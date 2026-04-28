@@ -41,6 +41,35 @@ class SubAgentHandleStoreFactoryTest {
   }
 
   @Test
+  fun fileBackedStoreKeepsHandlesIsolatedPerSession() {
+    val runtimeRoot = temporaryFolder.newFolder("subagent-handle-store-isolation")
+    val factory = FileBackedSubAgentHandleStoreFactory(runtimeRoot)
+    val sessionAHandle = sampleHandle(
+      agentId = "child-session-a",
+      childRunId = "child-run-session-a",
+      childTaskId = "child-task-session-a",
+      updatedAtEpochMs = 1_150L,
+    )
+    val sessionBHandle = sampleHandle(
+      agentId = "child-session-b",
+      childRunId = "child-run-session-b",
+      childTaskId = "child-task-session-b",
+      updatedAtEpochMs = 1_250L,
+    )
+
+    factory.forChatSession("session-a").upsert(sessionAHandle)
+    factory.forChatSession("session-b").upsert(sessionBHandle)
+
+    assertEquals(listOf(sessionAHandle), factory.forChatSession("session-a").list())
+    assertEquals(listOf(sessionBHandle), factory.forChatSession("session-b").list())
+    assertTrue(
+      factory.forChatSession("session-a").list().none { handle ->
+        handle.agentId == sessionBHandle.agentId
+      },
+    )
+  }
+
+  @Test
   fun persistentCoordinatorRepairsInterruptedBackgroundHandlesOnStartup() {
     val runtimeRoot = temporaryFolder.newFolder("subagent-handle-repair")
     FileBackedSubAgentHandleStoreFactory(runtimeRoot)

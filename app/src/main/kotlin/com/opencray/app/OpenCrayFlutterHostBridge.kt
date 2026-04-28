@@ -686,14 +686,44 @@ internal class OpenCrayFlutterHostBridge(
           return
         }
 
-        "loadChatSnapshot" -> chatRuntimeGateway.loadChatSnapshot()
-        "loadChatRuntimeSnapshot" -> chatRuntimeGateway.loadChatRuntimeSnapshot()
-        "loadChatRunSnapshot" -> chatRuntimeGateway.loadChatRunSnapshot(
-          call.argument<String>("runId").orEmpty(),
-        )
-        "loadMemoryDebugSnapshot" -> chatRuntimeGateway.loadMemoryDebugSnapshot()
-        "loadMemoryDebugLinksSnapshot" -> chatRuntimeGateway.loadMemoryDebugLinksSnapshot()
-        "loadSoulDebugSnapshot" -> chatRuntimeGateway.loadSoulDebugSnapshot()
+        "loadChatSnapshot" -> {
+          runAsync(result) {
+            chatRuntimeGateway.loadChatSnapshot()
+          }
+          return
+        }
+        "loadChatRuntimeSnapshot" -> {
+          runAsync(result) {
+            chatRuntimeGateway.loadChatRuntimeSnapshot()
+          }
+          return
+        }
+        "loadChatRunSnapshot" -> {
+          runAsync(result) {
+            chatRuntimeGateway.loadChatRunSnapshot(
+              call.argument<String>("runId").orEmpty(),
+            )
+          }
+          return
+        }
+        "loadMemoryDebugSnapshot" -> {
+          runAsync(result) {
+            chatRuntimeGateway.loadMemoryDebugSnapshot()
+          }
+          return
+        }
+        "loadMemoryDebugLinksSnapshot" -> {
+          runAsync(result) {
+            chatRuntimeGateway.loadMemoryDebugLinksSnapshot()
+          }
+          return
+        }
+        "loadSoulDebugSnapshot" -> {
+          runAsync(result) {
+            chatRuntimeGateway.loadSoulDebugSnapshot()
+          }
+          return
+        }
         "runDebugPythonScript" -> {
           runAsync(result) {
             debugPythonScriptRunner.runScript(

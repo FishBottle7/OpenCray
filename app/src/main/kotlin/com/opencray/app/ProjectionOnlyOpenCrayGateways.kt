@@ -427,10 +427,7 @@ internal fun observeProjectionWithPollingSnapshot(
 ): () -> Unit {
   val lock = Any()
   var disposed = false
-  var latestPayload = payloadProvider()
-  mainThreadPoster.post {
-    listener(latestPayload)
-  }
+  var latestPayload: Map<String, Any?>? = null
   val timer = Timer("projection-shell-gateway-observer", true)
   timer.scheduleAtFixedRate(
     object : TimerTask() {
@@ -457,7 +454,7 @@ internal fun observeProjectionWithPollingSnapshot(
         }
       }
     },
-    pollIntervalMs.coerceAtLeast(1L),
+    0L,
     pollIntervalMs.coerceAtLeast(1L),
   )
   return {
@@ -508,7 +505,7 @@ internal fun observeLiveAssistantDraftsWithPollingSnapshot(
         }
       }
     },
-    pollIntervalMs.coerceAtLeast(1L),
+    0L,
     pollIntervalMs.coerceAtLeast(1L),
   )
   return {

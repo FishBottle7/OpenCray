@@ -20,6 +20,7 @@ import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
+import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
@@ -261,12 +262,36 @@ private class FileBackedAgentRunRecordStore(
       )
       .forEach { run ->
         if (run.runId !in deduped) {
+          val normalizedLastResult = run.lastResult?.let { result ->
+            val normalizedMetadata = OpenCrayPromptResumeMetadata.normalizeMetadata(
+              metadata = result.metadata,
+              json = PersistenceJson.instance,
+            )
+            if (normalizedMetadata == result.metadata) {
+              result
+            } else {
+              result.copy(metadata = normalizedMetadata)
+            }
+          }
+          val normalizedLastEvent = run.lastEvent?.let { event ->
+            val normalizedMetadata = OpenCrayPromptResumeMetadata.normalizeMetadata(
+              metadata = event.resultMetadata,
+              json = PersistenceJson.instance,
+            )
+            if (normalizedMetadata == event.resultMetadata) {
+              event
+            } else {
+              event.copy(resultMetadata = normalizedMetadata)
+            }
+          }
           deduped[run.runId] = run.copy(
             pendingMessageId = run.pendingMessageId?.trim()?.takeIf(String::isNotBlank),
             managedProcessIds = run.managedProcessIds
               .map(String::trim)
               .filter(String::isNotBlank)
               .distinct(),
+            lastResult = normalizedLastResult,
+            lastEvent = normalizedLastEvent,
           )
         }
       }

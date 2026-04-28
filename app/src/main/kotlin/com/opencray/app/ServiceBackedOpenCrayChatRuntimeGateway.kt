@@ -44,7 +44,7 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
   }
 
   override fun observeChatRuntime(listener: (Map<String, Any?>) -> Unit): () -> Unit =
-    observeWithRuntimeGateway(
+    observeWithStickyRuntimeGateway(
       observe = { gateway, callback -> gateway.observeChatRuntime(callback) },
       listener = listener,
     )

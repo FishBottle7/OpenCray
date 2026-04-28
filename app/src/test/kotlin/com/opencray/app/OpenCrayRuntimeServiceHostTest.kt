@@ -2654,7 +2654,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun serviceBackedGatewayObserversSwitchBetweenFallbackAndBinderGateways() {
+  fun serviceBackedGatewayObserversKeepRuntimeStickyAfterBinderGatewayAppears() {
     val binderGateway = RecordingChatRuntimeGateway("binder")
     val fallbackGateway = RecordingChatRuntimeGateway("fallback")
     val serviceClient = RecordingRuntimeServiceClient(
@@ -2694,9 +2694,67 @@ class OpenCrayRuntimeServiceHostTest {
 
     assertEquals(listOf("fallback-chat", "binder-chat", "fallback-chat"), observedChatSources)
     assertEquals(
-      listOf("fallback-runtime", "binder-runtime", "fallback-runtime"),
+      listOf("fallback-runtime", "binder-runtime"),
       observedRuntimeSources,
     )
+  }
+
+  @Test
+  fun serviceBackedChatRuntimeGatewayObserveChatRuntimeStaysOnBinderAcrossTransientPeekMiss() {
+    val binderGateway = RecordingChatRuntimeGateway("binder").apply {
+      chatRuntimePayload = mapOf(
+        "source" to "binder-runtime",
+        "revision" to 1,
+      )
+    }
+    val fallbackGateway = RecordingChatRuntimeGateway("fallback").apply {
+      chatRuntimePayload = mapOf(
+        "source" to "fallback-runtime",
+        "revision" to 0,
+      )
+    }
+    val serviceClient = RecordingRuntimeServiceClient(
+      currentShellGateway = null,
+      currentChatGateway = binderGateway,
+      dispatchChatWriteCommandHandler = binderGateway::dispatchChatWriteCommand,
+      currentSkillsGateway = null,
+      currentSettingsGateway = null,
+    )
+    val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
+      serviceClient = serviceClient,
+      fallbackGateway = fallbackGateway,
+    )
+    val observedSources = mutableListOf<String?>()
+    val observedRevisions = mutableListOf<Int?>()
+
+    val disposer = gateway.observeChatRuntime { snapshot ->
+      observedSources += snapshot["source"] as String?
+      observedRevisions += snapshot["revision"] as Int?
+    }
+
+    binderGateway.chatRuntimePayload = mapOf(
+      "source" to "binder-runtime",
+      "revision" to 2,
+    )
+    binderGateway.emitChatRuntimeSnapshot()
+    serviceClient.currentChatGateway = null
+    fallbackGateway.chatRuntimePayload = mapOf(
+      "source" to "fallback-runtime",
+      "revision" to 10,
+    )
+    serviceClient.emitConnectionStateChanged(RuntimeServiceConnectionState.bindingPending())
+    binderGateway.chatRuntimePayload = mapOf(
+      "source" to "binder-runtime",
+      "revision" to 3,
+    )
+    binderGateway.emitChatRuntimeSnapshot()
+    disposer()
+
+    assertEquals(
+      listOf("fallback-runtime", "binder-runtime", "binder-runtime", "binder-runtime"),
+      observedSources,
+    )
+    assertEquals(listOf(0, 1, 2, 3), observedRevisions)
   }
 
   @Test
@@ -2973,7 +3031,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun serviceBackedChatRuntimeGatewayObserveChatRuntimeFallsBackAfterBinderDisconnectAndRebinds() {
+  fun serviceBackedChatRuntimeGatewayObserveChatRuntimeStaysStickyAcrossDisconnectButRebindsOnReconnect() {
     val expected = bridgeSnapshot(temporaryFolder.newFolder("chat-gateway-observe-runtime-disconnect"))
     val bindingAdapter = RecordingBindingAdapter()
     val binderGateway = RecordingChatRuntimeGateway("binder").apply {
@@ -3045,10 +3103,7 @@ class OpenCrayRuntimeServiceHostTest {
       observedSources.lastOrNull() == "binder-runtime"
     }
     bindingAdapter.disconnect()
-    waitForCondition(timeoutMs = 1_000L) {
-      observedSources.lastOrNull() == "fallback-runtime" &&
-        observedDraftCounts.lastOrNull() == 0
-    }
+    Thread.sleep(100L)
     waitForCondition(timeoutMs = 1_000L) { bindingAdapter.bindCount == 2 }
     bindingAdapter.connect(
       object : Binder(), OpenCrayRuntimeServiceBinderAccess {
@@ -3064,10 +3119,10 @@ class OpenCrayRuntimeServiceHostTest {
     disposer()
 
     assertEquals(
-      listOf("fallback-runtime", "binder-runtime", "fallback-runtime", "binder-rebound-runtime"),
+      listOf("fallback-runtime", "binder-runtime", "binder-rebound-runtime"),
       observedSources,
     )
-    assertEquals(listOf(0, 1, 0, 1), observedDraftCounts)
+    assertEquals(listOf(0, 1, 1), observedDraftCounts)
   }
 
   @Test

@@ -310,9 +310,7 @@ class _AgentDraft {
       forbiddenBehaviors: forbiddenBehaviors.trim(),
       llm: OpenCrayAgentLlmConfig(
         provider: provider.name,
-        protocol: protocol == _AgentProtocol.anthropic
-            ? 'anthropic'
-            : 'openai',
+        protocol: protocol == _AgentProtocol.anthropic ? 'anthropic' : 'openai',
         baseUrl: baseUrl.trim().isEmpty ? null : baseUrl.trim(),
         apiKey: apiKey.trim().isEmpty ? null : apiKey.trim(),
         model: model.trim().isEmpty ? 'model' : model.trim(),
@@ -355,7 +353,9 @@ class _SavedAgent {
   final bool isActive;
 
   factory _SavedAgent.fromDraft(_AgentDraft draft) {
-    final modelLabel = draft.model.trim().isEmpty ? 'Model' : draft.model.trim();
+    final modelLabel = draft.model.trim().isEmpty
+        ? 'Model'
+        : draft.model.trim();
     return _SavedAgent(
       agentId: null,
       name: draft.nameOrFallback,
@@ -363,7 +363,8 @@ class _SavedAgent {
       description: draft.baseDescription.trim().isEmpty
           ? 'No base description yet.'
           : draft.baseDescription.trim(),
-      meta: '${_labelForProvider(draft.provider)} · $modelLabel · updated just now',
+      meta:
+          '${_labelForProvider(draft.provider)} · $modelLabel · updated just now',
       avatarColors: List<Color>.from(draft.avatarColors),
       template: draft.copy(),
       isActive: false,
@@ -431,7 +432,9 @@ List<Color> _agentGradientForSettingsAsset(OpenCraySettingsImageAsset asset) {
   return _agentGradientForSeed(seed);
 }
 
-String _deriveAgentImageLabelFromSettingsAsset(OpenCraySettingsImageAsset asset) {
+String _deriveAgentImageLabelFromSettingsAsset(
+  OpenCraySettingsImageAsset asset,
+) {
   final rawName = asset.displayName.trim().isNotEmpty
       ? asset.displayName.trim()
       : asset.relativePath.trim();
@@ -910,16 +913,17 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
   }
 
   Future<void> _openNewAgent() async {
-    final _SavedAgent? savedAgent = await Navigator.of(context).push<_SavedAgent>(
-      MaterialPageRoute<_SavedAgent>(
-        builder: (BuildContext context) => _AgentCreatePage(
-          draft: _AgentDraft.prototype(),
-          backLabel: 'Agents',
-          debugBridge: widget.debugBridge,
-          persistToHost: _usesHostBackedAgents,
-        ),
-      ),
-    );
+    final _SavedAgent? savedAgent = await Navigator.of(context)
+        .push<_SavedAgent>(
+          MaterialPageRoute<_SavedAgent>(
+            builder: (BuildContext context) => _AgentCreatePage(
+              draft: _AgentDraft.prototype(),
+              backLabel: 'Agents',
+              debugBridge: widget.debugBridge,
+              persistToHost: _usesHostBackedAgents,
+            ),
+          ),
+        );
     if (!mounted || savedAgent == null) {
       return;
     }
@@ -941,16 +945,17 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
   }
 
   Future<void> _reuseAgent(_SavedAgent agent) async {
-    final _SavedAgent? savedAgent = await Navigator.of(context).push<_SavedAgent>(
-      MaterialPageRoute<_SavedAgent>(
-        builder: (BuildContext context) => _AgentCreatePage(
-          draft: agent.toDraft(),
-          backLabel: 'Agents',
-          debugBridge: widget.debugBridge,
-          persistToHost: false,
-        ),
-      ),
-    );
+    final _SavedAgent? savedAgent = await Navigator.of(context)
+        .push<_SavedAgent>(
+          MaterialPageRoute<_SavedAgent>(
+            builder: (BuildContext context) => _AgentCreatePage(
+              draft: agent.toDraft(),
+              backLabel: 'Agents',
+              debugBridge: widget.debugBridge,
+              persistToHost: false,
+            ),
+          ),
+        );
     if (!mounted || savedAgent == null) {
       return;
     }
@@ -978,9 +983,9 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to select agent: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to select agent: $error')));
     } finally {
       if (mounted) {
         setState(() {
@@ -1011,7 +1016,9 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
               (OpenCrayAgentSnapshot snapshot) => _SavedAgent.fromSnapshot(
                 activeAgentId == null
                     ? snapshot
-                    : snapshot.copyWith(isActive: snapshot.agentId == activeAgentId),
+                    : snapshot.copyWith(
+                        isActive: snapshot.agentId == activeAgentId,
+                      ),
               ),
             )
             .toList(growable: false);
@@ -1093,7 +1100,10 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Text('Core identity', style: _SettingsTextStyles.cardTitle),
+                    const Text(
+                      'Core identity',
+                      style: _SettingsTextStyles.cardTitle,
+                    ),
                     const SizedBox(height: 8),
                     Row(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1172,11 +1182,12 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
                           .map((_AgentSoulPreset preset) => preset.name)
                           .toList(growable: false),
                       selectedId: draft.soulPreset.name,
-                      labelBuilder: (String value) => _labelForSoulPresetSegment(
-                        _AgentSoulPreset.values.firstWhere(
-                          (_AgentSoulPreset preset) => preset.name == value,
-                        ),
-                      ),
+                      labelBuilder: (String value) =>
+                          _labelForSoulPresetSegment(
+                            _AgentSoulPreset.values.firstWhere(
+                              (_AgentSoulPreset preset) => preset.name == value,
+                            ),
+                          ),
                       onSelected: (String value) {
                         setState(() {
                           draft.soulPreset = _AgentSoulPreset.values.firstWhere(
@@ -1228,7 +1239,9 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
               const SizedBox(height: 8),
               Text(
                 'Workspace is assigned automatically on creation.',
-                style: _SettingsTextStyles.selectionMeta.copyWith(height: 16 / 12),
+                style: _SettingsTextStyles.selectionMeta.copyWith(
+                  height: 16 / 12,
+                ),
               ),
               const SizedBox(height: 8),
               _AgentPrimaryButton(
@@ -1277,9 +1290,9 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
       setState(() {
         _isSubmitting = false;
       });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Failed to create agent: $error')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Failed to create agent: $error')));
     }
   }
 
@@ -1287,10 +1300,7 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (BuildContext context) =>
-            _AgentAvatarPage(
-              draft: _syncedDraft(),
-              bridge: widget.debugBridge,
-            ),
+            _AgentAvatarPage(draft: _syncedDraft(), bridge: widget.debugBridge),
       ),
     );
     if (mounted) {
@@ -1301,7 +1311,8 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   Future<void> _openModePage() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder: (BuildContext context) => _AgentModePage(draft: _syncedDraft()),
+        builder: (BuildContext context) =>
+            _AgentModePage(draft: _syncedDraft()),
       ),
     );
     if (mounted) {
@@ -1348,11 +1359,10 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   Future<void> _openMediaPage() async {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder: (BuildContext context) =>
-            _AgentMediaSamplesPage(
-              draft: _syncedDraft(),
-              bridge: widget.debugBridge,
-            ),
+        builder: (BuildContext context) => _AgentMediaSamplesPage(
+          draft: _syncedDraft(),
+          bridge: widget.debugBridge,
+        ),
       ),
     );
     if (mounted) {
@@ -1435,11 +1445,12 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
                 .map((_AgentTwinImportCorpusType type) => type.name)
                 .toList(growable: false),
             selectedId: draft.twinImportCorpusType.name,
-            labelBuilder: (String value) => _labelForTwinImportCorpusTypeSegment(
-              _AgentTwinImportCorpusType.values.firstWhere(
-                (_AgentTwinImportCorpusType type) => type.name == value,
-              ),
-            ),
+            labelBuilder: (String value) =>
+                _labelForTwinImportCorpusTypeSegment(
+                  _AgentTwinImportCorpusType.values.firstWhere(
+                    (_AgentTwinImportCorpusType type) => type.name == value,
+                  ),
+                ),
             onSelected: _selectCorpusType,
           ),
           const SizedBox(height: 10),
@@ -1499,7 +1510,10 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    _InlineTextAction(label: 'Replace', onTap: _replaceSourceSample),
+                    _InlineTextAction(
+                      label: 'Replace',
+                      onTap: _replaceSourceSample,
+                    ),
                   ],
                 ),
                 const SizedBox(height: 10),
@@ -1558,7 +1572,9 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
           SizedBox(height: 10),
           Row(
             children: [
-              Expanded(child: _TwinImportSignalPill(label: 'SOUL', active: true)),
+              Expanded(
+                child: _TwinImportSignalPill(label: 'SOUL', active: true),
+              ),
               SizedBox(width: 8),
               Expanded(child: _TwinImportSignalPill(label: 'RELATION')),
               SizedBox(width: 8),
@@ -1577,7 +1593,9 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
 
   void _selectCorpusType(String rawValue) {
     final _AgentTwinImportCorpusType type = _AgentTwinImportCorpusType.values
-        .firstWhere((_AgentTwinImportCorpusType value) => value.name == rawValue);
+        .firstWhere(
+          (_AgentTwinImportCorpusType value) => value.name == rawValue,
+        );
     setState(() {
       _applyTwinImportCorpusPreset(widget.draft, type);
       widget.draft.twinImportConfigured = false;
@@ -1588,10 +1606,13 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
     final bool alternate;
     switch (widget.draft.twinImportCorpusType) {
       case _AgentTwinImportCorpusType.chatHistory:
-        alternate = widget.draft.twinImportFileName == 'aster_chat_export.chatlab.jsonl';
+        alternate =
+            widget.draft.twinImportFileName ==
+            'aster_chat_export.chatlab.jsonl';
         break;
       case _AgentTwinImportCorpusType.fictionWork:
-        alternate = widget.draft.twinImportFileName == 'aster_novel.normalized.json';
+        alternate =
+            widget.draft.twinImportFileName == 'aster_novel.normalized.json';
         break;
     }
     setState(() {
@@ -1609,7 +1630,8 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
       widget.draft.twinImportCloneTarget,
       'Aster',
       'Nova',
-      if (widget.draft.twinImportCorpusType == _AgentTwinImportCorpusType.fictionWork)
+      if (widget.draft.twinImportCorpusType ==
+          _AgentTwinImportCorpusType.fictionWork)
         'Lead'
       else
         'Muse',
@@ -1636,7 +1658,8 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
       widget.draft.twinImportCastAs,
       'Fish',
       'User',
-      if (widget.draft.twinImportCorpusType == _AgentTwinImportCorpusType.fictionWork)
+      if (widget.draft.twinImportCorpusType ==
+          _AgentTwinImportCorpusType.fictionWork)
         'Second lead'
       else
         'Partner',
@@ -1661,12 +1684,14 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
   Future<void> _selectRelationFocus() async {
     final List<String> options = <String>{
       widget.draft.twinImportRelationFocus,
-      if (widget.draft.twinImportCorpusType == _AgentTwinImportCorpusType.fictionWork)
+      if (widget.draft.twinImportCorpusType ==
+          _AgentTwinImportCorpusType.fictionWork)
         'Aster ↔ Fish'
       else
         'Ties with Fish',
       'Family context',
-      if (widget.draft.twinImportCorpusType == _AgentTwinImportCorpusType.fictionWork)
+      if (widget.draft.twinImportCorpusType ==
+          _AgentTwinImportCorpusType.fictionWork)
         'Rival route'
       else
         'Work context',
@@ -1717,9 +1742,16 @@ class _AgentModePageState extends State<_AgentModePage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text('Context mode', style: _SettingsTextStyles.cardTitle),
+                const Text(
+                  'Context mode',
+                  style: _SettingsTextStyles.cardTitle,
+                ),
                 const SizedBox(height: 10),
-                for (int index = 0; index < _AgentMode.values.length; index++) ...[
+                for (
+                  int index = 0;
+                  index < _AgentMode.values.length;
+                  index++
+                ) ...[
                   _AgentChoiceTile(
                     title: _labelForAgentMode(_AgentMode.values[index]),
                     body: _bodyForAgentMode(_AgentMode.values[index]),
@@ -1777,18 +1809,22 @@ class _AgentPlasticityPageState extends State<_AgentPlasticityPage> {
                   style: _SettingsTextStyles.cardTitle,
                 ),
                 const SizedBox(height: 10),
-                for (int index = 0;
-                    index < _AgentPlasticity.values.length;
-                    index++) ...[
+                for (
+                  int index = 0;
+                  index < _AgentPlasticity.values.length;
+                  index++
+                ) ...[
                   _AgentChoiceTile(
                     title: _labelForPlasticity(_AgentPlasticity.values[index]),
                     body: _bodyForPlasticity(_AgentPlasticity.values[index]),
                     selected:
-                        widget.draft.plasticity == _AgentPlasticity.values[index],
+                        widget.draft.plasticity ==
+                        _AgentPlasticity.values[index],
                     selectedLabel: 'Selected',
                     onTap: () {
                       setState(() {
-                        widget.draft.plasticity = _AgentPlasticity.values[index];
+                        widget.draft.plasticity =
+                            _AgentPlasticity.values[index];
                       });
                     },
                   ),
@@ -1833,15 +1869,23 @@ class _AgentAddressStylePageState extends State<_AgentAddressStylePage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text('Style options', style: _SettingsTextStyles.cardTitle),
+                const Text(
+                  'Style options',
+                  style: _SettingsTextStyles.cardTitle,
+                ),
                 const SizedBox(height: 10),
-                for (int index = 0;
-                    index < _AgentAddressStyle.values.length;
-                    index++) ...[
+                for (
+                  int index = 0;
+                  index < _AgentAddressStyle.values.length;
+                  index++
+                ) ...[
                   _AgentChoiceTile(
-                    title:
-                        _labelForAddressStyle(_AgentAddressStyle.values[index]),
-                    body: _bodyForAddressStyle(_AgentAddressStyle.values[index]),
+                    title: _labelForAddressStyle(
+                      _AgentAddressStyle.values[index],
+                    ),
+                    body: _bodyForAddressStyle(
+                      _AgentAddressStyle.values[index],
+                    ),
                     selected:
                         widget.draft.addressStyle ==
                         _AgentAddressStyle.values[index],
@@ -1948,7 +1992,10 @@ class _AgentAvatarPageState extends State<_AgentAvatarPage> {
                                 _AgentAvatarSource.generated;
                             widget.draft.customAvatarAsset = null;
                             widget.draft.avatarColors = widget
-                                .draft.imageReferences.first.colors
+                                .draft
+                                .imageReferences
+                                .first
+                                .colors
                                 .toList(growable: false);
                           });
                         },
@@ -2132,7 +2179,10 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
           Row(
             children: [
               const Expanded(
-                child: Text('Audio sample', style: _SettingsTextStyles.cardTitle),
+                child: Text(
+                  'Audio sample',
+                  style: _SettingsTextStyles.cardTitle,
+                ),
               ),
               const _AgentSoftBadge(label: 'Attached'),
             ],
@@ -2239,7 +2289,10 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('Image references', style: _SettingsTextStyles.cardTitle),
+            const Text(
+              'Image references',
+              style: _SettingsTextStyles.cardTitle,
+            ),
             const SizedBox(height: 12),
             _AgentUploadZone(
               title: 'Upload images',
@@ -2308,10 +2361,7 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
           const SizedBox(height: 10),
           Row(
             children: [
-              _AgentMutedButton(
-                label: 'Preview all',
-                onTap: _previewAllImages,
-              ),
+              _AgentMutedButton(label: 'Preview all', onTap: _previewAllImages),
               const SizedBox(width: 8),
               _AgentTertiaryButton(
                 label: 'Add more',
@@ -2355,10 +2405,12 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
                   spacing: 10,
                   runSpacing: 10,
                   children: images
-                      .map((_AgentImageReference image) => SizedBox(
-                            width: 100,
-                            child: _AgentReferenceCard(image: image),
-                          ))
+                      .map(
+                        (_AgentImageReference image) => SizedBox(
+                          width: 100,
+                          child: _AgentReferenceCard(image: image),
+                        ),
+                      )
                       .toList(growable: false),
                 ),
               ],
@@ -2408,8 +2460,8 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
       ];
       if (widget.draft.avatarSource == _AgentAvatarSource.generated &&
           widget.draft.imageReferences.isNotEmpty) {
-        widget.draft.avatarColors =
-            widget.draft.imageReferences.first.colors.toList(growable: false);
+        widget.draft.avatarColors = widget.draft.imageReferences.first.colors
+            .toList(growable: false);
       }
     });
   }
@@ -2460,8 +2512,8 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
       ];
       if (widget.draft.avatarSource == _AgentAvatarSource.generated &&
           widget.draft.imageReferences.isNotEmpty) {
-        widget.draft.avatarColors =
-            widget.draft.imageReferences.first.colors.toList(growable: false);
+        widget.draft.avatarColors = widget.draft.imageReferences.first.colors
+            .toList(growable: false);
       }
     });
     final skippedCount = importedAssets.length - freshAssets.length;
@@ -2562,9 +2614,18 @@ class _AgentModelPageState extends State<_AgentModelPage> {
                   controller: _apiKeyController,
                   hintText: 'sk-...',
                   obscureText: true,
-                  trailingText: 'Stored locally',
+                  trailing: _apiKeyController.text.trim().isEmpty
+                      ? null
+                      : _FieldClearButton(
+                          buttonKey: const ValueKey<String>(
+                            'settings-agent-api-key-clear',
+                          ),
+                          onTap: _clearApiKey,
+                        ),
                   onChanged: (String value) {
-                    widget.draft.apiKey = value;
+                    setState(() {
+                      widget.draft.apiKey = value;
+                    });
                   },
                 ),
                 const SizedBox(height: 10),
@@ -2614,6 +2675,16 @@ class _AgentModelPageState extends State<_AgentModelPage> {
     });
   }
 
+  void _clearApiKey() {
+    if (_apiKeyController.text.isEmpty) {
+      return;
+    }
+    setState(() {
+      _apiKeyController.clear();
+      widget.draft.apiKey = '';
+    });
+  }
+
   Future<void> _selectProtocol() async {
     final _AgentProtocol? value = await _showSelectionSheet<_AgentProtocol>(
       context,
@@ -2658,13 +2729,15 @@ class _AgentAdvancedDefaultsPage extends StatefulWidget {
       _AgentAdvancedDefaultsPageState();
 }
 
-class _AgentAdvancedDefaultsPageState extends State<_AgentAdvancedDefaultsPage> {
+class _AgentAdvancedDefaultsPageState
+    extends State<_AgentAdvancedDefaultsPage> {
   late final TextEditingController _collaborationController =
       TextEditingController(text: widget.draft.collaborationGuidance);
   late final TextEditingController _escalationController =
       TextEditingController(text: widget.draft.escalationRules);
-  late final TextEditingController _forbiddenController =
-      TextEditingController(text: widget.draft.forbiddenBehaviors);
+  late final TextEditingController _forbiddenController = TextEditingController(
+    text: widget.draft.forbiddenBehaviors,
+  );
 
   @override
   void dispose() {
@@ -2705,8 +2778,9 @@ class _AgentAdvancedDefaultsPageState extends State<_AgentAdvancedDefaultsPage> 
                 const Divider(height: 1, color: OpenCrayColors.divider),
                 _AgentSummaryLinkRow(
                   title: 'Relationship style',
-                  value:
-                      _labelForRelationshipStyle(widget.draft.relationshipStyle),
+                  value: _labelForRelationshipStyle(
+                    widget.draft.relationshipStyle,
+                  ),
                   onTap: _selectRelationshipStyle,
                 ),
                 const Divider(height: 1, color: OpenCrayColors.divider),
@@ -3014,9 +3088,7 @@ class _AgentSummaryLinkRow extends StatelessWidget {
                 textAlign: TextAlign.right,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: _SettingsTextStyles.selectionMeta.copyWith(
-                  fontSize: 13,
-                ),
+                style: _SettingsTextStyles.selectionMeta.copyWith(fontSize: 13),
               ),
             ),
             const SizedBox(width: 6),
@@ -3059,9 +3131,7 @@ class _AgentChoiceTile extends StatelessWidget {
               ? OpenCrayColors.surfaceAccent
               : const Color(0xFFF7F7FA),
           borderRadius: BorderRadius.circular(14),
-          border: selected
-              ? Border.all(color: const Color(0xFFBBD7FF))
-              : null,
+          border: selected ? Border.all(color: const Color(0xFFBBD7FF)) : null,
         ),
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -3211,11 +3281,7 @@ class _TwinImportSignalPill extends StatelessWidget {
 }
 
 class _AgentPillButton extends StatelessWidget {
-  const _AgentPillButton({
-    super.key,
-    required this.label,
-    required this.onTap,
-  });
+  const _AgentPillButton({super.key, required this.label, required this.onTap});
 
   final String label;
   final VoidCallback onTap;
@@ -3571,8 +3637,8 @@ class _AgentMultilineField extends StatelessWidget {
             maxLines: 2,
             onChanged: onChanged,
             autocorrect: false,
-            enableSuggestions: false,
-            enableIMEPersonalizedLearning: false,
+            enableSuggestions: true,
+            enableIMEPersonalizedLearning: true,
             spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
             smartDashesType: SmartDashesType.disabled,
             smartQuotesType: SmartQuotesType.disabled,
@@ -3754,8 +3820,8 @@ Future<String?> _showImageNamingDialog(
                       },
                       autofocus: true,
                       autocorrect: false,
-                      enableSuggestions: false,
-                      enableIMEPersonalizedLearning: false,
+                      enableSuggestions: true,
+                      enableIMEPersonalizedLearning: true,
                       spellCheckConfiguration:
                           const SpellCheckConfiguration.disabled(),
                       smartDashesType: SmartDashesType.disabled,
@@ -3766,8 +3832,7 @@ Future<String?> _showImageNamingDialog(
                       decoration: InputDecoration(
                         isCollapsed: true,
                         border: InputBorder.none,
-                        hintText:
-                            'e.g. front portrait, red outfit, warm light',
+                        hintText: 'e.g. front portrait, red outfit, warm light',
                         hintStyle: _SettingsTextStyles.fieldValue.copyWith(
                           color: const Color(0xFFA0A4AE),
                           fontWeight: FontWeight.w400,
@@ -3796,7 +3861,8 @@ Future<String?> _showImageNamingDialog(
                           label: 'Confirm',
                           primary: true,
                           onTap: canConfirm
-                              ? () => Navigator.of(context).pop(draftValue.trim())
+                              ? () =>
+                                    Navigator.of(context).pop(draftValue.trim())
                               : null,
                         ),
                       ),
@@ -3832,7 +3898,9 @@ class _AgentDialogButton extends StatelessWidget {
         height: 44,
         decoration: BoxDecoration(
           color: primary
-              ? (onTap == null ? const Color(0xFF9BC8FF) : OpenCrayColors.primary)
+              ? (onTap == null
+                    ? const Color(0xFF9BC8FF)
+                    : OpenCrayColors.primary)
               : const Color(0xFFEEF1F6),
           borderRadius: BorderRadius.circular(14),
         ),

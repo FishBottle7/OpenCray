@@ -279,6 +279,103 @@ class OpenCrayFlutterHostBridgeTest {
   }
 
   @Test
+  fun loadChatSnapshotMethodCallRunsOnBackgroundRunner() {
+    val chatGateway = RecordingChatRuntimeGateway().apply {
+      loadChatSnapshotResult = mapOf("messages" to listOf("hello"))
+    }
+    var queuedAction: (() -> Unit)? = null
+    val bridge = OpenCrayFlutterHostBridge(
+      context = MinimalContext(),
+      localHostGateway = UnsupportedLocalGateway(),
+      shellGateway = UnsupportedShellGateway(),
+      chatRuntimeGateway = chatGateway,
+      skillsGateway = UnsupportedSkillsGateway(),
+      settingsGateway = UnsupportedSettingsGateway(),
+      debugPythonScriptRunnerFactory = {
+        throw UnsupportedOperationException("Debug Python runner should not be used.")
+      },
+      backgroundRunner = { action -> queuedAction = action },
+      mainThreadPoster = { action -> action() },
+    )
+    val result = RecordingMethodResult()
+
+    bridge.onMethodCall(MethodCall("loadChatSnapshot", null), result)
+
+    assertEquals(0, chatGateway.loadChatSnapshotCallCount)
+    assertFalse(result.successCalled)
+    checkNotNull(queuedAction) { "Expected chat snapshot loading to be queued." }.invoke()
+    assertEquals(1, chatGateway.loadChatSnapshotCallCount)
+    assertTrue(result.successCalled)
+    assertEquals(chatGateway.loadChatSnapshotResult, result.successPayload)
+  }
+
+  @Test
+  fun loadChatRunSnapshotMethodCallRunsOnBackgroundRunner() {
+    val chatGateway = RecordingChatRuntimeGateway().apply {
+      loadChatRunSnapshotResult = mapOf("runId" to "run-1")
+    }
+    var queuedAction: (() -> Unit)? = null
+    val bridge = OpenCrayFlutterHostBridge(
+      context = MinimalContext(),
+      localHostGateway = UnsupportedLocalGateway(),
+      shellGateway = UnsupportedShellGateway(),
+      chatRuntimeGateway = chatGateway,
+      skillsGateway = UnsupportedSkillsGateway(),
+      settingsGateway = UnsupportedSettingsGateway(),
+      debugPythonScriptRunnerFactory = {
+        throw UnsupportedOperationException("Debug Python runner should not be used.")
+      },
+      backgroundRunner = { action -> queuedAction = action },
+      mainThreadPoster = { action -> action() },
+    )
+    val result = RecordingMethodResult()
+
+    bridge.onMethodCall(
+      MethodCall("loadChatRunSnapshot", mapOf("runId" to "run-1")),
+      result,
+    )
+
+    assertEquals(0, chatGateway.loadChatRunSnapshotCallCount)
+    assertFalse(result.successCalled)
+    checkNotNull(queuedAction) { "Expected chat run snapshot loading to be queued." }.invoke()
+    assertEquals(1, chatGateway.loadChatRunSnapshotCallCount)
+    assertEquals("run-1", chatGateway.lastLoadedRunId)
+    assertTrue(result.successCalled)
+    assertEquals(chatGateway.loadChatRunSnapshotResult, result.successPayload)
+  }
+
+  @Test
+  fun loadMemoryDebugSnapshotMethodCallRunsOnBackgroundRunner() {
+    val chatGateway = RecordingChatRuntimeGateway().apply {
+      loadMemoryDebugSnapshotResult = mapOf("records" to listOf("memory-1"))
+    }
+    var queuedAction: (() -> Unit)? = null
+    val bridge = OpenCrayFlutterHostBridge(
+      context = MinimalContext(),
+      localHostGateway = UnsupportedLocalGateway(),
+      shellGateway = UnsupportedShellGateway(),
+      chatRuntimeGateway = chatGateway,
+      skillsGateway = UnsupportedSkillsGateway(),
+      settingsGateway = UnsupportedSettingsGateway(),
+      debugPythonScriptRunnerFactory = {
+        throw UnsupportedOperationException("Debug Python runner should not be used.")
+      },
+      backgroundRunner = { action -> queuedAction = action },
+      mainThreadPoster = { action -> action() },
+    )
+    val result = RecordingMethodResult()
+
+    bridge.onMethodCall(MethodCall("loadMemoryDebugSnapshot", null), result)
+
+    assertEquals(0, chatGateway.loadMemoryDebugSnapshotCallCount)
+    assertFalse(result.successCalled)
+    checkNotNull(queuedAction) { "Expected memory debug snapshot loading to be queued." }.invoke()
+    assertEquals(1, chatGateway.loadMemoryDebugSnapshotCallCount)
+    assertTrue(result.successCalled)
+    assertEquals(chatGateway.loadMemoryDebugSnapshotResult, result.successPayload)
+  }
+
+  @Test
   fun submitChatMessageMethodCallPreservesArtifactAndChatAttachmentReferences() {
     val chatGateway = RecordingChatRuntimeGateway()
     val result = RecordingMethodResult()
@@ -873,6 +970,20 @@ class OpenCrayFlutterHostBridgeTest {
       private set
 
     var refreshSandboxSessionInfoError: Throwable? = null
+    var loadChatSnapshotCallCount: Int = 0
+      private set
+    var loadChatSnapshotResult: Map<String, Any?> = emptyMap()
+    var loadChatRuntimeSnapshotCallCount: Int = 0
+      private set
+    var loadChatRuntimeSnapshotResult: Map<String, Any?> = emptyMap()
+    var loadChatRunSnapshotCallCount: Int = 0
+      private set
+    var loadChatRunSnapshotResult: Map<String, Any?>? = null
+    var lastLoadedRunId: String? = null
+      private set
+    var loadMemoryDebugSnapshotCallCount: Int = 0
+      private set
+    var loadMemoryDebugSnapshotResult: Map<String, Any?> = emptyMap()
     var lastSelectedSessionId: String? = null
       private set
     var lastSubmittedText: String? = null
@@ -887,6 +998,27 @@ class OpenCrayFlutterHostBridgeTest {
     override fun refreshSandboxSessionInfo() {
       refreshSandboxSessionInfoCallCount += 1
       refreshSandboxSessionInfoError?.let { throwable -> throw throwable }
+    }
+
+    override fun loadChatSnapshot(): Map<String, Any?> {
+      loadChatSnapshotCallCount += 1
+      return loadChatSnapshotResult
+    }
+
+    override fun loadChatRuntimeSnapshot(): Map<String, Any?> {
+      loadChatRuntimeSnapshotCallCount += 1
+      return loadChatRuntimeSnapshotResult
+    }
+
+    override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? {
+      loadChatRunSnapshotCallCount += 1
+      lastLoadedRunId = runId
+      return loadChatRunSnapshotResult
+    }
+
+    override fun loadMemoryDebugSnapshot(): Map<String, Any?> {
+      loadMemoryDebugSnapshotCallCount += 1
+      return loadMemoryDebugSnapshotResult
     }
 
     override fun submitChatMessage(

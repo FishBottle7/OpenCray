@@ -448,6 +448,18 @@ internal class ServiceOwnedChatRuntimeGateway(
   @Suppress("unused")
   private val runtimeObservationDisposer = runtimeHostAccess?.observe(
     object : AgentSessionRuntimeListener {
+      override fun onTaskStarted(sessionId: String, task: com.opencray.core.contracts.AgentTask) {
+        emitServiceOwnedChatAndRuntimeSnapshots()
+      }
+
+      override fun onRunEvent(
+        sessionId: String,
+        task: com.opencray.core.contracts.AgentTask,
+        event: com.opencray.runtime.OpenCrayAgentRunEvent,
+      ) {
+        emitServiceOwnedChatAndRuntimeSnapshots()
+      }
+
       override fun onAssistantDraftUpdated(
         sessionId: String,
         task: com.opencray.core.contracts.AgentTask,
@@ -477,8 +489,8 @@ internal class ServiceOwnedChatRuntimeGateway(
           serviceChatDebug(
             "service.draftUpdated session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} len=${text.length} preview=${text.take(80).replace('\n', ' ')}",
           )
-          emitChatRuntimePayload(loadChatRuntimeSnapshot())
           emitLiveAssistantDraftEvent(draftEventPayload)
+          emitServiceOwnedRuntimeSnapshot()
         }
       }
 
@@ -517,8 +529,8 @@ internal class ServiceOwnedChatRuntimeGateway(
           serviceChatDebug(
             "service.draftCleared session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"}",
           )
-          emitChatRuntimePayload(loadChatRuntimeSnapshot())
           emitLiveAssistantDraftEvent(draftEventPayload)
+          emitServiceOwnedRuntimeSnapshot()
         }
       }
 
@@ -557,9 +569,9 @@ internal class ServiceOwnedChatRuntimeGateway(
           serviceChatDebug(
             "service.taskFinishedClearedDraft session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} status=${result.status} error=${result.errorCode ?: "-"}",
           )
-          emitChatRuntimePayload(loadChatRuntimeSnapshot())
           emitLiveAssistantDraftEvent(draftEventPayload)
         }
+        emitServiceOwnedChatAndRuntimeSnapshots()
       }
     },
   )
@@ -935,6 +947,21 @@ internal class ServiceOwnedChatRuntimeGateway(
     emitChatRuntimePayload(loadChatRuntimeSnapshot())
   }
 
+  private fun emitServiceOwnedRuntimeSnapshot() {
+    if (delegate != null) {
+      return
+    }
+    emitChatRuntimePayload(loadChatRuntimeSnapshot())
+  }
+
+  private fun emitServiceOwnedChatAndRuntimeSnapshots() {
+    if (delegate != null) {
+      return
+    }
+    emitChatPayload(loadChatSnapshot())
+    emitChatRuntimePayload(loadChatRuntimeSnapshot())
+  }
+
   private fun emitLiveAssistantDraftEvent(payload: Map<String, Any?>) {
     if (payload.isEmpty()) {
       return
@@ -1009,16 +1036,57 @@ internal class ServiceOwnedChatRuntimeGateway(
   }
 
   private fun shouldRunLiveChatRuntimeRefresh(): Boolean {
-    val hasListeners = synchronized(lock) { chatRuntimeListeners.isNotEmpty() }
-    if (!hasListeners) {
-      return false
+    val latestPayload = synchronized(lock) {
+      if (chatRuntimeListeners.isEmpty()) {
+        return false
+      }
+      latestChatRuntimePayload
     }
-    val access = runtimeHostAccess ?: return false
+    val hasPayloadLiveActivity = chatRuntimePayloadHasLiveActivity(latestPayload)
+    val access = runtimeHostAccess ?: return hasPayloadLiveActivity
     val summary = access.activeWorkSummary()
-    return summary.activeRunCount > 0 ||
+    if (
+      summary.activeRunCount > 0 ||
       summary.pendingWorkSessionIds.isNotEmpty() ||
       summary.liveManagedProcessSessionIds.isNotEmpty() ||
       summary.liveSubAgentSessionIds.isNotEmpty()
+    ) {
+      return true
+    }
+    return hasPayloadLiveActivity
+  }
+
+  private fun chatRuntimePayloadHasLiveActivity(payload: Map<String, Any?>): Boolean {
+    if (payloadLiveAssistantDrafts(payload).isNotEmpty()) {
+      return true
+    }
+    val activeRuns = payloadRuntimeRuns(payload, "activeRuns")
+    if (activeRuns.isNotEmpty()) {
+      return true
+    }
+    return payloadRuntimeRuns(payload, "retainedRuns").any(::runtimeRunPayloadHasLiveManagedProcess)
+  }
+
+  private fun payloadRuntimeRuns(
+    payload: Map<String, Any?>,
+    key: String,
+  ): List<Map<*, *>> = (payload[key] as? List<*>)
+    ?.mapNotNull { item -> item as? Map<*, *> }
+    .orEmpty()
+
+  private fun runtimeRunPayloadHasLiveManagedProcess(run: Map<*, *>): Boolean {
+    if (run["hasLiveManagedProcesses"] == true) {
+      return true
+    }
+    val runningCount = (run["runningManagedProcessCount"] as? Number)?.toInt() ?: 0
+    if (runningCount > 0) {
+      return true
+    }
+    return (run["managedProcesses"] as? List<*>)
+      ?.mapNotNull { item -> item as? Map<*, *> }
+      ?.any { process ->
+        (process["status"] as? String)?.trim()?.equals("running", ignoreCase = true) == true
+      } == true
   }
 
   private fun chatRuntimePayloadDebugSummary(payload: Map<String, Any?>): String {

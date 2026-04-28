@@ -337,10 +337,21 @@ private class FileBackedRunEventJournalStore(
   }
 
   private fun decodeJournalEntry(file: File): PersistedRunJournalEntry? = runCatching {
-    PersistenceJson.instance.decodeFromString(
+    val decoded = PersistenceJson.instance.decodeFromString(
       deserializer = PersistedRunJournalEntry.serializer(),
       string = file.readText(Charsets.UTF_8),
     )
+    val normalized = normalizeJournalEntry(decoded)
+    if (normalized != decoded) {
+      file.writeText(
+        PersistenceJson.instance.encodeToString(
+          serializer = PersistedRunJournalEntry.serializer(),
+          value = normalized,
+        ),
+        Charsets.UTF_8,
+      )
+    }
+    normalized
   }.getOrNull()
 
   private companion object {
@@ -365,9 +376,25 @@ private fun checkpointPayload(
   resultMetadata = OpenCrayPromptResumeMetadata.encodeToMetadata(
     state = emission.state,
     json = PROMPT_CHECKPOINT_JSON,
-    checkpointBoundary = emission.boundary,
+      checkpointBoundary = emission.boundary,
   ),
 )
+
+private fun normalizeJournalEntry(
+  entry: PersistedRunJournalEntry,
+): PersistedRunJournalEntry {
+  val normalizedMetadata = OpenCrayPromptResumeMetadata.normalizeMetadata(
+    metadata = entry.payload.resultMetadata,
+    json = PROMPT_CHECKPOINT_JSON,
+  )
+  return if (normalizedMetadata == entry.payload.resultMetadata) {
+    entry
+  } else {
+    entry.copy(
+      payload = entry.payload.copy(resultMetadata = normalizedMetadata),
+    )
+  }
+}
 
 private val PERSISTED_JOURNAL_ENTRY_COMPARATOR = compareBy<PersistedRunJournalEntry>(
   PersistedRunJournalEntry::persistedAtEpochMs,

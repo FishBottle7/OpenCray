@@ -935,7 +935,8 @@ class _WorkspaceAccessSettingsPageState
                               children: [
                                 Expanded(
                                   child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
                                       Text(
                                         SafetySettingsCopy.liveContextModeLabel(

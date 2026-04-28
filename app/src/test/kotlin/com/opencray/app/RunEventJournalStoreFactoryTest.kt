@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import com.opencray.persistence.PersistenceJson
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptCheckpointEmission
@@ -8,7 +9,15 @@ import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
+import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.AgentToolResult
+import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.RuntimeConversationMessageKind
+import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.context.RuntimeConversationToolResult
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -147,4 +156,99 @@ class RunEventJournalStoreFactoryTest {
     assertNotNull(restoredResumeState)
     assertTrue(restoredStore.listRuntimeEvents().isEmpty())
   }
+
+  @Test
+  fun fileBackedStoreRepairsLegacyNestedResumeMetadataWhenReloaded() {
+    val runtimeRoot = temporaryFolder.newFolder("runtime-journal-store-repair")
+    val factory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val store = factory.forChatSession("session-1")
+    store.append(
+      OpenCrayToolResultEvent(
+        runId = "run-1",
+        taskId = "task-1",
+        turn = 1,
+        call = AgentToolCall(toolName = "WebSearch"),
+        result = AgentToolResult(
+          toolName = "WebSearch",
+          status = AgentToolResultStatus.SUCCESS,
+          content = "done",
+          metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(
+            state = OpenCrayPromptResumeState(turnIndex = 1, toolCallCount = 1),
+            json = json,
+            checkpointBoundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
+          ),
+        ),
+        emittedAtEpochMs = 200L,
+      ),
+    )
+
+    val sessionDirectory = factory.directoryForSession("session-1")
+    val journalFile = sessionDirectory
+      .resolve("run-journal")
+      .walkTopDown()
+      .firstOrNull { file -> file.isFile && file.name.endsWith(".json") }
+      ?: error("Expected a single journal file.")
+    val persistedEntry = PersistenceJson.instance.decodeFromString(
+      deserializer = PersistedRunJournalEntry.serializer(),
+      string = journalFile.readText(),
+    )
+    val legacyState = OpenCrayPromptResumeState(
+      turnIndex = 1,
+      toolCallCount = 1,
+      transcript = listOf(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.TOOL,
+          kind = RuntimeConversationMessageKind.TOOL_RESULT,
+          content = legacyToolResultPayload(),
+          toolResult = RuntimeConversationToolResult(
+            toolName = "WebSearch",
+            status = "success",
+            isError = false,
+          ),
+        ),
+      ),
+    )
+    journalFile.writeText(
+      PersistenceJson.instance.encodeToString(
+        serializer = PersistedRunJournalEntry.serializer(),
+        value = persistedEntry.copy(
+          payload = persistedEntry.payload.copy(
+            resultMetadata = mapOf(
+              OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON to json.encodeToString(
+                OpenCrayPromptResumeState.serializer(),
+                legacyState,
+              ),
+              OpenCrayPromptResumeMetadata.KEY_PROMPT_CHECKPOINT_BOUNDARY to
+                OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED.wireValue,
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val restoredEntry = factory.forChatSession("session-1").listForRun("run-1").single()
+    val restoredState = OpenCrayPromptResumeMetadata.decodeFromMetadata(
+      metadata = restoredEntry.payload.resultMetadata,
+      json = json,
+    )
+
+    assertNotNull(restoredState)
+    assertFalse(
+      restoredState
+        ?.transcript
+        ?.single()
+        ?.content
+        ?.contains(OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON)
+        ?: true,
+    )
+    assertFalse(journalFile.readText().contains(encodedPayloadForRecord(legacyToolResultPayload())))
+  }
+
+  private fun legacyToolResultPayload(): String = """
+    {"run_id":"run-1","task_id":"task-1","turn":1,"tool_name":"WebSearch","status":"success","content":"done","metadata":{"sourceUrls":"https://example.com","opencray_prompt_resume_json":"{\"turnIndex\":0,\"toolCallCount\":0}","opencray_prompt_checkpoint_boundary":"tool_result_committed"}}
+  """.trimIndent()
+
+  private fun encodedPayloadForRecord(payload: String): String = payload
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
 }

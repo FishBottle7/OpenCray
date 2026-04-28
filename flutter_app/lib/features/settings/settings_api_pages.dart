@@ -155,7 +155,10 @@ class _SandboxProvidersSettingsPageState
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Execution environments', style: _SettingsTextStyles.cardTitle),
+                Text(
+                  'Execution environments',
+                  style: _SettingsTextStyles.cardTitle,
+                ),
                 SizedBox(height: 8),
                 Text(
                   'Cloud providers extend Python and future command execution without replacing the on-device runtime.',
@@ -213,7 +216,8 @@ class _SandboxE2bSettingsPage extends StatefulWidget {
   final String backLabel;
 
   @override
-  State<_SandboxE2bSettingsPage> createState() => _SandboxE2bSettingsPageState();
+  State<_SandboxE2bSettingsPage> createState() =>
+      _SandboxE2bSettingsPageState();
 }
 
 class _SandboxE2bSettingsPageState extends State<_SandboxE2bSettingsPage> {
@@ -297,7 +301,8 @@ class _SandboxE2bSettingsPageState extends State<_SandboxE2bSettingsPage> {
                 const SizedBox(height: 12),
                 _SandboxToggleRow(
                   title: 'Enable E2B',
-                  subtitle: 'Allow OpenCray to route Python and future execution tasks into E2B.',
+                  subtitle:
+                      'Allow OpenCray to route Python and future execution tasks into E2B.',
                   value: snapshot.enabled,
                   onChanged: (value) {
                     _updateSnapshot(snapshot.copyWith(enabled: value));
@@ -316,9 +321,14 @@ class _SandboxE2bSettingsPageState extends State<_SandboxE2bSettingsPage> {
                   controller: _apiKeyController,
                   hintText: 'e2b_...',
                   obscureText: true,
-                  trailingText: _apiKeyController.text.trim().isEmpty
+                  trailing: _apiKeyController.text.trim().isEmpty
                       ? null
-                      : 'Stored locally',
+                      : _FieldClearButton(
+                          buttonKey: const ValueKey<String>(
+                            'settings-sandbox-api-key-clear',
+                          ),
+                          onTap: _clearApiKey,
+                        ),
                   onChanged: (_) {
                     setState(() {});
                     _scheduleSave();
@@ -385,7 +395,8 @@ class _SandboxE2bSettingsPageState extends State<_SandboxE2bSettingsPage> {
                 const SizedBox(height: 12),
                 _SandboxToggleRow(
                   title: 'Auto resume',
-                  subtitle: 'Reconnect to sticky sessions when the runtime starts again.',
+                  subtitle:
+                      'Reconnect to sticky sessions when the runtime starts again.',
                   value: snapshot.autoResume,
                   onChanged: (value) {
                     _updateSnapshot(snapshot.copyWith(autoResume: value));
@@ -476,6 +487,15 @@ class _SandboxE2bSettingsPageState extends State<_SandboxE2bSettingsPage> {
       _snapshot = snapshot;
     });
     _scheduleSave();
+  }
+
+  void _clearApiKey() {
+    final snapshot = _snapshot;
+    if (snapshot == null || _apiKeyController.text.isEmpty) {
+      return;
+    }
+    _apiKeyController.clear();
+    _updateSnapshot(snapshot.copyWith(e2bApiKey: '', apiKeyConfigured: false));
   }
 
   void _scheduleSave() {

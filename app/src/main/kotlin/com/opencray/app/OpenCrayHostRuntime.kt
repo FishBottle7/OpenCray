@@ -7978,10 +7978,48 @@ internal class OpenCrayHostRuntime private constructor(
       return false
     }
     val summary = runtimeHostAccess.activeWorkSummary()
-    return summary.activeRunCount > 0 ||
+    if (
+      summary.activeRunCount > 0 ||
       summary.pendingWorkSessionIds.isNotEmpty() ||
       summary.liveManagedProcessSessionIds.isNotEmpty() ||
       summary.liveSubAgentSessionIds.isNotEmpty()
+    ) {
+      return true
+    }
+    return chatRuntimePayloadHasLiveActivity(loadChatRuntimeSnapshot())
+  }
+
+  private fun chatRuntimePayloadHasLiveActivity(payload: Map<String, Any?>): Boolean {
+    if ((payload["liveAssistantDrafts"] as? List<*>)?.isNotEmpty() == true) {
+      return true
+    }
+    val activeRuns = payloadRuntimeRuns(payload, "activeRuns")
+    if (activeRuns.isNotEmpty()) {
+      return true
+    }
+    return payloadRuntimeRuns(payload, "retainedRuns").any(::runtimeRunPayloadHasLiveManagedProcess)
+  }
+
+  private fun payloadRuntimeRuns(
+    payload: Map<String, Any?>,
+    key: String,
+  ): List<Map<*, *>> = (payload[key] as? List<*>)
+    ?.mapNotNull { item -> item as? Map<*, *> }
+    .orEmpty()
+
+  private fun runtimeRunPayloadHasLiveManagedProcess(run: Map<*, *>): Boolean {
+    if (run["hasLiveManagedProcesses"] == true) {
+      return true
+    }
+    val runningCount = (run["runningManagedProcessCount"] as? Number)?.toInt() ?: 0
+    if (runningCount > 0) {
+      return true
+    }
+    return (run["managedProcesses"] as? List<*>)
+      ?.mapNotNull { item -> item as? Map<*, *> }
+      ?.any { process ->
+        (process["status"] as? String)?.trim()?.equals("running", ignoreCase = true) == true
+      } == true
   }
 
   private fun emitLiveAssistantDraftEvent(payload: Map<String, Any?>) {

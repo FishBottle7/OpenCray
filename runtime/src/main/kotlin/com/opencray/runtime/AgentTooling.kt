@@ -171,6 +171,7 @@ data class AgentToolResult(
   fun toObservationText(json: Json): String = json.encodeToString(
     JsonObject.serializer(),
     buildJsonObject {
+      val normalizedMetadata = OpenCrayPromptResumeMetadata.sanitizeToolResultMetadata(metadata)
       put("tool_name", toolName)
       put("status", status.name.lowercase())
       put("content", content)
@@ -186,7 +187,7 @@ data class AgentToolResult(
       put(
         "metadata",
         buildJsonObject {
-          metadata.toSortedMap().forEach { (key, value) -> put(key, value) }
+          normalizedMetadata.toSortedMap().forEach { (key, value) -> put(key, value) }
         },
       )
     },

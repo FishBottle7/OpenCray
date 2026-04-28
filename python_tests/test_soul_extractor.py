@@ -126,6 +126,10 @@ def test_extract_chat_soul_writes_signal_and_draft_files(local_workspace):
     assert draft["anti_patterns"]
     assert draft["appraisal_tendencies"]
     assert draft["value_tradeoffs"]
+    assert draft["worldview_stack"]["schwartz_value_order"]
+    assert draft["worldview_stack"]["truth_vs_face_saving_bias"]
+    assert draft["idiolect"]["punctuation_rhythm"]["dominant_style"]
+    assert draft["idiolect"]["marker_clusters"]
     assert draft["conditional_policies"]
     assert any(policy["opening_context"] == "repair_offer" for policy in draft["conditional_policies"])
     assert {"event_semantics", "appraisal_hint", "value_tradeoff_hint", "opening_move_hint", "closure_move_hint"}.issubset(signal_types)
@@ -885,3 +889,165 @@ def test_judge_candidates_selector_context_prefers_selected_relationship(local_w
     assert focus["recommended_action"] in {"accept", "rewrite"}
     assert drift["recommended_action"] == "reject"
     assert any("relationship lens" in problem for problem in drift["problems"]) or "rebind_contamination" in drift["veto_reasons"]
+
+
+def _feedback_draft_payload() -> dict[str, Any]:
+    return {
+        "twin_id": "twin_feedback_lin",
+        "language_modes": {
+            "zh-CN": {
+                "surface_confidence": 0.88,
+                "directness_shift": "softened_direct",
+                "emoji_density": "low",
+                "sentence_length": "short_medium",
+                "punctuation_style": "light",
+                "signature_patterns": ["不是...是..."],
+            }
+        },
+        "speech_surface": {
+            "sentence_length": "short_medium",
+            "punctuation_style": "light",
+            "emoji_density": "low",
+            "directness_level": "softened_direct",
+            "signature_patterns": ["不是...是..."],
+        },
+        "judgment_policy": {
+            "fact_vs_feeling": "feeling_first_then_reason",
+            "certainty_style": "admits_uncertainty",
+            "dominant_appraisal": {
+                "self_state": "tired_overloaded",
+                "other_appraisal": "unreliable_or_inconsistent",
+                "core_need": "space_and_regulation",
+            },
+        },
+        "interpersonal_stance": {"agency": "medium", "communion": "high"},
+        "conflict_policy": {
+            "default": "explain_then_withdraw",
+            "boundary_style": "clear_but_not_hostile",
+            "repair_style": "returns_after_cooldown",
+        },
+        "affection_policy": {"mode": "restrained_indirect"},
+        "value_order": ["truth", "fairness", "autonomy"],
+        "social_value_orientation": "prosocial_but_bounded",
+        "conditional_policies": [
+            {
+                "when": ["conflict", "boundary", "repair_offer"],
+                "move_sequence": ["clarify_feeling", "withdraw"],
+                "relationship_scope": "close_relationship",
+                "confidence": 0.82,
+            }
+        ],
+        "relational_scripts": [
+            {
+                "name": "script_feedback",
+                "trigger": ["conflict", "boundary", "repair_offer"],
+                "moves": ["clarify_feeling", "withdraw"],
+                "relationship_scope": "close_relationship",
+                "scene_scope": "conflict",
+                "confidence": 0.82,
+            }
+        ],
+        "anti_patterns": [
+            "generic_therapy_tone",
+            "salesy_encouragement",
+            "overly_formal_ai_style",
+            "aggressive_personal_attack",
+        ],
+    }
+
+
+def test_feedback_variation_ops_accept_inline_payloads(local_workspace):
+    soul_extractor = _load_module()
+    service_root = local_workspace / ".opencray" / "personality_service"
+    draft_payload = _feedback_draft_payload()
+    context_payload = {
+        "scene_labels": ["conflict", "boundary"],
+        "relationship_scope": "close_relationship",
+        "source_mode": "chat_history",
+        "draft_text": "我不是在生气，只是现在有点累。今天先这样吧。",
+        "selected_relationship_binding_id": "binding_lin_user",
+        "counterpart_entity_id": "actor_user",
+        "overlay_key": "counterpart:actor_user",
+        "relationship_state_hints": {"warmth": "calm", "distance": "close", "pressure": "moderate"},
+        "interaction_preference_hints": {"tone": "calm", "pace": "measured"},
+        "recent_script_hints": ["clarify_feeling", "withdraw"],
+    }
+
+    planned = soul_extractor.run_request_envelope(
+        request_payload={
+            "operation": "plan_feedback_variations",
+            "params": {
+                "service_root": str(service_root),
+                "draft_payload": draft_payload,
+                "context_payload": context_payload,
+                "output_name": "feedback_plan_inline",
+            },
+        }
+    )
+
+    assert planned["status"] == "ok"
+    assert Path(planned["result_path"]).exists()
+    variation_context = planned["variation_context"]
+    assert variation_context["candidate_specs"]
+    assert variation_context["base_axes"]["closure_softness"] in {"balanced", "soft"}
+
+    sampled = soul_extractor.run_request_envelope(
+        request_payload={
+            "operation": "sample_feedback_candidates",
+            "params": {
+                "service_root": str(service_root),
+                "draft_payload": draft_payload,
+                "context_payload": variation_context,
+                "output_name": "feedback_sample_inline",
+            },
+        }
+    )
+
+    assert sampled["status"] == "ok"
+    assert Path(sampled["result_path"]).exists()
+    assert len(sampled["candidates"]) >= 2
+    assert all(candidate["text"] for candidate in sampled["candidates"])
+    assert sampled["candidate_batch"]["candidates"][0]["candidate_id"] == sampled["candidates"][0]["candidate_id"]
+
+
+def test_prepare_feedback_review_candidates_returns_ui_ready_cards(local_workspace):
+    soul_extractor = _load_module()
+    service_root = local_workspace / ".opencray" / "personality_service"
+    draft_payload = _feedback_draft_payload()
+    context_payload = {
+        "scene_labels": ["conflict", "boundary"],
+        "relationship_scope": "close_relationship",
+        "source_mode": "chat_history",
+        "draft_text": "我不是在生气，只是现在有点累。今天先这样吧。",
+        "variation_axes": ["closure_softness", "directness", "warmth"],
+        "selected_relationship_binding_id": "binding_lin_user",
+        "counterpart_entity_id": "actor_user",
+        "overlay_key": "counterpart:actor_user",
+        "relationship_state_hints": {"warmth": "calm", "distance": "close", "pressure": "moderate"},
+        "interaction_preference_hints": {"tone": "calm", "pace": "measured"},
+        "recent_script_hints": ["clarify_feeling", "withdraw"],
+        "memory_hints": ["最近对失约比较敏感"],
+        "reference_quotes": ["我不是在生气，只是现在有点累。"],
+    }
+
+    result = soul_extractor.run_request_envelope(
+        request_payload={
+            "operation": "prepare_feedback_review_candidates",
+            "params": {
+                "service_root": str(service_root),
+                "draft_payload": draft_payload,
+                "context_payload": context_payload,
+                "output_name": "feedback_review_inline",
+            },
+        }
+    )
+
+    assert result["status"] == "ok"
+    assert Path(result["result_path"]).exists()
+    assert result["best_candidate_id"]
+    assert result["candidates"]
+    assert all(card["text"] for card in result["candidates"])
+    assert all(card["judge"] for card in result["candidates"])
+    best_card = next(card for card in result["candidates"] if card["candidate_id"] == result["best_candidate_id"])
+    assert best_card["judge"]["recommended_action"] in {"accept", "rewrite"}
+    assert any(card["focus_axis"] for card in result["candidates"][1:])

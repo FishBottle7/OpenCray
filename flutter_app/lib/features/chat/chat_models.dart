@@ -80,10 +80,12 @@ class ChatRunTraceData {
   const ChatRunTraceData({
     required this.runId,
     required this.taskId,
+    this.anchorMessageId = '',
     required this.label,
     required this.body,
     this.history = const <ChatRunTraceHistoryEntry>[],
     this.isHighRisk = false,
+    this.isTerminal = false,
     this.canInterrupt = false,
     this.retryLabel,
     this.previewCard,
@@ -92,10 +94,12 @@ class ChatRunTraceData {
 
   final String runId;
   final String taskId;
+  final String anchorMessageId;
   final String label;
   final String body;
   final List<ChatRunTraceHistoryEntry> history;
   final bool isHighRisk;
+  final bool isTerminal;
   final bool canInterrupt;
   final String? retryLabel;
   final ChatRunTracePreviewCardData? previewCard;

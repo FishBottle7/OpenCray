@@ -100,6 +100,43 @@ void main() {
     },
   );
 
+  test(
+    'resolveChatRuntimeSnapshotForSession ignores snapshots from other sessions',
+    () {
+      const embedded = OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-2',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      );
+      const streamed = OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-cross-session-1',
+            taskId: 'task-cross-session-1',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 2000,
+            attempt: 1,
+            isTerminal: false,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      );
+
+      final resolved = resolveChatRuntimeSnapshotForSession(
+        expectedSessionId: 'session-2',
+        embedded: embedded,
+        streamed: streamed,
+      );
+
+      expect(resolved, isNotNull);
+      expect(resolved!.sessionId, 'session-2');
+      expect(resolved.activeRuns, isEmpty);
+      expect(resolved.retainedRuns, isEmpty);
+    },
+  );
+
   test('runtimeSnapshotVersion tracks projected subagent updates', () {
     const snapshot = OpenCrayChatRuntimeSnapshot(
       sessionId: 'session-1',
@@ -732,6 +769,95 @@ void main() {
   );
 
   test(
+    'shouldReplaceObservedRuntimeSnapshot accepts same-version process output changes',
+    () {
+      const current = OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        updatedAtEpochMs: 3000,
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-process-output-1',
+            taskId: 'task-process-output-1',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 3000,
+            attempt: 1,
+            pendingMessageId: 'pending-process-output-1',
+            managedProcessIds: <String>['proc-output'],
+            managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+              OpenCrayChatManagedProcessSnapshot(
+                processId: 'proc-output',
+                status: 'running',
+                command: 'npm',
+                args: <String>['run', 'dev'],
+                processStarted: true,
+                startedAtEpochMs: 2000,
+                updatedAtEpochMs: 3000,
+                stdoutPreview: 'alpha output',
+              ),
+            ],
+            runningManagedProcessCount: 1,
+            hasLiveManagedProcesses: true,
+            isTerminal: false,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'lifecycle',
+            runId: 'run-process-output-1',
+            taskId: 'task-process-output-1',
+            emittedAtEpochMs: 1000,
+            phase: 'start',
+          ),
+        ],
+      );
+      const incoming = OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        updatedAtEpochMs: 3000,
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-process-output-1',
+            taskId: 'task-process-output-1',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 3000,
+            attempt: 1,
+            pendingMessageId: 'pending-process-output-1',
+            managedProcessIds: <String>['proc-output'],
+            managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+              OpenCrayChatManagedProcessSnapshot(
+                processId: 'proc-output',
+                status: 'running',
+                command: 'npm',
+                args: <String>['run', 'dev'],
+                processStarted: true,
+                startedAtEpochMs: 2000,
+                updatedAtEpochMs: 3000,
+                stdoutPreview: 'bravo output',
+              ),
+            ],
+            runningManagedProcessCount: 1,
+            hasLiveManagedProcesses: true,
+            isTerminal: false,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'lifecycle',
+            runId: 'run-process-output-1',
+            taskId: 'task-process-output-1',
+            emittedAtEpochMs: 1000,
+            phase: 'start',
+          ),
+        ],
+      );
+
+      expect(runtimeSnapshotVersion(current), runtimeSnapshotVersion(incoming));
+      expect(shouldReplaceObservedRuntimeSnapshot(current, incoming), isTrue);
+    },
+  );
+
+  test(
     'resolveChatRuntimeSnapshot merges process details with newer drafts',
     () {
       const embedded = OpenCrayChatRuntimeSnapshot(
@@ -972,6 +1098,34 @@ void main() {
       expect(resolved.events.single.contentPreview, 'full file');
     },
   );
+
+  test('shouldReplaceObservedRuntimeSnapshot accepts session switches', () {
+    const current = OpenCrayChatRuntimeSnapshot(
+      sessionId: 'session-1',
+      updatedAtEpochMs: 5000,
+      activeRuns: <OpenCrayChatRunSnapshot>[
+        OpenCrayChatRunSnapshot(
+          sessionId: 'session-1',
+          runId: 'run-session-switch-1',
+          taskId: 'task-session-switch-1',
+          acceptedAtEpochMs: 1000,
+          updatedAtEpochMs: 5000,
+          attempt: 1,
+          pendingMessageId: 'pending-session-switch-1',
+          isTerminal: false,
+        ),
+      ],
+      events: <OpenCrayChatRuntimeEventSnapshot>[],
+    );
+    const incoming = OpenCrayChatRuntimeSnapshot(
+      sessionId: 'session-2',
+      updatedAtEpochMs: 1000,
+      activeRuns: <OpenCrayChatRunSnapshot>[],
+      events: <OpenCrayChatRuntimeEventSnapshot>[],
+    );
+
+    expect(shouldReplaceObservedRuntimeSnapshot(current, incoming), isTrue);
+  });
 
   test(
     'shouldReplaceObservedChatSnapshot accepts embedded runtime detail when versions tie',
@@ -1570,6 +1724,120 @@ void main() {
   );
 
   testWidgets(
+    'run traces stay under their own turn instead of collecting under the latest message',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'First request',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1100,
+            ),
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Second request',
+              createdAtEpochMs: 2000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-2',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 2100,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-turn-1',
+              taskId: 'task-turn-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1300,
+              attempt: 1,
+              pendingMessageId: 'pending-1',
+              isTerminal: false,
+            ),
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-turn-2',
+              taskId: 'task-turn-2',
+              acceptedAtEpochMs: 2000,
+              updatedAtEpochMs: 2300,
+              attempt: 1,
+              pendingMessageId: 'pending-2',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-turn-1',
+              taskId: 'task-turn-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-turn-2',
+              taskId: 'task-turn-2',
+              emittedAtEpochMs: 2000,
+              phase: 'start',
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final pendingOneFinder = find.byKey(
+        const ValueKey<String>('chat-bubble-pending-1'),
+      );
+      final secondOutboundFinder = find.byKey(
+        const ValueKey<String>('chat-bubble-message-2-outbound'),
+      );
+      final traceOneFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-turn-1'),
+      );
+      final traceTwoFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-turn-2'),
+      );
+
+      expect(pendingOneFinder, findsOneWidget);
+      expect(secondOutboundFinder, findsOneWidget);
+      expect(traceOneFinder, findsOneWidget);
+      expect(traceTwoFinder, findsOneWidget);
+
+      final double pendingOneTop = tester.getTopLeft(pendingOneFinder).dy;
+      final double traceOneTop = tester.getTopLeft(traceOneFinder).dy;
+      final double secondOutboundTop = tester
+          .getTopLeft(secondOutboundFinder)
+          .dy;
+      final double traceTwoTop = tester.getTopLeft(traceTwoFinder).dy;
+
+      expect(traceOneTop, greaterThan(pendingOneTop));
+      expect(traceOneTop, lessThan(secondOutboundTop));
+      expect(traceTwoTop, greaterThan(secondOutboundTop));
+    },
+  );
+
+  testWidgets(
     'live assistant drafts still render a chat bubble when the pending placeholder is missing',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
@@ -1693,6 +1961,713 @@ void main() {
 
       expect(find.text('First streamed chunk'), findsNothing);
       expect(find.text('First streamed chunk and more'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'live draft events keep projected process bubbles and terminal process status',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeSnapshots =
+          StreamController<OpenCrayChatRuntimeSnapshot>.broadcast();
+      final chatSnapshots = StreamController<OpenCrayChatSnapshot>.broadcast();
+      final draftEvents =
+          StreamController<OpenCrayChatLiveAssistantDraftEvent>.broadcast();
+      addTearDown(runtimeSnapshots.close);
+      addTearDown(chatSnapshots.close);
+      addTearDown(draftEvents.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          updatedAtEpochMs: 1000,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Start the development server.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-live-process-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 1100,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-live-process-1',
+              taskId: 'task-live-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1100,
+              attempt: 1,
+              pendingMessageId: 'pending-live-process-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-live-process-1',
+              taskId: 'task-live-process-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+          ],
+        ),
+        chatSnapshotStream: chatSnapshots.stream,
+        runtimeSnapshotStream: runtimeSnapshots.stream,
+        liveAssistantDraftEventStream: draftEvents.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final runTraceFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-live-process-1'),
+      );
+      expect(runTraceFinder, findsOneWidget);
+      await _openRunTraceFullscreen(tester, runTraceFinder);
+      final fullscreenFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-fullscreen-run-live-process-1'),
+      );
+
+      runtimeSnapshots.add(
+        const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 2600,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-live-process-1',
+              taskId: 'task-live-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 2600,
+              attempt: 1,
+              pendingMessageId: 'pending-live-process-1',
+              managedProcessIds: <String>['proc-live-process'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-live-process',
+                  status: 'running',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1800,
+                  updatedAtEpochMs: 2600,
+                  stdoutPreview: 'ready on http://localhost:3000',
+                ),
+              ],
+              runningManagedProcessCount: 1,
+              hasLiveManagedProcesses: true,
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-live-process-1',
+              taskId: 'task-live-process-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_call',
+              runId: 'run-live-process-1',
+              taskId: 'task-live-process-1',
+              emittedAtEpochMs: 1700,
+              toolName: 'Bash',
+              argumentsJson: '{"cmd":"npm run dev"}',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Process proc-live-process'), findsOneWidget);
+      expect(
+        find.textContaining('ready on http://localhost:3000'),
+        findsWidgets,
+      );
+      expect(fullscreenFinder, findsOneWidget);
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Bash', findRichText: true),
+        ),
+        findsWidgets,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.text('Process proc-live-process', findRichText: true),
+        ),
+        findsOneWidget,
+      );
+      final liveProcessBubbleFinder = find.byKey(
+        const ValueKey<String>(
+          'chat-bubble-runtime-process-run-live-process-1-proc-live-process',
+        ),
+      );
+      final liveDraftBubbleFinder = find.byKey(
+        const ValueKey<String>('chat-bubble-pending-live-process-1'),
+      );
+      expect(liveProcessBubbleFinder, findsOneWidget);
+      expect(liveDraftBubbleFinder, findsNothing);
+
+      draftEvents.add(
+        const OpenCrayChatLiveAssistantDraftEvent(
+          sessionId: 'session-1',
+          runId: 'run-live-process-1',
+          taskId: 'task-live-process-1',
+          pendingMessageId: 'pending-live-process-1',
+          text: 'The dev server is ready; I am checking the result.',
+          updatedAtEpochMs: 3200,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Process proc-live-process'), findsOneWidget);
+      expect(
+        find.text('The dev server is ready; I am checking the result.'),
+        findsOneWidget,
+      );
+      expect(liveProcessBubbleFinder, findsOneWidget);
+      expect(liveDraftBubbleFinder, findsOneWidget);
+      expect(
+        tester.getTopLeft(liveProcessBubbleFinder).dy,
+        lessThan(tester.getTopLeft(liveDraftBubbleFinder).dy),
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.text('Process proc-live-process', findRichText: true),
+        ),
+        findsOneWidget,
+      );
+
+      chatSnapshots.add(
+        _hostChatSnapshot(
+          updatedAtEpochMs: 3600,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Start the development server.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-live-process-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Process proc-live-process'), findsOneWidget);
+      expect(
+        find.text('The dev server is ready; I am checking the result.'),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Bash', findRichText: true),
+        ),
+        findsWidgets,
+      );
+
+      const terminalToolResult = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'tool_result',
+        runId: 'run-live-process-1',
+        taskId: 'task-live-process-1',
+        emittedAtEpochMs: 4100,
+        toolName: 'Bash',
+        contentPreview: 'server finished successfully',
+      );
+      runtimeSnapshots.add(
+        const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 4200,
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          retainedRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-live-process-1',
+              taskId: 'task-live-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 4200,
+              attempt: 1,
+              pendingMessageId: 'pending-live-process-1',
+              managedProcessIds: <String>['proc-live-process'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-live-process',
+                  status: 'success',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1800,
+                  updatedAtEpochMs: 4200,
+                  finishedAtEpochMs: 4200,
+                  stdoutPreview: 'ready on http://localhost:3000',
+                ),
+              ],
+              runningManagedProcessCount: 0,
+              hasLiveManagedProcesses: false,
+              isTerminal: true,
+              lastEvent: terminalToolResult,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-live-process-1',
+              taskId: 'task-live-process-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            terminalToolResult,
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.descendant(of: runTraceFinder, matching: find.text('RUNNING')),
+        findsNothing,
+      );
+      expect(
+        find.descendant(of: runTraceFinder, matching: find.text('FINISHED')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('status: finished', findRichText: true),
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'streamed assistant snapshots keep process bubbles and update the open inspector',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeSnapshots =
+          StreamController<OpenCrayChatRuntimeSnapshot>.broadcast();
+      final chatSnapshots = StreamController<OpenCrayChatSnapshot>.broadcast();
+      addTearDown(runtimeSnapshots.close);
+      addTearDown(chatSnapshots.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          updatedAtEpochMs: 1000,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Start the development server.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-stream-process-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 1100,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-stream-process-1',
+              taskId: 'task-stream-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1100,
+              attempt: 1,
+              pendingMessageId: 'pending-stream-process-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-stream-process-1',
+              taskId: 'task-stream-process-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+          ],
+        ),
+        chatSnapshotStream: chatSnapshots.stream,
+        runtimeSnapshotStream: runtimeSnapshots.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final runTraceFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-stream-process-1'),
+      );
+      expect(runTraceFinder, findsOneWidget);
+      await _openRunTraceFullscreen(tester, runTraceFinder);
+      final fullscreenFinder = find.byKey(
+        const ValueKey<String>(
+          'chat-run-trace-fullscreen-run-stream-process-1',
+        ),
+      );
+
+      runtimeSnapshots.add(
+        const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 2200,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-stream-process-1',
+              taskId: 'task-stream-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 2200,
+              attempt: 1,
+              pendingMessageId: 'pending-stream-process-1',
+              managedProcessIds: <String>['proc-stream-process'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-stream-process',
+                  status: 'running',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1800,
+                  updatedAtEpochMs: 2200,
+                  stdoutPreview: 'alpha output',
+                ),
+              ],
+              runningManagedProcessCount: 1,
+              hasLiveManagedProcesses: true,
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-stream-process-1',
+              taskId: 'task-stream-process-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_call',
+              runId: 'run-stream-process-1',
+              taskId: 'task-stream-process-1',
+              emittedAtEpochMs: 1700,
+              toolName: 'Bash',
+              argumentsJson: '{"cmd":"npm run dev"}',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Process proc-stream-process'), findsOneWidget);
+      expect(find.textContaining('alpha output'), findsWidgets);
+      final streamProcessBubbleFinder = find.byKey(
+        const ValueKey<String>(
+          'chat-bubble-runtime-process-run-stream-process-1-proc-stream-process',
+        ),
+      );
+      final streamDraftBubbleFinder = find.byKey(
+        const ValueKey<String>('chat-bubble-pending-stream-process-1'),
+      );
+      expect(streamProcessBubbleFinder, findsOneWidget);
+      expect(streamDraftBubbleFinder, findsNothing);
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Bash', findRichText: true),
+        ),
+        findsWidgets,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('alpha output', findRichText: true),
+        ),
+        findsOneWidget,
+      );
+
+      chatSnapshots.add(
+        _hostChatSnapshot(
+          updatedAtEpochMs: 2600,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Start the development server.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-stream-process-1',
+              kind: 'inbound',
+              text: 'The server process is up; I am checking the result.',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Process proc-stream-process'), findsOneWidget);
+      expect(
+        find.text('The server process is up; I am checking the result.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('alpha output'), findsWidgets);
+      expect(streamProcessBubbleFinder, findsOneWidget);
+      expect(streamDraftBubbleFinder, findsOneWidget);
+      expect(
+        tester.getTopLeft(streamProcessBubbleFinder).dy,
+        lessThan(tester.getTopLeft(streamDraftBubbleFinder).dy),
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('alpha output', findRichText: true),
+        ),
+        findsOneWidget,
+      );
+
+      runtimeSnapshots.add(
+        const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 2200,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-stream-process-1',
+              taskId: 'task-stream-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 2200,
+              attempt: 1,
+              pendingMessageId: 'pending-stream-process-1',
+              managedProcessIds: <String>['proc-stream-process'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-stream-process',
+                  status: 'running',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1800,
+                  updatedAtEpochMs: 2200,
+                  stdoutPreview: 'bravo output',
+                ),
+              ],
+              runningManagedProcessCount: 1,
+              hasLiveManagedProcesses: true,
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-stream-process-1',
+              taskId: 'task-stream-process-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_call',
+              runId: 'run-stream-process-1',
+              taskId: 'task-stream-process-1',
+              emittedAtEpochMs: 1700,
+              toolName: 'Bash',
+              argumentsJson: '{"cmd":"npm run dev"}',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Process proc-stream-process'), findsOneWidget);
+      expect(find.textContaining('alpha output'), findsNothing);
+      expect(find.textContaining('bravo output'), findsWidgets);
+      expect(streamProcessBubbleFinder, findsOneWidget);
+      expect(streamDraftBubbleFinder, findsOneWidget);
+      expect(
+        tester.getTopLeft(streamProcessBubbleFinder).dy,
+        lessThan(tester.getTopLeft(streamDraftBubbleFinder).dy),
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('bravo output', findRichText: true),
+        ),
+        findsOneWidget,
+      );
+
+      runtimeSnapshots.add(
+        const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 3200,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-stream-process-1',
+              taskId: 'task-stream-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 3200,
+              attempt: 1,
+              pendingMessageId: 'pending-stream-process-1',
+              managedProcessIds: <String>['proc-stream-process'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-stream-process',
+                  status: 'running',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1800,
+                  updatedAtEpochMs: 3200,
+                  stdoutPreview: 'ready on http://localhost:3000',
+                ),
+              ],
+              runningManagedProcessCount: 1,
+              hasLiveManagedProcesses: true,
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-stream-process-1',
+              taskId: 'task-stream-process-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_call',
+              runId: 'run-stream-process-1',
+              taskId: 'task-stream-process-1',
+              emittedAtEpochMs: 1700,
+              toolName: 'Bash',
+              argumentsJson: '{"cmd":"npm run dev"}',
+            ),
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-stream-process-1',
+              taskId: 'task-stream-process-1',
+              emittedAtEpochMs: 3100,
+              toolName: 'Bash',
+              contentPreview: 'background process is still running',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Process proc-stream-process'), findsOneWidget);
+      expect(find.textContaining('bravo output'), findsNothing);
+      expect(
+        find.textContaining('ready on http://localhost:3000'),
+        findsWidgets,
+      );
+      expect(streamProcessBubbleFinder, findsOneWidget);
+      expect(streamDraftBubbleFinder, findsOneWidget);
+      expect(
+        tester.getTopLeft(streamProcessBubbleFinder).dy,
+        lessThan(tester.getTopLeft(streamDraftBubbleFinder).dy),
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'ready on http://localhost:3000',
+            findRichText: true,
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'background process is still running',
+            findRichText: true,
+          ),
+        ),
+        findsWidgets,
+      );
+
+      chatSnapshots.add(
+        _hostChatSnapshot(
+          updatedAtEpochMs: 3600,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Start the development server.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-stream-process-1',
+              kind: 'inbound',
+              text: 'The server process is up and the preview is reachable.',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Process proc-stream-process'), findsOneWidget);
+      expect(
+        find.text('The server process is up and the preview is reachable.'),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('ready on http://localhost:3000'),
+        findsWidgets,
+      );
+      expect(streamProcessBubbleFinder, findsOneWidget);
+      expect(streamDraftBubbleFinder, findsOneWidget);
+      expect(
+        tester.getTopLeft(streamProcessBubbleFinder).dy,
+        lessThan(tester.getTopLeft(streamDraftBubbleFinder).dy),
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'ready on http://localhost:3000',
+            findRichText: true,
+          ),
+        ),
+        findsOneWidget,
+      );
     },
   );
 
@@ -7749,6 +8724,37 @@ void main() {
       await snapshots.close();
     },
   );
+
+  testWidgets('tapping outside the composer dismisses chat input focus', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-focus',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byType(TextField));
+    await tester.pump();
+    expect(FocusManager.instance.primaryFocus, isNotNull);
+
+    await tester.tapAt(const Offset(24, 24));
+    await tester.pump();
+    expect(FocusManager.instance.primaryFocus, isNull);
+  });
 
   testWidgets('session drawer shows unread dot and count badges', (
     tester,

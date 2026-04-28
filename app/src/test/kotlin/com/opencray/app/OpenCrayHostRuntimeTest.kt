@@ -7639,12 +7639,14 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
-  fun observeChatRuntimeRefreshesManagedProcessSnapshotsWhileRunIsActive() {
+  fun observeChatRuntimeRefreshesManagedProcessSnapshotsWhenOwnerSummaryIsIdle() {
     val chatStore = ChatSessionLocalStore(
       temporaryFolder.newFolder("chat-store-runtime-live-process-refresh"),
     )
     val activeSessionId = chatStore.loadState().activeSession.sessionId
-    val manager = RecordingRuntimeManager()
+    val manager = RecordingRuntimeManager().apply {
+      forceIdleWorkSummary = true
+    }
     val handle = RecordingSessionHandle(
       sessionId = activeSessionId,
       onResume = manager.resumedSessionIds::add,
@@ -11587,6 +11589,7 @@ class OpenCrayHostRuntimeTest {
     val resumedSessionIds = mutableListOf<String>()
     val requestedSessionIds = mutableListOf<String>()
     val releasedSessionIds = mutableListOf<String>()
+    var forceIdleWorkSummary: Boolean = false
 
     fun putHandle(handle: RecordingSessionHandle) {
       handlesBySession[handle.sessionId] = handle
@@ -11678,6 +11681,9 @@ class OpenCrayHostRuntimeTest {
     }
 
     override fun activeWorkSummary(): RuntimeOwnerWorkSummary {
+      if (forceIdleWorkSummary) {
+        return RuntimeOwnerWorkSummary(trackedSessionCount = handlesBySession.size)
+      }
       val activeSessionIds = linkedSetOf<String>()
       val pendingWorkSessionIds = mutableListOf<String>()
       val liveManagedProcessSessionIds = mutableListOf<String>()

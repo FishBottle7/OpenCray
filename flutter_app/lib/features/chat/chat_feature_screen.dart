@@ -55,6 +55,25 @@ OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshot(
   return _mergeRuntimeSnapshots(embedded, streamed);
 }
 
+@visibleForTesting
+OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshotForSession({
+  required String expectedSessionId,
+  OpenCrayChatRuntimeSnapshot? embedded,
+  OpenCrayChatRuntimeSnapshot? streamed,
+}) {
+  final String normalizedExpectedSessionId = expectedSessionId.trim();
+  return resolveChatRuntimeSnapshot(
+    _runtimeSnapshotForExpectedSession(
+      snapshot: embedded,
+      expectedSessionId: normalizedExpectedSessionId,
+    ),
+    _runtimeSnapshotForExpectedSession(
+      snapshot: streamed,
+      expectedSessionId: normalizedExpectedSessionId,
+    ),
+  );
+}
+
 bool _runtimeSnapshotsShareSession(
   OpenCrayChatRuntimeSnapshot left,
   OpenCrayChatRuntimeSnapshot right,
@@ -64,6 +83,20 @@ bool _runtimeSnapshotsShareSession(
   return leftSessionId.isEmpty ||
       rightSessionId.isEmpty ||
       leftSessionId == rightSessionId;
+}
+
+OpenCrayChatRuntimeSnapshot? _runtimeSnapshotForExpectedSession({
+  required OpenCrayChatRuntimeSnapshot? snapshot,
+  required String expectedSessionId,
+}) {
+  if (snapshot == null || expectedSessionId.isEmpty) {
+    return snapshot;
+  }
+  final String sessionId = snapshot.sessionId.trim();
+  if (sessionId.isEmpty || sessionId == expectedSessionId) {
+    return snapshot;
+  }
+  return null;
 }
 
 OpenCrayChatRuntimeSnapshot _preferRuntimeSnapshot(
@@ -374,8 +407,8 @@ List<OpenCrayChatManagedProcessSnapshot> _mergeRuntimeManagedProcesses(
   final Map<String, OpenCrayChatManagedProcessSnapshot> byKey =
       <String, OpenCrayChatManagedProcessSnapshot>{};
   for (final process in <OpenCrayChatManagedProcessSnapshot>[
-    ...preferred,
     ...supplement,
+    ...preferred,
   ]) {
     final String key = _runtimeManagedProcessMergeKey(process);
     final OpenCrayChatManagedProcessSnapshot? existing = byKey[key];
@@ -872,6 +905,13 @@ bool shouldReplaceObservedRuntimeSnapshot(
   if (current == null) {
     return true;
   }
+  final String currentSessionId = current.sessionId.trim();
+  final String incomingSessionId = incoming.sessionId.trim();
+  if (currentSessionId.isNotEmpty &&
+      incomingSessionId.isNotEmpty &&
+      currentSessionId != incomingSessionId) {
+    return true;
+  }
   final OpenCrayChatRuntimeSnapshot candidate =
       resolveChatRuntimeSnapshot(current, incoming) ?? incoming;
   final int currentVersion = runtimeSnapshotVersion(current);
@@ -911,7 +951,8 @@ bool shouldReplaceObservedRuntimeSnapshot(
       candidateHostInstanceId.isNotEmpty) {
     return true;
   }
-  return false;
+  return _runtimeSnapshotDisplaySignature(candidate) !=
+      _runtimeSnapshotDisplaySignature(current);
 }
 
 bool _runtimeSnapshotTerminalizesRun(
@@ -959,6 +1000,228 @@ int _visibleRunCount(OpenCrayChatRuntimeSnapshot snapshot) =>
 
 String _hostInstanceId(OpenCrayChatRuntimeSnapshot snapshot) =>
     snapshot.hostLifecycle?.hostInstanceId?.trim() ?? '';
+
+String _runtimeSnapshotDisplaySignature(OpenCrayChatRuntimeSnapshot snapshot) {
+  return jsonEncode(<String, Object?>{
+    'sessionId': snapshot.sessionId,
+    'activeRuns': snapshot.activeRuns
+        .map(_runtimeRunDisplaySignature)
+        .toList(growable: false),
+    'retainedRuns': snapshot.retainedRuns
+        .map(_runtimeRunDisplaySignature)
+        .toList(growable: false),
+    'subAgents': snapshot.subAgents
+        .map(_runtimeSubAgentDisplaySignature)
+        .toList(growable: false),
+    'events': snapshot.events
+        .map(_runtimeEventDisplaySignature)
+        .toList(growable: false),
+    'liveAssistantDrafts': snapshot.liveAssistantDrafts
+        .map(_runtimeDraftDisplaySignature)
+        .toList(growable: false),
+    'hostLifecycle': _runtimeHostLifecycleDisplaySignature(
+      snapshot.hostLifecycle,
+    ),
+  });
+}
+
+Map<String, Object?> _runtimeRunDisplaySignature(OpenCrayChatRunSnapshot run) {
+  return <String, Object?>{
+    'sessionId': run.sessionId,
+    'runId': run.runId,
+    'taskId': run.taskId,
+    'acceptedAtEpochMs': run.acceptedAtEpochMs,
+    'updatedAtEpochMs': run.updatedAtEpochMs,
+    'lifecycleState': run.lifecycleState,
+    'taskState': run.taskState,
+    'attempt': run.attempt,
+    'executionOrdinal': run.executionOrdinal,
+    'executionId': run.executionId,
+    'executionKind': run.executionKind,
+    'pendingExecutionKind': run.pendingExecutionKind,
+    'executionStatus': run.executionStatus,
+    'errorCode': run.errorCode,
+    'errorMessage': run.errorMessage,
+    'responseFormat': run.responseFormat,
+    'pendingMessageId': run.pendingMessageId,
+    'finalAttachments': run.finalAttachments
+        .map(_runtimeAttachmentDisplaySignature)
+        .toList(growable: false),
+    'managedProcessIds': run.managedProcessIds,
+    'managedProcesses': run.managedProcesses
+        .map(_runtimeManagedProcessDisplaySignature)
+        .toList(growable: false),
+    'runningManagedProcessCount': run.runningManagedProcessCount,
+    'hasLiveManagedProcesses': run.hasLiveManagedProcesses,
+    'isTerminal': run.isTerminal,
+    'lastEvent': run.lastEvent == null
+        ? null
+        : _runtimeEventDisplaySignature(run.lastEvent!),
+  };
+}
+
+Map<String, Object?> _runtimeManagedProcessDisplaySignature(
+  OpenCrayChatManagedProcessSnapshot process,
+) {
+  return <String, Object?>{
+    'processId': process.processId,
+    'status': process.status,
+    'command': process.command,
+    'args': process.args,
+    'workingDirectory': process.workingDirectory,
+    'processStarted': process.processStarted,
+    'timeoutMs': process.timeoutMs,
+    'startedAtEpochMs': process.startedAtEpochMs,
+    'updatedAtEpochMs': process.updatedAtEpochMs,
+    'finishedAtEpochMs': process.finishedAtEpochMs,
+    'exitCode': process.exitCode,
+    'errorCode': process.errorCode,
+    'errorMessage': process.errorMessage,
+    'timedOut': process.timedOut,
+    'cancelled': process.cancelled,
+    'outputLimitExceeded': process.outputLimitExceeded,
+    'stdout': process.stdout,
+    'stderr': process.stderr,
+    'stdoutPreview': process.stdoutPreview,
+    'stderrPreview': process.stderrPreview,
+    'stdoutTruncated': process.stdoutTruncated,
+    'stderrTruncated': process.stderrTruncated,
+  };
+}
+
+Map<String, Object?> _runtimeEventDisplaySignature(
+  OpenCrayChatRuntimeEventSnapshot event,
+) {
+  return <String, Object?>{
+    'kind': event.kind,
+    'runId': event.runId,
+    'taskId': event.taskId,
+    'emittedAtEpochMs': event.emittedAtEpochMs,
+    'executionId': event.executionId,
+    'executionOrdinal': event.executionOrdinal,
+    'executionKind': event.executionKind,
+    'entryId': event.entryId,
+    'checkpoint': event.checkpoint,
+    'turn': event.turn,
+    'phase': event.phase,
+    'status': event.status,
+    'errorCode': event.errorCode,
+    'errorMessage': event.errorMessage,
+    'responseFormat': event.responseFormat,
+    'isFinal': event.isFinal,
+    'text': event.text,
+    'stage': event.stage,
+    'toolName': event.toolName,
+    'isHighRisk': event.isHighRisk,
+    'label': event.label,
+    'childRunId': event.childRunId,
+    'childTaskId': event.childTaskId,
+    'subagentType': event.subagentType,
+    'contextMode': event.contextMode,
+    'depth': event.depth,
+    'executionState': event.executionState,
+    'continuationKind': event.continuationKind,
+    'toolReason': event.toolReason,
+    'argumentsJson': event.argumentsJson,
+    'toolStatus': event.toolStatus,
+    'content': event.content,
+    'contentPreview': event.contentPreview,
+    'resultMetadata': event.resultMetadata,
+    'operation': event.operation,
+    'query': event.query,
+    'queryTerms': event.queryTerms,
+    'resultCount': event.resultCount,
+    'corpusFileCount': event.corpusFileCount,
+    'recordIds': event.recordIds,
+    'writtenRecordIds': event.writtenRecordIds,
+    'writtenKinds': event.writtenKinds,
+    'resolvedRecordIds': event.resolvedRecordIds,
+    'suppressedRecordIds': event.suppressedRecordIds,
+    'reaffirmedRecordIds': event.reaffirmedRecordIds,
+    'expiredRecordIds': event.expiredRecordIds,
+    'paths': event.paths,
+    'lineRanges': event.lineRanges,
+    'path': event.path,
+    'fromLine': event.fromLine,
+    'returnedLineCount': event.returnedLineCount,
+    'totalLineCount': event.totalLineCount,
+  };
+}
+
+Map<String, Object?> _runtimeAttachmentDisplaySignature(
+  OpenCrayChatAttachmentSnapshot attachment,
+) {
+  return <String, Object?>{
+    'attachmentId': attachment.attachmentId,
+    'kind': attachment.kind,
+    'displayName': attachment.displayName,
+    'localPath': attachment.localPath,
+    'mimeType': attachment.mimeType,
+    'sizeBytes': attachment.sizeBytes,
+    'widthPx': attachment.widthPx,
+    'heightPx': attachment.heightPx,
+    'durationMs': attachment.durationMs,
+    'waveformBars': attachment.waveformBars,
+    'transcriptText': attachment.transcriptText,
+    'contentSha256': attachment.contentSha256,
+  };
+}
+
+Map<String, Object?> _runtimeSubAgentDisplaySignature(
+  OpenCrayChatSubAgentSnapshot subAgent,
+) {
+  return <String, Object?>{
+    'parentRunId': subAgent.parentRunId,
+    'parentTaskId': subAgent.parentTaskId,
+    'childRunId': subAgent.childRunId,
+    'childTaskId': subAgent.childTaskId,
+    'label': subAgent.label,
+    'subagentType': subAgent.subagentType,
+    'contextMode': subAgent.contextMode,
+    'depth': subAgent.depth,
+    'phase': subAgent.phase,
+    'status': subAgent.status,
+    'executionState': subAgent.executionState,
+    'continuationKind': subAgent.continuationKind,
+    'resumable': subAgent.resumable,
+    'requiresUserAction': subAgent.requiresUserAction,
+    'isHighRisk': subAgent.isHighRisk,
+    'summary': subAgent.summary,
+    'startedAtEpochMs': subAgent.startedAtEpochMs,
+    'updatedAtEpochMs': subAgent.updatedAtEpochMs,
+    'eventCount': subAgent.eventCount,
+    'mailboxMessageCount': subAgent.mailboxMessageCount,
+    'mailboxPendingMessageCount': subAgent.mailboxPendingMessageCount,
+    'mailboxLastDeliveredMessageId': subAgent.mailboxLastDeliveredMessageId,
+  };
+}
+
+Map<String, Object?> _runtimeDraftDisplaySignature(
+  OpenCrayChatLiveAssistantDraftSnapshot draft,
+) {
+  return <String, Object?>{
+    'runId': draft.runId,
+    'taskId': draft.taskId,
+    'pendingMessageId': draft.pendingMessageId,
+    'text': draft.text,
+    'updatedAtEpochMs': draft.updatedAtEpochMs,
+  };
+}
+
+Map<String, Object?>? _runtimeHostLifecycleDisplaySignature(
+  OpenCrayHostLifecycleSnapshot? hostLifecycle,
+) {
+  if (hostLifecycle == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'processStartId': hostLifecycle.processStartId,
+    'processStartedAtEpochMs': hostLifecycle.processStartedAtEpochMs,
+    'hostInstanceId': hostLifecycle.hostInstanceId,
+    'runtimeOwnerId': hostLifecycle.runtimeOwnerId,
+    'hostCreatedAtEpochMs': hostLifecycle.hostCreatedAtEpochMs,
+  };
+}
 
 void _runTraceDebug(String message) {
   if (!kDebugMode) {
@@ -1047,9 +1310,11 @@ bool _chatRunTracesEquivalent(
     (leftTrace, rightTrace) =>
         leftTrace.runId == rightTrace.runId &&
         leftTrace.taskId == rightTrace.taskId &&
+        leftTrace.anchorMessageId == rightTrace.anchorMessageId &&
         leftTrace.label == rightTrace.label &&
         leftTrace.body == rightTrace.body &&
         leftTrace.isHighRisk == rightTrace.isHighRisk &&
+        leftTrace.isTerminal == rightTrace.isTerminal &&
         leftTrace.canInterrupt == rightTrace.canInterrupt &&
         leftTrace.retryLabel == rightTrace.retryLabel &&
         _chatRunTracePreviewCardsEquivalent(
@@ -2984,8 +3249,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 
   void _handleChatRuntimeSnapshot(OpenCrayChatRuntimeSnapshot snapshot) {
     final OpenCrayChatRuntimeSnapshot resolvedSnapshot =
-        resolveChatRuntimeSnapshot(_latestChatRuntimeSnapshot, snapshot) ??
-        snapshot;
+        _latestChatRuntimeSnapshot != null &&
+            !_runtimeSnapshotsShareSession(
+              _latestChatRuntimeSnapshot!,
+              snapshot,
+            ) &&
+            snapshot.sessionId.trim().isNotEmpty
+        ? snapshot
+        : resolveChatRuntimeSnapshot(_latestChatRuntimeSnapshot, snapshot) ??
+              snapshot;
     if (!shouldReplaceObservedRuntimeSnapshot(
       _latestChatRuntimeSnapshot,
       resolvedSnapshot,
@@ -3020,6 +3292,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final String? visibleText = event.cleared
         ? null
         : _visibleAssistantDraftText(event.text);
+    if (!event.cleared) {
+      final List<ChatMessageData> previousMessages = _state.messages;
+      _applyHostState();
+      if (!chatMessagesEquivalent(previousMessages, _state.messages) &&
+          visibleText != null) {
+        _scheduleScrollToBottom(animated: false);
+      }
+      return;
+    }
     final List<ChatMessageData> nextMessages = _patchMessagesForLiveDraftEvent(
       messages: _state.messages,
       pendingMessageId: event.pendingMessageId,
@@ -4194,7 +4475,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
   ) {
     final OpenCrayChatRuntimeSnapshot? effectiveRuntime =
-        _resolveRuntimeSnapshot(snapshot.runtimeActivity, runtimeSnapshot);
+        _resolveRuntimeSnapshot(
+          expectedSessionId: _snapshotActiveSessionId(snapshot),
+          embedded: snapshot.runtimeActivity,
+          streamed: runtimeSnapshot,
+        );
     final List<ChatRunTraceData> runTraces = _mapRunTraces(
       effectiveRuntime,
       snapshot.pendingApprovals,
@@ -4910,10 +5195,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }) => ChatRunTraceData(
       runId: run.runId,
       taskId: run.taskId,
+      anchorMessageId: run.pendingMessageId?.trim() ?? '',
       label: label,
       body: body,
       history: historyOverride ?? history,
       isHighRisk: isHighRisk,
+      isTerminal: run.isTerminal,
       canInterrupt: canInterruptOverride ?? canInterrupt,
       retryLabel: retryLabel,
       previewCard: previewCard,
@@ -9283,15 +9570,44 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     '思考中...',
   };
 
-  OpenCrayChatRuntimeSnapshot? _resolveRuntimeSnapshot(
+  String _snapshotActiveSessionId(OpenCrayChatSnapshot snapshot) {
+    for (final session in snapshot.drawer.sessions) {
+      final String sessionId = session.sessionId.trim();
+      if (session.isSelected && sessionId.isNotEmpty) {
+        return sessionId;
+      }
+    }
+    final String runtimeSessionId =
+        snapshot.runtimeActivity?.sessionId.trim() ?? '';
+    if (runtimeSessionId.isNotEmpty) {
+      return runtimeSessionId;
+    }
+    for (final session in snapshot.drawer.sessions) {
+      final String sessionId = session.sessionId.trim();
+      if (sessionId.isNotEmpty) {
+        return sessionId;
+      }
+    }
+    return '';
+  }
+
+  OpenCrayChatRuntimeSnapshot? _resolveRuntimeSnapshot({
+    required String expectedSessionId,
     OpenCrayChatRuntimeSnapshot? embedded,
     OpenCrayChatRuntimeSnapshot? streamed,
-  ) {
-    final OpenCrayChatRuntimeSnapshot? resolved = resolveChatRuntimeSnapshot(
-      embedded,
-      streamed,
-    );
-    final String sessionId = resolved?.sessionId.trim() ?? _activeSessionId;
+  }) {
+    final String normalizedExpectedSessionId = expectedSessionId.trim();
+    final OpenCrayChatRuntimeSnapshot? resolved =
+        normalizedExpectedSessionId.isEmpty
+        ? resolveChatRuntimeSnapshot(embedded, streamed)
+        : resolveChatRuntimeSnapshotForSession(
+            expectedSessionId: normalizedExpectedSessionId,
+            embedded: embedded,
+            streamed: streamed,
+          );
+    final String sessionId = normalizedExpectedSessionId.isNotEmpty
+        ? normalizedExpectedSessionId
+        : resolved?.sessionId.trim() ?? _activeSessionId;
     final List<OpenCrayChatLiveAssistantDraftSnapshot> overrideDrafts =
         _liveAssistantDraftOverridesBySession[sessionId]?.values.toList(
           growable: false,
@@ -10658,6 +10974,53 @@ class _MessageList extends StatelessWidget {
   Widget build(BuildContext context) {
     final children = <Widget>[];
     int? previousTimestampEpochMs;
+    final Map<String, List<ChatRunTraceData>> anchoredRunTracesByMessageId =
+        <String, List<ChatRunTraceData>>{};
+    final Set<ChatRunTraceData> renderedRunTraces = <ChatRunTraceData>{};
+
+    for (final trace in runTraces) {
+      final String anchorMessageId = trace.anchorMessageId.trim();
+      if (anchorMessageId.isEmpty) {
+        continue;
+      }
+      anchoredRunTracesByMessageId
+          .putIfAbsent(anchorMessageId, () => <ChatRunTraceData>[])
+          .add(trace);
+    }
+
+    void addRunTrace(ChatRunTraceData trace) {
+      if (!renderedRunTraces.add(trace)) {
+        return;
+      }
+      children.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: _RunTraceBubble(
+              key: ValueKey<String>('chat-run-trace-${trace.runId}'),
+              bridge: bridge,
+              copy: copy,
+              trace: trace,
+              showSandboxPreviewCard: showSandboxPreviewCards,
+              showInterruptConfirm: interruptConfirmRunId == trace.interruptId,
+              isInterruptBusy: busyInterruptRunIds.contains(trace.interruptId),
+              onInterruptRequest: trace.canInterrupt
+                  ? () => onArmInterruptRunTrace(trace)
+                  : null,
+              onInterruptDismiss: interruptConfirmRunId == trace.interruptId
+                  ? () => onDismissInterruptRunTrace(trace)
+                  : null,
+              onInterruptConfirm: trace.canInterrupt
+                  ? () => onInterruptRunTrace(trace)
+                  : null,
+              isRetryBusy: busyRetryRunIds.contains(trace.retryId),
+              onRetry: trace.isRetryable ? () => onRetryRunTrace(trace) : null,
+            ),
+          ),
+        ),
+      );
+    }
 
     for (final message in messages) {
       final int? currentTimestampEpochMs = message.createdAtEpochMs;
@@ -10744,37 +11107,18 @@ class _MessageList extends StatelessWidget {
       if (currentTimestampEpochMs != null && currentTimestampEpochMs > 0) {
         previousTimestampEpochMs = currentTimestampEpochMs;
       }
+      final List<ChatRunTraceData>? anchoredTraces =
+          anchoredRunTracesByMessageId[message.messageId.trim()];
+      if (anchoredTraces == null) {
+        continue;
+      }
+      for (final trace in anchoredTraces) {
+        addRunTrace(trace);
+      }
     }
 
     for (final trace in runTraces) {
-      children.add(
-        Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: _RunTraceBubble(
-              key: ValueKey<String>('chat-run-trace-${trace.runId}'),
-              bridge: bridge,
-              copy: copy,
-              trace: trace,
-              showSandboxPreviewCard: showSandboxPreviewCards,
-              showInterruptConfirm: interruptConfirmRunId == trace.interruptId,
-              isInterruptBusy: busyInterruptRunIds.contains(trace.interruptId),
-              onInterruptRequest: trace.canInterrupt
-                  ? () => onArmInterruptRunTrace(trace)
-                  : null,
-              onInterruptDismiss: interruptConfirmRunId == trace.interruptId
-                  ? () => onDismissInterruptRunTrace(trace)
-                  : null,
-              onInterruptConfirm: trace.canInterrupt
-                  ? () => onInterruptRunTrace(trace)
-                  : null,
-              isRetryBusy: busyRetryRunIds.contains(trace.retryId),
-              onRetry: trace.isRetryable ? () => onRetryRunTrace(trace) : null,
-            ),
-          ),
-        ),
-      );
+      addRunTrace(trace);
     }
 
     return Column(children: children);
@@ -13146,6 +13490,18 @@ String _runTraceStatusLabel({
     activityLabel,
     copy,
   );
+  if (trace.isTerminal) {
+    final String terminalActivity = mappedActivity?.trim().toLowerCase() ?? '';
+    if (terminalActivity == 'failed' ||
+        terminalActivity == '失败' ||
+        terminalActivity == 'cancelled' ||
+        terminalActivity == '已取消' ||
+        terminalActivity == 'timed out' ||
+        terminalActivity == '已超时') {
+      return mappedActivity!;
+    }
+    return copy.isChinese ? '已完成' : 'FINISHED';
+  }
   return mappedActivity ?? (copy.isChinese ? '运行中' : 'RUNNING');
 }
 
@@ -13196,6 +13552,25 @@ String? _runTraceActivityLabel({
 String? _runTraceActivityStatusFromLabel(String? label, OpenCrayUiCopy copy) {
   final String normalized = label?.trim().toLowerCase() ?? '';
   switch (normalized) {
+    case 'finished':
+    case 'finish':
+    case 'success':
+    case 'completed':
+    case 'complete':
+    case 'done':
+      return copy.isChinese ? '已完成' : 'FINISHED';
+    case 'failed':
+    case 'failure':
+    case 'error':
+    case 'spawn_error':
+      return copy.isChinese ? '失败' : 'FAILED';
+    case 'cancelled':
+    case 'canceled':
+      return copy.isChinese ? '已取消' : 'CANCELLED';
+    case 'timeout':
+    case 'timed':
+    case 'timedout':
+      return copy.isChinese ? '已超时' : 'TIMED OUT';
     case 'read':
       return copy.isChinese ? '读取中' : 'READING';
     case 'write':

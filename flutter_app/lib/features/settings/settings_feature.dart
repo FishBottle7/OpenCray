@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' show FlutterView;
 
 import 'package:flutter/material.dart';
 
@@ -68,6 +69,10 @@ bool _isPrivate172SubnetHost(String host) {
   return secondOctet != null && secondOctet >= 16 && secondOctet <= 31;
 }
 
+void _dismissActiveInput() {
+  FocusManager.instance.primaryFocus?.unfocus();
+}
+
 class SettingsFeatureScreen extends StatefulWidget {
   const SettingsFeatureScreen({
     super.key,
@@ -86,16 +91,19 @@ class SettingsFeatureScreen extends StatefulWidget {
   State<SettingsFeatureScreen> createState() => _SettingsFeatureScreenState();
 }
 
-class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
+class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
+    with WidgetsBindingObserver {
   late SettingsPage _page = widget.initialPage;
   final Map<SettingsPage, SettingsDetailSnapshot> _detailCache =
       <SettingsPage, SettingsDetailSnapshot>{};
   SettingsOverviewSnapshot? _overview;
   StreamSubscription<SettingsOverviewSnapshot>? _overviewSubscription;
+  bool _keyboardWasVisible = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadOverview();
     _overviewSubscription = widget.facade.watchOverview().listen((overview) {
       if (!mounted) {
@@ -108,12 +116,28 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
     if (!_usesDedicatedPage(_page) && _page != SettingsPage.home) {
       _loadDetail(_page);
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _keyboardWasVisible = _isKeyboardVisible();
+    });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _overviewSubscription?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeMetrics() {
+    final bool keyboardVisible = _isKeyboardVisible();
+    if (_keyboardWasVisible && !keyboardVisible) {
+      _dismissActiveInput();
+    }
+    _keyboardWasVisible = keyboardVisible;
   }
 
   @override
@@ -125,13 +149,17 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
           height: 20 / 14,
           color: OpenCrayColors.textSecondary,
         );
-    final content = DefaultTextStyle(
-      style: defaultTextStyle,
-      child: SafeArea(
-        bottom: false,
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 180),
-          child: _buildCurrentPage(context),
+    final content = GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onTap: _dismissActiveInput,
+      child: DefaultTextStyle(
+        style: defaultTextStyle,
+        child: SafeArea(
+          bottom: false,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            child: _buildCurrentPage(context),
+          ),
         ),
       ),
     );
@@ -386,6 +414,14 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
       }
     }
     return '';
+  }
+
+  bool _isKeyboardVisible() {
+    final FlutterView? view = View.maybeOf(context);
+    if (view == null) {
+      return false;
+    }
+    return view.viewInsets.bottom > 0;
   }
 }
 
@@ -1008,26 +1044,26 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
   }
 
   List<String> _collectRecentRunIds(OpenCrayChatRuntimeSnapshot snapshot) {
-  final runEpochs = <String, int>{};
-  for (final run in snapshot.activeRuns) {
-    if (run.runId.trim().isEmpty) {
-      continue;
-    }
-    runEpochs[run.runId] = run.updatedAtEpochMs;
-  }
-  for (final run in snapshot.retainedRuns) {
-    if (run.runId.trim().isEmpty) {
-      continue;
-    }
-    final existingEpoch = runEpochs[run.runId];
-    if (existingEpoch == null || run.updatedAtEpochMs > existingEpoch) {
+    final runEpochs = <String, int>{};
+    for (final run in snapshot.activeRuns) {
+      if (run.runId.trim().isEmpty) {
+        continue;
+      }
       runEpochs[run.runId] = run.updatedAtEpochMs;
     }
-  }
-  for (final event in snapshot.events) {
-    if (event.runId.trim().isEmpty) {
-      continue;
+    for (final run in snapshot.retainedRuns) {
+      if (run.runId.trim().isEmpty) {
+        continue;
+      }
+      final existingEpoch = runEpochs[run.runId];
+      if (existingEpoch == null || run.updatedAtEpochMs > existingEpoch) {
+        runEpochs[run.runId] = run.updatedAtEpochMs;
+      }
     }
+    for (final event in snapshot.events) {
+      if (event.runId.trim().isEmpty) {
+        continue;
+      }
       final existingEpoch = runEpochs[event.runId];
       if (existingEpoch == null || event.emittedAtEpochMs > existingEpoch) {
         runEpochs[event.runId] = event.emittedAtEpochMs;
@@ -1497,6 +1533,7 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
               hintText: copy.networkSearchBaseUrlHint,
               controller: _baseUrlController,
               focusNode: _baseUrlFocusNode,
+              keyboardType: TextInputType.url,
               onChanged: (_) => _scheduleEmit(),
             ),
           ],
@@ -1516,6 +1553,7 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
             hintText: copy.networkSearchApiKeyHint,
             controller: _apiKeyController,
             focusNode: _apiKeyFocusNode,
+            keyboardType: TextInputType.visiblePassword,
             onChanged: (_) => _scheduleEmit(),
           ),
           const SizedBox(height: 10),
@@ -1921,7 +1959,6 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
               controller: _providerNameController,
               focusNode: _providerNameFocusNode,
               hintText: copy.llmProviderNameHint,
-              keyboardType: TextInputType.visiblePassword,
             ),
             const SizedBox(height: 12),
             _PrototypeField(
@@ -1929,7 +1966,6 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
               controller: _providerNotesController,
               focusNode: _providerNotesFocusNode,
               hintText: copy.llmNotesHint,
-              keyboardType: TextInputType.visiblePassword,
             ),
           ],
         ],
@@ -2042,9 +2078,14 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
             hintText: copy.llmApiKeyHint,
             obscureText: true,
             keyboardType: TextInputType.visiblePassword,
-            trailingText: _apiKeyController.text.trim().isEmpty
+            trailing: _apiKeyController.text.trim().isEmpty
                 ? null
-                : copy.llmStoredLocally,
+                : _FieldClearButton(
+                    buttonKey: const ValueKey<String>(
+                      'settings-llm-api-key-clear',
+                    ),
+                    onTap: _clearApiKey,
+                  ),
             onChanged: (_) => setState(() {}),
           ),
           const SizedBox(height: 12),
@@ -2053,7 +2094,6 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
             controller: _modelController,
             focusNode: _modelFocusNode,
             hintText: copy.llmModelHint,
-            keyboardType: TextInputType.visiblePassword,
             onChanged: (_) => setState(() {}),
           ),
           if (showsReasoning) ...[
@@ -2346,6 +2386,16 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       }
     });
     _isApplyingSnapshot = false;
+    unawaited(_saveDraft());
+  }
+
+  void _clearApiKey() {
+    if (_apiKeyController.text.isEmpty) {
+      return;
+    }
+    setState(() {
+      _apiKeyController.clear();
+    });
     unawaited(_saveDraft());
   }
 
@@ -4920,6 +4970,7 @@ class _InlineEditableField extends StatelessWidget {
     required this.hintText,
     required this.controller,
     required this.focusNode,
+    this.keyboardType = TextInputType.text,
     this.onChanged,
   });
 
@@ -4927,10 +4978,12 @@ class _InlineEditableField extends StatelessWidget {
   final String hintText;
   final TextEditingController controller;
   final FocusNode focusNode;
+  final TextInputType keyboardType;
   final ValueChanged<String>? onChanged;
 
   @override
   Widget build(BuildContext context) {
+    final bool usesPrivateIme = keyboardType == TextInputType.visiblePassword;
     return _PrototypeFieldSurface(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -4945,13 +4998,13 @@ class _InlineEditableField extends StatelessWidget {
                 onChanged: onChanged,
                 textAlign: TextAlign.right,
                 autocorrect: false,
-                enableSuggestions: false,
-                enableIMEPersonalizedLearning: false,
+                enableSuggestions: !usesPrivateIme,
+                enableIMEPersonalizedLearning: !usesPrivateIme,
                 spellCheckConfiguration:
                     const SpellCheckConfiguration.disabled(),
                 smartDashesType: SmartDashesType.disabled,
                 smartQuotesType: SmartQuotesType.disabled,
-                keyboardType: TextInputType.visiblePassword,
+                keyboardType: keyboardType,
                 style: _SettingsTextStyles.fieldValue,
                 strutStyle: _SettingsTextStyles.fieldValueStrut,
                 decoration: InputDecoration(
@@ -4994,6 +5047,37 @@ class _InlineTextAction extends StatelessWidget {
         child: Text(
           label,
           style: _SettingsTextStyles.inlineAction.copyWith(color: color),
+        ),
+      ),
+    );
+  }
+}
+
+class _FieldClearButton extends StatelessWidget {
+  const _FieldClearButton({required this.onTap, this.buttonKey});
+
+  final VoidCallback onTap;
+  final Key? buttonKey;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: Tooltip(
+        message: 'Clear',
+        child: InkWell(
+          key: buttonKey,
+          borderRadius: BorderRadius.circular(999),
+          onTap: onTap,
+          child: const SizedBox(
+            width: 28,
+            height: 28,
+            child: Icon(
+              Icons.close_rounded,
+              size: 18,
+              color: OpenCrayColors.textSecondary,
+            ),
+          ),
         ),
       ),
     );
@@ -5054,7 +5138,7 @@ class _PrototypeField extends StatelessWidget {
     this.obscureText = false,
     this.minLines = 1,
     this.maxLines = 1,
-    this.trailingText,
+    this.trailing,
     this.onChanged,
     this.keyboardType,
   });
@@ -5067,12 +5151,19 @@ class _PrototypeField extends StatelessWidget {
   final bool obscureText;
   final int minLines;
   final int maxLines;
-  final String? trailingText;
+  final Widget? trailing;
   final ValueChanged<String>? onChanged;
   final TextInputType? keyboardType;
 
   @override
   Widget build(BuildContext context) {
+    final TextInputType resolvedKeyboardType =
+        keyboardType ??
+        (obscureText
+            ? TextInputType.visiblePassword
+            : (maxLines == 1 ? TextInputType.text : TextInputType.multiline));
+    final bool usesPrivateIme =
+        obscureText || resolvedKeyboardType == TextInputType.visiblePassword;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -5094,17 +5185,13 @@ class _PrototypeField extends StatelessWidget {
                     onChanged: onChanged,
                     obscureText: obscureText,
                     autocorrect: false,
-                    enableSuggestions: false,
-                    enableIMEPersonalizedLearning: false,
+                    enableSuggestions: !usesPrivateIme,
+                    enableIMEPersonalizedLearning: !usesPrivateIme,
                     spellCheckConfiguration:
                         const SpellCheckConfiguration.disabled(),
                     smartDashesType: SmartDashesType.disabled,
                     smartQuotesType: SmartQuotesType.disabled,
-                    keyboardType:
-                        keyboardType ??
-                        (maxLines == 1
-                            ? TextInputType.visiblePassword
-                            : TextInputType.multiline),
+                    keyboardType: resolvedKeyboardType,
                     minLines: minLines,
                     maxLines: maxLines,
                     style: _SettingsTextStyles.fieldValue.copyWith(
@@ -5130,16 +5217,7 @@ class _PrototypeField extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (trailingText != null) ...[
-                  const SizedBox(width: 8),
-                  Padding(
-                    padding: const EdgeInsets.only(right: 12),
-                    child: Text(
-                      trailingText!,
-                      style: _SettingsTextStyles.selectionMeta,
-                    ),
-                  ),
-                ],
+                if (trailing != null) ...[const SizedBox(width: 8), trailing!],
               ],
             ),
           ),
@@ -5359,8 +5437,8 @@ class _CompactInlineValueField extends StatelessWidget {
           keyboardType: keyboardType,
           textAlign: TextAlign.center,
           autocorrect: false,
-          enableSuggestions: false,
-          enableIMEPersonalizedLearning: false,
+          enableSuggestions: true,
+          enableIMEPersonalizedLearning: true,
           spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
           smartDashesType: SmartDashesType.disabled,
           smartQuotesType: SmartQuotesType.disabled,

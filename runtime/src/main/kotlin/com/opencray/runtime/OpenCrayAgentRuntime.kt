@@ -5689,6 +5689,7 @@ class OpenCrayAgentRuntime(
   ): String = config.json.encodeToString(
     JsonObject.serializer(),
     buildJsonObject {
+      val normalizedMetadata = OpenCrayPromptResumeMetadata.sanitizeToolResultMetadata(result.metadata)
       put("run_id", runIdFor(task))
       put("task_id", task.id)
       put("turn", turn)
@@ -5708,7 +5709,7 @@ class OpenCrayAgentRuntime(
       put(
         "metadata",
         buildJsonObject {
-          result.metadata.toSortedMap().forEach { (key, value) -> put(key, value) }
+          normalizedMetadata.toSortedMap().forEach { (key, value) -> put(key, value) }
         },
       )
     },

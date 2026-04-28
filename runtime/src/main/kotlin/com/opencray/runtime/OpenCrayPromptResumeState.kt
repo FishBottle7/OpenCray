@@ -11,11 +11,17 @@ import com.opencray.runtime.context.FrontContextZones
 import com.opencray.runtime.context.FrozenToolResultReplayProjection
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.context.RuntimeConversationMessageKind
+import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import com.opencray.runtime.subagent.SubAgentHandleState
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.SerialName
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
 enum class OpenCrayPromptCheckpointBoundary(
@@ -437,18 +443,104 @@ object OpenCrayPromptResumeMetadata {
   const val KEY_PROMPT_RESUME_JSON: String = "opencray_prompt_resume_json"
   const val KEY_PROMPT_CHECKPOINT_BOUNDARY: String = "opencray_prompt_checkpoint_boundary"
 
+  fun sanitizeToolResultMetadata(
+    metadata: Map<String, String>,
+  ): Map<String, String> {
+    if (metadata.isEmpty()) {
+      return metadata
+    }
+    val sanitized = linkedMapOf<String, String>()
+    var changed = false
+    metadata.forEach { (key, value) ->
+      if (key in hiddenToolResultMetadataKeys()) {
+        changed = true
+      } else {
+        sanitized[key] = value
+      }
+    }
+    return if (changed) sanitized else metadata
+  }
+
+  fun normalizeState(
+    state: OpenCrayPromptResumeState,
+    json: Json,
+  ): OpenCrayPromptResumeState {
+    val transcript = normalizeRuntimeMessages(state.transcript, json)
+    val transcriptDelta = normalizeRuntimeMessages(state.transcriptDelta, json)
+    val pendingMessages = normalizeGatewayMessages(state.responsesPendingMessages)
+    val continuationEnvelope = state.localContinuationEnvelope?.let { envelope ->
+      val normalizedFrontier = normalizeRuntimeMessages(envelope.transcriptFrontier, json)
+      val normalizedGatewayMessages = normalizeGatewayMessages(envelope.gatewayMessages)
+      if (
+        normalizedFrontier == envelope.transcriptFrontier &&
+        normalizedGatewayMessages == envelope.gatewayMessages
+      ) {
+        envelope
+      } else {
+        envelope.copy(
+          transcriptFrontier = normalizedFrontier,
+          gatewayMessages = normalizedGatewayMessages,
+        )
+      }
+    }
+    val replayToolResultProjections = state.replayToolResultProjections.mapValues { (_, projection) ->
+      val normalizedToolResult = normalizeGatewayToolResult(projection.projectedToolResult)
+      if (normalizedToolResult == projection.projectedToolResult) {
+        projection
+      } else {
+        projection.copy(projectedToolResult = normalizedToolResult)
+      }
+    }
+    if (
+      transcript == state.transcript &&
+      transcriptDelta == state.transcriptDelta &&
+      pendingMessages == state.responsesPendingMessages &&
+      continuationEnvelope == state.localContinuationEnvelope &&
+      replayToolResultProjections == state.replayToolResultProjections
+    ) {
+      return state
+    }
+    return state.copy(
+      transcript = transcript,
+      transcriptDelta = transcriptDelta,
+      localContinuationEnvelope = continuationEnvelope,
+      responsesPendingMessages = pendingMessages,
+      replayToolResultProjections = replayToolResultProjections,
+    )
+  }
+
   fun encodeToMetadata(
     state: OpenCrayPromptResumeState,
     json: Json,
     checkpointBoundary: OpenCrayPromptCheckpointBoundary? = null,
-  ): Map<String, String> = mapOf(
-    KEY_PROMPT_RESUME_JSON to json.encodeToString(
-      serializer = OpenCrayPromptResumeState.serializer(),
-      value = state,
-    ),
-  ) + checkpointBoundary?.let { boundary ->
-    mapOf(KEY_PROMPT_CHECKPOINT_BOUNDARY to boundary.wireValue)
-  }.orEmpty()
+  ): Map<String, String> {
+    val normalizedState = normalizeState(state, json)
+    return mapOf(
+      KEY_PROMPT_RESUME_JSON to json.encodeToString(
+        serializer = OpenCrayPromptResumeState.serializer(),
+        value = normalizedState,
+      ),
+    ) + checkpointBoundary?.let { boundary ->
+      mapOf(KEY_PROMPT_CHECKPOINT_BOUNDARY to boundary.wireValue)
+    }.orEmpty()
+  }
+
+  fun normalizeMetadata(
+    metadata: Map<String, String>,
+    json: Json,
+  ): Map<String, String> {
+    val state = decodeFromMetadata(metadata, json) ?: return metadata
+    val normalizedState = normalizeState(state, json)
+    if (normalizedState == state) {
+      return metadata
+    }
+    return metadata + mapOf(
+      KEY_PROMPT_RESUME_JSON to json.encodeToString(
+        serializer = OpenCrayPromptResumeState.serializer(),
+        value = normalizedState,
+      ),
+    )
+  }
 
   fun decodeFromMetadata(
     metadata: Map<String, String>,
@@ -472,4 +564,95 @@ object OpenCrayPromptResumeMetadata {
     ?.trim()
     ?.takeIf(String::isNotBlank)
     ?.let(OpenCrayPromptCheckpointBoundary::fromWireValue)
+
+  private fun hiddenToolResultMetadataKeys(): Set<String> = setOf(
+    KEY_PROMPT_RESUME_JSON,
+    KEY_PROMPT_CHECKPOINT_BOUNDARY,
+    SubAgentApprovalResumeMetadata.KEY_PROMPT_RESUME_JSON,
+  )
 }
+
+private fun normalizeRuntimeMessages(
+  messages: List<RuntimeConversationMessage>,
+  json: Json,
+): List<RuntimeConversationMessage> {
+  if (messages.isEmpty()) {
+    return messages
+  }
+  val normalized = messages.map { message -> normalizeRuntimeMessage(message, json) }
+  return if (normalized == messages) messages else normalized
+}
+
+private fun normalizeRuntimeMessage(
+  message: RuntimeConversationMessage,
+  json: Json,
+): RuntimeConversationMessage {
+  if (
+    message.role != RuntimeConversationRole.TOOL ||
+    message.kind != RuntimeConversationMessageKind.TOOL_RESULT
+  ) {
+    return message
+  }
+  val payload = message.content.trim().takeIf { content -> content.startsWith("{") } ?: return message
+  val decoded = runCatching {
+    json.parseToJsonElement(payload) as? JsonObject
+  }.getOrNull() ?: return message
+  val metadata = decoded["metadata"] as? JsonObject ?: return message
+  val normalizedMetadata = OpenCrayPromptResumeMetadata.sanitizeToolResultMetadata(
+    metadata.toStringMap(),
+  )
+  if (normalizedMetadata == metadata.toStringMap()) {
+    return message
+  }
+  val normalizedPayload = JsonObject(
+    buildMap<String, JsonElement> {
+      decoded.forEach { (key, value) ->
+        put(key, value)
+      }
+      put("metadata", normalizedMetadata.toJsonObject())
+    },
+  )
+  return message.copy(
+    content = json.encodeToString(
+      serializer = JsonObject.serializer(),
+      value = normalizedPayload,
+    ),
+  )
+}
+
+private fun normalizeGatewayMessages(
+  messages: List<OpenCraySerializableGatewayMessage>,
+): List<OpenCraySerializableGatewayMessage> {
+  if (messages.isEmpty()) {
+    return messages
+  }
+  val normalized = messages.map { message ->
+    val toolResult = message.toolResult ?: return@map message
+    val normalizedToolResult = normalizeGatewayToolResult(toolResult)
+    if (normalizedToolResult == toolResult) {
+      message
+    } else {
+      message.copy(toolResult = normalizedToolResult)
+    }
+  }
+  return if (normalized == messages) messages else normalized
+}
+
+private fun normalizeGatewayToolResult(
+  result: OpenCraySerializableGatewayToolResult,
+): OpenCraySerializableGatewayToolResult {
+  val normalizedMetadata = OpenCrayPromptResumeMetadata.sanitizeToolResultMetadata(result.metadata)
+  return if (normalizedMetadata == result.metadata) {
+    result
+  } else {
+    result.copy(metadata = normalizedMetadata)
+  }
+}
+
+private fun JsonObject.toStringMap(): Map<String, String> = entries.associate { (key, value) ->
+  key to value.jsonPrimitive.content
+}
+
+private fun Map<String, String>.toJsonObject(): JsonObject = JsonObject(
+  entries.associate { (key, value) -> key to JsonPrimitive(value) },
+)

@@ -6818,10 +6818,6 @@
         "params": {
           "type": "object",
           "additionalProperties": false,
-          "required": [
-            "draft",
-            "candidates"
-          ],
           "properties": {
             "service_root": {
               "type": "string",
@@ -6835,11 +6831,260 @@
               "type": "string",
               "minLength": 1
             },
+            "draft_payload": {
+              "type": "object"
+            },
+            "candidates_payload": {
+              "type": "object"
+            },
             "output_name": {
               "type": "string",
               "minLength": 1
             }
-          }
+          },
+          "allOf": [
+            {
+              "anyOf": [
+                {
+                  "required": [
+                    "draft"
+                  ]
+                },
+                {
+                  "required": [
+                    "draft_payload"
+                  ]
+                }
+              ]
+            },
+            {
+              "anyOf": [
+                {
+                  "required": [
+                    "candidates"
+                  ]
+                },
+                {
+                  "required": [
+                    "candidates_payload"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "params"
+      ],
+      "properties": {
+        "operation": {
+          "const": "plan_feedback_variations"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "service_root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "draft": {
+              "type": "string",
+              "minLength": 1
+            },
+            "draft_payload": {
+              "type": "object"
+            },
+            "context": {
+              "type": "string",
+              "minLength": 1
+            },
+            "context_payload": {
+              "type": "object"
+            },
+            "output_name": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "allOf": [
+            {
+              "anyOf": [
+                {
+                  "required": [
+                    "draft"
+                  ]
+                },
+                {
+                  "required": [
+                    "draft_payload"
+                  ]
+                }
+              ]
+            },
+            {
+              "anyOf": [
+                {
+                  "required": [
+                    "context"
+                  ]
+                },
+                {
+                  "required": [
+                    "context_payload"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "params"
+      ],
+      "properties": {
+        "operation": {
+          "const": "sample_feedback_candidates"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "service_root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "draft": {
+              "type": "string",
+              "minLength": 1
+            },
+            "draft_payload": {
+              "type": "object"
+            },
+            "context": {
+              "type": "string",
+              "minLength": 1
+            },
+            "context_payload": {
+              "type": "object"
+            },
+            "output_name": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "allOf": [
+            {
+              "anyOf": [
+                {
+                  "required": [
+                    "draft"
+                  ]
+                },
+                {
+                  "required": [
+                    "draft_payload"
+                  ]
+                }
+              ]
+            },
+            {
+              "anyOf": [
+                {
+                  "required": [
+                    "context"
+                  ]
+                },
+                {
+                  "required": [
+                    "context_payload"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "params"
+      ],
+      "properties": {
+        "operation": {
+          "const": "prepare_feedback_review_candidates"
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "service_root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "draft": {
+              "type": "string",
+              "minLength": 1
+            },
+            "draft_payload": {
+              "type": "object"
+            },
+            "context": {
+              "type": "string",
+              "minLength": 1
+            },
+            "context_payload": {
+              "type": "object"
+            },
+            "output_name": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "allOf": [
+            {
+              "anyOf": [
+                {
+                  "required": [
+                    "draft"
+                  ]
+                },
+                {
+                  "required": [
+                    "draft_payload"
+                  ]
+                }
+              ]
+            },
+            {
+              "anyOf": [
+                {
+                  "required": [
+                    "context"
+                  ]
+                },
+                {
+                  "required": [
+                    "context_payload"
+                  ]
+                }
+              ]
+            }
+          ]
         }
       }
     },

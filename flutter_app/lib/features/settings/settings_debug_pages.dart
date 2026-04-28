@@ -251,7 +251,7 @@ print(os.getcwd())
                       controller: _fileNameController,
                       autocorrect: false,
                       enableSuggestions: false,
-                      enableIMEPersonalizedLearning: false,
+                      enableIMEPersonalizedLearning: true,
                       spellCheckConfiguration:
                           const SpellCheckConfiguration.disabled(),
                       smartDashesType: SmartDashesType.disabled,
@@ -274,7 +274,7 @@ print(os.getcwd())
                       keyboardType: TextInputType.multiline,
                       autocorrect: false,
                       enableSuggestions: false,
-                      enableIMEPersonalizedLearning: false,
+                      enableIMEPersonalizedLearning: true,
                       spellCheckConfiguration:
                           const SpellCheckConfiguration.disabled(),
                       smartDashesType: SmartDashesType.disabled,
@@ -1697,7 +1697,9 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                   _DebugValueChip(
                     label: 'Response shape',
                     value:
-                        llmDiagnostics.providerResponseShape?.trim().isNotEmpty ==
+                        llmDiagnostics.providerResponseShape
+                                ?.trim()
+                                .isNotEmpty ==
                             true
                         ? llmDiagnostics.providerResponseShape!.trim()
                         : 'unknown',
@@ -1706,9 +1708,9 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                     label: 'Cache break',
                     value:
                         llmDiagnostics.contextCacheBreakReason
-                            ?.trim()
-                            .isNotEmpty ==
-                        true
+                                ?.trim()
+                                .isNotEmpty ==
+                            true
                         ? llmDiagnostics.contextCacheBreakReason!.trim()
                         : 'clear',
                   ),
@@ -1727,7 +1729,8 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                   'Fallback parser',
                   'attempted ${llmDiagnostics.fallbackParserAttempted == true ? 'yes' : 'no'}, succeeded ${llmDiagnostics.fallbackParserSucceeded == true ? 'yes' : 'no'}',
                 ),
-              if ((llmDiagnostics.responsesContinuationRecoveryCount ?? 0) > 0 ||
+              if ((llmDiagnostics.responsesContinuationRecoveryCount ?? 0) >
+                      0 ||
                   llmDiagnostics.responsesContinuationRecoveryLastReason
                           ?.trim()
                           .isNotEmpty ==
@@ -2060,7 +2063,9 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
     );
   }
 
-  String _formatContextBudgetPreset(OpenCrayChatRunContextBudgetSnapshot budget) {
+  String _formatContextBudgetPreset(
+    OpenCrayChatRunContextBudgetSnapshot budget,
+  ) {
     final effective = budget.effectivePreset?.trim();
     final selected = budget.selectedPreset?.trim();
     final source = budget.presetSource?.trim();
@@ -2074,7 +2079,10 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
     if (effective != null && effective.isNotEmpty) {
       return effective;
     }
-    if (selected != null && selected.isNotEmpty && source != null && source.isNotEmpty) {
+    if (selected != null &&
+        selected.isNotEmpty &&
+        source != null &&
+        source.isNotEmpty) {
       return '$selected ($source)';
     }
     if (selected != null && selected.isNotEmpty) {
@@ -2666,8 +2674,8 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
               controller: _searchController,
               textInputAction: TextInputAction.search,
               autocorrect: false,
-              enableSuggestions: false,
-              enableIMEPersonalizedLearning: false,
+              enableSuggestions: true,
+              enableIMEPersonalizedLearning: true,
               spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
               smartDashesType: SmartDashesType.disabled,
               smartQuotesType: SmartQuotesType.disabled,
