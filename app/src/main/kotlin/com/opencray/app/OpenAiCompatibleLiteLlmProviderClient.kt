@@ -1070,15 +1070,19 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val toolCalls = toolCallParse.toolCalls
     val textSegments = responsesMessageTextSegments(payload)
     val orderedText = textSegments.ordered.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
-    val phasedCommentaryText = textSegments.commentary.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
     val finalPhaseText = textSegments.finalAnswer.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
     val unphasedText = textSegments.unphased.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
-    val commentaryText = buildList<String> {
-      phasedCommentaryText?.let(::add)
+    val commentaryTexts = buildList<String> {
+      addAll(
+        textSegments.commentary
+          .map(String::trim)
+          .filter(String::isNotBlank),
+      )
       if (toolCalls.isNotEmpty()) {
         unphasedText?.let(::add)
       }
-    }.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
+    }
+    val commentaryText = commentaryTexts.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
     val finalText = firstNonBlankString(
       finalPhaseText,
       unphasedText?.takeIf { toolCalls.isEmpty() },
@@ -1094,6 +1098,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       toolCalls = toolCalls,
       finalText = finalText,
       commentaryText = commentaryText,
+      commentaryTexts = commentaryTexts,
       reasoningText = reasoningText,
       rawText = rawText,
       toolCallErrors = toolCallParse.errors,
@@ -1231,19 +1236,29 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     toolCalls: List<LiteLlmStructuredToolCall>,
     finalText: String? = null,
     commentaryText: String? = null,
+    commentaryTexts: List<String> = emptyList(),
     reasoningText: String? = null,
     rawText: String? = null,
     toolCallErrors: List<String> = emptyList(),
   ): LiteLlmStructuredCompletion? {
     val normalizedFinalText = finalText?.trim()?.takeIf(String::isNotBlank)
-    val normalizedCommentaryText = commentaryText?.trim()?.takeIf(String::isNotBlank)
+    val normalizedCommentaryTexts = commentaryTexts
+      .map(String::trim)
+      .filter(String::isNotBlank)
+      .ifEmpty {
+        commentaryText?.trim()?.takeIf(String::isNotBlank)?.let(::listOf) ?: emptyList()
+      }
+    val normalizedCommentaryText = normalizedCommentaryTexts
+      .joinToString(separator = "\n")
+      .trim()
+      .takeIf(String::isNotBlank)
     val normalizedReasoningText = reasoningText?.trim()?.takeIf(String::isNotBlank)
     val normalizedRawText = rawText?.trim()?.takeIf(String::isNotBlank)
     val normalizedToolCallErrors = toolCallErrors.map(String::trim).filter(String::isNotBlank)
     if (
       toolCalls.isEmpty() &&
       normalizedFinalText == null &&
-      normalizedCommentaryText == null &&
+      normalizedCommentaryTexts.isEmpty() &&
       normalizedReasoningText == null &&
       normalizedRawText == null &&
       normalizedToolCallErrors.isEmpty()
@@ -1254,6 +1269,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       toolCalls = toolCalls,
       finalText = normalizedFinalText,
       commentaryText = normalizedCommentaryText,
+      commentaryTexts = normalizedCommentaryTexts,
       reasoningText = normalizedReasoningText,
       rawText = normalizedRawText,
       toolCallErrors = normalizedToolCallErrors,
@@ -5508,7 +5524,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   companion object {
     private const val DEFAULT_ANTHROPIC_MAX_TOKENS: Int = 4096
-    private const val DEFAULT_STREAM_UPDATE_MIN_INTERVAL_MS: Long = 0L
+    private const val DEFAULT_STREAM_UPDATE_MIN_INTERVAL_MS: Long = 24L
     private const val STREAM_SNIFF_LIMIT_BYTES: Int = 2_048
     private const val STREAM_DEBUG_PREVIEW_CHARS: Int = 80
     private const val STREAM_DEBUG_TAG: String = "OpenCrayStream"

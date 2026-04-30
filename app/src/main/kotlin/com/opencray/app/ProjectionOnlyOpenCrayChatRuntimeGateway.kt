@@ -1610,7 +1610,17 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   ): () -> Unit {
     val lock = Any()
     var disposed = false
-    var latestPayload: Map<String, Any?>? = null
+    var latestPayload: Map<String, Any?>? = runCatching(payloadProvider).getOrNull()
+    latestPayload?.let { initialPayload ->
+      mainThreadPoster.post {
+        synchronized(lock) {
+          if (disposed) {
+            return@post
+          }
+        }
+        listener(initialPayload)
+      }
+    }
     val timer = Timer("projection-chat-gateway-observer", true)
     timer.scheduleAtFixedRate(
       object : TimerTask() {

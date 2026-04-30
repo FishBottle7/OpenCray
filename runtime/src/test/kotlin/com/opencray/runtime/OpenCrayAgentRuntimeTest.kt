@@ -54,6 +54,14 @@ import com.opencray.runtime.process.AgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.subagent.InMemorySubAgentExecutionCoordinator
+import com.opencray.runtime.subagent.SubAgentActiveExecution
+import com.opencray.runtime.subagent.SubAgentContinuationKind
+import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
+import com.opencray.runtime.subagent.SubAgentExecutionState
+import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.withClearedChildPromptCheckpoint
+import com.opencray.runtime.subagent.withUpdatedChildPromptCheckpoint
 import com.opencray.runtime.skills.SkillCatalogResolver
 import com.opencray.runtime.skills.SkillInventory
 import com.opencray.runtime.skills.SkillInventoryTrace
@@ -76,7 +84,10 @@ import java.nio.file.Files
 import java.security.MessageDigest
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -1001,7 +1012,7 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
-  fun runPromptTaskStreamsStructuredActionsDraftText() {
+  fun runPromptTaskStreamsOnlyStructuredFinalDraftTextFromActionsBatch() {
     val workspaceRoot = temporaryFolder.newFolder("agent-structured-actions-draft-workspace")
     val selection = LiteLlmRouteSelectionMetadata(
       profileId = "test-profile",
@@ -1063,13 +1074,78 @@ class OpenCrayAgentRuntimeTest {
     assertEquals("Here is the final answer.", result.stdout)
     assertEquals(
       listOf(
-        "Checking the transcript first.",
         "Here is",
         "Here is the final answer.",
       ),
       eventSink.assistantDrafts,
     )
     assertEquals(0, eventSink.assistantDraftClearCount)
+  }
+
+  @Test
+  fun runPromptTaskStreamsIncompleteUserFacingJsonDrafts() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-json-draft-workspace")
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "json-draft-route",
+      providerId = "openai",
+      model = "gpt-test",
+      attemptIndex = 0,
+    )
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        request.streamObserver.onVisibleTextSnapshot("{\"status\":")
+        request.streamObserver.onVisibleTextSnapshot("{\"status\":\"ok\"}")
+        return LiteLlmGatewayResult(
+          requestId = request.requestId,
+          status = LiteLlmGatewayStatus.SUCCESS,
+          completionMode = LiteLlmCompletionMode.PRIMARY,
+          completion = LiteLlmStructuredCompletion(
+            finalText = "{\"status\":\"ok\"}",
+            rawText = "{\"status\":\"ok\"}",
+          ),
+          selectedRoute = selection,
+          attempts = listOf(
+            LiteLlmAttemptRecord(
+              route = selection,
+              outcome = LiteLlmAttemptOutcome.SUCCESS,
+              outputChars = 15,
+              startedAtEpochMs = 2_200L,
+              finishedAtEpochMs = 2_300L,
+            ),
+          ),
+          startedAtEpochMs = 2_200L,
+          finishedAtEpochMs = 2_300L,
+        )
+      }
+    }
+    val eventSink = RecordingEventSink()
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 2, maxToolCalls = 0),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 2_200L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Return a JSON status object."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("{\"status\":\"ok\"}", result.stdout)
+    assertEquals(
+      listOf(
+        "{\"status\":",
+        "{\"status\":\"ok\"}",
+      ),
+      eventSink.assistantDrafts,
+    )
   }
 
   @Test
@@ -1159,12 +1235,12 @@ class OpenCrayAgentRuntimeTest {
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("Actual final after the tool call.", result.stdout)
-    assertEquals(listOf("Checking the transcript first."), eventSink.assistantDrafts)
+    assertTrue(eventSink.assistantDrafts.isEmpty())
     assertEquals(1, eventSink.assistantDraftClearCount)
   }
 
   @Test
-  fun runPromptTaskStreamsTopLevelStructuredCommentaryProgressAndStatusDraftText() {
+  fun runPromptTaskSuppressesTopLevelStructuredCommentaryProgressAndStatusDraftText() {
     val workspaceRoot = temporaryFolder.newFolder("agent-top-level-structured-draft-workspace")
     val selection = LiteLlmRouteSelectionMetadata(
       profileId = "test-profile",
@@ -1227,14 +1303,7 @@ class OpenCrayAgentRuntimeTest {
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("Done.", result.stdout)
-    assertEquals(
-      listOf(
-        "Checking the transcript first.",
-        "Still checking the workspace.",
-        "Ready to answer.",
-      ),
-      eventSink.assistantDrafts,
-    )
+    assertTrue(eventSink.assistantDrafts.isEmpty())
     assertEquals(0, eventSink.assistantDraftClearCount)
   }
 
@@ -1301,7 +1370,7 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
-  fun runPromptTaskSuppressesStructuredToolAndInternalDraftPayloadsButKeepsPublicCommentary() {
+  fun runPromptTaskSuppressesStructuredToolInternalAndCommentaryDraftPayloads() {
     val workspaceRoot = temporaryFolder.newFolder("agent-structured-hidden-draft-workspace")
     val selection = LiteLlmRouteSelectionMetadata(
       profileId = "test-profile",
@@ -1364,7 +1433,7 @@ class OpenCrayAgentRuntimeTest {
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("Done.", result.stdout)
-    assertEquals(listOf("Inspecting files"), eventSink.assistantDrafts)
+    assertTrue(eventSink.assistantDrafts.isEmpty())
     assertEquals(0, eventSink.assistantDraftClearCount)
   }
 
@@ -6388,6 +6457,126 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
+  fun waitAgentEmitsSubagentProgressWhileJoiningForegroundExecution() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-wait-subagent-progress")
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val handle = SubAgentHandleState(
+      agentId = "agent-wait-1",
+      childRunId = "child-run-1",
+      childTaskId = "child-task-1",
+      description = "Inspect README",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "parent-run-wait-1",
+      parentTaskId = "parent-task-wait-1",
+      parentTurn = 0,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Delegated child run is running in the background.",
+      ),
+      createdAtEpochMs = 4_000L,
+      updatedAtEpochMs = 4_000L,
+    )
+    val executor = Executors.newSingleThreadExecutor()
+    val future = FutureTask<Unit> {
+      Thread.sleep(600L)
+      coordinator.upsertHandle(
+        handle.withUpdatedChildPromptCheckpoint(
+          checkpointState = OpenCrayPromptResumeState(
+            turnIndex = 0,
+            toolCallCount = 0,
+          ),
+          checkpointBoundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
+          emittedAtEpochMs = 4_100L,
+        ),
+      )
+      Thread.sleep(600L)
+      coordinator.finishExecution(
+        handle
+          .withClearedChildPromptCheckpoint(updatedAtEpochMs = 4_200L)
+          .copy(
+            snapshot = SubAgentExecutionSnapshot(
+              state = SubAgentExecutionState.COMPLETED,
+              continuationKind = SubAgentContinuationKind.NONE,
+              resumable = false,
+              requiresUserAction = false,
+              isHighRisk = false,
+              headline = "Delegated child run completed.",
+            ),
+            childExecutionStatus = ExecutionStatus.SUCCESS.name,
+            updatedAtEpochMs = 4_200L,
+          ),
+      )
+    }
+    coordinator.beginExecution(
+      handle = handle,
+      execution = SubAgentActiveExecution(
+        executor = executor,
+        future = future,
+        cancelRequested = AtomicBoolean(false),
+        closed = AtomicBoolean(false),
+      ),
+    )
+    executor.execute(future)
+
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"agent-wait-1"}}""",
+        """{"type":"final","answer":"Joined the delegated child run."}""",
+      ),
+    )
+    val eventSink = RecordingEventSink()
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        seededSubAgentHandles = listOf(handle),
+        subAgentExecutionCoordinator = coordinator,
+      ),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 7_900L)::next,
+    )
+
+    try {
+      val result = runtime.execute(
+        task = promptTask(input = "Wait for the delegated child run to finish."),
+        hooks = runtimeHooks(),
+      )
+
+      assertEquals(ExecutionStatus.SUCCESS, result.status)
+      assertEquals("Joined the delegated child run.", result.stdout)
+      assertTrue(
+        eventSink.events.joinToString(separator = "\n") { event ->
+          when (event) {
+            is OpenCraySubAgentEvent ->
+              "subagent phase=${event.phase} state=${event.executionState} summary=${event.summary}"
+            is OpenCrayToolCallEvent -> "tool_call ${event.call.toolName}"
+            is OpenCrayToolResultEvent -> "tool_result ${event.call.toolName}:${event.result.status}"
+            is OpenCrayAssistantEvent -> "assistant ${event.text}"
+            is OpenCrayLifecycleEvent -> "lifecycle ${event.phase}"
+            else -> event::class.java.simpleName
+          }
+        },
+        eventSink.events
+          .filterIsInstance<OpenCraySubAgentEvent>()
+          .any { event ->
+            event.childRunId == "child-run-1" &&
+              event.summary.orEmpty().isNotBlank()
+          },
+      )
+    } finally {
+      executor.shutdownNow()
+    }
+  }
+
+  @Test
   fun runPromptTaskRecoversFromProtocolErrorsWithoutSurfacingRawPayload() {
     val workspaceRoot = temporaryFolder.newFolder("agent-protocol-recovery")
     val gateway = RecordingGateway(
@@ -7394,7 +7583,116 @@ class OpenCrayAgentRuntimeTest {
         .filterNot(OpenCrayAssistantEvent::isFinal)
         .map(OpenCrayAssistantEvent::text),
     )
+    assertTrue(eventSink.assistantDrafts.isEmpty())
     assertEquals("false", result.metadata[LiteLlmMetadataKeys.FALLBACK_PARSER_ATTEMPTED])
+  }
+
+  @Test
+  fun runPromptTaskEmitsSeparateStructuredCommentaryEventsFromNativeCompletion() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-structured-multi-commentary")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "multi commentary".toByteArray(StandardCharsets.UTF_8),
+    )
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "multi-commentary-route",
+      providerId = "openai-compatible",
+      model = "gpt-4o-mini",
+      attemptIndex = 0,
+    )
+    var requestIndex = 0
+    val eventSink = RecordingEventSink()
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        return if (requestIndex++ == 0) {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              commentaryText = "Scanning the README before reading it.\nOpening the relevant section now.",
+              commentaryTexts = listOf(
+                "Scanning the README before reading it.",
+                "Opening the relevant section now.",
+              ),
+              toolCalls = listOf(
+                LiteLlmStructuredToolCall(
+                  id = "call_1",
+                  toolName = "Read",
+                  arguments = JsonObject(
+                    mapOf("file_path" to JsonPrimitive("README.md")),
+                  ),
+                ),
+              ),
+            ),
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 11_100L,
+                finishedAtEpochMs = 11_101L,
+              ),
+            ),
+            startedAtEpochMs = 11_100L,
+            finishedAtEpochMs = 11_101L,
+          )
+        } else {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              finalText = "README says multi commentary works.",
+            ),
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 11_102L,
+                finishedAtEpochMs = 11_103L,
+              ),
+            ),
+            startedAtEpochMs = 11_102L,
+            finishedAtEpochMs = 11_103L,
+          )
+        }
+      }
+    }
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 2),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 11_600L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Read the README and keep me updated twice."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("README says multi commentary works.", result.stdout)
+    assertEquals(
+      listOf(
+        "Scanning the README before reading it.",
+        "Opening the relevant section now.",
+      ),
+      eventSink.events
+        .filterIsInstance<OpenCrayAssistantEvent>()
+        .filterNot(OpenCrayAssistantEvent::isFinal)
+        .map(OpenCrayAssistantEvent::text),
+    )
+    assertTrue(eventSink.assistantDrafts.isEmpty())
   }
 
   @Test

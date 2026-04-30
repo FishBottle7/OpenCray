@@ -92,6 +92,8 @@ import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.decodeFromString
@@ -107,6 +109,7 @@ const val ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME: String =
   "LLM_RETRY_EXHAUSTED_AWAITING_RESUME"
 const val ERROR_EMPTY_RESPONSE_RECOVERY_EXHAUSTED: String =
   "EMPTY_RESPONSE_RECOVERY_EXHAUSTED"
+private const val SUBAGENT_WAIT_PROGRESS_POLL_INTERVAL_MS: Long = 100L
 
 data class OpenCrayAgentRuntimeConfig(
   val maxTurns: Int = DEFAULT_MAX_TURNS,
@@ -1252,12 +1255,9 @@ class OpenCrayAgentRuntime(
         )
       }
     val actions = mutableListOf<AgentModelAction>()
-    completion.commentaryText
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let { commentaryText ->
-        actions += AgentModelAction.Commentary(text = commentaryText)
-      }
+    structuredCompletionCommentaryTexts(completion).forEach { commentaryText ->
+      actions += AgentModelAction.Commentary(text = commentaryText)
+    }
     completion.toolCalls
       .mapTo(actions) { toolCall ->
         AgentModelAction.ToolCall(call = parseStructuredToolCall(toolCall))
@@ -1458,7 +1458,7 @@ class OpenCrayAgentRuntime(
   ): Boolean = !gatewayResult.outputText.isNullOrBlank() ||
     !gatewayResult.completion?.rawText.isNullOrBlank() ||
     !gatewayResult.completion?.finalText.isNullOrBlank() ||
-    !gatewayResult.completion?.commentaryText.isNullOrBlank() ||
+    gatewayResult.completion?.let(::structuredCompletionCommentaryTexts).orEmpty().isNotEmpty() ||
     gatewayResult.completion?.toolCalls?.isNotEmpty() == true
 
   private fun sleepForRecoverableRetry(
@@ -1617,15 +1617,28 @@ class OpenCrayAgentRuntime(
     if (!startsLikeJson) {
       return normalized
     }
+    if (normalized == "{" || normalized == "[") {
+      return null
+    }
     extractStructuredAssistantDraftText(normalized)?.let { return it }
     if (looksLikeStructuredProtocol || looksLikeInternalSignal) {
       return null
     }
-    if (!normalized.endsWith('}') && !normalized.endsWith(']')) {
-      return null
-    }
     return normalized
   }
+
+  private fun structuredCompletionCommentaryTexts(
+    completion: LiteLlmStructuredCompletion,
+  ): List<String> = completion.commentaryTexts
+    .map(String::trim)
+    .filter(String::isNotBlank)
+    .ifEmpty {
+      completion.commentaryText
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let(::listOf)
+        ?: emptyList()
+    }
 
   private fun extractStructuredAssistantDraftText(rawText: String): String? {
     val lowercase = rawText.lowercase()
@@ -1645,15 +1658,6 @@ class OpenCrayAgentRuntime(
         partialJsonStringFieldValue(rawText, "text"),
         partialJsonStringFieldValue(rawText, "message"),
         partialJsonStringFieldValue(rawText, "summary"),
-      )?.trim()?.takeIf(String::isNotBlank)
-
-      "progress",
-      "commentary",
-      "status",
-      -> firstNonBlankAssistantDraftField(
-        partialJsonStringFieldValue(rawText, "text"),
-        partialJsonStringFieldValue(rawText, "summary"),
-        partialJsonStringFieldValue(rawText, "message"),
       )?.trim()?.takeIf(String::isNotBlank)
 
       null,
@@ -1697,15 +1701,6 @@ class OpenCrayAgentRuntime(
         partialJsonStringFieldValue(rawAction, "text"),
         partialJsonStringFieldValue(rawAction, "message"),
         partialJsonStringFieldValue(rawAction, "summary"),
-      )?.trim()?.takeIf(String::isNotBlank)
-
-      "progress",
-      "commentary",
-      "status",
-      -> firstNonBlankAssistantDraftField(
-        partialJsonStringFieldValue(rawAction, "text"),
-        partialJsonStringFieldValue(rawAction, "summary"),
-        partialJsonStringFieldValue(rawAction, "message"),
       )?.trim()?.takeIf(String::isNotBlank)
 
       else -> null
@@ -6498,7 +6493,17 @@ class OpenCrayAgentRuntime(
     }
     val hadActiveExecution = cursor != null && activeSubAgentExecution(cursor = cursor, agentId = agentId) != null
     if (cursor != null && hadActiveExecution) {
-      waitForActiveSubAgentExecution(cursor = cursor, agentId = agentId)
+      waitForActiveSubAgentExecution(
+        cursor = cursor,
+        agentId = agentId,
+        onProgress = { progressHandle ->
+          emitSubAgentWaitProgressEvent(
+            task = task,
+            turn = turn,
+            handle = progressHandle,
+          )
+        },
+      )
       val latestHandleAfterJoin = synchronizedSubAgentHandle(
         cursor = cursor,
         agentId = agentId,
@@ -6513,7 +6518,16 @@ class OpenCrayAgentRuntime(
     val hadDetachedActiveExecution = cursor == null &&
       config.subAgentExecutionCoordinator.activeExecution(subAgentExecutionKey(handle)) != null
     if (cursor == null && hadDetachedActiveExecution) {
-      waitForDetachedSubAgentExecution(handle = handle)
+      waitForDetachedSubAgentExecution(
+        handle = handle,
+        onProgress = { progressHandle ->
+          emitSubAgentWaitProgressEvent(
+            task = task,
+            turn = turn,
+            handle = progressHandle,
+          )
+        },
+      )
       val latestHandleAfterJoin = coordinatedSubAgentHandle(handle) ?: handle
       if (
         isTerminalSubAgentState(latestHandleAfterJoin.snapshot.state) ||
@@ -6553,7 +6567,17 @@ class OpenCrayAgentRuntime(
         approvalContinuation = approvalContinuation,
         emitResumedPhaseWithoutApproval = true,
       )
-      waitForActiveSubAgentExecution(cursor = cursor, agentId = agentId)
+      waitForActiveSubAgentExecution(
+        cursor = cursor,
+        agentId = agentId,
+        onProgress = { progressHandle ->
+          emitSubAgentWaitProgressEvent(
+            task = task,
+            turn = turn,
+            handle = progressHandle,
+          )
+        },
+      )
       val latestHandle = synchronizedSubAgentHandle(
         cursor = cursor,
         agentId = agentId,
@@ -6569,7 +6593,16 @@ class OpenCrayAgentRuntime(
       handle = handle,
       handles = handles,
     ) ?: handle
-    waitForDetachedSubAgentExecution(handle = startedHandle)
+    waitForDetachedSubAgentExecution(
+      handle = startedHandle,
+      onProgress = { progressHandle ->
+        emitSubAgentWaitProgressEvent(
+          task = task,
+          turn = turn,
+          handle = progressHandle,
+        )
+      },
+    )
     val latestHandle = coordinatedSubAgentHandle(startedHandle) ?: startedHandle
     return storedSubAgentHandleResult(call = call, handle = latestHandle)
   }
@@ -6862,26 +6895,64 @@ class OpenCrayAgentRuntime(
   private fun waitForActiveSubAgentExecution(
     cursor: PromptTurnCursor,
     agentId: String,
+    onProgress: ((SubAgentHandleState) -> Unit)? = null,
   ) {
     waitForSubAgentExecution(
-      activeSubAgentExecution(cursor = cursor, agentId = agentId),
+      execution = activeSubAgentExecution(cursor = cursor, agentId = agentId),
+      latestHandleProvider = {
+        synchronizedSubAgentHandle(cursor = cursor, agentId = agentId)
+      },
+      onProgress = onProgress,
     )
   }
 
   private fun waitForDetachedSubAgentExecution(
     handle: SubAgentHandleState,
+    onProgress: ((SubAgentHandleState) -> Unit)? = null,
   ) {
+    val key = subAgentExecutionKey(handle)
     waitForSubAgentExecution(
-      config.subAgentExecutionCoordinator.activeExecution(subAgentExecutionKey(handle)),
+      execution = config.subAgentExecutionCoordinator.activeExecution(key),
+      latestHandleProvider = {
+        config.subAgentExecutionCoordinator.currentHandle(key) ?: handle
+      },
+      onProgress = onProgress,
     )
   }
 
   private fun waitForSubAgentExecution(
     execution: SubAgentActiveExecution?,
+    latestHandleProvider: (() -> SubAgentHandleState?)? = null,
+    onProgress: ((SubAgentHandleState) -> Unit)? = null,
   ) {
     val activeExecution = execution ?: return
+    var emittedHeartbeat = false
+    var lastCheckpointAtEpochMs = latestHandleProvider?.invoke()?.childPromptCheckpointAtEpochMs
     try {
-      activeExecution.future.get()
+      while (true) {
+        try {
+          activeExecution.future.get(
+            SUBAGENT_WAIT_PROGRESS_POLL_INTERVAL_MS,
+            TimeUnit.MILLISECONDS,
+          )
+          return
+        } catch (_: TimeoutException) {
+          val latestHandle = latestHandleProvider?.invoke() ?: continue
+          val checkpointAtEpochMs = latestHandle.childPromptCheckpointAtEpochMs
+          val shouldEmitProgress = when {
+            checkpointAtEpochMs != null && checkpointAtEpochMs != lastCheckpointAtEpochMs -> true
+            !emittedHeartbeat && isWaitingSubAgentState(latestHandle.snapshot.state) -> true
+            else -> false
+          }
+          if (checkpointAtEpochMs != null) {
+            lastCheckpointAtEpochMs = checkpointAtEpochMs
+          }
+          if (shouldEmitProgress) {
+            emittedHeartbeat = true
+            onProgress?.invoke(latestHandle)
+          }
+        }
+      }
     } catch (_: InterruptedException) {
       Thread.currentThread().interrupt()
     } catch (_: java.util.concurrent.CancellationException) {
@@ -6889,6 +6960,17 @@ class OpenCrayAgentRuntime(
     } catch (_: java.util.concurrent.ExecutionException) {
       Unit
     }
+  }
+
+  private fun isWaitingSubAgentState(
+    state: SubAgentExecutionState,
+  ): Boolean = when (state) {
+    SubAgentExecutionState.RUNNING,
+    SubAgentExecutionState.BACKGROUND_QUEUED,
+    SubAgentExecutionState.BACKGROUND_RUNNING,
+    -> true
+
+    else -> false
   }
 
   private fun activeSubAgentExecution(
@@ -7190,6 +7272,51 @@ class OpenCrayAgentRuntime(
         else -> "Queued delegated child run started."
       },
       snapshot = handle.snapshot,
+      liveContext = handle.childLiveContext,
+    )
+  }
+
+  private fun emitSubAgentWaitProgressEvent(
+    task: AgentTask,
+    turn: Int,
+    handle: SubAgentHandleState,
+  ) {
+    val checkpointHeadline = when (handle.childPromptCheckpointBoundary) {
+      OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST ->
+        "Delegated child run prepared its next model request."
+      OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED ->
+        "Delegated child run parsed its next action batch."
+      OpenCrayPromptCheckpointBoundary.COMMENTARY_EMITTED ->
+        "Delegated child run emitted a commentary update."
+      OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED ->
+        "Delegated child run committed a tool result."
+      OpenCrayPromptCheckpointBoundary.SUPPLEMENT_INGESTED ->
+        "Delegated child run ingested new context."
+      null -> null
+    }
+    val progressSnapshot = handle.snapshot.copy(
+      headline = checkpointHeadline ?: when (handle.snapshot.state) {
+        SubAgentExecutionState.BACKGROUND_QUEUED ->
+          "Delegated child run is queued and waiting to continue."
+        SubAgentExecutionState.BACKGROUND_RUNNING,
+        SubAgentExecutionState.RUNNING,
+        -> "Delegated child run is still running."
+        else -> handle.snapshot.headline
+      },
+      detailLines = emptyList(),
+    )
+    emitSubAgentEvent(
+      task = task,
+      turn = turn,
+      phase = when (handle.snapshot.state) {
+        SubAgentExecutionState.BACKGROUND_RUNNING -> OpenCraySubAgentPhase.RESUMED
+        else -> OpenCraySubAgentPhase.STARTED
+      },
+      childTask = handle.toTask(),
+      childRunId = handle.childRunId,
+      childTaskId = handle.childTaskId,
+      summary = progressSnapshot.summaryText(),
+      snapshot = progressSnapshot,
       liveContext = handle.childLiveContext,
     )
   }

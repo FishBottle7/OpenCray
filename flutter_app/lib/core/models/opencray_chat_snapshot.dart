@@ -1612,6 +1612,83 @@ class OpenCrayChatRuntimeSnapshot {
   }
 }
 
+class OpenCrayChatRuntimeEventDelta {
+  const OpenCrayChatRuntimeEventDelta({
+    required this.sessionId,
+    required this.events,
+    required this.totalLength,
+    this.sequence = 0,
+    this.activeRuns = const <OpenCrayChatRunSnapshot>[],
+    this.retainedRuns = const <OpenCrayChatRunSnapshot>[],
+    this.subAgents = const <OpenCrayChatSubAgentSnapshot>[],
+    this.liveAssistantDrafts = const <OpenCrayChatLiveAssistantDraftSnapshot>[],
+    this.hostLifecycle,
+    this.updatedAtEpochMs = 0,
+  });
+
+  final String sessionId;
+  final List<OpenCrayChatRuntimeEventSnapshot> events;
+  final int totalLength;
+  final int sequence;
+  final List<OpenCrayChatRunSnapshot> activeRuns;
+  final List<OpenCrayChatRunSnapshot> retainedRuns;
+  final List<OpenCrayChatSubAgentSnapshot> subAgents;
+  final List<OpenCrayChatLiveAssistantDraftSnapshot> liveAssistantDrafts;
+  final OpenCrayHostLifecycleSnapshot? hostLifecycle;
+  final int updatedAtEpochMs;
+
+  factory OpenCrayChatRuntimeEventDelta.fromMap(Map<Object?, Object?> map) {
+    final rawEvents = map['events'] as List<Object?>? ?? const <Object?>[];
+    final rawActiveRuns =
+        map['activeRuns'] as List<Object?>? ?? const <Object?>[];
+    final rawRetainedRuns =
+        map['retainedRuns'] as List<Object?>? ?? const <Object?>[];
+    final rawSubAgents =
+        map['subAgents'] as List<Object?>? ?? const <Object?>[];
+    final rawLiveAssistantDrafts =
+        map['liveAssistantDrafts'] as List<Object?>? ?? const <Object?>[];
+    final rawHostLifecycle = map['hostLifecycle'];
+    return OpenCrayChatRuntimeEventDelta(
+      sessionId: map['sessionId'] as String? ?? '',
+      events: rawEvents
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatRuntimeEventSnapshot.fromMap)
+          .toList(growable: false),
+      totalLength: map['totalLength'] as int? ?? 0,
+      sequence: map['sequence'] as int? ?? 0,
+      activeRuns: rawActiveRuns
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatRunSnapshot.fromMap)
+          .toList(growable: false),
+      retainedRuns: rawRetainedRuns
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatRunSnapshot.fromMap)
+          .toList(growable: false),
+      subAgents: rawSubAgents
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatSubAgentSnapshot.fromMap)
+          .toList(growable: false),
+      liveAssistantDrafts: rawLiveAssistantDrafts
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatLiveAssistantDraftSnapshot.fromMap)
+          .toList(growable: false),
+      hostLifecycle: rawHostLifecycle is Map<Object?, Object?>
+          ? OpenCrayHostLifecycleSnapshot.fromMap(rawHostLifecycle)
+          : null,
+      updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
+    );
+  }
+
+  bool get hasRuntimeActivityPatch =>
+      events.isNotEmpty ||
+      activeRuns.isNotEmpty ||
+      retainedRuns.isNotEmpty ||
+      subAgents.isNotEmpty ||
+      liveAssistantDrafts.isNotEmpty ||
+      hostLifecycle != null ||
+      updatedAtEpochMs > 0;
+}
+
 class OpenCrayChatLiveAssistantDraftSnapshot {
   const OpenCrayChatLiveAssistantDraftSnapshot({
     required this.runId,

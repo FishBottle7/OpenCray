@@ -55,6 +55,7 @@ internal class OpenCrayFlutterHostBridge(
   private var chatObserverDisposer: (() -> Unit)? = null
   private var chatRuntimeObserverDisposer: (() -> Unit)? = null
   private var liveAssistantDraftObserverDisposer: (() -> Unit)? = null
+  private var runtimeEventDeltaObserverDisposer: (() -> Unit)? = null
 
   fun attach(flutterEngine: FlutterEngine) {
     MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL).setMethodCallHandler(::onMethodCall)
@@ -100,6 +101,15 @@ internal class OpenCrayFlutterHostBridge(
         onDisposeChanged = { disposer -> liveAssistantDraftObserverDisposer = disposer },
       ),
     )
+    EventChannel(
+      flutterEngine.dartExecutor.binaryMessenger,
+      RUNTIME_EVENT_DELTA_CHANNEL,
+    ).setStreamHandler(
+      observerStreamHandler(
+        observe = chatRuntimeGateway::observeRuntimeEventDeltas,
+        onDisposeChanged = { disposer -> runtimeEventDeltaObserverDisposer = disposer },
+      ),
+    )
   }
 
   fun detach(flutterEngine: FlutterEngine) {
@@ -110,18 +120,21 @@ internal class OpenCrayFlutterHostBridge(
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_SNAPSHOT_CHANNEL).setStreamHandler(null)
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_RUNTIME_SNAPSHOT_CHANNEL).setStreamHandler(null)
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, LIVE_ASSISTANT_DRAFT_CHANNEL).setStreamHandler(null)
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, RUNTIME_EVENT_DELTA_CHANNEL).setStreamHandler(null)
     shellObserverDisposer?.invoke()
     settingsObserverDisposer?.invoke()
     skillsObserverDisposer?.invoke()
     chatObserverDisposer?.invoke()
     chatRuntimeObserverDisposer?.invoke()
     liveAssistantDraftObserverDisposer?.invoke()
+    runtimeEventDeltaObserverDisposer?.invoke()
     shellObserverDisposer = null
     settingsObserverDisposer = null
     skillsObserverDisposer = null
     chatObserverDisposer = null
     chatRuntimeObserverDisposer = null
     liveAssistantDraftObserverDisposer = null
+    runtimeEventDeltaObserverDisposer = null
   }
 
   fun selectChatSession(sessionId: String): Boolean =
@@ -1105,5 +1118,6 @@ internal class OpenCrayFlutterHostBridge(
     private const val CHAT_SNAPSHOT_CHANNEL = "com.opencray.host/chat_snapshot"
     private const val CHAT_RUNTIME_SNAPSHOT_CHANNEL = "com.opencray.host/chat_runtime_snapshot"
     private const val LIVE_ASSISTANT_DRAFT_CHANNEL = "com.opencray.host/live_assistant_draft"
+    private const val RUNTIME_EVENT_DELTA_CHANNEL = "com.opencray.host/runtime_event_delta"
   }
 }

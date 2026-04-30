@@ -1965,6 +1965,631 @@ void main() {
   );
 
   testWidgets(
+    'live assistant draft events do not recreate a pending bubble after commentary is projected',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final draftEvents =
+          StreamController<OpenCrayChatLiveAssistantDraftEvent>.broadcast();
+      addTearDown(draftEvents.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Inspect the workspace.',
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-1',
+              kind: 'inbound',
+              text: 'Thinking',
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-progress-1',
+              taskId: 'task-progress-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 2200,
+              attempt: 1,
+              pendingMessageId: 'pending-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'assistant_phase',
+              runId: 'run-progress-1',
+              taskId: 'task-progress-1',
+              emittedAtEpochMs: 2200,
+              phase: 'commentary',
+              isFinal: false,
+              turn: 0,
+              stage: 'Planning',
+              text:
+                  'Scanning README and Gradle files before choosing the next tool.',
+            ),
+          ],
+        ),
+        liveAssistantDraftEventStream: draftEvents.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      draftEvents.add(
+        const OpenCrayChatLiveAssistantDraftEvent(
+          sessionId: 'session-1',
+          runId: 'run-progress-1',
+          taskId: 'task-progress-1',
+          pendingMessageId: 'pending-1',
+          text: 'Streaming answer in progress',
+          updatedAtEpochMs: 2300,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final commentaryBubbleText = find.descendant(
+        of: find.byWidgetPredicate((widget) {
+          final Key? key = widget.key;
+          return key is ValueKey<String> &&
+              key.value.startsWith('chat-bubble-') &&
+              key.value != 'chat-bubble-pending-1';
+        }),
+        matching: find.textContaining(
+          'Scanning README and Gradle files before choosing the next tool.',
+        ),
+      );
+      expect(commentaryBubbleText, findsOneWidget);
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey<String>('chat-bubble-pending-1')),
+          matching: find.text('Streaming answer in progress'),
+        ),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets(
+    'runtime event deltas update the open inspector without a runtime snapshot refresh',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeEventDeltas =
+          StreamController<OpenCrayChatRuntimeEventDelta>.broadcast();
+      addTearDown(runtimeEventDeltas.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          updatedAtEpochMs: 1000,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Read the README.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-delta-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 1100,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-delta-1',
+              taskId: 'task-delta-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1100,
+              attempt: 1,
+              pendingMessageId: 'pending-delta-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-delta-1',
+              taskId: 'task-delta-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+          ],
+        ),
+        runtimeEventDeltaStream: runtimeEventDeltas.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final int runtimeSnapshotLoadsBeforeDelta =
+          bridge.loadChatRuntimeSnapshotCallCount;
+
+      final runTraceFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-delta-1'),
+      );
+      expect(runTraceFinder, findsOneWidget);
+      await _openRunTraceFullscreen(tester, runTraceFinder);
+      final fullscreenFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-fullscreen-run-delta-1'),
+      );
+
+      runtimeEventDeltas.add(
+        const OpenCrayChatRuntimeEventDelta(
+          sessionId: 'session-1',
+          totalLength: 2,
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_call',
+              runId: 'run-delta-1',
+              taskId: 'task-delta-1',
+              emittedAtEpochMs: 1200,
+              toolName: 'Read',
+              argumentsJson: '{"file_path":"README.md"}',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        bridge.loadChatRuntimeSnapshotCallCount,
+        runtimeSnapshotLoadsBeforeDelta,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Read', findRichText: true),
+        ),
+        findsWidgets,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('README.md', findRichText: true),
+        ),
+        findsWidgets,
+      );
+    },
+  );
+
+  testWidgets(
+    'runtime event deltas ignore totalLength mismatches when sequence is contiguous',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeEventDeltas =
+          StreamController<OpenCrayChatRuntimeEventDelta>.broadcast();
+      addTearDown(runtimeEventDeltas.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          updatedAtEpochMs: 1000,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Read the README.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-delta-sequence-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 1100,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-delta-sequence-1',
+              taskId: 'task-delta-sequence-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1100,
+              attempt: 1,
+              pendingMessageId: 'pending-delta-sequence-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-delta-sequence-1',
+              taskId: 'task-delta-sequence-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+          ],
+        ),
+        runtimeEventDeltaStream: runtimeEventDeltas.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final int runtimeSnapshotLoadsBeforeDelta =
+          bridge.loadChatRuntimeSnapshotCallCount;
+
+      runtimeEventDeltas.add(
+        const OpenCrayChatRuntimeEventDelta(
+          sessionId: 'session-1',
+          sequence: 1,
+          totalLength: 99,
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_call',
+              runId: 'run-delta-sequence-1',
+              taskId: 'task-delta-sequence-1',
+              emittedAtEpochMs: 1200,
+              toolName: 'Read',
+              argumentsJson: '{"file_path":"README.md"}',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        bridge.loadChatRuntimeSnapshotCallCount,
+        runtimeSnapshotLoadsBeforeDelta,
+      );
+      expect(find.text('Thinking'), findsNothing);
+      expect(
+        find.byKey(
+          const ValueKey<String>('chat-run-trace-run-delta-sequence-1'),
+        ),
+        findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets('runtime event deltas resync when sequence jumps', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final runtimeEventDeltas =
+        StreamController<OpenCrayChatRuntimeEventDelta>.broadcast();
+    addTearDown(runtimeEventDeltas.close);
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        updatedAtEpochMs: 1000,
+        messages: const <OpenCrayChatMessageSnapshot>[
+          OpenCrayChatMessageSnapshot(
+            kind: 'outbound',
+            text: 'Read the README.',
+            createdAtEpochMs: 1000,
+          ),
+          OpenCrayChatMessageSnapshot(
+            messageId: 'pending-delta-gap-1',
+            kind: 'inbound',
+            text: 'Thinking',
+            createdAtEpochMs: 1100,
+          ),
+        ],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        updatedAtEpochMs: 1100,
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-delta-gap-1',
+            taskId: 'task-delta-gap-1',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 1100,
+            attempt: 1,
+            pendingMessageId: 'pending-delta-gap-1',
+            isTerminal: false,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'lifecycle',
+            runId: 'run-delta-gap-1',
+            taskId: 'task-delta-gap-1',
+            emittedAtEpochMs: 1000,
+            phase: 'start',
+          ),
+        ],
+      ),
+      runtimeEventDeltaStream: runtimeEventDeltas.stream,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final int runtimeSnapshotLoadsBeforeDelta =
+        bridge.loadChatRuntimeSnapshotCallCount;
+
+    runtimeEventDeltas.add(
+      const OpenCrayChatRuntimeEventDelta(
+        sessionId: 'session-1',
+        sequence: 1,
+        totalLength: 2,
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'tool_call',
+            runId: 'run-delta-gap-1',
+            taskId: 'task-delta-gap-1',
+            emittedAtEpochMs: 1200,
+            toolName: 'Read',
+            argumentsJson: '{"file_path":"README.md"}',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    runtimeEventDeltas.add(
+      const OpenCrayChatRuntimeEventDelta(
+        sessionId: 'session-1',
+        sequence: 3,
+        totalLength: 3,
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'tool_result',
+            runId: 'run-delta-gap-1',
+            taskId: 'task-delta-gap-1',
+            emittedAtEpochMs: 1300,
+            toolName: 'Read',
+            contentPreview: 'README body loaded from disk.',
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      bridge.loadChatRuntimeSnapshotCallCount,
+      greaterThan(runtimeSnapshotLoadsBeforeDelta),
+    );
+  });
+
+  testWidgets(
+    'runtime event deltas create run traces without a runtime snapshot refresh',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeEventDeltas =
+          StreamController<OpenCrayChatRuntimeEventDelta>.broadcast();
+      addTearDown(runtimeEventDeltas.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          updatedAtEpochMs: 1000,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Read the README.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-delta-create-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 1100,
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+        runtimeEventDeltaStream: runtimeEventDeltas.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final int runtimeSnapshotLoadsBeforeDelta =
+          bridge.loadChatRuntimeSnapshotCallCount;
+
+      const runTraceFinder = ValueKey<String>(
+        'chat-run-trace-run-delta-create-1',
+      );
+      expect(find.byKey(runTraceFinder), findsNothing);
+
+      runtimeEventDeltas.add(
+        const OpenCrayChatRuntimeEventDelta(
+          sessionId: 'session-1',
+          totalLength: 1,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-delta-create-1',
+              taskId: 'task-delta-create-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1200,
+              attempt: 1,
+              pendingMessageId: 'pending-delta-create-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_call',
+              runId: 'run-delta-create-1',
+              taskId: 'task-delta-create-1',
+              emittedAtEpochMs: 1200,
+              toolName: 'Read',
+              argumentsJson: '{"file_path":"README.md"}',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        bridge.loadChatRuntimeSnapshotCallCount,
+        runtimeSnapshotLoadsBeforeDelta,
+      );
+      final runTrace = find.byKey(runTraceFinder);
+      expect(runTrace, findsOneWidget);
+      expect(find.text('Thinking'), findsNothing);
+      await _openRunTraceFullscreen(tester, runTrace);
+      final fullscreenFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-fullscreen-run-delta-create-1'),
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('README.md', findRichText: true),
+        ),
+        findsWidgets,
+      );
+    },
+  );
+
+  testWidgets(
+    'runtime event deltas update grouped inspector entries without a runtime snapshot refresh',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeEventDeltas =
+          StreamController<OpenCrayChatRuntimeEventDelta>.broadcast();
+      addTearDown(runtimeEventDeltas.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          updatedAtEpochMs: 1000,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Read the README.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-delta-grouped-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 1200,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-delta-grouped-1',
+              taskId: 'task-delta-grouped-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1200,
+              attempt: 1,
+              pendingMessageId: 'pending-delta-grouped-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-delta-grouped-1',
+              taskId: 'task-delta-grouped-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_call',
+              runId: 'run-delta-grouped-1',
+              taskId: 'task-delta-grouped-1',
+              emittedAtEpochMs: 1200,
+              toolName: 'Read',
+              argumentsJson: '{"file_path":"README.md"}',
+            ),
+          ],
+        ),
+        runtimeEventDeltaStream: runtimeEventDeltas.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final int runtimeSnapshotLoadsBeforeDelta =
+          bridge.loadChatRuntimeSnapshotCallCount;
+
+      final runTraceFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-delta-grouped-1'),
+      );
+      expect(runTraceFinder, findsOneWidget);
+      await _openRunTraceFullscreen(tester, runTraceFinder);
+      final fullscreenFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-fullscreen-run-delta-grouped-1'),
+      );
+
+      runtimeEventDeltas.add(
+        const OpenCrayChatRuntimeEventDelta(
+          sessionId: 'session-1',
+          totalLength: 3,
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-delta-grouped-1',
+              taskId: 'task-delta-grouped-1',
+              emittedAtEpochMs: 1300,
+              toolName: 'Read',
+              contentPreview: 'README body loaded from disk.',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        bridge.loadChatRuntimeSnapshotCallCount,
+        runtimeSnapshotLoadsBeforeDelta,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'README body loaded from disk.',
+            findRichText: true,
+          ),
+        ),
+        findsWidgets,
+      );
+    },
+  );
+
+  testWidgets(
     'live draft events keep projected process bubbles and terminal process status',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
@@ -2805,7 +3430,7 @@ void main() {
   );
 
   testWidgets(
-    'projected assistant phases stay anchored before the pending reply while runtime is ahead',
+    'projected assistant phases suppress competing live drafts while runtime is ahead',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
       final bridge = _FakeChatBridge(
@@ -2888,11 +3513,7 @@ void main() {
       );
 
       expect(phaseFinder, findsOneWidget);
-      expect(pendingFinder, findsOneWidget);
-      expect(
-        tester.getTopLeft(phaseFinder).dy,
-        lessThan(tester.getTopLeft(pendingFinder).dy),
-      );
+      expect(pendingFinder, findsNothing);
     },
   );
 
@@ -8749,11 +9370,13 @@ void main() {
 
     await tester.tap(find.byType(TextField));
     await tester.pump();
-    expect(FocusManager.instance.primaryFocus, isNotNull);
+    TextField composerField = tester.widget<TextField>(find.byType(TextField));
+    expect(composerField.focusNode?.hasFocus ?? false, isTrue);
 
     await tester.tapAt(const Offset(24, 24));
     await tester.pump();
-    expect(FocusManager.instance.primaryFocus, isNull);
+    composerField = tester.widget<TextField>(find.byType(TextField));
+    expect(composerField.focusNode?.hasFocus ?? false, isFalse);
   });
 
   testWidgets('session drawer shows unread dot and count badges', (
@@ -9415,6 +10038,122 @@ void main() {
       await tester.pump();
 
       expect(bridge.refreshSandboxSessionInfoCallCount, 1);
+    },
+  );
+
+  testWidgets(
+    'sandbox session auto refresh drains queued anchors after an in-flight refresh',
+    (tester) async {
+      final runtimeSnapshots =
+          StreamController<OpenCrayChatRuntimeSnapshot>.broadcast();
+      addTearDown(runtimeSnapshots.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-cloud-1',
+              taskId: 'task-cloud-1',
+              emittedAtEpochMs: 4200,
+              toolName: 'python_exec',
+              resultMetadata: <String, String>{'sandboxProvider': 'e2b'},
+            ),
+          ],
+        ),
+        runtimeSnapshotStream: runtimeSnapshots.stream,
+        sandboxSettings: const OpenCraySandboxSettingsSnapshot(
+          localeTag: 'en',
+          enabled: true,
+          providerId: 'e2b',
+          defaultBackend: 'sandbox',
+          sessionMode: 'ephemeral',
+          autoResume: false,
+          idleTimeoutMinutes: 15,
+          startupTimeoutMs: 30000,
+          requestTimeoutMs: 300000,
+          timeoutAction: 'kill',
+          templateId: '',
+          e2bApiKey: 'e2b_demo',
+          apiKeyConfigured: true,
+        ),
+      );
+      final firstRefreshCompleter = Completer<void>();
+      final secondRefreshCompleter = Completer<void>();
+      final thirdRefreshCompleter = Completer<void>();
+      bridge.refreshSandboxSessionInfoCompleter = firstRefreshCompleter;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(
+              copy: OpenCrayUiCopy.fromLocaleTag('en'),
+              bridge: bridge,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.pump(chatSandboxSessionAutoRefreshDebounce);
+      await tester.pump();
+
+      expect(bridge.refreshSandboxSessionInfoCallCount, 1);
+
+      runtimeSnapshots.add(
+        const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-cloud-2',
+              taskId: 'task-cloud-2',
+              emittedAtEpochMs: 4300,
+              toolName: 'python_exec',
+              resultMetadata: <String, String>{'sandboxProvider': 'e2b'},
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      runtimeSnapshots.add(
+        const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-cloud-3',
+              taskId: 'task-cloud-3',
+              emittedAtEpochMs: 4400,
+              toolName: 'python_exec',
+              resultMetadata: <String, String>{'sandboxProvider': 'e2b'},
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      bridge.refreshSandboxSessionInfoCompleter = secondRefreshCompleter;
+      firstRefreshCompleter.complete();
+      await tester.pump();
+      await tester.pump(chatSandboxSessionAutoRefreshDebounce);
+      await tester.pump();
+
+      expect(bridge.refreshSandboxSessionInfoCallCount, 2);
+
+      bridge.refreshSandboxSessionInfoCompleter = thirdRefreshCompleter;
+      secondRefreshCompleter.complete();
+      await tester.pump();
+      await tester.pump(chatSandboxSessionAutoRefreshDebounce);
+      await tester.pump();
+
+      expect(bridge.refreshSandboxSessionInfoCallCount, 3);
+
+      thirdRefreshCompleter.complete();
+      await tester.pumpAndSettle();
     },
   );
 
@@ -11111,6 +11850,7 @@ class _FakeChatBridge implements OpenCrayHostBridge {
     this.chatSnapshotStream,
     this.runtimeSnapshotStream,
     this.liveAssistantDraftEventStream,
+    this.runtimeEventDeltaStream,
     this.onRecallChatMessage,
     OpenCraySandboxSettingsSnapshot? sandboxSettings,
   }) : sandboxSettings =
@@ -11140,6 +11880,7 @@ class _FakeChatBridge implements OpenCrayHostBridge {
   final Stream<OpenCrayChatRuntimeSnapshot>? runtimeSnapshotStream;
   final Stream<OpenCrayChatLiveAssistantDraftEvent>?
   liveAssistantDraftEventStream;
+  final Stream<OpenCrayChatRuntimeEventDelta>? runtimeEventDeltaStream;
   final Future<void> Function(String sessionId, String messageId)?
   onRecallChatMessage;
   OpenCraySandboxSettingsSnapshot sandboxSettings;
@@ -11168,8 +11909,11 @@ class _FakeChatBridge implements OpenCrayHostBridge {
       <List<OpenCrayChatDraftAttachment>>[];
   final List<OpenCraySandboxSettingsSnapshot> savedSandboxSettings =
       <OpenCraySandboxSettingsSnapshot>[];
+  int loadChatSnapshotCallCount = 0;
+  int loadChatRuntimeSnapshotCallCount = 0;
   int refreshSandboxSessionInfoCallCount = 0;
   int resolveSandboxPreviewEmbedConfigCallCount = 0;
+  Completer<void>? refreshSandboxSessionInfoCompleter;
   Object? refreshSandboxSessionInfoError;
   Object? resolveSandboxPreviewEmbedConfigError;
   OpenCraySandboxPreviewEmbedConfig? sandboxPreviewEmbedConfig;
@@ -11229,15 +11973,20 @@ class _FakeChatBridge implements OpenCrayHostBridge {
   }
 
   @override
-  Future<OpenCrayChatSnapshot> loadChatSnapshot() async => chatSnapshot;
+  Future<OpenCrayChatSnapshot> loadChatSnapshot() async {
+    loadChatSnapshotCallCount += 1;
+    return chatSnapshot;
+  }
 
   @override
   Stream<OpenCrayChatSnapshot> watchChatSnapshot() =>
       chatSnapshotStream ?? Stream<OpenCrayChatSnapshot>.empty();
 
   @override
-  Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot() async =>
-      runtimeSnapshot;
+  Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot() async {
+    loadChatRuntimeSnapshotCallCount += 1;
+    return runtimeSnapshot;
+  }
 
   @override
   Future<OpenCraySandboxSettingsSnapshot> loadSandboxSettings() async =>
@@ -11314,6 +12063,10 @@ class _FakeChatBridge implements OpenCrayHostBridge {
   Stream<OpenCrayChatLiveAssistantDraftEvent> watchLiveAssistantDraftEvents() =>
       liveAssistantDraftEventStream ??
       Stream<OpenCrayChatLiveAssistantDraftEvent>.empty();
+
+  @override
+  Stream<OpenCrayChatRuntimeEventDelta> watchRuntimeEventDeltas() =>
+      runtimeEventDeltaStream ?? Stream<OpenCrayChatRuntimeEventDelta>.empty();
 
   @override
   Future<OpenCrayMemoryDebugSnapshot> loadMemoryDebugSnapshot() async =>
@@ -11441,6 +12194,10 @@ class _FakeChatBridge implements OpenCrayHostBridge {
   @override
   Future<void> refreshSandboxSessionInfo() async {
     refreshSandboxSessionInfoCallCount += 1;
+    final completer = refreshSandboxSessionInfoCompleter;
+    if (completer != null) {
+      await completer.future;
+    }
     final error = refreshSandboxSessionInfoError;
     if (error != null) {
       throw error;

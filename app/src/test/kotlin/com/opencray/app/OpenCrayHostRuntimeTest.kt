@@ -704,7 +704,9 @@ class OpenCrayHostRuntimeTest {
     )
     mainThreadPoster.flush()
 
-    val addedTodos = observedSnapshots.last()["todos"] as List<*>
+    val addedSnapshot = observedSnapshots.last()
+    assertEquals(null, addedSnapshot["runtimeActivity"])
+    val addedTodos = addedSnapshot["todos"] as List<*>
     val addedTodo = addedTodos.single() as Map<*, *>
     assertEquals("Review chat composer layout", addedTodo["content"])
     assertEquals("in_progress", addedTodo["status"])
@@ -735,7 +737,9 @@ class OpenCrayHostRuntimeTest {
     mainThreadPoster.flush()
     dispose()
 
-    val clearedTodos = observedSnapshots.last()["todos"] as List<*>
+    val clearedSnapshot = observedSnapshots.last()
+    assertEquals(null, clearedSnapshot["runtimeActivity"])
+    val clearedTodos = clearedSnapshot["todos"] as List<*>
     assertTrue(clearedTodos.isEmpty())
   }
 
@@ -3435,11 +3439,12 @@ class OpenCrayHostRuntimeTest {
     val snapshot = observedSnapshots.last()
     val messages = (snapshot["messages"] as List<*>).map { it as Map<*, *> }
     val summary = snapshot["summary"] as Map<*, *>
-    val runtimeActivity = snapshot["runtimeActivity"] as Map<*, *>
+    val runtimeActivity = hostRuntime.loadChatRuntimeSnapshot()
     val activeRuns = runtimeActivity["activeRuns"] as List<*>
 
     assertEquals("Settled final reply", messages.last()["text"])
     assertEquals("Local transcript is restored into the runtime window for each task.", summary["body"])
+    assertEquals(null, snapshot["runtimeActivity"])
     assertTrue(activeRuns.isEmpty())
   }
 
@@ -6055,11 +6060,8 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
-  fun recreatedHostsRestorePersistedLiveAssistantDraftsIntoRuntimeSnapshotAndInspectorHistory() {
-    val runtimeRoot = temporaryFolder.newFolder("runtime-journal-live-draft-recreation")
-    val firstFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
-    val secondFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
-    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-live-draft-recreation"))
+  fun assistantDraftUpdatesDoNotPersistRuntimeEventsIntoInspectorHistory() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-live-draft-runtime-events"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
     val manager = RecordingRuntimeManager()
     val handle = RecordingSessionHandle(
@@ -6067,13 +6069,12 @@ class OpenCrayHostRuntimeTest {
       onResume = manager.resumedSessionIds::add,
     )
     manager.putHandle(handle)
-    val firstHost = hostRuntime(
+    val hostRuntime = hostRuntime(
       chatStore = chatStore,
       runtimeManager = manager,
-      runEventJournalStoreFactory = firstFactory,
     )
 
-    val submission = firstHost.submitChatMessage("Stream a long answer")!!
+    val submission = hostRuntime.submitChatMessage("Stream a long answer")!!
     val task = handle.submittedTasks.single()
     manager.emitAssistantDraftUpdated(
       sessionId = activeSessionId,
@@ -6082,22 +6083,12 @@ class OpenCrayHostRuntimeTest {
       emittedAtEpochMs = 1_500L,
     )
 
-    val recreatedHost = hostRuntime(
-      chatStore = chatStore,
-      runtimeManager = manager,
-      runEventJournalStoreFactory = secondFactory,
-    )
-    val runtimeActivity = recreatedHost.loadChatRuntimeSnapshot()
+    val runtimeActivity = hostRuntime.loadChatRuntimeSnapshot()
     val liveDrafts = (runtimeActivity["liveAssistantDrafts"] as List<*>).map { draft ->
       draft as Map<*, *>
     }
     val events = (runtimeActivity["events"] as List<*>).map { event ->
       event as Map<*, *>
-    }
-    val draftEvent = events.single { event ->
-      event["kind"] == "assistant_phase" &&
-        event["stage"] == "Draft" &&
-        event["runId"] == submission["runId"]
     }
 
     assertEquals(1, liveDrafts.size)
@@ -6106,11 +6097,15 @@ class OpenCrayHostRuntimeTest {
       task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
       liveDrafts.single()["pendingMessageId"],
     )
-    assertEquals("Growing streamed answer", draftEvent["text"])
+    assertFalse(events.any { event ->
+      event["kind"] == "assistant_phase" &&
+        event["stage"] == "Draft" &&
+        event["runId"] == submission["runId"]
+    })
   }
 
   @Test
-  fun recreatedHostsDoNotRestoreAssistantDraftAfterPersistedClearMarker() {
+  fun recreatedHostsDoNotRestoreTransientAssistantDrafts() {
     val runtimeRoot = temporaryFolder.newFolder("runtime-journal-live-draft-clear-recreation")
     val firstFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
     val secondFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
@@ -6128,7 +6123,7 @@ class OpenCrayHostRuntimeTest {
       runEventJournalStoreFactory = firstFactory,
     )
 
-    val submission = firstHost.submitChatMessage("Stream a long answer")!!
+    firstHost.submitChatMessage("Stream a long answer")!!
     val task = handle.submittedTasks.single()
     manager.emitAssistantDraftUpdated(
       sessionId = activeSessionId,
@@ -6156,18 +6151,77 @@ class OpenCrayHostRuntimeTest {
     }
     val draftEvents = events.filter { event ->
       event["kind"] == "assistant_phase" &&
-        event["stage"] == "Draft" &&
-        event["runId"] == submission["runId"]
+        event["stage"] == "Draft"
     }
     val messages = (recreatedHost.loadChatSnapshot()["messages"] as List<*>).map { message ->
       message as Map<*, *>
     }
 
     assertTrue(liveDrafts.isEmpty())
-    assertEquals(2, draftEvents.size)
-    assertEquals("Transient streamed answer", draftEvents.first()["text"])
-    assertEquals("", draftEvents.last()["text"])
+    assertTrue(draftEvents.isEmpty())
     assertEquals("Thinking", messages.last()["text"])
+  }
+
+  @Test
+  fun runtimeEventDeltasEmitIncrementalEventsWithSequence() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-runtime-event-deltas"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(sessionId = activeSessionId)
+    manager.putHandle(handle)
+    val mainThreadPoster = QueuedMainThreadPoster()
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      mainThreadPoster = mainThreadPoster,
+    )
+    val observedDeltas = mutableListOf<Map<String, Any?>>()
+    val disposer = hostRuntime.observeRuntimeEventDeltas { payload ->
+      observedDeltas += payload
+    }
+    val observedChatSnapshots = mutableListOf<Map<String, Any?>>()
+    val chatDisposer = hostRuntime.observeChat { payload ->
+      observedChatSnapshots += payload
+    }
+    mainThreadPoster.flush()
+    observedChatSnapshots.clear()
+
+    try {
+      val submission = hostRuntime.submitChatMessage("Read the README")!!
+      mainThreadPoster.flush()
+      observedChatSnapshots.clear()
+      observedDeltas.clear()
+      val task = handle.submittedTasks.single()
+      manager.emitRunEvent(
+        sessionId = activeSessionId,
+        task = task,
+        event = OpenCrayToolCallEvent(
+          runId = submission["runId"] as String,
+          taskId = task.id,
+          turn = 0,
+          call = AgentToolCall(toolName = "Read"),
+          emittedAtEpochMs = 1_500L,
+        ),
+      )
+      mainThreadPoster.flush()
+
+      assertEquals(1, observedDeltas.size)
+      val delta = observedDeltas.single()
+      assertEquals(activeSessionId, delta["sessionId"])
+      assertTrue((delta["sequence"] as Long) >= 1L)
+      assertTrue(observedChatSnapshots.isEmpty())
+      val activeRuns = delta["activeRuns"] as List<*>
+      val activeRun = activeRuns.single() as Map<*, *>
+      assertEquals(submission["runId"], activeRun["runId"])
+      val events = delta["events"] as List<*>
+      val event = events.single() as Map<*, *>
+      assertEquals("tool_call", event["kind"])
+      assertEquals("Read", event["toolName"])
+      assertEquals(submission["runId"], event["runId"])
+    } finally {
+      disposer()
+      chatDisposer()
+    }
   }
 
   @Test
@@ -7639,7 +7693,7 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
-  fun observeChatRuntimeRefreshesManagedProcessSnapshotsWhenOwnerSummaryIsIdle() {
+  fun loadChatRuntimeSnapshotRefreshesManagedProcessSnapshotsWhenOwnerSummaryIsIdle() {
     val chatStore = ChatSessionLocalStore(
       temporaryFolder.newFolder("chat-store-runtime-live-process-refresh"),
     )
@@ -7655,16 +7709,10 @@ class OpenCrayHostRuntimeTest {
     val hostRuntime = hostRuntime(
       chatStore = chatStore,
       runtimeManager = manager,
-      liveChatRuntimeRefreshIntervalMs = 20L,
     )
-    val observedRuntimeSnapshots = mutableListOf<Map<String, Any?>>()
-    val disposeRuntime = hostRuntime.observeChatRuntime { snapshot ->
-      observedRuntimeSnapshots += snapshot
-    }
 
     val submission = hostRuntime.submitChatMessage("Start the dev server")!!
     val task = handle.submittedTasks.single()
-    observedRuntimeSnapshots.clear()
 
     handle.putManagedProcess(
       com.opencray.runtime.process.ManagedProcessSnapshot(
@@ -7682,8 +7730,8 @@ class OpenCrayHostRuntimeTest {
       ),
     )
 
-    val firstManagedProcess = waitForObservedManagedProcessSnapshot(
-      observedRuntimeSnapshots = observedRuntimeSnapshots,
+    val firstManagedProcess = managedProcessSnapshotForRun(
+      runtimeSnapshot = hostRuntime.loadChatRuntimeSnapshot(),
       runId = submission["runId"] as String,
     )
     assertEquals("proc-live", firstManagedProcess["processId"])
@@ -7712,8 +7760,8 @@ class OpenCrayHostRuntimeTest {
       ),
     )
 
-    val refreshedManagedProcess = waitForObservedManagedProcessSnapshot(
-      observedRuntimeSnapshots = observedRuntimeSnapshots,
+    val refreshedManagedProcess = managedProcessSnapshotForRun(
+      runtimeSnapshot = hostRuntime.loadChatRuntimeSnapshot(),
       runId = submission["runId"] as String,
       stdoutPreview = "compiled successfully",
     )
@@ -7728,8 +7776,6 @@ class OpenCrayHostRuntimeTest {
         "compiled successfully",
       ),
     )
-
-    disposeRuntime()
   }
 
   @Test
@@ -11008,7 +11054,6 @@ class OpenCrayHostRuntimeTest {
     },
     runtimeServiceConnectionChangeRegistrar: RuntimeServiceConnectionChangeRegistrar? = null,
     resumeActiveSessionOnInit: Boolean = true,
-    liveChatRuntimeRefreshIntervalMs: Long = 400L,
   ): OpenCrayHostRuntime = OpenCrayHostRuntime.createForTest(
     stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
     chatSessionStore = chatStore,
@@ -11056,7 +11101,6 @@ class OpenCrayHostRuntimeTest {
     runtimeServiceConnectionStateProvider = runtimeServiceConnectionStateProvider,
     runtimeServiceConnectionChangeRegistrar = runtimeServiceConnectionChangeRegistrar,
     resumeActiveSessionOnInit = resumeActiveSessionOnInit,
-    liveChatRuntimeRefreshIntervalMs = liveChatRuntimeRefreshIntervalMs,
     onDeviceLlmWarmupController = onDeviceLlmWarmupController,
     strings = HostRuntimeStrings(
       localeTag = "en",
@@ -11089,43 +11133,32 @@ class OpenCrayHostRuntimeTest {
     ),
   )
 
-  private fun waitForObservedManagedProcessSnapshot(
-    observedRuntimeSnapshots: List<Map<String, Any?>>,
+  private fun managedProcessSnapshotForRun(
+    runtimeSnapshot: Map<String, Any?>,
     runId: String,
     stdoutPreview: String? = null,
   ): Map<*, *> {
-    repeat(20) {
-      val managedProcess = observedRuntimeSnapshots
-        .asReversed()
-        .firstNotNullOfOrNull { snapshot ->
-          val activeRuns = snapshot["activeRuns"] as? List<*> ?: return@firstNotNullOfOrNull null
-          val activeRun = activeRuns
-            .mapNotNull { item -> item as? Map<*, *> }
-            .firstOrNull { run -> run["runId"] == runId }
-            ?: return@firstNotNullOfOrNull null
-          val managedProcess = (activeRun["managedProcesses"] as? List<*>)
-            .orEmpty()
-            .mapNotNull { item -> item as? Map<*, *> }
-            .firstOrNull()
-            ?: return@firstNotNullOfOrNull null
-          if (
-            stdoutPreview != null &&
-            !(managedProcess["stdoutPreview"] as? String).orEmpty().contains(
-              stdoutPreview,
-            )
-          ) {
-            return@firstNotNullOfOrNull null
-          }
-          managedProcess
-        }
-      if (managedProcess != null) {
-        return managedProcess
-      }
-      Thread.sleep(25L)
+    val activeRuns = runtimeSnapshot["activeRuns"] as? List<*> ?: emptyList<Any?>()
+    val activeRun = activeRuns
+      .mapNotNull { item -> item as? Map<*, *> }
+      .firstOrNull { run -> run["runId"] == runId }
+      ?: throw AssertionError("Missing active run $runId.")
+    val managedProcess = (activeRun["managedProcesses"] as? List<*>)
+      .orEmpty()
+      .mapNotNull { item -> item as? Map<*, *> }
+      .firstOrNull()
+      ?: throw AssertionError("Missing managed process for run $runId.")
+    if (
+      stdoutPreview != null &&
+      !(managedProcess["stdoutPreview"] as? String).orEmpty().contains(
+        stdoutPreview,
+      )
+    ) {
+      throw AssertionError(
+        "Managed process for run $runId did not contain stdoutPreview $stdoutPreview.",
+      )
     }
-    throw AssertionError(
-      "Timed out waiting for observed managed process snapshot for run $runId.",
-    )
+    return managedProcess
   }
 
   private object NoOpSettingsFacade : SettingsFacade {

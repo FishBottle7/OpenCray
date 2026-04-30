@@ -1537,6 +1537,10 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       const Stream<OpenCrayChatLiveAssistantDraftEvent>.empty();
 
   @override
+  Stream<OpenCrayChatRuntimeEventDelta> watchRuntimeEventDeltas() =>
+      const Stream<OpenCrayChatRuntimeEventDelta>.empty();
+
+  @override
   Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async =>
       null;
 

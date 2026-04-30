@@ -427,7 +427,17 @@ internal fun observeProjectionWithPollingSnapshot(
 ): () -> Unit {
   val lock = Any()
   var disposed = false
-  var latestPayload: Map<String, Any?>? = null
+  var latestPayload: Map<String, Any?>? = runCatching(payloadProvider).getOrNull()
+  latestPayload?.let { initialPayload ->
+    mainThreadPoster.post {
+      synchronized(lock) {
+        if (disposed) {
+          return@post
+        }
+      }
+      listener(initialPayload)
+    }
+  }
   val timer = Timer("projection-shell-gateway-observer", true)
   timer.scheduleAtFixedRate(
     object : TimerTask() {

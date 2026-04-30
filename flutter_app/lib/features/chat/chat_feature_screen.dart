@@ -38,6 +38,16 @@ class _TimedChatRunTraceHistoryEntry {
   final ChatRunTraceHistoryEntry entry;
 }
 
+class _RuntimeProjectionPatch {
+  const _RuntimeProjectionPatch({
+    required this.messages,
+    required this.runTraces,
+  });
+
+  final List<ChatMessageData> messages;
+  final List<ChatRunTraceData> runTraces;
+}
+
 @visibleForTesting
 OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshot(
   OpenCrayChatRuntimeSnapshot? embedded,
@@ -835,6 +845,15 @@ int _runtimeManagedProcessDetailWeight(
 
 @visibleForTesting
 int chatSnapshotVersion(OpenCrayChatSnapshot snapshot) {
+  final int contentVersion = chatContentSnapshotVersion(snapshot);
+  final int runtimeVersion = snapshot.runtimeActivity == null
+      ? 0
+      : runtimeSnapshotVersion(snapshot.runtimeActivity!);
+  return math.max(contentVersion, runtimeVersion);
+}
+
+@visibleForTesting
+int chatContentSnapshotVersion(OpenCrayChatSnapshot snapshot) {
   final int latestMessageEpochMs = snapshot.messages.fold<int>(0, (
     latest,
     message,
@@ -842,15 +861,7 @@ int chatSnapshotVersion(OpenCrayChatSnapshot snapshot) {
     final int messageEpochMs = message.createdAtEpochMs ?? 0;
     return latest > messageEpochMs ? latest : messageEpochMs;
   });
-  final int runtimeVersion = snapshot.runtimeActivity == null
-      ? 0
-      : runtimeSnapshotVersion(snapshot.runtimeActivity!);
-  return math.max(
-    snapshot.updatedAtEpochMs,
-    latestMessageEpochMs > runtimeVersion
-        ? latestMessageEpochMs
-        : runtimeVersion,
-  );
+  return math.max(snapshot.updatedAtEpochMs, latestMessageEpochMs);
 }
 
 @visibleForTesting
@@ -861,8 +872,13 @@ bool shouldReplaceObservedChatSnapshot(
   if (current == null) {
     return true;
   }
-  final int currentVersion = chatSnapshotVersion(current);
-  final int incomingVersion = chatSnapshotVersion(incoming);
+  final bool incomingIsChatOnly = incoming.runtimeActivity == null;
+  final int currentVersion = incomingIsChatOnly
+      ? chatContentSnapshotVersion(current)
+      : chatSnapshotVersion(current);
+  final int incomingVersion = incomingIsChatOnly
+      ? chatContentSnapshotVersion(incoming)
+      : chatSnapshotVersion(incoming);
   if (incomingVersion != currentVersion) {
     return incomingVersion > currentVersion;
   }
@@ -1869,11 +1885,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   StreamSubscription<OpenCrayChatRuntimeSnapshot>? _chatRuntimeSubscription;
   StreamSubscription<OpenCrayChatLiveAssistantDraftEvent>?
   _liveAssistantDraftSubscription;
+  StreamSubscription<OpenCrayChatRuntimeEventDelta>?
+  _runtimeEventDeltaSubscription;
   OpenCrayChatSnapshot? _latestChatSnapshot;
   OpenCrayChatRuntimeSnapshot? _latestChatRuntimeSnapshot;
   final Map<String, Map<String, OpenCrayChatLiveAssistantDraftSnapshot>>
   _liveAssistantDraftOverridesBySession =
       <String, Map<String, OpenCrayChatLiveAssistantDraftSnapshot>>{};
+  final Map<String, int> _runtimeEventDeltaSequenceBySession = <String, int>{};
+  bool _runtimeEventDeltaResyncInFlight = false;
   final Set<String> _approvalTaskIdsInFlight = <String>{};
   final Set<String> _interruptRunIdsInFlight = <String>{};
   final Set<String> _retryRunIdsInFlight = <String>{};
@@ -1889,7 +1909,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   String? _hiddenArchivedTodoFingerprint;
   String? _scheduledTodoArchiveFingerprint;
   String? _scheduledSandboxSessionRefreshAnchor;
-  String? _queuedSandboxSessionRefreshAnchor;
+  final List<String> _queuedSandboxSessionRefreshAnchors = <String>[];
   String? _lastSandboxSessionRefreshAnchor;
   String? _scheduledSandboxSessionLifecycleRefreshKey;
   bool _queuedSandboxSessionLifecycleRefresh = false;
@@ -1975,6 +1995,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       _liveAssistantDraftSubscription = bridge
           .watchLiveAssistantDraftEvents()
           .listen(_handleLiveAssistantDraftEvent);
+      _runtimeEventDeltaSubscription = bridge.watchRuntimeEventDeltas().listen(
+        _handleRuntimeEventDelta,
+      );
     }
   }
 
@@ -2008,6 +2031,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _chatSubscription?.cancel();
     _chatRuntimeSubscription?.cancel();
     _liveAssistantDraftSubscription?.cancel();
+    _runtimeEventDeltaSubscription?.cancel();
     _todoArchiveHideTimer?.cancel();
     _sandboxSessionAutoRefreshTimer?.cancel();
     _sandboxSessionLifecycleRefreshTimer?.cancel();
@@ -3275,7 +3299,100 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     );
     _reconcileLiveAssistantDraftOverrides(resolvedSnapshot);
     _latestChatRuntimeSnapshot = resolvedSnapshot;
+    final String resolvedSessionId = resolvedSnapshot.sessionId.trim();
+    if (resolvedSessionId.isNotEmpty) {
+      _runtimeEventDeltaSequenceBySession.remove(resolvedSessionId);
+    }
     _applyHostState();
+  }
+
+  void _handleRuntimeEventDelta(OpenCrayChatRuntimeEventDelta delta) {
+    if (!mounted ||
+        _latestChatSnapshot == null ||
+        !delta.hasRuntimeActivityPatch ||
+        _runtimeEventDeltaResyncInFlight) {
+      return;
+    }
+    final String sessionId = delta.sessionId.trim();
+    if (sessionId.isEmpty || sessionId != _activeSessionId) {
+      return;
+    }
+    final int previousSequence =
+        _runtimeEventDeltaSequenceBySession[sessionId] ?? 0;
+    if (previousSequence > 0 &&
+        delta.sequence > 0 &&
+        delta.sequence != previousSequence + 1) {
+      _resyncRuntimeSnapshotAfterDeltaMiss();
+      return;
+    }
+    final OpenCrayChatRuntimeSnapshot? currentSnapshot =
+        _latestChatRuntimeSnapshot?.sessionId.trim() == sessionId
+        ? _latestChatRuntimeSnapshot
+        : _latestChatSnapshot?.runtimeActivity?.sessionId.trim() == sessionId
+        ? _latestChatSnapshot?.runtimeActivity
+        : null;
+    if (currentSnapshot == null &&
+        delta.activeRuns.isEmpty &&
+        delta.retainedRuns.isEmpty) {
+      _resyncRuntimeSnapshotAfterDeltaMiss();
+      return;
+    }
+    final int latestDeltaEpochMs = delta.events.fold<int>(
+      0,
+      (latest, event) => math.max(latest, event.emittedAtEpochMs),
+    );
+    final OpenCrayChatRuntimeSnapshot deltaSnapshot =
+        OpenCrayChatRuntimeSnapshot(
+          sessionId: sessionId,
+          activeRuns: delta.activeRuns,
+          retainedRuns: delta.retainedRuns,
+          subAgents: delta.subAgents,
+          events: delta.events,
+          liveAssistantDrafts: delta.liveAssistantDrafts,
+          hostLifecycle: delta.hostLifecycle,
+          updatedAtEpochMs: math.max(
+            delta.updatedAtEpochMs,
+            latestDeltaEpochMs,
+          ),
+        );
+    final OpenCrayChatRuntimeSnapshot patchedSnapshot = currentSnapshot == null
+        ? deltaSnapshot
+        : _mergeRuntimeSnapshots(currentSnapshot, deltaSnapshot);
+    if (!shouldReplaceObservedRuntimeSnapshot(
+      currentSnapshot,
+      patchedSnapshot,
+    )) {
+      if (delta.sequence > 0) {
+        _runtimeEventDeltaSequenceBySession[sessionId] = delta.sequence;
+      }
+      return;
+    }
+    _latestChatRuntimeSnapshot = patchedSnapshot;
+    if (delta.sequence > 0) {
+      _runtimeEventDeltaSequenceBySession[sessionId] = delta.sequence;
+    }
+    _applyRuntimeActivityPatch(patchedSnapshot);
+  }
+
+  Future<void> _resyncRuntimeSnapshotAfterDeltaMiss() async {
+    if (_runtimeEventDeltaResyncInFlight) {
+      return;
+    }
+    final OpenCrayHostBridge? bridge = widget.bridge;
+    if (bridge == null) {
+      return;
+    }
+    _runtimeEventDeltaResyncInFlight = true;
+    try {
+      final OpenCrayChatRuntimeSnapshot snapshot = await bridge
+          .loadChatRuntimeSnapshot();
+      if (!mounted) {
+        return;
+      }
+      _handleChatRuntimeSnapshot(snapshot);
+    } finally {
+      _runtimeEventDeltaResyncInFlight = false;
+    }
   }
 
   void _handleLiveAssistantDraftEvent(
@@ -3289,18 +3406,17 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (sessionId.isEmpty || sessionId != _activeSessionId) {
       return;
     }
+    final OpenCrayChatRuntimeSnapshot? runtimeSnapshot =
+        _latestChatRuntimeSnapshot ?? _latestChatSnapshot?.runtimeActivity;
     final String? visibleText = event.cleared
         ? null
-        : _visibleAssistantDraftText(event.text);
-    if (!event.cleared) {
-      final List<ChatMessageData> previousMessages = _state.messages;
-      _applyHostState();
-      if (!chatMessagesEquivalent(previousMessages, _state.messages) &&
-          visibleText != null) {
-        _scheduleScrollToBottom(animated: false);
-      }
-      return;
-    }
+        : _shouldDisplayLiveAssistantDraft(
+            runId: event.runId,
+            taskId: event.taskId,
+            runtimeSnapshot: runtimeSnapshot,
+          )
+        ? _visibleAssistantDraftText(event.text)
+        : null;
     final List<ChatMessageData> nextMessages = _patchMessagesForLiveDraftEvent(
       messages: _state.messages,
       pendingMessageId: event.pendingMessageId,
@@ -3605,11 +3721,70 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _syncSandboxSessionLifecycleAutoRefresh();
   }
 
+  void _applyRuntimeActivityPatch(OpenCrayChatRuntimeSnapshot runtimeSnapshot) {
+    if (!mounted) {
+      return;
+    }
+    final OpenCrayChatSnapshot? snapshot = _latestChatSnapshot;
+    if (snapshot == null) {
+      return;
+    }
+    final OpenCrayChatRuntimeSnapshot? effectiveRuntime =
+        _resolveRuntimeSnapshot(
+          expectedSessionId: _snapshotActiveSessionId(snapshot),
+          embedded: snapshot.runtimeActivity,
+          streamed: runtimeSnapshot,
+        );
+    final _RuntimeProjectionPatch runtimeProjection = _mapRuntimeProjection(
+      snapshot,
+      effectiveRuntime,
+    );
+    final ChatFeatureState nextState = _state.copyWith(
+      variant:
+          runtimeProjection.messages.isEmpty &&
+              runtimeProjection.runTraces.isEmpty &&
+              _state.composer.todos.isEmpty &&
+              _state.pendingApprovals.isEmpty
+          ? ChatPrototypeVariant.empty
+          : ChatPrototypeVariant.main,
+      messages: runtimeProjection.messages,
+      runTraces: runtimeProjection.runTraces,
+      emptyThreadHeight:
+          runtimeProjection.messages.isEmpty &&
+              runtimeProjection.runTraces.isEmpty
+          ? 260
+          : 0,
+    );
+    final bool shouldScrollToBottom =
+        nextState.messages.length > _state.messages.length ||
+        nextState.runTraces.length > _state.runTraces.length;
+    final Set<String> retainedSelection = _selectedMessageIds
+        .where(
+          (messageId) => nextState.messages.any(
+            (message) => message.messageId == messageId,
+          ),
+        )
+        .toSet();
+    // Runtime deltas must propagate fresh trace objects to any open inspector,
+    // even when the visible projection is structurally equivalent.
+    setState(() {
+      _state = nextState;
+      _selectedMessageIds
+        ..clear()
+        ..addAll(retainedSelection);
+    });
+    if (shouldScrollToBottom) {
+      _scheduleScrollToBottom();
+    }
+    _syncSandboxSessionAutoRefresh();
+    _syncSandboxSessionLifecycleAutoRefresh();
+  }
+
   void _cancelScheduledSandboxSessionAutoRefresh() {
     _sandboxSessionAutoRefreshTimer?.cancel();
     _sandboxSessionAutoRefreshTimer = null;
     _scheduledSandboxSessionRefreshAnchor = null;
-    _queuedSandboxSessionRefreshAnchor = null;
+    _queuedSandboxSessionRefreshAnchors.clear();
   }
 
   void _cancelScheduledSandboxSessionLifecycleRefresh() {
@@ -3648,7 +3823,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return;
     }
     if (_sandboxSessionRefreshInFlight) {
-      _queuedSandboxSessionRefreshAnchor = anchor;
+      _enqueueSandboxSessionRefreshAnchor(anchor);
       return;
     }
     _scheduleSandboxSessionAutoRefresh(anchor);
@@ -3723,13 +3898,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       _lastSandboxSessionRefreshAnchor = anchor;
     } catch (_) {
       _lastSandboxSessionRefreshAnchor = anchor;
-      if (_queuedSandboxSessionRefreshAnchor == anchor) {
-        _queuedSandboxSessionRefreshAnchor = null;
-      }
     } finally {
       _sandboxSessionRefreshInFlight = false;
-      final String? queuedAnchor = _queuedSandboxSessionRefreshAnchor;
-      _queuedSandboxSessionRefreshAnchor = null;
+      final String? queuedAnchor = _dequeueSandboxSessionRefreshAnchor();
       final bool canContinue = mounted;
       final bool shouldScheduleQueuedAnchor =
           canContinue &&
@@ -3746,6 +3917,28 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         _syncSandboxSessionLifecycleAutoRefresh();
       }
     }
+  }
+
+  void _enqueueSandboxSessionRefreshAnchor(String anchor) {
+    final String normalizedAnchor = anchor.trim();
+    if (normalizedAnchor.isEmpty ||
+        normalizedAnchor == _scheduledSandboxSessionRefreshAnchor ||
+        normalizedAnchor == _lastSandboxSessionRefreshAnchor ||
+        _queuedSandboxSessionRefreshAnchors.contains(normalizedAnchor)) {
+      return;
+    }
+    _queuedSandboxSessionRefreshAnchors.add(normalizedAnchor);
+  }
+
+  String? _dequeueSandboxSessionRefreshAnchor() {
+    while (_queuedSandboxSessionRefreshAnchors.isNotEmpty) {
+      final String anchor = _queuedSandboxSessionRefreshAnchors.removeAt(0);
+      if (anchor == _lastSandboxSessionRefreshAnchor) {
+        continue;
+      }
+      return anchor;
+    }
+    return null;
   }
 
   Future<void> _runSandboxSessionLifecycleRefresh() async {
@@ -4480,48 +4673,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           embedded: snapshot.runtimeActivity,
           streamed: runtimeSnapshot,
         );
-    final List<ChatRunTraceData> runTraces = _mapRunTraces(
+    final _RuntimeProjectionPatch runtimeProjection = _mapRuntimeProjection(
+      snapshot,
       effectiveRuntime,
-      snapshot.pendingApprovals,
     );
-    final Map<String, String> liveDraftTextByMessageId =
-        effectiveRuntime == null
-        ? const <String, String>{}
-        : <String, String>{
-            for (final draft in effectiveRuntime.liveAssistantDrafts)
-              if (draft.pendingMessageId.trim().isNotEmpty &&
-                  _visibleAssistantDraftText(draft.text) != null)
-                draft.pendingMessageId.trim(): _visibleAssistantDraftText(
-                  draft.text,
-                )!,
-          };
-    final List<ChatMessageData> anchoredMessages = _mapMessages(
-      snapshot.messages,
-      hideThinkingPlaceholder: false,
-      draftTextByMessageId: liveDraftTextByMessageId,
-    );
-    final Set<String> existingMessageIds = anchoredMessages
-        .map((message) => message.messageId.trim())
-        .where((messageId) => messageId.isNotEmpty)
-        .toSet();
-    final List<ChatMessageData> projectedLiveDraftMessages =
-        _mapUnanchoredLiveDraftMessages(effectiveRuntime, existingMessageIds);
-    final List<ChatMessageData> anchoredVisibleMessages = <ChatMessageData>[
-      ...anchoredMessages,
-      ...projectedLiveDraftMessages,
-    ];
     final List<ChatTodoItemData> visibleTodos = _mapVisibleTodos(snapshot);
-    final List<ChatMessageData> messages = _trimHiddenThinkingPlaceholder(
-      _mergeProjectedAssistantPhaseMessages(
-        messages: anchoredVisibleMessages,
-        runtimeSnapshot: effectiveRuntime,
-      ),
-      hideThinkingPlaceholder: runTraces.isNotEmpty,
-    );
     return ChatFeatureState(
       variant:
-          messages.isEmpty &&
-              runTraces.isEmpty &&
+          runtimeProjection.messages.isEmpty &&
+              runtimeProjection.runTraces.isEmpty &&
               visibleTodos.isEmpty &&
               snapshot.pendingApprovals.isEmpty
           ? ChatPrototypeVariant.empty
@@ -4532,8 +4692,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         badge: snapshot.summary.badge,
         body: snapshot.summary.body,
       ),
-      messages: messages,
-      runTraces: runTraces,
+      messages: runtimeProjection.messages,
+      runTraces: runtimeProjection.runTraces,
       composer: ChatComposerState(
         placeholder: snapshot.composerPlaceholder,
         todos: visibleTodos,
@@ -4585,9 +4745,72 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           .toList(growable: false),
       modeLabel: snapshot.modeLabel,
       sessionButtonLabel: snapshot.sessionButtonLabel,
-      emptyThreadHeight: messages.isEmpty && runTraces.isEmpty ? 260 : 0,
+      emptyThreadHeight:
+          runtimeProjection.messages.isEmpty &&
+              runtimeProjection.runTraces.isEmpty
+          ? 260
+          : 0,
       isInputEnabled: snapshot.isInputEnabled,
     );
+  }
+
+  _RuntimeProjectionPatch _mapRuntimeProjection(
+    OpenCrayChatSnapshot snapshot,
+    OpenCrayChatRuntimeSnapshot? effectiveRuntime,
+  ) {
+    final List<ChatRunTraceData> runTraces = _mapRunTraces(
+      effectiveRuntime,
+      snapshot.pendingApprovals,
+    );
+    final Map<String, String> liveDraftTextByMessageId =
+        _liveDraftTextByMessageId(effectiveRuntime);
+    final List<ChatMessageData> anchoredMessages = _mapMessages(
+      snapshot.messages,
+      hideThinkingPlaceholder: false,
+      draftTextByMessageId: liveDraftTextByMessageId,
+    );
+    final Set<String> existingMessageIds = anchoredMessages
+        .map((message) => message.messageId.trim())
+        .where((messageId) => messageId.isNotEmpty)
+        .toSet();
+    final List<ChatMessageData> projectedLiveDraftMessages =
+        _mapUnanchoredLiveDraftMessages(effectiveRuntime, existingMessageIds);
+    final List<ChatMessageData> anchoredVisibleMessages = <ChatMessageData>[
+      ...anchoredMessages,
+      ...projectedLiveDraftMessages,
+    ];
+    final List<ChatMessageData> messages = _trimHiddenThinkingPlaceholder(
+      _mergeProjectedAssistantPhaseMessages(
+        messages: anchoredVisibleMessages,
+        runtimeSnapshot: effectiveRuntime,
+      ),
+      hideThinkingPlaceholder: runTraces.isNotEmpty,
+    );
+    return _RuntimeProjectionPatch(messages: messages, runTraces: runTraces);
+  }
+
+  Map<String, String> _liveDraftTextByMessageId(
+    OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
+  ) {
+    if (runtimeSnapshot == null) {
+      return const <String, String>{};
+    }
+    final Map<String, String> visibleDrafts = <String, String>{};
+    for (final draft in runtimeSnapshot.liveAssistantDrafts) {
+      final String pendingMessageId = draft.pendingMessageId.trim();
+      final String? visibleDraftText = _visibleAssistantDraftText(draft.text);
+      if (pendingMessageId.isEmpty ||
+          visibleDraftText == null ||
+          !_shouldDisplayLiveAssistantDraft(
+            runId: draft.runId,
+            taskId: draft.taskId,
+            runtimeSnapshot: runtimeSnapshot,
+          )) {
+        continue;
+      }
+      visibleDrafts[pendingMessageId] = visibleDraftText;
+    }
+    return visibleDrafts;
   }
 
   List<ChatMessageData> _mapMessages(
@@ -5092,7 +5315,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     for (final draft in sortedDrafts) {
       final String messageId = draft.pendingMessageId.trim();
       final String text = _visibleAssistantDraftText(draft.text) ?? '';
-      if (messageId.isEmpty || text.isEmpty || !seenMessageIds.add(messageId)) {
+      if (messageId.isEmpty ||
+          text.isEmpty ||
+          !_shouldDisplayLiveAssistantDraft(
+            runId: draft.runId,
+            taskId: draft.taskId,
+            runtimeSnapshot: runtimeSnapshot,
+          ) ||
+          !seenMessageIds.add(messageId)) {
         continue;
       }
       projected.add(
@@ -5105,6 +5335,45 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       );
     }
     return projected;
+  }
+
+  bool _shouldDisplayLiveAssistantDraft({
+    required String runId,
+    required String taskId,
+    required OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
+  }) {
+    if (runtimeSnapshot == null) {
+      return true;
+    }
+    final String normalizedRunId = runId.trim();
+    final String normalizedTaskId = taskId.trim();
+    if (normalizedRunId.isEmpty && normalizedTaskId.isEmpty) {
+      return true;
+    }
+    OpenCrayChatRunSnapshot? matchedRun;
+    for (final run in _visibleRuns(runtimeSnapshot)) {
+      if (normalizedRunId.isNotEmpty && run.runId.trim() == normalizedRunId) {
+        matchedRun = run;
+        break;
+      }
+      if (normalizedTaskId.isNotEmpty &&
+          run.taskId.trim() == normalizedTaskId) {
+        matchedRun = run;
+        break;
+      }
+    }
+    if (matchedRun == null) {
+      return true;
+    }
+    final OpenCrayChatRuntimeEventSnapshot? latestEvent = _latestRunTraceEvent(
+      _runEventsFor(run: matchedRun, runtimeSnapshot: runtimeSnapshot),
+    );
+    if (latestEvent == null) {
+      return true;
+    }
+    return latestEvent.kind != 'assistant_phase' ||
+        latestEvent.isFinal == true ||
+        _hideAssistantPhaseBubble(latestEvent);
   }
 
   bool _hideAssistantPhaseBubble(OpenCrayChatRuntimeEventSnapshot event) {
@@ -5155,7 +5424,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           runEvents: runEvents,
         );
     final OpenCrayChatRuntimeEventSnapshot? event = _effectiveRunTraceEvent(
-      lastEvent: run.lastEvent,
+      lastEvent: _latestRunTraceEvent(runEvents) ?? run.lastEvent,
       durableSubAgentEvents: durableSubAgentEvents,
     );
     final OpenCrayChatPendingApprovalSnapshot? pendingApproval =
@@ -6675,6 +6944,19 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     ..sort(
       (left, right) => left.emittedAtEpochMs.compareTo(right.emittedAtEpochMs),
     );
+
+  OpenCrayChatRuntimeEventSnapshot? _latestRunTraceEvent(
+    List<OpenCrayChatRuntimeEventSnapshot> runEvents,
+  ) {
+    for (int index = runEvents.length - 1; index >= 0; index -= 1) {
+      final OpenCrayChatRuntimeEventSnapshot event = runEvents[index];
+      if (event.kind == 'assistant_phase' && _hideAssistantPhaseBubble(event)) {
+        continue;
+      }
+      return event;
+    }
+    return null;
+  }
 
   ChatRunTracePreviewCardData? _latestRunTracePreviewCard(
     List<OpenCrayChatRuntimeEventSnapshot> runEvents,
@@ -16533,6 +16815,9 @@ class _InputRow extends StatelessWidget {
                                 controller: controller,
                                 focusNode: focusNode,
                                 enabled: enabled,
+                                onTapOutside: enabled
+                                    ? (_) => focusNode.unfocus()
+                                    : null,
                                 minLines: 1,
                                 maxLines: 4,
                                 textAlignVertical: TextAlignVertical.center,

@@ -336,6 +336,8 @@ abstract interface class OpenCrayHostBridge {
 
   Stream<OpenCrayChatLiveAssistantDraftEvent> watchLiveAssistantDraftEvents();
 
+  Stream<OpenCrayChatRuntimeEventDelta> watchRuntimeEventDeltas();
+
   Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId);
 
   Future<OpenCrayMemoryDebugSnapshot> loadMemoryDebugSnapshot();

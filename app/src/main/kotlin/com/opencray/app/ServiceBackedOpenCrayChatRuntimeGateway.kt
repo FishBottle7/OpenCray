@@ -25,6 +25,12 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
       listener = listener,
     )
 
+  override fun observeRuntimeEventDeltas(listener: (Map<String, Any?>) -> Unit): () -> Unit =
+    observeWithStickyRuntimeGateway(
+      observe = { gateway, callback -> gateway.observeRuntimeEventDeltas(callback) },
+      listener = listener,
+    )
+
   override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? =
     currentLoadGateway().loadChatRunSnapshot(runId)
 

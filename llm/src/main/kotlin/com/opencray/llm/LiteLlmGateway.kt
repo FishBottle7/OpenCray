@@ -391,6 +391,11 @@ data class LiteLlmStructuredCompletion(
   val toolCalls: List<LiteLlmStructuredToolCall> = emptyList(),
   val finalText: String? = null,
   val commentaryText: String? = null,
+  val commentaryTexts: List<String> = commentaryText
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?.let(::listOf)
+    ?: emptyList(),
   val reasoningText: String? = null,
   val rawText: String? = null,
   val toolCallErrors: List<String> = emptyList(),
@@ -398,6 +403,7 @@ data class LiteLlmStructuredCompletion(
   val hasStructuredActions: Boolean
     get() = toolCalls.isNotEmpty() ||
       !finalText.isNullOrBlank() ||
+      commentaryTexts.any(String::isNotBlank) ||
       !commentaryText.isNullOrBlank()
 
   val hasRecoverableDiagnostics: Boolean

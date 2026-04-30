@@ -11,6 +11,8 @@ internal interface OpenCrayChatRuntimeGateway {
 
   fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit
 
+  fun observeRuntimeEventDeltas(listener: (Map<String, Any?>) -> Unit): () -> Unit = {}
+
   fun loadChatRunSnapshot(runId: String): Map<String, Any?>?
 
   fun waitForChatRun(
