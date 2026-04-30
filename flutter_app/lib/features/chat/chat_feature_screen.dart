@@ -9978,7 +9978,7 @@ class _ChatScrollContent extends StatelessWidget {
       children: <Widget>[
         Text(state.screenTitle, style: _ChatTextStyles.pageTitle),
         const SizedBox(height: 20),
-        _SummaryCard(summary: state.summary),
+        _SummaryCard(copy: copy, summary: state.summary, bridge: bridge),
         const SizedBox(height: 20),
         if (state.messages.isEmpty &&
             state.runTraces.isEmpty &&
@@ -10414,9 +10414,15 @@ class _ChatSelectionActionButton extends StatelessWidget {
 }
 
 class _SummaryCard extends StatelessWidget {
-  const _SummaryCard({required this.summary});
+  const _SummaryCard({
+    required this.copy,
+    required this.summary,
+    this.bridge,
+  });
 
+  final OpenCrayUiCopy copy;
   final ChatSessionSummary summary;
+  final OpenCrayHostBridge? bridge;
 
   @override
   Widget build(BuildContext context) {
@@ -10440,7 +10446,13 @@ class _SummaryCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 8),
-            Text(summary.body, style: _ChatTextStyles.bodyMuted),
+            _OpenCrayMarkdownTextBlock(
+              copy: copy,
+              data: summary.body,
+              bodyStyle: _ChatTextStyles.bodyMuted,
+              surfaceColor: Colors.white,
+              bridge: bridge,
+            ),
           ],
         ),
       ),
@@ -11780,6 +11792,7 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
                       copy: widget.copy,
                       runId: trace.runId,
                       session: sessionCard,
+                      bridge: widget.bridge,
                     ),
                   ],
                   if (previewCard != null) ...<Widget>[
@@ -11888,14 +11901,18 @@ class _RunTracePreviewCard extends StatelessWidget {
               ),
             ],
             const SizedBox(height: 10),
-            Text(
-              preview.url,
+            KeyedSubtree(
               key: ValueKey<String>('$keyNamespace-url-$runId'),
-              maxLines: expanded ? null : 3,
-              overflow: expanded ? null : TextOverflow.ellipsis,
-              style: _ChatTextStyles.runTraceDetailValue.copyWith(
-                color: _ChatPalette.runTraceUrlText,
-                fontWeight: FontWeight.w600,
+              child: _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: preview.url,
+                bodyStyle: _ChatTextStyles.runTraceDetailValue.copyWith(
+                  color: _ChatPalette.runTraceUrlText,
+                  fontWeight: FontWeight.w600,
+                ),
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
+                preferAccentForStrong: true,
               ),
             ),
             if (detailParts.isNotEmpty) ...<Widget>[
@@ -11920,11 +11937,12 @@ class _RunTracePreviewCard extends StatelessWidget {
             ],
             if (preview.message?.trim().isNotEmpty == true) ...<Widget>[
               const SizedBox(height: 8),
-              Text(
-                preview.message!.trim(),
-                maxLines: expanded ? null : 3,
-                overflow: expanded ? null : TextOverflow.ellipsis,
-                style: _ChatTextStyles.bodyMuted,
+              _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: preview.message!.trim(),
+                bodyStyle: _ChatTextStyles.bodyMuted,
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
               ),
             ],
             const SizedBox(height: 10),
@@ -12148,6 +12166,7 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
     required this.copy,
     required this.runId,
     required this.session,
+    this.bridge,
     this.expanded = false,
     this.keyNamespace = 'chat-run-trace-session',
   });
@@ -12155,6 +12174,7 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
   final OpenCrayUiCopy copy;
   final String runId;
   final ChatRunTraceSandboxSessionCardData session;
+  final OpenCrayHostBridge? bridge;
   final bool expanded;
   final String keyNamespace;
 
@@ -12243,27 +12263,33 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 10),
-            Text(
-              summary,
+            KeyedSubtree(
               key: ValueKey<String>('$keyNamespace-summary-$runId'),
-              maxLines: expanded ? null : 3,
-              overflow: expanded ? null : TextOverflow.ellipsis,
-              style: _ChatTextStyles.runTraceDetailValue.copyWith(
-                color: session.sessionPresent
-                    ? _ChatPalette.textPrimary
-                    : _ChatPalette.textSecondary,
-                fontWeight: FontWeight.w600,
+              child: _OpenCrayMarkdownTextBlock(
+                key: ValueKey<String>('$keyNamespace-summary-markdown-$runId'),
+                copy: copy,
+                data: summary,
+                bodyStyle: _ChatTextStyles.runTraceDetailValue.copyWith(
+                  color: session.sessionPresent
+                      ? _ChatPalette.textPrimary
+                      : _ChatPalette.textSecondary,
+                  fontWeight: FontWeight.w600,
+                ),
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
+                preferAccentForStrong: true,
               ),
             ),
             if (subtitle != null) ...<Widget>[
               const SizedBox(height: 8),
-              Text(
-                subtitle,
-                maxLines: expanded ? null : 2,
-                overflow: expanded ? null : TextOverflow.ellipsis,
-                style: _ChatTextStyles.runTraceFooter.copyWith(
+              _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: subtitle,
+                bodyStyle: _ChatTextStyles.runTraceFooter.copyWith(
                   color: _ChatPalette.textSecondary,
                 ),
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
               ),
             ],
             if (detailParts.isNotEmpty) ...<Widget>[
@@ -12288,38 +12314,42 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
             ],
             if (updatedLabel != null) ...<Widget>[
               const SizedBox(height: 8),
-              Text(
-                updatedLabel,
-                maxLines: expanded ? null : 2,
-                overflow: expanded ? null : TextOverflow.ellipsis,
-                style: _ChatTextStyles.bodyMuted,
+              _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: updatedLabel,
+                bodyStyle: _ChatTextStyles.bodyMuted,
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
               ),
             ],
             if (lastActiveLabel != null) ...<Widget>[
               const SizedBox(height: 6),
-              Text(
-                lastActiveLabel,
-                maxLines: expanded ? null : 2,
-                overflow: expanded ? null : TextOverflow.ellipsis,
-                style: _ChatTextStyles.bodyMuted,
+              _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: lastActiveLabel,
+                bodyStyle: _ChatTextStyles.bodyMuted,
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
               ),
             ],
             if (staleAfterLabel != null) ...<Widget>[
               const SizedBox(height: 6),
-              Text(
-                staleAfterLabel,
-                maxLines: expanded ? null : 2,
-                overflow: expanded ? null : TextOverflow.ellipsis,
-                style: _ChatTextStyles.bodyMuted,
+              _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: staleAfterLabel,
+                bodyStyle: _ChatTextStyles.bodyMuted,
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
               ),
             ],
             if (previewCheckedLabel != null) ...<Widget>[
               const SizedBox(height: 6),
-              Text(
-                previewCheckedLabel,
-                maxLines: expanded ? null : 2,
-                overflow: expanded ? null : TextOverflow.ellipsis,
-                style: _ChatTextStyles.bodyMuted,
+              _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: previewCheckedLabel,
+                bodyStyle: _ChatTextStyles.bodyMuted,
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
               ),
             ],
             if (expanded && session.runningRequestIds.isNotEmpty) ...<Widget>[
@@ -12998,11 +13028,14 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                               if (compactPresentation.description !=
                                   null) ...<Widget>[
                                 const SizedBox(height: 8),
-                                Text(
-                                  compactPresentation.description!,
-                                  style: _ChatTextStyles.bodyMuted.copyWith(
+                                _OpenCrayMarkdownTextBlock(
+                                  copy: copy,
+                                  data: compactPresentation.description!,
+                                  bodyStyle: _ChatTextStyles.bodyMuted.copyWith(
                                     color: _ChatPalette.textPrimary,
                                   ),
+                                  surfaceColor: Colors.white,
+                                  bridge: widget.bridge,
                                 ),
                               ],
                               if (compactPresentation
@@ -13012,8 +13045,8 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                 ...compactPresentation.detailLines.map(
                                   (line) => Padding(
                                     padding: const EdgeInsets.only(bottom: 6),
-                                    child: Text.rich(
-                                      TextSpan(
+                                    child: RichText(
+                                      text: TextSpan(
                                         children: <InlineSpan>[
                                           TextSpan(
                                             text:
@@ -13021,10 +13054,19 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                             style: _ChatTextStyles
                                                 .runTraceDetailLabel,
                                           ),
-                                          TextSpan(
-                                            text: line.value,
-                                            style: _ChatTextStyles
-                                                .runTraceDetailValue,
+                                          WidgetSpan(
+                                            alignment:
+                                                PlaceholderAlignment.baseline,
+                                            baseline: TextBaseline.alphabetic,
+                                            child: _OpenCrayMarkdownTextBlock(
+                                              copy: copy,
+                                              data: line.value,
+                                              bodyStyle: _ChatTextStyles
+                                                  .runTraceDetailValue,
+                                              surfaceColor: Colors.white,
+                                              bridge: widget.bridge,
+                                              preferAccentForStrong: true,
+                                            ),
                                           ),
                                         ],
                                       ),
@@ -13083,6 +13125,7 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                     copy: copy,
                                     runId: trace.runId,
                                     session: session,
+                                    bridge: widget.bridge,
                                     expanded: true,
                                     keyNamespace:
                                         'chat-run-trace-fullscreen-session',
@@ -13111,7 +13154,11 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                 ...visibleHistory.map(
                                   (entry) => Padding(
                                     padding: const EdgeInsets.only(bottom: 14),
-                                    child: _RunTraceHistoryCard(entry: entry),
+                                    child: _RunTraceHistoryCard(
+                                      copy: copy,
+                                      entry: entry,
+                                      bridge: widget.bridge,
+                                    ),
                                   ),
                                 ),
                                 if (supplementalBody != null)
@@ -13122,12 +13169,16 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                     ),
                                     child: Padding(
                                       padding: const EdgeInsets.all(14),
-                                      child: Text(
-                                        supplementalBody,
-                                        style: _ChatTextStyles.bodyMuted
+                                      child: _OpenCrayMarkdownTextBlock(
+                                        copy: copy,
+                                        data: supplementalBody,
+                                        bodyStyle: _ChatTextStyles.bodyMuted
                                             .copyWith(
                                               color: _ChatPalette.textPrimary,
                                             ),
+                                        surfaceColor:
+                                            _ChatPalette.runTraceDetailSurface,
+                                        bridge: widget.bridge,
                                       ),
                                     ),
                                   ),
@@ -13992,9 +14043,15 @@ bool _runTraceTextContains(String? source, String? fragment) {
 }
 
 class _RunTraceHistoryCard extends StatelessWidget {
-  const _RunTraceHistoryCard({required this.entry});
+  const _RunTraceHistoryCard({
+    required this.copy,
+    required this.entry,
+    this.bridge,
+  });
 
+  final OpenCrayUiCopy copy;
   final ChatRunTraceHistoryEntry entry;
+  final OpenCrayHostBridge? bridge;
 
   @override
   Widget build(BuildContext context) {
@@ -14016,11 +14073,14 @@ class _RunTraceHistoryCard extends StatelessWidget {
             ),
             const SizedBox(height: 4),
           ],
-          Text(
-            entry.body,
-            style: _ChatTextStyles.bubble.copyWith(
+          _OpenCrayMarkdownTextBlock(
+            copy: copy,
+            data: entry.body,
+            bodyStyle: _ChatTextStyles.bubble.copyWith(
               color: _ChatPalette.textPrimary,
             ),
+            surfaceColor: Colors.white,
+            bridge: bridge,
           ),
         ],
       ],
@@ -14048,11 +14108,14 @@ class _RunTraceHistoryCard extends StatelessWidget {
     if (inspectorCallDetail.isNotEmpty) {
       children.add(const SizedBox(height: 4));
       children.add(
-        Text(
-          inspectorCallDetail,
-          style: _ChatTextStyles.runInspectorDetail.copyWith(
+        _OpenCrayMarkdownTextBlock(
+          copy: copy,
+          data: inspectorCallDetail,
+          bodyStyle: _ChatTextStyles.runInspectorDetail.copyWith(
             color: _ChatPalette.textSecondary,
           ),
+          surfaceColor: Colors.white,
+          bridge: bridge,
         ),
       );
     }
@@ -14068,34 +14131,18 @@ class _RunTraceHistoryCard extends StatelessWidget {
   }
 
   Widget _buildInspectorResultText(String body) {
-    final List<String> lines = body
-        .replaceAll('\r\n', '\n')
-        .replaceAll('\r', '\n')
-        .split('\n');
-    final String firstLine = lines.isEmpty ? '' : lines.first;
-    final String remaining = lines.length <= 1
-        ? ''
-        : lines.sublist(1).join('\n');
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         Text('└', style: _ChatTextStyles.runInspectorResultBranch),
         const SizedBox(width: 8),
         Expanded(
-          child: Text.rich(
-            TextSpan(
-              children: <InlineSpan>[
-                TextSpan(
-                  text: firstLine,
-                  style: _ChatTextStyles.runInspectorResult,
-                ),
-                if (remaining.isNotEmpty)
-                  TextSpan(
-                    text: '\n$remaining',
-                    style: _ChatTextStyles.runInspectorResult,
-                  ),
-              ],
-            ),
+          child: _OpenCrayMarkdownTextBlock(
+            copy: copy,
+            data: body,
+            bodyStyle: _ChatTextStyles.runInspectorResult,
+            surfaceColor: Colors.white,
+            bridge: bridge,
           ),
         ),
       ],
@@ -14772,6 +14819,227 @@ String _normalizeChatAttachmentMarkdownToken(String value) => value
     .replaceFirst(RegExp(r'^/'), '')
     .toLowerCase();
 
+Future<void> _handleOpenCrayMarkdownLinkTap(
+  BuildContext context, {
+  required String? href,
+  required OpenCrayUiCopy copy,
+  OpenCrayHostBridge? bridge,
+}) async {
+  final String target = href?.trim() ?? '';
+  if (target.isEmpty) {
+    return;
+  }
+  final ScaffoldMessengerState? messenger = ScaffoldMessenger.maybeOf(context);
+  try {
+    final String? routeName = openCrayResolveMarkdownInternalRoute(target);
+    if (routeName != null) {
+      await Navigator.of(context).pushNamed(routeName);
+      return;
+    }
+    final OpenCrayHostBridge? hostBridge = bridge;
+    if (hostBridge == null) {
+      throw StateError('Missing host bridge for markdown link target.');
+    }
+    final Uri? externalUri = openCrayResolveMarkdownExternalUri(target);
+    if (externalUri != null) {
+      await hostBridge.openExternalUri(externalUri.toString());
+      return;
+    }
+    final Uri? uri = Uri.tryParse(target);
+    if (_isWorkspaceRelativeChatLink(uri, target)) {
+      final String relativePath = _normalizeChatWorkspaceRelativePath(target);
+      if (_isPreviewableTextRelativePath(relativePath)) {
+        final OpenCrayFileTextPreview preview = await hostBridge
+            .loadWorkspaceTextPreview(relativePath);
+        if (!context.mounted) {
+          return;
+        }
+        await _showChatTextPreviewDialog(context, preview, bridge: hostBridge);
+        return;
+      }
+      await hostBridge.openWorkspaceEntry(relativePath);
+      return;
+    }
+    throw StateError('Unsupported markdown link target.');
+  } catch (error) {
+    if (!context.mounted) {
+      return;
+    }
+    final String message = openCrayMarkdownLocalizedErrorMessage(
+      error,
+      copy,
+      fallback: copy.chatMessageActionFailed,
+    );
+    messenger
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+bool _fontWeightIsEmphasized(FontWeight? fontWeight) {
+  return fontWeight != null && fontWeight.index >= FontWeight.w600.index;
+}
+
+MarkdownStyleSheet _openCrayMarkdownStyleSheet(
+  BuildContext context, {
+  required TextStyle bodyStyle,
+  required Color surfaceColor,
+  required Color textColor,
+  Color? linkColor,
+  bool preferAccentForStrong = false,
+  Color? strongAccentColor,
+}) {
+  final MarkdownStyleSheet base = MarkdownStyleSheet.fromTheme(Theme.of(context));
+  final bool darkSurface =
+      ThemeData.estimateBrightnessForColor(surfaceColor) == Brightness.dark;
+  final Color resolvedLinkColor =
+      linkColor ??
+      (darkSurface
+          ? const Color(0xFFDCEBFF)
+          : Theme.of(context).colorScheme.primary);
+  final Color resolvedStrongAccentColor =
+      strongAccentColor ?? Theme.of(context).colorScheme.primary;
+  final Color chromeColor = darkSurface
+      ? Colors.white.withValues(alpha: 0.18)
+      : Colors.black.withValues(alpha: 0.08);
+  final Color subtleChromeColor = darkSurface
+      ? Colors.white.withValues(alpha: 0.12)
+      : Colors.black.withValues(alpha: 0.05);
+  final bool accentStrong =
+      preferAccentForStrong || _fontWeightIsEmphasized(bodyStyle.fontWeight);
+  final TextStyle headingStyle = bodyStyle.copyWith(
+    fontWeight: FontWeight.w700,
+    height: 1.3,
+  );
+  return base.copyWith(
+    a: bodyStyle.copyWith(
+      color: resolvedLinkColor,
+      fontWeight: FontWeight.w600,
+      decoration: TextDecoration.underline,
+      decorationThickness: 1.2,
+      decorationColor: resolvedLinkColor.withValues(alpha: 0.75),
+    ),
+    p: bodyStyle,
+    pPadding: EdgeInsets.zero,
+    strong: accentStrong
+        ? bodyStyle.copyWith(color: resolvedStrongAccentColor)
+        : bodyStyle.copyWith(fontWeight: FontWeight.w700),
+    em: bodyStyle.copyWith(fontStyle: FontStyle.italic),
+    del: bodyStyle.copyWith(decoration: TextDecoration.lineThrough),
+    h1: headingStyle.copyWith(fontSize: 20),
+    h2: headingStyle.copyWith(fontSize: 18),
+    h3: headingStyle.copyWith(fontSize: 16),
+    h4: headingStyle.copyWith(fontSize: 15),
+    h5: headingStyle.copyWith(fontSize: 14),
+    h6: headingStyle.copyWith(fontSize: 14),
+    listBullet: bodyStyle,
+    code: TextStyle(
+      fontSize: 13,
+      height: 1.45,
+      fontFamily: 'monospace',
+      color: textColor,
+    ),
+    codeblockPadding: const EdgeInsets.all(10),
+    codeblockDecoration: BoxDecoration(
+      color: subtleChromeColor,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: chromeColor),
+    ),
+    blockquote: bodyStyle.copyWith(
+      color: textColor.withValues(alpha: darkSurface ? 0.88 : 0.82),
+    ),
+    blockquotePadding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+    blockquoteDecoration: BoxDecoration(
+      color: subtleChromeColor,
+      borderRadius: BorderRadius.circular(12),
+      border: Border(left: BorderSide(color: chromeColor, width: 3)),
+    ),
+    tableHead: bodyStyle.copyWith(fontWeight: FontWeight.w700),
+    tableBody: bodyStyle,
+    tableHeadAlign: TextAlign.left,
+    tablePadding: const EdgeInsets.only(top: 2, bottom: 4),
+    tableBorder: TableBorder.all(color: chromeColor),
+    tableColumnWidth: const IntrinsicColumnWidth(),
+    tableCellsPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+    tableCellsDecoration: BoxDecoration(color: subtleChromeColor),
+    tableHeadCellsDecoration: BoxDecoration(color: chromeColor),
+    horizontalRuleDecoration: BoxDecoration(
+      border: Border(top: BorderSide(color: chromeColor)),
+    ),
+    blockSpacing: 10,
+  );
+}
+
+MarkdownStyleSheet _runTraceMarkdownStyleSheet(
+  BuildContext context, {
+  required TextStyle bodyStyle,
+  required Color surfaceColor,
+  bool preferAccentForStrong = false,
+}) {
+  final Color textColor = bodyStyle.color ?? _ChatPalette.textPrimary;
+  return _openCrayMarkdownStyleSheet(
+    context,
+    bodyStyle: bodyStyle,
+    surfaceColor: surfaceColor,
+    textColor: textColor,
+    linkColor: _ChatPalette.inspectorAction,
+    preferAccentForStrong: preferAccentForStrong,
+    strongAccentColor: _ChatPalette.inspectorAction,
+  );
+}
+
+class _OpenCrayMarkdownTextBlock extends StatelessWidget {
+  const _OpenCrayMarkdownTextBlock({
+    super.key,
+    required this.copy,
+    required this.data,
+    required this.bodyStyle,
+    required this.surfaceColor,
+    this.bridge,
+    this.preferAccentForStrong = false,
+  });
+
+  final OpenCrayUiCopy copy;
+  final String data;
+  final TextStyle bodyStyle;
+  final Color surfaceColor;
+  final OpenCrayHostBridge? bridge;
+  final bool preferAccentForStrong;
+
+  @override
+  Widget build(BuildContext context) {
+    final String markdown = data.trim();
+    if (markdown.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return OpenCrayMarkdownBody(
+      data: markdown,
+      hostBridge: bridge,
+      onTapLink: (_, href, __) {
+        unawaited(
+          _handleOpenCrayMarkdownLinkTap(
+            context,
+            href: href,
+            copy: copy,
+            bridge: bridge,
+          ),
+        );
+      },
+      latexTextStyle: bodyStyle,
+      styleSheet: _runTraceMarkdownStyleSheet(
+        context,
+        bodyStyle: bodyStyle,
+        surfaceColor: surfaceColor,
+        preferAccentForStrong: preferAccentForStrong,
+      ),
+      imageBackgroundColor:
+          surfaceColor.withValues(alpha: 0.45),
+      imageBorderColor:
+          (bodyStyle.color ?? _ChatPalette.textPrimary).withValues(alpha: 0.16),
+    );
+  }
+}
+
 class _ChatBubbleMarkdownBody extends StatelessWidget {
   const _ChatBubbleMarkdownBody({
     required this.bridge,
@@ -14802,61 +15070,12 @@ class _ChatBubbleMarkdownBody extends StatelessWidget {
   final bool isOutgoing;
 
   Future<void> _handleLinkTap(BuildContext context, String? href) async {
-    final String target = href?.trim() ?? '';
-    if (target.isEmpty) {
-      return;
-    }
-    final ScaffoldMessengerState? messenger = ScaffoldMessenger.maybeOf(
+    await _handleOpenCrayMarkdownLinkTap(
       context,
+      href: href,
+      copy: copy,
+      bridge: bridge,
     );
-    try {
-      final String? routeName = openCrayResolveMarkdownInternalRoute(target);
-      if (routeName != null) {
-        await Navigator.of(context).pushNamed(routeName);
-        return;
-      }
-      final OpenCrayHostBridge? hostBridge = bridge;
-      if (hostBridge == null) {
-        throw StateError('Missing host bridge for markdown link target.');
-      }
-      final Uri? externalUri = openCrayResolveMarkdownExternalUri(target);
-      if (externalUri != null) {
-        await hostBridge.openExternalUri(externalUri.toString());
-        return;
-      }
-      final Uri? uri = Uri.tryParse(target);
-      if (_isWorkspaceRelativeChatLink(uri, target)) {
-        final String relativePath = _normalizeChatWorkspaceRelativePath(target);
-        if (_isPreviewableTextRelativePath(relativePath)) {
-          final OpenCrayFileTextPreview preview = await hostBridge
-              .loadWorkspaceTextPreview(relativePath);
-          if (!context.mounted) {
-            return;
-          }
-          await _showChatTextPreviewDialog(
-            context,
-            preview,
-            bridge: hostBridge,
-          );
-          return;
-        }
-        await hostBridge.openWorkspaceEntry(relativePath);
-        return;
-      }
-      throw StateError('Unsupported markdown link target.');
-    } catch (error) {
-      if (!context.mounted) {
-        return;
-      }
-      final String message = openCrayMarkdownLocalizedErrorMessage(
-        error,
-        copy,
-        fallback: copy.chatMessageActionFailed,
-      );
-      messenger
-        ?..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text(message)));
-    }
   }
 
   @override
@@ -14933,77 +15152,12 @@ MarkdownStyleSheet _chatMarkdownStyleSheet(
   required Color textColor,
   required Color backgroundColor,
 }) {
-  final base = MarkdownStyleSheet.fromTheme(Theme.of(context));
-  final bool darkBubble =
-      ThemeData.estimateBrightnessForColor(backgroundColor) == Brightness.dark;
-  final Color chromeColor = darkBubble
-      ? Colors.white.withValues(alpha: 0.18)
-      : Colors.black.withValues(alpha: 0.08);
-  final Color subtleChromeColor = darkBubble
-      ? Colors.white.withValues(alpha: 0.12)
-      : Colors.black.withValues(alpha: 0.05);
   final TextStyle bodyStyle = _ChatTextStyles.bubble.copyWith(color: textColor);
-  final Color linkColor = darkBubble
-      ? const Color(0xFFDCEBFF)
-      : Theme.of(context).colorScheme.primary;
-  final TextStyle headingStyle = bodyStyle.copyWith(
-    fontWeight: FontWeight.w700,
-    height: 1.3,
-  );
-  return base.copyWith(
-    a: bodyStyle.copyWith(
-      color: linkColor,
-      fontWeight: FontWeight.w600,
-      decoration: TextDecoration.underline,
-      decorationThickness: 1.2,
-      decorationColor: linkColor.withValues(alpha: 0.75),
-    ),
-    p: bodyStyle,
-    pPadding: EdgeInsets.zero,
-    strong: bodyStyle.copyWith(fontWeight: FontWeight.w700),
-    em: bodyStyle.copyWith(fontStyle: FontStyle.italic),
-    del: bodyStyle.copyWith(decoration: TextDecoration.lineThrough),
-    h1: headingStyle.copyWith(fontSize: 20),
-    h2: headingStyle.copyWith(fontSize: 18),
-    h3: headingStyle.copyWith(fontSize: 16),
-    h4: headingStyle.copyWith(fontSize: 15),
-    h5: headingStyle.copyWith(fontSize: 14),
-    h6: headingStyle.copyWith(fontSize: 14),
-    listBullet: bodyStyle,
-    code: TextStyle(
-      fontSize: 13,
-      height: 1.45,
-      fontFamily: 'monospace',
-      color: textColor,
-    ),
-    codeblockPadding: const EdgeInsets.all(10),
-    codeblockDecoration: BoxDecoration(
-      color: subtleChromeColor,
-      borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: chromeColor),
-    ),
-    blockquote: bodyStyle.copyWith(
-      color: textColor.withValues(alpha: darkBubble ? 0.88 : 0.82),
-    ),
-    blockquotePadding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-    blockquoteDecoration: BoxDecoration(
-      color: subtleChromeColor,
-      borderRadius: BorderRadius.circular(12),
-      border: Border(left: BorderSide(color: chromeColor, width: 3)),
-    ),
-    tableHead: bodyStyle.copyWith(fontWeight: FontWeight.w700),
-    tableBody: bodyStyle,
-    tableHeadAlign: TextAlign.left,
-    tablePadding: const EdgeInsets.only(top: 2, bottom: 4),
-    tableBorder: TableBorder.all(color: chromeColor),
-    tableColumnWidth: const IntrinsicColumnWidth(),
-    tableCellsPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-    tableCellsDecoration: BoxDecoration(color: subtleChromeColor),
-    tableHeadCellsDecoration: BoxDecoration(color: chromeColor),
-    horizontalRuleDecoration: BoxDecoration(
-      border: Border(top: BorderSide(color: chromeColor)),
-    ),
-    blockSpacing: 10,
+  return _openCrayMarkdownStyleSheet(
+    context,
+    bodyStyle: bodyStyle,
+    surfaceColor: backgroundColor,
+    textColor: textColor,
   );
 }
 

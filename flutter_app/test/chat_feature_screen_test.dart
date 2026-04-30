@@ -5097,7 +5097,7 @@ void main() {
         find.descendant(
           of: fullscreenFinder,
           matching: find.textContaining(
-            'Use .\\\\gradlew.bat test to run JVM tests.',
+            'Project uses the Gradle wrapper from the repo root.',
             findRichText: true,
           ),
         ),
@@ -10602,6 +10602,89 @@ void main() {
     expect(bubbleFinder, findsOneWidget);
     expect(
       find.descendant(of: bubbleFinder, matching: find.byType(Image)),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('run inspector renders markdown images from tool results', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    const toolCall = OpenCrayChatRuntimeEventSnapshot(
+      kind: 'tool_call',
+      runId: 'run-inspector-markdown-image',
+      taskId: 'task-inspector-markdown-image',
+      emittedAtEpochMs: 1000,
+      toolName: 'Read',
+      argumentsJson: '{"file_path":"docs/report.md"}',
+    );
+    const toolResult = OpenCrayChatRuntimeEventSnapshot(
+      kind: 'tool_result',
+      runId: 'run-inspector-markdown-image',
+      taskId: 'task-inspector-markdown-image',
+      emittedAtEpochMs: 2000,
+      toolName: 'Read',
+      content: 'Preview image:\n\n![Diagram](docs/diagram.png)',
+      contentPreview: 'Preview image:\n\n![Diagram](docs/diagram.png)',
+      resultMetadata: <String, String>{'filePath': 'docs/report.md'},
+    );
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-inspector-markdown-image',
+            taskId: 'task-inspector-markdown-image',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 2000,
+            attempt: 1,
+            isTerminal: false,
+            lastEvent: toolResult,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'lifecycle',
+            runId: 'run-inspector-markdown-image',
+            taskId: 'task-inspector-markdown-image',
+            emittedAtEpochMs: 900,
+            phase: 'start',
+          ),
+          toolCall,
+          toolResult,
+        ],
+      ),
+      imagePreviews: <String, OpenCrayFileImagePreview>{
+        'docs/diagram.png': _fakeImagePreview(
+          name: 'diagram.png',
+          relativePath: 'docs/diagram.png',
+        ),
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: OpenCrayChatFeature(copy: copy, bridge: bridge)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final bubbleFinder = find.byKey(
+      const ValueKey<String>('chat-run-trace-run-inspector-markdown-image'),
+    );
+    expect(bubbleFinder, findsOneWidget);
+    await _openRunTraceFullscreen(tester, bubbleFinder);
+
+    final fullscreenFinder = find.byKey(
+      const ValueKey<String>(
+        'chat-run-trace-fullscreen-run-inspector-markdown-image',
+      ),
+    );
+    expect(fullscreenFinder, findsOneWidget);
+    expect(
+      find.descendant(of: fullscreenFinder, matching: find.byType(Image)),
       findsOneWidget,
     );
   });
