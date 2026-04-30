@@ -117,6 +117,7 @@
 /flutter_app/.tmp_flutter_version_err.txt
 /flutter_app/.tmp_flutter_version_out.txt
 /log.txt
+/docs/diags/
 
 # Sisyphus local scratch files
 /.sisyphus/notepads/
