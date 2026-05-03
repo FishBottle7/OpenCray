@@ -2172,6 +2172,173 @@ void main() {
   );
 
   testWidgets(
+    'runtime event deltas refresh the open inspector when only managed process output changes',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeEventDeltas =
+          StreamController<OpenCrayChatRuntimeEventDelta>.broadcast();
+      addTearDown(runtimeEventDeltas.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          updatedAtEpochMs: 1000,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Start the development server.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-delta-process-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 1100,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-delta-process-1',
+              taskId: 'task-delta-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1100,
+              attempt: 1,
+              pendingMessageId: 'pending-delta-process-1',
+              managedProcessIds: <String>['proc-delta-process-1'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-delta-process-1',
+                  status: 'running',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1050,
+                  updatedAtEpochMs: 1100,
+                  stdoutPreview: 'starting dev server',
+                ),
+              ],
+              runningManagedProcessCount: 1,
+              hasLiveManagedProcesses: true,
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-delta-process-1',
+              taskId: 'task-delta-process-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+          ],
+        ),
+        runtimeEventDeltaStream: runtimeEventDeltas.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final int runtimeSnapshotLoadsBeforeDelta =
+          bridge.loadChatRuntimeSnapshotCallCount;
+
+      final runTraceFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-delta-process-1'),
+      );
+      expect(runTraceFinder, findsOneWidget);
+      await _openRunTraceFullscreen(tester, runTraceFinder);
+      final fullscreenFinder = find.byKey(
+        const ValueKey<String>(
+          'chat-run-trace-fullscreen-run-delta-process-1',
+        ),
+      );
+
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'starting dev server',
+            findRichText: true,
+          ),
+        ),
+        findsWidgets,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'ready on http://localhost:3000',
+            findRichText: true,
+          ),
+        ),
+        findsNothing,
+      );
+
+      runtimeEventDeltas.add(
+        const OpenCrayChatRuntimeEventDelta(
+          sessionId: 'session-1',
+          sequence: 1,
+          totalLength: 1,
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-delta-process-1',
+              taskId: 'task-delta-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1400,
+              attempt: 1,
+              pendingMessageId: 'pending-delta-process-1',
+              managedProcessIds: <String>['proc-delta-process-1'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-delta-process-1',
+                  status: 'running',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1050,
+                  updatedAtEpochMs: 1400,
+                  stdoutPreview: 'ready on http://localhost:3000',
+                ),
+              ],
+              runningManagedProcessCount: 1,
+              hasLiveManagedProcesses: true,
+              isTerminal: false,
+            ),
+          ],
+          updatedAtEpochMs: 1400,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        bridge.loadChatRuntimeSnapshotCallCount,
+        runtimeSnapshotLoadsBeforeDelta,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'ready on http://localhost:3000',
+            findRichText: true,
+          ),
+        ),
+        findsWidgets,
+      );
+    },
+  );
+
+  testWidgets(
     'runtime event deltas ignore totalLength mismatches when sequence is contiguous',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');

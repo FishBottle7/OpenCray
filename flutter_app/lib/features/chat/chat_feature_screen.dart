@@ -3408,56 +3408,39 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     final OpenCrayChatRuntimeSnapshot? runtimeSnapshot =
         _latestChatRuntimeSnapshot ?? _latestChatSnapshot?.runtimeActivity;
-    final String? visibleText = event.cleared
-        ? null
-        : _shouldDisplayLiveAssistantDraft(
-            runId: event.runId,
-            taskId: event.taskId,
-            runtimeSnapshot: runtimeSnapshot,
-          )
-        ? _visibleAssistantDraftText(event.text)
-        : null;
-    final List<ChatMessageData> nextMessages = _patchMessagesForLiveDraftEvent(
-      messages: _state.messages,
-      pendingMessageId: event.pendingMessageId,
-      text: visibleText,
-      updatedAtEpochMs: event.updatedAtEpochMs,
+    final OpenCrayChatRuntimeSnapshot effectiveRuntime = OpenCrayChatRuntimeSnapshot(
+      sessionId: sessionId,
+      activeRuns: runtimeSnapshot?.activeRuns ?? const <OpenCrayChatRunSnapshot>[],
+      retainedRuns: runtimeSnapshot?.retainedRuns ?? const <OpenCrayChatRunSnapshot>[],
+      subAgents: runtimeSnapshot?.subAgents ?? const <OpenCrayChatSubAgentSnapshot>[],
+      events: runtimeSnapshot?.events ?? const <OpenCrayChatRuntimeEventSnapshot>[],
+      liveAssistantDrafts:
+          runtimeSnapshot?.liveAssistantDrafts ??
+          const <OpenCrayChatLiveAssistantDraftSnapshot>[],
+      hostLifecycle: runtimeSnapshot?.hostLifecycle,
+      updatedAtEpochMs: math.max(
+        runtimeSnapshot?.updatedAtEpochMs ?? 0,
+        event.updatedAtEpochMs,
+      ),
     );
-    if (chatMessagesEquivalent(_state.messages, nextMessages)) {
+    final ChatFeatureState previousState = _state;
+    _applyRuntimeActivityPatch(effectiveRuntime);
+    if (!mounted) {
       return;
     }
-    final Set<String> retainedSelection = _selectedMessageIds
-        .where(
-          (messageId) =>
-              nextMessages.any((message) => message.messageId == messageId),
-        )
-        .toSet();
     final bool appendedMessage =
-        nextMessages.length > _state.messages.length ||
-        (_state.messages.isNotEmpty &&
-            nextMessages.isNotEmpty &&
-            _state.messages.last.messageId != nextMessages.last.messageId);
-    setState(() {
-      _state = _state.copyWith(
-        messages: nextMessages,
-        variant:
-            nextMessages.isEmpty &&
-                _state.runTraces.isEmpty &&
-                _state.composer.todos.isEmpty &&
-                _state.pendingApprovals.isEmpty
-            ? ChatPrototypeVariant.empty
-            : ChatPrototypeVariant.main,
-        emptyThreadHeight: nextMessages.isEmpty && _state.runTraces.isEmpty
-            ? 260
-            : 0,
-      );
-      _selectedMessageIds
-        ..clear()
-        ..addAll(retainedSelection);
-    });
+        _state.messages.length > previousState.messages.length ||
+        (previousState.messages.isNotEmpty &&
+            _state.messages.isNotEmpty &&
+            previousState.messages.last.messageId !=
+                _state.messages.last.messageId);
+    final String? visibleText = event.cleared
+        ? null
+        : _visibleAssistantDraftText(event.text);
     if (appendedMessage) {
       _scheduleScrollToBottom();
-    } else if (visibleText != null) {
+    } else if (visibleText != null &&
+        !chatMessagesEquivalent(previousState.messages, _state.messages)) {
       _scheduleScrollToBottom(animated: false);
     }
   }

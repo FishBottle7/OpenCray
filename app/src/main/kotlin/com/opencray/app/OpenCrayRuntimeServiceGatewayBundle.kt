@@ -982,7 +982,9 @@ internal class ServiceOwnedChatRuntimeGateway(
 
   override fun notifyChatSnapshotsChanged() {
     emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    if (!emitServiceOwnedRuntimeEventDeltaFromSnapshot()) {
+      emitChatRuntimeSnapshot()
+    }
     snapshotNotifier()
   }
 

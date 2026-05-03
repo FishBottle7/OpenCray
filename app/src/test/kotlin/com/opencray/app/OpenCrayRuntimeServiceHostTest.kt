@@ -1241,6 +1241,122 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun serviceOwnedChatRuntimeGatewayEmitsRuntimeDeltaWhenManagedProcessOutputChangesWithoutNewEvents() {
+    val readGateway = RecordingChatRuntimeGateway("projection")
+    readGateway.chatRuntimePayload = mapOf(
+      "sessionId" to "session-1",
+      "updatedAtEpochMs" to 1100L,
+      "activeRuns" to listOf(
+        mapOf(
+          "sessionId" to "session-1",
+          "runId" to "run-1",
+          "taskId" to "task-1",
+          "acceptedAtEpochMs" to 1000L,
+          "updatedAtEpochMs" to 1100L,
+          "attempt" to 1,
+          "pendingMessageId" to "pending-1",
+          "isTerminal" to false,
+          "managedProcessIds" to listOf("proc-1"),
+          "managedProcesses" to listOf(
+            mapOf(
+              "processId" to "proc-1",
+              "status" to "running",
+              "command" to "npm",
+              "args" to listOf("run", "dev"),
+              "workingDirectory" to ".",
+              "processStarted" to true,
+              "startedAtEpochMs" to 1050L,
+              "updatedAtEpochMs" to 1100L,
+              "stdoutPreview" to "starting dev server",
+            ),
+          ),
+          "runningManagedProcessCount" to 1,
+          "hasLiveManagedProcesses" to true,
+        ),
+      ),
+      "retainedRuns" to emptyList<Map<String, Any?>>(),
+      "subAgents" to emptyList<Map<String, Any?>>(),
+      "events" to listOf(
+        mapOf(
+          "kind" to "lifecycle",
+          "runId" to "run-1",
+          "taskId" to "task-1",
+          "emittedAtEpochMs" to 1000L,
+          "phase" to "start",
+        ),
+      ),
+    )
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedDeltas = mutableListOf<Map<String, Any?>>()
+    val dispose = gateway.observeRuntimeEventDeltas { payload ->
+      observedDeltas += payload
+    }
+
+    readGateway.chatRuntimePayload = mapOf(
+      "sessionId" to "session-1",
+      "updatedAtEpochMs" to 1400L,
+      "activeRuns" to listOf(
+        mapOf(
+          "sessionId" to "session-1",
+          "runId" to "run-1",
+          "taskId" to "task-1",
+          "acceptedAtEpochMs" to 1000L,
+          "updatedAtEpochMs" to 1400L,
+          "attempt" to 1,
+          "pendingMessageId" to "pending-1",
+          "isTerminal" to false,
+          "managedProcessIds" to listOf("proc-1"),
+          "managedProcesses" to listOf(
+            mapOf(
+              "processId" to "proc-1",
+              "status" to "running",
+              "command" to "npm",
+              "args" to listOf("run", "dev"),
+              "workingDirectory" to ".",
+              "processStarted" to true,
+              "startedAtEpochMs" to 1050L,
+              "updatedAtEpochMs" to 1400L,
+              "stdoutPreview" to "ready on http://localhost:3000",
+            ),
+          ),
+          "runningManagedProcessCount" to 1,
+          "hasLiveManagedProcesses" to true,
+        ),
+      ),
+      "retainedRuns" to emptyList<Map<String, Any?>>(),
+      "subAgents" to emptyList<Map<String, Any?>>(),
+      "events" to listOf(
+        mapOf(
+          "kind" to "lifecycle",
+          "runId" to "run-1",
+          "taskId" to "task-1",
+          "emittedAtEpochMs" to 1000L,
+          "phase" to "start",
+        ),
+      ),
+    )
+
+    gateway.notifyChatSnapshotsChanged()
+
+    assertEquals(1, observedDeltas.size)
+    assertEquals("session-1", observedDeltas.single()["sessionId"])
+    assertEquals(1L, observedDeltas.single()["sequence"])
+    assertEquals(1, (observedDeltas.single()["totalLength"] as Int))
+    assertTrue(((observedDeltas.single()["events"] as List<*>)).isEmpty())
+    val activeRuns = observedDeltas.single()["activeRuns"] as List<Map<String, Any?>>
+    val managedProcesses =
+      activeRuns.single()["managedProcesses"] as List<Map<String, Any?>>
+    assertEquals(
+      "ready on http://localhost:3000",
+      managedProcesses.single()["stdoutPreview"],
+    )
+    dispose()
+  }
+
+  @Test
   fun serviceOwnedSettingsGatewayHandlesNotificationAndStrongBackgroundWithoutDelegateRoundTrip() {
     val delegate = RecordingSettingsGateway("delegate")
     val strongBackgroundAccess = RecordingStrongBackgroundSettingsAccess()
