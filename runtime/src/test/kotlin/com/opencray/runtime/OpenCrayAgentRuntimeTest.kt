@@ -1946,7 +1946,7 @@ class OpenCrayAgentRuntimeTest {
     assertNull(resumedGatewayRequests.single().previousResponseId)
     assertEquals("full_rebuild", resumedGatewayRequests.single().metadata["localContinuationMode"])
     assertEquals(
-      "responses_restored_replay_required",
+      "responses_pending_tool_result_attachment_artifact",
       resumedGatewayRequests.single().metadata["localContinuationReason"],
     )
     assertTrue(
@@ -5962,7 +5962,7 @@ class OpenCrayAgentRuntimeTest {
     assertEquals("APPROVAL_REQUIRED", firstResult.errorCode)
     assertEquals(1, initialGateway.requests.size)
     assertEquals(0, resumeState.turnIndex)
-    assertEquals(0, resumeState.toolCallCount)
+    assertEquals(1, resumeState.toolCallCount)
     assertEquals(0, resumeState.nextActionIndex)
     assertEquals(1, resumeState.pendingActions.size)
     val resumedPendingCall = (resumeState.pendingActions.single() as OpenCraySerializableModelAction.ToolCall).call
@@ -6184,7 +6184,7 @@ class OpenCrayAgentRuntimeTest {
       initialEventSink.events.filterIsInstance<OpenCrayToolResultEvent>().map { "${it.call.toolName}:${it.result.status.name}" },
     )
     assertEquals(0, resumeState.turnIndex)
-    assertEquals(1, resumeState.toolCallCount)
+    assertEquals(2, resumeState.toolCallCount)
     assertEquals(2, resumeState.nextActionIndex)
     assertEquals(5, resumeState.pendingActions.size)
 

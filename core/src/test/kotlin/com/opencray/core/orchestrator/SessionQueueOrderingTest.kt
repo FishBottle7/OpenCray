@@ -410,6 +410,42 @@ class SessionQueueOrderingTest {
   }
 
   @Test
+  fun requestResumeTaskClearsApprovalErrorStateWhenRequeueing() {
+    val store = RecordingSnapshotStore()
+    val queue = SessionQueue(
+      sessionId = "session-resume-clear-error",
+      agentId = "agent-resume-clear-error",
+      runtime = SessionTaskRuntime { task, hooks ->
+        hooks.requestSuspend(
+          SuspensionRequest(
+            reasonCode = "APPROVAL_REQUIRED",
+            detail = "Approval is required before Write can run.",
+          ),
+        )
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.DENIED,
+          errorCode = "APPROVAL_REQUIRED",
+          errorMessage = "Approval is required before Write can run.",
+          startedAtEpochMs = 130_000L,
+          finishedAtEpochMs = 130_001L,
+        )
+      },
+      snapshotStore = store,
+      clock = IncrementingClock(start = 130_500L),
+    )
+    queue.enqueue(task(id = "task-resume-clear-error", createdAt = 7_000L))
+
+    queue.drain()
+    assertTrue(queue.requestResumeTask("task-resume-clear-error"))
+
+    val resumedSnapshot = queue.snapshot().tasks.single()
+    assertEquals(QueueTaskLifecycleState.QUEUED, resumedSnapshot.lifecycleState)
+    assertEquals(null, resumedSnapshot.lastErrorCode)
+    assertEquals(null, resumedSnapshot.lastErrorMessage)
+  }
+
+  @Test
   fun restorePreservesExistingRecoveryMetadataForNonInterruptedTask() {
     val queue = SessionQueue(
       sessionId = "session-restore-preserve",

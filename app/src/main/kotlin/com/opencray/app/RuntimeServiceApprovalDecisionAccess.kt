@@ -210,6 +210,9 @@ internal class RuntimeServiceApprovalDecisionAccess(
       subAgentApprovalResume = decisionRecord.subAgentApprovalResume,
       isHighRisk = decisionRecord.isHighRisk,
       supportsSessionApproval = approvalMetadataSupportsSessionScope(metadata),
+      subAgentParentRunId = metadata[com.opencray.runtime.subagent.SubAgentMetadataKeys.PARENT_RUN_ID]
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
       subAgentLifecycle = decisionRecord.subAgentLifecycle
         ?.toRuntimeServicePendingApprovalSubAgentLifecycle(),
       subAgentControlTool = metadata[SubAgentMetadataKeys.CONTROL_TOOL]
@@ -241,9 +244,11 @@ internal class RuntimeServiceApprovalDecisionAccess(
     if (!resolution.usesExplicitSubAgentHandleControlPlane()) {
       return false
     }
+    val parentRunId = resolution.subAgentParentRunId ?: return false
     val session = runtimeAccess.hostAccess.session(resolution.sessionId)
     val handle = session.listSubAgentHandles().firstOrNull { candidate ->
       subAgentApprovalResumeMatchesHandle(
+        parentRunId = parentRunId,
         resume = resolution.subAgentApprovalResume,
         handle = candidate,
       )
@@ -310,6 +315,7 @@ private data class RuntimeServicePendingApprovalResolution(
   val subAgentApprovalResume: SubAgentApprovalResume?,
   val isHighRisk: Boolean,
   val supportsSessionApproval: Boolean,
+  val subAgentParentRunId: String?,
   val subAgentLifecycle: RuntimeServicePendingApprovalSubAgentLifecycle?,
   val subAgentControlTool: String?,
   val executionId: String?,
@@ -431,14 +437,30 @@ private fun RuntimeServicePendingApprovalSubAgentLifecycle.toApprovalDecisionSub
 )
 
 private fun subAgentApprovalResumeMatchesHandle(
+  parentRunId: String,
   resume: SubAgentApprovalResume?,
   handle: SubAgentHandleState,
 ): Boolean {
   val candidate = resume ?: return false
+  if (handle.parentRunId != parentRunId) {
+    return false
+  }
+  if (
+    !candidate.childRunId.isNullOrBlank() &&
+    candidate.childRunId != handle.childRunId
+  ) {
+    return false
+  }
+  if (
+    !candidate.childTaskId.isNullOrBlank() &&
+    candidate.childTaskId != handle.childTaskId
+  ) {
+    return false
+  }
   return when {
     !candidate.agentId.isNullOrBlank() -> candidate.agentId == handle.agentId
-    !candidate.childTaskId.isNullOrBlank() -> candidate.childTaskId == handle.childTaskId
-    !candidate.childRunId.isNullOrBlank() -> candidate.childRunId == handle.childRunId
+    !candidate.childTaskId.isNullOrBlank() -> true
+    !candidate.childRunId.isNullOrBlank() -> true
     else -> false
   }
 }

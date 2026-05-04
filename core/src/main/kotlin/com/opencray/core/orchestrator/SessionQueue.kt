@@ -156,6 +156,7 @@ class SessionQueue(
 ) {
   private val lock = Any()
   private val taskEntries = mutableListOf<SessionQueueTaskSnapshot>()
+  private var drainInProgress: Boolean = false
   private var lifecycleState: SessionLifecycleState = SessionLifecycleState.IDLE
   private var nextEnqueueOrder: Long = 1L
 
@@ -204,35 +205,40 @@ class SessionQueue(
       if (maxTasks == 0 || lifecycleState == SessionLifecycleState.STOPPED) {
         return emptyList()
       }
+      if (drainInProgress) {
+        return emptyList()
+      }
+      drainInProgress = true
       transitionSessionStateLocked(SessionLifecycleState.RUNNING)
     }
     val results = mutableListOf<ExecutionResult>()
     var executedCount = 0
+    try {
+      while (executedCount < maxTasks) {
+        val nextIndex = synchronized(lock) {
+          if (lifecycleState == SessionLifecycleState.STOPPED) {
+            null
+          } else {
+            nextRunnableTaskIndexLocked()
+          }
+        }
+        if (nextIndex == null) break
 
-    while (executedCount < maxTasks) {
-      val nextIndex = synchronized(lock) {
-        if (lifecycleState == SessionLifecycleState.STOPPED) {
-          null
-        } else {
-          nextRunnableTaskIndexLocked()
+        val result = executeTaskAt(nextIndex)
+        if (result != null) {
+          results += result
+          executedCount += 1
         }
       }
-      if (nextIndex == null) break
-
-      val result = executeTaskAt(nextIndex)
-      if (result != null) {
-        results += result
-        executedCount += 1
+      return results
+    } finally {
+      synchronized(lock) {
+        drainInProgress = false
+        if (lifecycleState != SessionLifecycleState.STOPPED) {
+          transitionSessionStateLocked(SessionLifecycleState.IDLE)
+        }
       }
     }
-
-    synchronized(lock) {
-      if (lifecycleState != SessionLifecycleState.STOPPED) {
-        transitionSessionStateLocked(SessionLifecycleState.IDLE)
-      }
-    }
-
-    return results
   }
 
   /**
@@ -319,6 +325,8 @@ class SessionQueue(
     transitionTaskLocked(
       index = index,
       to = QueueTaskLifecycleState.QUEUED,
+      errorCode = "",
+      errorMessage = "",
       clearExecutionContext = true,
     )
     return true
@@ -653,8 +661,16 @@ class SessionQueue(
       executionOrdinal = nextExecutionOrdinal,
       executionId = nextExecutionId,
       executionKind = retainedExecutionKind,
-      lastErrorCode = errorCode ?: current.lastErrorCode,
-      lastErrorMessage = errorMessage ?: current.lastErrorMessage,
+      lastErrorCode = when {
+        errorCode == null -> current.lastErrorCode
+        errorCode.isBlank() -> null
+        else -> errorCode
+      },
+      lastErrorMessage = when {
+        errorMessage == null -> current.lastErrorMessage
+        errorMessage.isBlank() -> null
+        else -> errorMessage
+      },
     )
     persistSnapshotLocked()
   }

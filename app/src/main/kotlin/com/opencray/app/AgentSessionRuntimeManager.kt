@@ -525,6 +525,7 @@ private class ManagedAgentSessionHandle(
       runStateByTaskId = ::subAgentRecoveryRunStateByTaskId,
       runStateByRunId = ::subAgentRecoveryRunStateByRunId,
       replaceLastResult = ::replaceRunLastResult,
+      replaceDetachedTask = ::replaceRunDetachedTask,
       notifyTaskStarted = { task ->
         listenerProvider().forEach { listener ->
           listener.onTaskStarted(sessionId = sessionId, task = task)
@@ -587,6 +588,7 @@ private class ManagedAgentSessionHandle(
   init {
     synchronized(runLock) {
       restorePersistedRunRecordsLocked()
+      restoreDetachedControlTasksLocked()
       seedMissingRunRecordsLocked(loop.snapshot())
     }
   }
@@ -679,6 +681,7 @@ private class ManagedAgentSessionHandle(
       val record = ManagedRunRecord(
         submission = submission,
         pendingMessageId = normalizedTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
+        detachedTask = normalizedTask,
       )
       runRecordsById[runId] = record
       persistRunRecordLocked(record)
@@ -1270,6 +1273,7 @@ private class ManagedAgentSessionHandle(
       val record = ManagedRunRecord(
         submission = submission,
         pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
+        detachedTask = task,
       )
       runRecordsById[submission.runId] = record
       persistRunRecordLocked(record)
@@ -1294,6 +1298,18 @@ private class ManagedAgentSessionHandle(
     synchronized(runLock) {
       val existing = runRecordsById[runId] ?: return
       val updated = existing.copy(lastResult = result)
+      runRecordsById[runId] = updated
+      persistRunRecordLocked(updated)
+    }
+  }
+
+  private fun replaceRunDetachedTask(
+    runId: String,
+    task: AgentTask?,
+  ) {
+    synchronized(runLock) {
+      val existing = runRecordsById[runId] ?: return
+      val updated = existing.copy(detachedTask = task)
       runRecordsById[runId] = updated
       persistRunRecordLocked(updated)
     }
@@ -1504,9 +1520,36 @@ private class ManagedAgentSessionHandle(
         ),
         pendingMessageId = persisted.pendingMessageId,
         managedProcessIds = persisted.managedProcessIds,
+        detachedTask = persisted.detachedTask,
         lastEvent = persisted.lastEvent?.toRuntimeEventOrNull(),
         lastResult = persisted.lastResult,
       )
+    }
+  }
+
+  private fun restoreDetachedControlTasksLocked() {
+    runRecordsById.values.forEach { record ->
+      val task = record.detachedTask ?: return@forEach
+      val lastResult = record.lastResult ?: return@forEach
+      if (!isDetachedControlAwaitingManualResume(lastResult)) {
+        return@forEach
+      }
+      if (detachedControlTaskSpec(task) is DetachedSubAgentRecoveryWaitTaskSpec) {
+        subAgentRecoveryDriver.restorePendingTask(
+          submission = record.submission,
+          task = task,
+          lastResult = lastResult,
+        )
+      } else {
+        synchronized(detachedControlLock) {
+          detachedControlTasksByTaskId[record.submission.taskId] = DetachedControlTaskState(
+            submission = record.submission,
+            task = task,
+            cancelRequested = AtomicBoolean(false),
+            future = null,
+          )
+        }
+      }
     }
   }
 
@@ -1548,6 +1591,7 @@ private class ManagedAgentSessionHandle(
         acceptedAtEpochMs = record.submission.acceptedAtEpochMs,
         pendingMessageId = record.pendingMessageId,
         managedProcessIds = record.managedProcessIds,
+        detachedTask = record.detachedTask,
         lastResult = record.lastResult,
         lastEvent = record.lastEvent?.toPersistedRecord(),
       ),
@@ -1863,6 +1907,7 @@ private class ManagedAgentSessionHandle(
     val submission: AgentRunSubmission,
     val pendingMessageId: String? = null,
     val managedProcessIds: List<String> = emptyList(),
+    val detachedTask: AgentTask? = null,
     val lastEvent: OpenCrayAgentRunEvent? = null,
     val lastResult: ExecutionResult? = null,
   )

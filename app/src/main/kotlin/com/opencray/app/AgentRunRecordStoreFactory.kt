@@ -2,6 +2,7 @@ package com.opencray.app
 
 import android.content.Context
 import com.opencray.app.agent.AgentPathResolver
+import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.persistence.PersistenceJson
@@ -107,6 +108,7 @@ internal data class PersistedAgentRunRecord(
   val acceptedAtEpochMs: Long,
   val pendingMessageId: String? = null,
   val managedProcessIds: List<String> = emptyList(),
+  val detachedTask: AgentTask? = null,
   val lastResult: ExecutionResult? = null,
   val lastEvent: PersistedAgentRunEvent? = null,
 ) {
@@ -290,6 +292,18 @@ private class FileBackedAgentRunRecordStore(
               .map(String::trim)
               .filter(String::isNotBlank)
               .distinct(),
+            detachedTask = run.detachedTask?.let { detachedTask ->
+              detachedTask.copy(
+                input = detachedTask.input.trim(),
+                metadata = detachedTask.metadata.entries
+                  .mapNotNull { entry ->
+                    val normalizedKey = entry.key.trim().takeIf(String::isNotBlank)
+                      ?: return@mapNotNull null
+                    normalizedKey to entry.value
+                  }
+                  .toMap(),
+              )
+            },
             lastResult = normalizedLastResult,
             lastEvent = normalizedLastEvent,
           )

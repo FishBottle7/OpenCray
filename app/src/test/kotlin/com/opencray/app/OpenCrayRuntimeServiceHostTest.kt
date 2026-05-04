@@ -1241,6 +1241,90 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun runtimeServiceHostApprovePendingApprovalForExplicitHandleIgnoresSameChildFromDifferentParentRun() {
+    val childResume = SubAgentApprovalResume(
+      approvedToolName = "Edit",
+      promptResumeState = OpenCrayPromptResumeState(turnIndex = 0, toolCallCount = 1),
+      agentId = "child-explicit",
+      childRunId = "child-run-child-explicit",
+      childTaskId = "child-task-child-explicit",
+    )
+    val fixture = pendingApprovalServiceHostFixture(
+      root = temporaryFolder.newFolder("service-host-approve-explicit-subagent-parent-match"),
+      resultMetadata = SubAgentApprovalResumeMetadata.encodeToMetadata(
+        resume = childResume,
+        json = Json { prettyPrint = false },
+      ) + mapOf(
+        "toolName" to "Edit",
+        "canonicalToolName" to "edit",
+        "parentRunId" to "parent-run-child-explicit",
+        "childRunId" to childResume.childRunId.orEmpty(),
+        "childTaskId" to childResume.childTaskId.orEmpty(),
+        "subagentType" to "worker",
+        "delegationDescription" to "Edit notes",
+        "subagentContextMode" to "delegated",
+        "subagentDepth" to "2",
+        SubAgentMetadataKeys.CONTROL_TOOL to "wait_agent",
+      ),
+      subAgentHandles = listOf(
+        waitingApprovalSubAgentHandle(agentId = "child-explicit").copy(
+          parentRunId = "parent-run-wrong",
+        ),
+        waitingApprovalSubAgentHandle(agentId = "child-explicit").copy(
+          parentRunId = "parent-run-child-explicit",
+        ),
+      ),
+    )
+
+    fixture.serviceHost.approvePendingApproval(fixture.runId, nowEpochMs = 1_500L)
+
+    assertEquals(1, fixture.handle.detachedControlTasks.size)
+    assertEquals(
+      "parent-run-child-explicit",
+      fixture.handle.detachedControlTasks.single()
+        .metadata[METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID],
+    )
+  }
+
+  @Test
+  fun runtimeServiceHostApprovePendingApprovalForExplicitHandleWithoutParentRunIdDoesNotSubmitDetachedRecovery() {
+    val childResume = SubAgentApprovalResume(
+      approvedToolName = "Edit",
+      promptResumeState = OpenCrayPromptResumeState(turnIndex = 0, toolCallCount = 1),
+      agentId = "child-explicit",
+      childRunId = "child-run-child-explicit",
+      childTaskId = "child-task-child-explicit",
+    )
+    val fixture = pendingApprovalServiceHostFixture(
+      root = temporaryFolder.newFolder("service-host-approve-explicit-subagent-no-parent-run"),
+      resultMetadata = SubAgentApprovalResumeMetadata.encodeToMetadata(
+        resume = childResume,
+        json = Json { prettyPrint = false },
+      ) + mapOf(
+        "toolName" to "Edit",
+        "canonicalToolName" to "edit",
+        "childRunId" to childResume.childRunId.orEmpty(),
+        "childTaskId" to childResume.childTaskId.orEmpty(),
+        "subagentType" to "worker",
+        "delegationDescription" to "Edit notes",
+        "subagentContextMode" to "delegated",
+        "subagentDepth" to "2",
+        SubAgentMetadataKeys.CONTROL_TOOL to "wait_agent",
+      ),
+      subAgentHandles = listOf(waitingApprovalSubAgentHandle(agentId = "child-explicit")),
+    )
+
+    val failure = runCatching {
+      fixture.serviceHost.approvePendingApproval(fixture.runId, nowEpochMs = 1_500L)
+    }.exceptionOrNull()
+
+    assertTrue(failure is IllegalStateException)
+    assertEquals("Unable to resume pending approval '${fixture.runId}'.", failure?.message)
+    assertEquals(listOf(fixture.taskId), fixture.handle.resumedTaskIds)
+    assertEquals(emptyList<AgentTask>(), fixture.handle.detachedControlTasks)
+  }
+
+  @Test
   fun serviceOwnedChatRuntimeGatewayEmitsRuntimeDeltaWhenManagedProcessOutputChangesWithoutNewEvents() {
     val readGateway = RecordingChatRuntimeGateway("projection")
     readGateway.chatRuntimePayload = mapOf(

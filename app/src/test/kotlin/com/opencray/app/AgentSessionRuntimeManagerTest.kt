@@ -270,6 +270,96 @@ class AgentSessionRuntimeManagerTest {
   }
 
   @Test
+  fun detachedControlTaskCanResumeAfterManagerRestart() {
+    val sessionId = "session-detached-control-restart"
+    val firstExecutor = RecordingExecutorService()
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 1,
+      toolCallCount = 1,
+    )
+    val firstFactory = RecordingRuntimeFactory(
+      detachedControlResultFactory = { task ->
+        when (task.metadata[METADATA_EXECUTION_KIND]) {
+          EXECUTION_KIND_APPROVAL_RESUME -> ExecutionResult(
+            taskId = task.id,
+            status = ExecutionStatus.SUCCESS,
+            stdout = "resumed:${task.input}",
+            startedAtEpochMs = 1_200L,
+            finishedAtEpochMs = 1_201L,
+          )
+
+          else -> approvalRequiredResult(
+            taskId = task.id,
+            toolName = "Read",
+            resumeState = resumeState,
+          )
+        }
+      },
+    )
+    val firstManager = manager(
+      runtimeFactory = firstFactory,
+      executor = firstExecutor,
+    )
+    val firstHandle = firstManager.forSession(sessionId)
+    val submission = firstHandle.submitDetachedControlTask(
+      AgentTask(
+        id = "detached-control-task-restart",
+        type = AgentTaskType.SYSTEM,
+        input = "internal:subagent_recovery_wait:child-restart",
+        policyDecision = allowDecision(),
+        createdAtEpochMs = 1_000L,
+        metadata = mapOf(
+          METADATA_DETACHED_CONTROL_KIND to DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
+          METADATA_SUBAGENT_RECOVERY_AGENT_ID to "child-restart",
+          METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID to "parent-run-restart",
+        ),
+      ),
+    )
+
+    firstExecutor.runNext()
+    assertEquals(1, firstHandle.listDetachedControlTasks().size)
+
+    val restoredExecutor = RecordingExecutorService()
+    val restoredFactory = RecordingRuntimeFactory(
+      detachedControlResultFactory = { task ->
+        when (task.metadata[METADATA_EXECUTION_KIND]) {
+          EXECUTION_KIND_APPROVAL_RESUME -> ExecutionResult(
+            taskId = task.id,
+            status = ExecutionStatus.SUCCESS,
+            stdout = "resumed:${task.input}",
+            startedAtEpochMs = 1_300L,
+            finishedAtEpochMs = 1_301L,
+          )
+
+          else -> approvalRequiredResult(
+            taskId = task.id,
+            toolName = "Read",
+            resumeState = resumeState,
+          )
+        }
+      },
+    )
+    val restoredManager = manager(
+      runtimeFactory = restoredFactory,
+      executor = restoredExecutor,
+    )
+    val restoredHandle = restoredManager.forSession(sessionId)
+
+    assertEquals(1, restoredHandle.listDetachedControlTasks().size)
+    assertTrue(restoredHandle.requestResumeTask(submission.taskId))
+    assertEquals(1, restoredExecutor.pendingCount())
+
+    restoredExecutor.runNext()
+
+    assertEquals(ExecutionStatus.SUCCESS, restoredHandle.findRun(submission.runId)?.executionStatus)
+    assertTrue(restoredHandle.listDetachedControlTasks().isEmpty())
+    assertEquals(
+      listOf("internal:subagent_recovery_wait:child-restart"),
+      restoredFactory.detachedControlInputs,
+    )
+  }
+
+  @Test
   fun detachedSubAgentRecoveryTaskCanResumeByTaskIdWithoutQueueSnapshot() {
     val executor = RecordingExecutorService()
     val sessionId = "session-detached-subagent-recovery"
@@ -342,6 +432,89 @@ class AgentSessionRuntimeManagerTest {
     )
     assertTrue(runtimeFactory.detachedControlInputs.isEmpty())
     assertTrue(runtimeFactory.executedInputs.isEmpty())
+  }
+
+  @Test
+  fun detachedSubAgentRecoveryTaskCanResumeAfterManagerRestart() {
+    val sessionId = "session-detached-subagent-recovery-restart"
+    val firstExecutor = RecordingExecutorService()
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 1,
+      toolCallCount = 1,
+    )
+    val firstFactory = RecordingRuntimeFactory(
+      subAgentRecoveryResultFactory = { task ->
+        when (task.metadata[METADATA_EXECUTION_KIND]) {
+          EXECUTION_KIND_APPROVAL_RESUME -> ExecutionResult(
+            taskId = task.id,
+            status = ExecutionStatus.SUCCESS,
+            stdout = "resumed:${task.input}",
+            startedAtEpochMs = 1_200L,
+            finishedAtEpochMs = 1_201L,
+          )
+
+          else -> approvalRequiredResult(
+            taskId = task.id,
+            toolName = "Read",
+            resumeState = resumeState,
+          )
+        }
+      },
+    )
+    val firstManager = manager(
+      runtimeFactory = firstFactory,
+      executor = firstExecutor,
+    )
+    val firstHandle = firstManager.forSession(sessionId)
+    val submission = firstHandle.submitDetachedSubAgentRecoveryTask(
+      agentId = "child-restart",
+      parentRunId = "parent-run-restart",
+      taskId = "subagent-recovery-task-restart",
+      createdAtEpochMs = 1_000L,
+      submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
+    )
+
+    firstExecutor.runNext()
+    assertEquals(1, firstHandle.listDetachedControlTasks().size)
+
+    val restoredExecutor = RecordingExecutorService()
+    val restoredFactory = RecordingRuntimeFactory(
+      subAgentRecoveryResultFactory = { task ->
+        when (task.metadata[METADATA_EXECUTION_KIND]) {
+          EXECUTION_KIND_APPROVAL_RESUME -> ExecutionResult(
+            taskId = task.id,
+            status = ExecutionStatus.SUCCESS,
+            stdout = "resumed:${task.input}",
+            startedAtEpochMs = 1_300L,
+            finishedAtEpochMs = 1_301L,
+          )
+
+          else -> approvalRequiredResult(
+            taskId = task.id,
+            toolName = "Read",
+            resumeState = resumeState,
+          )
+        }
+      },
+    )
+    val restoredManager = manager(
+      runtimeFactory = restoredFactory,
+      executor = restoredExecutor,
+    )
+    val restoredHandle = restoredManager.forSession(sessionId)
+
+    assertEquals(1, restoredHandle.listDetachedControlTasks().size)
+    assertTrue(restoredHandle.requestResumeTask(submission.taskId))
+    assertEquals(1, restoredExecutor.pendingCount())
+
+    restoredExecutor.runNext()
+
+    assertEquals(ExecutionStatus.SUCCESS, restoredHandle.findRun(submission.runId)?.executionStatus)
+    assertTrue(restoredHandle.listDetachedControlTasks().isEmpty())
+    assertEquals(
+      listOf("internal:subagent_recovery_wait:child-restart"),
+      restoredFactory.subAgentRecoveryInputs,
+    )
   }
 
   @Test

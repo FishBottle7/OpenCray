@@ -318,8 +318,9 @@ class OpenCrayAgentRuntime(
       legacyJsonFallbackEnabled = false,
       responsesPreviousResponseId = config.promptResumeState?.responsesPreviousResponseId,
       responsesProviderLineageId = config.promptResumeState?.responsesProviderLineageId,
-      responsesLineageTrusted = config.promptResumeState == null,
-      responsesFullReplayRequired = config.promptResumeState != null,
+      responsesLineageTrusted = config.promptResumeState?.responsesLineageTrusted
+        ?: false,
+      responsesFullReplayRequired = false,
       responsesContinuationShape = config.promptResumeState?.responsesContinuationShape?.let { shape ->
         ResponsesContinuationShape(
           stableAnchor = shape.stableAnchor,
@@ -4968,7 +4969,7 @@ class OpenCrayAgentRuntime(
           state = OpenCrayPromptResumeState(
             transcript = transcript,
             turnIndex = turn,
-            toolCallCount = toolCallCount,
+            toolCallCount = toolCallCount + 1,
             pendingActions = pendingActions.map { action -> action.toSerializableModelAction() },
             nextActionIndex = nextActionIndex,
             requiresSingleActionReminder = requiresSingleActionReminder,
