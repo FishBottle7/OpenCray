@@ -12,6 +12,8 @@ internal object RunLifecycleMetadataKeys {
   const val HOST_INSTANCE_ID: String = "_host.hostInstanceId"
   const val RUNTIME_OWNER_ID: String = "_host.runtimeOwnerId"
   const val RUNTIME_CONTROLLER_ID: String = "_host.runtimeControllerId"
+  const val RUN_ATTEMPT: String = "_host.runAttempt"
+  const val RECOVERED_FROM_CHECKPOINT_ID: String = "_host.recoveredFromCheckpointId"
   const val SUBMISSION_SOURCE: String = "_host.submissionSource"
   const val PREAPPROVED_TOOL_NAME: String = "_host.preapprovedToolName"
 }
@@ -58,6 +60,7 @@ internal data class HostRuntimeLifecycleDescriptor(
     put(RunLifecycleMetadataKeys.HOST_INSTANCE_ID, hostInstanceId)
     put(RunLifecycleMetadataKeys.RUNTIME_OWNER_ID, runtimeOwnerId)
     put(RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_ID, runtimeControllerId)
+    put(RunLifecycleMetadataKeys.RUN_ATTEMPT, INITIAL_RUN_ATTEMPT.toString())
     submissionSource
       ?.trim()
       ?.takeIf(String::isNotBlank)
@@ -83,6 +86,8 @@ internal data class RunLifecycleDiagnostics(
   val hostInstanceId: String? = null,
   val runtimeOwnerId: String? = null,
   val runtimeControllerId: String? = null,
+  val runAttempt: Int? = null,
+  val recoveredFromCheckpointId: String? = null,
   val submissionSource: String? = null,
   val recoveryReason: String? = null,
   val queueRestoreEpochMs: Long? = null,
@@ -94,6 +99,8 @@ internal data class RunLifecycleDiagnostics(
       hostInstanceId.isNullOrBlank() &&
       runtimeOwnerId.isNullOrBlank() &&
       runtimeControllerId.isNullOrBlank() &&
+      runAttempt == null &&
+      recoveredFromCheckpointId.isNullOrBlank() &&
       submissionSource.isNullOrBlank() &&
       recoveryReason.isNullOrBlank() &&
       queueRestoreEpochMs == null &&
@@ -105,6 +112,8 @@ internal data class RunLifecycleDiagnostics(
     hostInstanceId?.takeIf(String::isNotBlank)?.let { put("hostInstanceId", it) }
     runtimeOwnerId?.takeIf(String::isNotBlank)?.let { put("runtimeOwnerId", it) }
     runtimeControllerId?.takeIf(String::isNotBlank)?.let { put("runtimeControllerId", it) }
+    runAttempt?.let { put("runAttempt", it) }
+    recoveredFromCheckpointId?.takeIf(String::isNotBlank)?.let { put("recoveredFromCheckpointId", it) }
     submissionSource?.takeIf(String::isNotBlank)?.let { put("submissionSource", it) }
     recoveryReason?.takeIf(String::isNotBlank)?.let { put("recoveryReason", it) }
     queueRestoreEpochMs?.let { put("queueRestoreEpochMs", it) }
@@ -130,6 +139,13 @@ internal fun runLifecycleDiagnosticsFrom(
     hostInstanceId = taskMetadata[RunLifecycleMetadataKeys.HOST_INSTANCE_ID]?.trim(),
     runtimeOwnerId = taskMetadata[RunLifecycleMetadataKeys.RUNTIME_OWNER_ID]?.trim(),
     runtimeControllerId = taskMetadata[RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_ID]?.trim(),
+    runAttempt = taskMetadata[RunLifecycleMetadataKeys.RUN_ATTEMPT]
+      ?.trim()
+      ?.toIntOrNull()
+      ?.takeIf { attempt -> attempt > 0 },
+    recoveredFromCheckpointId = taskMetadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID]
+      ?.trim()
+      ?.takeIf(String::isNotBlank),
     submissionSource = taskMetadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE]?.trim(),
     recoveryReason = recoveryReason,
     queueRestoreEpochMs = taskMetadata[METADATA_QUEUE_RESTORE_EPOCH_MS]?.toLongOrNull(),
@@ -179,3 +195,5 @@ internal fun lifecycleId(
   prefix: String,
   epochMs: Long = System.currentTimeMillis(),
 ): String = "$prefix-$epochMs-${UUID.randomUUID().toString().take(8)}"
+
+private const val INITIAL_RUN_ATTEMPT: Int = 1

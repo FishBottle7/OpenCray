@@ -149,6 +149,7 @@ class AgentSessionRuntimeManagerTest {
       submission.lifecycleDiagnostics.hostInstanceId,
       submission.lifecycleDiagnostics.runtimeOwnerId,
     )
+    assertEquals(1, submission.lifecycleDiagnostics.runAttempt)
     assertEquals("test_submit", submission.lifecycleDiagnostics.submissionSource)
     assertEquals(
       submission.lifecycleDiagnostics.processStartId,
@@ -158,6 +159,7 @@ class AgentSessionRuntimeManagerTest {
       submission.lifecycleDiagnostics.hostInstanceId,
       run.lifecycleDiagnostics.hostInstanceId,
     )
+    assertEquals(1, run.lifecycleDiagnostics.runAttempt)
     assertEquals("test_submit", run.lifecycleDiagnostics.submissionSource)
   }
 
@@ -685,6 +687,11 @@ class AgentSessionRuntimeManagerTest {
     assertEquals(QueueTaskLifecycleState.QUEUED, restoredRun.lifecycleState)
     assertTrue(restoredRun.lifecycleDiagnostics.previousLifecycleState != null)
     assertTrue(restoredRun.lifecycleDiagnostics.queueRestoreEpochMs != null)
+    assertEquals(2, restoredRun.lifecycleDiagnostics.runAttempt)
+    assertEquals(
+      "checkpoint-approved",
+      restoredRun.lifecycleDiagnostics.recoveredFromCheckpointId,
+    )
     assertEquals(null, restoredRun.executionStatus)
     assertEquals(null, restoredRun.errorCode)
     assertTrue(!restoredRun.isTerminal)

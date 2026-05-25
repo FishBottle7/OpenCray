@@ -59,6 +59,7 @@ class RecoveryAwareQueueSnapshotStoreTest {
     val runRecordStore = FileBackedAgentRunRecordStoreFactory(runtimeRoot).forChatSession(sessionId)
     val runEventJournalStore = FileBackedRunEventJournalStoreFactory(runtimeRoot).forChatSession(sessionId)
     val promptCheckpointStore = inMemoryPromptCheckpointStoreFactoryForTest().forChatSession(sessionId)
+    var nowEpochMs = 5_000L
 
     delegate.save(
       SessionQueueSnapshot(
@@ -114,7 +115,7 @@ class RecoveryAwareQueueSnapshotStoreTest {
       runEventJournalStore = runEventJournalStore,
       promptCheckpointStore = promptCheckpointStore,
       managedProcessesProvider = { emptyList() },
-      clock = { 5_000L },
+      clock = { nowEpochMs },
     )
 
     val restored = requireNotNull(store.load())
@@ -125,9 +126,31 @@ class RecoveryAwareQueueSnapshotStoreTest {
     assertEquals("5000", restoredTask.task.metadata[METADATA_QUEUE_RESTORE_EPOCH_MS])
     assertEquals("running", restoredTask.task.metadata[METADATA_PREVIOUS_LIFECYCLE_STATE])
     assertEquals("durable_general_resume_checkpoint", restoredTask.task.metadata[METADATA_RECOVERY_REASON])
+    assertEquals("2", restoredTask.task.metadata[RunLifecycleMetadataKeys.RUN_ATTEMPT])
+    assertEquals(
+      "checkpoint-general-resume",
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID],
+    )
+    val diagnostics = runLifecycleDiagnosticsFrom(restoredTask.task.metadata)
+    assertEquals(2, diagnostics.runAttempt)
+    assertEquals("checkpoint-general-resume", diagnostics.recoveredFromCheckpointId)
+    assertEquals(2, diagnostics.toMap()["runAttempt"])
+    assertEquals("checkpoint-general-resume", diagnostics.toMap()["recoveredFromCheckpointId"])
     assertEquals(5_000L, restoredTask.task.updatedAtEpochMs)
     assertNull(restoredTask.lastErrorCode)
     assertNull(restoredTask.lastErrorMessage)
+
+    delegate.save(restored)
+    nowEpochMs = 6_000L
+
+    val restoredAgain = requireNotNull(store.load()).tasks.single()
+
+    assertEquals("6000", restoredAgain.task.metadata[METADATA_QUEUE_RESTORE_EPOCH_MS])
+    assertEquals("2", restoredAgain.task.metadata[RunLifecycleMetadataKeys.RUN_ATTEMPT])
+    assertEquals(
+      "checkpoint-general-resume",
+      restoredAgain.task.metadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID],
+    )
   }
 
   @Test

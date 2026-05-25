@@ -447,7 +447,9 @@ Current implementation status:
 
 - `processStartId`, `hostInstanceId`, and `runtimeOwnerId` are already emitted through runtime diagnostics and run lifecycle metadata
 - `flutterAppInstanceId` and `bridgeInstanceId` are now emitted on client-delivered shell/chat runtime snapshot payloads and shown in the runtime diagnostics page
-- `runAttempt`, `recoveredFromCheckpointId`, and broader journal-side recovery stamping are still follow-up slices
+- `runAttempt` is now stamped on new run/task metadata and advanced by recovery-aware queue restore when a restore plan rewrites the task lifecycle
+- `recoveredFromCheckpointId` is now stamped for checkpoint-driven recovery rewrites and projected through run lifecycle diagnostics
+- broader journal-side recovery stamping is still a follow-up slice
 
 Where to emit them:
 

@@ -305,6 +305,7 @@ internal class RecoveryAwareQueueSnapshotStore(
           result = requireNotNull(runRecord?.lastResult),
           restoreEpochMs = restoreEpochMs,
           recoveryPlan = recoveryPlan,
+          checkpoint = checkpoint,
         )
       } else {
         entry
@@ -327,6 +328,7 @@ internal class RecoveryAwareQueueSnapshotStore(
               entry = entry,
               restoreEpochMs = restoreEpochMs,
               recoveryPlan = recoveryPlan,
+              checkpoint = checkpoint,
             ),
           ),
           lastErrorCode = null,
@@ -351,6 +353,7 @@ internal class RecoveryAwareQueueSnapshotStore(
               entry = entry,
               restoreEpochMs = restoreEpochMs,
               recoveryPlan = recoveryPlan,
+              checkpoint = checkpoint,
             ),
           ),
           lastErrorCode = approvalErrorCode(runRecord?.lastResult, checkpoint),
@@ -375,6 +378,7 @@ internal class RecoveryAwareQueueSnapshotStore(
               entry = entry,
               restoreEpochMs = restoreEpochMs,
               recoveryPlan = recoveryPlan,
+              checkpoint = checkpoint,
             ),
           ),
           lastErrorCode = entry.lastErrorCode,
@@ -399,6 +403,7 @@ internal class RecoveryAwareQueueSnapshotStore(
               entry = entry,
               restoreEpochMs = restoreEpochMs,
               recoveryPlan = recoveryPlan,
+              checkpoint = checkpoint,
             ),
           ),
           lastErrorCode = null,
@@ -423,6 +428,7 @@ internal class RecoveryAwareQueueSnapshotStore(
               entry = entry,
               restoreEpochMs = restoreEpochMs,
               recoveryPlan = recoveryPlan,
+              checkpoint = checkpoint,
             ),
           ),
         )
@@ -445,6 +451,7 @@ internal class RecoveryAwareQueueSnapshotStore(
               entry = entry,
               restoreEpochMs = restoreEpochMs,
               recoveryPlan = recoveryPlan,
+              checkpoint = checkpoint,
             ),
           ),
           lastErrorCode = ERROR_RESTART_REQUIRES_EXPLICIT_RETRY,
@@ -462,6 +469,7 @@ internal class RecoveryAwareQueueSnapshotStore(
     result: ExecutionResult,
     restoreEpochMs: Long,
     recoveryPlan: RunRecoveryPlan,
+    checkpoint: PersistedPromptCheckpoint?,
   ): SessionQueueTaskSnapshot {
     val lifecycleState = when (result.status) {
       ExecutionStatus.SUCCESS -> QueueTaskLifecycleState.COMPLETED
@@ -507,6 +515,7 @@ internal class RecoveryAwareQueueSnapshotStore(
           entry = entry,
           restoreEpochMs = restoreEpochMs,
           recoveryPlan = recoveryPlan,
+          checkpoint = checkpoint,
         ),
       ),
       lastErrorCode = clearedErrorCode,
@@ -682,10 +691,19 @@ internal class RecoveryAwareQueueSnapshotStore(
     entry: SessionQueueTaskSnapshot,
     restoreEpochMs: Long,
     recoveryPlan: RunRecoveryPlan? = null,
+    checkpoint: PersistedPromptCheckpoint? = null,
   ): Map<String, String> {
     val shouldStampRestore = shouldStampRestoreMetadata(
       entry = entry,
       recoveryPlan = recoveryPlan,
+    )
+    val recoveryReason = recoveryPlan
+      ?.reasonCode
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val recoveredCheckpointId = recoveredCheckpointIdFor(
+      recoveryPlan = recoveryPlan,
+      checkpoint = checkpoint,
     )
     return buildMap {
       putAll(
@@ -693,6 +711,8 @@ internal class RecoveryAwareQueueSnapshotStore(
           key != METADATA_QUEUE_RESTORE_EPOCH_MS &&
             key != METADATA_PREVIOUS_LIFECYCLE_STATE &&
             key != METADATA_RECOVERY_REASON &&
+            key != RunLifecycleMetadataKeys.RUN_ATTEMPT &&
+            key != RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID &&
             (
               recoveryPlan?.action != RunRecoveryAction.RESUME_FROM_CHECKPOINT ||
                 (
@@ -713,14 +733,70 @@ internal class RecoveryAwareQueueSnapshotStore(
       if (shouldStampRestore) {
         put(METADATA_QUEUE_RESTORE_EPOCH_MS, restoreEpochMs.toString())
         put(METADATA_PREVIOUS_LIFECYCLE_STATE, previousLifecycleState(entry))
-        recoveryPlan
-          ?.reasonCode
-          ?.trim()
-          ?.takeIf(String::isNotBlank)
-          ?.let { reasonCode ->
-            put(METADATA_RECOVERY_REASON, reasonCode)
-          }
+        put(
+          RunLifecycleMetadataKeys.RUN_ATTEMPT,
+          restoredRunAttempt(
+            entry = entry,
+            recoveryReason = recoveryReason,
+            recoveredCheckpointId = recoveredCheckpointId,
+          ).toString(),
+        )
+        recoveryReason?.let { reasonCode ->
+          put(METADATA_RECOVERY_REASON, reasonCode)
+        }
+        recoveredCheckpointId?.let { checkpointId ->
+          put(RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID, checkpointId)
+        }
       }
+    }
+  }
+
+  private fun restoredRunAttempt(
+    entry: SessionQueueTaskSnapshot,
+    recoveryReason: String?,
+    recoveredCheckpointId: String?,
+  ): Int {
+    val existingRunAttempt = entry.task.metadata[RunLifecycleMetadataKeys.RUN_ATTEMPT]
+      ?.trim()
+      ?.toIntOrNull()
+      ?.takeIf { attempt -> attempt > 0 }
+    val previousRecoveryReason = entry.task.metadata[METADATA_RECOVERY_REASON]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val previousCheckpointId = entry.task.metadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    if (
+      existingRunAttempt != null &&
+      previousRecoveryReason == recoveryReason &&
+      previousCheckpointId == recoveredCheckpointId
+    ) {
+      return existingRunAttempt
+    }
+    return (existingRunAttempt ?: DEFAULT_RUN_ATTEMPT) + 1
+  }
+
+  private fun recoveredCheckpointIdFor(
+    recoveryPlan: RunRecoveryPlan?,
+    checkpoint: PersistedPromptCheckpoint?,
+  ): String? {
+    val checkpointId = checkpoint
+      ?.checkpointId
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return null
+    return when (recoveryPlan?.action) {
+      RunRecoveryAction.RESUME_FROM_CHECKPOINT,
+      RunRecoveryAction.RESUME_WAITING_FOR_APPROVAL,
+      RunRecoveryAction.RESUME_WAITING_FOR_USER,
+      RunRecoveryAction.STOP_REJECTED_AWAITING_DIRECTION,
+      -> checkpointId
+
+      RunRecoveryAction.RESTORE_TERMINAL_RESULT,
+      RunRecoveryAction.RESUME_RECONNECT_PROCESS,
+      RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED,
+      null,
+      -> null
     }
   }
 
@@ -921,6 +997,7 @@ internal class RecoveryAwareQueueSnapshotStore(
   }
 
   private companion object {
+    private const val DEFAULT_RUN_ATTEMPT: Int = 1
   }
 }
 
