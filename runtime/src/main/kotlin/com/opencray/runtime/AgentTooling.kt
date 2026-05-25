@@ -41,6 +41,7 @@ import com.opencray.runtime.process.ManagedProcessDeliveredObservationState
 import com.opencray.runtime.process.InMemoryAgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
+import com.opencray.runtime.process.ManagedProcessRuntimeIdentity
 import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.process.normalizedDeliveredObservationState
 import com.opencray.runtime.process.normalizedObservationState
@@ -3086,6 +3087,7 @@ class OpenCrayToolDispatcher(
         workingDirectory = launch.workingDirectory.toString(),
         timeoutMs = processTimeoutMs,
         requestedAtEpochMs = System.currentTimeMillis(),
+        ownerIdentity = managedProcessOwnerIdentity(task),
         metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
           "workingDirectory" to toolTargetResolver.displayModelPath(launch.workingDirectory),
         ) + launch.metadata,
@@ -3234,6 +3236,7 @@ class OpenCrayToolDispatcher(
         workingDirectory = launch.workingDirectory.toString(),
         timeoutMs = timeoutMs,
         requestedAtEpochMs = System.currentTimeMillis(),
+        ownerIdentity = managedProcessOwnerIdentity(task),
         metadata = toolPolicyPipeline.policyMetadata(plan) + mapOf(
           "workingDirectory" to toolTargetResolver.displayModelPath(launch.workingDirectory),
         ) + launch.metadata,
@@ -4659,6 +4662,19 @@ class OpenCrayToolDispatcher(
       ?.trim()
       ?.takeIf(String::isNotBlank)
       ?.let { candidate -> runCatching { Paths.get(candidate) }.getOrNull() }
+
+  private fun managedProcessOwnerIdentity(task: AgentTask): ManagedProcessRuntimeIdentity? {
+    val processStartId = task.metadata["_host.processStartId"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val runtimeControllerId = task.metadata["_host.runtimeControllerId"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    return ManagedProcessRuntimeIdentity(
+      processStartId = processStartId,
+      runtimeControllerId = runtimeControllerId,
+    ).takeUnless(ManagedProcessRuntimeIdentity::isEmpty)
+  }
 
   private fun managedProcessMetadata(snapshot: ManagedProcessSnapshot): Map<String, String> = buildMap {
     val normalizedSnapshot = snapshot.withNormalizedRemoteState()
@@ -7214,6 +7230,9 @@ class OpenCrayToolDispatcher(
       "resultLimitApplied",
       "resultTruncated",
       "resultLimitKind",
+      "managedProcessRestoreScope",
+      "managedProcessRestoreCurrentProcessStartId",
+      "managedProcessRestoreCurrentRuntimeControllerId",
     )
   }
 

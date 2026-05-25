@@ -11,6 +11,9 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     val snapshot = buildMap<String, Any?> {
       putRuntimeServiceDiagnosticsSnapshot(
         hostLifecycle = HostRuntimeLifecycleDescriptor(hostInstanceId = "host-a"),
+        runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
+          controllerInstanceId = "controller-a",
+        ),
         runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(hostInstanceId = "owner-a"),
         runtimeOwnerWorkSummary = RuntimeOwnerWorkSummary(activeRunCount = 2),
         includeNullRuntimeServiceFields = true,
@@ -26,6 +29,10 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertTrue(snapshot.containsKey("runtimeServiceConnectionState"))
     assertEquals(null, snapshot["runtimeServiceConnectionState"])
     assertEquals("host-a", (snapshot["hostLifecycle"] as Map<*, *>)["hostInstanceId"])
+    assertEquals(
+      "controller-a",
+      (snapshot["runtimeControllerLifecycle"] as Map<*, *>)["controllerInstanceId"],
+    )
     assertEquals("owner-a", (snapshot["runtimeOwnerLifecycle"] as Map<*, *>)["hostInstanceId"])
   }
 

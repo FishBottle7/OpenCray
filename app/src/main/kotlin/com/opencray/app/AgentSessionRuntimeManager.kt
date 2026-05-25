@@ -31,6 +31,9 @@ import com.opencray.runtime.OpenCrayAgentEngine
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
 import java.util.UUID
@@ -68,6 +71,7 @@ internal data class AgentRunSnapshot(
   val managedProcessIds: List<String> = emptyList(),
   val runningManagedProcessCount: Int = 0,
   val hasLiveManagedProcesses: Boolean = false,
+  val hasAutoResumeEligibleManagedProcesses: Boolean = false,
   val lastEvent: OpenCrayAgentRunEvent? = null,
   val lifecycleDiagnostics: RunLifecycleDiagnostics = RunLifecycleDiagnostics(),
 ) {
@@ -138,6 +142,8 @@ internal interface AgentSessionRuntimeManager {
   fun activeWorkSummary(): RuntimeOwnerWorkSummary = RuntimeOwnerWorkSummary()
 
   fun release(sessionId: String)
+
+  fun releaseAllSessions() = Unit
 
   fun releaseIdleSessions()
 }
@@ -215,9 +221,7 @@ internal interface AgentSessionHandle {
       parentRunId = parentRunId,
       taskId = taskId,
       createdAtEpochMs = createdAtEpochMs,
-      metadata = HostRuntimeLifecycleDescriptor().taskMetadata(
-        submissionSource = submissionSource,
-      ),
+      metadata = submissionSourceTaskMetadata(submissionSource),
     ),
   )
 
@@ -305,7 +309,7 @@ internal class DefaultAgentSessionRuntimeManager(
   private val promptCheckpointStoreFactory: PromptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory(),
   private val executor: ExecutorService,
   private val subAgentRecoveryExecutor: ExecutorService = executor,
-  private val runtimeLifecycle: HostRuntimeLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+  private val runtimeLifecycleProvider: () -> HostRuntimeLifecycleDescriptor,
 ) : AgentSessionRuntimeManager {
   private val listeners = linkedSetOf<AgentSessionRuntimeListener>()
   private val sessions = linkedMapOf<String, ManagedAgentSessionHandle>()
@@ -323,7 +327,7 @@ internal class DefaultAgentSessionRuntimeManager(
         promptCheckpointStore = promptCheckpointStoreFactory.forChatSession(sessionId),
         executor = executor,
         subAgentRecoveryExecutor = subAgentRecoveryExecutor,
-        runtimeLifecycle = runtimeLifecycle,
+        runtimeLifecycleProvider = runtimeLifecycleProvider,
         listenerProvider = { synchronized(lock) { listeners.toList() } },
       )
     }.also { it.touch() }
@@ -389,6 +393,15 @@ internal class DefaultAgentSessionRuntimeManager(
     }
   }
 
+  override fun releaseAllSessions() {
+    val releasedSessionIds = synchronized(lock) {
+      val currentSessionIds = sessions.keys.toList()
+      sessions.clear()
+      currentSessionIds
+    }
+    releasedSessionIds.forEach(runtimeFactory::releaseSession)
+  }
+
   override fun releaseIdleSessions() {
     val releasedSessionIds = mutableListOf<String>()
     synchronized(lock) {
@@ -419,7 +432,7 @@ private class ManagedAgentSessionHandle(
   private val promptCheckpointStore: PromptCheckpointStore,
   private val executor: ExecutorService,
   private val subAgentRecoveryExecutor: ExecutorService,
-  private val runtimeLifecycle: HostRuntimeLifecycleDescriptor,
+  private val runtimeLifecycleProvider: () -> HostRuntimeLifecycleDescriptor,
   private val listenerProvider: () -> List<AgentSessionRuntimeListener>,
 ) : AgentSessionHandle {
   private val runLock = Any()
@@ -429,14 +442,16 @@ private class ManagedAgentSessionHandle(
   private val processingLock = Any()
   private var processing: Boolean = false
   private var lastAccessEpochMs: Long = System.currentTimeMillis()
-  private val snapshotStore: SessionQueueSnapshotStore = RecoveryAwareQueueSnapshotStore(
-    sessionId = sessionId,
-    delegate = snapshotStoreFactory.forChatSession(sessionId),
-    runRecordStore = runRecordStore,
-    runEventJournalStore = runEventJournalStore,
-    promptCheckpointStore = promptCheckpointStore,
-    managedProcessesProvider = { runtimeFactory.listManagedProcesses(sessionId) },
-  )
+  private val snapshotStore: SessionQueueSnapshotStore = snapshotStoreFactory.forChatSession(sessionId)
+  private val snapshotRestoreTransformer: RecoveryAwareQueueSnapshotStore =
+    RecoveryAwareQueueSnapshotStore(
+      sessionId = sessionId,
+      delegate = snapshotStore,
+      runRecordStore = runRecordStore,
+      runEventJournalStore = runEventJournalStore,
+      promptCheckpointStore = promptCheckpointStore,
+      managedProcessesProvider = { runtimeFactory.listManagedProcesses(sessionId) },
+    )
   private val runtimeEventSink: OpenCrayAgentRuntimeEventSink = object : OpenCrayAgentRuntimeEventSink {
     override fun onRunEvent(task: AgentTask, event: OpenCrayAgentRunEvent) {
       val enrichedEvent = enrichEventExecutionContext(
@@ -497,7 +512,7 @@ private class ManagedAgentSessionHandle(
     sessionId = sessionId,
     runtimeFactory = runtimeFactory,
     executor = subAgentRecoveryExecutor,
-    runtimeLifecycle = runtimeLifecycle,
+    runtimeLifecycleProvider = runtimeLifecycleProvider,
     runtimeEventSink = runtimeEventSink,
     callbacks = SessionSubAgentRecoveryDriverCallbacks(
       recordSubmission = ::recordDetachedRecoverySubmission,
@@ -551,6 +566,7 @@ private class ManagedAgentSessionHandle(
       }
       result
     },
+    restoreTransformer = snapshotRestoreTransformer,
   ).create(
     sessionId = sessionId,
     agentId = agentId,
@@ -578,7 +594,7 @@ private class ManagedAgentSessionHandle(
       input = userText,
       policyDecision = policyDecision,
       createdAtEpochMs = System.currentTimeMillis(),
-      metadata = runtimeLifecycle.taskMetadata() + metadata + mapOf(
+      metadata = runtimeLifecycleProvider().stampTaskMetadata(metadata) + mapOf(
         AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-$sessionId-${UUID.randomUUID().toString().take(8)}",
         AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to sessionId,
         AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to pendingMessageId,
@@ -594,7 +610,7 @@ private class ManagedAgentSessionHandle(
     val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
       ?.takeIf(String::isNotBlank)
       ?: "run-$sessionId-${UUID.randomUUID().toString().take(8)}"
-    val normalizedMetadata = runtimeLifecycle.taskMetadata() + task.metadata
+    val normalizedMetadata = runtimeLifecycleProvider().stampTaskMetadata(task.metadata)
     val queuedTask = if (
       task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
         ?.takeIf(String::isNotBlank) == runId
@@ -633,7 +649,7 @@ private class ManagedAgentSessionHandle(
     val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
       ?.takeIf(String::isNotBlank)
       ?: "run-$sessionId-${UUID.randomUUID().toString().take(8)}"
-    val normalizedMetadata = runtimeLifecycle.taskMetadata() + task.metadata + mapOf(
+    val normalizedMetadata = runtimeLifecycleProvider().stampTaskMetadata(task.metadata) + mapOf(
       AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
       AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to sessionId,
     )
@@ -1636,6 +1652,7 @@ private class ManagedAgentSessionHandle(
     }
     val startedAtEpochMs = record.submission.acceptedAtEpochMs
     val finishedAtEpochMs = maxOf(startedAtEpochMs, latestUpdateEpochMs)
+    val restoreMetadata = associatedManagedProcessRestoreMetadata(associatedProcesses)
     return ExecutionResult(
       taskId = record.submission.taskId,
       status = ExecutionStatus.FAILED,
@@ -1655,8 +1672,40 @@ private class ManagedAgentSessionHandle(
         METADATA_RESTORED_FROM_DURABLE_STORE to "true",
         METADATA_RUN_REPAIR_SOURCE to RUN_REPAIR_SOURCE_MANAGED_PROCESS_RESTORE,
         "managedProcessIds" to orderedProcessIds.joinToString(","),
-      ),
+      ) + restoreMetadata,
     )
+  }
+
+  private fun associatedManagedProcessRestoreMetadata(
+    associatedProcesses: List<ManagedProcessSnapshot>,
+  ): Map<String, String> {
+    val restoreMetadata = associatedProcesses
+      .asSequence()
+      .map(ManagedProcessSnapshot::metadata)
+      .firstOrNull { metadata ->
+        metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY]
+          ?.trim()
+          ?.takeIf(String::isNotBlank) != null
+      }
+      ?: return emptyMap()
+    return buildMap {
+      restoreMetadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { scope -> put(MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY, scope) }
+      restoreMetadata[MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { processStartId ->
+          put(MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY, processStartId)
+        }
+      restoreMetadata[MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { runtimeControllerId ->
+          put(MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY, runtimeControllerId)
+        }
+    }
   }
 
   private fun associatedManagedProcessIds(

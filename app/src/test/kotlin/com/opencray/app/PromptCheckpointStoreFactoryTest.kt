@@ -76,6 +76,16 @@ class PromptCheckpointStoreFactoryTest {
   }
 
   @Test
+  fun finalizationCheckpointKindIsTrackedButNotTreatedAsResumable() {
+    assertEquals(false, PromptCheckpointKind.FINALIZATION_COMPLETE.isCheckpointResumeKind())
+    assertEquals(false, PromptCheckpointKind.FINALIZATION_COMPLETE.isGeneralPromptResumeKind())
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.FINALIZATION_COMPLETE,
+      PromptCheckpointKind.FINALIZATION_COMPLETE.toRuntimeCheckpointBoundaryOrNull(),
+    )
+  }
+
+  @Test
   fun fileBackedStoreRetainsAndRemovesKnownTasks() {
     val runtimeRoot = temporaryFolder.newFolder("runtime-prompt-checkpoints-retain")
     val store = FileBackedPromptCheckpointStoreFactory(runtimeRoot).forChatSession("session-1")

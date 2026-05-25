@@ -44,8 +44,9 @@ internal class ProjectionOnlyOpenCrayShellGateway(
   private val hostSummary: String,
   private val connectionStateProvider: () -> RuntimeServiceConnectionState?,
   private val projectionSnapshotProvider: () -> RuntimeServiceProjectionSnapshot? = { null },
+  private val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? = { null },
   private val mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
-  private val hostLifecycleDescriptor: HostRuntimeLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+  private val hostLifecycleDescriptor: HostRuntimeLifecycleDescriptor,
   private val pollIntervalMs: Long = DEFAULT_PROJECTION_SHELL_POLL_INTERVAL_MS,
 ) : OpenCrayShellGateway {
   override fun loadShellSnapshot(): Map<String, Any?> = buildMap {
@@ -57,8 +58,9 @@ internal class ProjectionOnlyOpenCrayShellGateway(
     put("isHostConnected", true)
     putRuntimeServiceDiagnosticsSnapshot(
       localRuntimeServerState = projectionSnapshot?.localRuntimeServerState
-        ?: OpenCrayLocalRuntimeServerRegistry.peekState(),
+        ?: localRuntimeServerStateProvider(),
       hostLifecycle = hostLifecycleDescriptor,
+      runtimeControllerLifecycle = projectionSnapshot?.runtimeControllerLifecycle,
       runtimeOwnerLifecycle = projectionSnapshot?.runtimeOwnerLifecycle,
       runtimeOwnerWorkSummary = projectionSnapshot?.runtimeOwnerWorkSummary,
       runtimeServiceLifecycle = projectionSnapshot?.serviceLifecycle,
@@ -337,6 +339,7 @@ internal class ProjectionOnlyOpenCraySkillsGateway(
 internal fun projectionOnlyOpenCrayShellGateway(
   context: Context,
   serviceClient: OpenCrayRuntimeServiceClient,
+  hostLifecycleDescriptor: HostRuntimeLifecycleDescriptor,
 ): OpenCrayShellGateway {
   val appContext = context.applicationContext
   val localizedContext = OpenCrayLocaleManager.wrap(appContext)
@@ -345,9 +348,10 @@ internal fun projectionOnlyOpenCrayShellGateway(
     localeTagProvider = { LocaleSettingsStore.fromContext(appContext).loadLanguage().tag },
     hostLabel = localizedContext.getString(R.string.flutter_host_label_android),
     hostSummary = localizedContext.getString(R.string.flutter_host_summary_android),
-    connectionStateProvider = serviceClient::loadConnectionState,
+    connectionStateProvider = serviceClient::peekConnectionState,
     projectionSnapshotProvider = serviceClient::peekProjectionSnapshot,
     mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
+    hostLifecycleDescriptor = hostLifecycleDescriptor,
   )
 }
 

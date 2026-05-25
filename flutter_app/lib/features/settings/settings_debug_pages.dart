@@ -644,6 +644,8 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
   Widget _buildHostOwnershipCard(OpenCrayShellSnapshot snapshot) {
     final hostLifecycle = snapshot.hostLifecycle;
     final ownerLifecycle = snapshot.runtimeOwnerLifecycle;
+    final flutterAppInstanceId = snapshot.flutterAppInstanceId?.trim();
+    final bridgeInstanceId = snapshot.bridgeInstanceId?.trim();
     final detachedOwner =
         hostLifecycle != null &&
         ownerLifecycle != null &&
@@ -678,8 +680,28 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
                     label: 'Owner',
                     value: ownerLifecycle!.runtimeOwnerId!.trim(),
                   ),
+                if (flutterAppInstanceId?.isNotEmpty == true)
+                  _DebugValueChip(
+                    label: 'Flutter app',
+                    value: flutterAppInstanceId!,
+                  ),
+                if (bridgeInstanceId?.isNotEmpty == true)
+                  _DebugValueChip(label: 'Bridge', value: bridgeInstanceId!),
               ],
             ),
+            if (flutterAppInstanceId?.isNotEmpty == true ||
+                bridgeInstanceId?.isNotEmpty == true) ...[
+              const SizedBox(height: 12),
+              const Text(
+                'Client attach',
+                style: _SettingsTextStyles.bodyStrong,
+              ),
+              const SizedBox(height: 8),
+              if (flutterAppInstanceId?.isNotEmpty == true)
+                _DebugKeyValueLine('Flutter app', flutterAppInstanceId!),
+              if (bridgeInstanceId?.isNotEmpty == true)
+                _DebugKeyValueLine('Bridge', bridgeInstanceId!),
+            ],
             if (hostLifecycle != null) ...[
               const SizedBox(height: 12),
               const Text('Current host', style: _SettingsTextStyles.bodyStrong),

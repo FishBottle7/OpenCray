@@ -31,8 +31,16 @@ import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.process.ManagedProcessController
+import com.opencray.runtime.process.ManagedProcessRuntimeIdentity
+import com.opencray.runtime.process.ManagedProcessStartRequest
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
 import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessRestoreScope
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.process.ReconnectableManagedProcessControllerFactory
 import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
 import com.opencray.runtime.subagent.SubAgentHandleState
 import java.util.concurrent.AbstractExecutorService
@@ -151,6 +159,154 @@ class AgentSessionRuntimeManagerTest {
       run.lifecycleDiagnostics.hostInstanceId,
     )
     assertEquals("test_submit", run.lifecycleDiagnostics.submissionSource)
+  }
+
+  @Test
+  fun submitTaskRestampsLifecycleMetadataWithCurrentRuntimeLifecycle() {
+    val runtimeLifecycle = HostRuntimeLifecycleDescriptor(
+      processStartId = "process-current",
+      hostInstanceId = "host-current",
+      runtimeOwnerId = "owner-current",
+      runtimeControllerId = "controller-current",
+      hostCreatedAtEpochMs = 1_000L,
+    )
+    val staleLifecycle = HostRuntimeLifecycleDescriptor(
+      processStartId = "process-stale",
+      hostInstanceId = "host-stale",
+      runtimeOwnerId = "owner-stale",
+      runtimeControllerId = "controller-stale",
+      hostCreatedAtEpochMs = 500L,
+    )
+    val manager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+      runtimeLifecycleProvider = { runtimeLifecycle },
+    )
+    val handle = manager.forSession("session-restamp-submit-task")
+
+    val submission = handle.submitTask(
+      AgentTask(
+        id = "task-restamp-submit-task",
+        type = com.opencray.core.contracts.AgentTaskType.SYSTEM,
+        input = "internal:restamp-submit-task",
+        policyDecision = allowDecision(),
+        createdAtEpochMs = 1_100L,
+        metadata = staleLifecycle.taskMetadata(
+          submissionSource = "preserved_source",
+        ),
+      ),
+    )
+
+    assertEquals("process-current", submission.lifecycleDiagnostics.processStartId)
+    assertEquals("host-current", submission.lifecycleDiagnostics.hostInstanceId)
+    assertEquals("owner-current", submission.lifecycleDiagnostics.runtimeOwnerId)
+    assertEquals("controller-current", submission.lifecycleDiagnostics.runtimeControllerId)
+    assertEquals("preserved_source", submission.lifecycleDiagnostics.submissionSource)
+  }
+
+  @Test
+  fun submitDetachedControlTaskRestampsLifecycleMetadataWithCurrentRuntimeLifecycle() {
+    val runtimeLifecycle = HostRuntimeLifecycleDescriptor(
+      processStartId = "process-current-detached",
+      hostInstanceId = "host-current-detached",
+      runtimeOwnerId = "owner-current-detached",
+      runtimeControllerId = "controller-current-detached",
+      hostCreatedAtEpochMs = 2_000L,
+    )
+    val staleLifecycle = HostRuntimeLifecycleDescriptor(
+      processStartId = "process-stale-detached",
+      hostInstanceId = "host-stale-detached",
+      runtimeOwnerId = "owner-stale-detached",
+      runtimeControllerId = "controller-stale-detached",
+      hostCreatedAtEpochMs = 1_500L,
+    )
+    val manager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+      runtimeLifecycleProvider = { runtimeLifecycle },
+    )
+    val handle = manager.forSession("session-restamp-detached-task")
+
+    val submission = handle.submitDetachedControlTask(
+      AgentTask(
+        id = "task-restamp-detached-task",
+        type = com.opencray.core.contracts.AgentTaskType.SYSTEM,
+        input = "internal:restamp-detached-task",
+        policyDecision = allowDecision(),
+        createdAtEpochMs = 2_100L,
+        metadata = staleLifecycle.taskMetadata(
+          submissionSource = "preserved_detached_source",
+        ),
+      ),
+    )
+
+    assertEquals(
+      "process-current-detached",
+      submission.lifecycleDiagnostics.processStartId,
+    )
+    assertEquals("host-current-detached", submission.lifecycleDiagnostics.hostInstanceId)
+    assertEquals("owner-current-detached", submission.lifecycleDiagnostics.runtimeOwnerId)
+    assertEquals(
+      "controller-current-detached",
+      submission.lifecycleDiagnostics.runtimeControllerId,
+    )
+    assertEquals(
+      "preserved_detached_source",
+      submission.lifecycleDiagnostics.submissionSource,
+    )
+  }
+
+  @Test
+  fun existingSessionHandleUsesUpdatedRuntimeLifecycleProviderAcrossOwnerReplacement() {
+    var runtimeLifecycle = HostRuntimeLifecycleDescriptor(
+      processStartId = "process-retained",
+      hostInstanceId = "host-initial",
+      runtimeOwnerId = "owner-initial",
+      runtimeControllerId = "controller-retained",
+      hostCreatedAtEpochMs = 1_000L,
+    )
+    val manager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+      runtimeLifecycleProvider = { runtimeLifecycle },
+    )
+    val handle = manager.forSession("session-retained-owner")
+
+    val initialSubmission = handle.submitTask(
+      AgentTask(
+        id = "task-initial-owner",
+        type = AgentTaskType.SYSTEM,
+        input = "internal:initial-owner",
+        policyDecision = allowDecision(),
+        createdAtEpochMs = 1_100L,
+      ),
+    )
+
+    runtimeLifecycle = HostRuntimeLifecycleDescriptor(
+      processStartId = "process-retained",
+      hostInstanceId = "host-replaced",
+      runtimeOwnerId = "owner-replaced",
+      runtimeControllerId = "controller-retained",
+      hostCreatedAtEpochMs = 2_000L,
+    )
+    val replacementSubmission = handle.submitTask(
+      AgentTask(
+        id = "task-replaced-owner",
+        type = AgentTaskType.SYSTEM,
+        input = "internal:replaced-owner",
+        policyDecision = allowDecision(),
+        createdAtEpochMs = 2_100L,
+      ),
+    )
+
+    assertEquals("owner-initial", initialSubmission.lifecycleDiagnostics.runtimeOwnerId)
+    assertEquals("host-initial", initialSubmission.lifecycleDiagnostics.hostInstanceId)
+    assertEquals("owner-replaced", replacementSubmission.lifecycleDiagnostics.runtimeOwnerId)
+    assertEquals("host-replaced", replacementSubmission.lifecycleDiagnostics.hostInstanceId)
+    assertEquals(
+      listOf("owner-replaced", "owner-initial"),
+      handle.listRuns().map(AgentRunSnapshot::lifecycleDiagnostics).map { it.runtimeOwnerId },
+    )
   }
 
   @Test
@@ -772,6 +928,85 @@ class AgentSessionRuntimeManagerTest {
       QueueTaskLifecycleState.SUSPENDED,
       restoredHandle.findRun(submission.runId)?.lifecycleState,
     )
+  }
+
+  @Test
+  fun restoredSessionHandleReconnectsLiveManagedProcessAcrossRuntimeOwnerRebuild() {
+    val sessionId = "session-cross-owner-process-reconnect"
+    val firstOwnerIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-owner-1",
+      runtimeControllerId = "controller-owner-1",
+    )
+    val reconnectableFactory = ReconnectableCountingManagedProcessControllerFactory()
+    val firstProcessRegistryFactory = FileBackedAgentProcessRegistryFactory(
+      runtimeRootDirectory = temporaryFolder.root,
+      controllerFactory = reconnectableFactory,
+      runtimeIdentity = firstOwnerIdentity,
+    )
+    val firstManager = manager(
+      runtimeFactory = RegistryBackedRuntimeFactory(firstProcessRegistryFactory),
+      executor = RecordingExecutorService(),
+    )
+    val firstHandle = firstManager.forSession(sessionId)
+
+    val submission = firstHandle.submitPrompt(
+      userText = "keep the remote process attached",
+      pendingMessageId = "pending-cross-owner-process-reconnect",
+      visibleThroughMessageId = "pending-cross-owner-process-reconnect",
+      policyDecision = allowDecision(),
+    )
+    overwriteQueueSnapshot(
+      sessionId = sessionId,
+      snapshot = firstHandle.snapshot(),
+      taskId = submission.taskId,
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+    )
+    firstProcessRegistryFactory.forChatSession(sessionId).start(
+      managedProcessStartRequest(
+        processId = "proc-cross-owner-live",
+        taskId = submission.taskId,
+        ownerIdentity = firstOwnerIdentity,
+      ),
+    )
+    firstManager.release(sessionId)
+
+    val restoredProcessRegistryFactory = FileBackedAgentProcessRegistryFactory(
+      runtimeRootDirectory = temporaryFolder.root,
+      controllerFactory = reconnectableFactory,
+      runtimeIdentity = ManagedProcessRuntimeIdentity(
+        processStartId = "process-owner-2",
+        runtimeControllerId = "controller-owner-2",
+      ),
+    )
+    val restoredManager = manager(
+      runtimeFactory = RegistryBackedRuntimeFactory(restoredProcessRegistryFactory),
+      executor = RecordingExecutorService(),
+    )
+
+    val restoredHandle = restoredManager.forSession(sessionId)
+
+    assertEquals(1, reconnectableFactory.reconnectCount)
+
+    val restoredProcess = restoredHandle.listManagedProcesses().single()
+    assertEquals(ManagedProcessStatus.RUNNING, restoredProcess.status)
+    assertEquals("true", restoredProcess.metadata["reconnected"])
+    assertEquals(
+      ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+      restoredProcess.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY],
+    )
+    assertEquals(
+      "process-owner-2",
+      restoredProcess.metadata[MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY],
+    )
+    assertEquals(
+      "controller-owner-2",
+      restoredProcess.metadata[MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY],
+    )
+
+    val restoredRun = restoredHandle.findRun(submission.runId)
+    assertEquals(QueueTaskLifecycleState.SUSPENDED, restoredRun?.lifecycleState)
+    assertEquals(null, restoredRun?.errorCode)
+    assertTrue(restoredRun?.hasLiveManagedProcesses == true)
   }
 
   @Test
@@ -1568,6 +1803,11 @@ class AgentSessionRuntimeManagerTest {
               metadata = mapOf(
                 metadataRestoredFromDurableStoreForTest to "true",
                 metadataRestoredTerminalStateForTest to restoredTerminalStateInterruptedForTest,
+                MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY to
+                  ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+                MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY to "process-restore-2",
+                MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY to
+                  "controller-restore-2",
               ),
             ),
           )
@@ -1592,11 +1832,27 @@ class AgentSessionRuntimeManagerTest {
       restoredTerminalStateInterruptedForTest,
       restoredRun?.resultMetadata?.get(metadataRestoredTerminalStateForTest),
     )
+    assertEquals(
+      ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+      restoredRun?.resultMetadata?.get(MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY),
+    )
+    assertEquals(
+      "process-restore-2",
+      restoredRun?.resultMetadata?.get(MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY),
+    )
+    assertEquals(
+      "controller-restore-2",
+      restoredRun?.resultMetadata?.get(MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY),
+    )
     assertEquals(listOf("proc-restored"), restoredRun?.managedProcessIds)
     assertEquals(0, restoredRun?.runningManagedProcessCount)
     assertTrue(restoredRun?.hasLiveManagedProcesses == false)
     assertTrue(restoredRun?.isTerminal == true)
     assertTrue(restoredRun?.isActive == false)
+    assertEquals(
+      RunLifecycleRecoveryReasons.MANAGED_PROCESS_RESTORE_INTERRUPTED_SAME_PROCESS_NEW_CONTROLLER,
+      restoredRun?.lifecycleDiagnostics?.recoveryReason,
+    )
     assertTrue(!restoredHandle.hasPendingWork())
 
     restoredHandle.resume()
@@ -1615,6 +1871,10 @@ class AgentSessionRuntimeManagerTest {
     assertEquals(ExecutionStatus.FAILED, persistedRun?.executionStatus)
     assertEquals(errorManagedProcessInterruptedOnRestoreForTest, persistedRun?.errorCode)
     assertEquals(listOf("proc-restored"), persistedRun?.managedProcessIds)
+    assertEquals(
+      ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+      persistedRun?.resultMetadata?.get(MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY),
+    )
   }
 
   @Test
@@ -1909,6 +2169,8 @@ class AgentSessionRuntimeManagerTest {
     subAgentRecoveryExecutor: RecordingExecutorService = executor,
     runEventJournalStoreFactory: RunEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory(temporaryFolder.root),
     promptCheckpointStoreFactory: PromptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(temporaryFolder.root),
+    runtimeLifecycle: HostRuntimeLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+    runtimeLifecycleProvider: () -> HostRuntimeLifecycleDescriptor = { runtimeLifecycle },
   ): DefaultAgentSessionRuntimeManager = DefaultAgentSessionRuntimeManager(
     agentId = "opencray-app",
     runtimeFactory = runtimeFactory,
@@ -1918,6 +2180,7 @@ class AgentSessionRuntimeManagerTest {
     promptCheckpointStoreFactory = promptCheckpointStoreFactory,
     executor = executor,
     subAgentRecoveryExecutor = subAgentRecoveryExecutor,
+    runtimeLifecycleProvider = runtimeLifecycleProvider,
   )
 
   private fun overwriteQueueSnapshot(
@@ -1983,6 +2246,21 @@ class AgentSessionRuntimeManagerTest {
     startedAtEpochMs = 1_000L,
     updatedAtEpochMs = 1_001L,
     finishedAtEpochMs = if (status.isTerminal) 1_001L else null,
+  )
+
+  private fun managedProcessStartRequest(
+    processId: String,
+    taskId: String,
+    ownerIdentity: ManagedProcessRuntimeIdentity,
+  ): ManagedProcessStartRequest = ManagedProcessStartRequest(
+    processId = processId,
+    taskId = taskId,
+    command = "npm",
+    args = listOf("run", "dev"),
+    workingDirectory = ".",
+    timeoutMs = 120_000L,
+    requestedAtEpochMs = 1_000L,
+    ownerIdentity = ownerIdentity,
   )
 
   private fun backgroundSubAgentHandle(
@@ -2113,6 +2391,76 @@ class AgentSessionRuntimeManagerTest {
       sessionId: String,
       processId: String,
     ): ManagedProcessSnapshot? = terminateManagedProcessHandler(sessionId, processId)
+  }
+
+  private class RegistryBackedRuntimeFactory(
+    private val processRegistryFactory: AgentProcessRegistryFactory,
+  ) : AgentSessionTaskRuntimeFactory {
+    override fun create(
+      sessionId: String,
+      eventSink: OpenCrayAgentRuntimeEventSink,
+    ): SessionTaskRuntime = SessionTaskRuntime { task: AgentTask, _: RuntimeExecutionHooks ->
+      ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.SUCCESS,
+        stdout = "ok:${task.input}",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+      )
+    }
+
+    override fun listManagedProcesses(sessionId: String): List<ManagedProcessSnapshot> =
+      processRegistryFactory.forChatSession(sessionId).list()
+  }
+
+  private class ReconnectableCountingManagedProcessControllerFactory :
+    ReconnectableManagedProcessControllerFactory {
+    var reconnectCount: Int = 0
+      private set
+
+    override fun start(request: ManagedProcessStartRequest): ManagedProcessController =
+      StaticManagedProcessController(
+        snapshot = ManagedProcessSnapshot(
+          processId = request.processId,
+          taskId = request.taskId,
+          command = request.command,
+          args = request.args,
+          workingDirectory = request.workingDirectory,
+          status = ManagedProcessStatus.RUNNING,
+          processStarted = true,
+          timeoutMs = request.timeoutMs,
+          startedAtEpochMs = request.requestedAtEpochMs,
+          updatedAtEpochMs = request.requestedAtEpochMs,
+          ownerIdentity = request.ownerIdentity,
+          metadata = request.metadata,
+        ),
+      )
+
+    override fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController {
+      reconnectCount += 1
+      return StaticManagedProcessController(
+        snapshot = snapshot.copy(
+          status = ManagedProcessStatus.RUNNING,
+          errorCode = null,
+          errorMessage = null,
+          finishedAtEpochMs = null,
+          metadata = snapshot.metadata + mapOf(
+            "reconnected" to "true",
+            "sandboxCommandReconnectRecoveryState" to "attached_live",
+          ),
+        ),
+      )
+    }
+  }
+
+  private class StaticManagedProcessController(
+    private val snapshot: ManagedProcessSnapshot,
+  ) : ManagedProcessController {
+    override fun snapshot(): ManagedProcessSnapshot = snapshot
+
+    override fun await(timeoutMs: Long): ManagedProcessSnapshot = snapshot
+
+    override fun terminate(): ManagedProcessSnapshot = snapshot
   }
 
   private class RecordingExecutorService : AbstractExecutorService() {

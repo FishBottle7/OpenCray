@@ -162,6 +162,7 @@ private class PythonRuntimeManagedProcessController(
     finishedAtEpochMs = finishedAtEpochMs,
     timedOut = timedOut,
     cancelled = cancelled,
+    ownerIdentity = request.ownerIdentity,
     metadata = buildMetadata(),
   )
 

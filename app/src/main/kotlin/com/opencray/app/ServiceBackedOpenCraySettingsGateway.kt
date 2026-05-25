@@ -1,72 +1,77 @@
 package com.opencray.app
 
-import android.content.Context
-
 internal class ServiceBackedOpenCraySettingsGateway(
   private val serviceClient: OpenCrayRuntimeServiceClient,
-  private val fallbackGateway: OpenCraySettingsGateway,
+  fallbackGateway: OpenCraySettingsGateway? = null,
+  fallbackGatewayProvider: (() -> OpenCraySettingsGateway)? = null,
 ) : OpenCraySettingsGateway {
+  private val resolvedFallbackGatewayProvider: () -> OpenCraySettingsGateway =
+    cachedGatewayProvider(
+      fallbackGatewayProvider ?: fallbackGateway?.let { gateway -> { gateway } }
+        ?: error("Service-backed settings gateway requires a fallback gateway."),
+    )
+
   override fun loadSettingsOverview(): Map<String, Any?> =
-    currentReadGateway().loadSettingsOverview()
+    currentLoadGateway().loadSettingsOverview()
 
   override fun observeSettingsOverview(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
-      currentGateway = ::currentReadGateway,
-      observeConnectionState = serviceClient::observePassiveConnectionState,
+      currentGateway = ::currentObservedGateway,
+      observeConnectionState = serviceClient::observeConnectionState,
       observe = { gateway, callback -> gateway.observeSettingsOverview(callback) },
       listener = listener,
     )
 
   override fun loadSettingsDetail(routeIdRaw: String): Map<String, Any?> =
-    currentReadGateway().loadSettingsDetail(routeIdRaw)
+    currentLoadGateway().loadSettingsDetail(routeIdRaw)
 
   override fun loadNotificationSettings(): Map<String, Any?> =
-    currentReadGateway().loadNotificationSettings()
+    currentLoadGateway().loadNotificationSettings()
 
   override fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?> =
     dispatchPayloadWriteCommand(
       operation = "saveNotificationSettings",
       command = OpenCraySettingsWriteCommand.SaveNotificationSettings(payload),
-    )
+  )
 
   override fun loadStrongBackgroundSnapshot(): Map<String, Any?> =
-    currentReadGateway().loadStrongBackgroundSnapshot()
+    currentLoadGateway().loadStrongBackgroundSnapshot()
 
   override fun performStrongBackgroundAction(actionId: String): Map<String, Any?> =
     dispatchPayloadWriteCommand(
       operation = "performStrongBackgroundAction",
       command = OpenCraySettingsWriteCommand.PerformStrongBackgroundAction(actionId),
-    )
+  )
 
   override fun loadNetworkSearchConfig(): Map<String, Any?> =
-    currentReadGateway().loadNetworkSearchConfig()
+    currentLoadGateway().loadNetworkSearchConfig()
 
   override fun saveNetworkSearchConfig(slots: List<Map<String, Any?>>): Map<String, Any?> =
     dispatchPayloadWriteCommand(
       operation = "saveNetworkSearchConfig",
       command = OpenCraySettingsWriteCommand.SaveNetworkSearchConfig(slots),
-    )
+  )
 
   override fun loadMediaSpeechConfig(): Map<String, Any?> =
-    currentReadGateway().loadMediaSpeechConfig()
+    currentLoadGateway().loadMediaSpeechConfig()
 
   override fun saveMediaSpeechConfig(payload: Map<String, Any?>): Map<String, Any?> =
     dispatchPayloadWriteCommand(
       operation = "saveMediaSpeechConfig",
       command = OpenCraySettingsWriteCommand.SaveMediaSpeechConfig(payload),
-    )
+  )
 
   override fun loadSandboxSettings(): Map<String, Any?> =
-    currentReadGateway().loadSandboxSettings()
+    currentLoadGateway().loadSandboxSettings()
 
   override fun saveSandboxSettings(payload: Map<String, Any?>): Map<String, Any?> =
     dispatchPayloadWriteCommand(
       operation = "saveSandboxSettings",
       command = OpenCraySettingsWriteCommand.SaveSandboxSettings(payload),
-    )
+  )
 
   override fun loadLlmConfig(): Map<String, Any?> =
-    currentReadGateway().loadLlmConfig()
+    currentLoadGateway().loadLlmConfig()
 
   override fun saveLlmConfig(
     enabled: Boolean,
@@ -162,7 +167,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
   )
 
   override fun loadPersonalizationConfig(): Map<String, Any?> =
-    currentReadGateway().loadPersonalizationConfig()
+    currentLoadGateway().loadPersonalizationConfig()
 
   override fun savePersonalizationConfig(
     presetId: String,
@@ -187,10 +192,10 @@ internal class ServiceBackedOpenCraySettingsGateway(
     dispatchPayloadWriteCommand(
       operation = "runPersonalizationReset",
       command = OpenCraySettingsWriteCommand.RunPersonalizationReset(scopeId),
-    )
+  )
 
   override fun loadMcpSettings(): Map<String, Any?> =
-    currentReadGateway().loadMcpSettings()
+    currentLoadGateway().loadMcpSettings()
 
   override fun setMcpMasterEnabled(enabled: Boolean): Map<String, Any?> =
     dispatchPayloadWriteCommand(
@@ -210,7 +215,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
   )
 
   override fun loadSafetySettings(): Map<String, Any?> =
-    currentReadGateway().loadSafetySettings()
+    currentLoadGateway().loadSafetySettings()
 
   override fun saveSafetySettings(
     automationModeId: String,
@@ -259,8 +264,11 @@ internal class ServiceBackedOpenCraySettingsGateway(
     ),
   )
 
-  private fun currentReadGateway(): OpenCraySettingsGateway =
-    serviceClient.peekSettingsGateway() ?: fallbackGateway
+  private fun currentLoadGateway(): OpenCraySettingsGateway =
+    serviceClient.loadSettingsGateway() ?: resolvedFallbackGatewayProvider()
+
+  private fun currentObservedGateway(): OpenCraySettingsGateway =
+    serviceClient.peekSettingsGateway() ?: resolvedFallbackGatewayProvider()
 
   private fun dispatchWriteCommand(
     operation: String,
@@ -270,7 +278,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
       surface = "Settings",
       operation = operation,
       gateway = serviceClient.dispatchSettingsWriteCommand(command),
-      connectionState = serviceClient.loadConnectionState(),
+      connectionState = serviceClient.peekConnectionState(),
     )
 
   private fun dispatchPayloadWriteCommand(
@@ -287,20 +295,6 @@ private fun OpenCraySettingsWriteDispatchResult.payloadOrNull(): Map<String, Any
 }
 
 internal fun serviceBackedOpenCraySettingsGateway(
-  context: Context,
-): OpenCraySettingsGateway {
-  val appContext = context.applicationContext
-  val serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(appContext)
-  return serviceBackedOpenCraySettingsGateway(
-    serviceClient = serviceClient,
-    fallbackGateway = projectionOnlyOpenCraySettingsGateway(
-      context = appContext,
-      connectionStateProvider = serviceClient::loadConnectionState,
-    ),
-  )
-}
-
-internal fun serviceBackedOpenCraySettingsGateway(
   serviceClient: OpenCrayRuntimeServiceClient,
   fallbackGateway: OpenCraySettingsGateway,
 ): OpenCraySettingsGateway = ServiceBackedOpenCraySettingsGateway(
@@ -309,9 +303,9 @@ internal fun serviceBackedOpenCraySettingsGateway(
 )
 
 internal fun serviceBackedOpenCraySettingsGateway(
-  context: Context,
-  fallbackGateway: OpenCraySettingsGateway,
-): OpenCraySettingsGateway = serviceBackedOpenCraySettingsGateway(
-  serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(context.applicationContext),
-  fallbackGateway = fallbackGateway,
+  serviceClient: OpenCrayRuntimeServiceClient,
+  fallbackGatewayProvider: () -> OpenCraySettingsGateway,
+): OpenCraySettingsGateway = ServiceBackedOpenCraySettingsGateway(
+  serviceClient = serviceClient,
+  fallbackGatewayProvider = fallbackGatewayProvider,
 )

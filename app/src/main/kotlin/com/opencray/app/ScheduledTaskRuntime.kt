@@ -234,7 +234,7 @@ internal class AlarmManagerScheduledAlarmScheduler(
 }
 
 internal class ScheduledTaskDispatcher(
-  private val hostAccess: OpenCrayRuntimeHostAccess,
+  private val hostAccess: RuntimeSessionDirectoryAccess,
   private val chatSessionStore: ChatSessionLocalStore,
   private val safetySettingsFacade: SafetySettingsFacade,
   private val approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot,
@@ -527,7 +527,7 @@ internal class ScheduledTaskDispatcher(
 }
 
 internal data class ScheduledTaskDispatcherDependencies(
-  val hostAccess: OpenCrayRuntimeHostAccess,
+  val hostAccess: RuntimeSessionDirectoryAccess,
   val chatSessionStore: ChatSessionLocalStore,
   val safetySettingsFacade: SafetySettingsFacade,
   val approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot,
@@ -614,6 +614,7 @@ internal class ScheduledTaskWakeReceiver : BroadcastReceiver() {
     context: Context,
     intent: Intent?,
   ) {
+    val runtimeEnvironment = openCrayRuntimeServiceEnvironment(context.applicationContext)
     val scheduleId = intent?.getStringExtra(EXTRA_SCHEDULE_ID)
       ?.trim()
       ?.takeIf(String::isNotBlank)
@@ -627,36 +628,26 @@ internal class ScheduledTaskWakeReceiver : BroadcastReceiver() {
       triggeredAtEpochMs = System.currentTimeMillis(),
       triggerReason = ScheduledTaskTriggerReasons.ALARM,
     )
-    OpenCrayRuntimeServiceAccess.startScheduledTask(
+    runtimeEnvironment.runtimeServiceAccessGateway.startScheduledTask(
       context.applicationContext,
       wakeCommand,
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
     )
   }
 }
 
-internal fun scheduledTaskServiceIntent(
-  context: Context,
-  command: ScheduledTaskWakeCommand,
-): Intent = OpenCrayRuntimeServiceAccess.scheduledTaskServiceIntent(context, command)
-
-internal fun scheduledTaskRepairServiceIntent(
-  context: Context,
-  repairReason: String,
-): Intent = OpenCrayRuntimeServiceAccess.scheduledTaskRepairServiceIntent(
-  context,
-  repairReason,
-)
-
 internal fun parseScheduledTaskWakeCommand(intent: Intent?): ScheduledTaskWakeCommand? {
   return parseScheduledTaskWakeCommand(
-    action = intent?.action,
-    scheduleId = intent?.getStringExtra(EXTRA_SCHEDULE_ID),
-    scheduleRunId = intent?.getStringExtra(EXTRA_SCHEDULE_RUN_ID),
-    triggeredAtEpochMs = intent
-      ?.getLongExtra(EXTRA_TRIGGERED_AT_EPOCH_MS, -1L)
-      ?.takeIf { value -> value >= 0L },
-    triggerReason = intent?.getStringExtra(EXTRA_TRIGGER_REASON),
-    targetSessionId = intent?.getStringExtra(EXTRA_TARGET_SESSION_ID),
+    action = safeScheduledTaskWakeAction(intent),
+    scheduleId = safeScheduledTaskWakeStringExtra(intent, EXTRA_SCHEDULE_ID),
+    scheduleRunId = safeScheduledTaskWakeStringExtra(intent, EXTRA_SCHEDULE_RUN_ID),
+    triggeredAtEpochMs = safeScheduledTaskWakeLongExtra(
+      intent,
+      EXTRA_TRIGGERED_AT_EPOCH_MS,
+      -1L,
+    )?.takeIf { value -> value >= 0L },
+    triggerReason = safeScheduledTaskWakeStringExtra(intent, EXTRA_TRIGGER_REASON),
+    targetSessionId = safeScheduledTaskWakeStringExtra(intent, EXTRA_TARGET_SESSION_ID),
   )
 }
 
@@ -695,7 +686,28 @@ internal fun parseScheduledTaskWakeCommand(
       ?.trim()
       ?.takeIf(String::isNotBlank),
   )
-}
+  }
+
+private fun safeScheduledTaskWakeAction(
+  intent: Intent?,
+): String? = runCatching {
+  intent?.action
+}.getOrNull()
+
+private fun safeScheduledTaskWakeStringExtra(
+  intent: Intent?,
+  key: String,
+): String? = runCatching {
+  intent?.getStringExtra(key)
+}.getOrNull()
+
+private fun safeScheduledTaskWakeLongExtra(
+  intent: Intent?,
+  key: String,
+  defaultValue: Long,
+): Long? = runCatching {
+  intent?.getLongExtra(key, defaultValue)
+}.getOrNull()
 
 internal fun scheduledTaskWakeReceiverPendingIntent(
   context: Context,

@@ -12,7 +12,7 @@ internal fun interface RuntimeServiceWakeCommandDispatcherFactory {
     appContext: Context,
     dispatcherDependencies: RuntimeServiceWakeCommandDispatcherDependencies,
     gatewayBundle: OpenCrayRuntimeServiceGatewayBundle,
-    serviceExecutionCoordinator: RuntimeServiceExecutionCoordinator,
+    projectionCoordinator: RuntimeServiceProjectionCoordinator,
   ): RuntimeServiceWakeCommandDispatcher
 }
 
@@ -22,12 +22,12 @@ internal object DefaultRuntimeServiceWakeCommandDispatcherFactory :
     appContext: Context,
     dispatcherDependencies: RuntimeServiceWakeCommandDispatcherDependencies,
     gatewayBundle: OpenCrayRuntimeServiceGatewayBundle,
-    serviceExecutionCoordinator: RuntimeServiceExecutionCoordinator,
+    projectionCoordinator: RuntimeServiceProjectionCoordinator,
   ): RuntimeServiceWakeCommandDispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
     appContext = appContext,
     dispatcherDependencies = dispatcherDependencies,
     gatewayBundle = gatewayBundle,
-    serviceExecutionCoordinator = serviceExecutionCoordinator,
+    projectionCoordinator = projectionCoordinator,
   )
 }
 
@@ -35,8 +35,7 @@ internal data class RuntimeServiceWakeCommandDispatcherDependencies(
   val scheduledTaskDispatcherDependencies: ScheduledTaskDispatcherDependencies,
   val scheduledTaskRepairDependencies: ScheduledTaskRepairDependencies,
   val resumeInterruptedRuns: () -> Unit,
-  val approvePendingApproval: (String) -> Unit,
-  val rejectPendingApproval: (String) -> Unit,
+  val approvalDecisionAccess: RuntimeServiceApprovalDecisionAccess,
   val refreshServiceWorkState: () -> RuntimeServiceWorkState,
 )
 
@@ -44,46 +43,45 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
   private val appContext: Context,
   private val dispatcherDependencies: RuntimeServiceWakeCommandDispatcherDependencies,
   private val gatewayBundle: OpenCrayRuntimeServiceGatewayBundle,
-  private val serviceExecutionCoordinator: RuntimeServiceExecutionCoordinator,
-  private val notificationCommandParser: (Intent?) -> RuntimeServiceNotificationCommand? =
-    ::parseRuntimeNotificationCommand,
-  private val scheduledTaskWakeCommandParser: (Intent?) -> ScheduledTaskWakeCommand? =
-    ::parseScheduledTaskWakeCommand,
-  private val actionReader: (Intent?) -> String? = { intent -> intent?.action },
-  private val repairReasonReader: (Intent?) -> String? = { intent ->
-    intent?.getStringExtra(EXTRA_REPAIR_REASON)
-  },
+  private val projectionCoordinator: RuntimeServiceProjectionCoordinator,
+  private val wakeIntentParser: RuntimeServiceWakeIntentParser =
+    DefaultRuntimeServiceWakeIntentParser(),
   private val approvalNotificationDismisser: (Context, String?) -> Unit =
     { context, taskId -> RuntimeNotificationCoordinator.dismissApprovalNotification(context, taskId) },
 ) : RuntimeServiceWakeCommandDispatcher {
   override fun dispatch(intent: Intent?) {
-    notificationCommandParser(intent)?.let { command ->
-      handleNotificationCommand(command)
-      return
-    }
-    scheduledTaskWakeCommandParser(intent)?.let { scheduledTaskWakeCommand ->
-      val outcome = dispatcherDependencies
-        .scheduledTaskDispatcherDependencies
-        .createScheduledTaskDispatcher()
-        .dispatch(scheduledTaskWakeCommand)
-      serviceExecutionCoordinator.onScheduledDispatchOutcome(outcome)
-      refreshAndPersist()
-      return
-    }
-    when (actionReader(intent)) {
-      ACTION_RESUME_INTERRUPTED_RUNS -> {
+    when (val command = wakeIntentParser.parse(intent)) {
+      is RuntimeServiceWakeIntentCommand.ChatWrite -> {
+        gatewayBundle.dispatchChatWriteCommand(command.command)
+        refreshAndPersist()
+      }
+
+      is RuntimeServiceWakeIntentCommand.Notification -> {
+        handleNotificationCommand(command.command)
+      }
+
+      is RuntimeServiceWakeIntentCommand.ScheduledTask -> {
+        val outcome = dispatcherDependencies
+          .scheduledTaskDispatcherDependencies
+          .createScheduledTaskDispatcher()
+          .dispatch(command.command)
+        projectionCoordinator.onScheduledDispatchOutcome(outcome)
+        refreshAndPersist()
+      }
+
+      RuntimeServiceWakeIntentCommand.ResumeInterruptedRuns -> {
         dispatcherDependencies.resumeInterruptedRuns()
         refreshAndPersist()
       }
 
-      ACTION_REPAIR_SCHEDULES -> {
-        val repairReason = repairReasonReader(intent)
-          ?.trim()
-          ?.takeIf(String::isNotBlank)
-          ?: ScheduledTaskRepairReasons.WORK_MANAGER
-        dispatcherDependencies.scheduledTaskRepairDependencies.repairScheduledTasks(repairReason)
+      is RuntimeServiceWakeIntentCommand.RepairSchedules -> {
+        dispatcherDependencies
+          .scheduledTaskRepairDependencies
+          .repairScheduledTasks(command.repairReason)
         refreshAndPersist()
       }
+
+      null -> Unit
     }
   }
 
@@ -92,10 +90,14 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
   ) {
     when (command) {
       is RuntimeServiceNotificationCommand.ApproveApproval ->
-        dispatcherDependencies.approvePendingApproval(command.runId ?: command.taskId.orEmpty())
+        dispatcherDependencies.approvalDecisionAccess.approve(
+          command.runId ?: command.taskId.orEmpty(),
+        )
 
       is RuntimeServiceNotificationCommand.RejectApproval ->
-        dispatcherDependencies.rejectPendingApproval(command.runId ?: command.taskId.orEmpty())
+        dispatcherDependencies.approvalDecisionAccess.reject(
+          command.runId ?: command.taskId.orEmpty(),
+        )
     }
     gatewayBundle.notifyChatSnapshotsChanged()
     approvalNotificationDismisser(appContext, command.taskId)
@@ -104,6 +106,6 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
 
   private fun refreshAndPersist() {
     dispatcherDependencies.refreshServiceWorkState()
-    serviceExecutionCoordinator.persistProjectionSnapshot()
+    projectionCoordinator.persistProjectionSnapshot()
   }
 }

@@ -724,6 +724,7 @@ internal class OpenCrayLocalRuntimeServer(
   companion object {
     private const val SOCKET_TIMEOUT_MS: Int = 2_000
     internal const val DEFAULT_PORT: Int = 42_617
+    internal const val DETACHED_BACKGROUND_DEFAULT_PORT: Int = DEFAULT_PORT + 1
   }
 }
 
@@ -735,64 +736,20 @@ internal data class OpenCrayLocalRuntimeServerProviders(
   val settingsGatewayProvider: () -> OpenCraySettingsGateway,
 )
 
-internal object OpenCrayLocalRuntimeServerRegistry {
-  @Volatile
-  private var instance: OpenCrayLocalRuntimeServer? = null
-  @Volatile
-  private var providersFactory: OpenCrayLocalRuntimeServerProvidersFactory =
-    DefaultOpenCrayLocalRuntimeServerProvidersFactory
-
-  fun peekState(): LocalRuntimeServerState = synchronized(this) {
-    instance?.currentState() ?: LocalRuntimeServerState(
-      bindAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS.asRuntimeBindAddress(),
-      requestedPort = OpenCrayLocalRuntimeServer.DEFAULT_PORT,
-    )
-  }
-
-  fun fromContext(
-    context: Context,
-    providers: OpenCrayLocalRuntimeServerProviders? = null,
-  ): OpenCrayLocalRuntimeServer {
-    val appContext = context.applicationContext
-    return instance ?: synchronized(this) {
-      instance ?: run {
-        val resolvedProviders = providers ?: providersFactory.create(appContext)
-        OpenCrayLocalRuntimeServer(
-          localGatewayProvider = resolvedProviders.localGatewayProvider,
-          shellGatewayProvider = resolvedProviders.shellGatewayProvider,
-          chatRuntimeGatewayProvider = resolvedProviders.chatRuntimeGatewayProvider,
-          skillsGatewayProvider = resolvedProviders.skillsGatewayProvider,
-          settingsGatewayProvider = resolvedProviders.settingsGatewayProvider,
-          bindAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS,
-        ).also { created ->
-          instance = created
-        }
-      }
-    }
-  }
-
-  fun ensureStarted(
-    context: Context,
-    providers: OpenCrayLocalRuntimeServerProviders? = null,
-  ): OpenCrayLocalRuntimeServer =
-    fromContext(context, providers = providers).also { server -> server.ensureStarted() }
-
-  internal fun setProvidersFactoryForTest(
-    factory: OpenCrayLocalRuntimeServerProvidersFactory?,
-  ) {
-    providersFactory = factory ?: DefaultOpenCrayLocalRuntimeServerProvidersFactory
-  }
-
-  internal fun clearForTest() {
-    val existing = synchronized(this) {
-      instance.also {
-        instance = null
-        providersFactory = DefaultOpenCrayLocalRuntimeServerProvidersFactory
-      }
-    }
-    existing?.close()
-  }
+internal fun localRuntimeLoopbackPortForTarget(
+  target: RuntimeServiceTarget,
+): Int = when (target) {
+  RuntimeServiceTarget.INTERACTIVE -> OpenCrayLocalRuntimeServer.DEFAULT_PORT
+  RuntimeServiceTarget.DETACHED_BACKGROUND ->
+    OpenCrayLocalRuntimeServer.DETACHED_BACKGROUND_DEFAULT_PORT
 }
+
+internal fun defaultLocalRuntimeServerState(
+  target: RuntimeServiceTarget = RuntimeServiceTarget.INTERACTIVE,
+): LocalRuntimeServerState = LocalRuntimeServerState(
+  bindAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS.asRuntimeBindAddress(),
+  requestedPort = localRuntimeLoopbackPortForTarget(target),
+)
 
 private fun jsonArrayToStrings(array: JSONArray): List<String> =
   List(array.length()) { index ->

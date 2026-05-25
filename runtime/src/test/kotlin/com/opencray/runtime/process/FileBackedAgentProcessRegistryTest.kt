@@ -2,6 +2,9 @@ package com.opencray.runtime.process
 
 import com.opencray.persistence.PersistenceSchemaVersion
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -57,13 +60,22 @@ class FileBackedAgentProcessRegistryTest {
   @Test
   fun restoredRunningSnapshotIsRepairedToInterruptedFailure() {
     val directory = temporaryFolder.newFolder("durable-process-registry-running")
+    val runtimeIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-1",
+      runtimeControllerId = "controller-1",
+    )
     val registry = FileBackedAgentProcessRegistry(
       directory = directory,
-      controllerFactory = ManagedProcessControllerFactory {
+      controllerFactory = ManagedProcessControllerFactory { request ->
         FakeManagedProcessController(
-          snapshot = runningSnapshot(processId = it.processId, taskId = it.taskId),
+          snapshot = runningSnapshot(
+            processId = request.processId,
+            taskId = request.taskId,
+            ownerIdentity = request.ownerIdentity,
+          ),
         )
       },
+      runtimeIdentity = runtimeIdentity,
     )
 
     registry.start(
@@ -75,12 +87,16 @@ class FileBackedAgentProcessRegistryTest {
         workingDirectory = ".",
         timeoutMs = 30_000L,
         requestedAtEpochMs = 1_000L,
+        ownerIdentity = runtimeIdentity,
       ),
     )
 
     ManagedProcessControllerRegistry.clearForTest()
 
-    val restored = FileBackedAgentProcessRegistry(directory = directory).read("proc-running")
+    val restored = FileBackedAgentProcessRegistry(
+      directory = directory,
+      runtimeIdentity = runtimeIdentity,
+    ).read("proc-running")
 
     assertNotNull(restored)
     assertEquals(ManagedProcessStatus.FAILED, restored!!.status)
@@ -88,18 +104,43 @@ class FileBackedAgentProcessRegistryTest {
     assertTrue(restored.finishedAtEpochMs != null)
     assertEquals("true", restored.metadata["restoredFromDurableStore"])
     assertEquals("interrupted", restored.metadata["restoredTerminalState"])
+    assertEquals(
+      ManagedProcessRestoreScope.SAME_CONTROLLER.wireValue,
+      restored.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY],
+    )
+    assertEquals(
+      "process-1",
+      restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY],
+    )
+    assertEquals(
+      "controller-1",
+      restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY],
+    )
   }
 
   @Test
-  fun sameProcessRestoreReattachesLiveControllerInsteadOfMarkingInterrupted() {
+  fun sameControllerRestoreReattachesLiveControllerInsteadOfMarkingInterrupted() {
     val directory = temporaryFolder.newFolder("durable-process-registry-reattach")
+    val runtimeIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-1",
+      runtimeControllerId = "controller-1",
+    )
     val controller = FakeManagedProcessController(
-      snapshot = runningSnapshot(processId = "proc-live", taskId = "task-live"),
-      awaitSnapshot = successSnapshot(processId = "proc-live", taskId = "task-live"),
+      snapshot = runningSnapshot(
+        processId = "proc-live",
+        taskId = "task-live",
+        ownerIdentity = runtimeIdentity,
+      ),
+      awaitSnapshot = successSnapshot(
+        processId = "proc-live",
+        taskId = "task-live",
+        ownerIdentity = runtimeIdentity,
+      ),
     )
     val registry = FileBackedAgentProcessRegistry(
       directory = directory,
       controllerFactory = ManagedProcessControllerFactory { controller },
+      runtimeIdentity = runtimeIdentity,
     )
 
     registry.start(
@@ -111,10 +152,14 @@ class FileBackedAgentProcessRegistryTest {
         workingDirectory = ".",
         timeoutMs = 120_000L,
         requestedAtEpochMs = 1_000L,
+        ownerIdentity = runtimeIdentity,
       ),
     )
 
-    val restoredRegistry = FileBackedAgentProcessRegistry(directory = directory)
+    val restoredRegistry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      runtimeIdentity = runtimeIdentity,
+    )
     val restored = restoredRegistry.read("proc-live")
 
     assertNotNull(restored)
@@ -126,11 +171,204 @@ class FileBackedAgentProcessRegistryTest {
     assertNotNull(waited)
     assertEquals(ManagedProcessStatus.SUCCESS, waited!!.status)
 
-    val reopened = FileBackedAgentProcessRegistry(directory = directory).read("proc-live")
+    val reopened = FileBackedAgentProcessRegistry(
+      directory = directory,
+      runtimeIdentity = runtimeIdentity,
+    ).read("proc-live")
 
     assertNotNull(reopened)
     assertEquals(ManagedProcessStatus.SUCCESS, reopened!!.status)
     assertEquals("server ready", reopened.stdout)
+  }
+
+  @Test
+  fun sameProcessNewControllerRestoreReconnectsAndStampsRestoreScopeMetadata() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-same-process-new-controller")
+    val ownerIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-1",
+      runtimeControllerId = "controller-1",
+    )
+    val restoredRuntimeIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-1",
+      runtimeControllerId = "controller-2",
+    )
+    val factory = ReconnectableFakeManagedProcessControllerFactory()
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = factory,
+      runtimeIdentity = ownerIdentity,
+    )
+
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-remote",
+        taskId = "task-remote",
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        timeoutMs = 120_000L,
+        requestedAtEpochMs = 1_000L,
+        ownerIdentity = ownerIdentity,
+      ),
+    )
+
+    val restoredRegistry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = factory,
+      runtimeIdentity = restoredRuntimeIdentity,
+    )
+    val restored = restoredRegistry.read("proc-remote")
+
+    assertNotNull(restored)
+    assertEquals(ManagedProcessStatus.RUNNING, restored!!.status)
+    assertEquals("true", restored.metadata["reconnected"])
+    assertEquals(
+      ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+      restored.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY],
+    )
+    assertEquals(
+      "process-1",
+      restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY],
+    )
+    assertEquals(
+      "controller-2",
+      restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY],
+    )
+    assertEquals(1, factory.reconnectCount)
+  }
+
+  @Test
+  fun crossProcessRestoreRepairsInterruptedSnapshotAndStampsRestoreScopeMetadata() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-cross-process")
+    val ownerIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-1",
+      runtimeControllerId = "controller-1",
+    )
+    val restoredRuntimeIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-2",
+      runtimeControllerId = "controller-2",
+    )
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        FakeManagedProcessController(
+          snapshot = runningSnapshot(
+            processId = request.processId,
+            taskId = request.taskId,
+            ownerIdentity = request.ownerIdentity,
+          ),
+        )
+      },
+      runtimeIdentity = ownerIdentity,
+    )
+
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-cross-process",
+        taskId = "task-cross-process",
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        timeoutMs = 120_000L,
+        requestedAtEpochMs = 1_000L,
+        ownerIdentity = ownerIdentity,
+      ),
+    )
+
+    ManagedProcessControllerRegistry.clearForTest()
+
+    val restored = FileBackedAgentProcessRegistry(
+      directory = directory,
+      runtimeIdentity = restoredRuntimeIdentity,
+    ).read("proc-cross-process")
+
+    assertNotNull(restored)
+    assertEquals(ManagedProcessStatus.FAILED, restored!!.status)
+    assertEquals(FileBackedAgentProcessRegistry.ERROR_INTERRUPTED_ON_RESTORE, restored.errorCode)
+    assertEquals(
+      ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+      restored.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY],
+    )
+    assertEquals(
+      "process-2",
+      restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY],
+    )
+    assertEquals(
+      "controller-2",
+      restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY],
+    )
+  }
+
+  @Test
+  fun projectionOnlyRestoreModeReadsRunningSnapshotWithoutPersistingInterruptedRepair() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-projection-only")
+    val ownerIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-1",
+      runtimeControllerId = "controller-1",
+    )
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        FakeManagedProcessController(
+          snapshot = runningSnapshot(
+            processId = request.processId,
+            taskId = request.taskId,
+            ownerIdentity = request.ownerIdentity,
+          ),
+        )
+      },
+      runtimeIdentity = ownerIdentity,
+    )
+
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-projection",
+        taskId = "task-projection",
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        timeoutMs = 120_000L,
+        requestedAtEpochMs = 1_000L,
+        ownerIdentity = ownerIdentity,
+      ),
+    )
+
+    val projectionRead = FileBackedAgentProcessRegistry(
+      directory = directory,
+      runtimeIdentity = ManagedProcessRuntimeIdentity(
+        processStartId = "process-ui",
+        runtimeControllerId = "controller-ui",
+      ),
+      restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
+    ).read("proc-projection")
+
+    val secondProjectionRead = FileBackedAgentProcessRegistry(
+      directory = directory,
+      runtimeIdentity = ManagedProcessRuntimeIdentity(
+        processStartId = "process-ui",
+        runtimeControllerId = "controller-ui",
+      ),
+      restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
+    ).read("proc-projection")
+
+    assertNotNull(projectionRead)
+    assertEquals(ManagedProcessStatus.RUNNING, projectionRead!!.status)
+    assertNull(projectionRead.errorCode)
+    assertNotNull(secondProjectionRead)
+    assertEquals(ManagedProcessStatus.RUNNING, secondProjectionRead!!.status)
+    assertNull(secondProjectionRead.errorCode)
+
+    val activeRestore = FileBackedAgentProcessRegistry(
+      directory = directory,
+      runtimeIdentity = ManagedProcessRuntimeIdentity(
+        processStartId = "process-2",
+        runtimeControllerId = "controller-2",
+      ),
+    ).read("proc-projection")
+
+    assertNotNull(activeRestore)
+    assertEquals(ManagedProcessStatus.FAILED, activeRestore!!.status)
+    assertEquals(FileBackedAgentProcessRegistry.ERROR_INTERRUPTED_ON_RESTORE, activeRestore.errorCode)
   }
 
   @Test
@@ -435,9 +673,75 @@ class FileBackedAgentProcessRegistryTest {
     assertEquals("1050", restored.metadata["sandboxCommandLastDeliveredAtEpochMs"])
   }
 
+  @Test
+  fun concurrentFileBackedOwnersDoNotLoseManagedProcessSnapshots() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-concurrent-owners")
+    val ownerCount = 8
+    val ready = CountDownLatch(ownerCount)
+    val start = CountDownLatch(1)
+    val executor = Executors.newFixedThreadPool(ownerCount)
+    val failures = mutableListOf<Throwable>()
+
+    repeat(ownerCount) { index ->
+      executor.execute {
+        try {
+          val processId = "proc-$index"
+          ready.countDown()
+          assertTrue(ready.await(5, TimeUnit.SECONDS))
+          start.await(5, TimeUnit.SECONDS)
+          FileBackedAgentProcessRegistry(
+            directory = directory,
+            controllerFactory = ManagedProcessControllerFactory { request ->
+              FakeManagedProcessController(
+                snapshot = successSnapshot(
+                  processId = request.processId,
+                  taskId = request.taskId,
+                  ownerIdentity = request.ownerIdentity,
+                ),
+              )
+            },
+          ).start(
+            ManagedProcessStartRequest(
+              processId = processId,
+              taskId = "task-$index",
+              command = "npm",
+              args = listOf("run", "dev"),
+              workingDirectory = ".",
+              timeoutMs = 120_000L,
+              requestedAtEpochMs = 1_000L + index,
+            ),
+          )
+        } catch (error: Throwable) {
+          synchronized(failures) {
+            failures += error
+          }
+        }
+      }
+    }
+
+    assertTrue(ready.await(5, TimeUnit.SECONDS))
+    start.countDown()
+    executor.shutdown()
+    assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
+    synchronized(failures) {
+      if (failures.isNotEmpty()) {
+        throw AssertionError("Concurrent registry writes failed.", failures.first())
+      }
+    }
+
+    val restored = FileBackedAgentProcessRegistry(directory = directory).list()
+
+    assertEquals(ownerCount, restored.size)
+    assertEquals(
+      (0 until ownerCount).map { index -> "proc-$index" }.toSet(),
+      restored.map { snapshot -> snapshot.processId }.toSet(),
+    )
+  }
+
   private fun runningSnapshot(
     processId: String,
     taskId: String,
+    ownerIdentity: ManagedProcessRuntimeIdentity? = null,
   ): ManagedProcessSnapshot = ManagedProcessSnapshot(
     processId = processId,
     taskId = taskId,
@@ -449,11 +753,13 @@ class FileBackedAgentProcessRegistryTest {
     timeoutMs = 120_000L,
     startedAtEpochMs = 1_000L,
     updatedAtEpochMs = 1_000L,
+    ownerIdentity = ownerIdentity,
   )
 
   private fun successSnapshot(
     processId: String,
     taskId: String,
+    ownerIdentity: ManagedProcessRuntimeIdentity? = null,
   ): ManagedProcessSnapshot = ManagedProcessSnapshot(
     processId = processId,
     taskId = taskId,
@@ -468,6 +774,7 @@ class FileBackedAgentProcessRegistryTest {
     startedAtEpochMs = 1_000L,
     updatedAtEpochMs = 1_250L,
     finishedAtEpochMs = 1_250L,
+    ownerIdentity = ownerIdentity,
   )
 
   private class FakeManagedProcessController(
@@ -492,7 +799,11 @@ class FileBackedAgentProcessRegistryTest {
 
     override fun start(request: ManagedProcessStartRequest): ManagedProcessController =
       FakeManagedProcessController(
-        snapshot = runningSnapshot(processId = request.processId, taskId = request.taskId),
+        snapshot = runningSnapshot(
+          processId = request.processId,
+          taskId = request.taskId,
+          ownerIdentity = request.ownerIdentity,
+        ),
       )
 
     override fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController {
@@ -508,6 +819,7 @@ class FileBackedAgentProcessRegistryTest {
         awaitSnapshot = successSnapshot(
           processId = snapshot.processId,
           taskId = snapshot.taskId,
+          ownerIdentity = snapshot.ownerIdentity,
         ).copy(
           metadata = running.metadata + mapOf(
             "sandboxCommandReconnectRecoveryState" to "completed",
@@ -525,7 +837,11 @@ class FileBackedAgentProcessRegistryTest {
 
     override fun start(request: ManagedProcessStartRequest): ManagedProcessController =
       FakeManagedProcessController(
-        snapshot = runningSnapshot(processId = request.processId, taskId = request.taskId),
+        snapshot = runningSnapshot(
+          processId = request.processId,
+          taskId = request.taskId,
+          ownerIdentity = request.ownerIdentity,
+        ),
       )
 
     override fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController {

@@ -3,6 +3,15 @@ package com.opencray.app
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayMediaToolSettings
 import com.opencray.runtime.context.RuntimeSoulProfile
+import com.opencray.runtime.context.RuntimeConversationMessage
+
+internal data class OpenCrayRuntimeOwnerAccess(
+  val lifecycleDescriptor: HostRuntimeLifecycleDescriptor,
+  val hostAccess: OpenCrayRuntimeHostAccess,
+  val transcriptMessagesProvider: (String) -> List<RuntimeConversationMessage>,
+  val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator,
+  val replayAccess: OpenCrayRuntimeReplayAccess,
+)
 
 internal fun persistedRecordForTest(
   event: OpenCrayAgentRunEvent,
@@ -84,20 +93,22 @@ internal fun LlmAgentCapabilitySnapshot.runtimeMetadataOverrides(): Map<String, 
     args = arrayOf(this),
   )
 
-internal fun InProcessOpenCrayRuntimeOwner.toRuntimeOwnerAccess(): OpenCrayRuntimeOwnerAccess =
-  invokeKtStatic(
-    className = "com.opencray.app.OpenCrayRuntimeServiceHostKt",
-    methodName = "toRuntimeOwnerAccess",
-    args = arrayOf(this),
+internal fun RetainedInProcessOpenCrayRuntimeOwnerCore.toRuntimeOwnerAccess(): OpenCrayRuntimeOwnerAccess =
+  OpenCrayRuntimeOwnerAccess(
+    lifecycleDescriptor = currentLifecycleDescriptor(),
+    hostAccess = toRuntimeHostAccess(),
+    transcriptMessagesProvider = transcriptMessagesProvider,
+    memoryIngestionCoordinator = memoryIngestionCoordinator,
+    replayAccess = replayAccess,
   )
 
 internal fun bootstrapRuntimeServiceSessions(
   chatSessionStore: ChatSessionLocalStore,
   runtimeAccess: OpenCrayRuntimeOwnerAccess,
-): RuntimeServiceBootstrapResult = invokeKtStatic(
-  className = "com.opencray.app.RuntimeServiceBootstrapAssemblyKt",
-  methodName = "bootstrapRuntimeServiceSessions",
-  args = arrayOf(chatSessionStore, runtimeAccess),
+): RuntimeServiceBootstrapResult = com.opencray.app.bootstrapRuntimeServiceSessions(
+  chatSessionStore = chatSessionStore,
+  runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+  runtimeReplayAccess = runtimeAccess.replayAccess,
 )
 
 internal val errorManagedProcessInterruptedOnRestoreForTest: String

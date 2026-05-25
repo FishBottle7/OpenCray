@@ -2,6 +2,7 @@ package com.opencray.app
 
 internal fun MutableMap<String, Any?>.putRuntimeServiceDiagnosticsSnapshot(
   hostLifecycle: HostRuntimeLifecycleDescriptor,
+  runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor? = null,
   runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor? = null,
   runtimeOwnerWorkSummary: RuntimeOwnerWorkSummary? = null,
   runtimeServiceLifecycle: RuntimeServiceLifecycleDescriptor? = null,
@@ -15,6 +16,9 @@ internal fun MutableMap<String, Any?>.putRuntimeServiceDiagnosticsSnapshot(
     put("localRuntimeServerState", state.snapshotMap())
   }
   put("hostLifecycle", hostLifecycle.snapshotMap())
+  runtimeControllerLifecycle?.let { lifecycle ->
+    put("runtimeControllerLifecycle", lifecycle.snapshotMap())
+  }
   runtimeOwnerLifecycle?.let { lifecycle ->
     put("runtimeOwnerLifecycle", lifecycle.snapshotMap())
   }

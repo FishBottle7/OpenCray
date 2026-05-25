@@ -3,18 +3,27 @@ package com.opencray.app
 import com.opencray.core.orchestrator.METADATA_PREVIOUS_LIFECYCLE_STATE
 import com.opencray.core.orchestrator.METADATA_QUEUE_RESTORE_EPOCH_MS
 import com.opencray.core.orchestrator.METADATA_RECOVERY_REASON
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
+import com.opencray.runtime.process.ManagedProcessRestoreScope
 import java.util.UUID
 
 internal object RunLifecycleMetadataKeys {
   const val PROCESS_START_ID: String = "_host.processStartId"
   const val HOST_INSTANCE_ID: String = "_host.hostInstanceId"
   const val RUNTIME_OWNER_ID: String = "_host.runtimeOwnerId"
+  const val RUNTIME_CONTROLLER_ID: String = "_host.runtimeControllerId"
   const val SUBMISSION_SOURCE: String = "_host.submissionSource"
   const val PREAPPROVED_TOOL_NAME: String = "_host.preapprovedToolName"
 }
 
 internal object RunLifecycleRecoveryReasons {
   const val MANAGED_PROCESS_RESTORE_INTERRUPTED: String = "managed_process_restore_interrupted"
+  const val MANAGED_PROCESS_RESTORE_INTERRUPTED_SAME_CONTROLLER: String =
+    "managed_process_restore_interrupted_same_controller"
+  const val MANAGED_PROCESS_RESTORE_INTERRUPTED_SAME_PROCESS_NEW_CONTROLLER: String =
+    "managed_process_restore_interrupted_same_process_new_controller"
+  const val MANAGED_PROCESS_RESTORE_INTERRUPTED_CROSS_PROCESS: String =
+    "managed_process_restore_interrupted_cross_process"
 }
 
 internal object RunSubmissionSources {
@@ -30,6 +39,7 @@ internal data class HostRuntimeLifecycleDescriptor(
   val processStartedAtEpochMs: Long = OpenCrayProcessLifecycle.processStartedAtEpochMs,
   val hostInstanceId: String = lifecycleId(prefix = "host"),
   val runtimeOwnerId: String = hostInstanceId,
+  val runtimeControllerId: String = runtimeOwnerId,
   val hostCreatedAtEpochMs: Long = System.currentTimeMillis(),
 ) {
   fun snapshotMap(): Map<String, Any?> = mapOf(
@@ -37,6 +47,7 @@ internal data class HostRuntimeLifecycleDescriptor(
     "processStartedAtEpochMs" to processStartedAtEpochMs,
     "hostInstanceId" to hostInstanceId,
     "runtimeOwnerId" to runtimeOwnerId,
+    "runtimeControllerId" to runtimeControllerId,
     "hostCreatedAtEpochMs" to hostCreatedAtEpochMs,
   )
 
@@ -46,17 +57,32 @@ internal data class HostRuntimeLifecycleDescriptor(
     put(RunLifecycleMetadataKeys.PROCESS_START_ID, processStartId)
     put(RunLifecycleMetadataKeys.HOST_INSTANCE_ID, hostInstanceId)
     put(RunLifecycleMetadataKeys.RUNTIME_OWNER_ID, runtimeOwnerId)
+    put(RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_ID, runtimeControllerId)
     submissionSource
       ?.trim()
       ?.takeIf(String::isNotBlank)
       ?.let { normalized -> put(RunLifecycleMetadataKeys.SUBMISSION_SOURCE, normalized) }
   }
+
+  fun stampTaskMetadata(
+    metadata: Map<String, String>,
+  ): Map<String, String> = metadata + taskMetadata()
+}
+
+internal fun submissionSourceTaskMetadata(
+  submissionSource: String?,
+): Map<String, String> = buildMap {
+  submissionSource
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?.let { normalized -> put(RunLifecycleMetadataKeys.SUBMISSION_SOURCE, normalized) }
 }
 
 internal data class RunLifecycleDiagnostics(
   val processStartId: String? = null,
   val hostInstanceId: String? = null,
   val runtimeOwnerId: String? = null,
+  val runtimeControllerId: String? = null,
   val submissionSource: String? = null,
   val recoveryReason: String? = null,
   val queueRestoreEpochMs: Long? = null,
@@ -67,6 +93,7 @@ internal data class RunLifecycleDiagnostics(
     get() = processStartId.isNullOrBlank() &&
       hostInstanceId.isNullOrBlank() &&
       runtimeOwnerId.isNullOrBlank() &&
+      runtimeControllerId.isNullOrBlank() &&
       submissionSource.isNullOrBlank() &&
       recoveryReason.isNullOrBlank() &&
       queueRestoreEpochMs == null &&
@@ -77,6 +104,7 @@ internal data class RunLifecycleDiagnostics(
     processStartId?.takeIf(String::isNotBlank)?.let { put("processStartId", it) }
     hostInstanceId?.takeIf(String::isNotBlank)?.let { put("hostInstanceId", it) }
     runtimeOwnerId?.takeIf(String::isNotBlank)?.let { put("runtimeOwnerId", it) }
+    runtimeControllerId?.takeIf(String::isNotBlank)?.let { put("runtimeControllerId", it) }
     submissionSource?.takeIf(String::isNotBlank)?.let { put("submissionSource", it) }
     recoveryReason?.takeIf(String::isNotBlank)?.let { put("recoveryReason", it) }
     queueRestoreEpochMs?.let { put("queueRestoreEpochMs", it) }
@@ -101,6 +129,7 @@ internal fun runLifecycleDiagnosticsFrom(
     processStartId = taskMetadata[RunLifecycleMetadataKeys.PROCESS_START_ID]?.trim(),
     hostInstanceId = taskMetadata[RunLifecycleMetadataKeys.HOST_INSTANCE_ID]?.trim(),
     runtimeOwnerId = taskMetadata[RunLifecycleMetadataKeys.RUNTIME_OWNER_ID]?.trim(),
+    runtimeControllerId = taskMetadata[RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_ID]?.trim(),
     submissionSource = taskMetadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE]?.trim(),
     recoveryReason = recoveryReason,
     queueRestoreEpochMs = taskMetadata[METADATA_QUEUE_RESTORE_EPOCH_MS]?.toLongOrNull(),
@@ -119,10 +148,22 @@ private fun managedProcessRecoveryReasonOrNull(
   if (resultErrorCode != ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE) {
     return null
   }
-  return if (resultMetadata[METADATA_RUN_REPAIR_SOURCE] == RUN_REPAIR_SOURCE_MANAGED_PROCESS_RESTORE) {
-    RunLifecycleRecoveryReasons.MANAGED_PROCESS_RESTORE_INTERRUPTED
-  } else {
-    null
+  if (resultMetadata[METADATA_RUN_REPAIR_SOURCE] != RUN_REPAIR_SOURCE_MANAGED_PROCESS_RESTORE) {
+    return null
+  }
+  return when (ManagedProcessRestoreScope.fromWireValue(resultMetadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY])) {
+    ManagedProcessRestoreScope.SAME_CONTROLLER ->
+      RunLifecycleRecoveryReasons.MANAGED_PROCESS_RESTORE_INTERRUPTED_SAME_CONTROLLER
+
+    ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER ->
+      RunLifecycleRecoveryReasons.MANAGED_PROCESS_RESTORE_INTERRUPTED_SAME_PROCESS_NEW_CONTROLLER
+
+    ManagedProcessRestoreScope.CROSS_PROCESS ->
+      RunLifecycleRecoveryReasons.MANAGED_PROCESS_RESTORE_INTERRUPTED_CROSS_PROCESS
+
+    ManagedProcessRestoreScope.UNKNOWN,
+    null,
+    -> RunLifecycleRecoveryReasons.MANAGED_PROCESS_RESTORE_INTERRUPTED
   }
 }
 

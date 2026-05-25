@@ -72,7 +72,7 @@ internal class LocalNotificationSettingsFacade(
         store = RuntimeNotificationSettingsStore.fromContext(context.applicationContext),
       )
 
-    fun createForTest(
+    internal fun create(
       store: RuntimeNotificationSettingsStore = RuntimeNotificationSettingsStore(
         InMemoryRuntimeNotificationSettingsKeyValueStore(),
       ),

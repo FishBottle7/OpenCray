@@ -6,6 +6,8 @@ import com.opencray.runtime.process.AgentProcessRegistryConfig
 import com.opencray.runtime.process.FileBackedAgentProcessRegistry
 import com.opencray.runtime.process.LocalManagedProcessControllerFactory
 import com.opencray.runtime.process.ManagedProcessControllerFactory
+import com.opencray.runtime.process.ManagedProcessRestoreMode
+import com.opencray.runtime.process.ManagedProcessRuntimeIdentity
 import java.io.File
 
 internal interface AgentProcessRegistryFactory {
@@ -16,6 +18,8 @@ internal class FileBackedAgentProcessRegistryFactory(
   private val runtimeRootDirectory: File,
   private val controllerFactory: ManagedProcessControllerFactory = LocalManagedProcessControllerFactory(),
   private val config: AgentProcessRegistryConfig = AgentProcessRegistryConfig(),
+  private val runtimeIdentity: ManagedProcessRuntimeIdentity = ManagedProcessRuntimeIdentity(),
+  private val restoreMode: ManagedProcessRestoreMode = ManagedProcessRestoreMode.ACTIVE,
 ) : AgentProcessRegistryFactory {
   override fun forChatSession(sessionId: String): AgentProcessRegistry {
     val sessionDirectory = directoryForSession(sessionId).apply {
@@ -27,6 +31,8 @@ internal class FileBackedAgentProcessRegistryFactory(
       directory = sessionDirectory,
       controllerFactory = controllerFactory,
       config = config,
+      runtimeIdentity = runtimeIdentity,
+      restoreMode = restoreMode,
     )
   }
 
@@ -34,12 +40,16 @@ internal class FileBackedAgentProcessRegistryFactory(
     File(runtimeRootDirectory, FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(sessionId))
 
   companion object {
-    fun fromContext(context: Context): AgentProcessRegistryFactory =
+    fun fromContext(
+      context: Context,
+      restoreMode: ManagedProcessRestoreMode = ManagedProcessRestoreMode.ACTIVE,
+    ): AgentProcessRegistryFactory =
       FileBackedAgentProcessRegistryFactory(
         runtimeRootDirectory = File(
           context.filesDir,
           FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
         ),
+        restoreMode = restoreMode,
       )
   }
 }

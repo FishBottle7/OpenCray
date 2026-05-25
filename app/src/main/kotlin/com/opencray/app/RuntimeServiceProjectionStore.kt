@@ -10,6 +10,7 @@ import kotlinx.serialization.Serializable
 
 internal data class RuntimeServiceProjectionSnapshot(
   val localRuntimeServerState: LocalRuntimeServerState? = null,
+  val runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor? = null,
   val runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor,
   val runtimeOwnerWorkSummary: RuntimeOwnerWorkSummary,
   val serviceLifecycle: RuntimeServiceLifecycleDescriptor,
@@ -31,12 +32,15 @@ internal fun inMemoryRuntimeServiceProjectionStore(): RuntimeServiceProjectionSt
 internal class FileBackedRuntimeServiceProjectionStoreFactory(
   private val runtimeRootDirectory: File,
 ) {
-  fun create(): RuntimeServiceProjectionStore {
+  fun create(
+    target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
+  ): RuntimeServiceProjectionStore {
     if (!runtimeRootDirectory.exists()) {
       runtimeRootDirectory.mkdirs()
     }
     return FileBackedRuntimeServiceProjectionStore(
       storage = DirectoryDurableTextStorage(runtimeRootDirectory),
+      fileName = fileNameForTarget(target),
     )
   }
 
@@ -48,14 +52,18 @@ internal class FileBackedRuntimeServiceProjectionStoreFactory(
           FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
         ),
       )
+
+    private fun fileNameForTarget(target: RuntimeServiceTarget): String =
+      "runtime-service-projection-${target.wireValue}.json"
   }
 }
 
 internal fun OpenCrayRuntimeServiceBridgeSnapshot.toProjectionSnapshot(): RuntimeServiceProjectionSnapshot =
   RuntimeServiceProjectionSnapshot(
     localRuntimeServerState = localRuntimeServerState,
-    runtimeOwnerLifecycle = runtimeAccess.lifecycleDescriptor,
-    runtimeOwnerWorkSummary = runtimeAccess.hostAccess.activeWorkSummary(),
+    runtimeControllerLifecycle = runtimeControllerLifecycle,
+    runtimeOwnerLifecycle = runtimeOwnerLifecycle,
+    runtimeOwnerWorkSummary = runtimeOwnerWorkSummary,
     serviceLifecycle = serviceLifecycle,
     serviceWorkState = serviceWorkState,
     serviceKeepAliveState = serviceKeepAliveState,
@@ -82,6 +90,7 @@ private class InMemoryRuntimeServiceProjectionStore : RuntimeServiceProjectionSt
 
 private class FileBackedRuntimeServiceProjectionStore(
   private val storage: DurableTextStorage,
+  private val fileName: String,
 ) : RuntimeServiceProjectionStore {
   private val lock = Any()
 
@@ -92,7 +101,7 @@ private class FileBackedRuntimeServiceProjectionStore(
   override fun saveSnapshot(snapshot: RuntimeServiceProjectionSnapshot) {
     synchronized(lock) {
       storage.writeText(
-        FILE_NAME,
+        fileName,
         PersistenceJson.instance.encodeToString(
           serializer = PersistedRuntimeServiceProjectionRecord.serializer(),
           value = snapshot.toPersistedRecord(),
@@ -103,12 +112,12 @@ private class FileBackedRuntimeServiceProjectionStore(
 
   override fun clear() {
     synchronized(lock) {
-      storage.delete(FILE_NAME)
+      storage.delete(fileName)
     }
   }
 
   private fun loadRecord(): PersistedRuntimeServiceProjectionRecord? {
-    val encoded = storage.readText(FILE_NAME).orEmpty().trim()
+    val encoded = storage.readText(fileName).orEmpty().trim()
     if (encoded.isBlank()) {
       return null
     }
@@ -117,27 +126,33 @@ private class FileBackedRuntimeServiceProjectionStore(
       string = encoded,
     )
   }
-
-  private companion object {
-    const val FILE_NAME: String = "runtime-service-projection.json"
-  }
 }
 
 private fun RuntimeServiceProjectionSnapshot.toPersistedRecord():
   PersistedRuntimeServiceProjectionRecord = PersistedRuntimeServiceProjectionRecord(
     updatedAtEpochMs = maxOf(
       localRuntimeServerState?.changedAtEpochMs ?: 0L,
+      runtimeControllerLifecycle?.controllerCreatedAtEpochMs ?: 0L,
       runtimeOwnerLifecycle.hostCreatedAtEpochMs,
       serviceLifecycle.serviceCreatedAtEpochMs,
       serviceWorkState.changedAtEpochMs,
       serviceKeepAliveState.changedAtEpochMs,
     ),
     localRuntimeServerState = localRuntimeServerState?.toPersistedRecord(),
+    runtimeControllerLifecycle = runtimeControllerLifecycle?.let { lifecycle ->
+      PersistedRuntimeControllerLifecycleDescriptor(
+        processStartId = lifecycle.processStartId,
+        processStartedAtEpochMs = lifecycle.processStartedAtEpochMs,
+        controllerInstanceId = lifecycle.controllerInstanceId,
+        controllerCreatedAtEpochMs = lifecycle.controllerCreatedAtEpochMs,
+      )
+    },
     runtimeOwnerLifecycle = PersistedHostRuntimeLifecycleDescriptor(
       processStartId = runtimeOwnerLifecycle.processStartId,
       processStartedAtEpochMs = runtimeOwnerLifecycle.processStartedAtEpochMs,
       hostInstanceId = runtimeOwnerLifecycle.hostInstanceId,
       runtimeOwnerId = runtimeOwnerLifecycle.runtimeOwnerId,
+      runtimeControllerId = runtimeOwnerLifecycle.runtimeControllerId,
       hostCreatedAtEpochMs = runtimeOwnerLifecycle.hostCreatedAtEpochMs,
     ),
     runtimeOwnerWorkSummary = PersistedRuntimeOwnerWorkSummary(
@@ -184,11 +199,20 @@ private fun RuntimeServiceProjectionSnapshot.toPersistedRecord():
 private fun PersistedRuntimeServiceProjectionRecord.toSnapshot(): RuntimeServiceProjectionSnapshot =
   RuntimeServiceProjectionSnapshot(
     localRuntimeServerState = localRuntimeServerState?.toSnapshot(),
+    runtimeControllerLifecycle = runtimeControllerLifecycle?.let { lifecycle ->
+      RuntimeControllerLifecycleDescriptor(
+        processStartId = lifecycle.processStartId,
+        processStartedAtEpochMs = lifecycle.processStartedAtEpochMs,
+        controllerInstanceId = lifecycle.controllerInstanceId,
+        controllerCreatedAtEpochMs = lifecycle.controllerCreatedAtEpochMs,
+      )
+    },
     runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(
       processStartId = runtimeOwnerLifecycle.processStartId,
       processStartedAtEpochMs = runtimeOwnerLifecycle.processStartedAtEpochMs,
       hostInstanceId = runtimeOwnerLifecycle.hostInstanceId,
       runtimeOwnerId = runtimeOwnerLifecycle.runtimeOwnerId,
+      runtimeControllerId = runtimeOwnerLifecycle.runtimeControllerId ?: runtimeOwnerLifecycle.runtimeOwnerId,
       hostCreatedAtEpochMs = runtimeOwnerLifecycle.hostCreatedAtEpochMs,
     ),
     runtimeOwnerWorkSummary = RuntimeOwnerWorkSummary(
@@ -237,6 +261,7 @@ private data class PersistedRuntimeServiceProjectionRecord(
   val schemaVersion: Int = PersistenceSchemaVersion.CURRENT,
   val updatedAtEpochMs: Long = 0L,
   val localRuntimeServerState: PersistedLocalRuntimeServerState? = null,
+  val runtimeControllerLifecycle: PersistedRuntimeControllerLifecycleDescriptor? = null,
   val runtimeOwnerLifecycle: PersistedHostRuntimeLifecycleDescriptor,
   val runtimeOwnerWorkSummary: PersistedRuntimeOwnerWorkSummary,
   val serviceLifecycle: PersistedRuntimeServiceLifecycleDescriptor,
@@ -262,7 +287,16 @@ private data class PersistedHostRuntimeLifecycleDescriptor(
   val processStartedAtEpochMs: Long,
   val hostInstanceId: String,
   val runtimeOwnerId: String,
+  val runtimeControllerId: String? = null,
   val hostCreatedAtEpochMs: Long,
+)
+
+@Serializable
+private data class PersistedRuntimeControllerLifecycleDescriptor(
+  val processStartId: String,
+  val processStartedAtEpochMs: Long,
+  val controllerInstanceId: String,
+  val controllerCreatedAtEpochMs: Long,
 )
 
 @Serializable

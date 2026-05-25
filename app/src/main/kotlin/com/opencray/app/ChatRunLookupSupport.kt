@@ -12,7 +12,7 @@ internal fun knownChatSessionIds(
 
 internal fun findChatRunSnapshotForIdentifier(
   chatSessionStore: ChatSessionLocalStore,
-  runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  runtimeHostAccess: RuntimeSessionDirectoryAccess,
   runIdOrTaskId: String,
 ): AgentRunSnapshot? = findChatRunSnapshotForIdentifier(
   sessionIds = knownChatSessionIds(chatSessionStore),
@@ -22,7 +22,7 @@ internal fun findChatRunSnapshotForIdentifier(
 
 internal fun findChatRunSnapshotForIdentifier(
   sessionIds: List<String>,
-  runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  runtimeHostAccess: RuntimeSessionDirectoryAccess,
   runIdOrTaskId: String,
 ): AgentRunSnapshot? {
   sessionIds.firstNotNullOfOrNull { sessionId ->

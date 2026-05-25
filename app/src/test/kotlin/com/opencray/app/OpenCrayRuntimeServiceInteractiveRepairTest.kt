@@ -85,7 +85,11 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
       ),
     )
 
-    val result = resumeInterruptedRuntimeServiceRuns(chatSessionStore, runtimeAccess)
+    val result = resumeInterruptedRuntimeServiceRuns(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+      runtimeReplayAccess = runtimeAccess.replayAccess,
+    )
 
     assertEquals(
       setOf(activeSessionId, recoverableSessionId, completedSessionId),
@@ -140,7 +144,11 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
       ),
     )
 
-    val result = resumeInterruptedRuntimeServiceRuns(chatSessionStore, runtimeAccess)
+    val result = resumeInterruptedRuntimeServiceRuns(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+      runtimeReplayAccess = runtimeAccess.replayAccess,
+    )
 
     assertEquals(
       setOf(activeSessionId, subAgentSessionId, idleSessionId),
@@ -150,6 +158,79 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     assertEquals(emptyList<String>(), result.repairedSessionIds)
     assertEquals(0, activeSession.resumeCallCount)
     assertEquals(1, subAgentSession.resumeCallCount)
+    assertEquals(0, idleSession.resumeCallCount)
+    assertEquals(emptyList<String>(), repairedSessions)
+  }
+
+  @Test
+  fun resumeInterruptedRuntimeServiceRunsAlsoResumesSessionsWithDurablePromptCheckpoint() {
+    val root = temporaryFolder.newFolder("runtime-service-interactive-repair-checkpoint")
+    val runtimeRoot = root.resolve("runtime")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val checkpointSessionId = chatSessionStore.copySession(activeSessionId).activeSession.sessionId
+    val idleSessionId = chatSessionStore.copySession(checkpointSessionId).activeSession.sessionId
+    chatSessionStore.selectSession(activeSessionId)
+    val snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory(runtimeRoot)
+    promptCheckpointStoreFactory.forChatSession(checkpointSessionId).upsert(
+      PersistedPromptCheckpoint(
+        sessionId = checkpointSessionId,
+        runId = "run-checkpoint",
+        taskId = "task-checkpoint",
+        checkpointId = "checkpoint-1",
+        checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+        createdAtEpochMs = 1_000L,
+        updatedAtEpochMs = 1_100L,
+      ),
+    )
+
+    val activeSession = RecordingRuntimeSessionAccess(activeSessionId, runs = emptyList())
+    val checkpointSession = RecordingRuntimeSessionAccess(checkpointSessionId, runs = emptyList())
+    val idleSession = RecordingRuntimeSessionAccess(idleSessionId, runs = emptyList())
+    val repairedSessions = mutableListOf<String>()
+    val runtimeAccess = OpenCrayRuntimeOwnerAccess(
+      lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      hostAccess = RecordingRuntimeHostAccess(
+        sessions = mapOf(
+          activeSessionId to activeSession,
+          checkpointSessionId to checkpointSession,
+          idleSessionId to idleSession,
+        ),
+      ),
+      transcriptMessagesProvider = { emptyList<RuntimeConversationMessage>() },
+      memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
+        memoryStore = InMemoryMemoryStore(),
+      ),
+      replayAccess = OpenCrayRuntimeReplayAccess(
+        approvalRejectionRecorder = { _, _, _, _, _, _ -> },
+        approvalApprovedRecorder = { _, _, _, _, _, _ -> },
+        subAgentReplayRecorder = { _, _ -> },
+        runCancellationRecorder = { _, _, _, _, _ -> },
+        terminalReplayRepairer = { sessionId, _ ->
+          repairedSessions += sessionId
+        },
+      ),
+    )
+
+    val result = resumeInterruptedRuntimeServiceRuns(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+      runtimeReplayAccess = runtimeAccess.replayAccess,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+    )
+
+    assertEquals(
+      setOf(activeSessionId, checkpointSessionId, idleSessionId),
+      result.scannedSessionIds.toSet(),
+    )
+    assertEquals(listOf(checkpointSessionId), result.resumedSessionIds)
+    assertEquals(emptyList<String>(), result.repairedSessionIds)
+    assertEquals(0, activeSession.resumeCallCount)
+    assertEquals(1, checkpointSession.resumeCallCount)
     assertEquals(0, idleSession.resumeCallCount)
     assertEquals(emptyList<String>(), repairedSessions)
   }
@@ -190,7 +271,11 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
       ),
     )
 
-    resumeInterruptedRuntimeServiceRuns(chatSessionStore, runtimeAccess)
+    resumeInterruptedRuntimeServiceRuns(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+      runtimeReplayAccess = runtimeAccess.replayAccess,
+    )
 
     assertEquals(1, recoverySession.submittedTasks.size)
     val recoveryTask = recoverySession.submittedTasks.single()

@@ -12,7 +12,7 @@ import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
 
 internal class ChatRunControlCoordinator(
-  private val runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  private val runtimeHostAccess: RuntimeChatMutationAccess,
   private val findRunSnapshotForIdentifier: (String) -> AgentRunSnapshot?,
   private val pendingApprovalForRun: (AgentRunSnapshot) -> PendingApprovalSnapshot?,
   private val clearPendingApproval: (String, String) -> Unit,
@@ -121,7 +121,7 @@ internal class ChatRunControlCoordinator(
 
 internal class ServiceOwnedChatRunControlAccess(
   private val chatSessionStore: ChatSessionLocalStore,
-  private val runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  private val runtimeHostAccess: RuntimeChatMutationAccess,
   private val pendingApprovalState: ChatPendingApprovalState = ChatPendingApprovalState(),
   private val runtimeEventState: ChatRuntimeEventState = ChatRuntimeEventState(),
   private val runCancellationReplayRecorder:

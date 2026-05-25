@@ -13,6 +13,8 @@ import kotlinx.serialization.Serializable
 
 internal interface SubAgentHandleStoreFactory {
   fun forChatSession(sessionId: String): SubAgentHandleStore
+
+  fun knownSessionIds(): List<String> = emptyList()
 }
 
 internal interface SubAgentHandleStore {
@@ -41,6 +43,10 @@ internal class InMemorySubAgentHandleStoreFactory : SubAgentHandleStoreFactory {
   override fun forChatSession(sessionId: String): SubAgentHandleStore = synchronized(lock) {
     stores.getOrPut(sessionId) { InMemorySubAgentHandleStore(sessionId = sessionId) }
   }
+
+  override fun knownSessionIds(): List<String> = synchronized(lock) {
+    stores.keys.toList()
+  }
 }
 
 internal class FileBackedSubAgentHandleStoreFactory(
@@ -62,6 +68,14 @@ internal class FileBackedSubAgentHandleStoreFactory(
 
   internal fun directoryForSession(sessionId: String): File =
     File(runtimeRootDirectory, FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(sessionId))
+
+  override fun knownSessionIds(): List<String> = runtimeRootDirectory.listFiles()
+    .orEmpty()
+    .asSequence()
+    .filter(File::isDirectory)
+    .mapNotNull { directory -> FileBackedAgentQueueSnapshotStoreFactory.decodeSessionId(directory.name) }
+    .distinct()
+    .toList()
 
   companion object {
     fun fromContext(context: Context): SubAgentHandleStoreFactory =

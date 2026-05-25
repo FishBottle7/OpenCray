@@ -41,6 +41,7 @@ internal data class RuntimeApprovalNotificationModel(
   val sessionTitle: String,
   val runId: String,
   val taskId: String,
+  val runtimeTarget: RuntimeServiceTarget,
   val title: String,
   val body: String,
   val isHighRisk: Boolean,
@@ -69,7 +70,7 @@ internal class RuntimeNotificationCoordinator(
   private val appContext: Context,
   private val localizedContext: Context,
   private val chatSessionStore: ChatSessionLocalStore,
-  private val hostAccess: OpenCrayRuntimeHostAccess,
+  hostAccess: RuntimeNotificationHostAccess,
   private val scheduledTaskSpecStore: ScheduledTaskSpecStore,
   private val scheduledTaskRunRecordStore: ScheduledTaskRunRecordStore,
   private val terminalDeliveryStore: RuntimeNotificationDeliveryStore =
@@ -82,22 +83,28 @@ internal class RuntimeNotificationCoordinator(
   ) {
     "NotificationManager is unavailable."
   },
-  private val appVisibleProvider: () -> Boolean = AppVisibilityMonitor::isAppVisible,
+  private val runtimeServiceAccessGateway: RuntimeServiceAccessGateway,
+  private val appVisibilitySignalAccess: AppVisibilitySignalAccess =
+    defaultAppVisibilitySignalAccess(appContext),
 ) {
   private val lock = Any()
   private var started: Boolean = false
+  private var hostAccess: RuntimeNotificationHostAccess = hostAccess
   private var hostObservationDisposer: (() -> Unit)? = null
   private var visibilityObservationDisposer: (() -> Unit)? = null
   private var activeApprovalTaskIds: Set<String> = emptySet()
+  private val appVisibleProvider: () -> Boolean = appVisibilitySignalAccess::currentVisibility
 
   fun start() {
+    val resolvedHostAccess: RuntimeNotificationHostAccess
     synchronized(lock) {
       if (started) {
         return
       }
       started = true
-      hostObservationDisposer = hostAccess.observe(hostListener)
-      visibilityObservationDisposer = AppVisibilityMonitor.observe(::onAppVisibilityChanged)
+      resolvedHostAccess = hostAccess
+      hostObservationDisposer = resolvedHostAccess.observe(hostListener)
+      visibilityObservationDisposer = appVisibilitySignalAccess.observe(::onAppVisibilityChanged)
     }
     syncPendingApprovalNotifications()
     if (!appVisibleProvider()) {
@@ -118,6 +125,33 @@ internal class RuntimeNotificationCoordinator(
     }
     hostDisposer?.invoke()
     visibilityDisposer?.invoke()
+  }
+
+  fun replaceHostAccess(hostAccess: RuntimeNotificationHostAccess) {
+    val previousDisposer: (() -> Unit)?
+    val shouldSync: Boolean
+    synchronized(lock) {
+      if (this.hostAccess === hostAccess) {
+        return
+      }
+      this.hostAccess = hostAccess
+      shouldSync = started
+      previousDisposer = if (started) {
+        hostObservationDisposer.also {
+          hostObservationDisposer = hostAccess.observe(hostListener)
+        }
+      } else {
+        null
+      }
+      activeApprovalTaskIds = emptySet()
+    }
+    previousDisposer?.invoke()
+    if (shouldSync) {
+      syncPendingApprovalNotifications()
+      if (!appVisibleProvider()) {
+        syncOutstandingTerminalNotifications()
+      }
+    }
   }
 
   fun onScheduledDispatchOutcome(outcome: ScheduledTaskDispatchOutcome) {
@@ -247,6 +281,7 @@ internal class RuntimeNotificationCoordinator(
   }
 
   private fun syncOutstandingTerminalNotifications() {
+    val hostAccess = currentHostAccess()
     for (sessionId in knownSessionIds()) {
       val session = hostAccess.session(sessionId)
       val tasksById = session.snapshot().tasks.associateBy { taskSnapshot -> taskSnapshot.task.id }
@@ -280,6 +315,7 @@ internal class RuntimeNotificationCoordinator(
   private fun pendingApprovalNotificationsForSession(
     sessionId: String,
   ): List<RuntimeApprovalNotificationModel> {
+    val hostAccess = currentHostAccess()
     return approvalRequiredTaskProjectionsForSession(
       sessionId = sessionId,
       hostAccess = hostAccess,
@@ -344,6 +380,7 @@ internal class RuntimeNotificationCoordinator(
       sessionTitle = sessionTitle(sessionId),
       runId = runId,
       taskId = task.id,
+      runtimeTarget = runtimeServiceTargetForNotificationTask(task),
       title = if (isHighRisk) {
         localizedContext.getString(R.string.chat_high_risk_approval_required_title)
       } else {
@@ -497,6 +534,7 @@ internal class RuntimeNotificationCoordinator(
         sessionId = model.sessionId,
         taskId = model.taskId,
         runId = model.runId,
+        target = model.runtimeTarget,
       ),
     )
     .addAction(
@@ -507,6 +545,7 @@ internal class RuntimeNotificationCoordinator(
         sessionId = model.sessionId,
         taskId = model.taskId,
         runId = model.runId,
+        target = model.runtimeTarget,
       ),
     )
     .build()
@@ -747,20 +786,24 @@ internal class RuntimeNotificationCoordinator(
     sessionId: String,
     taskId: String,
     runId: String,
+    target: RuntimeServiceTarget,
   ): PendingIntent {
-    return OpenCrayRuntimeServiceAccess.approvalActionPendingIntent(
+    return runtimeServiceAccessGateway.approvalActionPendingIntent(
       context = appContext,
       action = action,
       sessionId = sessionId,
       taskId = taskId,
       runId = runId,
       requestCode = stableRequestCode("$action:$sessionId:$taskId"),
+      target = target,
     )
   }
 
   private fun knownSessionIds(): List<String> {
     return knownChatSessionIds(chatSessionStore)
   }
+
+  private fun currentHostAccess(): RuntimeNotificationHostAccess = synchronized(lock) { hostAccess }
 
   private fun approvalIsHighRisk(
     errorCode: String?,
@@ -877,3 +920,7 @@ internal class RuntimeNotificationCoordinator(
       (key.hashCode().absoluteValue % modulo).coerceAtLeast(0)
   }
 }
+
+internal fun runtimeServiceTargetForNotificationTask(
+  task: AgentTask,
+): RuntimeServiceTarget = runtimeServiceTargetForTask(task)

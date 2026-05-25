@@ -56,12 +56,114 @@ class OpenCrayFlutterHostBridgeTest {
   }
 
   @Test
+  fun selectChatSessionAsyncRoutesThroughChatRuntimeGatewayAndReportsCallback() {
+    val chatGateway = RecordingChatRuntimeGateway()
+    val callbackValues = mutableListOf<Boolean>()
+    val bridge = hostBridge(chatGateway = chatGateway)
+
+    bridge.selectChatSessionAsync("session-async") { selected ->
+      callbackValues += selected
+    }
+
+    assertEquals("session-async", chatGateway.lastSelectedSessionId)
+    assertEquals(listOf(true), callbackValues)
+  }
+
+  @Test
+  fun loadShellSnapshotMethodCallAddsStableBridgeInstanceId() {
+    val result = RecordingMethodResult()
+    val bridge = OpenCrayFlutterHostBridge(
+      context = MinimalContext(),
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      localHostGateway = UnsupportedLocalGateway(),
+      shellGateway = object : UnsupportedShellGateway() {
+        override fun loadShellSnapshot(): Map<String, Any?> = mapOf(
+          "initialTab" to "chat",
+          "hostLabel" to "HOST READY",
+          "hostSummary" to "Detached runtime service active.",
+          "isHostConnected" to true,
+        )
+      },
+      chatRuntimeGateway = RecordingChatRuntimeGateway(),
+      skillsGateway = UnsupportedSkillsGateway(),
+      settingsGateway = UnsupportedSettingsGateway(),
+      debugPythonScriptRunnerFactory = {
+        throw UnsupportedOperationException("Debug Python runner should not be used.")
+      },
+      backgroundRunner = { action -> action() },
+      mainThreadPoster = { action -> action() },
+    )
+
+    bridge.onMethodCall(MethodCall("loadShellSnapshot", null), result)
+    val firstSnapshot = result.successPayload as Map<*, *>
+    val firstBridgeId = firstSnapshot["bridgeInstanceId"] as String?
+
+    val secondResult = RecordingMethodResult()
+    bridge.onMethodCall(MethodCall("loadShellSnapshot", null), secondResult)
+    val secondSnapshot = secondResult.successPayload as Map<*, *>
+
+    assertTrue(result.successCalled)
+    assertTrue(firstBridgeId?.isNotBlank() == true)
+    assertEquals(firstBridgeId, secondSnapshot["bridgeInstanceId"])
+  }
+
+  @Test
+  fun loadChatSnapshotMethodCallAddsBridgeInstanceIdToEmbeddedRuntimeActivity() {
+    val result = RecordingMethodResult()
+    val bridge = OpenCrayFlutterHostBridge(
+      context = MinimalContext(),
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      localHostGateway = UnsupportedLocalGateway(),
+      shellGateway = UnsupportedShellGateway(),
+      chatRuntimeGateway = object : UnsupportedChatRuntimeGateway() {
+        override fun loadChatSnapshot(): Map<String, Any?> = mapOf(
+          "screenTitle" to "Chat",
+          "modeLabel" to "AUTO",
+          "sessionButtonLabel" to "Sessions",
+          "composerPlaceholder" to "Message OpenCray",
+          "summary" to emptyMap<String, Any?>(),
+          "messages" to emptyList<Map<String, Any?>>(),
+          "drawer" to emptyMap<String, Any?>(),
+          "isInputEnabled" to true,
+          "runtimeActivity" to mapOf(
+            "sessionId" to "session-1",
+            "activeRuns" to emptyList<Map<String, Any?>>(),
+            "retainedRuns" to emptyList<Map<String, Any?>>(),
+            "subAgents" to emptyList<Map<String, Any?>>(),
+            "events" to emptyList<Map<String, Any?>>(),
+            "liveAssistantDrafts" to emptyList<Map<String, Any?>>(),
+          ),
+        )
+      },
+      skillsGateway = UnsupportedSkillsGateway(),
+      settingsGateway = UnsupportedSettingsGateway(),
+      debugPythonScriptRunnerFactory = {
+        throw UnsupportedOperationException("Debug Python runner should not be used.")
+      },
+      backgroundRunner = { action -> action() },
+      mainThreadPoster = { action -> action() },
+    )
+
+    bridge.onMethodCall(MethodCall("loadChatSnapshot", null), result)
+
+    val chatSnapshot = result.successPayload as Map<*, *>
+    val runtimeActivity = chatSnapshot["runtimeActivity"] as Map<*, *>
+    val bridgeId = runtimeActivity["bridgeInstanceId"] as String?
+
+    assertTrue(result.successCalled)
+    assertTrue(bridgeId?.isNotBlank() == true)
+  }
+
+  @Test
   fun openCrayFlutterHostBridgeUsesInjectedGatewayBundleFactory() {
     val localGateway = RecordingLocalGateway()
     val chatGateway = RecordingChatRuntimeGateway()
+    var capturedTarget: RuntimeServiceTarget? = null
     val bridge = openCrayFlutterHostBridge(
       context = MinimalContext(),
-      gatewayBundleFactory = OpenCrayClientGatewayBundleFactory {
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      gatewayBundleFactory = OpenCrayClientGatewayBundleFactory { _, target ->
+        capturedTarget = target
         OpenCrayClientGatewayBundle(
           localHostGateway = localGateway,
           shellGateway = UnsupportedShellGateway(),
@@ -75,7 +177,46 @@ class OpenCrayFlutterHostBridgeTest {
     val selected = bridge.selectChatSession("session-2")
 
     assertTrue(selected)
+    assertEquals(RuntimeServiceTarget.INTERACTIVE, capturedTarget)
     assertEquals("session-2", chatGateway.lastSelectedSessionId)
+  }
+
+  @Test
+  fun openCrayFlutterHostBridgeUsesEnvironmentDefaultsWhenFactoryAndTargetAreOmitted() {
+    val localGateway = RecordingLocalGateway()
+    val chatGateway = RecordingChatRuntimeGateway()
+    val expectedTarget = RuntimeServiceTarget.DETACHED_BACKGROUND
+    var capturedTarget: RuntimeServiceTarget? = null
+    val context = RuntimeEnvironmentContext(
+      OpenCrayRuntimeServiceEnvironment(
+        projectionHostLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+        defaultClientRuntimeServiceTarget = expectedTarget,
+        clientGatewayBundleFactoryProvider = {
+          OpenCrayClientGatewayBundleFactory { _, target ->
+            capturedTarget = target
+            OpenCrayClientGatewayBundle(
+              localHostGateway = localGateway,
+              shellGateway = UnsupportedShellGateway(),
+              chatRuntimeGateway = chatGateway,
+              skillsGateway = UnsupportedSkillsGateway(),
+              settingsGateway = UnsupportedSettingsGateway(),
+            )
+          }
+        },
+      ),
+    )
+
+    val bridge = openCrayFlutterHostBridge(
+      context = context,
+      runtimeTarget = expectedTarget,
+      gatewayBundleFactory = context.openCrayRuntimeServiceEnvironment.clientGatewayBundleFactory,
+    )
+    val selected = bridge.selectChatSession("session-detached")
+
+    assertEquals(expectedTarget, capturedTarget)
+    assertEquals(expectedTarget, bridge.runtimeTarget)
+    assertTrue(selected)
+    assertEquals("session-detached", chatGateway.lastSelectedSessionId)
   }
 
   @Test
@@ -166,6 +307,51 @@ class OpenCrayFlutterHostBridgeTest {
   }
 
   @Test
+  fun performStrongBackgroundActionMethodCallRoutesThroughSettingsGatewayAsync() {
+    val settingsGateway = object : UnsupportedSettingsGateway() {
+      var lastActionId: String? = null
+
+      override fun performStrongBackgroundAction(actionId: String): Map<String, Any?> {
+        lastActionId = actionId
+        return mapOf("actionId" to actionId)
+      }
+    }
+    val result = RecordingMethodResult()
+    val bridge = OpenCrayFlutterHostBridge(
+      context = MinimalContext(),
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      localHostGateway = UnsupportedLocalGateway(),
+      shellGateway = UnsupportedShellGateway(),
+      chatRuntimeGateway = RecordingChatRuntimeGateway(),
+      skillsGateway = UnsupportedSkillsGateway(),
+      settingsGateway = settingsGateway,
+      debugPythonScriptRunnerFactory = {
+        throw UnsupportedOperationException("Debug Python runner should not be used.")
+      },
+      backgroundRunner = { action -> action() },
+      mainThreadPoster = { action -> action() },
+    )
+
+    bridge.onMethodCall(
+      MethodCall(
+        "performStrongBackgroundAction",
+        mapOf("actionId" to StrongBackgroundActionIds.OPEN_NOTIFICATION_SETTINGS),
+      ),
+      result,
+    )
+
+    assertEquals(
+      StrongBackgroundActionIds.OPEN_NOTIFICATION_SETTINGS,
+      settingsGateway.lastActionId,
+    )
+    assertTrue(result.successCalled)
+    assertEquals(
+      mapOf("actionId" to StrongBackgroundActionIds.OPEN_NOTIFICATION_SETTINGS),
+      result.successPayload,
+    )
+  }
+
+  @Test
   fun selectAgentMethodCallRoutesThroughLocalHostGateway() {
     val localGateway = RecordingLocalGateway().apply {
       selectAgentResult = mapOf(
@@ -194,6 +380,7 @@ class OpenCrayFlutterHostBridgeTest {
     localHostGateway: OpenCrayLocalHostGateway = UnsupportedLocalGateway(),
   ): OpenCrayFlutterHostBridge = OpenCrayFlutterHostBridge(
     context = MinimalContext(),
+    runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
     localHostGateway = localHostGateway,
     shellGateway = UnsupportedShellGateway(),
     chatRuntimeGateway = chatGateway,
@@ -207,6 +394,14 @@ class OpenCrayFlutterHostBridgeTest {
   )
 
   private class MinimalContext : ContextWrapper(null) {
+    override fun getApplicationContext(): Context = this
+
+    override fun getPackageName(): String = "org.opencray.app"
+  }
+
+  private class RuntimeEnvironmentContext(
+    override val openCrayRuntimeServiceEnvironment: OpenCrayRuntimeServiceEnvironment,
+  ) : ContextWrapper(null), OpenCrayRuntimeServiceEnvironmentOwner {
     override fun getApplicationContext(): Context = this
 
     override fun getPackageName(): String = "org.opencray.app"

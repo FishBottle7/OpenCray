@@ -7,6 +7,7 @@ import com.opencray.runtime.CommandExecutor
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.memory.MemoryCandidateExtractor
 import com.opencray.runtime.process.LocalManagedProcessControllerFactory
+import com.opencray.runtime.process.ManagedProcessRuntimeIdentity
 import com.opencray.runtime.process.RoutedManagedProcessControllerFactory
 import com.opencray.runtime.skills.SkillInstallManifestStore
 import com.opencray.runtime.skills.SkillPackageManager
@@ -17,8 +18,26 @@ import java.nio.file.Path
 import java.util.Locale
 import java.util.concurrent.Executors
 
-internal data class InProcessOpenCrayRuntimeOwner(
-  val lifecycleDescriptor: HostRuntimeLifecycleDescriptor,
+internal class RuntimeOwnerLifecycleState(
+  initialLifecycle: HostRuntimeLifecycleDescriptor,
+) {
+  private val lock = Any()
+  private var currentLifecycle: HostRuntimeLifecycleDescriptor = initialLifecycle
+
+  fun current(): HostRuntimeLifecycleDescriptor = synchronized(lock) {
+    currentLifecycle
+  }
+
+  fun replace(nextLifecycle: HostRuntimeLifecycleDescriptor): HostRuntimeLifecycleDescriptor =
+    synchronized(lock) {
+      currentLifecycle = nextLifecycle
+      nextLifecycle
+    }
+}
+
+internal data class RetainedInProcessOpenCrayRuntimeOwnerCore(
+  val runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor?,
+  private val runtimeOwnerLifecycleState: RuntimeOwnerLifecycleState,
   val sessionRuntimeManager: AgentSessionRuntimeManager,
   val runEventJournalStoreFactory: RunEventJournalStoreFactory,
   val promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
@@ -28,29 +47,87 @@ internal data class InProcessOpenCrayRuntimeOwner(
   val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator,
   val replayAccess: OpenCrayRuntimeReplayAccess,
   val sandboxPreviewEmbedConfigService: SandboxPreviewEmbedConfigService? = null,
-)
+  private val disposeHandler: () -> Unit = {},
+) {
+  private val disposeLock = Any()
+  private var disposed: Boolean = false
 
-internal object InProcessOpenCrayRuntimeOwnerRegistry {
-  @Volatile
-  private var instance: InProcessOpenCrayRuntimeOwner? = null
+  fun currentLifecycleDescriptor(): HostRuntimeLifecycleDescriptor =
+    runtimeOwnerLifecycleState.current()
 
-  fun peek(): InProcessOpenCrayRuntimeOwner? = instance
+  fun replaceLifecycleDescriptor(): HostRuntimeLifecycleDescriptor =
+    runtimeOwnerLifecycleState.replace(
+      hostRuntimeLifecycleDescriptorFor(runtimeControllerLifecycle),
+    )
 
-  fun clearForTest() {
-    synchronized(this) {
-      instance = null
-    }
+  fun toRuntimeHostAccess(
+    lifecycleDescriptor: HostRuntimeLifecycleDescriptor = currentLifecycleDescriptor(),
+  ): OpenCrayRuntimeHostAccess = DefaultOpenCrayRuntimeHostAccess(
+    lifecycleDescriptor = lifecycleDescriptor,
+    sessionRuntimeManager = sessionRuntimeManager,
+    runEventJournalStoreFactory = runEventJournalStoreFactory,
+    promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    supplementStoreFactory = supplementStoreFactory,
+    approvalRegistry = approvalRegistry,
+  )
+
+  fun toRuntimeOwnerBootstrap(
+    lifecycleDescriptor: HostRuntimeLifecycleDescriptor = currentLifecycleDescriptor(),
+  ): RuntimeOwnerBootstrap {
+    val runtimeHostAccess = toRuntimeHostAccess(lifecycleDescriptor)
+    return RuntimeOwnerBootstrap(
+      runtimeOwnerLifecycle = lifecycleDescriptor,
+      ownerObservationAccess = runtimeHostAccess,
+      notificationHostAccess = runtimeHostAccess,
+      approvalDecisionHostAccess = runtimeHostAccess,
+      chatMutationAccess = runtimeHostAccess,
+      chatSubmissionHostAccess = runtimeHostAccess,
+      runtimeReplayAccess = replayAccess,
+      retainedHandle = RetainedInProcessRuntimeOwnerHandle(this),
+    )
   }
 
-  fun getOrCreate(factory: () -> InProcessOpenCrayRuntimeOwner): InProcessOpenCrayRuntimeOwner =
-    instance ?: synchronized(this) {
-      instance ?: factory().also { created ->
-        instance = created
+  fun dispose() {
+    val handler = synchronized(disposeLock) {
+      if (disposed) {
+        null
+      } else {
+        disposed = true
+        disposeHandler
       }
+    } ?: return
+    try {
+      sessionRuntimeManager.releaseAllSessions()
+    } finally {
+      handler()
     }
+  }
 }
 
-internal fun createInProcessOpenCrayRuntimeOwner(
+private class RetainedInProcessRuntimeOwnerHandle(
+  private val core: RetainedInProcessOpenCrayRuntimeOwnerCore,
+) : RetainedRuntimeOwnerHandle {
+  override fun createReplacementBootstrap(): RuntimeOwnerBootstrap =
+    core.toRuntimeOwnerBootstrap(
+      lifecycleDescriptor = core.replaceLifecycleDescriptor(),
+    )
+
+  override fun disposeRetainedOwner() {
+    core.dispose()
+  }
+}
+
+private fun hostRuntimeLifecycleDescriptorFor(
+  runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor?,
+): HostRuntimeLifecycleDescriptor = runtimeControllerLifecycle
+  ?.let { controller ->
+    HostRuntimeLifecycleDescriptor(
+      runtimeControllerId = controller.controllerInstanceId,
+    )
+  }
+  ?: HostRuntimeLifecycleDescriptor()
+
+internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
   appContext: Context,
   llmSettingsStore: LlmSettingsStore,
   sandboxSettingsRepository: SandboxSettingsRepository,
@@ -66,8 +143,11 @@ internal fun createInProcessOpenCrayRuntimeOwner(
   workspaceRootsProvider: () -> Set<Path>,
   approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot,
   soulProfileStore: WorkspaceSoulProfileStore,
-): InProcessOpenCrayRuntimeOwner {
-  val lifecycleDescriptor = HostRuntimeLifecycleDescriptor()
+  runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor? = null,
+): RetainedInProcessOpenCrayRuntimeOwnerCore {
+  val runtimeOwnerLifecycleState = RuntimeOwnerLifecycleState(
+    hostRuntimeLifecycleDescriptorFor(runtimeControllerLifecycle),
+  )
   val chatExecutor = Executors.newSingleThreadExecutor()
   val subAgentRecoveryExecutor = Executors.newCachedThreadPool()
   val chatContextFactory = ChatRuntimeSessionContextFactory(
@@ -163,6 +243,10 @@ internal fun createInProcessOpenCrayRuntimeOwner(
       FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
     ),
     controllerFactory = managedProcessControllerFactory,
+    runtimeIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = runtimeOwnerLifecycleState.current().processStartId,
+      runtimeControllerId = runtimeOwnerLifecycleState.current().runtimeControllerId,
+    ),
   )
   val liteLlmProviderClient = OpenAiCompatibleLiteLlmProviderClient(
     userAgent = providerUserAgent,
@@ -314,19 +398,21 @@ internal fun createInProcessOpenCrayRuntimeOwner(
       )
     },
   )
-  return InProcessOpenCrayRuntimeOwner(
-    lifecycleDescriptor = lifecycleDescriptor,
-    sessionRuntimeManager = DefaultAgentSessionRuntimeManager(
-      agentId = "opencray-flutter-host",
-      runtimeFactory = runtimeFactory,
-      snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
-      runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
-      runEventJournalStoreFactory = runEventJournalStoreFactory,
-      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
-      executor = chatExecutor,
-      subAgentRecoveryExecutor = subAgentRecoveryExecutor,
-      runtimeLifecycle = lifecycleDescriptor,
-    ),
+  val sessionRuntimeManager = DefaultAgentSessionRuntimeManager(
+    agentId = "opencray-flutter-host",
+    runtimeFactory = runtimeFactory,
+    snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
+    runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
+    runEventJournalStoreFactory = runEventJournalStoreFactory,
+    promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    executor = chatExecutor,
+    subAgentRecoveryExecutor = subAgentRecoveryExecutor,
+    runtimeLifecycleProvider = runtimeOwnerLifecycleState::current,
+  )
+  return RetainedInProcessOpenCrayRuntimeOwnerCore(
+    runtimeControllerLifecycle = runtimeControllerLifecycle,
+    runtimeOwnerLifecycleState = runtimeOwnerLifecycleState,
+    sessionRuntimeManager = sessionRuntimeManager,
     runEventJournalStoreFactory = runEventJournalStoreFactory,
     promptCheckpointStoreFactory = promptCheckpointStoreFactory,
     supplementStoreFactory = supplementStoreFactory,
@@ -343,5 +429,11 @@ internal fun createInProcessOpenCrayRuntimeOwner(
       terminalReplayRepairer = runtimeFactory::repairTerminalReplayFromRunSnapshots,
     ),
     sandboxPreviewEmbedConfigService = e2bSandboxPreviewEmbedConfigService,
+    disposeHandler = {
+      chatExecutor.shutdownNow()
+      if (subAgentRecoveryExecutor !== chatExecutor) {
+        subAgentRecoveryExecutor.shutdownNow()
+      }
+    },
   )
 }

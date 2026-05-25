@@ -430,6 +430,7 @@ private class SandboxPythonManagedCommandController(
     timedOut = timedOut,
     cancelled = cancelled,
     outputLimitExceeded = outputLimitExceeded,
+    ownerIdentity = request.ownerIdentity,
     metadata = buildMap {
       putAll(runtimeMetadata)
       if (terminationRequested) {

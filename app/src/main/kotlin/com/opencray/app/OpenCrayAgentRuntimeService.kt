@@ -10,23 +10,25 @@ internal class OpenCrayAgentRuntimeService : Service() {
   private val mainHandler: Handler by lazy(LazyThreadSafetyMode.NONE) {
     Handler(Looper.getMainLooper())
   }
+  private val runtimeEnvironment: OpenCrayRuntimeServiceEnvironment by lazy(
+    LazyThreadSafetyMode.NONE,
+  ) {
+    openCrayRuntimeServiceEnvironment(applicationContext)
+  }
   @Volatile
-  private var serviceBootstrapInstance: OpenCrayAgentRuntimeServiceBootstrap? = null
-  private val serviceBootstrap: OpenCrayAgentRuntimeServiceBootstrap
-    get() = serviceBootstrapInstance
-      ?: error("Runtime service bootstrap accessed before OpenCrayAgentRuntimeService bootstrap.")
+  private var shellControllerInstance: RuntimeServiceShellController? = null
+  private val shellController: RuntimeServiceShellController
+    get() = shellControllerInstance
+      ?: error("Runtime service shell controller accessed before OpenCrayAgentRuntimeService bootstrap.")
 
   override fun onCreate() {
     super.onCreate()
-    bootstrapOpenCrayRuntimeProcessSupport(applicationContext)
-    RuntimeNotificationChannelRegistry.ensureRegistered(applicationContext)
-    serviceBootstrapInstance = openCrayAgentRuntimeServiceBootstrap(
+    shellControllerInstance = runtimeServiceShellController(
       service = this,
       appContext = applicationContext,
       mainHandler = mainHandler,
+      bootstrapDependencies = runtimeEnvironment.runtimeServiceBootstrapDependencies,
     )
-    serviceBootstrap.transportBootstrap.ensureStarted()
-    serviceBootstrap.executionCoordinator.attach()
   }
 
   override fun onStartCommand(
@@ -34,19 +36,20 @@ internal class OpenCrayAgentRuntimeService : Service() {
     flags: Int,
     startId: Int,
   ): Int {
-    serviceBootstrap.executionCoordinator.onStartCommand(startId)
-    serviceBootstrap.wakeCommandDispatcher.dispatch(intent)
-    return START_NOT_STICKY
+    val controller = shellController
+    controller.attach(runtimeTargetForIntent(intent))
+    return controller.onStartCommand(intent = intent, startId = startId)
   }
 
-  override fun onBind(intent: Intent?): IBinder = serviceBootstrap.binderEndpoint
+  override fun onBind(intent: Intent?): IBinder {
+    val controller = shellController
+    controller.attach(runtimeTargetForIntent(intent))
+    return controller.onBind(intent)
+  }
 
   override fun onDestroy() {
-    serviceBootstrapInstance?.executionCoordinator?.dispose()
-    serviceBootstrapInstance = null
+    shellControllerInstance?.dispose()
+    shellControllerInstance = null
     super.onDestroy()
   }
 }
-
-internal const val ACTION_RESUME_INTERRUPTED_RUNS: String =
-  "com.opencray.app.action.RESUME_INTERRUPTED_RUNS"

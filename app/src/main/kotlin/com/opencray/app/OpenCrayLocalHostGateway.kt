@@ -460,35 +460,21 @@ internal class DefaultOpenCrayLocalHostGateway(
     }
 }
 
-internal object OpenCrayLocalHostGatewayRegistry {
-  @Volatile
-  private var instance: OpenCrayLocalHostGateway? = null
-
-  fun fromContext(context: Context): OpenCrayLocalHostGateway {
-    val appContext = context.applicationContext
-    return instance ?: synchronized(this) {
-      instance ?: createFromContext(appContext).also { created ->
-        instance = created
-      }
-    }
-  }
-
-  private fun createFromContext(appContext: Context): OpenCrayLocalHostGateway {
-    val dependencies = loadOpenCrayRuntimeContextDependencies(appContext)
-    return DefaultOpenCrayLocalHostGateway(
-      appContext = appContext,
-      workspaceRootProvider = dependencies.workspaceRootProvider,
-      workspaceSnapshotProvider = dependencies.workspaceSnapshotProvider,
-      sandboxPreviewEmbedConfigServiceProvider = {
-        defaultSandboxPreviewEmbedConfigService(appContext)
-      },
-      mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
-    )
-  }
+internal fun createOpenCrayLocalHostGateway(
+  context: Context,
+  dependencies: LocalHostGatewayDependencies,
+): OpenCrayLocalHostGateway {
+  val appContext = context.applicationContext
+  return DefaultOpenCrayLocalHostGateway(
+    appContext = appContext,
+    workspaceRootProvider = dependencies.workspaceRootProvider,
+    workspaceSnapshotProvider = dependencies.workspaceSnapshotProvider,
+    sandboxPreviewEmbedConfigServiceProvider = {
+      defaultSandboxPreviewEmbedConfigService(appContext)
+    },
+    mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
+  )
 }
-
-internal fun openCrayLocalHostGateway(context: Context): OpenCrayLocalHostGateway =
-  OpenCrayLocalHostGatewayRegistry.fromContext(context.applicationContext)
 
 private fun defaultSandboxPreviewEmbedConfigService(
   appContext: Context,

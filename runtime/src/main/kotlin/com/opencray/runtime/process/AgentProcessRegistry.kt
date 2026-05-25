@@ -5,6 +5,8 @@ import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
+import java.io.RandomAccessFile
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
 
 data class ManagedProcessStartRequest(
@@ -15,6 +17,7 @@ data class ManagedProcessStartRequest(
   val workingDirectory: String? = null,
   val timeoutMs: Long = 300_000L,
   val requestedAtEpochMs: Long,
+  val ownerIdentity: ManagedProcessRuntimeIdentity? = null,
   val metadata: Map<String, String> = emptyMap(),
 ) {
   init {
@@ -129,6 +132,44 @@ data class ManagedProcessDeliveredObservationState(
 )
 
 @Serializable
+data class ManagedProcessRuntimeIdentity(
+  val processStartId: String? = null,
+  val runtimeControllerId: String? = null,
+) {
+  val isEmpty: Boolean
+    get() = processStartId.isNullOrBlank() && runtimeControllerId.isNullOrBlank()
+}
+
+@Serializable
+enum class ManagedProcessRestoreMode {
+  ACTIVE,
+  PROJECTION_ONLY,
+}
+
+@Serializable
+enum class ManagedProcessRestoreScope {
+  SAME_CONTROLLER,
+  SAME_PROCESS_NEW_CONTROLLER,
+  CROSS_PROCESS,
+  UNKNOWN,
+  ;
+
+  val wireValue: String
+    get() = name.lowercase()
+
+  companion object {
+    fun fromWireValue(value: String?): ManagedProcessRestoreScope? =
+      entries.firstOrNull { scope -> scope.wireValue == value?.trim()?.lowercase() }
+  }
+}
+
+const val MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY: String = "managedProcessRestoreScope"
+const val MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY: String =
+  "managedProcessRestoreCurrentProcessStartId"
+const val MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY: String =
+  "managedProcessRestoreCurrentRuntimeControllerId"
+
+@Serializable
 data class ManagedProcessSnapshot(
   val processId: String,
   val taskId: String,
@@ -153,6 +194,7 @@ data class ManagedProcessSnapshot(
   val observationState: ManagedProcessObservationState? = null,
   val reconnectState: ManagedProcessReconnectState? = null,
   val deliveredObservationState: ManagedProcessDeliveredObservationState? = null,
+  val ownerIdentity: ManagedProcessRuntimeIdentity? = null,
   val metadata: Map<String, String> = emptyMap(),
 ) {
   init {
@@ -369,20 +411,25 @@ class InMemoryAgentProcessRegistry(
 }
 
 class FileBackedAgentProcessRegistry(
-  directory: File,
+  private val directory: File,
   private val controllerFactory: ManagedProcessControllerFactory = LocalManagedProcessControllerFactory(),
   private val config: AgentProcessRegistryConfig = AgentProcessRegistryConfig(),
+  private val runtimeIdentity: ManagedProcessRuntimeIdentity = ManagedProcessRuntimeIdentity(),
+  private val restoreMode: ManagedProcessRestoreMode = ManagedProcessRestoreMode.ACTIVE,
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) : AgentProcessRegistry {
   private val lock = Any()
   private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
-  private val controllerScopeId: String = directory.absoluteFile.normalize().path
+  private val controllerScopeId: String = buildControllerScopeId(
+    directory = directory,
+    runtimeIdentity = runtimeIdentity,
+  )
   private val controllersByProcessId = linkedMapOf<String, ManagedProcessController>()
   private val reconnectableControllerFactory =
     controllerFactory as? ReconnectableManagedProcessControllerFactory
 
   init {
-    synchronized(lock) {
+    synchronizedStoreLocked {
       loadNormalizedRecordLocked()
     }
   }
@@ -390,7 +437,7 @@ class FileBackedAgentProcessRegistry(
   override fun start(request: ManagedProcessStartRequest): ManagedProcessSnapshot {
     val controller = controllerFactory.start(request)
     val snapshot = controller.snapshot()
-    synchronized(lock) {
+    return synchronizedStoreLocked {
       val existing = loadNormalizedRecordLocked()
       require(existing.snapshots.none { persisted -> persisted.processId == request.processId }) {
         "Managed process '${request.processId}' already exists."
@@ -401,37 +448,43 @@ class FileBackedAgentProcessRegistry(
         processId = request.processId,
         controller = controller,
       )
-      return persistSnapshotsLocked(existing.snapshots + snapshot).first { persisted ->
+      persistSnapshotsLocked(existing.snapshots + snapshot).first { persisted ->
         persisted.processId == request.processId
       }
     }
   }
 
-  override fun list(): List<ManagedProcessSnapshot> = synchronized(lock) {
-    synchronizeLiveSnapshotsLocked().snapshots
+  override fun list(): List<ManagedProcessSnapshot> = synchronizedStoreLocked {
+    when (restoreMode) {
+      ManagedProcessRestoreMode.ACTIVE -> synchronizeLiveSnapshotsLocked().snapshots
+      ManagedProcessRestoreMode.PROJECTION_ONLY -> loadNormalizedRecordLocked().snapshots
+    }
   }
 
-  override fun read(processId: String): ManagedProcessSnapshot? = synchronized(lock) {
-    synchronizeLiveSnapshotsLocked().snapshots.firstOrNull { snapshot ->
+  override fun read(processId: String): ManagedProcessSnapshot? = synchronizedStoreLocked {
+    when (restoreMode) {
+      ManagedProcessRestoreMode.ACTIVE -> synchronizeLiveSnapshotsLocked().snapshots
+      ManagedProcessRestoreMode.PROJECTION_ONLY -> loadNormalizedRecordLocked().snapshots
+    }.firstOrNull { snapshot ->
       snapshot.processId == processId
     }
   }
 
   override fun wait(processId: String, timeoutMs: Long): ManagedProcessSnapshot? {
-    val controller = synchronized(lock) {
+    val controller = synchronizedStoreLocked {
       val existing = loadNormalizedRecordLocked()
       val snapshot = existing.snapshots.firstOrNull { persisted -> persisted.processId == processId }
       snapshot?.let(::controllerForSnapshot)
     }
     if (controller == null) {
-      return synchronized(lock) {
+      return synchronizedStoreLocked {
         loadNormalizedRecordLocked().snapshots.firstOrNull { snapshot ->
           snapshot.processId == processId
         }
       }
     }
     val snapshot = controller.await(timeoutMs.coerceAtLeast(0L))
-    return synchronized(lock) {
+    return synchronizedStoreLocked {
       val existing = loadNormalizedRecordLocked()
       val persistedSnapshot = existing.snapshots.firstOrNull { persisted ->
         persisted.processId == processId
@@ -444,20 +497,20 @@ class FileBackedAgentProcessRegistry(
   }
 
   override fun terminate(processId: String): ManagedProcessSnapshot? {
-    val controller = synchronized(lock) {
+    val controller = synchronizedStoreLocked {
       val existing = loadNormalizedRecordLocked()
       val snapshot = existing.snapshots.firstOrNull { persisted -> persisted.processId == processId }
       snapshot?.let(::controllerForSnapshot)
     }
     if (controller == null) {
-      return synchronized(lock) {
+      return synchronizedStoreLocked {
         loadNormalizedRecordLocked().snapshots.firstOrNull { snapshot ->
           snapshot.processId == processId
         }
       }
     }
     val snapshot = controller.terminate()
-    return synchronized(lock) {
+    return synchronizedStoreLocked {
       val existing = loadNormalizedRecordLocked()
       val persistedSnapshot = existing.snapshots.firstOrNull { persisted ->
         persisted.processId == processId
@@ -473,7 +526,7 @@ class FileBackedAgentProcessRegistry(
     processId: String,
     deliveredObservationState: ManagedProcessDeliveredObservationState?,
   ) {
-    synchronized(lock) {
+    synchronizedStoreLocked {
       val existing = loadNormalizedRecordLocked()
       var changed = false
       val updatedSnapshots = existing.snapshots.map { snapshot ->
@@ -491,6 +544,13 @@ class FileBackedAgentProcessRegistry(
       }
     }
   }
+
+  private fun <T> synchronizedStoreLocked(block: () -> T): T =
+    ManagedProcessRegistryStoreLock.withLock(directory) {
+      synchronized(lock) {
+        block()
+      }
+    }
 
   private fun synchronizeLiveSnapshotsLocked(): ManagedProcessRegistryRecord {
     val existing = loadNormalizedRecordLocked()
@@ -531,6 +591,17 @@ class FileBackedAgentProcessRegistry(
   private fun loadNormalizedRecordLocked(): ManagedProcessRegistryRecord {
     val existing = loadRecordLocked()
     val normalizedSnapshots = normalizeSnapshots(existing.snapshots)
+    if (restoreMode == ManagedProcessRestoreMode.PROJECTION_ONLY) {
+      return if (normalizedSnapshots == existing.snapshots) {
+        existing
+      } else {
+        existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = clock(),
+          snapshots = normalizedSnapshots,
+        )
+      }
+    }
     if (normalizedSnapshots == existing.snapshots) {
       synchronizeControllersLocked(normalizedSnapshots.map(ManagedProcessSnapshot::processId).toSet())
       return existing
@@ -571,9 +642,11 @@ class FileBackedAgentProcessRegistry(
       )
       .forEach { snapshot ->
         if (snapshot.processId !in orderedByProcessId) {
-          orderedByProcessId[snapshot.processId] = repairRestoredRunningSnapshot(
-            snapshot.withNormalizedRemoteState(),
-          )
+          val normalizedSnapshot = snapshot.withNormalizedRemoteState()
+          orderedByProcessId[snapshot.processId] = when (restoreMode) {
+            ManagedProcessRestoreMode.ACTIVE -> repairRestoredRunningSnapshot(normalizedSnapshot)
+            ManagedProcessRestoreMode.PROJECTION_ONLY -> normalizedSnapshot
+          }
         }
       }
     val retained = orderedByProcessId.values.toMutableList()
@@ -605,7 +678,10 @@ class FileBackedAgentProcessRegistry(
       errorMessage = "Managed process state was restored without a live controller; marking it interrupted.",
       updatedAtEpochMs = repairedAt,
       finishedAtEpochMs = repairedAt,
-      metadata = snapshot.metadata + mapOf(
+      metadata = snapshot.metadata + managedProcessRestoreMetadata(
+        snapshot = snapshot,
+        runtimeIdentity = runtimeIdentity,
+      ) + mapOf(
         "restoredFromDurableStore" to "true",
         "restoredTerminalState" to "interrupted",
       ),
@@ -722,7 +798,13 @@ class FileBackedAgentProcessRegistry(
     if (snapshot.status != ManagedProcessStatus.RUNNING) {
       return null
     }
-    val controller = reconnectableControllerFactory?.reconnect(snapshot) ?: return null
+    val reconnectSnapshot = snapshot.copy(
+      metadata = snapshot.metadata + managedProcessRestoreMetadata(
+        snapshot = snapshot,
+        runtimeIdentity = runtimeIdentity,
+      ),
+    )
+    val controller = reconnectableControllerFactory?.reconnect(reconnectSnapshot) ?: return null
     controllersByProcessId[snapshot.processId] = controller
     ManagedProcessControllerRegistry.register(
       scopeId = controllerScopeId,
@@ -751,6 +833,121 @@ class FileBackedAgentProcessRegistry(
     internal const val FILE_NAME: String = "managed-process-registry.json"
     const val ERROR_INTERRUPTED_ON_RESTORE: String = "PROCESS_INTERRUPTED_ON_RESTORE"
   }
+}
+
+private fun buildControllerScopeId(
+  directory: File,
+  runtimeIdentity: ManagedProcessRuntimeIdentity,
+): String {
+  val normalizedDirectory = directory.absoluteFile.normalize().path
+  val runtimeControllerId = runtimeIdentity.runtimeControllerId
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+  return if (runtimeControllerId == null) {
+    normalizedDirectory
+  } else {
+    "$normalizedDirectory#$runtimeControllerId"
+  }
+}
+
+private fun managedProcessRestoreMetadata(
+  snapshot: ManagedProcessSnapshot,
+  runtimeIdentity: ManagedProcessRuntimeIdentity,
+): Map<String, String> = buildMap {
+  put(
+    MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY,
+    managedProcessRestoreScope(
+      snapshot = snapshot,
+      runtimeIdentity = runtimeIdentity,
+    ).wireValue,
+  )
+  runtimeIdentity.processStartId
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?.let { processStartId ->
+      put(MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY, processStartId)
+    }
+  runtimeIdentity.runtimeControllerId
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?.let { runtimeControllerId ->
+      put(MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY, runtimeControllerId)
+    }
+}
+
+private fun managedProcessRestoreScope(
+  snapshot: ManagedProcessSnapshot,
+  runtimeIdentity: ManagedProcessRuntimeIdentity,
+): ManagedProcessRestoreScope {
+  val ownerIdentity = snapshot.ownerIdentity?.takeUnless(ManagedProcessRuntimeIdentity::isEmpty)
+    ?: return ManagedProcessRestoreScope.UNKNOWN
+  val currentRuntimeControllerId = runtimeIdentity.runtimeControllerId
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+  val ownerRuntimeControllerId = ownerIdentity.runtimeControllerId
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+  if (
+    currentRuntimeControllerId != null &&
+    ownerRuntimeControllerId != null &&
+    currentRuntimeControllerId == ownerRuntimeControllerId
+  ) {
+    return ManagedProcessRestoreScope.SAME_CONTROLLER
+  }
+  val currentProcessStartId = runtimeIdentity.processStartId
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+  val ownerProcessStartId = ownerIdentity.processStartId
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+  if (
+    currentProcessStartId != null &&
+    ownerProcessStartId != null &&
+    currentProcessStartId == ownerProcessStartId
+  ) {
+    return ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER
+  }
+  if (
+    currentProcessStartId != null &&
+    ownerProcessStartId != null &&
+    currentProcessStartId != ownerProcessStartId
+  ) {
+    return ManagedProcessRestoreScope.CROSS_PROCESS
+  }
+  return ManagedProcessRestoreScope.UNKNOWN
+}
+
+private object ManagedProcessRegistryStoreLock {
+  private val locksByDirectory = ConcurrentHashMap<String, Any>()
+
+  fun <T> withLock(directory: File, block: () -> T): T {
+    val normalizedDirectory = directory.absoluteFile.normalize()
+    val directoryKey = normalizedDirectory.path
+    val processLocalLock = locksByDirectory.computeIfAbsent(directoryKey) { Any() }
+    synchronized(processLocalLock) {
+      ensureDirectory(normalizedDirectory)
+      val lockFile = File(normalizedDirectory, LOCK_FILE_NAME)
+      RandomAccessFile(lockFile, "rw").channel.use { channel ->
+        channel.lock().use {
+          return block()
+        }
+      }
+    }
+  }
+
+  private fun ensureDirectory(directory: File) {
+    if (directory.exists()) {
+      require(directory.isDirectory) {
+        "Managed process registry lock path must be a directory: ${directory.path}"
+      }
+      return
+    }
+    require(directory.mkdirs()) {
+      "Failed to create managed process registry directory: ${directory.path}"
+    }
+  }
+
+  private const val LOCK_FILE_NAME: String = ".managed-process-registry.lock"
 }
 
 private fun inferredRemoteHandleFromMetadata(

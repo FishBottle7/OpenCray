@@ -101,7 +101,7 @@ internal class LocalNetworkSearchConfigFacade private constructor(
       )
     }
 
-    internal fun createForTest(
+    internal fun create(
       settingsStore: WebSearchSettingsStore,
     ): NetworkSearchConfigFacade = LocalNetworkSearchConfigFacade(
       settingsStore = settingsStore,

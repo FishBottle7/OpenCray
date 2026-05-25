@@ -36,7 +36,7 @@ internal class SessionSubAgentRecoveryDriver(
   private val sessionId: String,
   private val runtimeFactory: AgentSessionTaskRuntimeFactory,
   private val executor: ExecutorService,
-  private val runtimeLifecycle: HostRuntimeLifecycleDescriptor,
+  private val runtimeLifecycleProvider: () -> HostRuntimeLifecycleDescriptor,
   private val runtimeEventSink: OpenCrayAgentRuntimeEventSink,
   private val callbacks: SessionSubAgentRecoveryDriverCallbacks,
 ) {
@@ -71,7 +71,7 @@ internal class SessionSubAgentRecoveryDriver(
       parentRunId = parentRunId,
       taskId = taskId,
       createdAtEpochMs = createdAtEpochMs,
-      metadata = runtimeLifecycle.taskMetadata(
+      metadata = runtimeLifecycleProvider().taskMetadata(
         submissionSource = submissionSource,
       ),
     )

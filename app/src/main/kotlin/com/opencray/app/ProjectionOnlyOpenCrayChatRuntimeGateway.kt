@@ -39,6 +39,7 @@ import com.opencray.runtime.memory.MemoryOperator
 import com.opencray.runtime.memory.MemoryOperatorAction
 import com.opencray.runtime.memory.MemoryOperatorRequest
 import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessRestoreMode
 import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import com.opencray.runtime.subagent.SubAgentExecutionState
@@ -76,9 +77,10 @@ internal data class ProjectionOnlyChatStrings(
 )
 
 internal data class ProjectionOnlyChatRuntimeDiagnosticsSource(
+  val hostLifecycleDescriptor: HostRuntimeLifecycleDescriptor,
   val connectionStateProvider: () -> RuntimeServiceConnectionState,
-  val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? =
-    OpenCrayLocalRuntimeServerRegistry::peekState,
+  val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? = { null },
+  val runtimeControllerLifecycleProvider: () -> RuntimeControllerLifecycleDescriptor? = { null },
   val runtimeOwnerLifecycleProvider: () -> HostRuntimeLifecycleDescriptor? = { null },
   val runtimeOwnerWorkSummaryProvider: () -> RuntimeOwnerWorkSummary? = { null },
   val serviceLifecycleProvider: () -> RuntimeServiceLifecycleDescriptor? = { null },
@@ -98,13 +100,14 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private val strings: ProjectionOnlyChatStrings,
   private val stringsProvider: (() -> ProjectionOnlyChatStrings)? = null,
   private val connectionStateProvider: () -> RuntimeServiceConnectionState,
-  private val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? =
-    OpenCrayLocalRuntimeServerRegistry::peekState,
+  private val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? = { null },
   private val personalizationLocalStore: PersonalizationLocalStore? = null,
   private val workspaceRootProvider: (() -> Path?)? = null,
   private val workspaceSoulProfileStore: WorkspaceSoulProfileStore = WorkspaceSoulProfileStore(),
   private val mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
   private val hostLifecycleDescriptor: HostRuntimeLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+  private val runtimeControllerLifecycleProvider: () -> RuntimeControllerLifecycleDescriptor? =
+    { null },
   private val runtimeOwnerLifecycleProvider: () -> HostRuntimeLifecycleDescriptor? = { null },
   private val runtimeOwnerWorkSummaryProvider: () -> RuntimeOwnerWorkSummary? = { null },
   private val serviceLifecycleProvider: () -> RuntimeServiceLifecycleDescriptor? = { null },
@@ -413,6 +416,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
         putRuntimeServiceDiagnosticsSnapshot(
           localRuntimeServerState = localRuntimeServerStateProvider(),
           hostLifecycle = hostLifecycleDescriptor,
+          runtimeControllerLifecycle = runtimeControllerLifecycleProvider(),
           runtimeOwnerLifecycle = runtimeOwnerLifecycleProvider(),
           runtimeOwnerWorkSummary = runtimeOwnerWorkSummaryProvider(),
           runtimeServiceLifecycle = serviceLifecycleProvider(),
@@ -433,16 +437,20 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val journalStore = runEventJournalStoreFactory.forChatSession(sessionId)
     val checkpointStore = promptCheckpointStoreFactory.forChatSession(sessionId)
     val processRegistry = processRegistryFactory.forChatSession(sessionId)
-    val queueStore = RecoveryAwareQueueSnapshotStore(
+    val queueSnapshotStore = queueSnapshotStoreFactory.forChatSession(sessionId)
+    val queueRestorer = RecoveryAwareQueueSnapshotStore(
       sessionId = sessionId,
-      delegate = queueSnapshotStoreFactory.forChatSession(sessionId),
+      delegate = queueSnapshotStore,
       runRecordStore = runRecordStore,
       runEventJournalStore = journalStore,
       promptCheckpointStore = checkpointStore,
       managedProcessesProvider = processRegistry::list,
       clock = clock,
     )
-    val taskSnapshotsByRunId = queueStore.load()
+    val taskSnapshotsByRunId = queueRestorer.restore(
+      snapshot = queueSnapshotStore.load(),
+      restoreEpochMs = clock(),
+    )
       ?.tasks
       .orEmpty()
       .associateBy { taskSnapshot -> runIdFor(taskSnapshot.task) }
@@ -996,9 +1004,10 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val journalStore = runEventJournalStoreFactory.forChatSession(sessionId)
     val checkpointStore = promptCheckpointStoreFactory.forChatSession(sessionId)
     val processRegistry = processRegistryFactory.forChatSession(sessionId)
-    val queueStore = RecoveryAwareQueueSnapshotStore(
+    val queueSnapshotStore = queueSnapshotStoreFactory.forChatSession(sessionId)
+    val queueRestorer = RecoveryAwareQueueSnapshotStore(
       sessionId = sessionId,
-      delegate = queueSnapshotStoreFactory.forChatSession(sessionId),
+      delegate = queueSnapshotStore,
       runRecordStore = runRecordStore,
       runEventJournalStore = journalStore,
       promptCheckpointStore = checkpointStore,
@@ -1008,7 +1017,10 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val isChinese = resolvedStrings.localeTag.startsWith("zh", ignoreCase = true)
     return approvalRequiredTaskProjections(
       sessionId = sessionId,
-      queueTaskSnapshots = queueStore.load()?.tasks.orEmpty(),
+      queueTaskSnapshots = queueRestorer.restore(
+        snapshot = queueSnapshotStore.load(),
+        restoreEpochMs = clock(),
+      )?.tasks.orEmpty(),
       runSnapshots = runs,
       checkpoints = checkpointStore.list(),
       approvalRequiredErrorCode = PROJECTION_APPROVAL_REQUIRED_ERROR_CODE,
@@ -1611,12 +1623,16 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
   context: Context,
   connectionStateProvider: () -> RuntimeServiceConnectionState,
   projectionSnapshotProvider: () -> RuntimeServiceProjectionSnapshot? = { null },
+  hostLifecycleDescriptor: HostRuntimeLifecycleDescriptor,
 ): OpenCrayChatRuntimeGateway {
   val diagnosticsSource = ProjectionOnlyChatRuntimeDiagnosticsSource(
+    hostLifecycleDescriptor = hostLifecycleDescriptor,
     connectionStateProvider = connectionStateProvider,
     localRuntimeServerStateProvider = {
       projectionSnapshotProvider()?.localRuntimeServerState
-        ?: OpenCrayLocalRuntimeServerRegistry.peekState()
+    },
+    runtimeControllerLifecycleProvider = {
+      projectionSnapshotProvider()?.runtimeControllerLifecycle
     },
     runtimeOwnerLifecycleProvider = { projectionSnapshotProvider()?.runtimeOwnerLifecycle },
     runtimeOwnerWorkSummaryProvider = {
@@ -1648,7 +1664,10 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
     runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
     runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext),
     promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
-    processRegistryFactory = FileBackedAgentProcessRegistryFactory.fromContext(appContext),
+    processRegistryFactory = FileBackedAgentProcessRegistryFactory.fromContext(
+      context = appContext,
+      restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
+    ),
     supplementStoreFactory = FileBackedAgentSessionSupplementStoreFactory.fromContext(appContext),
     subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
     strings = strings,
@@ -1662,6 +1681,8 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
         ?.toPath()
     },
     mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
+    hostLifecycleDescriptor = diagnosticsSource.hostLifecycleDescriptor,
+    runtimeControllerLifecycleProvider = diagnosticsSource.runtimeControllerLifecycleProvider,
     runtimeOwnerLifecycleProvider = diagnosticsSource.runtimeOwnerLifecycleProvider,
     runtimeOwnerWorkSummaryProvider = diagnosticsSource.runtimeOwnerWorkSummaryProvider,
     serviceLifecycleProvider = diagnosticsSource.serviceLifecycleProvider,

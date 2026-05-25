@@ -1,9 +1,13 @@
 package com.opencray.app
 
+import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
+import com.opencray.runtime.OpenCrayPromptResumeState
+import com.opencray.runtime.OpenCraySerializableModelAction
+import com.opencray.runtime.OpenCraySerializableToolCall
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCrayToolCallEvent
@@ -11,6 +15,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 class RunRecoveryPlannerTest {
   private val planner = RunRecoveryPlanner()
@@ -98,6 +104,98 @@ class RunRecoveryPlannerTest {
     assertEquals("durable_general_resume_checkpoint", plan.reasonCode)
     assertTrue(plan.safeToAutoResume)
     assertFalse(plan.requiresUserAction)
+  }
+
+  @Test
+  fun durableTerminalResultTakesPriorityOverStaleResumableCheckpoint() {
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = interruptedRestoreRun(),
+          checkpoint = PersistedPromptCheckpoint(
+            sessionId = "session-1",
+            runId = "run-1",
+            taskId = "task-1",
+            checkpointId = "checkpoint-1",
+            checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+            createdAtEpochMs = 100L,
+            updatedAtEpochMs = 100L,
+          ),
+          durableResult = ExecutionResult(
+            taskId = "task-1",
+            status = ExecutionStatus.SUCCESS,
+            stdout = "Final answer",
+            startedAtEpochMs = 50L,
+            finishedAtEpochMs = 150L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.RESTORE_TERMINAL_RESULT, plan.action)
+    assertEquals("durable_terminal_result_persisted", plan.reasonCode)
+    assertEquals(PromptCheckpointKind.GENERAL_RESUME, plan.checkpointKind)
+    assertTrue(plan.safeToAutoResume)
+    assertFalse(plan.requiresUserAction)
+  }
+
+  @Test
+  fun finalizationCheckpointWithDurableTerminalResultRestoresTerminalState() {
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = interruptedRestoreRun(),
+          checkpoint = PersistedPromptCheckpoint(
+            sessionId = "session-1",
+            runId = "run-1",
+            taskId = "task-1",
+            checkpointId = "checkpoint-1",
+            checkpointKind = PromptCheckpointKind.FINALIZATION_COMPLETE,
+            createdAtEpochMs = 100L,
+            updatedAtEpochMs = 100L,
+          ),
+          durableResult = ExecutionResult(
+            taskId = "task-1",
+            status = ExecutionStatus.SUCCESS,
+            stdout = "Final answer",
+            startedAtEpochMs = 50L,
+            finishedAtEpochMs = 150L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.RESTORE_TERMINAL_RESULT, plan.action)
+    assertEquals("durable_terminal_result_persisted", plan.reasonCode)
+    assertEquals(PromptCheckpointKind.FINALIZATION_COMPLETE, plan.checkpointKind)
+    assertTrue(plan.safeToAutoResume)
+    assertFalse(plan.requiresUserAction)
+  }
+
+  @Test
+  fun finalizationCheckpointWithoutDurableTerminalResultDoesNotPlanResume() {
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = interruptedRestoreRun(),
+          checkpoint = PersistedPromptCheckpoint(
+            sessionId = "session-1",
+            runId = "run-1",
+            taskId = "task-1",
+            checkpointId = "checkpoint-1",
+            checkpointKind = PromptCheckpointKind.FINALIZATION_COMPLETE,
+            createdAtEpochMs = 100L,
+            updatedAtEpochMs = 100L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED, plan.action)
+    assertEquals("finalization_checkpoint_missing_terminal_result", plan.reasonCode)
+    assertEquals(PromptCheckpointKind.FINALIZATION_COMPLETE, plan.checkpointKind)
+    assertFalse(plan.safeToAutoResume)
+    assertTrue(plan.requiresUserAction)
   }
 
   @Test
@@ -236,6 +334,74 @@ class RunRecoveryPlannerTest {
     assertEquals("live_managed_process_detected", plan.reasonCode)
     assertFalse(plan.safeToAutoResume)
     assertTrue(plan.requiresUserAction)
+  }
+
+  @Test
+  fun interruptedRestoreManagedProcessObservationCheckpointAutoResumesFromCheckpoint() {
+    val processId = "proc-live"
+    val checkpoint = PersistedPromptCheckpoint(
+      sessionId = "session-1",
+      runId = "run-1",
+      taskId = "task-1",
+      checkpointId = "checkpoint-1",
+      checkpointKind = PromptCheckpointKind.COMMENTARY_EMITTED,
+      createdAtEpochMs = 100L,
+      updatedAtEpochMs = 100L,
+      toolName = "ProcessWait",
+      promptResumeState = OpenCrayPromptResumeState(
+        turnIndex = 0,
+        toolCallCount = 0,
+        pendingActions = listOf(
+          OpenCraySerializableModelAction.ToolCall(
+            call = OpenCraySerializableToolCall(
+              id = "oc-call-1",
+              toolName = "ProcessWait",
+              arguments = JsonObject(
+                mapOf(
+                  "process_id" to JsonPrimitive(processId),
+                  "timeout_ms" to JsonPrimitive("250"),
+                ),
+              ),
+            ),
+          ),
+        ),
+        nextActionIndex = 0,
+      ),
+    )
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = interruptedRestoreRun().copy(
+            hasLiveManagedProcesses = true,
+            hasAutoResumeEligibleManagedProcesses = true,
+          ),
+          checkpoint = checkpoint,
+          lastJournalEvent = OpenCrayToolCallEvent(
+            runId = "run-1",
+            taskId = "task-1",
+            turn = 0,
+            call = AgentToolCall(
+              id = "oc-call-1",
+              toolName = "ProcessWait",
+              arguments = JsonObject(
+                mapOf(
+                  "process_id" to JsonPrimitive(processId),
+                  "timeout_ms" to JsonPrimitive("250"),
+                ),
+              ),
+            ),
+            emittedAtEpochMs = 150L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.RESUME_FROM_CHECKPOINT, plan.action)
+    assertEquals("managed_process_observation_checkpoint_resume", plan.reasonCode)
+    assertEquals(PromptCheckpointKind.COMMENTARY_EMITTED, plan.checkpointKind)
+    assertEquals("tool_call", plan.journalTailKind)
+    assertTrue(plan.safeToAutoResume)
+    assertFalse(plan.requiresUserAction)
   }
 
   @Test
@@ -578,6 +744,7 @@ class RunRecoveryPlannerTest {
     executionStatus: ExecutionStatus? = null,
     errorCode: String? = null,
     hasLiveManagedProcesses: Boolean = false,
+    hasAutoResumeEligibleManagedProcesses: Boolean = false,
     diagnostics: RunLifecycleDiagnostics = RunLifecycleDiagnostics(),
     executionOrdinal: Int = 0,
     pendingExecutionKind: String? = null,
@@ -596,6 +763,7 @@ class RunRecoveryPlannerTest {
     executionStatus = executionStatus,
     errorCode = errorCode,
     hasLiveManagedProcesses = hasLiveManagedProcesses,
+    hasAutoResumeEligibleManagedProcesses = hasAutoResumeEligibleManagedProcesses,
     lifecycleDiagnostics = diagnostics,
   )
 }

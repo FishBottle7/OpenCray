@@ -480,7 +480,7 @@ class OpenCrayLocalRuntimeServerTest {
 
   @Test
   fun forwardsNetworkSearchConfigRequestsToHostRuntime() {
-    val networkSearchConfigFacade = LocalNetworkSearchConfigFacade.createForTest(
+    val networkSearchConfigFacade = LocalNetworkSearchConfigFacade.create(
       WebSearchSettingsStore(InMemoryWebSearchSettingsKeyValueStore()),
     )
     val server = localRuntimeServer(networkSearchConfigFacade = networkSearchConfigFacade)

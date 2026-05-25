@@ -29,10 +29,40 @@ internal data class OpenCrayRuntimeContextDependencies(
   val mediaSpeechSettingsStore: MediaSpeechSettingsStore,
   val approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot,
   val workspaceSnapshotProvider: () -> Map<String, Any?>,
+  val runtimeServiceAccessGateway: RuntimeServiceAccessGateway,
+  val chatRuntimeWriteTargetResolverFactory: ChatRuntimeWriteTargetResolverFactory,
 )
+
+internal data class LocalHostGatewayDependencies(
+  val workspaceRootProvider: () -> Path,
+  val workspaceSnapshotProvider: () -> Map<String, Any?>,
+)
+
+internal fun localHostGatewayDependencies(
+  dependencies: OpenCrayRuntimeContextDependencies,
+): LocalHostGatewayDependencies = LocalHostGatewayDependencies(
+  workspaceRootProvider = dependencies.workspaceRootProvider,
+  workspaceSnapshotProvider = dependencies.workspaceSnapshotProvider,
+)
+
+internal fun loadLocalHostGatewayDependencies(
+  appContext: Context,
+): LocalHostGatewayDependencies {
+  val workspaceRootProvider = { AppAgentWorkspace.ensureRootForContext(appContext) }
+  val workspaceSnapshotProvider = {
+    AppAgentWorkspaceSnapshotFactory.createSnapshot(
+      workspaceRootProvider(),
+    ).toMap()
+  }
+  return LocalHostGatewayDependencies(
+    workspaceRootProvider = workspaceRootProvider,
+    workspaceSnapshotProvider = workspaceSnapshotProvider,
+  )
+}
 
 internal fun loadOpenCrayRuntimeContextDependencies(
   appContext: Context,
+  runtimeEnvironment: OpenCrayRuntimeServiceEnvironment,
 ): OpenCrayRuntimeContextDependencies {
   val localizedContext = OpenCrayLocaleManager.wrap(appContext)
   val llmSettingsStore = LlmSettingsStore.fromContext(appContext)
@@ -73,7 +103,7 @@ internal fun loadOpenCrayRuntimeContextDependencies(
     personalizationStore = personalizationStore,
     chatSessionStore = chatSessionStore,
     skillsFacade = skillsFacade,
-    mcpSettingsFacade = LocalMcpSettingsFacade.createForTest(
+    mcpSettingsFacade = LocalMcpSettingsFacade.create(
       context = localizedContext,
       settingsStore = mcpSettingsStore,
       registryStore = mcpRegistryStore,
@@ -89,5 +119,7 @@ internal fun loadOpenCrayRuntimeContextDependencies(
     mediaSpeechSettingsStore = mediaSpeechSettingsStore,
     approvedReadRootsProvider = approvedReadRootsProvider,
     workspaceSnapshotProvider = workspaceSnapshotProvider,
+    runtimeServiceAccessGateway = runtimeEnvironment.runtimeServiceAccessGateway,
+    chatRuntimeWriteTargetResolverFactory = runtimeEnvironment.chatRuntimeWriteTargetResolverFactory,
   )
 }

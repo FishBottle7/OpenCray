@@ -10,7 +10,7 @@ import kotlinx.serialization.json.put
 
 internal fun submitSandboxSessionInfoRefreshTask(
   sessionId: String,
-  runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  runtimeHostAccess: RuntimeSessionDirectoryAccess,
   taskSafetyMetadata: Map<String, String>,
   lifecycleDescriptor: HostRuntimeLifecycleDescriptor,
   nowEpochMsProvider: () -> Long = System::currentTimeMillis,

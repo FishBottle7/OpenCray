@@ -12,18 +12,22 @@ import java.util.Locale
 import org.opencray.app.R
 
 internal fun runtimeServiceApprovalDecisionAccess(
-  dependencies: OpenCrayRuntimeContextDependencies,
-  runtimeAccess: OpenCrayRuntimeOwnerAccess,
+  dependencies: RuntimeServiceApprovalDecisionDependencies,
   nowEpochMsProvider: () -> Long = System::currentTimeMillis,
 ): RuntimeServiceApprovalDecisionAccess = RuntimeServiceApprovalDecisionAccess(
   dependencies = dependencies,
-  runtimeAccess = runtimeAccess,
   nowEpochMsProvider = nowEpochMsProvider,
 )
 
+internal data class RuntimeServiceApprovalDecisionDependencies(
+  val localizedContext: Context,
+  val chatSessionStore: ChatSessionLocalStore,
+  val runtimeHostAccess: RuntimeApprovalDecisionHostAccess,
+  val runtimeReplayAccess: OpenCrayRuntimeReplayAccess,
+)
+
 internal class RuntimeServiceApprovalDecisionAccess(
-  private val dependencies: OpenCrayRuntimeContextDependencies,
-  private val runtimeAccess: OpenCrayRuntimeOwnerAccess,
+  private val dependencies: RuntimeServiceApprovalDecisionDependencies,
   private val nowEpochMsProvider: () -> Long = System::currentTimeMillis,
 ) {
   fun approve(taskIdOrRunId: String) {
@@ -58,7 +62,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
         )
       },
       markApprovalApproved = { subject ->
-        runtimeAccess.hostAccess.markApprovalApproved(
+        dependencies.runtimeHostAccess.markApprovalApproved(
           sessionId = subject.sessionId,
           taskId = subject.taskId,
           toolName = subject.decisionRecord.resumeToolName ?: subject.decisionRecord.toolName,
@@ -67,7 +71,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
         )
       },
       markApprovalRejected = { subject ->
-        runtimeAccess.hostAccess.markApprovalRejected(
+        dependencies.runtimeHostAccess.markApprovalRejected(
           sessionId = subject.sessionId,
           taskId = subject.taskId,
           toolName = subject.decisionRecord.resumeToolName ?: subject.decisionRecord.toolName,
@@ -76,25 +80,25 @@ internal class RuntimeServiceApprovalDecisionAccess(
         )
       },
       clearApproval = { sessionId, taskId ->
-        runtimeAccess.hostAccess.clearApproval(
+        dependencies.runtimeHostAccess.clearApproval(
           sessionId = sessionId,
           taskId = taskId,
         )
       },
       upsertCheckpoint = { sessionId, checkpoint ->
-        runtimeAccess.hostAccess.promptCheckpointStore(sessionId).upsert(checkpoint)
+        dependencies.runtimeHostAccess.promptCheckpointStore(sessionId).upsert(checkpoint)
       },
       removeCheckpoint = { sessionId, taskId ->
-        runtimeAccess.hostAccess.promptCheckpointStore(sessionId).remove(taskId)
+        dependencies.runtimeHostAccess.promptCheckpointStore(sessionId).remove(taskId)
       },
       requestResumeTask = { sessionId, taskId ->
-        runtimeAccess.hostAccess.session(sessionId).requestResumeTask(taskId)
+        dependencies.runtimeHostAccess.session(sessionId).requestResumeTask(taskId)
       },
       requestCancel = { sessionId, taskId ->
-        runtimeAccess.hostAccess.session(sessionId).requestCancel(taskId)
+        dependencies.runtimeHostAccess.session(sessionId).requestCancel(taskId)
       },
       recordApprovalApprovedReplay = { subject ->
-        runtimeAccess.replayAccess.approvalApprovedRecorder(
+        dependencies.runtimeReplayAccess.approvalApprovedRecorder(
           subject.sessionId,
           subject.taskId,
           subject.runId,
@@ -104,7 +108,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
         )
       },
       recordApprovalRejectedReplay = { subject ->
-        runtimeAccess.replayAccess.approvalRejectionRecorder(
+        dependencies.runtimeReplayAccess.approvalRejectionRecorder(
           subject.sessionId,
           subject.taskId,
           subject.runId,
@@ -114,10 +118,10 @@ internal class RuntimeServiceApprovalDecisionAccess(
         )
       },
       recordApprovalResultEvent = { sessionId, event ->
-        runtimeAccess.hostAccess.runEventJournalStore(sessionId).append(event)
+        dependencies.runtimeHostAccess.runEventJournalStore(sessionId).append(event)
       },
       recordSubAgentEvent = { sessionId, event ->
-        runtimeAccess.replayAccess.subAgentReplayRecorder(sessionId, event)
+        dependencies.runtimeReplayAccess.subAgentReplayRecorder(sessionId, event)
       },
       setSessionApprovalGranted = { sessionId, approved ->
         dependencies.chatSessionStore.setNativeWebSearchSessionApproved(
@@ -177,7 +181,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
   private fun resolvePendingApproval(
     taskIdOrRunId: String,
   ): RuntimeServicePendingApprovalResolution? {
-    val hostAccess = runtimeAccess.hostAccess
+    val hostAccess = dependencies.runtimeHostAccess
     val projection = findApprovalRequiredTaskProjection(
       sessionIds = knownChatSessionIds(dependencies.chatSessionStore),
       hostAccess = hostAccess,
@@ -225,7 +229,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
   private fun shouldDeferApprovalDecisionUntilManualResume(
     resolution: RuntimeServicePendingApprovalResolution,
   ): Boolean {
-    val runtimeEvents = runtimeAccess.hostAccess
+    val runtimeEvents = dependencies.runtimeHostAccess
       .runEventJournalStore(resolution.sessionId)
       .listForRun(resolution.runId)
       .mapNotNull { entry -> entry.payload.toRuntimeEventOrNull() }
@@ -241,7 +245,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
     if (!resolution.usesExplicitSubAgentHandleControlPlane()) {
       return false
     }
-    val session = runtimeAccess.hostAccess.session(resolution.sessionId)
+    val session = dependencies.runtimeHostAccess.session(resolution.sessionId)
     val handle = session.listSubAgentHandles().firstOrNull { candidate ->
       subAgentApprovalResumeMatchesHandle(
         resume = resolution.subAgentApprovalResume,
@@ -254,14 +258,14 @@ internal class RuntimeServiceApprovalDecisionAccess(
       parentRunId = handle.parentRunId,
     )
     val runId = detachedSubAgentRecoveryRunId(taskId)
-    runtimeAccess.hostAccess.markApprovalApproved(
+    dependencies.runtimeHostAccess.markApprovalApproved(
       sessionId = resolution.sessionId,
       taskId = taskId,
       toolName = resolution.resumeToolName ?: resolution.toolName,
       promptResumeState = resolution.promptResumeState,
       subAgentApprovalResume = resolution.subAgentApprovalResume,
     )
-    runtimeAccess.hostAccess.promptCheckpointStore(resolution.sessionId).upsert(
+    dependencies.runtimeHostAccess.promptCheckpointStore(resolution.sessionId).upsert(
       resolution.toApprovalDecisionRecord().decisionCheckpoint(
         sessionId = resolution.sessionId,
         checkpointKind = PromptCheckpointKind.APPROVED_PENDING_RESUME,

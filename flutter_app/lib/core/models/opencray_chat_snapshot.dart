@@ -1173,6 +1173,8 @@ class OpenCrayChatRuntimeSnapshot {
     this.subAgents = const <OpenCrayChatSubAgentSnapshot>[],
     required this.events,
     this.liveAssistantDrafts = const <OpenCrayChatLiveAssistantDraftSnapshot>[],
+    this.flutterAppInstanceId,
+    this.bridgeInstanceId,
     this.hostLifecycle,
   });
 
@@ -1182,6 +1184,8 @@ class OpenCrayChatRuntimeSnapshot {
   final List<OpenCrayChatSubAgentSnapshot> subAgents;
   final List<OpenCrayChatRuntimeEventSnapshot> events;
   final List<OpenCrayChatLiveAssistantDraftSnapshot> liveAssistantDrafts;
+  final String? flutterAppInstanceId;
+  final String? bridgeInstanceId;
   final OpenCrayHostLifecycleSnapshot? hostLifecycle;
 
   factory OpenCrayChatRuntimeSnapshot.fromMap(Map<Object?, Object?> map) {
@@ -1217,6 +1221,8 @@ class OpenCrayChatRuntimeSnapshot {
           .whereType<Map<Object?, Object?>>()
           .map(OpenCrayChatLiveAssistantDraftSnapshot.fromMap)
           .toList(growable: false),
+      flutterAppInstanceId: map['flutterAppInstanceId'] as String?,
+      bridgeInstanceId: map['bridgeInstanceId'] as String?,
       hostLifecycle: rawHostLifecycle is Map<Object?, Object?>
           ? OpenCrayHostLifecycleSnapshot.fromMap(rawHostLifecycle)
           : null,

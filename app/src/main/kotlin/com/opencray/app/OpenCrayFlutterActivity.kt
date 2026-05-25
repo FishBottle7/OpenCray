@@ -76,10 +76,7 @@ class OpenCrayFlutterActivity :
 
   override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
     super.configureFlutterEngine(flutterEngine)
-    val bridge = hostBridge ?: openCrayFlutterHostBridge(this).also { created ->
-      hostBridge = created
-    }
-    bridge.attach(flutterEngine)
+    ensureHostBridge(flutterEngine, intent)
     applyLaunchIntent(intent, flutterEngine, pushRoute = false)
   }
 
@@ -90,6 +87,7 @@ class OpenCrayFlutterActivity :
     super.onNewIntent(intent)
     setIntent(intent)
     flutterEngine?.let { engine ->
+      ensureHostBridge(engine, intent)
       applyLaunchIntent(intent, engine, pushRoute = true)
     }
   }
@@ -200,12 +198,13 @@ class OpenCrayFlutterActivity :
       ?.trim()
       ?.takeIf(String::isNotBlank)
     if (targetSessionId != null) {
-      val selected = hostBridge?.selectChatSession(targetSessionId) == true
-      if (selected) {
-        RuntimeNotificationCoordinator.dismissApprovalNotification(
-          applicationContext,
-          targetApprovalTaskId,
-        )
+      hostBridge?.selectChatSessionAsync(targetSessionId) { selected ->
+        if (selected) {
+          RuntimeNotificationCoordinator.dismissApprovalNotification(
+            applicationContext,
+            targetApprovalTaskId,
+          )
+        }
       }
     }
     if (pushRoute) {
@@ -216,5 +215,41 @@ class OpenCrayFlutterActivity :
           flutterEngine.navigationChannel.pushRoute(route)
         }
     }
+  }
+
+  private fun ensureHostBridge(
+    flutterEngine: FlutterEngine,
+    launchIntent: Intent?,
+  ): OpenCrayFlutterHostBridge {
+    val runtimeEnvironment = openCrayRuntimeServiceEnvironment(applicationContext)
+    val desiredTarget = runtimeTargetForLaunchIntent(launchIntent)
+    hostBridge?.takeIf { existing -> existing.runtimeTarget == desiredTarget }?.let { existing ->
+      return existing
+    }
+    hostBridge?.detach(flutterEngine)
+    return openCrayFlutterHostBridge(
+      context = this,
+      runtimeTarget = desiredTarget,
+      gatewayBundleFactory = runtimeEnvironment.clientGatewayBundleFactory,
+    ).also { created ->
+      hostBridge = created
+      created.attach(flutterEngine)
+    }
+  }
+
+  private fun runtimeTargetForLaunchIntent(
+    launchIntent: Intent?,
+  ): RuntimeServiceTarget {
+    val runtimeEnvironment = openCrayRuntimeServiceEnvironment(applicationContext)
+    return runtimeTargetForFlutterBridgeEntry(
+      context = applicationContext,
+      notificationTaskId = launchIntent
+        ?.getStringExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_TASK_ID),
+      notificationRunId = launchIntent
+        ?.getStringExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_RUN_ID),
+      chatSessionId = launchIntent
+        ?.getStringExtra(EXTRA_CHAT_SESSION_ID),
+      environment = runtimeEnvironment,
+    )
   }
 }

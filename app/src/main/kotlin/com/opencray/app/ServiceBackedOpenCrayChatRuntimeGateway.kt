@@ -1,39 +1,45 @@
 package com.opencray.app
 
-import android.content.Context
 import com.opencray.runtime.OpenCrayFinalAttachment
 
 internal class ServiceBackedOpenCrayChatRuntimeGateway(
   private val serviceClient: OpenCrayRuntimeServiceClient,
-  private val fallbackGateway: OpenCrayChatRuntimeGateway,
+  fallbackGateway: OpenCrayChatRuntimeGateway? = null,
+  fallbackGatewayProvider: (() -> OpenCrayChatRuntimeGateway)? = null,
 ) : OpenCrayChatRuntimeGateway {
+  private val resolvedFallbackGatewayProvider: () -> OpenCrayChatRuntimeGateway =
+    cachedGatewayProvider(
+      fallbackGatewayProvider ?: fallbackGateway?.let { gateway -> { gateway } }
+        ?: error("Service-backed chat runtime gateway requires a fallback gateway."),
+  )
+
   override fun loadChatSnapshot(): Map<String, Any?> =
-    currentReadGateway().loadChatSnapshot()
+    currentLoadGateway().loadChatSnapshot()
 
   override fun observeChat(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
-      initialGateway = { fallbackGateway },
-      currentGateway = ::currentReadGateway,
+      initialGateway = resolvedFallbackGatewayProvider,
+      currentGateway = ::currentObservedGateway,
       observeConnectionState = serviceClient::observeConnectionState,
       observe = { gateway, callback -> gateway.observeChat(callback) },
       listener = listener,
     )
 
   override fun loadChatRuntimeSnapshot(): Map<String, Any?> =
-    currentReadGateway().loadChatRuntimeSnapshot()
+    currentLoadGateway().loadChatRuntimeSnapshot()
 
   override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? =
-    currentReadGateway().loadChatRunSnapshot(runId)
+    currentLoadGateway().loadChatRunSnapshot(runId)
 
   override fun waitForChatRun(
     runId: String,
     timeoutMs: Long,
-  ): Map<String, Any?>? = currentReadGateway().waitForChatRun(runId, timeoutMs)
+  ): Map<String, Any?>? = currentLoadGateway().waitForChatRun(runId, timeoutMs)
 
   override fun observeChatRuntime(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
-      initialGateway = { fallbackGateway },
-      currentGateway = ::currentReadGateway,
+      initialGateway = resolvedFallbackGatewayProvider,
+      currentGateway = ::currentObservedGateway,
       observeConnectionState = serviceClient::observeConnectionState,
       observe = { gateway, callback -> gateway.observeChatRuntime(callback) },
       listener = listener,
@@ -47,25 +53,25 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
   }
 
   override fun loadMemoryDebugSnapshot(): Map<String, Any?> =
-    currentReadGateway().loadMemoryDebugSnapshot()
+    currentLoadGateway().loadMemoryDebugSnapshot()
 
   override fun loadMemoryDebugLinksSnapshot(): Map<String, Any?> =
-    currentReadGateway().loadMemoryDebugLinksSnapshot()
+    currentLoadGateway().loadMemoryDebugLinksSnapshot()
 
   override fun loadSoulDebugSnapshot(): Map<String, Any?> =
-    currentReadGateway().loadSoulDebugSnapshot()
+    currentLoadGateway().loadSoulDebugSnapshot()
 
   override fun searchMemoryDebug(
     query: String,
     maxResults: Int,
     minScore: Int,
-  ): Map<String, Any?> = currentReadGateway().searchMemoryDebug(query, maxResults, minScore)
+  ): Map<String, Any?> = currentLoadGateway().searchMemoryDebug(query, maxResults, minScore)
 
   override fun getMemoryDebugSlice(
     path: String,
     fromLine: Int?,
     lines: Int,
-  ): Map<String, Any?> = currentReadGateway().getMemoryDebugSlice(path, fromLine, lines)
+  ): Map<String, Any?> = currentLoadGateway().getMemoryDebugSlice(path, fromLine, lines)
 
   override fun applyMemoryDebugAction(
     recordId: String,
@@ -195,39 +201,26 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
     )
   }
 
-  private fun currentReadGateway(): OpenCrayChatRuntimeGateway =
-    serviceClient.peekChatRuntimeGateway() ?: fallbackGateway
+  private fun currentLoadGateway(): OpenCrayChatRuntimeGateway =
+    serviceClient.loadChatRuntimeGateway() ?: resolvedFallbackGatewayProvider()
+
+  private fun currentObservedGateway(): OpenCrayChatRuntimeGateway =
+    serviceClient.peekChatRuntimeGateway() ?: resolvedFallbackGatewayProvider()
 
   private fun dispatchWriteCommand(
     operation: String,
     command: OpenCrayChatWriteCommand,
-  ): OpenCrayChatWriteDispatchResult =
-    requireBinderBackedGateway(
+  ): OpenCrayChatWriteDispatchResult = requireBinderBackedGateway(
       surface = "Chat runtime",
       operation = operation,
       gateway = serviceClient.dispatchChatWriteCommand(command),
-      connectionState = serviceClient.loadConnectionState(),
+      connectionState = serviceClient.peekConnectionState(),
     )
 }
 
 private fun OpenCrayChatWriteDispatchResult.payloadOrNull(): Map<String, Any?>? = when (this) {
   OpenCrayChatWriteDispatchResult.Completed -> null
   is OpenCrayChatWriteDispatchResult.Payload -> value
-}
-
-internal fun serviceBackedOpenCrayChatRuntimeGateway(
-  context: Context,
-): OpenCrayChatRuntimeGateway {
-  val appContext = context.applicationContext
-  val serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(appContext)
-  return serviceBackedOpenCrayChatRuntimeGateway(
-    context = context,
-    fallbackGateway = projectionOnlyOpenCrayChatRuntimeGateway(
-      context = appContext,
-      connectionStateProvider = serviceClient::loadConnectionState,
-      projectionSnapshotProvider = serviceClient::peekProjectionSnapshot,
-    ),
-  )
 }
 
 internal fun serviceBackedOpenCrayChatRuntimeGateway(
@@ -239,9 +232,9 @@ internal fun serviceBackedOpenCrayChatRuntimeGateway(
 )
 
 internal fun serviceBackedOpenCrayChatRuntimeGateway(
-  context: Context,
-  fallbackGateway: OpenCrayChatRuntimeGateway,
-): OpenCrayChatRuntimeGateway = serviceBackedOpenCrayChatRuntimeGateway(
-  serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(context.applicationContext),
-  fallbackGateway = fallbackGateway,
+  serviceClient: OpenCrayRuntimeServiceClient,
+  fallbackGatewayProvider: () -> OpenCrayChatRuntimeGateway,
+): OpenCrayChatRuntimeGateway = ServiceBackedOpenCrayChatRuntimeGateway(
+  serviceClient = serviceClient,
+  fallbackGatewayProvider = fallbackGatewayProvider,
 )

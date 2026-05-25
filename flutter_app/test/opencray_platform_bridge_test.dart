@@ -254,6 +254,31 @@ void main() {
   });
 
   test(
+    'platform bridge preserves native bridge ids and injects flutter app ids into shell snapshots',
+    () async {
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            if (call.method != 'loadShellSnapshot') {
+              return null;
+            }
+            return <String, Object?>{
+              'initialTab': 'chat',
+              'hostLabel': 'HOST READY',
+              'hostSummary': 'Detached runtime service active.',
+              'isHostConnected': true,
+              'bridgeInstanceId': 'native-bridge-1',
+            };
+          });
+
+      final snapshot = await bridge.loadShellSnapshot();
+
+      expect(snapshot.bridgeInstanceId, 'native-bridge-1');
+      expect(snapshot.flutterAppInstanceId, isNotEmpty);
+    },
+  );
+
+  test(
     'platform bridge loads sandbox preview embed config over the host channel',
     () async {
       late MethodCall capturedCall;

@@ -9,8 +9,9 @@ import android.os.IBinder
 import android.os.Looper
 
 internal data class OpenCrayRuntimeServiceBridgeSnapshot(
-  val dependencies: OpenCrayRuntimeContextDependencies,
-  val runtimeAccess: OpenCrayRuntimeOwnerAccess,
+  val runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor,
+  val runtimeOwnerWorkSummary: RuntimeOwnerWorkSummary,
+  val runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor? = null,
   val serviceLifecycle: RuntimeServiceLifecycleDescriptor,
   val serviceWorkState: RuntimeServiceWorkState,
   val serviceKeepAliveState: RuntimeServiceKeepAliveState,
@@ -18,8 +19,9 @@ internal data class OpenCrayRuntimeServiceBridgeSnapshot(
 )
 
 internal data class RuntimeServiceBridgeSnapshotDependencies(
-  val dependencies: OpenCrayRuntimeContextDependencies,
-  val runtimeAccess: OpenCrayRuntimeOwnerAccess,
+  val runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor,
+  val runtimeOwnerWorkSummaryProvider: () -> RuntimeOwnerWorkSummary,
+  val runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor? = null,
   val serviceLifecycle: RuntimeServiceLifecycleDescriptor,
   val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? = { null },
 )
@@ -32,9 +34,6 @@ internal data class RuntimeServiceConnectionState(
   val binderAvailable: Boolean,
   val fallbackReason: String? = null,
 ) {
-  fun withLoopbackHttpTransport(): RuntimeServiceConnectionState =
-    copy(transport = TRANSPORT_LOOPBACK_HTTP)
-
   fun snapshotMap(): Map<String, Any?> = buildMap {
     put("phase", phase)
     put("transport", transport)
@@ -57,7 +56,6 @@ internal data class RuntimeServiceConnectionState(
     private const val PHASE_FALLBACK: String = "fallback"
     private const val TRANSPORT_BINDER: String = "binder"
     private const val TRANSPORT_IN_PROCESS: String = "in_process"
-    private const val TRANSPORT_LOOPBACK_HTTP: String = "loopback_http"
 
     fun binderConnected(
       serviceStartRequested: Boolean = true,
@@ -226,10 +224,8 @@ internal interface OpenCrayRuntimeServiceClient {
 
   fun observePassiveConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit =
     observeConnectionState(listener)
-}
 
-internal interface OpenCrayRuntimeServiceBridge {
-  fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot
+  fun dispose() = Unit
 }
 
 internal interface OpenCrayRuntimeServiceBinderAccess {
@@ -254,55 +250,6 @@ internal interface OpenCrayRuntimeServiceBinderAccess {
   fun dispatchSettingsWriteCommand(
     command: OpenCraySettingsWriteCommand,
   ): OpenCraySettingsWriteDispatchResult? = null
-}
-
-internal class InProcessOpenCrayRuntimeServiceBridge(
-  private val snapshotProvider: () -> OpenCrayRuntimeServiceBridgeSnapshot,
-) : OpenCrayRuntimeServiceBridge {
-  override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot =
-    snapshotProvider()
-}
-
-internal class ExistingOpenCrayRuntimeServiceBridge(
-  private val snapshotProvider: () -> OpenCrayRuntimeServiceBridgeSnapshot?,
-  private val missingHostMessage: String =
-    "Runtime service host is unavailable. Call OpenCrayRuntimeServiceAccess.ensureStarted(...) before loading fallback snapshots.",
-) : OpenCrayRuntimeServiceBridge {
-  override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot =
-    checkNotNull(snapshotProvider()) { missingHostMessage }
-}
-
-internal class MissingOpenCrayRuntimeServiceBridge(
-  private val missingSnapshotMessage: String =
-    "Runtime service binder snapshot is unavailable. Use peekProjectionSnapshot() for binder-unavailable projection reads.",
-) : OpenCrayRuntimeServiceBridge {
-  override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot =
-    error(missingSnapshotMessage)
-}
-
-internal class BinderBackedOpenCrayRuntimeServiceBridge(
-  private val binderAccess: OpenCrayRuntimeServiceBinderAccess,
-) : OpenCrayRuntimeServiceBridge {
-  override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot =
-    binderAccess.loadSnapshot()
-}
-
-internal class BridgeBackedOpenCrayRuntimeServiceClient(
-  private val bridge: OpenCrayRuntimeServiceBridge,
-  private val connectionState: RuntimeServiceConnectionState,
-) : OpenCrayRuntimeServiceClient {
-  override fun loadSnapshot(): OpenCrayRuntimeServiceClientSnapshot =
-    bridge.loadSnapshot().toClientSnapshot(connectionState)
-
-  override fun peekSnapshot(): OpenCrayRuntimeServiceClientSnapshot =
-    loadSnapshot()
-
-  override fun peekProjectionSnapshot(): RuntimeServiceProjectionSnapshot =
-    bridge.loadSnapshot().toProjectionSnapshot()
-
-  override fun loadConnectionState(): RuntimeServiceConnectionState = connectionState
-
-  override fun peekConnectionState(): RuntimeServiceConnectionState = connectionState
 }
 
 internal interface OpenCrayRuntimeServiceBindingAdapter {
@@ -351,30 +298,21 @@ private fun defaultBindingReleaseScheduler(
     HandlerRuntimeServiceDelayScheduler(Handler(Looper.getMainLooper()))
   }
 
-private fun defaultRuntimeServiceStartRequester(context: Context) {
-  OpenCrayRuntimeServiceAccess.ensureStarted(context)
-}
-
-private fun defaultRuntimeServiceBaseIntent(context: Context): Intent =
-  OpenCrayRuntimeServiceAccess.baseIntent(context.applicationContext)
-
 internal class AndroidBindingOpenCrayRuntimeServiceClient(
   private val appContext: Context,
-  private val fallbackBridge: OpenCrayRuntimeServiceBridge =
-    MissingOpenCrayRuntimeServiceBridge(),
   projectionStore: RuntimeServiceProjectionStore? = null,
+  private val runtimeTarget: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
   private val bindingAdapter: OpenCrayRuntimeServiceBindingAdapter =
     AndroidOpenCrayRuntimeServiceBindingAdapter,
-  private val startRequester: (Context) -> Unit = ::defaultRuntimeServiceStartRequester,
+  private val startRequester: (Context) -> Unit,
+  private val wakeChatWriteRequester: (OpenCrayChatWriteCommand) -> Boolean = { false },
   private val mainThreadPoster: MainThreadPoster =
     HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
   private val bindingReleaseDelayMs: Long = DEFAULT_BINDING_RELEASE_DELAY_MS,
   private val bindingReleaseScheduler: RuntimeServiceDelayScheduler =
     defaultBindingReleaseScheduler(mainThreadPoster),
-  private val serviceIntentFactory: (Context) -> Intent = ::defaultRuntimeServiceBaseIntent,
+  private val serviceIntentFactory: (Context) -> Intent,
   private val bindingFlags: Int = Context.BIND_AUTO_CREATE,
-  private val fallbackGatewayBundle: RuntimeServiceReadFallbackGatewayBundle? = null,
-  private val commandFallbackTransport: RuntimeServiceCommandFallbackTransport? = null,
   private val isMainThread: () -> Boolean = {
     Looper.myLooper() == Looper.getMainLooper()
   },
@@ -383,12 +321,11 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
   private val listeners = linkedSetOf<(RuntimeServiceConnectionState) -> Unit>()
   private val projectionSnapshotStore: RuntimeServiceProjectionStore? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
     projectionStore ?: runCatching {
-      FileBackedRuntimeServiceProjectionStoreFactory.fromContext(appContext).create()
+      FileBackedRuntimeServiceProjectionStoreFactory.fromContext(appContext).create(runtimeTarget)
     }.getOrNull()
   }
   private var connectionObserverCount: Int = 0
   private var bindingEstablished: Boolean = false
-  private var binderTransportUnsupported: Boolean = false
   private var pendingBindingReleaseTask: RuntimeServiceDelayedTask? = null
 
   @Volatile
@@ -420,21 +357,15 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
         return
       }
       val access = service as? OpenCrayRuntimeServiceBinderAccess
-      val fallbackCapable = hasLoopbackFallbackTransport()
-      val shouldReleaseUnsupportedBinder = access == null && fallbackCapable
       synchronized(lock) {
         cancelPendingBindingReleaseLocked()
         if (access != null) {
           bindingEstablished = true
           binderAccess = access
-          binderTransportUnsupported = false
         } else {
-          bindingEstablished = !shouldReleaseUnsupportedBinder
-          bindingRequested = !shouldReleaseUnsupportedBinder
+          bindingEstablished = true
+          bindingRequested = true
           binderAccess = null
-          if (shouldReleaseUnsupportedBinder) {
-            binderTransportUnsupported = true
-          }
         }
         notifyAllLocked()
       }
@@ -452,14 +383,6 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
             bindingRequested = currentBindingRequested(),
           ),
         )
-        if (shouldReleaseUnsupportedBinder) {
-          runCatching {
-            bindingAdapter.unbind(
-              context = appContext,
-              connection = this,
-            )
-          }
-        }
       }
       scheduleBindingReleaseIfIdle()
     }
@@ -517,9 +440,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
   override fun loadSnapshot(): OpenCrayRuntimeServiceClientSnapshot {
     return withTransientBindingAccess {
       val currentConnectionState = currentConnectionState()
-      val bridgeSnapshot = binderAccess
-        ?.let { access -> runCatching { access.loadSnapshot() }.getOrNull() }
-        ?: runCatching { fallbackBridge.loadSnapshot() }.getOrNull()
+      val bridgeSnapshot = loadBinderSnapshot()
       bridgeSnapshot?.toClientSnapshot(currentConnectionState)
         ?: projectionSnapshotStore?.loadSnapshot()?.toClientSnapshot(currentConnectionState)
         ?: error(
@@ -530,16 +451,14 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
 
   override fun peekSnapshot(): OpenCrayRuntimeServiceClientSnapshot? {
     val currentConnectionState = currentConnectionState()
-    val bridgeSnapshot = binderAccess
-      ?.let { access -> runCatching { access.loadSnapshot() }.getOrNull() }
-      ?: runCatching { fallbackBridge.loadSnapshot() }.getOrNull()
+    val bridgeSnapshot = loadBinderSnapshot()
     return bridgeSnapshot?.toClientSnapshot(currentConnectionState)
       ?: projectionSnapshotStore?.loadSnapshot()?.toClientSnapshot(currentConnectionState)
   }
 
   override fun peekProjectionSnapshot(): RuntimeServiceProjectionSnapshot? =
-    binderAccess
-      ?.let { access -> runCatching { access.loadSnapshot().toProjectionSnapshot() }.getOrNull() }
+    loadBinderSnapshot()
+      ?.toProjectionSnapshot()
       ?: projectionSnapshotStore?.loadSnapshot()
 
   override fun loadConnectionState(): RuntimeServiceConnectionState = currentConnectionState()
@@ -547,73 +466,70 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
   override fun peekConnectionState(): RuntimeServiceConnectionState = currentConnectionState()
 
   override fun loadShellGateway(): OpenCrayShellGateway? =
-    withTransientBindingAccess { binderAccess?.loadShellGateway() ?: fallbackGatewayBundle?.shellGateway }
+    withTransientBindingAccess { binderAccess?.loadShellGateway() }
 
   override fun peekShellGateway(): OpenCrayShellGateway? =
-    binderAccess?.loadShellGateway() ?: fallbackGatewayBundle?.shellGateway
+    binderAccess?.loadShellGateway()
 
   override fun loadChatRuntimeGateway(): OpenCrayChatRuntimeGateway? =
-    withTransientBindingAccess {
-      binderAccess?.loadChatRuntimeGateway() ?: fallbackGatewayBundle?.chatRuntimeGateway
-    }
+    withTransientBindingAccess { binderAccess?.loadChatRuntimeGateway() }
 
   override fun peekChatRuntimeGateway(): OpenCrayChatRuntimeGateway? =
-    binderAccess?.loadChatRuntimeGateway() ?: fallbackGatewayBundle?.chatRuntimeGateway
+    binderAccess?.loadChatRuntimeGateway()
 
   override fun awaitChatRuntimeGateway(timeoutMs: Long): OpenCrayChatRuntimeGateway? =
-    loadGatewayWithFallback(
+    loadGatewayWithBindingAwait(
       timeoutMs = timeoutMs,
       binderLoad = { binderAccess?.loadChatRuntimeGateway() },
-      fallbackLoad = { fallbackGatewayBundle?.chatRuntimeGateway },
     )
 
   override fun dispatchChatWriteCommand(
     command: OpenCrayChatWriteCommand,
-  ): OpenCrayChatWriteDispatchResult? = dispatchWithFallback(
+  ): OpenCrayChatWriteDispatchResult? = dispatchWithBinder(
     binderDispatch = { binderAccess?.dispatchChatWriteCommand(command) },
-    fallbackDispatch = { transport -> transport.dispatchChatWriteCommand(command) },
+    wakeFallback = {
+      if (wakeChatWriteRequester(command)) {
+        OpenCrayChatWriteDispatchResult.Completed
+      } else {
+        null
+      }
+    },
   )
 
   override fun loadSkillsGateway(): OpenCraySkillsGateway? =
-    withTransientBindingAccess { binderAccess?.loadSkillsGateway() ?: fallbackGatewayBundle?.skillsGateway }
+    withTransientBindingAccess { binderAccess?.loadSkillsGateway() }
 
   override fun peekSkillsGateway(): OpenCraySkillsGateway? =
-    binderAccess?.loadSkillsGateway() ?: fallbackGatewayBundle?.skillsGateway
+    binderAccess?.loadSkillsGateway()
 
   override fun awaitSkillsGateway(timeoutMs: Long): OpenCraySkillsGateway? =
-    loadGatewayWithFallback(
+    loadGatewayWithBindingAwait(
       timeoutMs = timeoutMs,
       binderLoad = { binderAccess?.loadSkillsGateway() },
-      fallbackLoad = { fallbackGatewayBundle?.skillsGateway },
     )
 
   override fun dispatchSkillsWriteCommand(
     command: OpenCraySkillsWriteCommand,
-  ): OpenCraySkillsWriteDispatchResult? = dispatchWithFallback(
+  ): OpenCraySkillsWriteDispatchResult? = dispatchWithBinder(
     binderDispatch = { binderAccess?.dispatchSkillsWriteCommand(command) },
-    fallbackDispatch = { transport -> transport.dispatchSkillsWriteCommand(command) },
   )
 
   override fun loadSettingsGateway(): OpenCraySettingsGateway? =
-    withTransientBindingAccess {
-      binderAccess?.loadSettingsGateway() ?: fallbackGatewayBundle?.settingsGateway
-    }
+    withTransientBindingAccess { binderAccess?.loadSettingsGateway() }
 
   override fun peekSettingsGateway(): OpenCraySettingsGateway? =
-    binderAccess?.loadSettingsGateway() ?: fallbackGatewayBundle?.settingsGateway
+    binderAccess?.loadSettingsGateway()
 
   override fun awaitSettingsGateway(timeoutMs: Long): OpenCraySettingsGateway? =
-    loadGatewayWithFallback(
+    loadGatewayWithBindingAwait(
       timeoutMs = timeoutMs,
       binderLoad = { binderAccess?.loadSettingsGateway() },
-      fallbackLoad = { fallbackGatewayBundle?.settingsGateway },
     )
 
   override fun dispatchSettingsWriteCommand(
     command: OpenCraySettingsWriteCommand,
-  ): OpenCraySettingsWriteDispatchResult? = dispatchWithFallback(
+  ): OpenCraySettingsWriteDispatchResult? = dispatchWithBinder(
     binderDispatch = { binderAccess?.dispatchSettingsWriteCommand(command) },
-    fallbackDispatch = { transport -> transport.dispatchSettingsWriteCommand(command) },
   )
 
   override fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit =
@@ -627,6 +543,34 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     listener = listener,
     retainBinding = false,
   )
+
+  override fun dispose() {
+    val shouldUnbind: Boolean
+    synchronized(lock) {
+      cancelPendingBindingReleaseLocked()
+      listeners.clear()
+      connectionObserverCount = 0
+      shouldUnbind = bindingEstablished || bindingRequested
+      binderAccess = null
+      bindingEstablished = false
+      bindingRequested = false
+      serviceStartRequested = false
+      notifyAllLocked()
+      connectionState = RuntimeServiceConnectionState.inProcessFallback(
+        serviceStartRequested = false,
+        bindingRequested = false,
+        fallbackReason = "client_disposed",
+      )
+    }
+    if (shouldUnbind) {
+      runCatching {
+        bindingAdapter.unbind(
+          context = appContext,
+          connection = serviceConnection,
+        )
+      }
+    }
+  }
 
   private inline fun <T> withTransientBindingAccess(
     block: () -> T,
@@ -652,15 +596,13 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     }
   }
 
-  private inline fun <T> loadGatewayWithFallback(
+  private inline fun <T> loadGatewayWithBindingAwait(
     timeoutMs: Long,
     binderLoad: () -> T?,
-    fallbackLoad: () -> T?,
   ): T? {
     ensureStartedAndBinding()
     return try {
       binderLoad()
-        ?: fallbackLoad()
         ?: run {
           awaitBindingAccess(timeoutMs)
           binderLoad()
@@ -670,17 +612,16 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     }
   }
 
-  private inline fun <T> dispatchWithFallback(
+  private inline fun <T> dispatchWithBinder(
     binderDispatch: () -> T?,
-    fallbackDispatch: (RuntimeServiceCommandFallbackTransport) -> T?,
+    noinline wakeFallback: (() -> T?)? = null,
   ): T? {
     ensureStartedAndBinding()
     return try {
       binderDispatch()
-        ?: commandFallbackTransport?.let(fallbackDispatch)
         ?: run {
           awaitBindingAccess(SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS)
-          binderDispatch()
+          binderDispatch() ?: wakeFallback?.invoke()
         }
     } finally {
       scheduleBindingReleaseIfIdle()
@@ -727,9 +668,6 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     if (shouldStart) {
       startRequester(appContext)
     }
-    if (shouldBypassBinderBinding()) {
-      return
-    }
     requestBindingIfNeeded(force = false)
   }
 
@@ -762,9 +700,6 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
   private fun requestBindingIfNeeded(force: Boolean) {
     val shouldBind: Boolean
     synchronized(lock) {
-      if (shouldBypassBinderBindingLocked()) {
-        return
-      }
       if (binderAccess != null) {
         return
       }
@@ -877,16 +812,6 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     pendingBindingReleaseTask = null
   }
 
-  private fun hasLoopbackFallbackTransport(): Boolean =
-    commandFallbackTransport != null || fallbackGatewayBundle != null
-
-  private fun shouldBypassBinderBinding(): Boolean = synchronized(lock) {
-    shouldBypassBinderBindingLocked()
-  }
-
-  private fun shouldBypassBinderBindingLocked(): Boolean =
-    binderTransportUnsupported && hasLoopbackFallbackTransport()
-
   private fun notifyAllLocked() {
     java.lang.Object::class.java.getMethod("notifyAll").invoke(lock)
   }
@@ -918,18 +843,10 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
 
   private fun currentBindingRequested(): Boolean = synchronized(lock) { bindingRequested }
 
-  private fun currentConnectionState(): RuntimeServiceConnectionState {
-    val current = connectionState
-    return if (!current.binderAvailable && (
-        commandFallbackTransport != null ||
-          fallbackGatewayBundle != null
-        )
-    ) {
-      current.withLoopbackHttpTransport()
-    } else {
-      current
-    }
-  }
+  private fun loadBinderSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot? =
+    binderAccess?.let { access -> runCatching { access.loadSnapshot() }.getOrNull() }
+
+  private fun currentConnectionState(): RuntimeServiceConnectionState = synchronized(lock) { connectionState }
 
   private fun publishConnectionState(nextState: RuntimeServiceConnectionState) {
     val currentListeners = synchronized(lock) {
@@ -956,8 +873,9 @@ internal fun RuntimeServiceBridgeSnapshotDependencies.toBridgeSnapshot(
   serviceWorkState: RuntimeServiceWorkState,
   serviceKeepAliveState: RuntimeServiceKeepAliveState = RuntimeServiceKeepAliveState(),
 ): OpenCrayRuntimeServiceBridgeSnapshot = OpenCrayRuntimeServiceBridgeSnapshot(
-  dependencies = dependencies,
-  runtimeAccess = runtimeAccess,
+  runtimeOwnerLifecycle = runtimeOwnerLifecycle,
+  runtimeOwnerWorkSummary = runtimeOwnerWorkSummaryProvider(),
+  runtimeControllerLifecycle = runtimeControllerLifecycle,
   serviceLifecycle = serviceLifecycle,
   serviceWorkState = serviceWorkState,
   serviceKeepAliveState = serviceKeepAliveState,

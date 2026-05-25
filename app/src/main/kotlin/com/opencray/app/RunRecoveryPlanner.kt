@@ -1,18 +1,23 @@
 package com.opencray.app
 
+import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.orchestrator.EXECUTION_KIND_INITIAL
 import com.opencray.core.orchestrator.ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayLifecycleEvent
+import com.opencray.runtime.OpenCraySerializableModelAction
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 internal enum class RunRecoveryAction {
+  RESTORE_TERMINAL_RESULT,
   RESUME_FROM_CHECKPOINT,
   RESUME_WAITING_FOR_APPROVAL,
   RESUME_WAITING_FOR_USER,
@@ -25,6 +30,7 @@ internal data class RunRecoveryPlannerInput(
   val run: AgentRunSnapshot,
   val checkpoint: PersistedPromptCheckpoint? = null,
   val lastJournalEvent: OpenCrayAgentRunEvent? = null,
+  val durableResult: ExecutionResult? = null,
   val approvalState: AgentTaskApprovalState? = null,
 )
 
@@ -54,7 +60,44 @@ internal class RunRecoveryPlanner {
   fun plan(input: RunRecoveryPlannerInput): RunRecoveryPlan? {
     val checkpoint = input.checkpoint
     val run = input.run
+    val durableResult = input.durableResult
     val journalTailKind = recoveryJournalTailKind(input.lastJournalEvent)
+
+    if (durableResult.isRestorableTerminalResult() && runNeedsTerminalRepair(run = run, result = requireNotNull(durableResult))) {
+      return RunRecoveryPlan(
+        action = RunRecoveryAction.RESTORE_TERMINAL_RESULT,
+        reasonCode = "durable_terminal_result_persisted",
+        summary =
+          "A terminal execution result was already durably persisted before recovery. Restore the run to its terminal state instead of replaying the task.",
+        safeToAutoResume = true,
+        requiresUserAction = false,
+        checkpointKind = checkpoint?.checkpointKind,
+        approvalState = input.approvalState,
+        journalTailKind = journalTailKind,
+      )
+    }
+
+    if (
+      isInterruptedRestoreRun(run) &&
+      checkpoint != null &&
+      safeManagedProcessObservationResume(
+        run = run,
+        checkpoint = checkpoint,
+        event = input.lastJournalEvent,
+      )
+    ) {
+      return RunRecoveryPlan(
+        action = RunRecoveryAction.RESUME_FROM_CHECKPOINT,
+        reasonCode = "managed_process_observation_checkpoint_resume",
+        summary =
+          "The host was rebuilt while a ProcessRead or ProcessWait observation against a still-live managed process was in flight. Recovery can safely resume from the durable checkpoint and reissue that observation after reconnecting the process controller.",
+        safeToAutoResume = true,
+        requiresUserAction = false,
+        checkpointKind = checkpoint.checkpointKind,
+        approvalState = input.approvalState,
+        journalTailKind = journalTailKind,
+      )
+    }
 
     if (
       isInterruptedRestoreRun(run) &&
@@ -110,6 +153,20 @@ internal class RunRecoveryPlanner {
       )
     }
 
+    if (checkpoint?.checkpointKind == PromptCheckpointKind.FINALIZATION_COMPLETE) {
+      return RunRecoveryPlan(
+        action = RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED,
+        reasonCode = "finalization_checkpoint_missing_terminal_result",
+        summary =
+          "Recovery found a finalization checkpoint, but no durable terminal result is available to prove the final answer completed. Stop here instead of replaying or guessing.",
+        safeToAutoResume = false,
+        requiresUserAction = true,
+        checkpointKind = checkpoint.checkpointKind,
+        approvalState = input.approvalState,
+        journalTailKind = journalTailKind,
+      )
+    }
+
     if (checkpoint?.checkpointKind?.isCheckpointResumeKind() == true) {
       return RunRecoveryPlan(
         action = RunRecoveryAction.RESUME_FROM_CHECKPOINT,
@@ -120,6 +177,7 @@ internal class RunRecoveryPlanner {
           PromptCheckpointKind.COMMENTARY_EMITTED -> "durable_commentary_emitted_checkpoint"
           PromptCheckpointKind.TOOL_RESULT_COMMITTED -> "durable_tool_result_checkpoint"
           PromptCheckpointKind.SUPPLEMENT_INGESTED -> "durable_supplement_ingested_checkpoint"
+          PromptCheckpointKind.FINALIZATION_COMPLETE -> "finalization_checkpoint_missing_terminal_result"
           PromptCheckpointKind.APPROVED_PENDING_RESUME -> "approval_already_granted_resume_pending"
           PromptCheckpointKind.REJECTED_PENDING_RESUME -> "approval_already_rejected_waiting_for_instruction"
           PromptCheckpointKind.WAITING_APPROVAL -> "approval_waiting_checkpoint"
@@ -137,6 +195,8 @@ internal class RunRecoveryPlanner {
             "The run durably committed a tool-result boundary and should continue from that boundary instead of rerunning from task input."
           PromptCheckpointKind.SUPPLEMENT_INGESTED ->
             "The run durably committed a supplement-ingestion boundary and should continue from that boundary instead of rerunning from task input."
+          PromptCheckpointKind.FINALIZATION_COMPLETE ->
+            "The run has terminal finalization evidence and must not be resumed from the prompt checkpoint path."
           PromptCheckpointKind.APPROVED_PENDING_RESUME,
           PromptCheckpointKind.REJECTED_PENDING_RESUME,
           PromptCheckpointKind.WAITING_APPROVAL,
@@ -290,6 +350,73 @@ internal class RunRecoveryPlanner {
           event.phase == OpenCraySubAgentPhase.RESUMED
       else -> false
     }
+  }
+
+  private fun safeManagedProcessObservationResume(
+    run: AgentRunSnapshot,
+    checkpoint: PersistedPromptCheckpoint,
+    event: OpenCrayAgentRunEvent?,
+  ): Boolean {
+    if (!run.hasAutoResumeEligibleManagedProcesses) {
+      return false
+    }
+    val toolCallEvent = event as? OpenCrayToolCallEvent ?: return false
+    if (!toolCallEvent.call.isManagedProcessObservationCall()) {
+      return false
+    }
+    val resumeState = checkpoint.promptResumeState ?: return false
+    val resumableAction = resumeState.resumableActions()
+      .getOrNull(resumeState.normalizedNextActionIndex()) as? OpenCraySerializableModelAction.ToolCall
+      ?: return false
+    val resumedCall = resumableAction.call
+    if (!resumedCall.toolName.equals(toolCallEvent.call.toolName, ignoreCase = true)) {
+      return false
+    }
+    val resumedProcessId = managedProcessObservationProcessId(resumedCall.arguments) ?: return false
+    val eventProcessId = managedProcessObservationProcessId(toolCallEvent.call.arguments) ?: return false
+    return resumedProcessId == eventProcessId
+  }
+
+  private fun com.opencray.runtime.AgentToolCall.isManagedProcessObservationCall(): Boolean =
+    toolName.equals("ProcessRead", ignoreCase = true) ||
+      toolName.equals("ProcessWait", ignoreCase = true)
+
+  private fun managedProcessObservationProcessId(arguments: JsonObject): String? =
+    (arguments["process_id"] as? JsonPrimitive)
+      ?.content
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+
+  private fun runNeedsTerminalRepair(
+    run: AgentRunSnapshot,
+    result: ExecutionResult,
+  ): Boolean = when (result.status) {
+    ExecutionStatus.SUCCESS ->
+      run.lifecycleState != QueueTaskLifecycleState.COMPLETED || run.executionStatus != ExecutionStatus.SUCCESS
+
+    ExecutionStatus.CANCELLED ->
+      run.lifecycleState != QueueTaskLifecycleState.CANCELLED || run.executionStatus != ExecutionStatus.CANCELLED
+
+    ExecutionStatus.FAILED,
+    ExecutionStatus.TIMEOUT,
+    ->
+      run.lifecycleState != QueueTaskLifecycleState.FAILED || run.executionStatus != result.status
+
+    ExecutionStatus.DENIED -> false
+  }
+
+  private fun ExecutionResult?.isRestorableTerminalResult(): Boolean = when (this?.status) {
+    ExecutionStatus.FAILED ->
+      errorCode != ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
+
+    ExecutionStatus.SUCCESS,
+    ExecutionStatus.CANCELLED,
+    ExecutionStatus.TIMEOUT,
+    -> true
+
+    ExecutionStatus.DENIED,
+    null,
+    -> false
   }
 
   private fun recoveryJournalTailKind(event: OpenCrayAgentRunEvent?): String? = when (event) {

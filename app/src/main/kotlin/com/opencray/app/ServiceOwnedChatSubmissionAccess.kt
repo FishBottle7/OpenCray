@@ -46,7 +46,7 @@ internal fun chatRunIsLlmRetryPausedAwaitingResume(run: AgentRunSnapshot): Boole
 
 internal fun chatRunIsDeferredApprovalAwaitingResume(
   run: AgentRunSnapshot,
-  runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  runtimeHostAccess: RuntimeSessionPersistenceAccess,
 ): Boolean = run.lifecycleState == QueueTaskLifecycleState.SUSPENDED &&
   runtimeHostAccess.promptCheckpointStore(run.sessionId)
     .get(run.taskId)
@@ -78,7 +78,7 @@ internal data class ServiceOwnedChatSubmissionResult(
 
 internal class ChatSubmissionCoordinator(
   private val chatSessionStore: ChatSessionLocalStore,
-  private val runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  private val runtimeHostAccess: RuntimeChatSubmissionHostAccess,
   private val taskSafetyMetadataProvider: () -> Map<String, String>,
   private val taskMetadataProvider: (String) -> Map<String, String>,
   private val workspaceRootProvider: (() -> Path)?,
@@ -508,7 +508,7 @@ internal class ChatSubmissionCoordinator(
 
 internal class ServiceOwnedChatSubmissionAccess(
   chatSessionStore: ChatSessionLocalStore,
-  runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  runtimeHostAccess: RuntimeChatSubmissionHostAccess,
   safetySettingsFacade: SafetySettingsFacade,
   workspaceRootProvider: (() -> Path)?,
   approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot = {

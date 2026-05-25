@@ -25,10 +25,15 @@ import '../models/opencray_skills_snapshot.dart';
 import '../models/opencray_strong_background.dart';
 import '../models/opencray_twin_import_source_probe.dart';
 import '../models/opencray_workspace_text_document.dart';
+import 'opencray_bridge_lifecycle.dart';
 import 'opencray_host_bridge.dart';
 
 class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   const OpenCrayPlatformBridge();
+
+  static final String _fallbackBridgeInstanceId = openCrayLifecycleId(
+    'platform-bridge',
+  );
 
   static const MethodChannel _methodChannel = MethodChannel(
     'com.opencray.host/methods',
@@ -839,18 +844,32 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
 
   @override
   Future<OpenCrayChatSnapshot> loadChatSnapshot() async =>
-      OpenCrayChatSnapshot.fromMap(await _invokeMap('loadChatSnapshot'));
+      OpenCrayChatSnapshot.fromMap(
+        attachChatSnapshotClientLifecycle(
+          await _invokeMap('loadChatSnapshot'),
+          fallbackBridgeInstanceId: _fallbackBridgeInstanceId,
+        ),
+      );
 
   @override
   Stream<OpenCrayChatSnapshot> watchChatSnapshot() => _chatSnapshotChannel
       .receiveBroadcastStream()
       .map(_requireMap)
+      .map(
+        (payload) => attachChatSnapshotClientLifecycle(
+          payload,
+          fallbackBridgeInstanceId: _fallbackBridgeInstanceId,
+        ),
+      )
       .map(OpenCrayChatSnapshot.fromMap);
 
   @override
   Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot() async =>
       OpenCrayChatRuntimeSnapshot.fromMap(
-        await _invokeMap('loadChatRuntimeSnapshot'),
+        attachChatRuntimeSnapshotClientLifecycle(
+          await _invokeMap('loadChatRuntimeSnapshot'),
+          fallbackBridgeInstanceId: _fallbackBridgeInstanceId,
+        ),
       );
 
   @override
@@ -858,6 +877,12 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       _chatRuntimeSnapshotChannel
           .receiveBroadcastStream()
           .map(_requireMap)
+          .map(
+            (payload) => attachChatRuntimeSnapshotClientLifecycle(
+              payload,
+              fallbackBridgeInstanceId: _fallbackBridgeInstanceId,
+            ),
+          )
           .map(OpenCrayChatRuntimeSnapshot.fromMap);
 
   @override
@@ -1132,7 +1157,10 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     Map<Object?, Object?> payload,
   ) {
     return OpenCrayShellSnapshot.fromMap(
-      payload,
+      attachShellSnapshotClientLifecycle(
+        payload,
+        fallbackBridgeInstanceId: _fallbackBridgeInstanceId,
+      ),
       defaultHostSummary: 'Flutter shell is attached to a host bridge.',
     );
   }

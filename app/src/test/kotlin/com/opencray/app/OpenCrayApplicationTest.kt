@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.app.Application
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -110,6 +111,30 @@ class OpenCrayApplicationTest {
   }
 
   @Test
+  fun bootstrapOpenCrayRuntimeServiceProcessSupportAlsoRegistersNotificationChannels() {
+    val application = Application()
+    val steps = mutableListOf<String>()
+
+    bootstrapOpenCrayRuntimeServiceProcessSupport(
+      context = application,
+      runtimeProcessSupportBootstrap = {
+        steps += "runtime_process_support"
+      },
+      notificationChannelRegistrar = {
+        steps += "register_notification_channels"
+      },
+    )
+
+    assertEquals(
+      listOf(
+        "runtime_process_support",
+        "register_notification_channels",
+      ),
+      steps,
+    )
+  }
+
+  @Test
   fun bootstrapOpenCrayApplicationStillQueuesRepairWhenResyncFailsWithoutStartingRuntime() {
     val application = Application()
     val steps = mutableListOf<String>()
@@ -138,5 +163,17 @@ class OpenCrayApplicationTest {
       ),
       steps,
     )
+  }
+
+  @Test
+  fun openCrayApplicationExposesStableRuntimeServiceEnvironment() {
+    val application = OpenCrayApplication()
+
+    val first = application.openCrayRuntimeServiceEnvironment
+    val second = application.openCrayRuntimeServiceEnvironment
+
+    assertSame(first, second)
+    assertSame(first.runtimeServiceAccessGateway, second.runtimeServiceAccessGateway)
+    assertSame(first.executionControllerResolver, second.executionControllerResolver)
   }
 }

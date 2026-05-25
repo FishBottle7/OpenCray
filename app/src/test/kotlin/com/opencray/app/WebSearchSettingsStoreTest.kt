@@ -45,7 +45,7 @@ class WebSearchSettingsStoreTest {
   @Test
   fun facadeSaveNormalizesUnsupportedProvidersToExa() {
     val store = WebSearchSettingsStore(InMemoryWebSearchSettingsKeyValueStore())
-    val facade = LocalNetworkSearchConfigFacade.createForTest(store)
+    val facade = LocalNetworkSearchConfigFacade.create(store)
 
     val snapshot = facade.save(
       SaveNetworkSearchConfigRequest(

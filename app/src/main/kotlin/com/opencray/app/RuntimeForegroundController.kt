@@ -51,17 +51,58 @@ internal interface RuntimeForegroundServiceAdapter {
 }
 
 internal class RuntimeForegroundController(
-  private val serviceAdapter: RuntimeForegroundServiceAdapter,
+  serviceAdapter: RuntimeForegroundServiceAdapter? = null,
+  private val retainForegroundDuringIdleGraceProvider: () -> Boolean = { false },
+  private val appVisibleProvider: () -> Boolean,
   private val mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
   private val clock: () -> Long = System::currentTimeMillis,
 ) {
   private val lock = Any()
   private var destroyed: Boolean = false
+  private var boundServiceAdapter: RuntimeForegroundServiceAdapter? = serviceAdapter
+  private var appVisible: Boolean = appVisibleProvider()
+  private var lastObservedWorkState: RuntimeServiceWorkState = RuntimeServiceWorkState(
+    changedAtEpochMs = clock(),
+  )
+  private var lastKeepAliveState: RuntimeServiceKeepAliveState = RuntimeServiceKeepAliveState(
+    appVisible = appVisible,
+    changedAtEpochMs = clock(),
+  )
   private var currentState: RuntimeForegroundState = RuntimeForegroundState(
     changedAtEpochMs = clock(),
   )
+  private var currentNotificationModel: RuntimeForegroundNotificationModel? = null
 
   fun currentState(): RuntimeForegroundState = synchronized(lock) { currentState }
+
+  fun bindServiceAdapter(
+    serviceAdapter: RuntimeForegroundServiceAdapter,
+  ): RuntimeForegroundState {
+    val modelToReplay = synchronized(lock) {
+      if (destroyed) {
+        return currentState
+      }
+      boundServiceAdapter = serviceAdapter
+      currentNotificationModel
+    }
+    if (modelToReplay != null) {
+      dispatchTo(
+        serviceAdapter = serviceAdapter,
+        command = RuntimeForegroundCommand.StartOrUpdate(modelToReplay),
+      )
+    }
+    return currentState()
+  }
+
+  fun unbindServiceAdapter(
+    serviceAdapter: RuntimeForegroundServiceAdapter? = null,
+  ) {
+    synchronized(lock) {
+      if (serviceAdapter == null || boundServiceAdapter === serviceAdapter) {
+        boundServiceAdapter = null
+      }
+    }
+  }
 
   fun startBootstrapForeground(
     keepAliveReason: String = RuntimeServiceWorkState.KEEP_ALIVE_REASON_SERVICE_STARTUP,
@@ -94,59 +135,66 @@ internal class RuntimeForegroundController(
         changedAtEpochMs = clock(),
       )
       currentState = nextState
+      currentNotificationModel = model
     }
     // Android expects startForeground() synchronously after startForegroundService().
-    serviceAdapter.startOrUpdateForeground(model)
+    dispatchToCurrentServiceAdapter(
+      RuntimeForegroundCommand.StartOrUpdate(model),
+    )
     return nextState
   }
 
   fun onWorkStateChanged(workState: RuntimeServiceWorkState): RuntimeForegroundState {
+    val now = clock()
     val command: RuntimeForegroundCommand?
     val nextState: RuntimeForegroundState
     synchronized(lock) {
       if (destroyed) {
         return currentState
       }
-      val now = clock()
-      if (!workState.keepAliveRequired) {
-        if (currentState.phase == RuntimeForegroundState.PHASE_IDLE) {
-          return currentState
-        }
-        currentState = RuntimeForegroundState(
-          phase = RuntimeForegroundState.PHASE_IDLE,
-          notificationVisible = false,
-          activeRunCount = workState.activeRunCount,
-          activeSessionCount = workState.activeSessionCount,
-          changedAtEpochMs = now,
-        )
-        nextState = currentState
-        command = RuntimeForegroundCommand.Stop
-      } else {
-        val model = RuntimeForegroundNotificationModel(
-          activeRunCount = workState.activeRunCount,
-          activeSessionCount = workState.activeSessionCount,
-          liveManagedProcessSessionCount = workState.liveManagedProcessSessionCount,
-          keepAliveReason = workState.keepAliveReason,
-        )
-        if (
-          currentState.phase == RuntimeForegroundState.PHASE_FOREGROUND &&
-          currentState.activeRunCount == model.activeRunCount &&
-          currentState.activeSessionCount == model.activeSessionCount &&
-          currentState.keepAliveReason == model.keepAliveReason
-        ) {
-          return currentState
-        }
-        currentState = RuntimeForegroundState(
-          phase = RuntimeForegroundState.PHASE_FOREGROUND,
-          notificationVisible = true,
-          activeRunCount = model.activeRunCount,
-          activeSessionCount = model.activeSessionCount,
-          keepAliveReason = model.keepAliveReason,
-          changedAtEpochMs = now,
-        )
-        nextState = currentState
-        command = RuntimeForegroundCommand.StartOrUpdate(model)
+      lastObservedWorkState = workState
+      val transition = reduceStateLocked(now)
+      nextState = transition.state
+      command = transition.command
+    }
+    dispatch(command)
+    return nextState
+  }
+
+  fun onKeepAliveStateChanged(
+    keepAliveState: RuntimeServiceKeepAliveState,
+  ): RuntimeForegroundState {
+    val now = clock()
+    val command: RuntimeForegroundCommand?
+    val nextState: RuntimeForegroundState
+    synchronized(lock) {
+      if (destroyed) {
+        return currentState
       }
+      lastKeepAliveState = keepAliveState
+      val transition = reduceStateLocked(now)
+      nextState = transition.state
+      command = transition.command
+    }
+    dispatch(command)
+    return nextState
+  }
+
+  fun onAppVisibilityChanged(appVisible: Boolean): RuntimeForegroundState {
+    val now = clock()
+    val command: RuntimeForegroundCommand?
+    val nextState: RuntimeForegroundState
+    synchronized(lock) {
+      if (destroyed) {
+        return currentState
+      }
+      if (this.appVisible == appVisible) {
+        return currentState
+      }
+      this.appVisible = appVisible
+      val transition = reduceStateLocked(now)
+      nextState = transition.state
+      command = transition.command
     }
     dispatch(command)
     return nextState
@@ -166,6 +214,7 @@ internal class RuntimeForegroundController(
       } else {
         null
       }
+      currentNotificationModel = null
       currentState = currentState.copy(
         phase = RuntimeForegroundState.PHASE_DESTROYED,
         notificationVisible = false,
@@ -181,6 +230,21 @@ internal class RuntimeForegroundController(
     if (command == null) {
       return
     }
+    dispatchToCurrentServiceAdapter(command)
+  }
+
+  private fun dispatchToCurrentServiceAdapter(command: RuntimeForegroundCommand) {
+    val serviceAdapter = synchronized(lock) { boundServiceAdapter } ?: return
+    dispatchTo(
+      serviceAdapter = serviceAdapter,
+      command = command,
+    )
+  }
+
+  private fun dispatchTo(
+    serviceAdapter: RuntimeForegroundServiceAdapter,
+    command: RuntimeForegroundCommand,
+  ) {
     mainThreadPoster.post {
       when (command) {
         is RuntimeForegroundCommand.StartOrUpdate ->
@@ -190,6 +254,87 @@ internal class RuntimeForegroundController(
       }
     }
   }
+
+  private fun reduceStateLocked(
+    now: Long,
+  ): RuntimeForegroundTransition {
+    val model = desiredForegroundModelLocked()
+    if (model == null) {
+      if (currentState.phase == RuntimeForegroundState.PHASE_IDLE) {
+        return RuntimeForegroundTransition(
+          state = currentState,
+          command = null,
+        )
+      }
+      currentState = RuntimeForegroundState(
+        phase = RuntimeForegroundState.PHASE_IDLE,
+        notificationVisible = false,
+        activeRunCount = lastObservedWorkState.activeRunCount,
+        activeSessionCount = lastObservedWorkState.activeSessionCount,
+        changedAtEpochMs = now,
+      )
+      currentNotificationModel = null
+      return RuntimeForegroundTransition(
+        state = currentState,
+        command = RuntimeForegroundCommand.Stop,
+      )
+    }
+    if (
+      currentState.phase == RuntimeForegroundState.PHASE_FOREGROUND &&
+      currentState.activeRunCount == model.activeRunCount &&
+      currentState.activeSessionCount == model.activeSessionCount &&
+      currentState.keepAliveReason == model.keepAliveReason
+    ) {
+      return RuntimeForegroundTransition(
+        state = currentState,
+        command = null,
+      )
+    }
+    currentNotificationModel = model
+    currentState = RuntimeForegroundState(
+      phase = RuntimeForegroundState.PHASE_FOREGROUND,
+      notificationVisible = true,
+      activeRunCount = model.activeRunCount,
+      activeSessionCount = model.activeSessionCount,
+      keepAliveReason = model.keepAliveReason,
+      changedAtEpochMs = now,
+    )
+    return RuntimeForegroundTransition(
+      state = currentState,
+      command = RuntimeForegroundCommand.StartOrUpdate(model),
+    )
+  }
+
+  private fun desiredForegroundModelLocked(): RuntimeForegroundNotificationModel? {
+    if (lastObservedWorkState.keepAliveRequired) {
+      return RuntimeForegroundNotificationModel(
+        activeRunCount = lastObservedWorkState.activeRunCount,
+        activeSessionCount = lastObservedWorkState.activeSessionCount,
+        liveManagedProcessSessionCount = lastObservedWorkState.liveManagedProcessSessionCount,
+        keepAliveReason = lastObservedWorkState.keepAliveReason,
+      )
+    }
+    if (!shouldRetainForegroundDuringIdleGraceLocked()) {
+      return null
+    }
+    return RuntimeForegroundNotificationModel(
+      activeRunCount = lastObservedWorkState.activeRunCount,
+      activeSessionCount = lastObservedWorkState.activeSessionCount,
+      liveManagedProcessSessionCount = lastObservedWorkState.liveManagedProcessSessionCount,
+      keepAliveReason = RuntimeServiceWorkState.KEEP_ALIVE_REASON_IDLE_GRACE,
+    )
+  }
+
+  private fun shouldRetainForegroundDuringIdleGraceLocked(): Boolean =
+    !appVisible &&
+      retainForegroundDuringIdleGraceProvider() &&
+      lastKeepAliveState.phase == RuntimeServiceKeepAliveState.PHASE_IDLE_GRACE &&
+      lastKeepAliveState.stopScheduled
+
+  private data class RuntimeForegroundTransition(
+    val state: RuntimeForegroundState,
+    val command: RuntimeForegroundCommand?,
+  )
 
   private sealed interface RuntimeForegroundCommand {
     data class StartOrUpdate(
@@ -256,6 +401,8 @@ internal class RuntimeActiveNotificationFactory(
     val contentText = when {
       model.keepAliveReason == RuntimeServiceWorkState.KEEP_ALIVE_REASON_SERVICE_STARTUP ->
         context.getString(R.string.runtime_notification_active_bootstrap_text)
+      model.keepAliveReason == RuntimeServiceWorkState.KEEP_ALIVE_REASON_IDLE_GRACE ->
+        context.getString(R.string.runtime_notification_active_idle_grace_text)
       model.keepAliveReason == RuntimeServiceWorkState.KEEP_ALIVE_REASON_MANAGED_PROCESS &&
         model.liveManagedProcessSessionCount > 0 ->
         context.getString(

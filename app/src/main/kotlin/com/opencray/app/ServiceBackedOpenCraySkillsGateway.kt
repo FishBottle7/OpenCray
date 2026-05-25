@@ -1,23 +1,27 @@
 package com.opencray.app
 
-import android.content.Context
-
 internal class ServiceBackedOpenCraySkillsGateway(
   private val serviceClient: OpenCrayRuntimeServiceClient,
-  private val fallbackGateway: OpenCraySkillsGateway,
+  fallbackGateway: OpenCraySkillsGateway? = null,
+  fallbackGatewayProvider: (() -> OpenCraySkillsGateway)? = null,
 ) : OpenCraySkillsGateway {
+  private val resolvedFallbackGatewayProvider: () -> OpenCraySkillsGateway = cachedGatewayProvider(
+    fallbackGatewayProvider ?: fallbackGateway?.let { gateway -> { gateway } }
+      ?: error("Service-backed skills gateway requires a fallback gateway."),
+  )
+
   override fun loadSkillsSnapshot(
     query: String,
     suggestedLimit: Int,
-  ): Map<String, Any?> = currentReadGateway().loadSkillsSnapshot(
+  ): Map<String, Any?> = currentLoadGateway().loadSkillsSnapshot(
     query = query,
     suggestedLimit = suggestedLimit,
   )
 
   override fun observeSkills(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
-      currentGateway = ::currentReadGateway,
-      observeConnectionState = serviceClient::observePassiveConnectionState,
+      currentGateway = ::currentObservedGateway,
+      observeConnectionState = serviceClient::observeConnectionState,
       observe = { gateway, callback -> gateway.observeSkills(callback) },
       listener = listener,
     )
@@ -88,15 +92,15 @@ internal class ServiceBackedOpenCraySkillsGateway(
     dispatchWriteCommand(
       operation = "updateInstalledSkill",
       command = OpenCraySkillsWriteCommand.UpdateInstalledSkill(skillId),
-    ).messageOrNull()
+  ).messageOrNull()
 
   override fun loadSkillInstructions(skillId: String): Map<String, Any?> =
-    currentReadGateway().loadSkillInstructions(skillId)
+    currentLoadGateway().loadSkillInstructions(skillId)
 
   override fun loadSuggestedSkillInstructions(
     sourceRef: String,
     selectedSkillName: String,
-  ): Map<String, Any?> = currentReadGateway().loadSuggestedSkillInstructions(
+  ): Map<String, Any?> = currentLoadGateway().loadSuggestedSkillInstructions(
     sourceRef = sourceRef,
     selectedSkillName = selectedSkillName,
   )
@@ -107,8 +111,11 @@ internal class ServiceBackedOpenCraySkillsGateway(
       command = OpenCraySkillsWriteCommand.ActivateSkillsInstallSource(sourceId),
     ).messageOrNull()
 
-  private fun currentReadGateway(): OpenCraySkillsGateway =
-    serviceClient.peekSkillsGateway() ?: fallbackGateway
+  private fun currentLoadGateway(): OpenCraySkillsGateway =
+    serviceClient.loadSkillsGateway() ?: resolvedFallbackGatewayProvider()
+
+  private fun currentObservedGateway(): OpenCraySkillsGateway =
+    serviceClient.peekSkillsGateway() ?: resolvedFallbackGatewayProvider()
 
   private fun dispatchWriteCommand(
     operation: String,
@@ -118,7 +125,7 @@ internal class ServiceBackedOpenCraySkillsGateway(
       surface = "Skills",
       operation = operation,
       gateway = serviceClient.dispatchSkillsWriteCommand(command),
-      connectionState = serviceClient.loadConnectionState(),
+      connectionState = serviceClient.peekConnectionState(),
     )
 }
 
@@ -142,20 +149,6 @@ private fun OpenCraySkillsWriteDispatchResult.payloadOrNull(): Map<String, Any?>
 }
 
 internal fun serviceBackedOpenCraySkillsGateway(
-  context: Context,
-): OpenCraySkillsGateway {
-  val appContext = context.applicationContext
-  val serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(appContext)
-  return serviceBackedOpenCraySkillsGateway(
-    serviceClient = serviceClient,
-    fallbackGateway = projectionOnlyOpenCraySkillsGateway(
-      context = appContext,
-      connectionStateProvider = serviceClient::loadConnectionState,
-    ),
-  )
-}
-
-internal fun serviceBackedOpenCraySkillsGateway(
   serviceClient: OpenCrayRuntimeServiceClient,
   fallbackGateway: OpenCraySkillsGateway,
 ): OpenCraySkillsGateway = ServiceBackedOpenCraySkillsGateway(
@@ -164,9 +157,9 @@ internal fun serviceBackedOpenCraySkillsGateway(
 )
 
 internal fun serviceBackedOpenCraySkillsGateway(
-  context: Context,
-  fallbackGateway: OpenCraySkillsGateway,
-): OpenCraySkillsGateway = serviceBackedOpenCraySkillsGateway(
-  serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(context.applicationContext),
-  fallbackGateway = fallbackGateway,
+  serviceClient: OpenCrayRuntimeServiceClient,
+  fallbackGatewayProvider: () -> OpenCraySkillsGateway,
+): OpenCraySkillsGateway = ServiceBackedOpenCraySkillsGateway(
+  serviceClient = serviceClient,
+  fallbackGatewayProvider = fallbackGatewayProvider,
 )

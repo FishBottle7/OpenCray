@@ -29,6 +29,7 @@ import '../models/opencray_skills_snapshot.dart';
 import '../models/opencray_strong_background.dart';
 import '../models/opencray_twin_import_source_probe.dart';
 import '../models/opencray_workspace_text_document.dart';
+import 'opencray_bridge_lifecycle.dart';
 import 'opencray_host_bridge.dart';
 
 class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
@@ -41,6 +42,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   final Uri _baseUri;
   final Duration requestTimeout;
   final Duration pollInterval;
+  final String _bridgeInstanceId = openCrayLifecycleId('local-runtime-bridge');
 
   @override
   Future<OpenCrayShellSnapshot> loadShellSnapshot() async =>
@@ -775,24 +777,42 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
 
   @override
   Future<OpenCrayChatSnapshot> loadChatSnapshot() async =>
-      OpenCrayChatSnapshot.fromMap(await _getMap('v1/chat_snapshot'));
+      OpenCrayChatSnapshot.fromMap(
+        attachChatSnapshotClientLifecycle(
+          await _getMap('v1/chat_snapshot'),
+          fallbackBridgeInstanceId: _bridgeInstanceId,
+        ),
+      );
 
   @override
   Stream<OpenCrayChatSnapshot> watchChatSnapshot() => _watchMap(
     () => _getMap('v1/chat_snapshot'),
-    OpenCrayChatSnapshot.fromMap,
+    (payload) => OpenCrayChatSnapshot.fromMap(
+      attachChatSnapshotClientLifecycle(
+        payload,
+        fallbackBridgeInstanceId: _bridgeInstanceId,
+      ),
+    ),
   );
 
   @override
   Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot() async =>
       OpenCrayChatRuntimeSnapshot.fromMap(
-        await _getMap('v1/chat_runtime_snapshot'),
+        attachChatRuntimeSnapshotClientLifecycle(
+          await _getMap('v1/chat_runtime_snapshot'),
+          fallbackBridgeInstanceId: _bridgeInstanceId,
+        ),
       );
 
   @override
   Stream<OpenCrayChatRuntimeSnapshot> watchChatRuntimeSnapshot() => _watchMap(
     () => _getMap('v1/chat_runtime_snapshot'),
-    OpenCrayChatRuntimeSnapshot.fromMap,
+    (payload) => OpenCrayChatRuntimeSnapshot.fromMap(
+      attachChatRuntimeSnapshotClientLifecycle(
+        payload,
+        fallbackBridgeInstanceId: _bridgeInstanceId,
+      ),
+    ),
   );
 
   @override
@@ -1125,11 +1145,12 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     return Uri.parse(withTrailingSlash);
   }
 
-  static OpenCrayShellSnapshot _parseShellSnapshot(
-    Map<Object?, Object?> payload,
-  ) {
+  OpenCrayShellSnapshot _parseShellSnapshot(Map<Object?, Object?> payload) {
     return OpenCrayShellSnapshot.fromMap(
-      payload,
+      attachShellSnapshotClientLifecycle(
+        payload,
+        fallbackBridgeInstanceId: _bridgeInstanceId,
+      ),
       defaultHostSummary:
           'Flutter shell is attached to a local runtime bridge.',
     );

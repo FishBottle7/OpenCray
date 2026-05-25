@@ -10,6 +10,8 @@ import java.util.Base64
 
 internal interface AgentQueueSnapshotStoreFactory {
   fun forChatSession(sessionId: String): SessionQueueSnapshotStore
+
+  fun knownSessionIds(): List<String> = emptyList()
 }
 
 internal class FileBackedAgentQueueSnapshotStoreFactory(
@@ -27,6 +29,14 @@ internal class FileBackedAgentQueueSnapshotStoreFactory(
   internal fun directoryForSession(sessionId: String): File =
     File(runtimeRootDirectory, encodeSessionId(sessionId))
 
+  override fun knownSessionIds(): List<String> = runtimeRootDirectory.listFiles()
+    .orEmpty()
+    .asSequence()
+    .filter(File::isDirectory)
+    .mapNotNull { directory -> decodeSessionId(directory.name) }
+    .distinct()
+    .toList()
+
   companion object {
     internal const val DIRECTORY_NAME = "agent-runtime"
 
@@ -36,6 +46,18 @@ internal class FileBackedAgentQueueSnapshotStoreFactory(
         .withoutPadding()
         .encodeToString(normalized.toByteArray(StandardCharsets.UTF_8))
       return "session-$encoded"
+    }
+
+    internal fun decodeSessionId(directoryName: String): String? {
+      val encoded = directoryName.removePrefix("session-")
+        .takeIf { encodedValue -> encodedValue.isNotBlank() && directoryName.startsWith("session-") }
+        ?: return null
+      return runCatching {
+        String(
+          Base64.getUrlDecoder().decode(encoded),
+          StandardCharsets.UTF_8,
+        ).trim().takeIf(String::isNotBlank)
+      }.getOrNull()
     }
 
     fun fromContext(context: Context): AgentQueueSnapshotStoreFactory =

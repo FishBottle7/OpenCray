@@ -23,7 +23,8 @@ enum class OpenCrayPromptCheckpointBoundary(
   ACTION_BATCH_PARSED("action_batch_parsed"),
   COMMENTARY_EMITTED("commentary_emitted"),
   TOOL_RESULT_COMMITTED("tool_result_committed"),
-  SUPPLEMENT_INGESTED("supplement_ingested");
+  SUPPLEMENT_INGESTED("supplement_ingested"),
+  FINALIZATION_COMPLETE("finalization_complete");
 
   companion object {
     fun fromWireValue(raw: String): OpenCrayPromptCheckpointBoundary? =

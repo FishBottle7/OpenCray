@@ -18,19 +18,23 @@ import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.RECOVERY_REASON_HOST_RESTART_INFLIGHT_TASK_INTERRUPTED
 import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionQueueSnapshotStore
+import com.opencray.core.orchestrator.SessionQueueRestoreTransformer
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.OpenCrayApprovalEvent
 import com.opencray.runtime.OpenCrayApprovalPhase
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayAssistantPhaseEvent
+import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayExecutionMetadataKeys
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessReconnectState
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.process.withNormalizedRemoteState
 import com.opencray.runtime.subagent.SubAgentApprovalResume
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import kotlinx.serialization.json.Json
@@ -44,17 +48,25 @@ internal class RecoveryAwareQueueSnapshotStore(
   private val managedProcessesProvider: () -> List<ManagedProcessSnapshot>,
   private val planner: RunRecoveryPlanner = RunRecoveryPlanner(),
   private val clock: () -> Long = { System.currentTimeMillis() },
-) : SessionQueueSnapshotStore {
+) : SessionQueueSnapshotStore, SessionQueueRestoreTransformer {
   private val promptResumeJson: Json = Json { prettyPrint = false }
 
-  override fun load(): SessionQueueSnapshot? {
-    val snapshot = delegate.load() ?: return null
+  override fun load(): SessionQueueSnapshot? = restore(
+    snapshot = delegate.load(),
+    restoreEpochMs = clock(),
+  )
+
+  override fun restore(
+    snapshot: SessionQueueSnapshot?,
+    restoreEpochMs: Long,
+  ): SessionQueueSnapshot? {
+    snapshot ?: return null
     if (snapshot.tasks.isEmpty()) {
       return snapshot
     }
-
-    val restoreEpochMs = clock()
-    val runRecordsByRunId = runRecordStore.list().associateBy(PersistedAgentRunRecord::runId)
+    val runRecordsByRunId = runRecordStore.list()
+      .associateBy(PersistedAgentRunRecord::runId)
+      .toMutableMap()
     val checkpointsByTaskId = promptCheckpointStore.list()
       .associateBy(PersistedPromptCheckpoint::taskId)
       .toMutableMap()
@@ -63,7 +75,7 @@ internal class RecoveryAwareQueueSnapshotStore(
     var changed = false
     val rewrittenTasks = snapshot.tasks.map { entry ->
       val runId = runIdFor(entry.task)
-      val runRecord = runRecordsByRunId[runId]
+      var runRecord = runRecordsByRunId[runId]
       val journalEntries = runEventJournalStore.listForRun(runId)
       val lastJournalEvent = journalEntries
         .asReversed()
@@ -71,6 +83,17 @@ internal class RecoveryAwareQueueSnapshotStore(
         .mapNotNull { journalEntry -> journalEntry.payload.toRuntimeEventOrNull() }
         .firstOrNull()
         ?: runRecord?.lastEvent?.toRuntimeEventOrNull()
+      val repairedRunRecord = repairTerminalResultIfNeeded(
+        entry = entry,
+        runId = runId,
+        runRecord = runRecord,
+        journalEntries = journalEntries,
+        fallbackEvent = lastJournalEvent,
+      )
+      if (repairedRunRecord != null) {
+        runRecord = repairedRunRecord
+        runRecordsByRunId[runId] = repairedRunRecord
+      }
       val checkpoint = checkpointsByTaskId[entry.task.id]
         ?: synthesizeApprovalCheckpoint(
           entry = entry,
@@ -106,6 +129,7 @@ internal class RecoveryAwareQueueSnapshotStore(
         ),
         checkpoint = checkpoint,
         lastJournalEvent = lastJournalEvent,
+        durableResult = runRecord?.lastResult,
         planner = planner,
       )
       val rewrittenEntry = rewriteForRecoveryPlan(
@@ -117,6 +141,10 @@ internal class RecoveryAwareQueueSnapshotStore(
       )
       if (rewrittenEntry != entry) {
         changed = true
+      }
+      if (recoveryPlan?.action == RunRecoveryAction.RESTORE_TERMINAL_RESULT) {
+        promptCheckpointStore.remove(entry.task.id)
+        checkpointsByTaskId.remove(entry.task.id)
       }
       rewrittenEntry
     }
@@ -228,6 +256,41 @@ internal class RecoveryAwareQueueSnapshotStore(
     )
   }
 
+  private fun repairTerminalResultIfNeeded(
+    entry: SessionQueueTaskSnapshot,
+    runId: String,
+    runRecord: PersistedAgentRunRecord?,
+    journalEntries: List<PersistedRunJournalEntry>,
+    fallbackEvent: OpenCrayAgentRunEvent?,
+  ): PersistedAgentRunRecord? {
+    if (runRecord?.lastResult.isRestorableTerminalResult()) {
+      return null
+    }
+    val finalAssistantEvent = latestFinalizationAssistantEvent(
+      journalEntries = journalEntries,
+      fallbackEvent = fallbackEvent,
+    ) ?: return null
+    val repairedResult = synthesizedTerminalSuccessResult(
+      entry = entry,
+      runRecord = runRecord,
+      event = finalAssistantEvent,
+    ) ?: return null
+    val repairedRunRecord = PersistedAgentRunRecord(
+      runId = runId,
+      taskId = entry.task.id,
+      acceptedAtEpochMs = runRecord?.acceptedAtEpochMs ?: entry.task.createdAtEpochMs,
+      pendingMessageId = runRecord?.pendingMessageId
+        ?: entry.task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+          ?.trim()
+          ?.takeIf(String::isNotBlank),
+      managedProcessIds = runRecord?.managedProcessIds.orEmpty(),
+      lastResult = repairedResult,
+      lastEvent = finalAssistantEvent.toPersistedRecord(),
+    )
+    runRecordStore.upsert(repairedRunRecord)
+    return repairedRunRecord
+  }
+
   private fun rewriteForRecoveryPlan(
     entry: SessionQueueTaskSnapshot,
     runRecord: PersistedAgentRunRecord?,
@@ -235,6 +298,18 @@ internal class RecoveryAwareQueueSnapshotStore(
     recoveryPlan: RunRecoveryPlan?,
     restoreEpochMs: Long,
   ): SessionQueueTaskSnapshot = when (recoveryPlan?.action) {
+    RunRecoveryAction.RESTORE_TERMINAL_RESULT ->
+      if (canRestoreTerminalResult(entry, runRecord?.lastResult)) {
+        rewriteTerminalResult(
+          entry = entry,
+          result = requireNotNull(runRecord?.lastResult),
+          restoreEpochMs = restoreEpochMs,
+          recoveryPlan = recoveryPlan,
+        )
+      } else {
+        entry
+      }
+
     RunRecoveryAction.RESUME_FROM_CHECKPOINT ->
       if (canResumeFromCheckpoint(entry)) {
         entry.copy(
@@ -382,12 +457,91 @@ internal class RecoveryAwareQueueSnapshotStore(
     else -> entry
   }
 
+  private fun rewriteTerminalResult(
+    entry: SessionQueueTaskSnapshot,
+    result: ExecutionResult,
+    restoreEpochMs: Long,
+    recoveryPlan: RunRecoveryPlan,
+  ): SessionQueueTaskSnapshot {
+    val lifecycleState = when (result.status) {
+      ExecutionStatus.SUCCESS -> QueueTaskLifecycleState.COMPLETED
+      ExecutionStatus.CANCELLED -> QueueTaskLifecycleState.CANCELLED
+      ExecutionStatus.FAILED,
+      ExecutionStatus.TIMEOUT,
+      -> QueueTaskLifecycleState.FAILED
+      ExecutionStatus.DENIED -> entry.lifecycleState
+    }
+    val taskState = when (lifecycleState) {
+      QueueTaskLifecycleState.COMPLETED -> AgentTaskState.COMPLETED
+      QueueTaskLifecycleState.CANCELLED -> AgentTaskState.CANCELLED
+      QueueTaskLifecycleState.FAILED -> AgentTaskState.FAILED
+      else -> entry.task.state
+    }
+    val clearedErrorCode = when (result.status) {
+      ExecutionStatus.SUCCESS -> null
+      ExecutionStatus.CANCELLED -> result.errorCode
+      ExecutionStatus.FAILED,
+      ExecutionStatus.TIMEOUT,
+      -> result.errorCode ?: entry.lastErrorCode
+      ExecutionStatus.DENIED -> entry.lastErrorCode
+    }
+    val clearedErrorMessage = when (result.status) {
+      ExecutionStatus.SUCCESS -> null
+      ExecutionStatus.CANCELLED -> result.errorMessage
+      ExecutionStatus.FAILED,
+      ExecutionStatus.TIMEOUT,
+      -> result.errorMessage ?: entry.lastErrorMessage
+      ExecutionStatus.DENIED -> entry.lastErrorMessage
+    }
+    return entry.copy(
+      lifecycleState = lifecycleState,
+      task = entry.task.copy(
+        state = taskState,
+        updatedAtEpochMs = maxOf(
+          entry.task.updatedAtEpochMs,
+          entry.task.createdAtEpochMs,
+          result.finishedAtEpochMs,
+          restoreEpochMs,
+        ),
+        metadata = rewrittenTaskMetadata(
+          entry = entry,
+          restoreEpochMs = restoreEpochMs,
+          recoveryPlan = recoveryPlan,
+        ),
+      ),
+      lastErrorCode = clearedErrorCode,
+      lastErrorMessage = clearedErrorMessage,
+    )
+  }
+
   private fun canResumeFromCheckpoint(entry: SessionQueueTaskSnapshot): Boolean = when {
     isRestoreInterruptedLifecycle(entry.lifecycleState) -> true
     entry.lifecycleState == QueueTaskLifecycleState.QUEUED -> true
     entry.lifecycleState == QueueTaskLifecycleState.SUSPENDED -> true
     isRestartRestoreFailure(entry) -> true
     else -> false
+  }
+
+  private fun canRestoreTerminalResult(
+    entry: SessionQueueTaskSnapshot,
+    result: ExecutionResult?,
+  ): Boolean {
+    val terminalResult = result ?: return false
+    if (!terminalResult.isRestorableTerminalResult()) {
+      return false
+    }
+    return when (entry.lifecycleState) {
+      QueueTaskLifecycleState.COMPLETED ->
+        terminalResult.status != ExecutionStatus.SUCCESS || entry.task.state != AgentTaskState.COMPLETED
+      QueueTaskLifecycleState.CANCELLED ->
+        terminalResult.status != ExecutionStatus.CANCELLED || entry.task.state != AgentTaskState.CANCELLED
+      QueueTaskLifecycleState.FAILED ->
+        terminalResult.status !in setOf(ExecutionStatus.FAILED, ExecutionStatus.TIMEOUT) ||
+          entry.task.state != AgentTaskState.FAILED ||
+          entry.lastErrorCode != terminalResult.errorCode ||
+          entry.lastErrorMessage != terminalResult.errorMessage
+      else -> true
+    }
   }
 
   private fun canRestoreWaitingApproval(entry: SessionQueueTaskSnapshot): Boolean = when {
@@ -423,11 +577,12 @@ internal class RecoveryAwareQueueSnapshotStore(
   private fun canInterruptRecovery(
     entry: SessionQueueTaskSnapshot,
     recoveryPlan: RunRecoveryPlan?,
-  ): Boolean = entry.lifecycleState == QueueTaskLifecycleState.QUEUED ||
-    (
-      recoveryPlan?.reasonCode == "uncertain_inflight_mutation" &&
-        isRestoreInterruptedLifecycle(entry.lifecycleState)
-      )
+  ): Boolean = when {
+    entry.lifecycleState == QueueTaskLifecycleState.QUEUED -> true
+    isRestoreInterruptedLifecycle(entry.lifecycleState) -> true
+    isRestartRestoreFailure(entry) -> true
+    else -> false
+  }
 
   private fun plannerProjection(
     entry: SessionQueueTaskSnapshot,
@@ -476,6 +631,9 @@ internal class RecoveryAwareQueueSnapshotStore(
     val runningManagedProcessCount = managedProcesses.count { snapshot ->
       snapshot.status == ManagedProcessStatus.RUNNING
     }
+    val autoResumeEligibleManagedProcessCount = managedProcesses.count { snapshot ->
+      snapshot.isAutoResumeEligibleManagedProcess()
+    }
     val acceptedAtEpochMs = runRecord?.acceptedAtEpochMs ?: entry.task.createdAtEpochMs
     return AgentRunSnapshot(
       sessionId = sessionId,
@@ -510,6 +668,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       managedProcessIds = managedProcesses.map(ManagedProcessSnapshot::processId).distinct(),
       runningManagedProcessCount = runningManagedProcessCount,
       hasLiveManagedProcesses = runningManagedProcessCount > 0,
+      hasAutoResumeEligibleManagedProcesses = autoResumeEligibleManagedProcessCount > 0,
       lastEvent = runRecord?.lastEvent?.toRuntimeEventOrNull(),
       lifecycleDiagnostics = runLifecycleDiagnosticsFrom(
         taskMetadata = entry.task.metadata,
@@ -682,6 +841,85 @@ internal class RecoveryAwareQueueSnapshotStore(
     else -> restoreInterruptedMessage(entry.lifecycleState)
   }
 
+  private fun latestFinalizationAssistantEvent(
+    journalEntries: List<PersistedRunJournalEntry>,
+    fallbackEvent: OpenCrayAgentRunEvent?,
+  ): OpenCrayAssistantPhaseEvent? = journalEntries
+    .asReversed()
+    .asSequence()
+    .mapNotNull { entry ->
+      entry.payload.toRuntimeEventOrNull() as? OpenCrayAssistantPhaseEvent
+    }
+    .firstOrNull(::hasFinalizationBoundary)
+    ?: (fallbackEvent as? OpenCrayAssistantPhaseEvent)?.takeIf(::hasFinalizationBoundary)
+
+  private fun synthesizedTerminalSuccessResult(
+    entry: SessionQueueTaskSnapshot,
+    runRecord: PersistedAgentRunRecord?,
+    event: OpenCrayAssistantPhaseEvent,
+  ): ExecutionResult? {
+    if (
+      event.text.isBlank() &&
+      !event.metadata.containsKey(OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON)
+    ) {
+      return null
+    }
+    val startedAtEpochMs = minOf(
+      runRecord?.acceptedAtEpochMs ?: entry.task.createdAtEpochMs,
+      event.emittedAtEpochMs,
+    )
+    return ExecutionResult(
+      taskId = entry.task.id,
+      status = ExecutionStatus.SUCCESS,
+      stdout = event.text,
+      startedAtEpochMs = startedAtEpochMs,
+      finishedAtEpochMs = maxOf(startedAtEpochMs, event.emittedAtEpochMs),
+      metadata = buildMap {
+        putAll(event.metadata)
+        event.responseFormat
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?.let { responseFormat ->
+            if (!containsKey("responseFormat")) {
+              put("responseFormat", responseFormat)
+            }
+          }
+        val executionId = entry.executionId
+          ?: entry.task.metadata[METADATA_EXECUTION_ID]?.trim()?.takeIf(String::isNotBlank)
+        if (executionId != null && !containsKey(METADATA_EXECUTION_ID)) {
+          put(METADATA_EXECUTION_ID, executionId)
+        }
+        if (entry.executionOrdinal > 0 && !containsKey(METADATA_EXECUTION_ORDINAL)) {
+          put(METADATA_EXECUTION_ORDINAL, entry.executionOrdinal.toString())
+        }
+        val executionKind = entry.executionKind
+          ?: entry.task.metadata[METADATA_EXECUTION_KIND]?.trim()?.takeIf(String::isNotBlank)
+        if (executionKind != null && !containsKey(METADATA_EXECUTION_KIND)) {
+          put(METADATA_EXECUTION_KIND, executionKind)
+        }
+      },
+    )
+  }
+
+  private fun hasFinalizationBoundary(event: OpenCrayAssistantPhaseEvent): Boolean =
+    event.isFinal &&
+      OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(event.metadata) ==
+      OpenCrayPromptCheckpointBoundary.FINALIZATION_COMPLETE
+
+  private fun ExecutionResult?.isRestorableTerminalResult(): Boolean = when (this?.status) {
+    ExecutionStatus.FAILED ->
+      errorCode != ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
+
+    ExecutionStatus.SUCCESS,
+    ExecutionStatus.CANCELLED,
+    ExecutionStatus.TIMEOUT,
+    -> true
+
+    ExecutionStatus.DENIED,
+    null,
+    -> false
+  }
+
   private companion object {
   }
 }
@@ -803,6 +1041,7 @@ private fun promptCheckpointKindFromMetadata(
   OpenCrayPromptCheckpointBoundary.COMMENTARY_EMITTED -> PromptCheckpointKind.COMMENTARY_EMITTED
   OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED -> PromptCheckpointKind.TOOL_RESULT_COMMITTED
   OpenCrayPromptCheckpointBoundary.SUPPLEMENT_INGESTED -> PromptCheckpointKind.SUPPLEMENT_INGESTED
+  OpenCrayPromptCheckpointBoundary.FINALIZATION_COMPLETE -> PromptCheckpointKind.FINALIZATION_COMPLETE
   null -> null
 }
 
@@ -907,5 +1146,35 @@ private fun AgentToolResult.isApprovalRequiredDenial(): Boolean =
         errorCode == SNAPSHOT_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE
       )
 
+private fun ManagedProcessSnapshot.isAutoResumeEligibleManagedProcess(): Boolean {
+  if (status != ManagedProcessStatus.RUNNING) {
+    return false
+  }
+  val normalizedSnapshot = withNormalizedRemoteState()
+  val reconnectState = normalizedSnapshot.reconnectState
+  if (reconnectState == null && !normalizedSnapshot.hasReconnectMetadata()) {
+    return true
+  }
+  val recoveryState = reconnectState.normalizedRecoveryState()
+    ?: normalizedSnapshot.metadata["sandboxCommandReconnectRecoveryState"]
+      ?.trim()
+      ?.lowercase()
+      ?.takeIf(String::isNotBlank)
+  return recoveryState == MANAGED_PROCESS_RECOVERY_STATE_ATTACHED_LIVE ||
+    recoveryState == MANAGED_PROCESS_RECOVERY_STATE_COMPLETED
+}
+
+private fun ManagedProcessReconnectState?.normalizedRecoveryState(): String? =
+  this?.recoveryState
+    ?.trim()
+    ?.lowercase()
+    ?.takeIf(String::isNotBlank)
+
+private fun ManagedProcessSnapshot.hasReconnectMetadata(): Boolean =
+  reconnectState != null ||
+    metadata.keys.any { key -> key.startsWith("sandboxCommandReconnect") }
+
 private const val SNAPSHOT_APPROVAL_REQUIRED_ERROR_CODE: String = "APPROVAL_REQUIRED"
 private const val SNAPSHOT_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE: String = "HIGH_RISK_APPROVAL_REQUIRED"
+private const val MANAGED_PROCESS_RECOVERY_STATE_ATTACHED_LIVE: String = "attached_live"
+private const val MANAGED_PROCESS_RECOVERY_STATE_COMPLETED: String = "completed"

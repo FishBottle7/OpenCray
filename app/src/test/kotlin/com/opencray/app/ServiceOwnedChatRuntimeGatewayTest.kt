@@ -30,6 +30,49 @@ class ServiceOwnedChatRuntimeGatewayTest {
   val temporaryFolder: TemporaryFolder = TemporaryFolder()
 
   @Test
+  fun serviceOwnedChatRuntimeGatewayDisposeUnregistersReadGatewayObservers() {
+    val readGateway = RecordingChatGateway("projection")
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedChatSources = mutableListOf<String?>()
+    val observedRuntimeSources = mutableListOf<String?>()
+    val chatDisposer = gateway.observeChat { snapshot ->
+      observedChatSources += snapshot["source"] as String?
+    }
+    val runtimeDisposer = gateway.observeChatRuntime { snapshot ->
+      observedRuntimeSources += snapshot["source"] as String?
+    }
+
+    try {
+      assertEquals(1, readGateway.activeChatObserverCount)
+      assertEquals(1, readGateway.activeChatRuntimeObserverCount)
+      assertEquals(listOf("projection-chat"), observedChatSources)
+      assertEquals(listOf("projection-runtime"), observedRuntimeSources)
+
+      gateway.dispose()
+      gateway.dispose()
+
+      assertEquals(1, readGateway.chatObservationDisposeCount)
+      assertEquals(1, readGateway.chatRuntimeObservationDisposeCount)
+      assertEquals(0, readGateway.activeChatObserverCount)
+      assertEquals(0, readGateway.activeChatRuntimeObserverCount)
+
+      readGateway.chatPayload = mapOf("source" to "projection-chat-after-dispose")
+      readGateway.chatRuntimePayload = mapOf("source" to "projection-runtime-after-dispose")
+      readGateway.emitChatSnapshot()
+      readGateway.emitChatRuntimeSnapshot()
+
+      assertEquals(listOf("projection-chat"), observedChatSources)
+      assertEquals(listOf("projection-runtime"), observedRuntimeSources)
+    } finally {
+      chatDisposer()
+      runtimeDisposer()
+    }
+  }
+
+  @Test
   fun serviceOwnedChatRuntimeGatewayRoutesSessionMutationsThroughServiceOwnedAccess() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("service-owned-chat-store"))
     val initialSessionId = chatStore.loadState().activeSession.sessionId
@@ -806,9 +849,18 @@ class ServiceOwnedChatRuntimeGatewayTest {
   private class RecordingChatGateway(
     private val label: String,
   ) : OpenCrayRuntimeServiceChatGateway {
+    var chatPayload: Map<String, Any?> = mapOf("source" to "$label-chat")
+    var chatObservationDisposeCount: Int = 0
+      private set
     var chatRuntimePayload: Map<String, Any?> = mapOf("source" to "$label-runtime")
+    var chatRuntimeObservationDisposeCount: Int = 0
+      private set
     var observedChatRuntime: Boolean = false
       private set
+    val activeChatObserverCount: Int
+      get() = synchronized(this) { chatObservers.size }
+    val activeChatRuntimeObserverCount: Int
+      get() = synchronized(this) { chatRuntimeObservers.size }
     var createChatSessionCallCount: Int = 0
       private set
     val copiedSessionIds = mutableListOf<String>()
@@ -826,12 +878,23 @@ class ServiceOwnedChatRuntimeGatewayTest {
       private set
     var notifiedChatSnapshotCount: Int = 0
       private set
+    private val chatObservers = linkedSetOf<(Map<String, Any?>) -> Unit>()
+    private val chatRuntimeObservers = linkedSetOf<(Map<String, Any?>) -> Unit>()
 
-    override fun loadChatSnapshot(): Map<String, Any?> = mapOf("source" to "$label-chat")
+    override fun loadChatSnapshot(): Map<String, Any?> = chatPayload
 
     override fun observeChat(listener: (Map<String, Any?>) -> Unit): () -> Unit {
+      synchronized(this) {
+        chatObservers += listener
+      }
       listener(loadChatSnapshot())
-      return { }
+      return {
+        synchronized(this) {
+          if (chatObservers.remove(listener)) {
+            chatObservationDisposeCount += 1
+          }
+        }
+      }
     }
 
     override fun loadChatRuntimeSnapshot(): Map<String, Any?> = chatRuntimePayload
@@ -849,8 +912,29 @@ class ServiceOwnedChatRuntimeGatewayTest {
 
     override fun observeChatRuntime(listener: (Map<String, Any?>) -> Unit): () -> Unit {
       observedChatRuntime = true
+      synchronized(this) {
+        chatRuntimeObservers += listener
+      }
       listener(loadChatRuntimeSnapshot())
-      return { }
+      return {
+        synchronized(this) {
+          if (chatRuntimeObservers.remove(listener)) {
+            chatRuntimeObservationDisposeCount += 1
+          }
+        }
+      }
+    }
+
+    fun emitChatSnapshot() {
+      val payload = loadChatSnapshot()
+      val listeners = synchronized(this) { chatObservers.toList() }
+      listeners.forEach { listener -> listener(payload) }
+    }
+
+    fun emitChatRuntimeSnapshot() {
+      val payload = loadChatRuntimeSnapshot()
+      val listeners = synchronized(this) { chatRuntimeObservers.toList() }
+      listeners.forEach { listener -> listener(payload) }
     }
 
     override fun refreshSandboxSessionInfo() = Unit

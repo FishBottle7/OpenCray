@@ -8,6 +8,14 @@ import java.io.File
 import java.nio.charset.StandardCharsets
 
 class OpenCrayApplication : Application() {
+  internal val openCrayRuntimeServiceEnvironment: OpenCrayRuntimeServiceEnvironment by lazy(
+    LazyThreadSafetyMode.NONE,
+  ) {
+    OpenCrayRuntimeServiceEnvironment(
+      projectionHostLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+    )
+  }
+
   override fun onCreate() {
     super.onCreate()
     if (!shouldBootstrapOpenCrayApplication(packageName, currentProcessNameOrNull())) {
@@ -44,7 +52,9 @@ internal fun currentProcessNameOrNull(): String? {
 
 internal fun bootstrapOpenCrayApplication(
   application: Application,
-  registerVisibility: (Application) -> Unit = AppVisibilityMonitor::register,
+  registerVisibility: (Application) -> Unit = { app ->
+    AppVisibilityMonitor.register(app)
+  },
   initializeRuntimeDocumentSupport: (Context) -> Unit = { context ->
     OpenCrayDocumentRuntimeEnvironment.initialize(context)
   },
@@ -79,4 +89,15 @@ internal fun bootstrapOpenCrayRuntimeProcessSupport(
 ) {
   initializeRuntimeDocumentSupport(context)
   seedBundledSkills(context)
+}
+
+internal fun bootstrapOpenCrayRuntimeServiceProcessSupport(
+  context: Context,
+  runtimeProcessSupportBootstrap: (Context) -> Unit = { runtimeContext ->
+    bootstrapOpenCrayRuntimeProcessSupport(runtimeContext)
+  },
+  notificationChannelRegistrar: (Context) -> Unit = RuntimeNotificationChannelRegistry::ensureRegistered,
+) {
+  runtimeProcessSupportBootstrap(context)
+  notificationChannelRegistrar(context)
 }

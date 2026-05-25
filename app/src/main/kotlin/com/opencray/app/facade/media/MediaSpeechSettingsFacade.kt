@@ -156,7 +156,7 @@ internal class LocalMediaSpeechSettingsFacade private constructor(
       )
     }
 
-    internal fun createForTest(
+    internal fun create(
       store: MediaSpeechSettingsStore,
     ): MediaSpeechSettingsFacade = LocalMediaSpeechSettingsFacade(
       store = store,

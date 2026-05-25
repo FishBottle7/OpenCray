@@ -12,6 +12,8 @@ import kotlinx.serialization.Serializable
 
 internal interface PromptCheckpointStoreFactory {
   fun forChatSession(sessionId: String): PromptCheckpointStore
+
+  fun knownSessionIds(): List<String> = emptyList()
 }
 
 internal interface PromptCheckpointStore {
@@ -43,6 +45,10 @@ internal class InMemoryPromptCheckpointStoreFactory : PromptCheckpointStoreFacto
   override fun forChatSession(sessionId: String): PromptCheckpointStore = synchronized(lock) {
     stores.getOrPut(sessionId) { InMemoryPromptCheckpointStore(sessionId = sessionId) }
   }
+
+  override fun knownSessionIds(): List<String> = synchronized(lock) {
+    stores.keys.toList()
+  }
 }
 
 internal class FileBackedPromptCheckpointStoreFactory(
@@ -64,6 +70,14 @@ internal class FileBackedPromptCheckpointStoreFactory(
 
   internal fun directoryForSession(sessionId: String): File =
     File(runtimeRootDirectory, FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(sessionId))
+
+  override fun knownSessionIds(): List<String> = runtimeRootDirectory.listFiles()
+    .orEmpty()
+    .asSequence()
+    .filter(File::isDirectory)
+    .mapNotNull { directory -> FileBackedAgentQueueSnapshotStoreFactory.decodeSessionId(directory.name) }
+    .distinct()
+    .toList()
 
   companion object {
     fun fromContext(context: Context): PromptCheckpointStoreFactory =
@@ -94,6 +108,7 @@ internal enum class PromptCheckpointKind {
   COMMENTARY_EMITTED,
   TOOL_RESULT_COMMITTED,
   SUPPLEMENT_INGESTED,
+  FINALIZATION_COMPLETE,
   WAITING_APPROVAL,
   APPROVED_PENDING_RESUME,
   REJECTED_PENDING_RESUME,
@@ -109,6 +124,7 @@ internal fun PromptCheckpointKind.isCheckpointResumeKind(): Boolean = when (this
   PromptCheckpointKind.APPROVED_PENDING_RESUME,
   -> true
 
+  PromptCheckpointKind.FINALIZATION_COMPLETE,
   PromptCheckpointKind.WAITING_APPROVAL,
   PromptCheckpointKind.REJECTED_PENDING_RESUME,
   -> false
@@ -123,6 +139,7 @@ internal fun PromptCheckpointKind.isGeneralPromptResumeKind(): Boolean = when (t
   PromptCheckpointKind.SUPPLEMENT_INGESTED,
   -> true
 
+  PromptCheckpointKind.FINALIZATION_COMPLETE,
   PromptCheckpointKind.WAITING_APPROVAL,
   PromptCheckpointKind.APPROVED_PENDING_RESUME,
   PromptCheckpointKind.REJECTED_PENDING_RESUME,
@@ -136,6 +153,8 @@ internal fun PromptCheckpointKind.toRuntimeCheckpointBoundaryOrNull():
   PromptCheckpointKind.COMMENTARY_EMITTED -> OpenCrayPromptCheckpointBoundary.COMMENTARY_EMITTED
   PromptCheckpointKind.TOOL_RESULT_COMMITTED -> OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED
   PromptCheckpointKind.SUPPLEMENT_INGESTED -> OpenCrayPromptCheckpointBoundary.SUPPLEMENT_INGESTED
+  PromptCheckpointKind.FINALIZATION_COMPLETE ->
+    OpenCrayPromptCheckpointBoundary.FINALIZATION_COMPLETE
   PromptCheckpointKind.GENERAL_RESUME,
   PromptCheckpointKind.WAITING_APPROVAL,
   PromptCheckpointKind.APPROVED_PENDING_RESUME,

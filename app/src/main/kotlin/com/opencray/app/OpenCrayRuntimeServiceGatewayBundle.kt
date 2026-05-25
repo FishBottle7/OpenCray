@@ -29,7 +29,11 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
   val chatRuntimeGateway: OpenCrayRuntimeServiceChatGateway,
   val skillsGateway: OpenCraySkillsGateway,
   val settingsGateway: OpenCraySettingsGateway,
+  private val disposeHandler: () -> Unit = {},
 ) {
+  private val lock = Any()
+  private var disposed: Boolean = false
+
   fun dispatchChatWriteCommand(
     command: OpenCrayChatWriteCommand,
   ): OpenCrayChatWriteDispatchResult = chatRuntimeGateway.dispatchChatWriteCommand(command)
@@ -46,6 +50,18 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
     chatRuntimeGateway.notifyChatSnapshotsChanged()
   }
 
+  fun dispose() {
+    val handler = synchronized(lock) {
+      if (disposed) {
+        null
+      } else {
+        disposed = true
+        disposeHandler
+      }
+    } ?: return
+    handler()
+  }
+
   companion object {
     fun createForRuntimeService(
       appContext: android.content.Context,
@@ -58,6 +74,12 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
       val chatUnreadMessageState = ChatUnreadMessageState()
       val pendingApprovalState = ChatPendingApprovalState()
       val runtimeEventState = ChatRuntimeEventState()
+      val runtimeServicePort = gatewayDependencies.runtimeServicePort
+      val serviceShellHostLifecycleDescriptor = serviceShellHostLifecycleDescriptor(
+        runtimeControllerLifecycle = gatewayDependencies.runtimeControllerLifecycle,
+        runtimeOwnerLifecycle = runtimeServicePort.lifecycleDescriptor,
+        runtimeServiceLifecycle = gatewayDependencies.serviceLifecycle,
+      )
       val localizedContextProvider = {
         OpenCrayLocaleManager.wrap(appContext)
       }
@@ -65,9 +87,14 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
       val projectionChatGateway = projectionOnlyOpenCrayChatRuntimeGateway(
         context = appContext,
         diagnosticsSource = ProjectionOnlyChatRuntimeDiagnosticsSource(
+          hostLifecycleDescriptor = serviceShellHostLifecycleDescriptor,
           connectionStateProvider = { runtimeServiceConnectionState },
-          runtimeOwnerLifecycleProvider = { gatewayDependencies.runtimeOwnerLifecycle },
-          runtimeOwnerWorkSummaryProvider = gatewayDependencies.runtimeHostAccess::activeWorkSummary,
+          localRuntimeServerStateProvider = gatewayDependencies.localRuntimeServerStateProvider,
+          runtimeControllerLifecycleProvider = {
+            gatewayDependencies.runtimeControllerLifecycle
+          },
+          runtimeOwnerLifecycleProvider = { runtimeServicePort.lifecycleDescriptor },
+          runtimeOwnerWorkSummaryProvider = runtimeServicePort.ownerObservationAccess::activeWorkSummary,
           serviceLifecycleProvider = { gatewayDependencies.serviceLifecycle },
           serviceWorkStateProvider = gatewayDependencies.serviceWorkStateProvider,
           serviceKeepAliveStateProvider = runtimeServiceKeepAliveStateProvider,
@@ -82,13 +109,16 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
         localeTag = strings.localeTag,
         hostLabel = strings.shellHostLabel,
         hostSummary = strings.shellHostSummary,
-        runtimeHostAccess = gatewayDependencies.runtimeHostAccess,
+        runtimeHostAccess = runtimeServicePort.ownerObservationAccess,
+        runtimeControllerLifecycle = gatewayDependencies.runtimeControllerLifecycle,
         runtimeServiceLifecycle = gatewayDependencies.serviceLifecycle,
         runtimeServiceWorkStateProvider = gatewayDependencies.serviceWorkStateProvider,
         runtimeServiceKeepAliveStateProvider = runtimeServiceKeepAliveStateProvider,
         runtimeServiceKeepAliveChangeRegistrar = runtimeServiceKeepAliveChangeRegistrar,
         runtimeServiceConnectionStateProvider = { runtimeServiceConnectionState },
+        localRuntimeServerStateProvider = gatewayDependencies.localRuntimeServerStateProvider,
         mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
+        hostLifecycleDescriptor = serviceShellHostLifecycleDescriptor,
       )
       val skillsGateway = ServiceOwnedSkillsGateway(
         skillsFacade = LocalSkillsFacade.fromContext(localizedContextProvider()),
@@ -104,19 +134,19 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
         snapshotNotifier = {},
         chatSessionMutationAccess = ServiceOwnedChatSessionMutationAccess(
           chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
-          runtimeHostAccess = gatewayDependencies.runtimeHostAccess,
+          runtimeHostAccess = runtimeServicePort.chatMutationAccess,
           chatUnreadMessageState = chatUnreadMessageState,
           pendingApprovalState = pendingApprovalState,
           runtimeEventState = runtimeEventState,
-          terminalReplayRepairer = gatewayDependencies.runtimeReplayAccess.terminalReplayRepairer,
+          terminalReplayRepairer = runtimeServicePort.replayAccess.terminalReplayRepairer,
         ),
         chatRunControlAccess = ServiceOwnedChatRunControlAccess(
           chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
-          runtimeHostAccess = gatewayDependencies.runtimeHostAccess,
+          runtimeHostAccess = runtimeServicePort.chatMutationAccess,
           pendingApprovalState = pendingApprovalState,
           runtimeEventState = runtimeEventState,
-          runCancellationReplayRecorder = gatewayDependencies.runtimeReplayAccess.runCancellationRecorder,
-          subAgentReplayRecorder = gatewayDependencies.runtimeReplayAccess.subAgentReplayRecorder,
+          runCancellationReplayRecorder = runtimeServicePort.replayAccess.runCancellationRecorder,
+          subAgentReplayRecorder = runtimeServicePort.replayAccess.subAgentReplayRecorder,
           isChineseLocale = {
             localizedHostRuntimeStrings(
               OpenCrayLocaleManager.wrap(appContext),
@@ -124,13 +154,14 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
           },
         ),
         chatApprovalAccess = ServiceOwnedChatApprovalAccess(
-          approveChatApprovalHandler = gatewayDependencies.approvePendingApproval,
-          approveChatApprovalForSessionHandler = gatewayDependencies.approvePendingApprovalForSession,
-          rejectChatApprovalHandler = gatewayDependencies.rejectPendingApproval,
+          approveChatApprovalHandler = gatewayDependencies.approvalDecisionAccess::approve,
+          approveChatApprovalForSessionHandler =
+            gatewayDependencies.approvalDecisionAccess::approveForSession,
+          rejectChatApprovalHandler = gatewayDependencies.approvalDecisionAccess::reject,
         ),
         chatSubmissionAccess = ServiceOwnedChatSubmissionAccess(
           chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
-          runtimeHostAccess = gatewayDependencies.runtimeHostAccess,
+          runtimeHostAccess = runtimeServicePort.chatSubmissionHostAccess,
           safetySettingsFacade = gatewayDependencies.safetySettingsFacade,
           workspaceRootProvider = gatewayDependencies.workspaceRootProvider,
           approvedReadRootsProvider = gatewayDependencies.approvedReadRootsProvider,
@@ -144,12 +175,12 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
             .sessionId
           submitSandboxSessionInfoRefreshTask(
             sessionId = activeSessionId,
-            runtimeHostAccess = gatewayDependencies.runtimeHostAccess,
+            runtimeHostAccess = runtimeServicePort.chatSubmissionHostAccess,
             taskSafetyMetadata = buildTaskSafetyMetadata(
               snapshot = gatewayDependencies.safetySettingsFacade.load(),
               approvedReadRoots = gatewayDependencies.approvedReadRootsProvider(),
             ),
-            lifecycleDescriptor = gatewayDependencies.runtimeOwnerLifecycle,
+            lifecycleDescriptor = runtimeServicePort.lifecycleDescriptor,
           )
         },
         mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
@@ -226,24 +257,29 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
         chatRuntimeGateway = chatGateway,
         skillsGateway = skillsGateway,
         settingsGateway = settingsGateway,
+        disposeHandler = {
+          chatGateway.dispose()
+          shellGateway.dispose()
+        },
       )
     }
   }
 }
 
 internal data class RuntimeServiceGatewayBundleDependencies(
-  val runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor,
-  val runtimeHostAccess: OpenCrayRuntimeHostAccess,
-  val runtimeReplayAccess: OpenCrayRuntimeReplayAccess,
+  val runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor? = null,
+  val runtimeServicePort: RuntimeServicePort,
+  val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? = { null },
   val serviceLifecycle: RuntimeServiceLifecycleDescriptor,
   val serviceWorkStateProvider: () -> RuntimeServiceWorkState,
   val safetySettingsFacade: SafetySettingsFacade,
   val workspaceRootProvider: () -> Path,
   val approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot,
-  val approvePendingApproval: (String) -> Unit,
-  val approvePendingApprovalForSession: (String) -> Unit,
-  val rejectPendingApproval: (String) -> Unit,
-)
+  val approvalDecisionAccess: RuntimeServiceApprovalDecisionAccess,
+) {
+  val runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor
+    get() = runtimeServicePort.lifecycleDescriptor
+}
 
 internal fun interface RuntimeServiceGatewayBundleFactory {
   fun create(
@@ -268,25 +304,44 @@ internal object DefaultRuntimeServiceGatewayBundleFactory : RuntimeServiceGatewa
   )
 }
 
+internal fun serviceShellHostLifecycleDescriptor(
+  runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor?,
+  runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor,
+  runtimeServiceLifecycle: RuntimeServiceLifecycleDescriptor,
+): HostRuntimeLifecycleDescriptor = HostRuntimeLifecycleDescriptor(
+  processStartId = runtimeServiceLifecycle.processStartId,
+  processStartedAtEpochMs = runtimeServiceLifecycle.processStartedAtEpochMs,
+  hostInstanceId = runtimeServiceLifecycle.serviceInstanceId,
+  runtimeOwnerId = runtimeOwnerLifecycle.runtimeOwnerId,
+  runtimeControllerId = runtimeControllerLifecycle?.controllerInstanceId
+    ?: runtimeOwnerLifecycle.runtimeControllerId,
+  hostCreatedAtEpochMs = runtimeServiceLifecycle.serviceCreatedAtEpochMs,
+)
+
 internal class ServiceOwnedShellGateway(
   private val stateStore: AppShellStateStore,
   private var localeTag: String,
   private var hostLabel: String,
   private var hostSummary: String,
-  private val runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  private val runtimeHostAccess: RuntimeOwnerObservationAccess,
+  private val runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor? = null,
   private val runtimeServiceLifecycle: RuntimeServiceLifecycleDescriptor,
   private val runtimeServiceWorkStateProvider: () -> RuntimeServiceWorkState?,
   private val runtimeServiceKeepAliveStateProvider: () -> RuntimeServiceKeepAliveState? = { null },
   private val runtimeServiceKeepAliveChangeRegistrar: RuntimeServiceKeepAliveChangeRegistrar? = null,
   private val runtimeServiceConnectionStateProvider: () -> RuntimeServiceConnectionState? = { null },
+  private val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? = { null },
   private val mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
-  private val hostLifecycleDescriptor: HostRuntimeLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+  private val hostLifecycleDescriptor: HostRuntimeLifecycleDescriptor,
 ) : OpenCrayShellGateway {
   private val lock = Any()
   private val listeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  private var disposed: Boolean = false
+  private val runtimeHostObservationDisposer: () -> Unit
+  private val keepAliveObservationDisposer: (() -> Unit)?
 
   init {
-    runtimeHostAccess.observe(
+    runtimeHostObservationDisposer = runtimeHostAccess.observe(
       object : AgentSessionRuntimeListener {
         override fun onTaskStarted(
           sessionId: String,
@@ -304,7 +359,7 @@ internal class ServiceOwnedShellGateway(
         }
       },
     )
-    runtimeServiceKeepAliveChangeRegistrar?.register {
+    keepAliveObservationDisposer = runtimeServiceKeepAliveChangeRegistrar?.register {
       emitShellSnapshot()
     }
   }
@@ -324,8 +379,9 @@ internal class ServiceOwnedShellGateway(
     put("hostSummary", currentHostSummary)
     put("isHostConnected", true)
     putRuntimeServiceDiagnosticsSnapshot(
-      localRuntimeServerState = OpenCrayLocalRuntimeServerRegistry.peekState(),
+      localRuntimeServerState = localRuntimeServerStateProvider(),
       hostLifecycle = hostLifecycleDescriptor,
+      runtimeControllerLifecycle = runtimeControllerLifecycle,
       runtimeOwnerLifecycle = runtimeHostAccess.lifecycleDescriptor,
       runtimeOwnerWorkSummary = runtimeHostAccess.activeWorkSummary(),
       runtimeServiceLifecycle = runtimeServiceLifecycle,
@@ -365,6 +421,20 @@ internal class ServiceOwnedShellGateway(
     emitShellSnapshot()
   }
 
+  internal fun dispose() {
+    val disposers = synchronized(lock) {
+      if (disposed) {
+        null
+      } else {
+        disposed = true
+        listeners.clear()
+        runtimeHostObservationDisposer to keepAliveObservationDisposer
+      }
+    } ?: return
+    disposers.second?.invoke()
+    disposers.first.invoke()
+  }
+
   private fun emitShellSnapshot() {
     val currentListeners = synchronized(lock) { listeners.toList() }
     if (currentListeners.isEmpty()) {
@@ -391,16 +461,15 @@ internal class ServiceOwnedChatRuntimeGateway(
   private val lock = Any()
   private val chatListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  private var disposed: Boolean = false
   private var latestChatPayload: Map<String, Any?> = chatSnapshotGateway().loadChatSnapshot()
   private var latestChatRuntimePayload: Map<String, Any?> =
     runtimeSnapshotGateway().loadChatRuntimeSnapshot()
 
-  @Suppress("unused")
   private val chatObservationDisposer = chatSnapshotGateway().observeChat { payload ->
     emitChatPayload(payload)
   }
 
-  @Suppress("unused")
   private val chatRuntimeObservationDisposer = runtimeSnapshotGateway().observeChatRuntime { payload ->
     emitChatRuntimePayload(payload)
   }
@@ -648,6 +717,21 @@ internal class ServiceOwnedChatRuntimeGateway(
 
   internal fun emitLocalizedSnapshotChanged() {
     emitChatSnapshot()
+  }
+
+  internal fun dispose() {
+    val disposers = synchronized(lock) {
+      if (disposed) {
+        null
+      } else {
+        disposed = true
+        chatListeners.clear()
+        chatRuntimeListeners.clear()
+        chatObservationDisposer to chatRuntimeObservationDisposer
+      }
+    } ?: return
+    disposers.second.invoke()
+    disposers.first.invoke()
   }
 
   private fun emitChatSnapshot() {

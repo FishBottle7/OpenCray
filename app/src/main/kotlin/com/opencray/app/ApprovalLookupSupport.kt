@@ -53,7 +53,7 @@ internal data class ApprovalRequiredTaskProjection(
 
 internal fun approvalRequiredTaskProjectionsForSession(
   sessionId: String,
-  hostAccess: OpenCrayRuntimeHostAccess,
+  hostAccess: RuntimeRunLookupAccess,
   approvalRequiredErrorCode: String = DEFAULT_APPROVAL_REQUIRED_ERROR_CODE,
   highRiskApprovalRequiredErrorCode: String = DEFAULT_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE,
 ): List<ApprovalRequiredTaskProjection> {
@@ -120,7 +120,7 @@ internal fun approvalRequiredTaskProjections(
 
 internal fun findApprovalRequiredTaskProjection(
   sessionIds: List<String>,
-  hostAccess: OpenCrayRuntimeHostAccess,
+  hostAccess: RuntimeRunLookupAccess,
   taskIdOrRunId: String,
   approvalRequiredErrorCode: String = DEFAULT_APPROVAL_REQUIRED_ERROR_CODE,
   highRiskApprovalRequiredErrorCode: String = DEFAULT_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE,

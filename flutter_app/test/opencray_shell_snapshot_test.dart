@@ -10,6 +10,8 @@ void main() {
       'hostLabel': 'HOST READY',
       'hostSummary': 'Detached runtime service active.',
       'isHostConnected': true,
+      'flutterAppInstanceId': 'flutter-app-1',
+      'bridgeInstanceId': 'bridge-1',
       'localRuntimeServerState': <Object?, Object?>{
         'phase': 'listening',
         'bindAddress': '127.0.0.1',
@@ -75,6 +77,8 @@ void main() {
     }, defaultHostSummary: 'fallback summary');
 
     expect(snapshot.initialTab, OpenCrayTab.chat);
+    expect(snapshot.flutterAppInstanceId, 'flutter-app-1');
+    expect(snapshot.bridgeInstanceId, 'bridge-1');
     expect(snapshot.localRuntimeServerState, isNotNull);
     expect(snapshot.localRuntimeServerState!.phase, 'listening');
     expect(snapshot.localRuntimeServerState!.listeningPort, 42617);

@@ -24,7 +24,7 @@ internal fun parseRuntimeNotificationCommand(
   intent: Intent?,
 ): RuntimeServiceNotificationCommand? {
   return parseRuntimeNotificationCommand(
-    action = intent?.action,
+    action = safeNotificationAction(intent),
     sessionId = notificationCommandExtra(
       intent = intent,
       key = RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SESSION_ID,
@@ -76,6 +76,14 @@ internal fun parseRuntimeNotificationCommand(
 private fun notificationCommandExtra(
   intent: Intent?,
   key: String,
-): String? = intent?.getStringExtra(key)
+): String? = runCatching {
+  intent?.getStringExtra(key)
+}.getOrNull()
   ?.trim()
   ?.takeIf(String::isNotBlank)
+
+private fun safeNotificationAction(
+  intent: Intent?,
+): String? = runCatching {
+  intent?.action
+}.getOrNull()

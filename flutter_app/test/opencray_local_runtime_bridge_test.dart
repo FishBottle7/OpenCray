@@ -74,6 +74,28 @@ void main() {
     expect(snapshot.isHostConnected, isTrue);
   });
 
+  test(
+    'local runtime bridge injects flutter and bridge lifecycle ids into shell snapshots',
+    () async {
+      requestHandler = (request) async {
+        expect(request.method, 'GET');
+        expect(request.uri.path, '/v1/shell_snapshot');
+        await writeJson(request, <String, Object?>{
+          'initialTab': 'chat',
+          'hostLabel': 'LOCAL RUNTIME',
+          'hostSummary': 'Loopback runtime is attached.',
+          'isHostConnected': true,
+        });
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+      final snapshot = await bridge.loadShellSnapshot();
+
+      expect(snapshot.flutterAppInstanceId, isNotEmpty);
+      expect(snapshot.bridgeInstanceId, isNotEmpty);
+    },
+  );
+
   test('local runtime bridge loads files snapshot over http', () async {
     requestHandler = (request) async {
       expect(request.method, 'GET');

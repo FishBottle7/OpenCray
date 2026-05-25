@@ -4,7 +4,7 @@ import com.opencray.persistence.model.ChatTranscriptRole
 
 internal class ChatSessionMutationCoordinator(
   private val chatSessionStore: ChatSessionLocalStore,
-  private val runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  private val runtimeHostAccess: RuntimeChatMutationAccess,
   private val chatUnreadMessageState: ChatUnreadMessageState,
   private val pendingApprovalState: ChatPendingApprovalState = ChatPendingApprovalState(),
   private val runtimeEventState: ChatRuntimeEventState = ChatRuntimeEventState(),
@@ -192,7 +192,7 @@ internal class ChatSessionMutationCoordinator(
 
 internal class ServiceOwnedChatSessionMutationAccess(
   private val chatSessionStore: ChatSessionLocalStore,
-  private val runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  private val runtimeHostAccess: RuntimeChatMutationAccess,
   private val chatUnreadMessageState: ChatUnreadMessageState,
   private val pendingApprovalState: ChatPendingApprovalState = ChatPendingApprovalState(),
   private val runtimeEventState: ChatRuntimeEventState = ChatRuntimeEventState(),

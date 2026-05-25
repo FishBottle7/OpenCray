@@ -9,7 +9,8 @@ internal fun interface RuntimeServiceBinderEndpointFactory {
   fun create(
     binderEndpointDependencies: RuntimeServiceBinderEndpointDependencies,
     gatewayBundle: OpenCrayRuntimeServiceGatewayBundle,
-    serviceExecutionCoordinator: RuntimeServiceExecutionCoordinator,
+    shellStateAccess: RuntimeServiceShellStateAccess,
+    projectionCoordinator: RuntimeServiceProjectionCoordinator,
   ): RuntimeServiceBinderEndpoint
 }
 
@@ -18,31 +19,35 @@ internal object DefaultRuntimeServiceBinderEndpointFactory :
   override fun create(
     binderEndpointDependencies: RuntimeServiceBinderEndpointDependencies,
     gatewayBundle: OpenCrayRuntimeServiceGatewayBundle,
-    serviceExecutionCoordinator: RuntimeServiceExecutionCoordinator,
+    shellStateAccess: RuntimeServiceShellStateAccess,
+    projectionCoordinator: RuntimeServiceProjectionCoordinator,
   ): RuntimeServiceBinderEndpoint = DefaultRuntimeServiceBinderEndpoint(
     binderEndpointDependencies = binderEndpointDependencies,
     gatewayBundle = gatewayBundle,
-    serviceExecutionCoordinator = serviceExecutionCoordinator,
+    shellStateAccess = shellStateAccess,
+    projectionCoordinator = projectionCoordinator,
   )
 }
 
 internal data class RuntimeServiceBinderEndpointDependencies(
   val bridgeSnapshotDependencies: RuntimeServiceBridgeSnapshotDependencies,
-  val approvePendingApproval: (String) -> Unit,
-  val approvePendingApprovalForSession: (String) -> Unit,
-  val rejectPendingApproval: (String) -> Unit,
+  val runtimeTarget: RuntimeServiceTarget,
+  val chatWriteTargetResolver: ChatRuntimeWriteTargetResolver,
+  val targetScopedServiceClientProvider: (RuntimeServiceTarget) -> OpenCrayRuntimeServiceClient,
+  val approvalDecisionAccess: RuntimeServiceApprovalDecisionAccess,
   val refreshServiceWorkState: () -> RuntimeServiceWorkState,
 )
 
 internal class DefaultRuntimeServiceBinderEndpoint(
   private val binderEndpointDependencies: RuntimeServiceBinderEndpointDependencies,
   private val gatewayBundle: OpenCrayRuntimeServiceGatewayBundle,
-  private val serviceExecutionCoordinator: RuntimeServiceExecutionCoordinator,
+  private val shellStateAccess: RuntimeServiceShellStateAccess,
+  private val projectionCoordinator: RuntimeServiceProjectionCoordinator,
 ) : Binder(), RuntimeServiceBinderEndpoint {
   override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot =
     binderEndpointDependencies.bridgeSnapshotDependencies.toBridgeSnapshot(
       serviceWorkState = binderEndpointDependencies.refreshServiceWorkState(),
-      serviceKeepAliveState = serviceExecutionCoordinator.currentKeepAliveState(),
+      serviceKeepAliveState = shellStateAccess.currentKeepAliveState(),
     )
 
   override fun loadShellGateway(): OpenCrayShellGateway = gatewayBundle.shellGateway
@@ -53,30 +58,52 @@ internal class DefaultRuntimeServiceBinderEndpoint(
   override fun dispatchChatWriteCommand(
     command: OpenCrayChatWriteCommand,
   ): OpenCrayChatWriteDispatchResult = try {
-    when (command) {
-      is OpenCrayChatWriteCommand.ApproveChatApproval -> {
-        binderEndpointDependencies.approvePendingApproval(command.taskIdOrRunId)
-        gatewayBundle.notifyChatSnapshotsChanged()
-        OpenCrayChatWriteDispatchResult.Completed
-      }
-
-      is OpenCrayChatWriteCommand.ApproveChatApprovalForSession -> {
-        binderEndpointDependencies.approvePendingApprovalForSession(command.taskIdOrRunId)
-        gatewayBundle.notifyChatSnapshotsChanged()
-        OpenCrayChatWriteDispatchResult.Completed
-      }
-
-      is OpenCrayChatWriteCommand.RejectChatApproval -> {
-        binderEndpointDependencies.rejectPendingApproval(command.taskIdOrRunId)
-        gatewayBundle.notifyChatSnapshotsChanged()
-        OpenCrayChatWriteDispatchResult.Completed
-      }
-
-      else -> gatewayBundle.dispatchChatWriteCommand(command)
+    val target = binderEndpointDependencies.chatWriteTargetResolver.targetFor(command)
+    if (target != binderEndpointDependencies.runtimeTarget) {
+      dispatchForwardedChatWriteCommand(
+        target = target,
+        command = command,
+      )
+    } else {
+      dispatchLocalChatWriteCommand(command)
     }
   } finally {
     refreshWorkState()
     persistProjectionSnapshot()
+  }
+
+  private fun dispatchLocalChatWriteCommand(
+    command: OpenCrayChatWriteCommand,
+  ): OpenCrayChatWriteDispatchResult = when (command) {
+    is OpenCrayChatWriteCommand.ApproveChatApproval -> {
+      binderEndpointDependencies.approvalDecisionAccess.approve(command.taskIdOrRunId)
+      gatewayBundle.notifyChatSnapshotsChanged()
+      OpenCrayChatWriteDispatchResult.Completed
+    }
+
+    is OpenCrayChatWriteCommand.ApproveChatApprovalForSession -> {
+      binderEndpointDependencies.approvalDecisionAccess.approveForSession(command.taskIdOrRunId)
+      gatewayBundle.notifyChatSnapshotsChanged()
+      OpenCrayChatWriteDispatchResult.Completed
+    }
+
+    is OpenCrayChatWriteCommand.RejectChatApproval -> {
+      binderEndpointDependencies.approvalDecisionAccess.reject(command.taskIdOrRunId)
+      gatewayBundle.notifyChatSnapshotsChanged()
+      OpenCrayChatWriteDispatchResult.Completed
+    }
+
+    else -> gatewayBundle.dispatchChatWriteCommand(command)
+  }
+
+  private fun dispatchForwardedChatWriteCommand(
+    target: RuntimeServiceTarget,
+    command: OpenCrayChatWriteCommand,
+  ): OpenCrayChatWriteDispatchResult = requireNotNull(
+    binderEndpointDependencies.targetScopedServiceClientProvider(target)
+      .dispatchChatWriteCommand(command),
+  ) {
+    "Unable to dispatch chat write command to runtime service target '${target.wireValue}'."
   }
 
   override fun loadSkillsGateway(): OpenCraySkillsGateway = gatewayBundle.skillsGateway
@@ -101,8 +128,7 @@ internal class DefaultRuntimeServiceBinderEndpoint(
 
   fun peekRuntimeOwnerLifecycle(): Map<String, Any?> =
     loadSnapshot()
-      .runtimeAccess
-      .lifecycleDescriptor
+      .runtimeOwnerLifecycle
       .snapshotMap()
 
   fun peekRuntimeServiceLifecycle(): Map<String, Any?> =
@@ -121,13 +147,13 @@ internal class DefaultRuntimeServiceBinderEndpoint(
       .snapshotMap()
 
   fun peekRuntimeForegroundState(): Map<String, Any?> =
-    serviceExecutionCoordinator.currentForegroundState().snapshotMap()
+    shellStateAccess.currentForegroundState().snapshotMap()
 
   private fun refreshWorkState() {
     binderEndpointDependencies.refreshServiceWorkState()
   }
 
   private fun persistProjectionSnapshot() {
-    serviceExecutionCoordinator.persistProjectionSnapshot()
+    projectionCoordinator.persistProjectionSnapshot()
   }
 }

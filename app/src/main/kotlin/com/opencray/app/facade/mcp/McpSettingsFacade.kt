@@ -432,7 +432,7 @@ internal class LocalMcpSettingsFacade private constructor(
       nowEpochMs = System::currentTimeMillis,
     )
 
-    internal fun createForTest(
+    internal fun create(
       context: Context,
       settingsStore: McpSettingsStore,
       registryStore: McpRegistryStore,

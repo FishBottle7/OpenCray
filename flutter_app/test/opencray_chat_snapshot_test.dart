@@ -72,6 +72,8 @@ void main() {
   test('chat runtime snapshot parses host lifecycle and run diagnostics', () {
     final snapshot = OpenCrayChatRuntimeSnapshot.fromMap(<Object?, Object?>{
       'sessionId': 'session-1',
+      'flutterAppInstanceId': 'flutter-app-1',
+      'bridgeInstanceId': 'bridge-1',
       'hostLifecycle': <Object?, Object?>{
         'processStartId': 'process-1',
         'processStartedAtEpochMs': 1500,
@@ -114,6 +116,8 @@ void main() {
     });
 
     expect(snapshot.hostLifecycle, isNotNull);
+    expect(snapshot.flutterAppInstanceId, 'flutter-app-1');
+    expect(snapshot.bridgeInstanceId, 'bridge-1');
     expect(snapshot.hostLifecycle!.processStartId, 'process-1');
     expect(snapshot.hostLifecycle!.hostInstanceId, 'host-1');
     expect(snapshot.hostLifecycle!.hostCreatedAtEpochMs, 2000);

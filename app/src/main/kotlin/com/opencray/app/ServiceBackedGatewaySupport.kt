@@ -8,7 +8,7 @@ internal fun serviceOwnedGatewayUnavailableMessage(
   append(surface)
   append(" operation '")
   append(operation)
-  append("' requires a live runtime service gateway. ")
+  append("' requires a binder-backed runtime service gateway. ")
   append("Current connection state: phase=")
   append(connectionState.phase)
   append(", transport=")
@@ -29,15 +29,32 @@ internal fun <T> requireBinderBackedGateway(
   operation: String,
   gateway: T?,
   connectionState: RuntimeServiceConnectionState,
-): T = gateway ?: throw IllegalStateException(
-  serviceOwnedGatewayUnavailableMessage(
-    surface = surface,
-    operation = operation,
-    connectionState = connectionState,
-  ),
-)
+): T {
+  // Binder dispatch success is the real source of truth here. Connection-state publication can
+  // lag slightly behind the binder callback that produced this payload, especially across the
+  // bind-pending -> binder-connected handoff on worker threads.
+  if (gateway != null) {
+    return gateway
+  }
+  throw IllegalStateException(
+    serviceOwnedGatewayUnavailableMessage(
+      surface = surface,
+      operation = operation,
+      connectionState = connectionState,
+    ),
+  )
+}
 
-internal const val SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS: Long = 2_000L
+internal fun <T> cachedGatewayProvider(
+  provider: () -> T,
+): () -> T {
+  val cachedValue = lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+    provider()
+  }
+  return { cachedValue.value }
+}
+
+internal const val SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS: Long = 10_000L
 
 internal fun <TGateway, TPayload> observeWithDynamicGateway(
   initialGateway: (() -> TGateway)? = null,

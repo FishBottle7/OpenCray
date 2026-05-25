@@ -1091,7 +1091,7 @@ internal class LocalLlmConfigFacade private constructor(
       )
     }
 
-    internal fun createForTest(
+    internal fun create(
       llmSettingsStore: LlmSettingsStore,
       providerClient: LiteLlmProviderClient,
     ): LlmConfigFacade = LocalLlmConfigFacade(

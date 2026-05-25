@@ -1,18 +1,77 @@
 package com.opencray.app
 
 import android.content.Context
+import java.nio.file.Path
+
+internal data class RuntimeServiceBootstrapContext(
+  val localizedContext: Context,
+  val chatSessionStore: ChatSessionLocalStore,
+  val safetySettingsFacade: com.opencray.app.facade.safety.SafetySettingsFacade,
+  val workspaceRootProvider: () -> Path,
+  val approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot,
+  val runtimeServiceAccessGateway: RuntimeServiceAccessGateway,
+  val chatRuntimeWriteTargetResolverFactory: ChatRuntimeWriteTargetResolverFactory,
+)
+
+internal fun runtimeServiceBootstrapContext(
+  dependencies: OpenCrayRuntimeContextDependencies,
+): RuntimeServiceBootstrapContext = RuntimeServiceBootstrapContext(
+  localizedContext = dependencies.localizedContext,
+  chatSessionStore = dependencies.chatSessionStore,
+  safetySettingsFacade = dependencies.safetySettingsFacade,
+  workspaceRootProvider = dependencies.workspaceRootProvider,
+  approvedReadRootsProvider = dependencies.approvedReadRootsProvider,
+  runtimeServiceAccessGateway = dependencies.runtimeServiceAccessGateway,
+  chatRuntimeWriteTargetResolverFactory = dependencies.chatRuntimeWriteTargetResolverFactory,
+)
 
 internal data class RuntimeServiceBootstrapAssembly(
-  val dependencies: OpenCrayRuntimeContextDependencies,
-  val runtimeAccess: OpenCrayRuntimeOwnerAccess,
-  val serviceLifecycle: RuntimeServiceLifecycleDescriptor,
+  val bootstrapContext: RuntimeServiceBootstrapContext,
+  val retainedOwnerState: RuntimeServiceRetainedOwnerState,
+  val projectionCoordinator: RuntimeServiceProjectionCoordinator,
+  val transportCoordinator: RuntimeServiceTransportCoordinator,
+  val retainedShellControl: RuntimeServiceRetainedShellControl,
+  val runtimeTarget: RuntimeServiceTarget = RuntimeServiceTarget.INTERACTIVE,
+  val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? = { null },
+  val runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor? = null,
   val bootstrapResult: RuntimeServiceBootstrapResult,
   val serviceWorkStateTracker: RuntimeServiceWorkStateTracker,
   val scheduledTaskSpecStore: ScheduledTaskSpecStore,
   val scheduledTaskRunRecordStore: ScheduledTaskRunRecordStore,
   val scheduledTaskTriggerSyncStateStore: ScheduledTaskTriggerSyncStateStore,
   val scheduledTriggerRegistrar: ScheduledTriggerRegistrar,
+  private val runtimeOwnerRebinder: (RuntimeOwnerBootstrap) -> Unit = {},
+  private val disposeHandler: () -> Unit = {},
 )
+
+{
+  private val disposeLock = Any()
+  private var disposed: Boolean = false
+
+  val runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor
+    get() = retainedOwnerState.currentRuntimeServicePort().lifecycleDescriptor
+
+  val runtimeServicePort: RuntimeServicePort
+    get() = retainedOwnerState.currentRuntimeServicePort()
+
+  fun replaceRuntimeOwner(): RuntimeOwnerBootstrap {
+    val nextBootstrap = retainedOwnerState.replaceRuntimeOwner()
+    runtimeOwnerRebinder(nextBootstrap)
+    return nextBootstrap
+  }
+
+  fun dispose() {
+    val handler = synchronized(disposeLock) {
+      if (disposed) {
+        null
+      } else {
+        disposed = true
+        disposeHandler
+      }
+    } ?: return
+    handler()
+  }
+}
 
 internal data class RuntimeServiceBootstrapResult(
   val scannedSessionIds: List<String>,
@@ -26,29 +85,43 @@ internal data class RuntimeServiceInterruptedRunRepairResult(
   val repairedSessionIds: List<String>,
 )
 
-internal fun RuntimeServiceBootstrapAssembly.toRuntimeServiceBootstrapState():
-  RuntimeServiceBootstrapState = RuntimeServiceBootstrapState(
-  gatewayDependencies = toGatewayBundleDependencies(),
-  executionCoordinatorDependencies = toExecutionCoordinatorDependencies(),
-  wakeCommandDispatcherDependencies = toWakeCommandDispatcherDependencies(),
-  binderEndpointDependencies = toBinderEndpointDependencies(),
-)
+internal fun RuntimeServiceBootstrapAssembly.toRuntimeServiceBootstrapState(
+  serviceLifecycle: RuntimeServiceLifecycleDescriptor,
+): RuntimeServiceBootstrapState {
+  projectionCoordinator.bindServiceLifecycle(serviceLifecycle)
+  return RuntimeServiceBootstrapState(
+    gatewayDependencies = toGatewayBundleDependencies(serviceLifecycle),
+    executionCoordinatorDependencies = toExecutionCoordinatorDependencies(),
+    wakeCommandDispatcherDependencies = toWakeCommandDispatcherDependencies(),
+    binderEndpointDependencies = toBinderEndpointDependencies(serviceLifecycle),
+    retainedShellControl = retainedShellControl,
+    transportCoordinator = transportCoordinator,
+  )
+}
 
 internal fun createRuntimeServiceBootstrapAssembly(
   appContext: Context,
-  serviceLifecycle: RuntimeServiceLifecycleDescriptor,
-  runtimeOwnerAccessFactory: OpenCrayRuntimeOwnerAccessFactory =
-    DefaultOpenCrayRuntimeOwnerAccessFactory,
+  bootstrapContext: RuntimeServiceBootstrapContext,
+  retainedOwnerState: RuntimeServiceRetainedOwnerState,
+  runtimeTarget: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
+  runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor? = null,
+  localRuntimeServerStateProvider: (() -> LocalRuntimeServerState?)? = null,
+  retainedShellControlFactory: (Context) -> RuntimeServiceRetainedShellControl =
+    ::createRuntimeServiceRetainedShellControl,
   bootstrapFactory: RuntimeServiceBootstrapFactory =
     DefaultRuntimeServiceBootstrapFactory,
 ): RuntimeServiceBootstrapAssembly {
+  val initialRuntimePort = retainedOwnerState.currentRuntimeServicePort()
   val bootstrap = bootstrapFactory.create(
     appContext = appContext,
-    runtimeOwnerAccessFactory = runtimeOwnerAccessFactory,
   )
   val bootstrapResult = bootstrapRuntimeServiceSessions(
-    chatSessionStore = bootstrap.dependencies.chatSessionStore,
-    runtimeAccess = bootstrap.runtimeAccess,
+    chatSessionStore = bootstrapContext.chatSessionStore,
+    runtimeSessionDirectoryAccess = initialRuntimePort.notificationHostAccess,
+    runtimeReplayAccess = initialRuntimePort.replayAccess,
+    snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
+    promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
+    subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
   )
   resyncEnabledScheduledTasks(
     specStore = bootstrap.scheduledTaskSpecStore,
@@ -56,117 +129,176 @@ internal fun createRuntimeServiceBootstrapAssembly(
     triggerSyncStateStore = bootstrap.scheduledTaskTriggerSyncStateStore,
   )
   val serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
-    workSummaryProvider = bootstrap.runtimeAccess.hostAccess::activeWorkSummary,
-  )
-  bootstrap.runtimeAccess.hostAccess.observe(
-    object : AgentSessionRuntimeListener {
-      override fun onTaskStarted(sessionId: String, task: com.opencray.core.contracts.AgentTask) {
-        serviceWorkStateTracker.refresh()
-      }
-
-      override fun onTaskFinished(
-        sessionId: String,
-        task: com.opencray.core.contracts.AgentTask,
-        result: com.opencray.core.contracts.ExecutionResult,
-      ) {
-        serviceWorkStateTracker.refresh()
-      }
-
-      override fun onRunEvent(
-        sessionId: String,
-        task: com.opencray.core.contracts.AgentTask,
-        event: com.opencray.runtime.OpenCrayAgentRunEvent,
-      ) {
-        serviceWorkStateTracker.refresh()
-      }
+    workSummaryProvider = {
+      retainedOwnerState.currentRuntimeServicePort().ownerObservationAccess.activeWorkSummary()
     },
   )
+  val transportCoordinator = DefaultRuntimeServiceTransportCoordinator(
+    runtimeTarget = runtimeTarget,
+    initialLocalRuntimeServerStateProvider = localRuntimeServerStateProvider
+      ?: { defaultLocalRuntimeServerState(runtimeTarget) },
+  )
+  val projectionCoordinator = DefaultRuntimeServiceProjectionCoordinator(
+    runtimeTarget = runtimeTarget,
+    localRuntimeServerStateProvider = transportCoordinator::currentLocalRuntimeServerState,
+    runtimeControllerLifecycle = runtimeControllerLifecycle,
+    runtimeOwnerLifecycle = initialRuntimePort.lifecycleDescriptor,
+    ownerObservationAccess = initialRuntimePort.ownerObservationAccess,
+    notificationHostAccess = initialRuntimePort.notificationHostAccess,
+    serviceWorkStateTracker = serviceWorkStateTracker,
+    appContext = appContext,
+    localizedContext = bootstrapContext.localizedContext,
+    chatSessionStore = bootstrapContext.chatSessionStore,
+    scheduledTaskSpecStore = bootstrap.scheduledTaskSpecStore,
+    scheduledTaskRunRecordStore = bootstrap.scheduledTaskRunRecordStore,
+    runtimeServiceAccessGateway = bootstrapContext.runtimeServiceAccessGateway,
+  )
+  val retainedShellControl = retainedShellControlFactory(appContext)
+  val ownerWorkStateObservationBinding = RuntimeServiceOwnerWorkStateObservationBinding(
+    serviceWorkStateTracker = serviceWorkStateTracker,
+  )
+  ownerWorkStateObservationBinding.bind(initialRuntimePort.ownerObservationAccess)
   serviceWorkStateTracker.refresh()
   return RuntimeServiceBootstrapAssembly(
-    dependencies = bootstrap.dependencies,
-    runtimeAccess = bootstrap.runtimeAccess,
-    serviceLifecycle = serviceLifecycle,
+    bootstrapContext = bootstrapContext,
+    retainedOwnerState = retainedOwnerState,
+    projectionCoordinator = projectionCoordinator,
+    transportCoordinator = transportCoordinator,
+    retainedShellControl = retainedShellControl,
+    runtimeTarget = runtimeTarget,
+    localRuntimeServerStateProvider = transportCoordinator::currentLocalRuntimeServerState,
+    runtimeControllerLifecycle = runtimeControllerLifecycle,
     bootstrapResult = bootstrapResult,
     serviceWorkStateTracker = serviceWorkStateTracker,
     scheduledTaskSpecStore = bootstrap.scheduledTaskSpecStore,
     scheduledTaskRunRecordStore = bootstrap.scheduledTaskRunRecordStore,
     scheduledTaskTriggerSyncStateStore = bootstrap.scheduledTaskTriggerSyncStateStore,
     scheduledTriggerRegistrar = bootstrap.scheduledTriggerRegistrar,
+    runtimeOwnerRebinder = {
+      val nextRuntimePort = retainedOwnerState.currentRuntimeServicePort()
+      ownerWorkStateObservationBinding.bind(nextRuntimePort.ownerObservationAccess)
+      projectionCoordinator.replaceRuntimeOwner(
+        runtimeOwnerLifecycle = nextRuntimePort.lifecycleDescriptor,
+        ownerObservationAccess = nextRuntimePort.ownerObservationAccess,
+        notificationHostAccess = nextRuntimePort.notificationHostAccess,
+      )
+    },
+    disposeHandler = {
+      transportCoordinator.dispose()
+      projectionCoordinator.dispose()
+      retainedShellControl.runtimeForegroundController.onDestroy()
+      retainedShellControl.keepAliveController.onDestroy()
+      ownerWorkStateObservationBinding.dispose()
+    },
   )
 }
 
-internal fun createRuntimeServiceBootstrapState(
-  appContext: Context,
-  serviceLifecycle: RuntimeServiceLifecycleDescriptor,
-  runtimeOwnerAccessFactory: OpenCrayRuntimeOwnerAccessFactory =
-    DefaultOpenCrayRuntimeOwnerAccessFactory,
-  bootstrapFactory: RuntimeServiceBootstrapFactory =
-    DefaultRuntimeServiceBootstrapFactory,
-): RuntimeServiceBootstrapState = createRuntimeServiceBootstrapAssembly(
-  appContext = appContext,
-  serviceLifecycle = serviceLifecycle,
-  runtimeOwnerAccessFactory = runtimeOwnerAccessFactory,
-  bootstrapFactory = bootstrapFactory,
-).toRuntimeServiceBootstrapState()
+private class RuntimeServiceOwnerWorkStateObservationBinding(
+  private val serviceWorkStateTracker: RuntimeServiceWorkStateTracker,
+) {
+  private val lock = Any()
+  private var observationDisposer: (() -> Unit)? = null
+  private val listener = object : AgentSessionRuntimeListener {
+    override fun onTaskStarted(sessionId: String, task: com.opencray.core.contracts.AgentTask) {
+      serviceWorkStateTracker.refresh()
+    }
 
-private fun RuntimeServiceBootstrapAssembly.toGatewayBundleDependencies():
-  RuntimeServiceGatewayBundleDependencies {
+    override fun onTaskFinished(
+      sessionId: String,
+      task: com.opencray.core.contracts.AgentTask,
+      result: com.opencray.core.contracts.ExecutionResult,
+    ) {
+      serviceWorkStateTracker.refresh()
+    }
+
+    override fun onRunEvent(
+      sessionId: String,
+      task: com.opencray.core.contracts.AgentTask,
+      event: com.opencray.runtime.OpenCrayAgentRunEvent,
+    ) {
+      serviceWorkStateTracker.refresh()
+    }
+  }
+
+  fun bind(ownerObservationAccess: RuntimeOwnerObservationAccess) {
+    val previousDisposer = synchronized(lock) {
+      observationDisposer.also {
+        observationDisposer = ownerObservationAccess.observe(listener)
+      }
+    }
+    previousDisposer?.invoke()
+    serviceWorkStateTracker.refresh()
+  }
+
+  fun dispose() {
+    val disposer = synchronized(lock) {
+      observationDisposer.also {
+        observationDisposer = null
+      }
+    }
+    disposer?.invoke()
+  }
+}
+
+private fun RuntimeServiceBootstrapAssembly.toGatewayBundleDependencies(
+  serviceLifecycle: RuntimeServiceLifecycleDescriptor,
+): RuntimeServiceGatewayBundleDependencies {
+  val runtimeServicePort = retainedOwnerState.currentRuntimeServicePort()
   val approvalDecisionAccess = runtimeServiceApprovalDecisionAccess(
-    dependencies = dependencies,
-    runtimeAccess = runtimeAccess,
+    dependencies = toApprovalDecisionDependencies(runtimeServicePort),
   )
   return RuntimeServiceGatewayBundleDependencies(
-    runtimeOwnerLifecycle = runtimeAccess.lifecycleDescriptor,
-    runtimeHostAccess = runtimeAccess.hostAccess,
-    runtimeReplayAccess = runtimeAccess.replayAccess,
+    runtimeControllerLifecycle = runtimeControllerLifecycle,
+    runtimeServicePort = runtimeServicePort,
+    localRuntimeServerStateProvider = localRuntimeServerStateProvider,
     serviceLifecycle = serviceLifecycle,
     serviceWorkStateProvider = serviceWorkStateTracker::currentState,
-    safetySettingsFacade = dependencies.safetySettingsFacade,
-    workspaceRootProvider = dependencies.workspaceRootProvider,
-    approvedReadRootsProvider = dependencies.approvedReadRootsProvider,
-    approvePendingApproval = approvalDecisionAccess::approve,
-    approvePendingApprovalForSession = approvalDecisionAccess::approveForSession,
-    rejectPendingApproval = approvalDecisionAccess::reject,
+    safetySettingsFacade = bootstrapContext.safetySettingsFacade,
+    workspaceRootProvider = bootstrapContext.workspaceRootProvider,
+    approvedReadRootsProvider = bootstrapContext.approvedReadRootsProvider,
+    approvalDecisionAccess = approvalDecisionAccess,
   )
 }
 
-private fun RuntimeServiceBootstrapAssembly.toExecutionCoordinatorDependencies():
+private fun RuntimeServiceBootstrapAssembly.toExecutionCoordinatorDependencies(
+):
   RuntimeServiceExecutionCoordinatorDependencies = RuntimeServiceExecutionCoordinatorDependencies(
-  localRuntimeServerStateProvider = OpenCrayLocalRuntimeServerRegistry::peekState,
-  runtimeOwnerLifecycle = runtimeAccess.lifecycleDescriptor,
-  runtimeHostAccess = runtimeAccess.hostAccess,
-  serviceLifecycle = serviceLifecycle,
-  bootstrapResult = bootstrapResult,
+  projectionCoordinator = projectionCoordinator,
   serviceWorkStateTracker = serviceWorkStateTracker,
-  localizedContext = dependencies.localizedContext,
-  chatSessionStore = dependencies.chatSessionStore,
-  scheduledTaskSpecStore = scheduledTaskSpecStore,
-  scheduledTaskRunRecordStore = scheduledTaskRunRecordStore,
 )
 
-private fun RuntimeServiceBootstrapAssembly.toBridgeSnapshotDependencies():
-  RuntimeServiceBridgeSnapshotDependencies = RuntimeServiceBridgeSnapshotDependencies(
-  dependencies = dependencies,
-  runtimeAccess = runtimeAccess,
-  serviceLifecycle = serviceLifecycle,
-  localRuntimeServerStateProvider = OpenCrayLocalRuntimeServerRegistry::peekState,
-)
+private fun RuntimeServiceBootstrapAssembly.toBridgeSnapshotDependencies(
+  serviceLifecycle: RuntimeServiceLifecycleDescriptor,
+):
+  RuntimeServiceBridgeSnapshotDependencies {
+  val runtimeServicePort = retainedOwnerState.currentRuntimeServicePort()
+  return RuntimeServiceBridgeSnapshotDependencies(
+    runtimeOwnerLifecycle = runtimeServicePort.lifecycleDescriptor,
+    runtimeOwnerWorkSummaryProvider = runtimeServicePort.ownerObservationAccess::activeWorkSummary,
+    runtimeControllerLifecycle = runtimeControllerLifecycle,
+    serviceLifecycle = serviceLifecycle,
+    localRuntimeServerStateProvider = localRuntimeServerStateProvider,
+  )
+}
 
 private fun RuntimeServiceBootstrapAssembly.toScheduledTaskDispatcherDependencies():
-  ScheduledTaskDispatcherDependencies = ScheduledTaskDispatcherDependencies(
-  hostAccess = runtimeAccess.hostAccess,
-  chatSessionStore = dependencies.chatSessionStore,
-  safetySettingsFacade = dependencies.safetySettingsFacade,
-  approvedReadRootsProvider = dependencies.approvedReadRootsProvider,
-  lifecycleDescriptor = runtimeAccess.lifecycleDescriptor,
-  localizedContext = dependencies.localizedContext,
-  assistantPlaceholderTextProvider = {
-    dependencies.localizedContext.getText(org.opencray.app.R.string.chat_agent_thinking).toString()
-  },
-  specStore = scheduledTaskSpecStore,
-  runRecordStore = scheduledTaskRunRecordStore,
-  triggerRegistrar = scheduledTriggerRegistrar,
-)
+  ScheduledTaskDispatcherDependencies {
+  val runtimeServicePort = retainedOwnerState.currentRuntimeServicePort()
+  return ScheduledTaskDispatcherDependencies(
+    hostAccess = runtimeServicePort.chatSubmissionHostAccess,
+    chatSessionStore = bootstrapContext.chatSessionStore,
+    safetySettingsFacade = bootstrapContext.safetySettingsFacade,
+    approvedReadRootsProvider = bootstrapContext.approvedReadRootsProvider,
+    lifecycleDescriptor = runtimeServicePort.lifecycleDescriptor,
+    localizedContext = bootstrapContext.localizedContext,
+    assistantPlaceholderTextProvider = {
+      bootstrapContext.localizedContext.getText(org.opencray.app.R.string.chat_agent_thinking).toString()
+    },
+    specStore = scheduledTaskSpecStore,
+    runRecordStore = scheduledTaskRunRecordStore,
+    triggerRegistrar = scheduledTriggerRegistrar,
+  )
+}
 
 private fun RuntimeServiceBootstrapAssembly.toScheduledTaskRepairDependencies(
   scheduledTaskDispatcherDependencies: ScheduledTaskDispatcherDependencies =
@@ -180,10 +312,10 @@ private fun RuntimeServiceBootstrapAssembly.toScheduledTaskRepairDependencies(
 
 private fun RuntimeServiceBootstrapAssembly.toWakeCommandDispatcherDependencies():
   RuntimeServiceWakeCommandDispatcherDependencies {
+  val runtimeServicePort = retainedOwnerState.currentRuntimeServicePort()
   val scheduledTaskDispatcherDependencies = toScheduledTaskDispatcherDependencies()
   val approvalDecisionAccess = runtimeServiceApprovalDecisionAccess(
-    dependencies = dependencies,
-    runtimeAccess = runtimeAccess,
+    dependencies = toApprovalDecisionDependencies(runtimeServicePort),
   )
   return RuntimeServiceWakeCommandDispatcherDependencies(
     scheduledTaskDispatcherDependencies = scheduledTaskDispatcherDependencies,
@@ -192,30 +324,59 @@ private fun RuntimeServiceBootstrapAssembly.toWakeCommandDispatcherDependencies(
     ),
     resumeInterruptedRuns = {
       resumeInterruptedRuntimeServiceRuns(
-        chatSessionStore = dependencies.chatSessionStore,
-        runtimeAccess = runtimeAccess,
+        chatSessionStore = bootstrapContext.chatSessionStore,
+        runtimeSessionDirectoryAccess = runtimeServicePort.notificationHostAccess,
+        runtimeReplayAccess = runtimeServicePort.replayAccess,
+        snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(
+          bootstrapContext.localizedContext.applicationContext,
+        ),
+        promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(
+          bootstrapContext.localizedContext.applicationContext,
+        ),
+        subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(
+          bootstrapContext.localizedContext.applicationContext,
+        ),
       )
     },
-    approvePendingApproval = approvalDecisionAccess::approve,
-    rejectPendingApproval = approvalDecisionAccess::reject,
+    approvalDecisionAccess = approvalDecisionAccess,
     refreshServiceWorkState = serviceWorkStateTracker::refresh,
   )
 }
 
-private fun RuntimeServiceBootstrapAssembly.toBinderEndpointDependencies():
+private fun RuntimeServiceBootstrapAssembly.toBinderEndpointDependencies(
+  serviceLifecycle: RuntimeServiceLifecycleDescriptor,
+):
   RuntimeServiceBinderEndpointDependencies {
+  val runtimeServicePort = retainedOwnerState.currentRuntimeServicePort()
   val approvalDecisionAccess = runtimeServiceApprovalDecisionAccess(
-    dependencies = dependencies,
-    runtimeAccess = runtimeAccess,
+    dependencies = toApprovalDecisionDependencies(runtimeServicePort),
   )
   return RuntimeServiceBinderEndpointDependencies(
-    bridgeSnapshotDependencies = toBridgeSnapshotDependencies(),
-    approvePendingApproval = approvalDecisionAccess::approve,
-    approvePendingApprovalForSession = approvalDecisionAccess::approveForSession,
-    rejectPendingApproval = approvalDecisionAccess::reject,
+    bridgeSnapshotDependencies = toBridgeSnapshotDependencies(serviceLifecycle),
+    runtimeTarget = runtimeTarget,
+    chatWriteTargetResolver = bootstrapContext.chatRuntimeWriteTargetResolverFactory.create(
+      bootstrapContext.localizedContext.applicationContext,
+    ),
+    targetScopedServiceClientProvider = { target ->
+      bootstrapContext.runtimeServiceAccessGateway.ensureClient(
+        bootstrapContext.localizedContext.applicationContext,
+        target = target,
+      )
+    },
+    approvalDecisionAccess = approvalDecisionAccess,
     refreshServiceWorkState = serviceWorkStateTracker::refresh,
   )
 }
+
+private fun RuntimeServiceBootstrapAssembly.toApprovalDecisionDependencies(
+  runtimeServicePort: RuntimeServicePort = retainedOwnerState.currentRuntimeServicePort(),
+):
+  RuntimeServiceApprovalDecisionDependencies = RuntimeServiceApprovalDecisionDependencies(
+  localizedContext = bootstrapContext.localizedContext,
+  chatSessionStore = bootstrapContext.chatSessionStore,
+  runtimeHostAccess = runtimeServicePort.approvalDecisionHostAccess,
+  runtimeReplayAccess = runtimeServicePort.replayAccess,
+)
 
 private fun submitRecoverableSubAgentTasksForSession(
   session: OpenCrayRuntimeSessionAccess,
@@ -225,19 +386,32 @@ private fun submitRecoverableSubAgentTasksForSession(
 
 internal fun bootstrapRuntimeServiceSessions(
   chatSessionStore: ChatSessionLocalStore,
-  runtimeAccess: OpenCrayRuntimeOwnerAccess,
+  runtimeSessionDirectoryAccess: RuntimeSessionDirectoryAccess,
+  runtimeReplayAccess: OpenCrayRuntimeReplayAccess,
+  snapshotStoreFactory: AgentQueueSnapshotStoreFactory? = null,
+  promptCheckpointStoreFactory: PromptCheckpointStoreFactory? = null,
+  subAgentHandleStoreFactory: SubAgentHandleStoreFactory? = null,
 ): RuntimeServiceBootstrapResult {
-  val state = chatSessionStore.loadState()
-  val knownSessionIds = knownChatSessionIds(chatSessionStore)
+  val knownSessionIds = recoveryCandidateSessionIds(
+    chatSessionStore = chatSessionStore,
+    snapshotStoreFactory = snapshotStoreFactory,
+    promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+  )
   val resumedSessionIds = mutableListOf<String>()
   val repairedSessionIds = mutableListOf<String>()
 
   knownSessionIds.forEach { sessionId ->
-    val session = runtimeAccess.hostAccess.session(sessionId)
-    val shouldResume = sessionId == state.activeSession.sessionId ||
-      session.hasPendingWork() ||
+    val session = runtimeSessionDirectoryAccess.session(sessionId)
+    val shouldResume = session.hasPendingWork() ||
       session.hasLiveManagedProcesses() ||
-      session.hasLiveSubAgentWork()
+      session.hasLiveSubAgentWork() ||
+      hasDurableInteractiveRepairWorkForSession(
+        sessionId = sessionId,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      )
     if (!shouldResume) {
       return@forEach
     }
@@ -245,7 +419,7 @@ internal fun bootstrapRuntimeServiceSessions(
     resumedSessionIds += sessionId
     val runs = session.listRuns()
     if (runs.isNotEmpty()) {
-      runtimeAccess.replayAccess.terminalReplayRepairer(sessionId, runs)
+      runtimeReplayAccess.terminalReplayRepairer(sessionId, runs)
       repairedSessionIds += sessionId
     }
     submitRecoverableSubAgentTasksForSession(
@@ -262,16 +436,32 @@ internal fun bootstrapRuntimeServiceSessions(
 
 internal fun resumeInterruptedRuntimeServiceRuns(
   chatSessionStore: ChatSessionLocalStore,
-  runtimeAccess: OpenCrayRuntimeOwnerAccess,
+  runtimeSessionDirectoryAccess: RuntimeSessionDirectoryAccess,
+  runtimeReplayAccess: OpenCrayRuntimeReplayAccess,
+  snapshotStoreFactory: AgentQueueSnapshotStoreFactory? = null,
+  promptCheckpointStoreFactory: PromptCheckpointStoreFactory? = null,
+  subAgentHandleStoreFactory: SubAgentHandleStoreFactory? = null,
 ): RuntimeServiceInterruptedRunRepairResult {
-  val knownSessionIds = knownChatSessionIds(chatSessionStore)
+  val knownSessionIds = recoveryCandidateSessionIds(
+    chatSessionStore = chatSessionStore,
+    snapshotStoreFactory = snapshotStoreFactory,
+    promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+  )
   val resumedSessionIds = mutableListOf<String>()
   val repairedSessionIds = mutableListOf<String>()
 
   knownSessionIds.forEach { sessionId ->
-    val session = runtimeAccess.hostAccess.session(sessionId)
+    val session = runtimeSessionDirectoryAccess.session(sessionId)
     val runs = session.listRuns()
-    val shouldResume = runs.any(AgentRunSnapshot::isActive) || session.hasLiveSubAgentWork()
+    val shouldResume = runs.any(AgentRunSnapshot::isActive) ||
+      session.hasLiveSubAgentWork() ||
+      hasDurableInteractiveRepairWorkForSession(
+        sessionId = sessionId,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      )
     if (!shouldResume) {
       return@forEach
     }
@@ -279,7 +469,7 @@ internal fun resumeInterruptedRuntimeServiceRuns(
     resumedSessionIds += sessionId
     val repairedRuns = session.listRuns()
     if (repairedRuns.isNotEmpty()) {
-      runtimeAccess.replayAccess.terminalReplayRepairer(sessionId, repairedRuns)
+      runtimeReplayAccess.terminalReplayRepairer(sessionId, repairedRuns)
       repairedSessionIds += sessionId
     }
     submitRecoverableSubAgentTasksForSession(
@@ -293,3 +483,36 @@ internal fun resumeInterruptedRuntimeServiceRuns(
     repairedSessionIds = repairedSessionIds,
   )
 }
+
+private fun hasDurableInteractiveRepairWorkForSession(
+  sessionId: String,
+  snapshotStoreFactory: AgentQueueSnapshotStoreFactory?,
+  promptCheckpointStoreFactory: PromptCheckpointStoreFactory?,
+  subAgentHandleStoreFactory: SubAgentHandleStoreFactory?,
+): Boolean {
+  if (
+    snapshotStoreFactory == null ||
+    promptCheckpointStoreFactory == null ||
+    subAgentHandleStoreFactory == null
+  ) {
+    return false
+  }
+  return hasPotentialInteractiveRunRepairWorkForSession(
+    sessionId = sessionId,
+    snapshotStoreFactory = snapshotStoreFactory,
+    promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+  )
+}
+
+internal fun recoveryCandidateSessionIds(
+  chatSessionStore: ChatSessionLocalStore,
+  snapshotStoreFactory: AgentQueueSnapshotStoreFactory?,
+  promptCheckpointStoreFactory: PromptCheckpointStoreFactory?,
+  subAgentHandleStoreFactory: SubAgentHandleStoreFactory?,
+): List<String> = buildSet {
+  addAll(knownChatSessionIds(chatSessionStore))
+  snapshotStoreFactory?.knownSessionIds()?.let(::addAll)
+  promptCheckpointStoreFactory?.knownSessionIds()?.let(::addAll)
+  subAgentHandleStoreFactory?.knownSessionIds()?.let(::addAll)
+}.toList()

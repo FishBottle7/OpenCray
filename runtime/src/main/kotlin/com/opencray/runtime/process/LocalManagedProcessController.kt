@@ -264,6 +264,7 @@ private class LocalManagedProcessController(
     timedOut = timedOut,
     cancelled = cancelled,
     outputLimitExceeded = outputLimitExceeded,
+    ownerIdentity = request.ownerIdentity,
     metadata = request.metadata,
   )
 

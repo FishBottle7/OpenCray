@@ -11,12 +11,17 @@ import io.flutter.plugin.common.MethodChannel
 
 internal fun openCrayFlutterHostBridge(
   context: Context,
-  gatewayBundleFactory: OpenCrayClientGatewayBundleFactory =
-    DefaultOpenCrayClientGatewayBundleFactory,
+  runtimeTarget: RuntimeServiceTarget,
+  gatewayBundleFactory: OpenCrayClientGatewayBundleFactory,
 ): OpenCrayFlutterHostBridge {
-  val gatewayBundle = gatewayBundleFactory.create(context.applicationContext)
+  val appContext = context.applicationContext
+  val gatewayBundle = gatewayBundleFactory.create(
+    appContext,
+    target = runtimeTarget,
+  )
   return OpenCrayFlutterHostBridge(
     context = context,
+    runtimeTarget = runtimeTarget,
     localHostGateway = gatewayBundle.localHostGateway,
     shellGateway = gatewayBundle.shellGateway,
     chatRuntimeGateway = gatewayBundle.chatRuntimeGateway,
@@ -27,6 +32,7 @@ internal fun openCrayFlutterHostBridge(
 
 internal class OpenCrayFlutterHostBridge(
   private val context: Context,
+  internal val runtimeTarget: RuntimeServiceTarget,
   private val localHostGateway: OpenCrayLocalHostGateway,
   private val shellGateway: OpenCrayShellGateway,
   private val chatRuntimeGateway: OpenCrayChatRuntimeGateway,
@@ -46,6 +52,7 @@ internal class OpenCrayFlutterHostBridge(
     Handler(Looper.getMainLooper()).post { action() }
   },
 ) {
+  private val bridgeInstanceId: String = lifecycleId(prefix = "bridge")
   private val debugPythonScriptRunner: DebugPythonScriptRunner by lazy(LazyThreadSafetyMode.NONE) {
     debugPythonScriptRunnerFactory()
   }
@@ -61,6 +68,7 @@ internal class OpenCrayFlutterHostBridge(
       observerStreamHandler(
         observe = shellGateway::observeShell,
         onDisposeChanged = { disposer -> shellObserverDisposer = disposer },
+        payloadTransformer = ::attachBridgeLifecycleToShellSnapshot,
       ),
     )
     EventChannel(
@@ -82,12 +90,14 @@ internal class OpenCrayFlutterHostBridge(
       observerStreamHandler(
         observe = chatRuntimeGateway::observeChat,
         onDisposeChanged = { disposer -> chatObserverDisposer = disposer },
+        payloadTransformer = ::attachBridgeLifecycleToChatSnapshot,
       ),
     )
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_RUNTIME_SNAPSHOT_CHANNEL).setStreamHandler(
       observerStreamHandler(
         observe = chatRuntimeGateway::observeChatRuntime,
         onDisposeChanged = { disposer -> chatRuntimeObserverDisposer = disposer },
+        payloadTransformer = ::attachBridgeLifecycleToRuntimeSnapshot,
       ),
     )
   }
@@ -115,6 +125,18 @@ internal class OpenCrayFlutterHostBridge(
     runCatching {
       chatRuntimeGateway.selectChatSession(sessionId)
     }.isSuccess
+
+  fun selectChatSessionAsync(
+    sessionId: String,
+    callback: (Boolean) -> Unit,
+  ) {
+    backgroundRunner {
+      val selected = selectChatSession(sessionId)
+      mainThreadPoster {
+        callback(selected)
+      }
+    }
+  }
 
   internal fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
     if (call.method == "pickChatAttachments") {
@@ -243,9 +265,14 @@ internal class OpenCrayFlutterHostBridge(
           return
         }
         "loadStrongBackgroundSnapshot" -> settingsGateway.loadStrongBackgroundSnapshot()
-        "performStrongBackgroundAction" -> settingsGateway.performStrongBackgroundAction(
-          actionId = call.argument<String>("actionId").orEmpty(),
-        )
+        "performStrongBackgroundAction" -> {
+          runAsync(result) {
+            settingsGateway.performStrongBackgroundAction(
+              actionId = call.argument<String>("actionId").orEmpty(),
+            )
+          }
+          return
+        }
         "loadNetworkSearchConfig" -> settingsGateway.loadNetworkSearchConfig()
         "saveNetworkSearchConfig" -> {
           runAsync(result) {
@@ -770,7 +797,7 @@ internal class OpenCrayFlutterHostBridge(
         }
       }
     }.onSuccess { payload ->
-      result.success(payload)
+      result.success(transformMethodResultPayload(method = call.method, payload = payload))
     }.onFailure { throwable ->
       result.error(
         "HOST_BRIDGE_ERROR",
@@ -933,13 +960,14 @@ internal class OpenCrayFlutterHostBridge(
   private fun observerStreamHandler(
     observe: ((Map<String, Any?>) -> Unit) -> (() -> Unit),
     onDisposeChanged: ((() -> Unit)?) -> Unit,
+    payloadTransformer: (Map<String, Any?>) -> Any? = { payload -> payload },
   ): EventChannel.StreamHandler = object : EventChannel.StreamHandler {
     private var currentDispose: (() -> Unit)? = null
 
     override fun onListen(arguments: Any?, events: EventChannel.EventSink) {
       currentDispose?.invoke()
       currentDispose = observe { payload ->
-        events.success(payload)
+        events.success(payloadTransformer(payload))
       }
       onDisposeChanged(currentDispose)
     }
@@ -948,6 +976,36 @@ internal class OpenCrayFlutterHostBridge(
       currentDispose?.invoke()
       currentDispose = null
       onDisposeChanged(null)
+    }
+  }
+
+  private fun transformMethodResultPayload(
+    method: String,
+    payload: Any?,
+  ): Any? = when (method) {
+    "loadShellSnapshot" -> attachBridgeLifecycleToShellSnapshot(payload)
+    "loadChatSnapshot" -> attachBridgeLifecycleToChatSnapshot(payload)
+    "loadChatRuntimeSnapshot" -> attachBridgeLifecycleToRuntimeSnapshot(payload)
+    else -> payload
+  }
+
+  private fun attachBridgeLifecycleToShellSnapshot(payload: Any?): Any? =
+    attachBridgeLifecycleToRuntimeSnapshot(payload)
+
+  private fun attachBridgeLifecycleToRuntimeSnapshot(payload: Any?): Any? {
+    val snapshot = payload as? Map<*, *> ?: return payload
+    return snapshot.toMutableMap().apply {
+      put("bridgeInstanceId", bridgeInstanceId)
+    }
+  }
+
+  private fun attachBridgeLifecycleToChatSnapshot(payload: Any?): Any? {
+    val snapshot = payload as? Map<*, *> ?: return payload
+    return snapshot.toMutableMap().apply {
+      val runtimeActivity = this["runtimeActivity"]
+      if (runtimeActivity is Map<*, *>) {
+        this["runtimeActivity"] = attachBridgeLifecycleToRuntimeSnapshot(runtimeActivity)
+      }
     }
   }
 

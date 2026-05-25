@@ -33,7 +33,7 @@ class LlmConfigFacadeTest {
   @Test
   fun saveCustomProviderPersistsReusableProviderOption() {
     val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = RecordingProviderClient(
         LiteLlmProviderResult.Success(outputText = "OK"),
@@ -68,7 +68,7 @@ class LlmConfigFacadeTest {
   @Test
   fun saveCustomProviderOverwritesSelectedSavedOption() {
     val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = RecordingProviderClient(
         LiteLlmProviderResult.Success(outputText = "OK"),
@@ -117,7 +117,7 @@ class LlmConfigFacadeTest {
   @Test
   fun savePersistsStreamingEnabled() {
     val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = RecordingProviderClient(
         LiteLlmProviderResult.Success(outputText = "OK"),
@@ -148,7 +148,7 @@ class LlmConfigFacadeTest {
   @Test
   fun saveCustomProviderPersistsStreamingEnabled() {
     val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = RecordingProviderClient(
         LiteLlmProviderResult.Success(outputText = "OK"),
@@ -184,7 +184,7 @@ class LlmConfigFacadeTest {
       capabilityProbeResult(expectedEcho = "strict_schema_probe"),
       parallelCapabilityProbeResult(),
     )
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = providerClient,
     )
@@ -251,7 +251,7 @@ class LlmConfigFacadeTest {
         ),
       ),
     )
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = providerClient,
     )
@@ -304,7 +304,7 @@ class LlmConfigFacadeTest {
         ),
       ),
     )
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = providerClient,
     )
@@ -347,7 +347,7 @@ class LlmConfigFacadeTest {
         ),
       ),
     )
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = providerClient,
     )
@@ -382,7 +382,7 @@ class LlmConfigFacadeTest {
 
   @Test
   fun validateReturnsProviderFailureMessage() {
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
       providerClient = RecordingProviderClient(
         LiteLlmProviderResult.Failure(
@@ -420,7 +420,7 @@ class LlmConfigFacadeTest {
         ),
       ),
     )
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = providerClient,
     )
@@ -464,7 +464,7 @@ class LlmConfigFacadeTest {
       capabilityProbeResult(expectedEcho = "strict_schema_probe"),
       parallelCapabilityProbeResult(),
     )
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
       providerClient = providerClient,
     )
@@ -497,7 +497,7 @@ class LlmConfigFacadeTest {
       capabilityProbeResult(expectedEcho = "strict_schema_probe"),
       parallelCapabilityProbeResult(),
     )
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
       providerClient = providerClient,
     )
@@ -538,7 +538,7 @@ class LlmConfigFacadeTest {
       ),
     )
     val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = providerClient,
     )
@@ -590,7 +590,7 @@ class LlmConfigFacadeTest {
       ),
     )
     val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = providerClient,
     )
@@ -657,7 +657,7 @@ class LlmConfigFacadeTest {
       ),
     )
     val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = providerClient,
     )
@@ -713,7 +713,7 @@ class LlmConfigFacadeTest {
   @Test
   fun savePersistsPromptCachingSettings() {
     val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = RecordingProviderClient(
         LiteLlmProviderResult.Success(outputText = "OK"),
@@ -775,7 +775,7 @@ class LlmConfigFacadeTest {
         anthropicPromptCacheTtl = ANTHROPIC_PROMPT_CACHE_TTL_1H,
       ),
     )
-    val facade = LocalLlmConfigFacade.createForTest(
+    val facade = LocalLlmConfigFacade.create(
       llmSettingsStore = store,
       providerClient = RecordingProviderClient(
         LiteLlmProviderResult.Success(outputText = "OK"),

@@ -60,6 +60,7 @@ internal class RoutingManagedProcessControllerFactory(
           startedAtEpochMs = clock(),
           updatedAtEpochMs = clock(),
           finishedAtEpochMs = clock(),
+          ownerIdentity = routedRequest.ownerIdentity,
           metadata = routedRequest.metadata,
         ),
       )

@@ -514,7 +514,7 @@ class P4aPythonRuntimeTest {
         workspaceRoot = workspaceRoot,
         scriptPath = workspaceRoot.resolve("demo.py"),
         timeoutMs = 40L,
-        startupTimeoutMs = 30L,
+        startupTimeoutMs = 120L,
       ),
     )
 

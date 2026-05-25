@@ -5,10 +5,12 @@ import com.opencray.core.contracts.AgentTaskType
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.orchestrator.AgentLoop
+import com.opencray.core.orchestrator.NoOpSessionQueueRestoreTransformer
 import com.opencray.core.orchestrator.QueueClock
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.core.orchestrator.SessionQueue
 import com.opencray.core.orchestrator.SessionQueueConfig
+import com.opencray.core.orchestrator.SessionQueueRestoreTransformer
 import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionTaskRuntime
 import com.opencray.core.orchestrator.SuspensionRequest
@@ -3314,12 +3316,21 @@ class OpenCrayAgentRuntime(
             shouldContinueBatch = false
             continue
           }
+          val finalizationMetadata = promptCheckpointMetadata(
+            boundary = OpenCrayPromptCheckpointBoundary.FINALIZATION_COMPLETE,
+            cursor = cursor,
+            turnIndex = cursor.turn + 1,
+            localContinuationContextPrompt = localContinuationContextPrompt,
+            localContinuationStableAnchor = localContinuationStableAnchor,
+            localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
+          ) + finalAttachmentMetadata(action.attachments)
           emitAssistantEvent(
             task = task,
             turn = cursor.turn,
             text = action.answer,
             responseFormat = action.responseFormat,
             isFinal = true,
+            metadata = finalizationMetadata,
           )
           return PromptBatchExecutionOutcome.Terminal(
             successResult(
@@ -3334,7 +3345,7 @@ class OpenCrayAgentRuntime(
                 responseFormat = action.responseFormat,
                 contextReport = contextReport,
                 diagnostics = diagnostics,
-              ) + finalAttachmentMetadata(action.attachments),
+              ) + finalizationMetadata,
             ),
           )
         }
@@ -8020,6 +8031,7 @@ class OpenCrayAgentRuntime(
 class OpenCrayAgentEngine(
   private val runtime: SessionTaskRuntime,
   private val clock: QueueClock = SystemQueueClock,
+  private val restoreTransformer: SessionQueueRestoreTransformer = NoOpSessionQueueRestoreTransformer,
   private val queueConfig: SessionQueueConfig = SessionQueueConfig(),
 ) {
   fun create(
@@ -8032,6 +8044,7 @@ class OpenCrayAgentEngine(
       agentId = agentId,
       runtime = runtime,
       snapshotStore = snapshotStore,
+      restoreTransformer = restoreTransformer,
       clock = clock,
       config = queueConfig,
     ),

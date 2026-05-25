@@ -1,13 +1,15 @@
 package com.opencray.app
 
-internal interface RuntimeServiceExecutionCoordinator {
-  fun attach()
-
-  fun onStartCommand(startId: Int)
-
+internal interface RuntimeServiceShellStateAccess {
   fun currentKeepAliveState(): RuntimeServiceKeepAliveState
 
   fun currentForegroundState(): RuntimeForegroundState
+}
+
+internal interface RuntimeServiceExecutionCoordinator : RuntimeServiceShellStateAccess {
+  fun attach()
+
+  fun onStartCommand(startId: Int)
 
   fun persistProjectionSnapshot(
     workState: RuntimeServiceWorkState? = null,
@@ -39,60 +41,23 @@ internal object DefaultRuntimeServiceExecutionCoordinatorFactory :
     coordinatorDependencies = coordinatorDependencies,
     keepAliveController = keepAliveController,
     runtimeForegroundController = runtimeForegroundController,
-    runtimeNotificationController = RuntimeNotificationCoordinator(
-      appContext = appContext,
-      localizedContext = coordinatorDependencies.localizedContext,
-      chatSessionStore = coordinatorDependencies.chatSessionStore,
-      hostAccess = coordinatorDependencies.runtimeHostAccess,
-      scheduledTaskSpecStore = coordinatorDependencies.scheduledTaskSpecStore,
-      scheduledTaskRunRecordStore = coordinatorDependencies.scheduledTaskRunRecordStore,
-      notificationSettingsProvider = RuntimeNotificationSettingsStore.fromContext(appContext)::load,
-    ),
-    projectionStore = FileBackedRuntimeServiceProjectionStoreFactory.fromContext(appContext).create(),
   )
 }
 
 internal data class RuntimeServiceExecutionCoordinatorDependencies(
-  val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? = { null },
-  val runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor,
-  val runtimeHostAccess: OpenCrayRuntimeHostAccess,
-  val serviceLifecycle: RuntimeServiceLifecycleDescriptor,
-  val bootstrapResult: RuntimeServiceBootstrapResult,
+  val projectionCoordinator: RuntimeServiceProjectionCoordinator,
   val serviceWorkStateTracker: RuntimeServiceWorkStateTracker,
-  val localizedContext: android.content.Context,
-  val chatSessionStore: ChatSessionLocalStore,
-  val scheduledTaskSpecStore: ScheduledTaskSpecStore,
-  val scheduledTaskRunRecordStore: ScheduledTaskRunRecordStore,
 )
 
 private class DefaultRuntimeServiceExecutionCoordinator(
   private val coordinatorDependencies: RuntimeServiceExecutionCoordinatorDependencies,
   private val keepAliveController: RuntimeServiceKeepAliveController,
   private val runtimeForegroundController: RuntimeForegroundController,
-  private val runtimeNotificationController: RuntimeNotificationCoordinator,
-  private val projectionStore: RuntimeServiceProjectionStore,
 ) : RuntimeServiceExecutionCoordinator {
   private val lock = Any()
   private var attached: Boolean = false
   private var serviceWorkStateObservationDisposer: (() -> Unit)? = null
   private var keepAliveStateObservationDisposer: (() -> Unit)? = null
-  private var runtimeOwnerProjectionObservationDisposer: (() -> Unit)? = null
-  private val runtimeOwnerProjectionListener = object : AgentSessionRuntimeListener {
-    override fun onTaskStarted(
-      sessionId: String,
-      task: com.opencray.core.contracts.AgentTask,
-    ) {
-      persistProjectionSnapshot()
-    }
-
-    override fun onTaskFinished(
-      sessionId: String,
-      task: com.opencray.core.contracts.AgentTask,
-      result: com.opencray.core.contracts.ExecutionResult,
-    ) {
-      persistProjectionSnapshot()
-    }
-  }
 
   override fun attach() {
     val serviceWorkStateTracker = coordinatorDependencies.serviceWorkStateTracker
@@ -107,21 +72,17 @@ private class DefaultRuntimeServiceExecutionCoordinator(
       keepAliveStateObservationDisposer = keepAliveController.observe(
         ::onKeepAliveStateChanged,
       )
-      runtimeOwnerProjectionObservationDisposer = coordinatorDependencies.runtimeHostAccess.observe(
-        runtimeOwnerProjectionListener,
-      )
     }
-    runtimeNotificationController.start()
-    runtimeNotificationController.onServiceBootstrapCompleted(
-      bootstrapResult = coordinatorDependencies.bootstrapResult,
-      processStartId = coordinatorDependencies.serviceLifecycle.processStartId,
-    )
-    onServiceWorkStateChanged(serviceWorkStateTracker.currentState())
-    persistProjectionSnapshot()
+    val currentWorkState = serviceWorkStateTracker.currentState()
+    keepAliveController.onWorkStateChanged(currentWorkState)
+    runtimeForegroundController.onWorkStateChanged(currentWorkState)
+    val currentKeepAliveState = keepAliveController.currentState()
+    onKeepAliveStateChanged(currentKeepAliveState)
   }
 
   override fun onStartCommand(startId: Int) {
-    keepAliveController.onStartCommand(startId)
+    val keepAliveState = keepAliveController.onStartCommand(startId)
+    persistProjectionSnapshot(keepAliveState = keepAliveState)
   }
 
   override fun currentKeepAliveState(): RuntimeServiceKeepAliveState = keepAliveController.currentState()
@@ -131,27 +92,18 @@ private class DefaultRuntimeServiceExecutionCoordinator(
   override fun persistProjectionSnapshot(
     workState: RuntimeServiceWorkState?,
     keepAliveState: RuntimeServiceKeepAliveState?,
-  ) {
-    projectionStore.saveSnapshot(
-      RuntimeServiceProjectionSnapshot(
-        localRuntimeServerState = coordinatorDependencies.localRuntimeServerStateProvider(),
-        runtimeOwnerLifecycle = coordinatorDependencies.runtimeOwnerLifecycle,
-        runtimeOwnerWorkSummary = coordinatorDependencies.runtimeHostAccess.activeWorkSummary(),
-        serviceLifecycle = coordinatorDependencies.serviceLifecycle,
-        serviceWorkState = workState ?: coordinatorDependencies.serviceWorkStateTracker.currentState(),
-        serviceKeepAliveState = keepAliveState ?: keepAliveController.currentState(),
-      ),
-    )
-  }
+  ) = coordinatorDependencies.projectionCoordinator.persistProjectionSnapshot(
+    workState = workState,
+    keepAliveState = keepAliveState ?: keepAliveController.currentState(),
+  )
 
   override fun onScheduledDispatchOutcome(outcome: ScheduledTaskDispatchOutcome) {
-    runtimeNotificationController.onScheduledDispatchOutcome(outcome)
+    coordinatorDependencies.projectionCoordinator.onScheduledDispatchOutcome(outcome)
   }
 
   override fun dispose() {
     val serviceWorkStateDisposer: (() -> Unit)?
     val keepAliveDisposer: (() -> Unit)?
-    val runtimeOwnerDisposer: (() -> Unit)?
     synchronized(lock) {
       if (!attached) {
         return
@@ -159,27 +111,21 @@ private class DefaultRuntimeServiceExecutionCoordinator(
       attached = false
       serviceWorkStateDisposer = serviceWorkStateObservationDisposer
       keepAliveDisposer = keepAliveStateObservationDisposer
-      runtimeOwnerDisposer = runtimeOwnerProjectionObservationDisposer
       serviceWorkStateObservationDisposer = null
       keepAliveStateObservationDisposer = null
-      runtimeOwnerProjectionObservationDisposer = null
     }
     serviceWorkStateDisposer?.invoke()
     keepAliveDisposer?.invoke()
-    runtimeOwnerDisposer?.invoke()
-    runtimeNotificationController.dispose()
-    runtimeForegroundController.onDestroy()
-    val destroyedKeepAliveState = keepAliveController.onDestroy()
-    persistProjectionSnapshot(keepAliveState = destroyedKeepAliveState)
+    persistProjectionSnapshot(keepAliveState = keepAliveController.currentState())
   }
 
   private fun onServiceWorkStateChanged(workState: RuntimeServiceWorkState) {
     keepAliveController.onWorkStateChanged(workState)
     runtimeForegroundController.onWorkStateChanged(workState)
-    persistProjectionSnapshot(workState = workState)
   }
 
   private fun onKeepAliveStateChanged(keepAliveState: RuntimeServiceKeepAliveState) {
+    runtimeForegroundController.onKeepAliveStateChanged(keepAliveState)
     persistProjectionSnapshot(keepAliveState = keepAliveState)
   }
 }

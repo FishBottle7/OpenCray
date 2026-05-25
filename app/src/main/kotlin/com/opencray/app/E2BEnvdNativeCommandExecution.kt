@@ -1164,6 +1164,7 @@ private class E2BMinimalProtocolManagedProcessControllerFactory(
       workingDirectory = normalizedSnapshot.workingDirectory,
       timeoutMs = normalizedSnapshot.timeoutMs,
       requestedAtEpochMs = normalizedSnapshot.startedAtEpochMs,
+      ownerIdentity = normalizedSnapshot.ownerIdentity,
       metadata = normalizedSnapshot.metadata,
     )
     return E2BMinimalNativeManagedCommandController(
@@ -2528,6 +2529,7 @@ private class E2BMinimalNativeManagedCommandController(
     remoteHandle = remoteHandleLocked(),
     observationState = observationStateLocked(),
     reconnectState = reconnectStateLocked(),
+    ownerIdentity = request.ownerIdentity,
     metadata = buildMap {
       putAll(runtimeMetadata)
       if (terminationRequested) {

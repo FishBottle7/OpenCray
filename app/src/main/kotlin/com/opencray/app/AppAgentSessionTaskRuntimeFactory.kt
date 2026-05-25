@@ -580,6 +580,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       PromptCheckpointKind.COMMENTARY_EMITTED,
       PromptCheckpointKind.TOOL_RESULT_COMMITTED,
       PromptCheckpointKind.SUPPLEMENT_INGESTED,
+      PromptCheckpointKind.FINALIZATION_COMPLETE,
       PromptCheckpointKind.WAITING_APPROVAL,
       PromptCheckpointKind.GENERAL_RESUME,
       -> ApprovalContinuation()
@@ -750,6 +751,9 @@ internal class AppAgentSessionTaskRuntimeFactory(
 
       OpenCrayPromptCheckpointBoundary.SUPPLEMENT_INGESTED ->
         PromptCheckpointKind.SUPPLEMENT_INGESTED
+
+      OpenCrayPromptCheckpointBoundary.FINALIZATION_COMPLETE ->
+        PromptCheckpointKind.FINALIZATION_COMPLETE
     }
 
   private object NonPromptTaskLiteLlmGateway : LiteLlmGateway {

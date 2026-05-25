@@ -11,21 +11,64 @@ internal data class OpenCrayClientGatewayBundle(
 )
 
 internal fun interface OpenCrayClientGatewayBundleFactory {
-  fun create(context: Context): OpenCrayClientGatewayBundle
+  fun create(
+    context: Context,
+    target: RuntimeServiceTarget,
+  ): OpenCrayClientGatewayBundle
 }
 
-internal object DefaultOpenCrayClientGatewayBundleFactory : OpenCrayClientGatewayBundleFactory {
-  override fun create(context: Context): OpenCrayClientGatewayBundle {
+internal class ConfigurableOpenCrayClientGatewayBundleFactory(
+  private val localHostGatewayProvider: (Context) -> OpenCrayLocalHostGateway,
+  private val serviceBackedGatewayBundleFactory: OpenCrayServiceBackedGatewayBundleFactory,
+) : OpenCrayClientGatewayBundleFactory {
+  private val lock = Any()
+  private var bundlesByTarget: Map<RuntimeServiceTarget, OpenCrayClientGatewayBundle> = emptyMap()
+  @Volatile
+  private var localHostGateway: OpenCrayLocalHostGateway? = null
+
+  override fun create(
+    context: Context,
+    target: RuntimeServiceTarget,
+  ): OpenCrayClientGatewayBundle {
     val appContext = context.applicationContext
-    val serviceBackedGatewayBundle = DefaultOpenCrayServiceBackedGatewayBundleFactory.create(
+    bundlesByTarget[target]?.let { existing ->
+      return existing
+    }
+    return synchronized(lock) {
+      bundlesByTarget[target] ?: createBundle(
+        appContext = appContext,
+        target = target,
+      ).also { created ->
+        bundlesByTarget = bundlesByTarget + (target to created)
+      }
+    }
+  }
+
+  private fun createBundle(
+    appContext: Context,
+    target: RuntimeServiceTarget,
+  ): OpenCrayClientGatewayBundle {
+    val serviceBackedGatewayBundle = serviceBackedGatewayBundleFactory.create(
       appContext,
+      target = target,
     )
     return OpenCrayClientGatewayBundle(
-      localHostGateway = openCrayLocalHostGateway(appContext),
+      localHostGateway = resolveLocalHostGateway(appContext),
       shellGateway = serviceBackedGatewayBundle.shellGateway,
       chatRuntimeGateway = serviceBackedGatewayBundle.chatRuntimeGateway,
       skillsGateway = serviceBackedGatewayBundle.skillsGateway,
       settingsGateway = serviceBackedGatewayBundle.settingsGateway,
     )
+  }
+
+  private fun resolveLocalHostGateway(appContext: Context): OpenCrayLocalHostGateway {
+    localHostGateway?.let { existing ->
+      return existing
+    }
+    return synchronized(lock) {
+      localHostGateway ?: localHostGatewayProvider(appContext).also { created ->
+        localHostGateway = created
+      }
+    }
   }
 }

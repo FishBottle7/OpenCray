@@ -8,6 +8,8 @@ class OpenCrayShellSnapshot {
     required this.hostLabel,
     required this.hostSummary,
     required this.isHostConnected,
+    this.flutterAppInstanceId,
+    this.bridgeInstanceId,
     this.localRuntimeServerState,
     this.hostLifecycle,
     this.runtimeOwnerLifecycle,
@@ -23,6 +25,8 @@ class OpenCrayShellSnapshot {
   final String hostLabel;
   final String hostSummary;
   final bool isHostConnected;
+  final String? flutterAppInstanceId;
+  final String? bridgeInstanceId;
   final OpenCrayLocalRuntimeServerStateSnapshot? localRuntimeServerState;
   final OpenCrayHostLifecycleSnapshot? hostLifecycle;
   final OpenCrayHostLifecycleSnapshot? runtimeOwnerLifecycle;
@@ -53,6 +57,8 @@ class OpenCrayShellSnapshot {
       hostLabel: map['hostLabel'] as String? ?? 'HOST READY',
       hostSummary: map['hostSummary'] as String? ?? defaultHostSummary,
       isHostConnected: map['isHostConnected'] as bool? ?? true,
+      flutterAppInstanceId: map['flutterAppInstanceId'] as String?,
+      bridgeInstanceId: map['bridgeInstanceId'] as String?,
       localRuntimeServerState:
           rawLocalRuntimeServerState is Map<Object?, Object?>
           ? OpenCrayLocalRuntimeServerStateSnapshot.fromMap(
@@ -104,6 +110,8 @@ class OpenCrayShellSnapshot {
     String? hostLabel,
     String? hostSummary,
     bool? isHostConnected,
+    String? flutterAppInstanceId,
+    String? bridgeInstanceId,
     OpenCrayLocalRuntimeServerStateSnapshot? localRuntimeServerState,
     OpenCrayHostLifecycleSnapshot? hostLifecycle,
     OpenCrayHostLifecycleSnapshot? runtimeOwnerLifecycle,
@@ -120,6 +128,8 @@ class OpenCrayShellSnapshot {
       hostLabel: hostLabel ?? this.hostLabel,
       hostSummary: hostSummary ?? this.hostSummary,
       isHostConnected: isHostConnected ?? this.isHostConnected,
+      flutterAppInstanceId: flutterAppInstanceId ?? this.flutterAppInstanceId,
+      bridgeInstanceId: bridgeInstanceId ?? this.bridgeInstanceId,
       localRuntimeServerState:
           localRuntimeServerState ?? this.localRuntimeServerState,
       hostLifecycle: hostLifecycle ?? this.hostLifecycle,

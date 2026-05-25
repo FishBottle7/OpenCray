@@ -1,38 +1,31 @@
 package com.opencray.app
 
-import android.content.Context
-
 internal class ServiceBackedOpenCrayShellGateway(
   private val serviceClient: OpenCrayRuntimeServiceClient,
-  private val fallbackGateway: OpenCrayShellGateway,
+  fallbackGateway: OpenCrayShellGateway? = null,
+  fallbackGatewayProvider: (() -> OpenCrayShellGateway)? = null,
 ) : OpenCrayShellGateway {
+  private val resolvedFallbackGatewayProvider: () -> OpenCrayShellGateway = cachedGatewayProvider(
+    fallbackGatewayProvider ?: fallbackGateway?.let { gateway -> { gateway } }
+      ?: error("Service-backed shell gateway requires a fallback gateway."),
+  )
+
   override fun loadShellSnapshot(): Map<String, Any?> =
-    currentGateway().loadShellSnapshot()
+    currentLoadGateway().loadShellSnapshot()
 
   override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithDynamicGateway(
-      currentGateway = ::currentGateway,
+      currentGateway = ::currentObservedGateway,
       observeConnectionState = serviceClient::observePassiveConnectionState,
       observe = { gateway, callback -> gateway.observeShell(callback) },
       listener = listener,
     )
 
-  private fun currentGateway(): OpenCrayShellGateway =
-    serviceClient.peekShellGateway() ?: fallbackGateway
-}
+  private fun currentLoadGateway(): OpenCrayShellGateway =
+    serviceClient.loadShellGateway() ?: resolvedFallbackGatewayProvider()
 
-internal fun serviceBackedOpenCrayShellGateway(
-  context: Context,
-): OpenCrayShellGateway {
-  val appContext = context.applicationContext
-  val serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(appContext)
-  return serviceBackedOpenCrayShellGateway(
-    serviceClient = serviceClient,
-    fallbackGateway = projectionOnlyOpenCrayShellGateway(
-      context = appContext,
-      serviceClient = serviceClient,
-    ),
-  )
+  private fun currentObservedGateway(): OpenCrayShellGateway =
+    serviceClient.peekShellGateway() ?: resolvedFallbackGatewayProvider()
 }
 
 internal fun serviceBackedOpenCrayShellGateway(
@@ -44,9 +37,9 @@ internal fun serviceBackedOpenCrayShellGateway(
 )
 
 internal fun serviceBackedOpenCrayShellGateway(
-  context: Context,
-  fallbackGateway: OpenCrayShellGateway,
-): OpenCrayShellGateway = serviceBackedOpenCrayShellGateway(
-  serviceClient = OpenCrayRuntimeServiceAccess.ensureClient(context.applicationContext),
-  fallbackGateway = fallbackGateway,
+  serviceClient: OpenCrayRuntimeServiceClient,
+  fallbackGatewayProvider: () -> OpenCrayShellGateway,
+): OpenCrayShellGateway = ServiceBackedOpenCrayShellGateway(
+  serviceClient = serviceClient,
+  fallbackGatewayProvider = fallbackGatewayProvider,
 )

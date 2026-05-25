@@ -12,6 +12,10 @@ import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
+import com.opencray.runtime.subagent.SubAgentContinuationKind
+import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
+import com.opencray.runtime.subagent.SubAgentExecutionState
+import com.opencray.runtime.subagent.SubAgentHandleState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -46,6 +50,7 @@ class ScheduledTaskWorkManagerTest {
     chatSessionStore.selectSession(activeSessionId)
     val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
     val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
 
     snapshotStoreFactory.forChatSession(recoverableSessionId).save(
       queueSnapshot(
@@ -65,6 +70,7 @@ class ScheduledTaskWorkManagerTest {
         chatSessionStore = chatSessionStore,
         snapshotStoreFactory = snapshotStoreFactory,
         promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
       ),
     )
   }
@@ -78,6 +84,7 @@ class ScheduledTaskWorkManagerTest {
     chatSessionStore.selectSession(activeSessionId)
     val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
     val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
 
     snapshotStoreFactory.forChatSession(checkpointSessionId).save(
       queueSnapshot(
@@ -108,16 +115,74 @@ class ScheduledTaskWorkManagerTest {
         chatSessionStore = chatSessionStore,
         snapshotStoreFactory = snapshotStoreFactory,
         promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
       ),
     )
   }
 
   @Test
-  fun hasPotentialInteractiveRunRepairWorkReturnsFalseWhenOnlyTerminalTasksExistWithoutCheckpoints() {
+  fun hasPotentialInteractiveRunRepairWorkReturnsTrueWhenDurableBackgroundSubAgentHandleExists() {
+    val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-subagent")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val subAgentSessionId = chatSessionStore.copySession(activeSessionId).activeSession.sessionId
+    chatSessionStore.selectSession(activeSessionId)
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+
+    subAgentHandleStoreFactory.forChatSession(subAgentSessionId).upsert(
+      backgroundSubAgentHandle(agentId = "child-repair"),
+    )
+
+    assertTrue(
+      hasPotentialInteractiveRunRepairWork(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      ),
+    )
+  }
+
+  @Test
+  fun hasPotentialInteractiveRunRepairWorkFindsDurableSessionOutsideChatSessionStoreState() {
+    val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-durable-only")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val durableOnlySessionId = "session-durable-only"
+
+    promptCheckpointStoreFactory.forChatSession(durableOnlySessionId).upsert(
+      PersistedPromptCheckpoint(
+        sessionId = durableOnlySessionId,
+        runId = "run-durable-only",
+        taskId = "task-durable-only",
+        checkpointId = "checkpoint-durable-only",
+        checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+        createdAtEpochMs = 1_000L,
+        updatedAtEpochMs = 1_100L,
+      ),
+    )
+
+    assertTrue(
+      hasPotentialInteractiveRunRepairWork(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      ),
+    )
+  }
+
+  @Test
+  fun hasPotentialInteractiveRunRepairWorkReturnsFalseWhenOnlyTerminalTasksAndTerminalSubAgentsExist() {
     val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-idle")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
     val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
     val sessionId = chatSessionStore.loadState().activeSession.sessionId
 
     snapshotStoreFactory.forChatSession(sessionId).save(
@@ -132,12 +197,16 @@ class ScheduledTaskWorkManagerTest {
         ),
       ),
     )
+    subAgentHandleStoreFactory.forChatSession(sessionId).upsert(
+      completedSubAgentHandle(agentId = "child-completed"),
+    )
 
     assertFalse(
       hasPotentialInteractiveRunRepairWork(
         chatSessionStore = chatSessionStore,
         snapshotStoreFactory = snapshotStoreFactory,
         promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
       ),
     )
   }
@@ -181,10 +250,45 @@ class ScheduledTaskWorkManagerTest {
     lifecycleState = lifecycleState,
   )
 
+  private fun backgroundSubAgentHandle(
+    agentId: String,
+  ): SubAgentHandleState = SubAgentHandleState.queued(
+    agentId = agentId,
+    childRunId = "child-run-$agentId",
+    childTaskId = "child-task-$agentId",
+    description = "Recover child $agentId",
+    prompt = "Resume background child $agentId",
+    subagentType = "worker",
+    contextMode = "delegated",
+    parentRunId = "parent-run-$agentId",
+    parentTaskId = "parent-task-$agentId",
+    parentTurn = 0,
+    depth = 1,
+    activeSkillName = null,
+    activeSkillActivationSource = null,
+    createdAtEpochMs = 1_000L,
+  )
+
+  private fun completedSubAgentHandle(
+    agentId: String,
+  ): SubAgentHandleState = backgroundSubAgentHandle(agentId).copy(
+    snapshot = SubAgentExecutionSnapshot(
+      state = SubAgentExecutionState.COMPLETED,
+      continuationKind = SubAgentContinuationKind.NONE,
+      resumable = false,
+      requiresUserAction = false,
+      isHighRisk = false,
+      headline = "Delegated child run completed.",
+    ),
+    updatedAtEpochMs = 1_100L,
+  )
+
   private class InMemoryAgentQueueSnapshotStoreFactory : AgentQueueSnapshotStoreFactory {
     private val stores = linkedMapOf<String, SessionQueueSnapshotStore>()
 
     override fun forChatSession(sessionId: String): SessionQueueSnapshotStore =
       stores.getOrPut(sessionId) { InMemorySessionQueueSnapshotStore() }
+
+    override fun knownSessionIds(): List<String> = stores.keys.toList()
   }
 }

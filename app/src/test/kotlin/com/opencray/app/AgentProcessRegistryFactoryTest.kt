@@ -1,11 +1,17 @@
 package com.opencray.app
 
 import com.opencray.runtime.process.AgentProcessRegistry
+import com.opencray.runtime.process.FileBackedAgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessController
 import com.opencray.runtime.process.ManagedProcessControllerFactory
+import com.opencray.runtime.process.ManagedProcessRestoreMode
+import com.opencray.runtime.process.ManagedProcessRestoreScope
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.process.ManagedProcessRuntimeIdentity
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Rule
@@ -84,9 +90,135 @@ class AgentProcessRegistryFactoryTest {
     assertNull(sessionBProcess)
   }
 
+  @Test
+  fun differentRuntimeControllersInSameProcessDoNotReattachLiveManagedProcessController() {
+    val ownerIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-1",
+      runtimeControllerId = "controller-1",
+    )
+    val firstFactory = FileBackedAgentProcessRegistryFactory(
+      runtimeRootDirectory = temporaryFolder.root,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        FakeManagedProcessController(
+          snapshot = runningSnapshot(
+            request.processId,
+            request.taskId,
+            ownerIdentity = request.ownerIdentity,
+          ),
+          awaitSnapshot = successSnapshot(
+            request.processId,
+            request.taskId,
+            ownerIdentity = request.ownerIdentity,
+          ),
+        )
+      },
+      runtimeIdentity = ownerIdentity,
+    )
+    val secondFactory = FileBackedAgentProcessRegistryFactory(
+      runtimeRootDirectory = temporaryFolder.root,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        FakeManagedProcessController(
+          snapshot = runningSnapshot(
+            request.processId,
+            request.taskId,
+            ownerIdentity = request.ownerIdentity,
+          ),
+        )
+      },
+      runtimeIdentity = ManagedProcessRuntimeIdentity(
+        processStartId = "process-1",
+        runtimeControllerId = "controller-2",
+      ),
+    )
+
+    firstFactory.forChatSession("session/a").start(
+      startRequest(
+        processId = "proc-live",
+        taskId = "task-live",
+        ownerIdentity = ownerIdentity,
+      ),
+    )
+
+    val restored = secondFactory.forChatSession("session/a").read("proc-live")
+
+    assertEquals(ManagedProcessStatus.FAILED, restored?.status)
+    assertEquals(FileBackedAgentProcessRegistry.ERROR_INTERRUPTED_ON_RESTORE, restored?.errorCode)
+    assertEquals(
+      ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+      restored?.metadata?.get(MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY),
+    )
+    assertEquals(
+      "controller-2",
+      restored?.metadata?.get(MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY),
+    )
+  }
+
+  @Test
+  fun projectionOnlyRestoreModeDoesNotRepairRunningManagedProcessSnapshotsDuringRead() {
+    val ownerIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-owner",
+      runtimeControllerId = "controller-owner",
+    )
+    val ownerFactory = FileBackedAgentProcessRegistryFactory(
+      runtimeRootDirectory = temporaryFolder.root,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        FakeManagedProcessController(
+          snapshot = runningSnapshot(
+            request.processId,
+            request.taskId,
+            ownerIdentity = request.ownerIdentity,
+          ),
+        )
+      },
+      runtimeIdentity = ownerIdentity,
+    )
+
+    ownerFactory.forChatSession("session/a").start(
+      startRequest(
+        processId = "proc-projection",
+        taskId = "task-projection",
+        ownerIdentity = ownerIdentity,
+      ),
+    )
+
+    val projectionIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-ui",
+      runtimeControllerId = "controller-ui",
+    )
+    val projectionFactory = FileBackedAgentProcessRegistryFactory(
+      runtimeRootDirectory = temporaryFolder.root,
+      runtimeIdentity = projectionIdentity,
+      restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
+    )
+
+    val firstProjectionRead = projectionFactory.forChatSession("session/a").read("proc-projection")
+    val secondProjectionRead = projectionFactory.forChatSession("session/a").read("proc-projection")
+
+    assertEquals(ManagedProcessStatus.RUNNING, firstProjectionRead?.status)
+    assertNull(firstProjectionRead?.errorCode)
+    assertEquals(ManagedProcessStatus.RUNNING, secondProjectionRead?.status)
+    assertNull(secondProjectionRead?.errorCode)
+
+    val restoredOwnerRead = FileBackedAgentProcessRegistryFactory(
+      runtimeRootDirectory = temporaryFolder.root,
+      runtimeIdentity = ManagedProcessRuntimeIdentity(
+        processStartId = "process-runtime-2",
+        runtimeControllerId = "controller-runtime-2",
+      ),
+    ).forChatSession("session/a").read("proc-projection")
+
+    assertEquals(ManagedProcessStatus.FAILED, restoredOwnerRead?.status)
+    assertEquals(FileBackedAgentProcessRegistry.ERROR_INTERRUPTED_ON_RESTORE, restoredOwnerRead?.errorCode)
+    assertEquals(
+      ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+      restoredOwnerRead?.metadata?.get(MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY),
+    )
+  }
+
   private fun startRequest(
     processId: String,
     taskId: String,
+    ownerIdentity: ManagedProcessRuntimeIdentity? = null,
   ): ManagedProcessStartRequest = ManagedProcessStartRequest(
     processId = processId,
     taskId = taskId,
@@ -95,11 +227,13 @@ class AgentProcessRegistryFactoryTest {
     workingDirectory = ".",
     timeoutMs = 120_000L,
     requestedAtEpochMs = 900L,
+    ownerIdentity = ownerIdentity,
   )
 
   private fun runningSnapshot(
     processId: String,
     taskId: String,
+    ownerIdentity: ManagedProcessRuntimeIdentity? = null,
   ): ManagedProcessSnapshot = ManagedProcessSnapshot(
     processId = processId,
     taskId = taskId,
@@ -111,11 +245,13 @@ class AgentProcessRegistryFactoryTest {
     timeoutMs = 120_000L,
     startedAtEpochMs = 1_000L,
     updatedAtEpochMs = 1_000L,
+    ownerIdentity = ownerIdentity,
   )
 
   private fun successSnapshot(
     processId: String,
     taskId: String,
+    ownerIdentity: ManagedProcessRuntimeIdentity? = null,
   ): ManagedProcessSnapshot = ManagedProcessSnapshot(
     processId = processId,
     taskId = taskId,
@@ -130,6 +266,7 @@ class AgentProcessRegistryFactoryTest {
     startedAtEpochMs = 1_000L,
     updatedAtEpochMs = 1_250L,
     finishedAtEpochMs = 1_250L,
+    ownerIdentity = ownerIdentity,
   )
 
   private class FakeManagedProcessController(

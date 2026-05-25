@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.ComponentName
+import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.ServiceConnection
@@ -39,6 +40,13 @@ import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.ProviderNativeWebSearchSupport
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.process.ManagedProcessController
+import com.opencray.runtime.process.ManagedProcessControllerFactory
+import com.opencray.runtime.process.ManagedProcessRestoreMode
+import com.opencray.runtime.process.ManagedProcessRuntimeIdentity
+import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessStartRequest
+import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.subagent.SubAgentApprovalResume
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import com.opencray.runtime.subagent.SubAgentContinuationKind
@@ -89,8 +97,9 @@ class OpenCrayRuntimeServiceHostTest {
       runCancellationRecorder = { _, _, _, _, _ -> },
       terminalReplayRepairer = { _, _ -> },
     )
-    val owner = InProcessOpenCrayRuntimeOwner(
-      lifecycleDescriptor = lifecycleDescriptor,
+    val owner = RetainedInProcessOpenCrayRuntimeOwnerCore(
+      runtimeControllerLifecycle = null,
+      runtimeOwnerLifecycleState = RuntimeOwnerLifecycleState(lifecycleDescriptor),
       sessionRuntimeManager = runtimeManager,
       runEventJournalStoreFactory = runEventJournalStoreFactory,
       promptCheckpointStoreFactory = promptCheckpointStoreFactory,
@@ -584,6 +593,7 @@ class OpenCrayRuntimeServiceHostTest {
     val requestedStopIds = mutableListOf<Int>()
     val controller = RuntimeServiceKeepAliveController(
       idleGraceMs = 500L,
+      appVisibleProvider = { true },
       scheduler = scheduler,
       stopRequester = { startId ->
         requestedStopIds += startId
@@ -617,6 +627,7 @@ class OpenCrayRuntimeServiceHostTest {
     val requestedStopIds = mutableListOf<Int>()
     val controller = RuntimeServiceKeepAliveController(
       idleGraceMs = 500L,
+      appVisibleProvider = { true },
       scheduler = scheduler,
       stopRequester = { startId ->
         requestedStopIds += startId
@@ -648,11 +659,47 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun runtimeServiceKeepAliveControllerReschedulesIdleStopWhenAppGoesBackground() {
+    var now = 1_000L
+    val scheduler = RecordingRuntimeServiceDelayScheduler()
+    val requestedStopIds = mutableListOf<Int>()
+    val controller = RuntimeServiceKeepAliveController(
+      idleGraceMs = 500L,
+      backgroundIdleGraceMsProvider = { 3_000L },
+      appVisibleProvider = { true },
+      scheduler = scheduler,
+      stopRequester = { startId ->
+        requestedStopIds += startId
+        true
+      },
+      clock = { now },
+    )
+
+    controller.onStartCommand(startId = 7)
+
+    now = 1_200L
+    val rescheduled = controller.onAppVisibilityChanged(false)
+
+    assertEquals(listOf(500L, 2_800L), scheduler.scheduledDelayMs)
+    assertEquals(RuntimeServiceKeepAliveState.PHASE_IDLE_GRACE, rescheduled.phase)
+    assertEquals(false, rescheduled.appVisible)
+    assertEquals(3_000L, rescheduled.idleGraceMs)
+    assertEquals(4_000L, rescheduled.stopDeadlineEpochMs)
+
+    now = 4_000L
+    scheduler.runNext()
+
+    assertEquals(listOf(7), requestedStopIds)
+    assertEquals(RuntimeServiceKeepAliveState.PHASE_STOP_REQUESTED, controller.currentState().phase)
+  }
+
+  @Test
   fun runtimeServiceKeepAliveControllerTransitionsToDestroyedOnDestroy() {
     var now = 3_000L
     val scheduler = RecordingRuntimeServiceDelayScheduler()
     val controller = RuntimeServiceKeepAliveController(
       idleGraceMs = 500L,
+      appVisibleProvider = { true },
       scheduler = scheduler,
       stopRequester = { true },
       clock = { now },
@@ -676,6 +723,7 @@ class OpenCrayRuntimeServiceHostTest {
     val adapter = RecordingRuntimeForegroundServiceAdapter()
     val controller = RuntimeForegroundController(
       serviceAdapter = adapter,
+      appVisibleProvider = { true },
       mainThreadPoster = ImmediateMainThreadPoster,
       clock = { now },
     )
@@ -717,11 +765,182 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun runtimeForegroundControllerRetainsForegroundDuringBackgroundIdleGrace() {
+    var now = 5_800L
+    val adapter = RecordingRuntimeForegroundServiceAdapter()
+    val controller = RuntimeForegroundController(
+      serviceAdapter = adapter,
+      retainForegroundDuringIdleGraceProvider = { true },
+      appVisibleProvider = { true },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { now },
+    )
+
+    controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_ACTIVE_WORK,
+        hasActiveWork = true,
+        activeRunCount = 1,
+        activeSessionCount = 1,
+        pendingWorkSessionCount = 1,
+        keepAliveRequired = true,
+        keepAliveReason = RuntimeServiceWorkState.KEEP_ALIVE_REASON_ACTIVE_RUN,
+        changedAtEpochMs = now,
+        activeSinceEpochMs = now,
+      ),
+    )
+    now = 5_850L
+    controller.onAppVisibilityChanged(false)
+    controller.onKeepAliveStateChanged(
+      RuntimeServiceKeepAliveState(
+        phase = RuntimeServiceKeepAliveState.PHASE_IDLE_GRACE,
+        idleGraceMs = 3_000L,
+        appVisible = false,
+        stopScheduled = true,
+        stopDeadlineEpochMs = 8_800L,
+        lastStartId = 7,
+        changedAtEpochMs = now,
+      ),
+    )
+
+    now = 5_900L
+    val idleGrace = controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_IDLE,
+        hasActiveWork = false,
+        keepAliveRequired = false,
+        changedAtEpochMs = now,
+        idleSinceEpochMs = now,
+      ),
+    )
+
+    assertEquals(RuntimeForegroundState.PHASE_FOREGROUND, idleGrace.phase)
+    assertEquals(true, idleGrace.notificationVisible)
+    assertEquals(RuntimeServiceWorkState.KEEP_ALIVE_REASON_IDLE_GRACE, idleGrace.keepAliveReason)
+    assertEquals(2, adapter.startedModels.size)
+    assertEquals(
+      RuntimeServiceWorkState.KEEP_ALIVE_REASON_IDLE_GRACE,
+      adapter.startedModels.last().keepAliveReason,
+    )
+    assertEquals(0, adapter.stopCount)
+  }
+
+  @Test
+  fun runtimeForegroundControllerDoesNotRetainIdleGraceForegroundWhenRetentionDisabled() {
+    var now = 5_950L
+    val adapter = RecordingRuntimeForegroundServiceAdapter()
+    val controller = RuntimeForegroundController(
+      serviceAdapter = adapter,
+      retainForegroundDuringIdleGraceProvider = { false },
+      appVisibleProvider = { true },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { now },
+    )
+
+    controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_ACTIVE_WORK,
+        hasActiveWork = true,
+        activeRunCount = 1,
+        activeSessionCount = 1,
+        pendingWorkSessionCount = 1,
+        keepAliveRequired = true,
+        keepAliveReason = RuntimeServiceWorkState.KEEP_ALIVE_REASON_ACTIVE_RUN,
+        changedAtEpochMs = now,
+        activeSinceEpochMs = now,
+      ),
+    )
+    now = 5_980L
+    controller.onAppVisibilityChanged(false)
+    controller.onKeepAliveStateChanged(
+      RuntimeServiceKeepAliveState(
+        phase = RuntimeServiceKeepAliveState.PHASE_IDLE_GRACE,
+        idleGraceMs = 3_000L,
+        appVisible = false,
+        stopScheduled = true,
+        stopDeadlineEpochMs = 8_950L,
+        lastStartId = 9,
+        changedAtEpochMs = now,
+      ),
+    )
+
+    now = 6_000L
+    val idle = controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_IDLE,
+        hasActiveWork = false,
+        keepAliveRequired = false,
+        changedAtEpochMs = now,
+        idleSinceEpochMs = now,
+      ),
+    )
+
+    assertEquals(RuntimeForegroundState.PHASE_IDLE, idle.phase)
+    assertEquals(false, idle.notificationVisible)
+    assertEquals(1, adapter.stopCount)
+  }
+
+  @Test
+  fun runtimeForegroundControllerDoesNotRetainIdleGraceForegroundWhileAppVisible() {
+    var now = 6_050L
+    val adapter = RecordingRuntimeForegroundServiceAdapter()
+    val controller = RuntimeForegroundController(
+      serviceAdapter = adapter,
+      retainForegroundDuringIdleGraceProvider = { true },
+      appVisibleProvider = { true },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { now },
+    )
+
+    controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_ACTIVE_WORK,
+        hasActiveWork = true,
+        activeRunCount = 1,
+        activeSessionCount = 1,
+        pendingWorkSessionCount = 1,
+        keepAliveRequired = true,
+        keepAliveReason = RuntimeServiceWorkState.KEEP_ALIVE_REASON_ACTIVE_RUN,
+        changedAtEpochMs = now,
+        activeSinceEpochMs = now,
+      ),
+    )
+    now = 6_100L
+    controller.onKeepAliveStateChanged(
+      RuntimeServiceKeepAliveState(
+        phase = RuntimeServiceKeepAliveState.PHASE_IDLE_GRACE,
+        idleGraceMs = 3_000L,
+        appVisible = true,
+        stopScheduled = true,
+        stopDeadlineEpochMs = 9_050L,
+        lastStartId = 11,
+        changedAtEpochMs = now,
+      ),
+    )
+
+    now = 6_150L
+    val idle = controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_IDLE,
+        hasActiveWork = false,
+        keepAliveRequired = false,
+        changedAtEpochMs = now,
+        idleSinceEpochMs = now,
+      ),
+    )
+
+    assertEquals(RuntimeForegroundState.PHASE_IDLE, idle.phase)
+    assertEquals(false, idle.notificationVisible)
+    assertEquals(1, adapter.stopCount)
+  }
+
+  @Test
   fun runtimeForegroundControllerUpdatesForegroundWhenActiveCountsChange() {
     var now = 6_000L
     val adapter = RecordingRuntimeForegroundServiceAdapter()
     val controller = RuntimeForegroundController(
       serviceAdapter = adapter,
+      appVisibleProvider = { true },
       mainThreadPoster = ImmediateMainThreadPoster,
       clock = { now },
     )
@@ -769,6 +988,7 @@ class OpenCrayRuntimeServiceHostTest {
     val adapter = RecordingRuntimeForegroundServiceAdapter()
     val controller = RuntimeForegroundController(
       serviceAdapter = adapter,
+      appVisibleProvider = { true },
       mainThreadPoster = ImmediateMainThreadPoster,
       clock = { now },
     )
@@ -809,7 +1029,13 @@ class OpenCrayRuntimeServiceHostTest {
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
     val runtimeManager = RecordingAgentSessionRuntimeManager()
-    runtimeManager.putHandle(RecordingAgentSessionHandle(activeSessionId, runtimeManager.resumedSessionIds))
+    runtimeManager.putHandle(
+      RecordingAgentSessionHandle(
+        sessionId = activeSessionId,
+        resumedSessionIds = runtimeManager.resumedSessionIds,
+        hasPendingWork = true,
+      ),
+    )
     val repairCalls = mutableListOf<Pair<String, List<AgentRunSnapshot>>>()
     val lifecycleDescriptor = HostRuntimeLifecycleDescriptor()
     val runtimeAccess = OpenCrayRuntimeOwnerAccess(
@@ -875,6 +1101,7 @@ class OpenCrayRuntimeServiceHostTest {
       RecordingAgentSessionHandle(
         sessionId = firstSessionId,
         resumedSessionIds = runtimeManager.resumedSessionIds,
+        hasPendingWork = true,
       ),
     )
     runtimeManager.putHandle(
@@ -955,6 +1182,7 @@ class OpenCrayRuntimeServiceHostTest {
       RecordingAgentSessionHandle(
         sessionId = activeSessionId,
         resumedSessionIds = runtimeManager.resumedSessionIds,
+        hasPendingWork = true,
       ),
     )
     runtimeManager.putHandle(
@@ -1011,6 +1239,92 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun bootstrapRuntimeServiceSessionsAlsoResumesNonActiveSessionsWithDurableSubAgentHandles() {
+    val root = temporaryFolder.newFolder("service-host-bootstrap-durable-subagent")
+    val runtimeRoot = root.resolve("runtime")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    chatSessionStore.appendUserMessage(activeSessionId, "Keep the active session")
+    val durableSubAgentSessionId = chatSessionStore.createSession().activeSession.sessionId
+    chatSessionStore.appendUserMessage(durableSubAgentSessionId, "Repair from durable subagent state")
+    val idleSessionId = chatSessionStore.createSession().activeSession.sessionId
+    chatSessionStore.appendUserMessage(idleSessionId, "Keep the idle session")
+    chatSessionStore.selectSession(activeSessionId)
+    val snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory(runtimeRoot)
+    subAgentHandleStoreFactory.forChatSession(durableSubAgentSessionId).upsert(
+      backgroundSubAgentHandle(agentId = "child-durable"),
+    )
+
+    val runtimeManager = RecordingAgentSessionRuntimeManager()
+    runtimeManager.putHandle(
+      RecordingAgentSessionHandle(
+        sessionId = activeSessionId,
+        resumedSessionIds = runtimeManager.resumedSessionIds,
+        hasPendingWork = true,
+      ),
+    )
+    runtimeManager.putHandle(
+      RecordingAgentSessionHandle(
+        sessionId = durableSubAgentSessionId,
+        resumedSessionIds = runtimeManager.resumedSessionIds,
+      ),
+    )
+    runtimeManager.putHandle(
+      RecordingAgentSessionHandle(
+        sessionId = idleSessionId,
+        resumedSessionIds = runtimeManager.resumedSessionIds,
+      ),
+    )
+    val lifecycleDescriptor = HostRuntimeLifecycleDescriptor()
+    val runtimeAccess = OpenCrayRuntimeOwnerAccess(
+      lifecycleDescriptor = lifecycleDescriptor,
+      hostAccess = DefaultOpenCrayRuntimeHostAccess(
+        lifecycleDescriptor = lifecycleDescriptor,
+        sessionRuntimeManager = runtimeManager,
+        runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory(),
+        promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory(),
+        supplementStoreFactory = object : AgentSessionSupplementStoreFactory {
+          private val stores = linkedMapOf<String, SessionSupplementStore>()
+
+          override fun forChatSession(sessionId: String): SessionSupplementStore =
+            stores.getOrPut(sessionId) { InMemorySessionSupplementStore() }
+        },
+        approvalRegistry = AgentTaskApprovalRegistry(),
+      ),
+      transcriptMessagesProvider = { emptyList() },
+      memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(memoryStore = InMemoryMemoryStore()),
+      replayAccess = OpenCrayRuntimeReplayAccess(
+        approvalRejectionRecorder = { _, _, _, _, _, _ -> },
+        approvalApprovedRecorder = { _, _, _, _, _, _ -> },
+        subAgentReplayRecorder = { _, _ -> },
+        runCancellationRecorder = { _, _, _, _, _ -> },
+        terminalReplayRepairer = { _, _ -> },
+      ),
+    )
+
+    val result = bootstrapRuntimeServiceSessions(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+      runtimeReplayAccess = runtimeAccess.replayAccess,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+    )
+
+    assertEquals(
+      setOf(activeSessionId, durableSubAgentSessionId),
+      result.resumedSessionIds.toSet(),
+    )
+    assertTrue(result.repairedSessionIds.isEmpty())
+    assertEquals(
+      setOf(activeSessionId, durableSubAgentSessionId),
+      runtimeManager.resumedSessionIds.toSet(),
+    )
+  }
+
+  @Test
   fun bootstrapRuntimeServiceSessionsSubmitsRecoveryTaskForQueuedSubAgentWithoutActiveParentRun() {
     val root = temporaryFolder.newFolder("service-host-bootstrap-subagent-recovery")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
@@ -1025,6 +1339,7 @@ class OpenCrayRuntimeServiceHostTest {
       RecordingAgentSessionHandle(
         sessionId = activeSessionId,
         resumedSessionIds = runtimeManager.resumedSessionIds,
+        hasPendingWork = true,
       ),
     )
     val recoveryHandle = queuedSubAgentHandle(agentId = "child-resume")
@@ -1081,118 +1396,6 @@ class OpenCrayRuntimeServiceHostTest {
     )
     assertTrue(recoverySession.submittedTasks.isEmpty())
     assertEquals(0, recoverySession.ensureProcessingCallCount)
-  }
-
-  @Test
-  fun inProcessBridgeLoadsSnapshotFromSnapshotProvider() {
-    val expected = bridgeSnapshot(temporaryFolder.newFolder("in-process-bridge"))
-    val bridge = InProcessOpenCrayRuntimeServiceBridge { expected }
-
-    val actual = bridge.loadSnapshot()
-
-    assertSame(expected.dependencies, actual.dependencies)
-    assertSame(expected.runtimeAccess, actual.runtimeAccess)
-    assertSame(expected.serviceLifecycle, actual.serviceLifecycle)
-    assertEquals(expected.serviceWorkState.phase, actual.serviceWorkState.phase)
-    assertEquals(expected.serviceKeepAliveState.phase, actual.serviceKeepAliveState.phase)
-    assertEquals(
-      expected.serviceWorkState.keepAliveRequired,
-      actual.serviceWorkState.keepAliveRequired,
-    )
-  }
-
-  @Test
-  fun existingBridgeLoadsSnapshotFromSnapshotProvider() {
-    val expected = bridgeSnapshot(temporaryFolder.newFolder("existing-bridge"))
-    val bridge = ExistingOpenCrayRuntimeServiceBridge(
-      snapshotProvider = { expected },
-    )
-
-    val actual = bridge.loadSnapshot()
-
-    assertSame(expected.dependencies, actual.dependencies)
-    assertSame(expected.runtimeAccess, actual.runtimeAccess)
-    assertSame(expected.serviceLifecycle, actual.serviceLifecycle)
-    assertEquals(expected.serviceWorkState.phase, actual.serviceWorkState.phase)
-    assertEquals(expected.serviceKeepAliveState.phase, actual.serviceKeepAliveState.phase)
-    assertEquals(
-      expected.serviceWorkState.keepAliveRequired,
-      actual.serviceWorkState.keepAliveRequired,
-    )
-  }
-
-  @Test
-  fun existingBridgeFailsExplicitlyWhenHostMissing() {
-    val bridge = ExistingOpenCrayRuntimeServiceBridge(
-      snapshotProvider = { null },
-      missingHostMessage = "runtime host missing",
-    )
-
-    val failure = runCatching { bridge.loadSnapshot() }.exceptionOrNull()
-
-    assertTrue(failure is IllegalStateException)
-    assertEquals("runtime host missing", failure?.message)
-  }
-
-  @Test
-  fun missingBridgeFailsExplicitly() {
-    val bridge = MissingOpenCrayRuntimeServiceBridge(
-      missingSnapshotMessage = "binder snapshot missing",
-    )
-
-    val failure = runCatching { bridge.loadSnapshot() }.exceptionOrNull()
-
-    assertTrue(failure is IllegalStateException)
-    assertEquals("binder snapshot missing", failure?.message)
-  }
-
-  @Test
-  fun binderBackedBridgeDelegatesToBinderAccess() {
-    val expected = bridgeSnapshot(temporaryFolder.newFolder("binder-bridge"))
-    val binderAccess = object : OpenCrayRuntimeServiceBinderAccess {
-      override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot = expected
-    }
-    val bridge = BinderBackedOpenCrayRuntimeServiceBridge(binderAccess)
-
-    val actual = bridge.loadSnapshot()
-
-    assertSame(expected.dependencies, actual.dependencies)
-    assertSame(expected.runtimeAccess, actual.runtimeAccess)
-    assertSame(expected.serviceLifecycle, actual.serviceLifecycle)
-  }
-
-  @Test
-  fun serviceClientLoadsBridgeSnapshotWithProjectedConnectionState() {
-    val expected = bridgeSnapshot(temporaryFolder.newFolder("client-bridge"))
-    val connectionState = RuntimeServiceConnectionState.inProcessFallback(
-      serviceStartRequested = true,
-    )
-    val client = BridgeBackedOpenCrayRuntimeServiceClient(
-      bridge = InProcessOpenCrayRuntimeServiceBridge { expected },
-      connectionState = connectionState,
-    )
-
-    val actual = client.loadSnapshot()
-
-    assertSame(expected, actual.bridgeSnapshot)
-    assertEquals(
-      expected.runtimeAccess.lifecycleDescriptor.runtimeOwnerId,
-      actual.diagnosticsSnapshot.runtimeOwnerLifecycle.runtimeOwnerId,
-    )
-    assertEquals(
-      expected.serviceLifecycle.serviceInstanceId,
-      actual.diagnosticsSnapshot.serviceLifecycle.serviceInstanceId,
-    )
-    assertEquals(expected.serviceWorkState.phase, actual.diagnosticsSnapshot.serviceWorkState.phase)
-    assertEquals(
-      expected.serviceKeepAliveState.phase,
-      actual.diagnosticsSnapshot.serviceKeepAliveState.phase,
-    )
-    assertEquals(
-      expected.serviceWorkState.keepAliveRequired,
-      actual.diagnosticsSnapshot.serviceWorkState.keepAliveRequired,
-    )
-    assertSame(connectionState, actual.connectionState)
   }
 
   @Test
@@ -1256,7 +1459,7 @@ class OpenCrayRuntimeServiceHostTest {
       settingsFacade = RecordingServiceOwnedSettingsFacade(),
       notificationSettingsFacade = com.opencray.app.facade.notifications
         .LocalNotificationSettingsFacade
-        .createForTest(),
+        .create(),
       strongBackgroundSettingsAccess = strongBackgroundAccess,
       sandboxSettingsAccess = RecordingSandboxSettingsGatewayAccess(),
       networkSearchConfigFacade = RecordingNetworkSearchConfigFacade(),
@@ -1308,7 +1511,7 @@ class OpenCrayRuntimeServiceHostTest {
       settingsFacade = RecordingServiceOwnedSettingsFacade(),
       notificationSettingsFacade = com.opencray.app.facade.notifications
         .LocalNotificationSettingsFacade
-        .createForTest(),
+        .create(),
       strongBackgroundSettingsAccess = RecordingStrongBackgroundSettingsAccess(),
       sandboxSettingsAccess = RecordingSandboxSettingsGatewayAccess(),
       networkSearchConfigFacade = networkFacade,
@@ -1393,7 +1596,7 @@ class OpenCrayRuntimeServiceHostTest {
       settingsFacade = settingsFacade,
       notificationSettingsFacade = com.opencray.app.facade.notifications
         .LocalNotificationSettingsFacade
-        .createForTest(),
+        .create(),
       strongBackgroundSettingsAccess = RecordingStrongBackgroundSettingsAccess(),
       sandboxSettingsAccess = RecordingSandboxSettingsGatewayAccess(),
       networkSearchConfigFacade = RecordingNetworkSearchConfigFacade(),
@@ -1438,7 +1641,7 @@ class OpenCrayRuntimeServiceHostTest {
       settingsFacade = RecordingServiceOwnedSettingsFacade(),
       notificationSettingsFacade = com.opencray.app.facade.notifications
         .LocalNotificationSettingsFacade
-        .createForTest(),
+        .create(),
       strongBackgroundSettingsAccess = RecordingStrongBackgroundSettingsAccess(),
       sandboxSettingsAccess = sandboxAccess,
       networkSearchConfigFacade = RecordingNetworkSearchConfigFacade(),
@@ -1495,7 +1698,7 @@ class OpenCrayRuntimeServiceHostTest {
       settingsFacade = RecordingServiceOwnedSettingsFacade(),
       notificationSettingsFacade = com.opencray.app.facade.notifications
         .LocalNotificationSettingsFacade
-        .createForTest(),
+        .create(),
       strongBackgroundSettingsAccess = RecordingStrongBackgroundSettingsAccess(),
       appLanguageSettingsAccess = appLanguageAccess,
       sandboxSettingsAccess = RecordingSandboxSettingsGatewayAccess(),
@@ -1559,7 +1762,7 @@ class OpenCrayRuntimeServiceHostTest {
       settingsFacade = RecordingServiceOwnedSettingsFacade(),
       notificationSettingsFacade = com.opencray.app.facade.notifications
         .LocalNotificationSettingsFacade
-        .createForTest(),
+        .create(),
       strongBackgroundSettingsAccess = RecordingStrongBackgroundSettingsAccess(),
       sandboxSettingsAccess = RecordingSandboxSettingsGatewayAccess(),
       networkSearchConfigFacade = RecordingNetworkSearchConfigFacade(),
@@ -1613,7 +1816,7 @@ class OpenCrayRuntimeServiceHostTest {
       settingsFacade = RecordingServiceOwnedSettingsFacade(),
       notificationSettingsFacade = com.opencray.app.facade.notifications
         .LocalNotificationSettingsFacade
-        .createForTest(),
+        .create(),
       strongBackgroundSettingsAccess = RecordingStrongBackgroundSettingsAccess(),
       sandboxSettingsAccess = RecordingSandboxSettingsGatewayAccess(),
       networkSearchConfigFacade = RecordingNetworkSearchConfigFacade(),
@@ -1759,13 +1962,13 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun androidBindingClientTransitionsFromFallbackBindingToBinderConnection() {
+  fun androidBindingClientTransitionsFromProjectionBackedBindingToBinderConnection() {
     val expected = bridgeSnapshot(temporaryFolder.newFolder("binding-client"))
     val bindingAdapter = RecordingBindingAdapter()
     var startRequestCount = 0
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
+      projectionStore = projectionStoreFor(expected),
       bindingAdapter = bindingAdapter,
       startRequester = { startRequestCount += 1 },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -1781,9 +1984,9 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(true, initial.connectionState.serviceStartRequested)
     assertEquals(true, initial.connectionState.bindingRequested)
     assertFalse(initial.connectionState.binderAvailable)
-    assertSame(expected, initial.bridgeSnapshot)
+    assertNull(initial.bridgeSnapshot)
     assertEquals(
-      expected.runtimeAccess.lifecycleDescriptor.runtimeOwnerId,
+      expected.runtimeOwnerLifecycle.runtimeOwnerId,
       initial.diagnosticsSnapshot.runtimeOwnerLifecycle.runtimeOwnerId,
     )
 
@@ -1802,7 +2005,7 @@ class OpenCrayRuntimeServiceHostTest {
     assertTrue(connectedState.binderAvailable)
     assertSame(expected, connectedSnapshot.bridgeSnapshot)
     assertEquals(
-      expected.runtimeAccess.lifecycleDescriptor.runtimeOwnerId,
+      expected.runtimeOwnerLifecycle.runtimeOwnerId,
       connectedSnapshot.diagnosticsSnapshot.runtimeOwnerLifecycle.runtimeOwnerId,
     )
     assertEquals(
@@ -1822,7 +2025,6 @@ class OpenCrayRuntimeServiceHostTest {
     val binderGateway = RecordingChatRuntimeGateway("binder")
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -1849,7 +2051,6 @@ class OpenCrayRuntimeServiceHostTest {
     val binderGateway = RecordingShellGateway("binder")
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -1870,33 +2071,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun androidBindingClientPeekSnapshotDoesNotStartServiceOrBind() {
-    val expected = bridgeSnapshot(temporaryFolder.newFolder("binding-client-passive-peek"))
-    val bindingAdapter = RecordingBindingAdapter()
-    var startRequestCount = 0
-    val client = AndroidBindingOpenCrayRuntimeServiceClient(
-      appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
-      bindingAdapter = bindingAdapter,
-      startRequester = { startRequestCount += 1 },
-      mainThreadPoster = ImmediateMainThreadPoster,
-      serviceIntentFactory = { Intent() },
-    )
-
-    val snapshot = client.peekSnapshot()
-
-    assertSame(expected, snapshot?.bridgeSnapshot)
-    assertEquals(
-      expected.runtimeAccess.lifecycleDescriptor.runtimeOwnerId,
-      snapshot?.diagnosticsSnapshot?.runtimeOwnerLifecycle?.runtimeOwnerId,
-    )
-    assertEquals(0, startRequestCount)
-    assertEquals(0, bindingAdapter.bindCount)
-    assertEquals("fallback", snapshot?.connectionState?.phase)
-  }
-
-  @Test
-  fun androidBindingClientDefaultPeekSnapshotReturnsNullWithoutBinderOrFallbackSnapshot() {
+  fun androidBindingClientDefaultPeekSnapshotReturnsNullWithoutBinderOrProjectionSnapshot() {
     val bindingAdapter = RecordingBindingAdapter()
     var startRequestCount = 0
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
@@ -1938,6 +2113,10 @@ class OpenCrayRuntimeServiceHostTest {
 
     assertNotNull(actual)
     assertEquals(
+      expected.runtimeControllerLifecycle?.controllerInstanceId,
+      actual?.runtimeControllerLifecycle?.controllerInstanceId,
+    )
+    assertEquals(
       expected.runtimeOwnerLifecycle.runtimeOwnerId,
       actual?.runtimeOwnerLifecycle?.runtimeOwnerId,
     )
@@ -1968,6 +2147,51 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun androidBindingClientUsesTargetScopedDurableProjectionStoreWhenProjectionStoreNotInjected() {
+    val context = FilesDirBackedContext(
+      temporaryFolder.newFolder("binding-client-target-scoped-files"),
+    )
+    val storeFactory = FileBackedRuntimeServiceProjectionStoreFactory.fromContext(context)
+    val interactiveExpected = bridgeSnapshot(
+      temporaryFolder.newFolder("binding-client-interactive-projection"),
+    ).copy(
+      localRuntimeServerState = defaultLocalRuntimeServerState(RuntimeServiceTarget.INTERACTIVE),
+    ).toProjectionSnapshot()
+    val detachedExpected = bridgeSnapshot(
+      temporaryFolder.newFolder("binding-client-detached-projection"),
+    ).copy(
+      localRuntimeServerState = defaultLocalRuntimeServerState(RuntimeServiceTarget.DETACHED_BACKGROUND),
+    ).toProjectionSnapshot()
+    storeFactory.create(RuntimeServiceTarget.INTERACTIVE).saveSnapshot(interactiveExpected)
+    storeFactory.create(RuntimeServiceTarget.DETACHED_BACKGROUND).saveSnapshot(detachedExpected)
+    val bindingAdapter = RecordingBindingAdapter()
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = context,
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      bindingAdapter = bindingAdapter,
+      startRequester = { },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+
+    val snapshot = client.peekProjectionSnapshot()
+
+    assertEquals(
+      interactiveExpected.runtimeOwnerLifecycle.runtimeOwnerId,
+      snapshot?.runtimeOwnerLifecycle?.runtimeOwnerId,
+    )
+    assertEquals(
+      interactiveExpected.localRuntimeServerState?.requestedPort,
+      snapshot?.localRuntimeServerState?.requestedPort,
+    )
+    assertEquals(
+      localRuntimeLoopbackPortForTarget(RuntimeServiceTarget.INTERACTIVE),
+      snapshot?.localRuntimeServerState?.requestedPort,
+    )
+    assertEquals(0, bindingAdapter.bindCount)
+  }
+
+  @Test
   fun androidBindingClientPeekProjectionSnapshotUsesDurableStoreWithoutStartingServiceOrBind() {
     val expected = bridgeSnapshot(
       temporaryFolder.newFolder("binding-client-projection-peek"),
@@ -1979,10 +2203,6 @@ class OpenCrayRuntimeServiceHostTest {
     var startRequestCount = 0
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = object : OpenCrayRuntimeServiceBridge {
-        override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot =
-          error("fallback bridge should not be used for projection peeks")
-      },
       projectionStore = projectionStore,
       bindingAdapter = bindingAdapter,
       startRequester = { startRequestCount += 1 },
@@ -2000,6 +2220,7 @@ class OpenCrayRuntimeServiceHostTest {
       expected.serviceKeepAliveState.phase,
       snapshot?.serviceKeepAliveState?.phase,
     )
+    assertEquals("fallback", client.loadConnectionState().phase)
     assertEquals(0, startRequestCount)
     assertEquals(0, bindingAdapter.bindCount)
   }
@@ -2026,6 +2247,10 @@ class OpenCrayRuntimeServiceHostTest {
     val snapshot = client.loadSnapshot()
 
     assertNull(snapshot.bridgeSnapshot)
+    assertEquals(
+      expected.runtimeControllerLifecycle?.controllerInstanceId,
+      snapshot.diagnosticsSnapshot.runtimeControllerLifecycle?.controllerInstanceId,
+    )
     assertEquals(
       expected.runtimeOwnerLifecycle.runtimeOwnerId,
       snapshot.diagnosticsSnapshot.runtimeOwnerLifecycle.runtimeOwnerId,
@@ -2085,8 +2310,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun androidBindingClientStopsRebindingAfterUnsupportedBinderWhenLoopbackFallbackIsAvailable() {
-    val fallbackShellGateway = RecordingShellGateway("fallback")
+  fun androidBindingClientReportsInvalidBinderWhenBinderAccessIsUnsupported() {
     val bindingAdapter = RecordingBindingAdapter()
     var startRequestCount = 0
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
@@ -2095,12 +2319,9 @@ class OpenCrayRuntimeServiceHostTest {
       startRequester = { startRequestCount += 1 },
       mainThreadPoster = ImmediateMainThreadPoster,
       serviceIntentFactory = { Intent() },
-      fallbackGatewayBundle = RuntimeServiceReadFallbackGatewayBundle(
-        shellGateway = fallbackShellGateway,
-      ),
     )
 
-    assertSame(fallbackShellGateway, client.loadShellGateway())
+    assertNull(client.loadShellGateway())
     assertEquals(1, startRequestCount)
     assertEquals(1, bindingAdapter.bindCount)
 
@@ -2109,11 +2330,11 @@ class OpenCrayRuntimeServiceHostTest {
     val connectionState = client.loadConnectionState()
 
     assertEquals("invalid_binder", connectionState.phase)
-    assertEquals("loopback_http", connectionState.transport)
-    assertFalse(connectionState.bindingRequested)
-    assertEquals(1, bindingAdapter.unbindCount)
+    assertEquals("in_process", connectionState.transport)
+    assertTrue(connectionState.bindingRequested)
+    assertEquals(0, bindingAdapter.unbindCount)
 
-    assertSame(fallbackShellGateway, client.loadShellGateway())
+    assertNull(client.loadShellGateway())
     assertEquals(1, startRequestCount)
     assertEquals(1, bindingAdapter.bindCount)
   }
@@ -2125,7 +2346,6 @@ class OpenCrayRuntimeServiceHostTest {
     val binderGateway = RecordingSkillsGateway("binder")
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -2152,7 +2372,6 @@ class OpenCrayRuntimeServiceHostTest {
     val binderGateway = RecordingSettingsGateway("binder")
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -2179,7 +2398,7 @@ class OpenCrayRuntimeServiceHostTest {
     val releaseScheduler = RecordingRuntimeServiceDelayScheduler()
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
+      projectionStore = projectionStoreFor(expected),
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -2216,7 +2435,6 @@ class OpenCrayRuntimeServiceHostTest {
     val releaseScheduler = RecordingRuntimeServiceDelayScheduler()
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -2247,6 +2465,34 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun androidBindingClientPublishesInvalidBinderConnectionStateToObservers() {
+    val bindingAdapter = RecordingBindingAdapter()
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+    val observedStates = mutableListOf<RuntimeServiceConnectionState>()
+
+    val dispose = client.observeConnectionState { state ->
+      observedStates += state
+    }
+
+    try {
+      bindingAdapter.connect(Binder())
+
+      val invalidBinderState = observedStates.last()
+      assertEquals("invalid_binder", invalidBinderState.phase)
+      assertEquals("in_process", invalidBinderState.transport)
+      assertFalse(invalidBinderState.binderAvailable)
+    } finally {
+      dispose()
+    }
+  }
+
+  @Test
   fun serviceBackedShellGatewayPrefersBinderForLoadsAndFallsBackWhenUnavailable() {
     val binderGateway = RecordingShellGateway("binder")
     val fallbackGateway = RecordingShellGateway("fallback")
@@ -2266,71 +2512,8 @@ class OpenCrayRuntimeServiceHostTest {
     serviceClient.currentShellGateway = null
 
     assertEquals("fallback-shell", gateway.loadShellSnapshot()["source"])
-  }
-
-  @Test
-  fun serviceBackedGatewaysReadThroughLoopbackFallbackBundleWhenBinderIsUnavailable() {
-    val loopbackShellGateway = RecordingShellGateway("loopback")
-    val loopbackChatGateway = RecordingChatRuntimeGateway("loopback")
-    val loopbackSkillsGateway = RecordingSkillsGateway("loopback")
-    val loopbackSettingsGateway = RecordingSettingsGateway("loopback")
-    val server = OpenCrayLocalRuntimeServer(
-      localGatewayProvider = { UnsupportedLocalGateway() },
-      shellGatewayProvider = { loopbackShellGateway },
-      chatRuntimeGatewayProvider = { loopbackChatGateway },
-      skillsGatewayProvider = { loopbackSkillsGateway },
-      settingsGatewayProvider = { loopbackSettingsGateway },
-      requestedPort = 0,
-      shutdownExecutorOnClose = true,
-    )
-    server.ensureStarted()
-
-    try {
-      val requestClient = OpenCrayLocalRuntimeLoopbackHttpClient(
-        baseUrlProvider = { "http://127.0.0.1:${server.listeningPort}/" },
-        bootstrapTimeoutMs = 0L,
-      )
-      val bindingAdapter = RecordingBindingAdapter()
-      val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
-        appContext = ContextWrapper(null),
-        bindingAdapter = bindingAdapter,
-        startRequester = { },
-        mainThreadPoster = ImmediateMainThreadPoster,
-        serviceIntentFactory = { Intent() },
-        fallbackGatewayBundle = loopbackRuntimeServiceReadFallbackGatewayBundle(
-          requestClient = requestClient,
-          mainThreadPoster = ImmediateMainThreadPoster,
-        ),
-        commandFallbackTransport = LoopbackHttpRuntimeServiceCommandFallbackTransport(
-          requestClient = requestClient,
-        ),
-      )
-      val shellGateway = ServiceBackedOpenCrayShellGateway(
-        serviceClient = serviceClient,
-        fallbackGateway = RecordingShellGateway("projection"),
-      )
-      val chatGateway = ServiceBackedOpenCrayChatRuntimeGateway(
-        serviceClient = serviceClient,
-        fallbackGateway = RecordingChatRuntimeGateway("projection"),
-      )
-      val skillsGateway = ServiceBackedOpenCraySkillsGateway(
-        serviceClient = serviceClient,
-        fallbackGateway = RecordingSkillsGateway("projection"),
-      )
-      val settingsGateway = ServiceBackedOpenCraySettingsGateway(
-        serviceClient = serviceClient,
-        fallbackGateway = RecordingSettingsGateway("projection"),
-      )
-
-      assertEquals("loopback-shell", shellGateway.loadShellSnapshot()["source"])
-      assertEquals("loopback-chat", chatGateway.loadChatSnapshot()["source"])
-      assertEquals("loopback-skills", skillsGateway.loadSkillsSnapshot(query = "", suggestedLimit = 0)["source"])
-      assertEquals("loopback-settings", settingsGateway.loadSettingsOverview()["source"])
-      assertEquals(0, bindingAdapter.bindCount)
-      assertEquals("loopback_http", serviceClient.loadConnectionState().transport)
-    } finally {
-      server.close()
-    }
+    assertEquals(2, serviceClient.loadShellGatewayCallCount)
+    assertEquals(0, serviceClient.peekShellGatewayCallCount)
   }
 
   @Test
@@ -2394,12 +2577,10 @@ class OpenCrayRuntimeServiceHostTest {
 
   @Test
   fun serviceBackedShellGatewayObservationDoesNotStartOrBindRuntimeService() {
-    val expected = bridgeSnapshot(temporaryFolder.newFolder("shell-gateway-passive-observe"))
     val bindingAdapter = RecordingBindingAdapter()
     var startRequestCount = 0
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { startRequestCount += 1 },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -2422,12 +2603,188 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun serviceBackedShellGatewayLoadStartsAndBindsRuntimeService() {
+    val bindingAdapter = RecordingBindingAdapter()
+    var startRequestCount = 0
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { startRequestCount += 1 },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+    val gateway = ServiceBackedOpenCrayShellGateway(
+      serviceClient = client,
+      fallbackGateway = RecordingShellGateway("fallback"),
+    )
+
+    assertEquals("fallback-shell", gateway.loadShellSnapshot()["source"])
+    assertEquals(1, startRequestCount)
+    assertEquals(1, bindingAdapter.bindCount)
+    assertEquals("binding", client.loadConnectionState().phase)
+  }
+
+  @Test
+  fun serviceBackedChatGatewayObservationStartsAndBindsRuntimeService() {
+    val bindingAdapter = RecordingBindingAdapter()
+    var startRequestCount = 0
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { startRequestCount += 1 },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+    val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
+      serviceClient = client,
+      fallbackGateway = RecordingChatRuntimeGateway("fallback"),
+    )
+    val observedChatSources = mutableListOf<String?>()
+    val observedRuntimeSources = mutableListOf<String?>()
+
+    gateway.observeChat { snapshot ->
+      observedChatSources += snapshot["source"] as String?
+    }
+    gateway.observeChatRuntime { snapshot ->
+      observedRuntimeSources += snapshot["source"] as String?
+    }
+
+    assertEquals(listOf("fallback-chat"), observedChatSources)
+    assertEquals(listOf("fallback-runtime"), observedRuntimeSources)
+    assertEquals(1, startRequestCount)
+    assertEquals(1, bindingAdapter.bindCount)
+    assertEquals("binding", client.loadConnectionState().phase)
+  }
+
+  @Test
+  fun serviceBackedChatGatewayLoadStartsAndBindsRuntimeService() {
+    val bindingAdapter = RecordingBindingAdapter()
+    var startRequestCount = 0
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { startRequestCount += 1 },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+    val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
+      serviceClient = client,
+      fallbackGateway = RecordingChatRuntimeGateway("fallback"),
+    )
+
+    assertEquals("fallback-chat", gateway.loadChatSnapshot()["source"])
+    assertEquals(1, startRequestCount)
+    assertEquals(1, bindingAdapter.bindCount)
+    assertEquals("binding", client.loadConnectionState().phase)
+  }
+
+  @Test
+  fun serviceBackedSkillsGatewayObservationStartsAndBindsRuntimeService() {
+    val bindingAdapter = RecordingBindingAdapter()
+    var startRequestCount = 0
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { startRequestCount += 1 },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+    val gateway = ServiceBackedOpenCraySkillsGateway(
+      serviceClient = client,
+      fallbackGateway = RecordingSkillsGateway("fallback"),
+    )
+    val observedSources = mutableListOf<String?>()
+
+    gateway.observeSkills { snapshot ->
+      observedSources += snapshot["source"] as String?
+    }
+
+    assertEquals(listOf("fallback-skills"), observedSources)
+    assertEquals(1, startRequestCount)
+    assertEquals(1, bindingAdapter.bindCount)
+    assertEquals("binding", client.loadConnectionState().phase)
+  }
+
+  @Test
+  fun serviceBackedSkillsGatewayLoadStartsAndBindsRuntimeService() {
+    val bindingAdapter = RecordingBindingAdapter()
+    var startRequestCount = 0
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { startRequestCount += 1 },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+    val gateway = ServiceBackedOpenCraySkillsGateway(
+      serviceClient = client,
+      fallbackGateway = RecordingSkillsGateway("fallback"),
+    )
+
+    assertEquals(
+      "fallback-skills",
+      gateway.loadSkillsSnapshot(query = "", suggestedLimit = 0)["source"],
+    )
+    assertEquals(1, startRequestCount)
+    assertEquals(1, bindingAdapter.bindCount)
+    assertEquals("binding", client.loadConnectionState().phase)
+  }
+
+  @Test
+  fun serviceBackedSettingsGatewayObservationStartsAndBindsRuntimeService() {
+    val bindingAdapter = RecordingBindingAdapter()
+    var startRequestCount = 0
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { startRequestCount += 1 },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+    val gateway = ServiceBackedOpenCraySettingsGateway(
+      serviceClient = client,
+      fallbackGateway = RecordingSettingsGateway("fallback"),
+    )
+    val observedSources = mutableListOf<String?>()
+
+    gateway.observeSettingsOverview { snapshot ->
+      observedSources += snapshot["source"] as String?
+    }
+
+    assertEquals(listOf("fallback-settings"), observedSources)
+    assertEquals(1, startRequestCount)
+    assertEquals(1, bindingAdapter.bindCount)
+    assertEquals("binding", client.loadConnectionState().phase)
+  }
+
+  @Test
+  fun serviceBackedSettingsGatewayLoadStartsAndBindsRuntimeService() {
+    val bindingAdapter = RecordingBindingAdapter()
+    var startRequestCount = 0
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { startRequestCount += 1 },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+    val gateway = ServiceBackedOpenCraySettingsGateway(
+      serviceClient = client,
+      fallbackGateway = RecordingSettingsGateway("fallback"),
+    )
+
+    assertEquals("fallback-settings", gateway.loadSettingsOverview()["source"])
+    assertEquals(1, startRequestCount)
+    assertEquals(1, bindingAdapter.bindCount)
+    assertEquals("binding", client.loadConnectionState().phase)
+  }
+
+  @Test
   fun androidBindingClientRebindsAfterServiceDisconnectWhileObserverIsActive() {
     val expected = bridgeSnapshot(temporaryFolder.newFolder("binding-client-disconnect-rebind"))
     val bindingAdapter = RecordingBindingAdapter()
     val client = AndroidBindingOpenCrayRuntimeServiceClient(
       appContext = ContextWrapper(null),
-      fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
       bindingAdapter = bindingAdapter,
       startRequester = { },
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -2459,12 +2816,18 @@ class OpenCrayRuntimeServiceHostTest {
       changedAtEpochMs = 1_000L,
     )
     var keepAliveListener: (() -> Unit)? = null
+    val hostLifecycleDescriptor = serviceShellHostLifecycleDescriptor(
+      runtimeControllerLifecycle = expected.runtimeControllerLifecycle,
+      runtimeOwnerLifecycle = expected.runtimeOwnerLifecycle,
+      runtimeServiceLifecycle = expected.serviceLifecycle,
+    )
     val gateway = ServiceOwnedShellGateway(
       stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
       localeTag = "en",
       hostLabel = "HOST",
       hostSummary = "summary",
-      runtimeHostAccess = expected.runtimeAccess.hostAccess,
+      runtimeHostAccess = noOpRuntimeHostAccess(expected.runtimeOwnerLifecycle),
+      runtimeControllerLifecycle = expected.runtimeControllerLifecycle,
       runtimeServiceLifecycle = expected.serviceLifecycle,
       runtimeServiceWorkStateProvider = { expected.serviceWorkState },
       runtimeServiceKeepAliveStateProvider = { keepAliveState },
@@ -2473,7 +2836,9 @@ class OpenCrayRuntimeServiceHostTest {
         { if (keepAliveListener === listener) keepAliveListener = null }
       },
       runtimeServiceConnectionStateProvider = { RuntimeServiceConnectionState.binderConnected() },
+      localRuntimeServerStateProvider = { expected.localRuntimeServerState },
       mainThreadPoster = ImmediateMainThreadPoster,
+      hostLifecycleDescriptor = hostLifecycleDescriptor,
     )
     val observedStates = mutableListOf<Pair<String?, String?>>()
 
@@ -2484,12 +2849,24 @@ class OpenCrayRuntimeServiceHostTest {
 
     try {
       val initial = gateway.loadShellSnapshot()
+      val hostLifecycle = initial["hostLifecycle"] as Map<*, *>
+      @Suppress("UNCHECKED_CAST")
+      val localRuntimeServerState = initial["localRuntimeServerState"] as Map<String, Any?>
 
       assertEquals("chat", initial["initialTab"])
       assertEquals("en", initial["localeTag"])
       assertNotNull(initial["runtimeOwnerLifecycle"])
       assertNotNull(initial["runtimeOwnerWorkSummary"])
+      assertNotNull(initial["runtimeControllerLifecycle"])
       assertNotNull(initial["runtimeServiceLifecycle"])
+      assertEquals(expected.serviceLifecycle.serviceInstanceId, hostLifecycle["hostInstanceId"])
+      assertEquals(expected.runtimeOwnerLifecycle.runtimeOwnerId, hostLifecycle["runtimeOwnerId"])
+      assertEquals(
+        expected.runtimeControllerLifecycle?.controllerInstanceId,
+        hostLifecycle["runtimeControllerId"],
+      )
+      assertEquals(LocalRuntimeServerState.PHASE_LISTENING, localRuntimeServerState["phase"])
+      assertEquals(42_617, localRuntimeServerState["listeningPort"])
       assertEquals(listOf("en" to RuntimeServiceKeepAliveState.PHASE_CREATED), observedStates)
 
       gateway.updateLocalizedResources(
@@ -2513,6 +2890,90 @@ class OpenCrayRuntimeServiceHostTest {
         ),
         observedStates,
       )
+    } finally {
+      disposer()
+    }
+  }
+
+  @Test
+  fun serviceOwnedShellGatewayDisposeUnregistersExternalObservers() {
+    val expected = bridgeSnapshot(temporaryFolder.newFolder("service-owned-shell-dispose"))
+    var keepAliveState = RuntimeServiceKeepAliveState(
+      phase = RuntimeServiceKeepAliveState.PHASE_CREATED,
+      changedAtEpochMs = 1_000L,
+    )
+    var registeredHostListener: AgentSessionRuntimeListener? = null
+    var hostObserverDisposeCount = 0
+    var keepAliveListener: (() -> Unit)? = null
+    var keepAliveObserverDisposeCount = 0
+    val hostLifecycleDescriptor = serviceShellHostLifecycleDescriptor(
+      runtimeControllerLifecycle = expected.runtimeControllerLifecycle,
+      runtimeOwnerLifecycle = expected.runtimeOwnerLifecycle,
+      runtimeServiceLifecycle = expected.serviceLifecycle,
+    )
+    val gateway = ServiceOwnedShellGateway(
+      stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+      localeTag = "en",
+      hostLabel = "HOST",
+      hostSummary = "summary",
+      runtimeHostAccess = object : RuntimeOwnerObservationAccess {
+        override val lifecycleDescriptor: HostRuntimeLifecycleDescriptor =
+          expected.runtimeOwnerLifecycle
+
+        override fun observe(listener: AgentSessionRuntimeListener): () -> Unit {
+          registeredHostListener = listener
+          return {
+            if (registeredHostListener === listener) {
+              registeredHostListener = null
+            }
+            hostObserverDisposeCount += 1
+          }
+        }
+
+        override fun activeWorkSummary(): RuntimeOwnerWorkSummary = RuntimeOwnerWorkSummary()
+      },
+      runtimeServiceLifecycle = expected.serviceLifecycle,
+      runtimeServiceWorkStateProvider = { expected.serviceWorkState },
+      runtimeServiceKeepAliveStateProvider = { keepAliveState },
+      runtimeServiceKeepAliveChangeRegistrar = RuntimeServiceKeepAliveChangeRegistrar { listener ->
+        keepAliveListener = listener
+        {
+          if (keepAliveListener === listener) {
+            keepAliveListener = null
+          }
+          keepAliveObserverDisposeCount += 1
+        }
+      },
+      runtimeServiceConnectionStateProvider = { RuntimeServiceConnectionState.binderConnected() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      hostLifecycleDescriptor = hostLifecycleDescriptor,
+    )
+    val observedPhases = mutableListOf<String?>()
+    val disposer = gateway.observeShell { snapshot ->
+      val keepAlive = snapshot["runtimeServiceKeepAliveState"] as? Map<*, *>
+      observedPhases += keepAlive?.get("phase") as String?
+    }
+
+    try {
+      assertNotNull(registeredHostListener)
+      assertNotNull(keepAliveListener)
+      assertEquals(listOf(RuntimeServiceKeepAliveState.PHASE_CREATED), observedPhases)
+
+      gateway.dispose()
+      gateway.dispose()
+
+      assertEquals(1, hostObserverDisposeCount)
+      assertEquals(1, keepAliveObserverDisposeCount)
+      assertNull(registeredHostListener)
+      assertNull(keepAliveListener)
+
+      keepAliveState = keepAliveState.copy(
+        phase = RuntimeServiceKeepAliveState.PHASE_IDLE_GRACE,
+        changedAtEpochMs = 1_500L,
+      )
+      gateway.emitLocalizedSnapshotChanged()
+
+      assertEquals(listOf(RuntimeServiceKeepAliveState.PHASE_CREATED), observedPhases)
     } finally {
       disposer()
     }
@@ -2709,6 +3170,7 @@ class OpenCrayRuntimeServiceHostTest {
       connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
       projectionSnapshotProvider = { projectionSnapshot },
       mainThreadPoster = ImmediateMainThreadPoster,
+      hostLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
       pollIntervalMs = 25L,
     )
     val observedKeepAlivePhases = mutableListOf<String?>()
@@ -2764,6 +3226,7 @@ class OpenCrayRuntimeServiceHostTest {
         connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
         projectionSnapshotProvider = { projectionSnapshot },
         mainThreadPoster = ImmediateMainThreadPoster,
+        hostLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
       )
 
       val snapshot = gateway.loadShellSnapshot()
@@ -2772,6 +3235,29 @@ class OpenCrayRuntimeServiceHostTest {
 
       assertEquals(LocalRuntimeServerState.PHASE_LISTENING, localRuntimeServerState["phase"])
       assertEquals(48_200, localRuntimeServerState["listeningPort"])
+    } finally {
+      OpenCrayLocalRuntimeServerRegistry.clearForTest()
+    }
+  }
+
+  @Test
+  fun projectionOnlyShellGatewayDoesNotFallbackToProcessLocalRuntimeServerStateWithoutProjection() {
+    OpenCrayLocalRuntimeServerRegistry.clearForTest()
+    try {
+      val gateway = ProjectionOnlyOpenCrayShellGateway(
+        stateStore = AppShellStateStore(InMemoryAppShellKeyValueStore()),
+        localeTagProvider = { "en" },
+        hostLabel = "HOST",
+        hostSummary = "summary",
+        connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+        projectionSnapshotProvider = { null },
+        mainThreadPoster = ImmediateMainThreadPoster,
+        hostLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      )
+
+      val snapshot = gateway.loadShellSnapshot()
+
+      assertFalse(snapshot.containsKey("localRuntimeServerState"))
     } finally {
       OpenCrayLocalRuntimeServerRegistry.clearForTest()
     }
@@ -2794,14 +3280,18 @@ class OpenCrayRuntimeServiceHostTest {
     )
 
     assertEquals("binder-chat", gateway.loadChatSnapshot()["source"])
+    serviceClient.emitConnectionStateChanged(RuntimeServiceConnectionState.binderConnected())
     gateway.submitChatMessage("through binder", emptyList())
     assertEquals("through binder", binderGateway.submittedText)
     assertEquals(null, fallbackGateway.submittedText)
 
     serviceClient.currentChatGateway = null
     serviceClient.dispatchChatWriteCommandHandler = null
+    serviceClient.emitConnectionStateChanged(RuntimeServiceConnectionState.inProcessFallback())
 
     assertEquals("fallback-chat", gateway.loadChatSnapshot()["source"])
+    assertEquals(2, serviceClient.loadChatRuntimeGatewayCallCount)
+    assertEquals(0, serviceClient.peekChatRuntimeGatewayCallCount)
     val failure = runCatching {
       gateway.submitChatMessage("through fallback", emptyList())
     }.exceptionOrNull()
@@ -2865,7 +3355,6 @@ class OpenCrayRuntimeServiceHostTest {
     val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
       serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
         appContext = ContextWrapper(null),
-        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
         bindingAdapter = bindingAdapter,
         startRequester = { },
         mainThreadPoster = ImmediateMainThreadPoster,
@@ -2910,36 +3399,66 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun serviceBackedChatRuntimeGatewayFallsBackToLoopbackTransportWhenBinderIsUnavailable() {
-    val loopbackGateway = RecordingChatRuntimeGateway("loopback")
-    val server = recordingLoopbackLocalRuntimeServer(chatRuntimeGateway = loopbackGateway)
-    server.ensureStarted()
+  fun serviceBackedChatRuntimeGatewayRejectsInProcessTransportWhenBinderIsUnavailable() {
+    val bindingAdapter = RecordingBindingAdapter()
+    val fallbackGateway = RecordingChatRuntimeGateway("fallback")
+    val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+      isMainThread = { true },
+    )
+    val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
+      serviceClient = serviceClient,
+      fallbackGateway = fallbackGateway,
+    )
 
-    try {
-      val bindingAdapter = RecordingBindingAdapter()
-      val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
-        appContext = ContextWrapper(null),
-        bindingAdapter = bindingAdapter,
-        startRequester = { },
-        mainThreadPoster = ImmediateMainThreadPoster,
-        serviceIntentFactory = { Intent() },
-        commandFallbackTransport = loopbackCommandFallbackTransport(server),
-      )
-      val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
-        serviceClient = serviceClient,
-        fallbackGateway = RecordingChatRuntimeGateway("fallback"),
-      )
+    val failure = runCatching {
+      gateway.submitChatMessage("through binder only", emptyList())
+    }.exceptionOrNull()
 
-      val result = gateway.submitChatMessage("through loopback", emptyList())
+    assertEquals(1, bindingAdapter.bindCount)
+    assertTrue(failure is IllegalStateException)
+    assertTrue(failure?.message?.contains("binder-backed runtime service gateway") == true)
+    assertNull(fallbackGateway.submittedText)
+    assertEquals("binding", serviceClient.loadConnectionState().phase)
+    assertEquals("in_process", serviceClient.loadConnectionState().transport)
+  }
 
-      assertEquals(1, bindingAdapter.bindCount)
-      assertEquals("through loopback", loopbackGateway.submittedText)
-      assertEquals("loopback-submit", result?.get("source"))
-      assertEquals("binding", serviceClient.loadConnectionState().phase)
-      assertEquals("loopback_http", serviceClient.loadConnectionState().transport)
-    } finally {
-      server.close()
-    }
+  @Test
+  fun serviceBackedChatRuntimeGatewayFallsBackToWakeTransportForFireAndForgetWritesWhenBinderIsUnavailable() {
+    val bindingAdapter = RecordingBindingAdapter()
+    val fallbackGateway = RecordingChatRuntimeGateway("fallback")
+    val wakeCommands = mutableListOf<OpenCrayChatWriteCommand>()
+    val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { },
+      wakeChatWriteRequester = { command ->
+        wakeCommands += command
+        true
+      },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+      isMainThread = { true },
+    )
+    val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
+      serviceClient = serviceClient,
+      fallbackGateway = fallbackGateway,
+    )
+
+    gateway.approveChatApproval("run-alpha")
+
+    assertEquals(1, bindingAdapter.bindCount)
+    assertEquals(
+      listOf(OpenCrayChatWriteCommand.ApproveChatApproval("run-alpha")),
+      wakeCommands,
+    )
+    assertNull(fallbackGateway.approvedTaskIdOrRunId)
+    assertEquals("binding", serviceClient.loadConnectionState().phase)
+    assertEquals("in_process", serviceClient.loadConnectionState().transport)
   }
 
   @Test
@@ -2958,6 +3477,7 @@ class OpenCrayRuntimeServiceHostTest {
       fallbackGateway = fallbackGateway,
     )
 
+    serviceClient.emitConnectionStateChanged(RuntimeServiceConnectionState.binderConnected())
     gateway.approveChatApproval("run-alpha")
 
     assertEquals("run-alpha", binderGateway.approvedTaskIdOrRunId)
@@ -2980,6 +3500,7 @@ class OpenCrayRuntimeServiceHostTest {
       fallbackGateway = fallbackGateway,
     )
 
+    serviceClient.emitConnectionStateChanged(RuntimeServiceConnectionState.binderConnected())
     gateway.approveChatApprovalForSession("run-beta")
 
     assertEquals("run-beta", binderGateway.approvedForSessionTaskIdOrRunId)
@@ -3028,6 +3549,7 @@ class OpenCrayRuntimeServiceHostTest {
       "binder-skills",
       gateway.loadSkillsSnapshot(query = "", suggestedLimit = 0)["source"],
     )
+    serviceClient.emitConnectionStateChanged(RuntimeServiceConnectionState.binderConnected())
     assertEquals(
       "Installed roin-orca/skills via binder.",
       gateway.installSkillSource(sourceRef = "roin-orca/skills", selectedSkillName = ""),
@@ -3037,11 +3559,14 @@ class OpenCrayRuntimeServiceHostTest {
 
     serviceClient.currentSkillsGateway = null
     serviceClient.dispatchSkillsWriteCommandHandler = null
+    serviceClient.emitConnectionStateChanged(RuntimeServiceConnectionState.inProcessFallback())
 
     assertEquals(
       "fallback-skills",
       gateway.loadSkillsSnapshot(query = "", suggestedLimit = 0)["source"],
     )
+    assertEquals(2, serviceClient.loadSkillsGatewayCallCount)
+    assertEquals(0, serviceClient.peekSkillsGatewayCallCount)
     val failure = runCatching {
       gateway.installSkillSource(sourceRef = "fallback/skills", selectedSkillName = "")
     }.exceptionOrNull()
@@ -3071,11 +3596,36 @@ class OpenCrayRuntimeServiceHostTest {
       "fallback-skills",
       gateway.loadSkillsSnapshot(query = "", suggestedLimit = 0)["source"],
     )
+    serviceClient.emitConnectionStateChanged(RuntimeServiceConnectionState.binderConnected())
     assertEquals(
       "Installed roin-orca/skills via binder.",
       gateway.installSkillSource(sourceRef = "roin-orca/skills", selectedSkillName = ""),
     )
     assertEquals("roin-orca/skills", binderGateway.lastInstalledSourceRef)
+    assertNull(fallbackGateway.lastInstalledSourceRef)
+  }
+
+  @Test
+  fun serviceBackedSkillsGatewayUsesPassiveConnectionStateLookupForWriteDiagnostics() {
+    val fallbackGateway = RecordingSkillsGateway("fallback")
+    val serviceClient = RecordingRuntimeServiceClient(
+      currentShellGateway = null,
+      currentChatGateway = null,
+      currentSkillsGateway = null,
+      currentSettingsGateway = null,
+    )
+    val gateway = ServiceBackedOpenCraySkillsGateway(
+      serviceClient = serviceClient,
+      fallbackGateway = fallbackGateway,
+    )
+
+    val failure = runCatching {
+      gateway.installSkillSource(sourceRef = "fallback/skills", selectedSkillName = "")
+    }.exceptionOrNull()
+
+    assertTrue(failure is IllegalStateException)
+    assertEquals(0, serviceClient.loadConnectionStateCallCount)
+    assertEquals(1, serviceClient.peekConnectionStateCallCount)
     assertNull(fallbackGateway.lastInstalledSourceRef)
   }
 
@@ -3137,7 +3687,6 @@ class OpenCrayRuntimeServiceHostTest {
     val gateway = ServiceBackedOpenCraySkillsGateway(
       serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
         appContext = ContextWrapper(null),
-        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
         bindingAdapter = bindingAdapter,
         startRequester = { },
         mainThreadPoster = ImmediateMainThreadPoster,
@@ -3179,41 +3728,39 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun serviceBackedSkillsGatewayFallsBackToLoopbackTransportWhenBinderIsUnavailable() {
-    val loopbackGateway = RecordingSkillsGateway("loopback")
-    val server = recordingLoopbackLocalRuntimeServer(skillsGateway = loopbackGateway)
-    server.ensureStarted()
+  fun serviceBackedSkillsGatewayRejectsInProcessTransportWhenBinderIsUnavailable() {
+    val bindingAdapter = RecordingBindingAdapter()
+    val fallbackGateway = RecordingSkillsGateway("fallback")
+    val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+      isMainThread = { true },
+    )
+    val gateway = ServiceBackedOpenCraySkillsGateway(
+      serviceClient = serviceClient,
+      fallbackGateway = fallbackGateway,
+    )
 
-    try {
-      val bindingAdapter = RecordingBindingAdapter()
-      val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
-        appContext = ContextWrapper(null),
-        bindingAdapter = bindingAdapter,
-        startRequester = { },
-        mainThreadPoster = ImmediateMainThreadPoster,
-        serviceIntentFactory = { Intent() },
-        commandFallbackTransport = loopbackCommandFallbackTransport(server),
-      )
-      val gateway = ServiceBackedOpenCraySkillsGateway(
-        serviceClient = serviceClient,
-        fallbackGateway = RecordingSkillsGateway("fallback"),
-      )
-
-      val installResult = gateway.installSkillSourceBatch(
+    val installFailure = runCatching {
+      gateway.installSkillSourceBatch(
         sourceRef = "roin-orca/skills",
         selectedSkillNames = listOf("find-skills", "skill-creator"),
       )
-      val activationResult = gateway.activateSkillsInstallSource("github-url")
+    }.exceptionOrNull()
+    val activationFailure = runCatching {
+      gateway.activateSkillsInstallSource("github-url")
+    }.exceptionOrNull()
 
-      assertEquals(1, bindingAdapter.bindCount)
-      assertEquals("Installed 2 skills via loopback.", installResult)
-      assertEquals("github-url", activationResult)
-      assertEquals("github-url", loopbackGateway.lastActivatedSourceId)
-      assertEquals("binding", serviceClient.loadConnectionState().phase)
-      assertEquals("loopback_http", serviceClient.loadConnectionState().transport)
-    } finally {
-      server.close()
-    }
+    assertEquals(1, bindingAdapter.bindCount)
+    assertTrue(installFailure is IllegalStateException)
+    assertTrue(activationFailure is IllegalStateException)
+    assertTrue(installFailure?.message?.contains("binder-backed runtime service gateway") == true)
+    assertNull(fallbackGateway.lastActivatedSourceId)
+    assertEquals("binding", serviceClient.loadConnectionState().phase)
+    assertEquals("in_process", serviceClient.loadConnectionState().transport)
   }
 
   @Test
@@ -3239,7 +3786,7 @@ class OpenCrayRuntimeServiceHostTest {
     }.exceptionOrNull()
 
     assertTrue(failure is IllegalStateException)
-    assertTrue(failure?.message?.contains("live runtime service gateway") == true)
+    assertTrue(failure?.message?.contains("binder-backed runtime service gateway") == true)
   }
 
   @Test
@@ -3296,6 +3843,22 @@ class OpenCrayRuntimeServiceHostTest {
         taskId = taskId,
         acceptedAtEpochMs = 1_000L,
         pendingMessageId = "pending-1",
+      ),
+    )
+    checkpointFactory.forChatSession(sessionId).upsert(
+      PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = runId,
+        taskId = taskId,
+        checkpointId = "checkpoint-run-1",
+        checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+        createdAtEpochMs = 1_200L,
+        updatedAtEpochMs = 1_200L,
+        pendingMessageId = "pending-1",
+        promptResumeState = OpenCrayPromptResumeState(
+          turnIndex = 1,
+          toolCallCount = 0,
+        ),
       ),
     )
     journalFactory.forChatSession(sessionId).append(
@@ -3371,7 +3934,7 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(sessionId, runtimeSnapshot["sessionId"])
     assertEquals(1, activeRuns.size)
     assertEquals(runId, activeRuns.single()["runId"])
-    assertEquals("running", activeRuns.single()["lifecycleState"])
+    assertEquals("queued", activeRuns.single()["lifecycleState"])
     assertEquals(1, events.size)
     assertEquals("assistant_phase", events.single()["kind"])
     assertEquals("commentary", events.single()["phase"])
@@ -3380,9 +3943,136 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(48_201, localRuntimeServerState["listeningPort"])
     assertNotNull(runSnapshot)
     assertEquals(runId, runSnapshot?.get("runId"))
-    assertEquals("running", runSnapshot?.get("lifecycleState"))
+    assertEquals("queued", runSnapshot?.get("lifecycleState"))
     assertEquals(1, messages.size)
     assertEquals("hello from user", messages.single()["text"])
+  }
+
+  @Test
+  fun projectionOnlyChatRuntimeGatewayDoesNotInterruptRunningManagedProcessFromProjectionRead() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-managed-process-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-managed-process-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    chatStore.appendUserMessage(sessionId, "keep the remote dev server alive")
+
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val runRecordFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val journalFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val ownerIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-runtime-owner",
+      runtimeControllerId = "controller-runtime-owner",
+    )
+    val ownerProcessFactory = FileBackedAgentProcessRegistryFactory(
+      runtimeRootDirectory = runtimeRoot,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        object : ManagedProcessController {
+          private val snapshot = ManagedProcessSnapshot(
+            processId = request.processId,
+            taskId = request.taskId,
+            command = request.command,
+            args = request.args,
+            workingDirectory = request.workingDirectory,
+            status = ManagedProcessStatus.RUNNING,
+            processStarted = true,
+            timeoutMs = request.timeoutMs,
+            startedAtEpochMs = 1_000L,
+            updatedAtEpochMs = 1_000L,
+            ownerIdentity = request.ownerIdentity,
+          )
+
+          override fun snapshot(): ManagedProcessSnapshot = snapshot
+
+          override fun await(timeoutMs: Long): ManagedProcessSnapshot = snapshot
+
+          override fun terminate(): ManagedProcessSnapshot = snapshot
+        }
+      },
+      runtimeIdentity = ownerIdentity,
+    )
+    val projectionProcessFactory = FileBackedAgentProcessRegistryFactory(
+      runtimeRootDirectory = runtimeRoot,
+      runtimeIdentity = ManagedProcessRuntimeIdentity(
+        processStartId = "process-ui",
+        runtimeControllerId = "controller-ui",
+      ),
+      restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
+    )
+    val supplementFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot)
+
+    val runId = "run-managed-process"
+    val taskId = "task-managed-process"
+    queueFactory.forChatSession(sessionId).save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_200L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = taskId,
+              type = AgentTaskType.PROMPT,
+              input = "keep the remote dev server alive",
+              state = AgentTaskState.RUNNING,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_200L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+                AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to "pending-managed-process",
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.RUNNING,
+            attempt = 1,
+          ),
+        ),
+      ),
+    )
+    runRecordFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = runId,
+        taskId = taskId,
+        acceptedAtEpochMs = 1_000L,
+        pendingMessageId = "pending-managed-process",
+      ),
+    )
+    ownerProcessFactory.forChatSession(sessionId).start(
+      ManagedProcessStartRequest(
+        processId = "proc-live",
+        taskId = taskId,
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        timeoutMs = 120_000L,
+        requestedAtEpochMs = 1_000L,
+        ownerIdentity = ownerIdentity,
+      ),
+    )
+
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      runRecordStoreFactory = runRecordFactory,
+      runEventJournalStoreFactory = journalFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      processRegistryFactory = projectionProcessFactory,
+      supplementStoreFactory = supplementFactory,
+      strings = projectionOnlyChatStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.bindingPending() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 1_500L },
+    )
+
+    val runSnapshot = requireNotNull(gateway.loadChatRunSnapshot(runId))
+
+    assertEquals(runId, runSnapshot["runId"])
+    assertEquals(null, runSnapshot["errorCode"])
   }
 
   @Test
@@ -3482,6 +4172,7 @@ class OpenCrayRuntimeServiceHostTest {
     assertTrue(activeRuns.isEmpty())
     assertTrue(retainedRuns.isEmpty())
     assertTrue(events.isEmpty())
+    assertFalse(runtimeSnapshot.containsKey("localRuntimeServerState"))
     assertNull(gateway.loadChatRunSnapshot(runId))
     assertNull(gateway.waitForChatRun(runId, 0))
     assertEquals("Restored", summary["body"])
@@ -4442,6 +5133,21 @@ class OpenCrayRuntimeServiceHostTest {
           acceptedAtEpochMs = 2_000L,
         ),
       )
+      checkpointFactory.forChatSession(sessionId).upsert(
+        PersistedPromptCheckpoint(
+          sessionId = sessionId,
+          runId = runId,
+          taskId = taskId,
+          checkpointId = "checkpoint-observer-run-1",
+          checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+          createdAtEpochMs = 2_200L,
+          updatedAtEpochMs = 2_200L,
+          promptResumeState = OpenCrayPromptResumeState(
+            turnIndex = 1,
+            toolCallCount = 0,
+          ),
+        ),
+      )
       journalFactory.forChatSession(sessionId).append(
         OpenCrayAssistantEvent(
           runId = runId,
@@ -4757,6 +5463,7 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals("binder-settings", gateway.loadSettingsOverview()["source"])
     assertEquals("binder-notification-settings", gateway.loadNotificationSettings()["source"])
     assertEquals("binder-sandbox-settings", gateway.loadSandboxSettings()["source"])
+    serviceClient.emitConnectionStateChanged(RuntimeServiceConnectionState.binderConnected())
     assertEquals(
       "binder-notification-settings-save",
       gateway.saveNotificationSettings(
@@ -4783,10 +5490,13 @@ class OpenCrayRuntimeServiceHostTest {
 
     serviceClient.currentSettingsGateway = null
     serviceClient.dispatchSettingsWriteCommandHandler = null
+    serviceClient.emitConnectionStateChanged(RuntimeServiceConnectionState.inProcessFallback())
 
     assertEquals("fallback-settings", gateway.loadSettingsOverview()["source"])
     assertEquals("fallback-notification-settings", gateway.loadNotificationSettings()["source"])
     assertEquals("fallback-sandbox-settings", gateway.loadSandboxSettings()["source"])
+    assertEquals(6, serviceClient.loadSettingsGatewayCallCount)
+    assertEquals(0, serviceClient.peekSettingsGatewayCallCount)
     val notificationFailure = runCatching {
       gateway.saveNotificationSettings(mapOf("masterEnabled" to true))
     }.exceptionOrNull()
@@ -4842,6 +5552,23 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun serviceBackedSettingsGatewayObserverRechecksGatewayAfterConnectionObservationStarts() {
+    val binderGateway = RecordingSettingsGateway("binder")
+    val fallbackGateway = RecordingSettingsGateway("fallback")
+    val gateway = ServiceBackedOpenCraySettingsGateway(
+      serviceClient = SettingsGatewayAvailableOnObserveClient(binderGateway),
+      fallbackGateway = fallbackGateway,
+    )
+    val observedSources = mutableListOf<String?>()
+
+    gateway.observeSettingsOverview { snapshot ->
+      observedSources += snapshot["source"] as String?
+    }
+
+    assertEquals(listOf("fallback-settings", "binder-settings"), observedSources)
+  }
+
+  @Test
   fun serviceBackedSettingsGatewayAllowsFallbackStrongBackgroundLoadsButRequiresBinderForActions() {
     val binderGateway = RecordingSettingsGateway("binder")
     val fallbackGateway = RecordingSettingsGateway("fallback")
@@ -4870,6 +5597,7 @@ class OpenCrayRuntimeServiceHostTest {
 
     serviceClient.currentSettingsGateway = binderGateway
     serviceClient.dispatchSettingsWriteCommandHandler = binderGateway::dispatchSettingsWriteCommand
+    serviceClient.emitConnectionStateChanged(RuntimeServiceConnectionState.binderConnected())
 
     assertEquals("binder-strong-background", gateway.loadStrongBackgroundSnapshot()["source"])
     assertEquals(
@@ -4901,6 +5629,7 @@ class OpenCrayRuntimeServiceHostTest {
     )
 
     assertEquals("fallback-strong-background", gateway.loadStrongBackgroundSnapshot()["source"])
+    serviceClient.emitConnectionStateChanged(RuntimeServiceConnectionState.binderConnected())
     assertEquals(
       "binder-strong-background-action",
       gateway.performStrongBackgroundAction(
@@ -4915,6 +5644,30 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun serviceBackedSettingsGatewayUsesPassiveConnectionStateLookupForWriteDiagnostics() {
+    val fallbackGateway = RecordingSettingsGateway("fallback")
+    val serviceClient = RecordingRuntimeServiceClient(
+      currentShellGateway = null,
+      currentChatGateway = null,
+      currentSkillsGateway = null,
+      currentSettingsGateway = null,
+    )
+    val gateway = ServiceBackedOpenCraySettingsGateway(
+      serviceClient = serviceClient,
+      fallbackGateway = fallbackGateway,
+    )
+
+    val failure = runCatching {
+      gateway.saveNotificationSettings(mapOf("masterEnabled" to true))
+    }.exceptionOrNull()
+
+    assertTrue(failure is IllegalStateException)
+    assertEquals(0, serviceClient.loadConnectionStateCallCount)
+    assertEquals(1, serviceClient.peekConnectionStateCallCount)
+    assertNull(fallbackGateway.lastNotificationSettingsPayload)
+  }
+
+  @Test
   fun serviceBackedSettingsGatewayWaitsForPendingBinderBeforeSavingCustomProvider() {
     val expected = bridgeSnapshot(temporaryFolder.newFolder("settings-gateway-await-binder"))
     val bindingAdapter = RecordingBindingAdapter()
@@ -4922,7 +5675,6 @@ class OpenCrayRuntimeServiceHostTest {
     val gateway = ServiceBackedOpenCraySettingsGateway(
       serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
         appContext = ContextWrapper(null),
-        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
         bindingAdapter = bindingAdapter,
         startRequester = { },
         mainThreadPoster = ImmediateMainThreadPoster,
@@ -4973,27 +5725,24 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun serviceBackedSettingsGatewayFallsBackToLoopbackTransportWhenBinderIsUnavailable() {
-    val loopbackGateway = RecordingSettingsGateway("loopback")
-    val server = recordingLoopbackLocalRuntimeServer(settingsGateway = loopbackGateway)
-    server.ensureStarted()
+  fun serviceBackedSettingsGatewayRejectsInProcessTransportWhenBinderIsUnavailable() {
+    val bindingAdapter = RecordingBindingAdapter()
+    val fallbackGateway = RecordingSettingsGateway("fallback")
+    val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+      isMainThread = { true },
+    )
+    val gateway = ServiceBackedOpenCraySettingsGateway(
+      serviceClient = serviceClient,
+      fallbackGateway = fallbackGateway,
+    )
 
-    try {
-      val bindingAdapter = RecordingBindingAdapter()
-      val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
-        appContext = ContextWrapper(null),
-        bindingAdapter = bindingAdapter,
-        startRequester = { },
-        mainThreadPoster = ImmediateMainThreadPoster,
-        serviceIntentFactory = { Intent() },
-        commandFallbackTransport = loopbackCommandFallbackTransport(server),
-      )
-      val gateway = ServiceBackedOpenCraySettingsGateway(
-        serviceClient = serviceClient,
-        fallbackGateway = RecordingSettingsGateway("fallback"),
-      )
-
-      val customProvider = gateway.saveCustomLlmProvider(
+    val customProviderFailure = runCatching {
+      gateway.saveCustomLlmProvider(
         selectedProviderOptionId = "provider-option",
         protocol = "anthropic",
         providerName = "Third-party Anthropic",
@@ -5004,22 +5753,20 @@ class OpenCrayRuntimeServiceHostTest {
         reasoningEffort = "medium",
         systemPrompt = "prompt",
       )
-      val strongBackground = gateway.performStrongBackgroundAction(
+    }.exceptionOrNull()
+    val strongBackgroundFailure = runCatching {
+      gateway.performStrongBackgroundAction(
         StrongBackgroundActionIds.OPEN_NOTIFICATION_SETTINGS,
       )
+    }.exceptionOrNull()
 
-      assertEquals(1, bindingAdapter.bindCount)
-      assertEquals("loopback-custom-llm", customProvider["source"])
-      assertEquals(
-        StrongBackgroundActionIds.OPEN_NOTIFICATION_SETTINGS,
-        loopbackGateway.lastStrongBackgroundActionId,
-      )
-      assertEquals("loopback-strong-background-action", strongBackground["source"])
-      assertEquals("binding", serviceClient.loadConnectionState().phase)
-      assertEquals("loopback_http", serviceClient.loadConnectionState().transport)
-    } finally {
-      server.close()
-    }
+    assertEquals(1, bindingAdapter.bindCount)
+    assertTrue(customProviderFailure is IllegalStateException)
+    assertTrue(strongBackgroundFailure is IllegalStateException)
+    assertTrue(customProviderFailure?.message?.contains("binder-backed runtime service gateway") == true)
+    assertNull(fallbackGateway.lastStrongBackgroundActionId)
+    assertEquals("binding", serviceClient.loadConnectionState().phase)
+    assertEquals("in_process", serviceClient.loadConnectionState().transport)
   }
 
   @Test
@@ -5030,7 +5777,6 @@ class OpenCrayRuntimeServiceHostTest {
     val gateway = ServiceBackedOpenCraySettingsGateway(
       serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
         appContext = ContextWrapper(null),
-        fallbackBridge = InProcessOpenCrayRuntimeServiceBridge { expected },
         bindingAdapter = bindingAdapter,
         startRequester = { },
         mainThreadPoster = ImmediateMainThreadPoster,
@@ -5383,11 +6129,13 @@ class OpenCrayRuntimeServiceHostTest {
 
   private class RecordingRuntimeServiceDelayScheduler : RuntimeServiceDelayScheduler {
     private val tasks = ArrayDeque<RecordingDelayedTask>()
+    val scheduledDelayMs = mutableListOf<Long>()
 
     override fun schedule(
       delayMs: Long,
       action: () -> Unit,
     ): RuntimeServiceDelayedTask {
+      scheduledDelayMs += delayMs
       val task = RecordingDelayedTask(delayMs = delayMs, action = action)
       tasks += task
       return task
@@ -5443,94 +6191,6 @@ class OpenCrayRuntimeServiceHostTest {
     }
   }
 
-  private fun recordingLoopbackLocalRuntimeServer(
-    chatRuntimeGateway: OpenCrayChatRuntimeGateway = RecordingChatRuntimeGateway("loopback"),
-    skillsGateway: OpenCraySkillsGateway = RecordingSkillsGateway("loopback"),
-    settingsGateway: OpenCraySettingsGateway = RecordingSettingsGateway("loopback"),
-  ): OpenCrayLocalRuntimeServer = OpenCrayLocalRuntimeServer(
-    localGatewayProvider = { UnsupportedLocalGateway() },
-    shellGatewayProvider = { RecordingShellGateway("loopback") },
-    chatRuntimeGatewayProvider = { chatRuntimeGateway },
-    skillsGatewayProvider = { skillsGateway },
-    settingsGatewayProvider = { settingsGateway },
-    requestedPort = 0,
-    shutdownExecutorOnClose = true,
-  )
-
-  private fun loopbackCommandFallbackTransport(
-    server: OpenCrayLocalRuntimeServer,
-  ): RuntimeServiceCommandFallbackTransport = LoopbackHttpRuntimeServiceCommandFallbackTransport(
-    requestClient = OpenCrayLocalRuntimeLoopbackHttpClient(
-      baseUrlProvider = { "http://127.0.0.1:${server.listeningPort}/" },
-      bootstrapTimeoutMs = 0L,
-    ),
-  )
-
-  private open class UnsupportedLocalGateway : OpenCrayLocalHostGateway {
-    override fun loadFilesSnapshot(): Map<String, Any?> = throw UnsupportedOperationException()
-
-    override fun loadWorkspaceImagePreview(relativePath: String): Map<String, Any?> =
-      throw UnsupportedOperationException()
-
-    override fun loadWorkspaceTextPreview(relativePath: String): Map<String, Any?> =
-      throw UnsupportedOperationException()
-
-    override fun loadWorkspaceVoicePlaybackSource(relativePath: String): Map<String, Any?> =
-      throw UnsupportedOperationException()
-
-    override fun loadWorkspaceTextDocument(relativePath: String): Map<String, Any?> =
-      throw UnsupportedOperationException()
-
-    override fun openWorkspaceEntry(relativePath: String) {
-      throw UnsupportedOperationException()
-    }
-
-    override fun openExternalUri(uri: String) {
-      throw UnsupportedOperationException()
-    }
-
-    override fun copyRichTextToClipboard(plainText: String, htmlText: String?) {
-      throw UnsupportedOperationException()
-    }
-
-    override fun createWorkspaceFolder(parentRelativePath: String, name: String): Map<String, Any?> =
-      throw UnsupportedOperationException()
-
-    override fun createWorkspaceTextFile(parentRelativePath: String, name: String): Map<String, Any?> =
-      throw UnsupportedOperationException()
-
-    override fun renameWorkspaceEntry(targetRelativePath: String, newName: String): Map<String, Any?> =
-      throw UnsupportedOperationException()
-
-    override fun deleteWorkspaceEntries(relativePaths: List<String>): Map<String, Any?> =
-      throw UnsupportedOperationException()
-
-    override fun saveWorkspaceTextDocument(targetRelativePath: String, content: String): Map<String, Any?> =
-      throw UnsupportedOperationException()
-
-    override fun pasteWorkspaceEntries(
-      sourceRelativePaths: List<String>,
-      destinationRelativePath: String,
-      move: Boolean,
-    ): Map<String, Any?> = throw UnsupportedOperationException()
-
-    override fun shareWorkspaceEntries(relativePaths: List<String>) {
-      throw UnsupportedOperationException()
-    }
-
-    override fun showNativeToast(message: String) {
-      throw UnsupportedOperationException()
-    }
-
-    override fun importDraftChatAttachments(
-      requestedKind: String,
-      uriStrings: List<String>,
-    ): List<Map<String, Any?>> = throw UnsupportedOperationException()
-
-    override fun probeTwinImportSource(filePath: String): Map<String, Any?> =
-      throw UnsupportedOperationException()
-  }
-
   private class RecordingRuntimeServiceClient(
     var currentShellGateway: OpenCrayShellGateway?,
     var currentChatGateway: OpenCrayChatRuntimeGateway?,
@@ -5543,36 +6203,86 @@ class OpenCrayRuntimeServiceHostTest {
     private val listeners = linkedSetOf<(RuntimeServiceConnectionState) -> Unit>()
     private var currentConnectionState: RuntimeServiceConnectionState =
       RuntimeServiceConnectionState.inProcessFallback()
+    var loadConnectionStateCallCount: Int = 0
+      private set
+    var peekConnectionStateCallCount: Int = 0
+      private set
+    var loadShellGatewayCallCount: Int = 0
+      private set
+    var peekShellGatewayCallCount: Int = 0
+      private set
+    var loadChatRuntimeGatewayCallCount: Int = 0
+      private set
+    var peekChatRuntimeGatewayCallCount: Int = 0
+      private set
+    var loadSkillsGatewayCallCount: Int = 0
+      private set
+    var peekSkillsGatewayCallCount: Int = 0
+      private set
+    var loadSettingsGatewayCallCount: Int = 0
+      private set
+    var peekSettingsGatewayCallCount: Int = 0
+      private set
 
     override fun loadSnapshot(): OpenCrayRuntimeServiceClientSnapshot = error("unused in test")
 
-    override fun loadConnectionState(): RuntimeServiceConnectionState = currentConnectionState
+    override fun loadConnectionState(): RuntimeServiceConnectionState {
+      loadConnectionStateCallCount += 1
+      return currentConnectionState
+    }
 
-    override fun peekConnectionState(): RuntimeServiceConnectionState = currentConnectionState
+    override fun peekConnectionState(): RuntimeServiceConnectionState {
+      peekConnectionStateCallCount += 1
+      return currentConnectionState
+    }
 
-    override fun loadShellGateway(): OpenCrayShellGateway? = currentShellGateway
+    override fun loadShellGateway(): OpenCrayShellGateway? {
+      loadShellGatewayCallCount += 1
+      return currentShellGateway
+    }
 
-    override fun peekShellGateway(): OpenCrayShellGateway? = currentShellGateway
+    override fun peekShellGateway(): OpenCrayShellGateway? {
+      peekShellGatewayCallCount += 1
+      return currentShellGateway
+    }
 
-    override fun loadChatRuntimeGateway(): OpenCrayChatRuntimeGateway? = currentChatGateway
+    override fun loadChatRuntimeGateway(): OpenCrayChatRuntimeGateway? {
+      loadChatRuntimeGatewayCallCount += 1
+      return currentChatGateway
+    }
 
-    override fun peekChatRuntimeGateway(): OpenCrayChatRuntimeGateway? = currentChatGateway
+    override fun peekChatRuntimeGateway(): OpenCrayChatRuntimeGateway? {
+      peekChatRuntimeGatewayCallCount += 1
+      return currentChatGateway
+    }
 
     override fun dispatchChatWriteCommand(
       command: OpenCrayChatWriteCommand,
     ): OpenCrayChatWriteDispatchResult? = dispatchChatWriteCommandHandler?.invoke(command)
 
-    override fun loadSkillsGateway(): OpenCraySkillsGateway? = currentSkillsGateway
+    override fun loadSkillsGateway(): OpenCraySkillsGateway? {
+      loadSkillsGatewayCallCount += 1
+      return currentSkillsGateway
+    }
 
-    override fun peekSkillsGateway(): OpenCraySkillsGateway? = currentSkillsGateway
+    override fun peekSkillsGateway(): OpenCraySkillsGateway? {
+      peekSkillsGatewayCallCount += 1
+      return currentSkillsGateway
+    }
 
     override fun dispatchSkillsWriteCommand(
       command: OpenCraySkillsWriteCommand,
     ): OpenCraySkillsWriteDispatchResult? = dispatchSkillsWriteCommandHandler?.invoke(command)
 
-    override fun loadSettingsGateway(): OpenCraySettingsGateway? = currentSettingsGateway
+    override fun loadSettingsGateway(): OpenCraySettingsGateway? {
+      loadSettingsGatewayCallCount += 1
+      return currentSettingsGateway
+    }
 
-    override fun peekSettingsGateway(): OpenCraySettingsGateway? = currentSettingsGateway
+    override fun peekSettingsGateway(): OpenCraySettingsGateway? {
+      peekSettingsGatewayCallCount += 1
+      return currentSettingsGateway
+    }
 
     override fun dispatchSettingsWriteCommand(
       command: OpenCraySettingsWriteCommand,
@@ -5641,6 +6351,36 @@ class OpenCrayRuntimeServiceHostTest {
       if (observing) binderGateway else null
 
     override fun peekChatRuntimeGateway(): OpenCrayChatRuntimeGateway? =
+      if (observing) binderGateway else null
+
+    override fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit {
+      observing = true
+      return { }
+    }
+
+    override fun observePassiveConnectionState(
+      listener: (RuntimeServiceConnectionState) -> Unit,
+    ): () -> Unit = observeConnectionState(listener)
+  }
+
+  private class SettingsGatewayAvailableOnObserveClient(
+    private val binderGateway: OpenCraySettingsGateway,
+  ) : OpenCrayRuntimeServiceClient {
+    private var observing: Boolean = false
+
+    override fun loadSnapshot(): OpenCrayRuntimeServiceClientSnapshot = error("unused in test")
+
+    override fun loadConnectionState(): RuntimeServiceConnectionState =
+      if (observing) {
+        RuntimeServiceConnectionState.binderConnected()
+      } else {
+        RuntimeServiceConnectionState.bindingPending()
+      }
+
+    override fun loadSettingsGateway(): OpenCraySettingsGateway? =
+      if (observing) binderGateway else null
+
+    override fun peekSettingsGateway(): OpenCraySettingsGateway? =
       if (observing) binderGateway else null
 
     override fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit {
@@ -7061,74 +7801,51 @@ class OpenCrayRuntimeServiceHostTest {
       )
   }
 
-  private fun bridgeSnapshot(root: java.io.File): OpenCrayRuntimeServiceBridgeSnapshot {
-    val runtimeManager = NoOpAgentSessionRuntimeManager()
-    val runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory()
-    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+  private fun noOpRuntimeHostAccess(
+    lifecycleDescriptor: HostRuntimeLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+  ): OpenCrayRuntimeHostAccess {
     val supplementStoreFactory = object : AgentSessionSupplementStoreFactory {
       private val stores = linkedMapOf<String, SessionSupplementStore>()
 
       override fun forChatSession(sessionId: String): SessionSupplementStore =
         stores.getOrPut(sessionId) { InMemorySessionSupplementStore() }
     }
-    val approvalRegistry = AgentTaskApprovalRegistry()
-    val memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
-      memoryStore = InMemoryMemoryStore(),
-    )
-    val replayAccess = OpenCrayRuntimeReplayAccess(
-      approvalRejectionRecorder = { _, _, _, _, _, _ -> },
-      approvalApprovedRecorder = { _, _, _, _, _, _ -> },
-      subAgentReplayRecorder = { _, _ -> },
-      runCancellationRecorder = { _, _, _, _, _ -> },
-      terminalReplayRepairer = { _, _ -> },
-    )
-    val lifecycleDescriptor = HostRuntimeLifecycleDescriptor()
-    val runtimeAccess = OpenCrayRuntimeOwnerAccess(
+    return DefaultOpenCrayRuntimeHostAccess(
       lifecycleDescriptor = lifecycleDescriptor,
-      hostAccess = DefaultOpenCrayRuntimeHostAccess(
-        lifecycleDescriptor = lifecycleDescriptor,
-        sessionRuntimeManager = runtimeManager,
-        runEventJournalStoreFactory = runEventJournalStoreFactory,
-        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
-        supplementStoreFactory = supplementStoreFactory,
-        approvalRegistry = approvalRegistry,
-      ),
-      transcriptMessagesProvider = { emptyList() },
-      memoryIngestionCoordinator = memoryIngestionCoordinator,
-      replayAccess = replayAccess,
+      sessionRuntimeManager = NoOpAgentSessionRuntimeManager(),
+      runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory(),
+      promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory(),
+      supplementStoreFactory = supplementStoreFactory,
+      approvalRegistry = AgentTaskApprovalRegistry(),
     )
-    val workspaceRoot = root.toPath()
+  }
+
+  private fun projectionStoreFor(
+    snapshot: OpenCrayRuntimeServiceBridgeSnapshot,
+  ): RuntimeServiceProjectionStore = inMemoryRuntimeServiceProjectionStore().apply {
+    saveSnapshot(snapshot.toProjectionSnapshot())
+  }
+
+  private class FilesDirBackedContext(
+    private val resolvedFilesDir: java.io.File,
+  ) : ContextWrapper(null) {
+    override fun getApplicationContext(): Context = this
+
+    override fun getFilesDir(): java.io.File = resolvedFilesDir
+  }
+
+  private fun bridgeSnapshot(root: java.io.File): OpenCrayRuntimeServiceBridgeSnapshot {
+    val runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor()
+    val runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
+      controllerInstanceId = "controller-bridge",
+    )
     return OpenCrayRuntimeServiceBridgeSnapshot(
-        dependencies = OpenCrayRuntimeContextDependencies(
-          appContext = ContextWrapper(null),
-          localizedContext = ContextWrapper(null),
-          llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
-          sandboxSettingsRepository = testSandboxSettingsRepository(),
-          personalizationStore = PersonalizationLocalStore(root.resolve("personalization")),
-          chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session")),
-          skillsFacade = EmptySkillsFacade,
-        mcpSettingsFacade = EmptyMcpSettingsFacade,
-        webSearchSettingsStore = WebSearchSettingsStore(InMemoryWebSearchSettingsKeyValueStore()),
-        providerUserAgent = "OpenCrayRuntimeServiceHostTest",
-        workspaceRootProvider = { workspaceRoot },
-        workspaceRootsProvider = { setOf(workspaceRoot) },
-        voiceMetadataCacheStore = null,
-        soulProfileStore = WorkspaceSoulProfileStore(),
-        liveContextModeStore = LiveContextModeStore(InMemoryLiveContextModeKeyValueStore()),
-        safetySettingsFacade = EmptySafetySettingsFacade,
-        mediaSpeechSettingsStore = MediaSpeechSettingsStore(InMemoryMediaSpeechSettingsKeyValueStore()),
-        approvedReadRootsProvider = {
-          ApprovedReadRootsSnapshot(
-            roots = setOf(workspaceRoot),
-            summary = "workspace=${workspaceRoot.toString().replace('\\', '/')}",
-          )
-        },
-        workspaceSnapshotProvider = { emptyMap() },
-      ),
-      runtimeAccess = runtimeAccess,
+      runtimeOwnerLifecycle = runtimeOwnerLifecycle,
+      runtimeOwnerWorkSummary = RuntimeOwnerWorkSummary(),
+      runtimeControllerLifecycle = runtimeControllerLifecycle,
       serviceLifecycle = RuntimeServiceLifecycleDescriptor(),
       serviceWorkState = RuntimeServiceWorkStateTracker(
-        workSummaryProvider = runtimeAccess.hostAccess::activeWorkSummary,
+        workSummaryProvider = ::RuntimeOwnerWorkSummary,
       ).apply {
         refresh()
       }.currentState(),
@@ -7360,6 +8077,15 @@ class OpenCrayRuntimeServiceHostTest {
         )
       },
       workspaceSnapshotProvider = { emptyMap() },
+      runtimeServiceAccessGateway = DefaultRuntimeServiceAccessGateway(
+        defaultRuntimeServiceAccessDependencies(),
+      ),
+      chatRuntimeWriteTargetResolverFactory = ChatRuntimeWriteTargetResolverFactory {
+        object : ChatRuntimeWriteTargetResolver {
+          override fun targetFor(command: OpenCrayChatWriteCommand): RuntimeServiceTarget =
+            RuntimeServiceTarget.INTERACTIVE
+        }
+      },
     )
   }
 

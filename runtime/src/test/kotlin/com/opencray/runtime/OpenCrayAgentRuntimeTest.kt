@@ -554,6 +554,54 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
+  fun runPromptTaskMarksFinalAssistantAndResultWithFinalizationCheckpoint() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-finalization-checkpoint")
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"final","answer":"No tools needed."}""",
+      ),
+    )
+    val eventSink = RecordingEventSink()
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 2),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 1_360L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Answer directly without tools."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    val finalAssistantEvent = eventSink.events
+      .filterIsInstance<OpenCrayAssistantEvent>()
+      .single { event -> event.isFinal }
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.FINALIZATION_COMPLETE,
+      OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(finalAssistantEvent.metadata),
+    )
+    assertEquals(
+      OpenCrayPromptCheckpointBoundary.FINALIZATION_COMPLETE,
+      OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(result.metadata),
+    )
+    val finalizationState = requireNotNull(
+      OpenCrayPromptResumeMetadata.decodeFromMetadata(
+        metadata = finalAssistantEvent.metadata,
+        json = Json { ignoreUnknownKeys = true },
+      ),
+    )
+    assertEquals(1, finalizationState.turnIndex)
+    assertEquals(0, finalizationState.pendingActions.size)
+  }
+
+  @Test
   fun failedNonTerminalToolResultStillEmitsGeneralResumeCheckpoint() {
     val workspaceRoot = temporaryFolder.newFolder("agent-failed-tool-general-resume")
     val gateway = RecordingGateway(

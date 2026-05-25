@@ -376,7 +376,7 @@ internal class LocalPersonalizationFacade private constructor(
       queueIdleProvider = { true },
     )
 
-    internal fun createForTest(
+    internal fun create(
       context: Context,
       store: PersonalizationLocalStore,
       soulProfileStore: WorkspaceSoulProfileStore = WorkspaceSoulProfileStore(),

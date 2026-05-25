@@ -71,6 +71,17 @@ interface SessionQueueSnapshotStore {
   fun clear()
 }
 
+fun interface SessionQueueRestoreTransformer {
+  fun restore(snapshot: SessionQueueSnapshot?, restoreEpochMs: Long): SessionQueueSnapshot?
+}
+
+object NoOpSessionQueueRestoreTransformer : SessionQueueRestoreTransformer {
+  override fun restore(
+    snapshot: SessionQueueSnapshot?,
+    restoreEpochMs: Long,
+  ): SessionQueueSnapshot? = snapshot
+}
+
 class InMemorySessionQueueSnapshotStore(
   initialSnapshot: SessionQueueSnapshot? = null,
 ) : SessionQueueSnapshotStore {
@@ -151,6 +162,7 @@ class SessionQueue(
   private val agentId: String,
   private val runtime: SessionTaskRuntime,
   private val snapshotStore: SessionQueueSnapshotStore,
+  private val restoreTransformer: SessionQueueRestoreTransformer = NoOpSessionQueueRestoreTransformer,
   private val clock: QueueClock = SystemQueueClock,
   private val config: SessionQueueConfig = SessionQueueConfig(),
 ) {
@@ -164,7 +176,11 @@ class SessionQueue(
     require(agentId.isNotBlank()) { "SessionQueue agentId must not be blank." }
 
     synchronized(lock) {
-      restoreLocked(snapshotStore.load())
+      val restoreEpochMs = clock.nowEpochMs()
+      restoreLocked(
+        snapshot = restoreTransformer.restore(snapshotStore.load(), restoreEpochMs),
+        restoreEpochMs = restoreEpochMs,
+      )
       persistSnapshotLocked()
     }
   }
@@ -340,7 +356,10 @@ class SessionQueue(
 
   fun snapshot(): SessionQueueSnapshot = synchronized(lock) { buildSnapshotLocked() }
 
-  private fun restoreLocked(snapshot: SessionQueueSnapshot?) {
+  private fun restoreLocked(
+    snapshot: SessionQueueSnapshot?,
+    restoreEpochMs: Long,
+  ) {
     if (snapshot == null) return
     if (snapshot.sessionId != sessionId || snapshot.agentId != agentId) return
 
@@ -351,7 +370,6 @@ class SessionQueue(
         SessionLifecycleState.IDLE
       }
 
-    val restoreEpochMs = clock.nowEpochMs()
     val restored = snapshot.tasks
       .sortedBy { it.enqueueOrder }
       .map { entry -> normalizeAfterRestart(entry, restoreEpochMs) }
