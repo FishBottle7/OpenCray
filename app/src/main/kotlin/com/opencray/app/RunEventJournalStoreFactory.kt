@@ -24,6 +24,13 @@ internal interface RunEventJournalStore {
     emission: OpenCrayPromptCheckpointEmission,
   ): PersistedRunJournalEntry
 
+  fun appendRecovery(
+    runId: String,
+    taskId: String,
+    emittedAtEpochMs: Long,
+    metadata: Map<String, String>,
+  ): PersistedRunJournalEntry
+
   fun hasEntries(): Boolean
 
   fun list(): List<PersistedRunJournalEntry>
@@ -139,6 +146,22 @@ private class InMemoryRunEventJournalStore(
     )
   }
 
+  override fun appendRecovery(
+    runId: String,
+    taskId: String,
+    emittedAtEpochMs: Long,
+    metadata: Map<String, String>,
+  ): PersistedRunJournalEntry = synchronized(lock) {
+    appendPayloadLocked(
+      recoveryPayload(
+        runId = runId,
+        taskId = taskId,
+        emittedAtEpochMs = emittedAtEpochMs,
+        metadata = metadata,
+      ),
+    )
+  }
+
   override fun list(): List<PersistedRunJournalEntry> = synchronized(lock) {
     entriesByRunId.values
       .asSequence()
@@ -210,6 +233,22 @@ private class FileBackedRunEventJournalStore(
         runId = runId,
         taskId = taskId,
         emission = emission,
+      ),
+    )
+  }
+
+  override fun appendRecovery(
+    runId: String,
+    taskId: String,
+    emittedAtEpochMs: Long,
+    metadata: Map<String, String>,
+  ): PersistedRunJournalEntry = synchronized(lock) {
+    appendPayloadLocked(
+      recoveryPayload(
+        runId = runId,
+        taskId = taskId,
+        emittedAtEpochMs = emittedAtEpochMs,
+        metadata = metadata,
       ),
     )
   }
@@ -345,6 +384,19 @@ private fun checkpointPayload(
     json = PROMPT_CHECKPOINT_JSON,
     checkpointBoundary = emission.boundary,
   ),
+)
+
+private fun recoveryPayload(
+  runId: String,
+  taskId: String,
+  emittedAtEpochMs: Long,
+  metadata: Map<String, String>,
+): PersistedAgentRunEvent = PersistedAgentRunEvent(
+  kind = PersistedAgentRunEventKind.RECOVERY,
+  runId = runId,
+  taskId = taskId,
+  emittedAtEpochMs = emittedAtEpochMs,
+  resultMetadata = metadata.filterValues { value -> value.isNotBlank() },
 )
 
 private val PERSISTED_JOURNAL_ENTRY_COMPARATOR = compareBy<PersistedRunJournalEntry>(

@@ -177,6 +177,7 @@ internal enum class PersistedAgentRunEventKind {
   MEMORY_RETRIEVAL,
   MEMORY_WRITE,
   CANCELLATION,
+  RECOVERY,
 }
 
 private class FileBackedAgentRunRecordStore(
@@ -459,7 +460,10 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
 }
 
 internal fun PersistedAgentRunEvent.toRuntimeEventOrNull(): OpenCrayAgentRunEvent? =
-  if (kind == PersistedAgentRunEventKind.CHECKPOINT) {
+  if (
+    kind == PersistedAgentRunEventKind.CHECKPOINT ||
+    kind == PersistedAgentRunEventKind.RECOVERY
+  ) {
     null
   } else {
     toRuntimeEvent()
@@ -633,6 +637,9 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
   )
   PersistedAgentRunEventKind.CHECKPOINT -> error(
     "Checkpoint journal entries are recovery markers and do not map to runtime events.",
+  )
+  PersistedAgentRunEventKind.RECOVERY -> error(
+    "Recovery journal entries are diagnostics markers and do not map to runtime events.",
   )
   PersistedAgentRunEventKind.MEMORY_RETRIEVAL -> OpenCrayMemoryRetrievalEvent(
     runId = runId,

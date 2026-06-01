@@ -141,6 +141,14 @@ internal class RecoveryAwareQueueSnapshotStore(
       )
       if (rewrittenEntry != entry) {
         changed = true
+        appendRecoveryJournalEntryIfNeeded(
+          runId = runId,
+          originalEntry = entry,
+          rewrittenEntry = rewrittenEntry,
+          recoveryPlan = recoveryPlan,
+          restoreEpochMs = restoreEpochMs,
+          existingEntries = journalEntries,
+        )
       }
       if (recoveryPlan?.action == RunRecoveryAction.RESTORE_TERMINAL_RESULT) {
         promptCheckpointStore.remove(entry.task.id)
@@ -800,6 +808,84 @@ internal class RecoveryAwareQueueSnapshotStore(
     }
   }
 
+  private fun appendRecoveryJournalEntryIfNeeded(
+    runId: String,
+    originalEntry: SessionQueueTaskSnapshot,
+    rewrittenEntry: SessionQueueTaskSnapshot,
+    recoveryPlan: RunRecoveryPlan?,
+    restoreEpochMs: Long,
+    existingEntries: List<PersistedRunJournalEntry>,
+  ) {
+    recoveryPlan ?: return
+    val metadata = recoveryJournalMetadata(
+      originalEntry = originalEntry,
+      rewrittenEntry = rewrittenEntry,
+      recoveryPlan = recoveryPlan,
+      restoreEpochMs = restoreEpochMs,
+    )
+    if (metadata.isEmpty()) {
+      return
+    }
+    val basis = recoveryJournalBasis(metadata)
+    val alreadyStamped = existingEntries.any { entry ->
+      entry.kind == PersistedAgentRunEventKind.RECOVERY &&
+        recoveryJournalBasis(entry.payload.resultMetadata) == basis
+    }
+    if (alreadyStamped) {
+      return
+    }
+    runEventJournalStore.appendRecovery(
+      runId = runId,
+      taskId = rewrittenEntry.task.id,
+      emittedAtEpochMs = restoreEpochMs,
+      metadata = metadata,
+    )
+  }
+
+  private fun recoveryJournalMetadata(
+    originalEntry: SessionQueueTaskSnapshot,
+    rewrittenEntry: SessionQueueTaskSnapshot,
+    recoveryPlan: RunRecoveryPlan,
+    restoreEpochMs: Long,
+  ): Map<String, String> = buildMap {
+    put(RunLifecycleMetadataKeys.RECOVERY_ACTION, recoveryPlan.action.name.lowercase())
+    put(
+      METADATA_QUEUE_RESTORE_EPOCH_MS,
+      rewrittenEntry.task.metadata[METADATA_QUEUE_RESTORE_EPOCH_MS]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: restoreEpochMs.toString(),
+    )
+    put(
+      METADATA_PREVIOUS_LIFECYCLE_STATE,
+      rewrittenEntry.task.metadata[METADATA_PREVIOUS_LIFECYCLE_STATE]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: previousLifecycleState(originalEntry),
+    )
+    val recoveryReason = rewrittenEntry.task.metadata[METADATA_RECOVERY_REASON]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: recoveryPlan.reasonCode.trim().takeIf(String::isNotBlank)
+    recoveryReason?.let { reason -> put(METADATA_RECOVERY_REASON, reason) }
+    rewrittenEntry.task.metadata[RunLifecycleMetadataKeys.RUN_ATTEMPT]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { runAttempt -> put(RunLifecycleMetadataKeys.RUN_ATTEMPT, runAttempt) }
+    rewrittenEntry.task.metadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { checkpointId -> put(RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID, checkpointId) }
+  }
+
+  private fun recoveryJournalBasis(metadata: Map<String, String>): Map<String, String> =
+    RECOVERY_JOURNAL_BASIS_KEYS.mapNotNull { key ->
+      metadata[key]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { value -> key to value }
+    }.toMap()
+
   private fun shouldStampRestoreMetadata(
     entry: SessionQueueTaskSnapshot,
     recoveryPlan: RunRecoveryPlan?,
@@ -998,6 +1084,12 @@ internal class RecoveryAwareQueueSnapshotStore(
 
   private companion object {
     private const val DEFAULT_RUN_ATTEMPT: Int = 1
+    private val RECOVERY_JOURNAL_BASIS_KEYS: Set<String> = setOf(
+      RunLifecycleMetadataKeys.RECOVERY_ACTION,
+      METADATA_RECOVERY_REASON,
+      RunLifecycleMetadataKeys.RUN_ATTEMPT,
+      RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID,
+    )
   }
 }
 

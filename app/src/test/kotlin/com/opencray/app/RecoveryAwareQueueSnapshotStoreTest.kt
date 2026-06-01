@@ -151,6 +151,23 @@ class RecoveryAwareQueueSnapshotStoreTest {
       "checkpoint-general-resume",
       restoredAgain.task.metadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID],
     )
+    val recoveryEntries = runEventJournalStore.listForRun(runId)
+      .filter { entry -> entry.kind == PersistedAgentRunEventKind.RECOVERY }
+
+    assertEquals(1, recoveryEntries.size)
+    val recoveryMetadata = recoveryEntries.single().payload.resultMetadata
+    assertEquals(
+      "resume_from_checkpoint",
+      recoveryMetadata[RunLifecycleMetadataKeys.RECOVERY_ACTION],
+    )
+    assertEquals("5000", recoveryMetadata[METADATA_QUEUE_RESTORE_EPOCH_MS])
+    assertEquals("running", recoveryMetadata[METADATA_PREVIOUS_LIFECYCLE_STATE])
+    assertEquals("durable_general_resume_checkpoint", recoveryMetadata[METADATA_RECOVERY_REASON])
+    assertEquals("2", recoveryMetadata[RunLifecycleMetadataKeys.RUN_ATTEMPT])
+    assertEquals(
+      "checkpoint-general-resume",
+      recoveryMetadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID],
+    )
   }
 
   @Test

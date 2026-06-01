@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import com.opencray.core.orchestrator.METADATA_RECOVERY_REASON
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptCheckpointEmission
@@ -145,6 +146,49 @@ class RunEventJournalStoreFactoryTest {
     )
     assertEquals(resumeState, restoredResumeState)
     assertNotNull(restoredResumeState)
+    assertTrue(restoredStore.listRuntimeEvents().isEmpty())
+  }
+
+  @Test
+  fun fileBackedStorePersistsRecoveryEntriesWithoutProjectingRuntimeEvents() {
+    val runtimeRoot = temporaryFolder.newFolder("runtime-journal-store-recovery")
+    val firstStore = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+      .forChatSession("session-1")
+
+    firstStore.appendRecovery(
+      runId = "run-1",
+      taskId = "task-1",
+      emittedAtEpochMs = 250L,
+      metadata = mapOf(
+        RunLifecycleMetadataKeys.RECOVERY_ACTION to "resume_from_checkpoint",
+        METADATA_RECOVERY_REASON to "durable_general_resume_checkpoint",
+        RunLifecycleMetadataKeys.RUN_ATTEMPT to "2",
+        RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID to "checkpoint-1",
+      ),
+    )
+
+    val restoredStore = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+      .forChatSession("session-1")
+    val recoveryEntry = restoredStore.listForRun("run-1").single()
+
+    assertEquals(PersistedAgentRunEventKind.RECOVERY, recoveryEntry.kind)
+    assertEquals(250L, recoveryEntry.emittedAtEpochMs)
+    assertEquals(
+      "resume_from_checkpoint",
+      recoveryEntry.payload.resultMetadata[RunLifecycleMetadataKeys.RECOVERY_ACTION],
+    )
+    assertEquals(
+      "durable_general_resume_checkpoint",
+      recoveryEntry.payload.resultMetadata[METADATA_RECOVERY_REASON],
+    )
+    assertEquals(
+      "2",
+      recoveryEntry.payload.resultMetadata[RunLifecycleMetadataKeys.RUN_ATTEMPT],
+    )
+    assertEquals(
+      "checkpoint-1",
+      recoveryEntry.payload.resultMetadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID],
+    )
     assertTrue(restoredStore.listRuntimeEvents().isEmpty())
   }
 }

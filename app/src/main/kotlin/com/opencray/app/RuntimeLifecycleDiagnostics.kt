@@ -14,6 +14,7 @@ internal object RunLifecycleMetadataKeys {
   const val RUNTIME_CONTROLLER_ID: String = "_host.runtimeControllerId"
   const val RUN_ATTEMPT: String = "_host.runAttempt"
   const val RECOVERED_FROM_CHECKPOINT_ID: String = "_host.recoveredFromCheckpointId"
+  const val RECOVERY_ACTION: String = "_host.recoveryAction"
   const val SUBMISSION_SOURCE: String = "_host.submissionSource"
   const val PREAPPROVED_TOOL_NAME: String = "_host.preapprovedToolName"
 }
