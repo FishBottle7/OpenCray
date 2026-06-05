@@ -5299,9 +5299,6 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           );
     }
     for (final run in visibleRuns) {
-      if (run.isTerminal) {
-        continue;
-      }
       final String anchorMessageId = run.pendingMessageId?.trim() ?? '';
       if (anchorMessageId.isEmpty ||
           !visibleMessageIds.contains(anchorMessageId)) {

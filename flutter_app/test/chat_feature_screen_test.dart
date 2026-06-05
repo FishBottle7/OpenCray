@@ -4436,6 +4436,10 @@ void main() {
         lessThan(tester.getTopLeft(finalBubbleFinder).dy),
       );
       expect(
+        tester.getTopLeft(processBubbleFinder).dy,
+        lessThan(tester.getTopLeft(finalBubbleFinder).dy),
+      );
+      expect(
         find.descendant(
           of: statusFinder,
           matching: find.text(copy.chatRunInterruptAction),
@@ -4494,6 +4498,23 @@ void main() {
               updatedAtEpochMs: 3600,
               attempt: 1,
               pendingMessageId: 'pending-interrupt-inline',
+              managedProcessIds: <String>['proc-interrupt-inline'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-interrupt-inline',
+                  status: 'success',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1800,
+                  updatedAtEpochMs: 3600,
+                  finishedAtEpochMs: 3600,
+                  stdoutPreview: 'ready',
+                ),
+              ],
+              runningManagedProcessCount: 0,
+              hasLiveManagedProcesses: false,
               isTerminal: true,
               lastEvent: OpenCrayChatRuntimeEventSnapshot(
                 kind: 'tool_result',
@@ -4534,6 +4555,20 @@ void main() {
       expect(
         find.descendant(of: statusFinder, matching: find.text('FINISHED')),
         findsOneWidget,
+      );
+      expect(processBubbleFinder, findsOneWidget);
+      expect(finalBubbleFinder, findsOneWidget);
+      expect(
+        tester.getTopLeft(statusFinder).dy,
+        lessThan(tester.getTopLeft(processBubbleFinder).dy),
+      );
+      expect(
+        tester.getTopLeft(statusFinder).dy,
+        lessThan(tester.getTopLeft(finalBubbleFinder).dy),
+      );
+      expect(
+        tester.getTopLeft(processBubbleFinder).dy,
+        lessThan(tester.getTopLeft(finalBubbleFinder).dy),
       );
     },
   );
