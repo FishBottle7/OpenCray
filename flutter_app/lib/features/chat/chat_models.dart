@@ -260,6 +260,7 @@ class ChatMessageData {
     required this.kind,
     required this.text,
     this.meta = '',
+    this.runtimeAnchorMessageId = '',
     this.createdAtEpochMs,
     this.isEphemeral = false,
     this.attachments = const <ChatMessageAttachmentData>[],
@@ -269,6 +270,7 @@ class ChatMessageData {
   final ChatMessageKind kind;
   final String text;
   final String meta;
+  final String runtimeAnchorMessageId;
   final int? createdAtEpochMs;
   final bool isEphemeral;
   final List<ChatMessageAttachmentData> attachments;

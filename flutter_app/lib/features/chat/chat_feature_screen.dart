@@ -1396,6 +1396,8 @@ bool chatMessagesEquivalent(
         leftMessage.kind == rightMessage.kind &&
         leftMessage.text == rightMessage.text &&
         leftMessage.meta == rightMessage.meta &&
+        leftMessage.runtimeAnchorMessageId ==
+            rightMessage.runtimeAnchorMessageId &&
         leftMessage.createdAtEpochMs == rightMessage.createdAtEpochMs &&
         leftMessage.isEphemeral == rightMessage.isEphemeral &&
         _listsEquivalent(
@@ -5275,6 +5277,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               messageId: messageId,
               kind: ChatMessageKind.inbound,
               text: text,
+              runtimeAnchorMessageId: anchorMessageId,
               createdAtEpochMs: event.emittedAtEpochMs,
               isEphemeral: true,
             ),
@@ -5317,6 +5320,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                 messageId: messageId,
                 kind: ChatMessageKind.inbound,
                 text: text,
+                runtimeAnchorMessageId: anchorMessageId,
                 createdAtEpochMs: _managedProcessSortEpochMs(process),
                 isEphemeral: true,
               ),
@@ -11367,10 +11371,16 @@ class _MessageList extends StatelessWidget {
           .add(trace);
     }
 
-    void addRunTrace(ChatRunTraceData trace, {required bool showActions}) {
+    void addRunTrace(
+      ChatRunTraceData trace, {
+      required bool showRetryAction,
+      required bool showInterruptAction,
+    }) {
       if (!renderedRunTraces.add(trace)) {
         return;
       }
+      final bool canShowInterrupt = showInterruptAction && trace.canInterrupt;
+      final bool canShowRetry = showRetryAction && trace.isRetryable;
       children.add(
         Padding(
           padding: const EdgeInsets.only(bottom: 8),
@@ -11382,20 +11392,27 @@ class _MessageList extends StatelessWidget {
               copy: copy,
               trace: trace,
               showSandboxPreviewCard: showSandboxPreviewCards,
-              showInlineActions: showActions,
-              showInterruptConfirm: interruptConfirmRunId == trace.interruptId,
-              isInterruptBusy: busyInterruptRunIds.contains(trace.interruptId),
-              onInterruptRequest: trace.canInterrupt
+              showRetryAction: canShowRetry,
+              showInterruptAction: canShowInterrupt,
+              showInterruptConfirm:
+                  canShowInterrupt &&
+                  interruptConfirmRunId == trace.interruptId,
+              isInterruptBusy:
+                  canShowInterrupt &&
+                  busyInterruptRunIds.contains(trace.interruptId),
+              onInterruptRequest: canShowInterrupt
                   ? () => onArmInterruptRunTrace(trace)
                   : null,
-              onInterruptDismiss: interruptConfirmRunId == trace.interruptId
+              onInterruptDismiss:
+                  canShowInterrupt && interruptConfirmRunId == trace.interruptId
                   ? () => onDismissInterruptRunTrace(trace)
                   : null,
-              onInterruptConfirm: trace.canInterrupt
+              onInterruptConfirm: canShowInterrupt
                   ? () => onInterruptRunTrace(trace)
                   : null,
-              isRetryBusy: busyRetryRunIds.contains(trace.retryId),
-              onRetry: trace.isRetryable ? () => onRetryRunTrace(trace) : null,
+              isRetryBusy:
+                  canShowRetry && busyRetryRunIds.contains(trace.retryId),
+              onRetry: canShowRetry ? () => onRetryRunTrace(trace) : null,
             ),
           ),
         ),
@@ -11403,12 +11420,22 @@ class _MessageList extends StatelessWidget {
     }
 
     for (final message in messages) {
+      final String leadingTraceAnchorMessageId =
+          _leadingTraceAnchorMessageIdForMessage(
+            message,
+            anchoredRunTracesByMessageId,
+          );
+      final List<ChatRunTraceData> leadingTraces =
+          leadingTraceAnchorMessageId.isEmpty
+          ? const <ChatRunTraceData>[]
+          : anchoredRunTracesByMessageId[leadingTraceAnchorMessageId] ??
+                const <ChatRunTraceData>[];
+      for (final trace in leadingTraces) {
+        addRunTrace(trace, showRetryAction: false, showInterruptAction: true);
+      }
       final List<ChatRunTraceData> anchoredTraces =
           anchoredRunTracesByMessageId[message.messageId.trim()] ??
           const <ChatRunTraceData>[];
-      for (final trace in anchoredTraces) {
-        addRunTrace(trace, showActions: false);
-      }
       final int? currentTimestampEpochMs = message.createdAtEpochMs;
       if (currentTimestampEpochMs != null &&
           currentTimestampEpochMs > 0 &&
@@ -11518,11 +11545,32 @@ class _MessageList extends StatelessWidget {
       final bool showActions =
           anchorMessageId.isEmpty ||
           !visibleMessageIds.contains(anchorMessageId);
-      addRunTrace(trace, showActions: showActions);
+      addRunTrace(
+        trace,
+        showRetryAction: showActions,
+        showInterruptAction: true,
+      );
     }
 
     return Column(children: children);
   }
+}
+
+String _leadingTraceAnchorMessageIdForMessage(
+  ChatMessageData message,
+  Map<String, List<ChatRunTraceData>> anchoredRunTracesByMessageId,
+) {
+  final String messageId = message.messageId.trim();
+  if (messageId.isNotEmpty &&
+      anchoredRunTracesByMessageId.containsKey(messageId)) {
+    return messageId;
+  }
+  final String runtimeAnchorMessageId = message.runtimeAnchorMessageId.trim();
+  if (runtimeAnchorMessageId.isNotEmpty &&
+      anchoredRunTracesByMessageId.containsKey(runtimeAnchorMessageId)) {
+    return runtimeAnchorMessageId;
+  }
+  return '';
 }
 
 String _chatMessageListItemKey(ChatMessageData message) {
@@ -11540,7 +11588,8 @@ class _RunTraceBubble extends StatefulWidget {
     required this.copy,
     required this.trace,
     this.showSandboxPreviewCard = false,
-    this.showInlineActions = false,
+    this.showRetryAction = false,
+    this.showInterruptAction = false,
     this.showInterruptConfirm = false,
     this.onInterruptRequest,
     this.onInterruptDismiss,
@@ -11554,7 +11603,8 @@ class _RunTraceBubble extends StatefulWidget {
   final OpenCrayUiCopy copy;
   final ChatRunTraceData trace;
   final bool showSandboxPreviewCard;
-  final bool showInlineActions;
+  final bool showRetryAction;
+  final bool showInterruptAction;
   final bool showInterruptConfirm;
   final VoidCallback? onInterruptRequest;
   final VoidCallback? onInterruptDismiss;
@@ -11670,6 +11720,8 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
         widget.showSandboxPreviewCard ? trace.previewCard : null;
     final _RunTraceCompactPresentation presentation =
         _buildRunTraceCompactPresentation(trace: trace, copy: widget.copy);
+    final bool showInlineActions =
+        widget.showRetryAction || widget.showInterruptAction;
     final double bubbleWidth = math.min(
       MediaQuery.sizeOf(context).width - 76,
       314,
@@ -11688,11 +11740,13 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
               copy: widget.copy,
               onTap: _openFullscreen,
             ),
-            if (widget.showInlineActions) ...<Widget>[
+            if (showInlineActions) ...<Widget>[
               const SizedBox(height: 8),
               _ChatRunTraceInlineActions(
                 copy: widget.copy,
                 traces: <ChatRunTraceData>[trace],
+                showRetryActions: widget.showRetryAction,
+                showInterruptActions: widget.showInterruptAction,
                 interruptConfirmRunId: widget.showInterruptConfirm
                     ? trace.interruptId
                     : null,
@@ -14564,6 +14618,8 @@ class _ChatRunTraceInlineActions extends StatefulWidget {
   const _ChatRunTraceInlineActions({
     required this.copy,
     required this.traces,
+    this.showRetryActions = true,
+    this.showInterruptActions = true,
     this.interruptConfirmRunId,
     this.busyInterruptRunIds = const <String>{},
     this.busyRetryRunIds = const <String>{},
@@ -14575,6 +14631,8 @@ class _ChatRunTraceInlineActions extends StatefulWidget {
 
   final OpenCrayUiCopy copy;
   final List<ChatRunTraceData> traces;
+  final bool showRetryActions;
+  final bool showInterruptActions;
   final String? interruptConfirmRunId;
   final Set<String> busyInterruptRunIds;
   final Set<String> busyRetryRunIds;
@@ -14593,12 +14651,17 @@ class _ChatRunTraceInlineActionsState
   bool _outsideDismissReady = false;
 
   ChatRunTraceData? get _confirmTrace {
+    if (!widget.showInterruptActions) {
+      return null;
+    }
     final String confirmRunId = widget.interruptConfirmRunId?.trim() ?? '';
     if (confirmRunId.isEmpty) {
       return null;
     }
     for (final trace in widget.traces) {
-      if (trace.interruptId == confirmRunId) {
+      if (trace.interruptId == confirmRunId &&
+          trace.canInterrupt &&
+          !trace.isTerminal) {
         return trace;
       }
     }
@@ -14644,9 +14707,16 @@ class _ChatRunTraceInlineActionsState
       );
       final bool retryBusy = widget.busyRetryRunIds.contains(trace.retryId);
       final bool canShowInterrupt =
-          widget.onArmInterruptRunTrace != null || showConfirm || interruptBusy;
+          widget.showInterruptActions &&
+          !trace.isTerminal &&
+          (trace.canInterrupt || showConfirm || interruptBusy) &&
+          (widget.onArmInterruptRunTrace != null ||
+              showConfirm ||
+              interruptBusy);
       final bool canShowRetry =
-          trace.isRetryable && widget.onRetryRunTrace != null;
+          widget.showRetryActions &&
+          trace.isRetryable &&
+          widget.onRetryRunTrace != null;
       if (!canShowInterrupt && !canShowRetry) {
         continue;
       }
@@ -14932,6 +15002,7 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
                 _ChatRunTraceInlineActions(
                   copy: widget.copy,
                   traces: widget.attachedRunTraces,
+                  showInterruptActions: false,
                   interruptConfirmRunId: widget.interruptConfirmRunId,
                   busyInterruptRunIds: widget.busyInterruptRunIds,
                   busyRetryRunIds: widget.busyRetryRunIds,

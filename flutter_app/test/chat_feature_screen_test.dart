@@ -4334,6 +4334,187 @@ void main() {
     );
   });
 
+  testWidgets(
+    'anchored running status stays above process and final bubbles with interrupt action',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeSnapshots =
+          StreamController<OpenCrayChatRuntimeSnapshot>.broadcast();
+      addTearDown(runtimeSnapshots.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Start the server.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-interrupt-inline',
+              kind: 'inbound',
+              text: 'The server is running; I am checking the preview.',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 2400,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-interrupt-inline',
+              taskId: 'task-interrupt-inline',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 2400,
+              attempt: 1,
+              pendingMessageId: 'pending-interrupt-inline',
+              managedProcessIds: <String>['proc-interrupt-inline'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-interrupt-inline',
+                  status: 'running',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1800,
+                  updatedAtEpochMs: 2400,
+                  stdoutPreview: 'ready',
+                ),
+              ],
+              runningManagedProcessCount: 1,
+              hasLiveManagedProcesses: true,
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-interrupt-inline',
+              taskId: 'task-interrupt-inline',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+          ],
+        ),
+        runtimeSnapshotStream: runtimeSnapshots.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final statusFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-interrupt-inline'),
+      );
+      final processBubbleFinder = find.byKey(
+        const ValueKey<String>(
+          'chat-bubble-runtime-process-run-interrupt-inline-proc-interrupt-inline',
+        ),
+      );
+      final finalBubbleFinder = find.byKey(
+        const ValueKey<String>('chat-bubble-pending-interrupt-inline'),
+      );
+      final interruptFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-interrupt-run-interrupt-inline'),
+      );
+      expect(statusFinder, findsOneWidget);
+      expect(processBubbleFinder, findsOneWidget);
+      expect(finalBubbleFinder, findsOneWidget);
+      expect(
+        tester.getTopLeft(statusFinder).dy,
+        lessThan(tester.getTopLeft(processBubbleFinder).dy),
+      );
+      expect(
+        tester.getTopLeft(statusFinder).dy,
+        lessThan(tester.getTopLeft(finalBubbleFinder).dy),
+      );
+      expect(
+        find.descendant(of: statusFinder, matching: interruptFinder),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: finalBubbleFinder,
+          matching: find.text(copy.chatRunInterruptAction),
+        ),
+        findsNothing,
+      );
+
+      await tester.tap(interruptFinder);
+      await tester.pumpAndSettle();
+      final sliderFinder = find.byKey(
+        const ValueKey<String>(
+          'chat-run-trace-interrupt-slider-run-interrupt-inline',
+        ),
+      );
+      expect(sliderFinder, findsOneWidget);
+
+      await tester.tapAt(const Offset(8, 8));
+      await tester.pumpAndSettle();
+      expect(sliderFinder, findsNothing);
+      expect(bridge.cancelledRunIds, isEmpty);
+
+      runtimeSnapshots.add(
+        const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 3600,
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          retainedRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-interrupt-inline',
+              taskId: 'task-interrupt-inline',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 3600,
+              attempt: 1,
+              pendingMessageId: 'pending-interrupt-inline',
+              isTerminal: true,
+              lastEvent: OpenCrayChatRuntimeEventSnapshot(
+                kind: 'tool_result',
+                runId: 'run-interrupt-inline',
+                taskId: 'task-interrupt-inline',
+                emittedAtEpochMs: 3600,
+                toolName: 'Bash',
+                contentPreview: 'server finished',
+              ),
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-interrupt-inline',
+              taskId: 'task-interrupt-inline',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-interrupt-inline',
+              taskId: 'task-interrupt-inline',
+              emittedAtEpochMs: 3600,
+              toolName: 'Bash',
+              contentPreview: 'server finished',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(interruptFinder, findsNothing);
+      expect(
+        find.descendant(of: statusFinder, matching: find.text('FINISHED')),
+        findsOneWidget,
+      );
+    },
+  );
+
   testWidgets('cloud mode shows sandbox preview card on the run trace', (
     tester,
   ) async {
@@ -7362,7 +7543,9 @@ void main() {
       expect(
         find.descendant(
           of: fullscreenFinder,
-          matching: find.textContaining(copy.chatRunApprovalDecisionDeferredBody),
+          matching: find.textContaining(
+            copy.chatRunApprovalDecisionDeferredBody,
+          ),
         ),
         findsOneWidget,
       );
