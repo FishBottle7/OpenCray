@@ -154,6 +154,13 @@ internal class OpenCrayFlutterHostBridge(
     runCatching {
       when (call.method) {
         "loadShellSnapshot" -> shellGateway.loadShellSnapshot()
+        "saveShellDestination" -> {
+          shellGateway.saveShellDestination(
+            selectedTab = call.argument<String>("selectedTab").orEmpty(),
+            settingsSubpage = call.argument<String>("settingsSubpage"),
+          )
+          null
+        }
         "loadFilesSnapshot" -> localHostGateway.loadFilesSnapshot()
         "resolveSandboxPreviewEmbedConfig" -> localHostGateway.resolveSandboxPreviewEmbedConfig(
           previewUrl = call.argument<String>("previewUrl").orEmpty(),

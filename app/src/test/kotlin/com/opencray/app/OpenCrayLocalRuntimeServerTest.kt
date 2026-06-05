@@ -2919,6 +2919,11 @@ class OpenCrayLocalRuntimeServerTest {
       listener(loadShellSnapshot())
       return { }
     }
+
+    override fun saveShellDestination(
+      selectedTab: String,
+      settingsSubpage: String?,
+    ) = Unit
   }
 
   private class RecordingSkillsGateway : OpenCraySkillsGateway {

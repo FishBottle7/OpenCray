@@ -2022,8 +2022,10 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "writtenKinds" to event.writtenKinds,
       "resolvedRecordIds" to event.resolvedRecordIds,
       "suppressedRecordIds" to event.suppressedRecordIds,
+      "reopenedRecordIds" to event.reopenedRecordIds,
       "reaffirmedRecordIds" to event.reaffirmedRecordIds,
       "expiredRecordIds" to event.expiredRecordIds,
+      "stewardshipPlanSteps" to event.stewardshipPlanSteps.map(::stewardshipPlanStepToMap),
     )
     is OpenCrayCancellationEvent -> mapOf(
       "kind" to "interrupted",

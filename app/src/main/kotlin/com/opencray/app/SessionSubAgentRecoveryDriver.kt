@@ -208,6 +208,29 @@ internal class SessionSubAgentRecoveryDriver(
     return true
   }
 
+  fun restoreInFlightTask(
+    submission: AgentRunSubmission,
+    task: AgentTask,
+  ): Boolean {
+    val recoverySpec = detachedControlTaskSpec(task) as? DetachedSubAgentRecoveryWaitTaskSpec
+      ?: return false
+    val handleKey = SubAgentExecutionKey(
+      parentRunId = recoverySpec.parentRunId,
+      agentId = recoverySpec.agentId,
+    )
+    launchExecution(
+      handleKey = handleKey,
+      submission = submission,
+      task = task,
+      executionKind = task.metadata[METADATA_EXECUTION_KIND]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: EXECUTION_KIND_INITIAL,
+      clearPreviousResult = false,
+    )
+    return true
+  }
+
   private fun launchExecution(
     handleKey: SubAgentExecutionKey,
     submission: AgentRunSubmission,

@@ -249,6 +249,8 @@ class OpenCrayAgentRuntime(
         ?: config.inheritedActiveSkillCapsule?.name,
       activationSource = config.promptResumeState?.activeSkillActivationSource
         ?: config.inheritedActiveSkillCapsule?.activationSource,
+      pinned = config.promptResumeState?.activeSkillPinned
+        ?: config.inheritedActiveSkillCapsule?.pinned,
     )
     val toolResult = waitOnDetachedRecoverySubAgentHandle(
       task = task,
@@ -314,6 +316,9 @@ class OpenCrayAgentRuntime(
         ?: config.inheritedActiveSkillCapsule?.name,
       activeSkillActivationSource = config.promptResumeState?.activeSkillActivationSource
         ?: config.inheritedActiveSkillCapsule?.activationSource,
+      activeSkillPinned = config.promptResumeState?.activeSkillPinned
+        ?: config.inheritedActiveSkillCapsule?.pinned
+        ?: false,
       nextSyntheticToolCallSequence = nextSyntheticToolCallSequence(executionTranscript),
       legacyJsonFallbackEnabled = false,
       responsesPreviousResponseId = config.promptResumeState?.responsesPreviousResponseId,
@@ -370,6 +375,7 @@ class OpenCrayAgentRuntime(
         val activeSkillCapsule = resolveActiveSkillCapsule(
           activeSkillName = cursor.activeSkillName,
           activationSource = cursor.activeSkillActivationSource,
+          pinned = cursor.activeSkillPinned,
         )
         val visibleToolDefinitions = visibleToolDefinitionsForTurn(
           allDefinitions = toolDispatcher.definitions(),
@@ -439,6 +445,7 @@ class OpenCrayAgentRuntime(
         val activeSkillCapsule = resolveActiveSkillCapsule(
           activeSkillName = cursor.activeSkillName,
           activationSource = cursor.activeSkillActivationSource,
+          pinned = cursor.activeSkillPinned,
         )
         val visibleToolDefinitions = visibleToolDefinitionsForTurn(
           allDefinitions = toolDispatcher.definitions(),
@@ -1038,6 +1045,8 @@ class OpenCrayAgentRuntime(
         ?: config.inheritedActiveSkillCapsule?.name,
       activationSource = config.promptResumeState?.activeSkillActivationSource
         ?: config.inheritedActiveSkillCapsule?.activationSource,
+      pinned = config.promptResumeState?.activeSkillPinned
+        ?: config.inheritedActiveSkillCapsule?.pinned,
     )
     val toolResult = gateDisabledSessionToolCall(
       call = toolCall,
@@ -1146,6 +1155,8 @@ class OpenCrayAgentRuntime(
         ?: config.inheritedActiveSkillCapsule?.name,
       activationSource = config.promptResumeState?.activeSkillActivationSource
         ?: config.inheritedActiveSkillCapsule?.activationSource,
+      pinned = config.promptResumeState?.activeSkillPinned
+        ?: config.inheritedActiveSkillCapsule?.pinned,
     )
     val key = SubAgentExecutionKey(
       parentRunId = parentRunId,
@@ -2990,6 +3001,13 @@ class OpenCrayAgentRuntime(
         report.memoryFlushTrace.outcome?.let { outcome ->
           put("contextMemoryFlushOutcome", outcome.name.lowercase())
         }
+        report.memoryFlushTrace.triggerStage
+          .takeIf(String::isNotBlank)
+          ?.let { triggerStage -> put("contextMemoryFlushTriggerStage", triggerStage) }
+        put("contextMemoryFlushContextWindowTokens", report.memoryFlushTrace.contextWindowTokens.toString())
+        put("contextMemoryFlushAutoCompactTokenLimit", report.memoryFlushTrace.autoCompactTokenLimit.toString())
+        put("contextMemoryFlushEstimatedReplayTokens", report.memoryFlushTrace.estimatedReplayTokens.toString())
+        put("contextMemoryFlushTokenThresholdTriggered", report.memoryFlushTrace.tokenThresholdTriggered.toString())
         put("contextMemoryFlushOmittedMessageCount", report.memoryFlushTrace.omittedMessageCount.toString())
         put("contextMemoryFlushOmittedCharCount", report.memoryFlushTrace.omittedCharCount.toString())
         report.memoryFlushTrace.signature?.let { signature ->
@@ -3012,6 +3030,25 @@ class OpenCrayAgentRuntime(
         put(
           "contextDurableCompactionCompactedThisRun",
           report.durableCompactionTrace.compactedThisRun.toString(),
+        )
+        report.durableCompactionTrace.triggerStage
+          .takeIf(String::isNotBlank)
+          ?.let { triggerStage -> put("contextDurableCompactionTriggerStage", triggerStage) }
+        put(
+          "contextDurableCompactionContextWindowTokens",
+          report.durableCompactionTrace.contextWindowTokens.toString(),
+        )
+        put(
+          "contextDurableCompactionAutoCompactTokenLimit",
+          report.durableCompactionTrace.autoCompactTokenLimit.toString(),
+        )
+        put(
+          "contextDurableCompactionEstimatedReplayTokens",
+          report.durableCompactionTrace.estimatedReplayTokens.toString(),
+        )
+        put(
+          "contextDurableCompactionTokenThresholdTriggered",
+          report.durableCompactionTrace.tokenThresholdTriggered.toString(),
         )
         put(
           "contextDurableCompactionSourceTranscriptMessageCount",
@@ -3117,6 +3154,7 @@ class OpenCrayAgentRuntime(
       report.activeSkillTrace.invocationControl?.let { put("contextActiveSkillInvocationControl", it) }
       report.activeSkillTrace.executionContext?.let { put("contextActiveSkillExecutionContext", it) }
       report.activeSkillTrace.activationSource?.let { put("contextActiveSkillActivationSource", it) }
+      put("contextActiveSkillPinned", report.activeSkillTrace.pinned.toString())
       put("contextActiveSkillToolRestrictionEnabled", report.activeSkillTrace.toolRestrictionEnabled.toString())
       put("contextActiveSkillTruncated", report.activeSkillTrace.truncated.toString())
       report.activeSkillTrace.allowedToolKeys
@@ -3425,6 +3463,7 @@ class OpenCrayAgentRuntime(
   private fun resolveActiveSkillCapsule(
     activeSkillName: String?,
     activationSource: String?,
+    pinned: Boolean? = null,
   ): ActiveSkillCapsule? {
     val resolved = activeSkillCapsuleResolver.resolve(
       catalog = config.sessionContext.skillCatalog,
@@ -3432,14 +3471,14 @@ class OpenCrayAgentRuntime(
       activationSource = activationSource,
     )
     if (resolved != null) {
-      return resolved
+      return resolved.copy(pinned = pinned ?: resolved.pinned)
     }
     val inherited = config.inheritedActiveSkillCapsule ?: return null
     val normalizedName = activeSkillName?.trim()?.takeIf(String::isNotBlank) ?: return null
     val normalizedSource = activationSource?.trim()?.takeIf(String::isNotBlank) ?: return null
     return inherited.takeIf { capsule ->
       capsule.name == normalizedName && capsule.activationSource == normalizedSource
-    }
+    }?.copy(pinned = pinned ?: inherited.pinned)
   }
 
   private fun normalizedAllowedToolKeys(
@@ -4528,6 +4567,7 @@ class OpenCrayAgentRuntime(
           toolResult = toolResult,
           activeSkillName = cursor.activeSkillName,
           activeSkillActivationSource = cursor.activeSkillActivationSource,
+          activeSkillPinned = cursor.activeSkillPinned,
           responsesPreviousResponseId = cursor.responsesPreviousResponseId,
           responsesProviderLineageId = cursor.responsesProviderLineageId,
           responsesLineageTrusted = cursor.responsesLineageTrusted,
@@ -4570,6 +4610,7 @@ class OpenCrayAgentRuntime(
       if (!activatedSkillName.isNullOrBlank()) {
         cursor.activeSkillName = activatedSkillName
         cursor.activeSkillActivationSource = ACTIVATION_SOURCE_SKILL_READ
+        cursor.activeSkillPinned = true
       }
     }
     val transcriptEntry = transcriptWithToolResult(
@@ -4922,6 +4963,7 @@ class OpenCrayAgentRuntime(
     toolResult: AgentToolResult,
     activeSkillName: String?,
     activeSkillActivationSource: String?,
+    activeSkillPinned: Boolean,
     responsesPreviousResponseId: String?,
     responsesProviderLineageId: String?,
     responsesLineageTrusted: Boolean,
@@ -4975,6 +5017,7 @@ class OpenCrayAgentRuntime(
             requiresSingleActionReminder = requiresSingleActionReminder,
             activeSkillName = activeSkillName,
             activeSkillActivationSource = activeSkillActivationSource,
+            activeSkillPinned = activeSkillPinned,
             responsesPreviousResponseId = responsesPreviousResponseId,
             responsesProviderLineageId = responsesProviderLineageId,
             responsesLineageTrusted = responsesLineageTrusted,
@@ -8196,6 +8239,7 @@ class OpenCrayAgentRuntime(
       depth = childDepth,
       activeSkillName = activeSkillCapsule?.name,
       activeSkillActivationSource = activeSkillCapsule?.activationSource,
+      activeSkillPinned = activeSkillCapsule?.pinned ?: false,
     )
     val delegationPlan = toolDispatcher.planTaskDelegation(
       task = task,
@@ -8243,6 +8287,7 @@ class OpenCrayAgentRuntime(
       depth = prepared.childTask.depth,
       activeSkillName = prepared.childTask.activeSkillName,
       activeSkillActivationSource = prepared.childTask.activeSkillActivationSource,
+      activeSkillPinned = prepared.childTask.activeSkillPinned,
       createdAtEpochMs = createdAt,
     )
   }
@@ -8253,6 +8298,11 @@ class OpenCrayAgentRuntime(
   ): ActiveSkillCapsule? = resolveActiveSkillCapsule(
     activeSkillName = handle.activeSkillName ?: activeSkillCapsule?.name,
     activationSource = handle.activeSkillActivationSource ?: activeSkillCapsule?.activationSource,
+    pinned = if (handle.activeSkillName != null) {
+      handle.activeSkillPinned
+    } else {
+      activeSkillCapsule?.pinned
+    },
   ) ?: activeSkillCapsule
 
   private fun continuationResume(): SubAgentApprovalResume? =
@@ -8542,6 +8592,7 @@ class OpenCrayAgentRuntime(
     requiresSingleActionReminder = requiresSingleActionReminder,
     activeSkillName = cursor.activeSkillName,
     activeSkillActivationSource = cursor.activeSkillActivationSource,
+    activeSkillPinned = cursor.activeSkillPinned,
     localContinuationEnvelope = localContinuationContextPrompts
       ?.takeIf { prompts -> prompts.isNotEmpty() }
       ?.let { frontContextPrompts ->
@@ -8957,6 +9008,7 @@ class OpenCrayAgentRuntime(
     var todoWriteUsed: Boolean,
     var activeSkillName: String?,
     var activeSkillActivationSource: String?,
+    var activeSkillPinned: Boolean,
     var nextSyntheticToolCallSequence: Int,
     var legacyJsonFallbackEnabled: Boolean,
     var responsesPreviousResponseId: String?,

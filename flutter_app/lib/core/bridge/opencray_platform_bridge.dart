@@ -66,6 +66,15 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
       .map(_parseShellSnapshot);
 
   @override
+  Future<void> saveShellDestination({
+    required String selectedTab,
+    String? settingsSubpage,
+  }) => _methodChannel.invokeMethod<void>('saveShellDestination', <String, Object?>{
+    'selectedTab': selectedTab,
+    'settingsSubpage': settingsSubpage,
+  });
+
+  @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
       OpenCrayFilesSnapshot.fromMap(await _invokeMap('loadFilesSnapshot'));
 

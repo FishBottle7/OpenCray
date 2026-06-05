@@ -589,6 +589,13 @@ class OpenCrayFlutterHostBridgeTest {
 
     override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit =
       throw UnsupportedOperationException()
+
+    override fun saveShellDestination(
+      selectedTab: String,
+      settingsSubpage: String?,
+    ) {
+      throw UnsupportedOperationException()
+    }
   }
 
   private open class UnsupportedSettingsGateway : OpenCraySettingsGateway {

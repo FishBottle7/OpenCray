@@ -1287,7 +1287,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun runtimeServiceHostApprovePendingApprovalForExplicitHandleWithoutParentRunIdDoesNotSubmitDetachedRecovery() {
+  fun runtimeServiceHostApprovePendingApprovalForExplicitHandleWithoutParentRunIdUsesUniqueHandleParentRun() {
     val childResume = SubAgentApprovalResume(
       approvedToolName = "Edit",
       promptResumeState = OpenCrayPromptResumeState(turnIndex = 0, toolCallCount = 1),
@@ -1314,14 +1314,15 @@ class OpenCrayRuntimeServiceHostTest {
       subAgentHandles = listOf(waitingApprovalSubAgentHandle(agentId = "child-explicit")),
     )
 
-    val failure = runCatching {
-      fixture.serviceHost.approvePendingApproval(fixture.runId, nowEpochMs = 1_500L)
-    }.exceptionOrNull()
+    fixture.serviceHost.approvePendingApproval(fixture.runId, nowEpochMs = 1_500L)
 
-    assertTrue(failure is IllegalStateException)
-    assertEquals("Unable to resume pending approval '${fixture.runId}'.", failure?.message)
-    assertEquals(listOf(fixture.taskId), fixture.handle.resumedTaskIds)
-    assertEquals(emptyList<AgentTask>(), fixture.handle.detachedControlTasks)
+    assertEquals(emptyList<String>(), fixture.handle.resumedTaskIds)
+    assertEquals(1, fixture.handle.detachedControlTasks.size)
+    assertEquals(
+      "parent-run-child-explicit",
+      fixture.handle.detachedControlTasks.single()
+        .metadata[METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID],
+    )
   }
 
   @Test
@@ -5787,6 +5788,11 @@ class OpenCrayRuntimeServiceHostTest {
       listener(loadShellSnapshot())
       return { }
     }
+
+    override fun saveShellDestination(
+      selectedTab: String,
+      settingsSubpage: String?,
+    ) = Unit
   }
 
   private class RecordingRuntimeServiceClient(

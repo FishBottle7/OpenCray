@@ -16,7 +16,9 @@ import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayAttachmentArtifact
 import com.opencray.runtime.OpenCrayAttachmentArtifactMetadataKeys
 import com.opencray.runtime.OpenCrayFinalAttachment
+import com.opencray.runtime.OpenCrayMediaArtifactSource
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.defaultOpenCrayMediaArtifactRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
@@ -78,6 +80,57 @@ class ServiceOwnedChatSubmissionAccessAttachmentTest {
     access.submitChatMessage(
       text = "Reuse the generated image",
       attachments = listOf(OpenCrayFinalAttachment(artifactId = "artifact-diagram-1")),
+    )
+
+    val userMessage = requireNotNull(
+      chatStore.loadState().activeSession.messages.lastOrNull { message ->
+        message.role == ChatTranscriptRole.USER
+      },
+    )
+    val archivedAttachment = userMessage.attachments.single()
+
+    assertEquals(ChatAttachmentKind.IMAGE, archivedAttachment.kind)
+    assertEquals("diagram.png", archivedAttachment.displayName)
+    assertTrue(archivedAttachment.localPath.startsWith(".opencray/chat-media/$sessionId/"))
+    assertTrue(Files.exists(workspaceRoot.resolve(archivedAttachment.localPath)))
+  }
+
+  @Test
+  fun submitChatMessageResolvesArtifactReferencesFromWorkspaceRegistry() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-registry-artifact-ref"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val workspaceRoot = temporaryFolder.newFolder("registry-artifact-ref-workspace").toPath()
+    Files.createDirectories(workspaceRoot.resolve(".opencray/generated-media/images"))
+    Files.write(
+      workspaceRoot.resolve(".opencray/generated-media/images/diagram.png"),
+      byteArrayOf(1, 2, 3, 4),
+    )
+    defaultOpenCrayMediaArtifactRegistry(workspaceRoot).register(
+      artifacts = listOf(
+        OpenCrayAttachmentArtifact(
+          artifactId = "artifact-registry-diagram-1",
+          relativePath = ".opencray/generated-media/images/diagram.png",
+          displayName = "diagram.png",
+          kindHint = "image",
+          mimeType = "image/png",
+        ),
+      ),
+      source = OpenCrayMediaArtifactSource(
+        runId = "run-other-session",
+        toolName = "GenerateImage",
+        source = "generated",
+      ),
+    )
+    val runtimeHostAccess = RecordingRuntimeHostAccess(sessionId)
+    val access = submissionAccess(
+      chatStore = chatStore,
+      runtimeHostAccess = runtimeHostAccess,
+      workspaceRoot = workspaceRoot,
+    )
+
+    access.submitChatMessage(
+      text = "Reuse a registry image",
+      attachments = listOf(OpenCrayFinalAttachment(artifactId = "artifact-registry-diagram-1")),
     )
 
     val userMessage = requireNotNull(

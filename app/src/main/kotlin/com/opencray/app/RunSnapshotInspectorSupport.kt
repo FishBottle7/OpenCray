@@ -260,6 +260,11 @@ internal fun runSnapshotMemoryFlushFromMetadata(
   metadata: Map<String, String>,
 ): Map<String, Any?>? {
   val outcome = metadata["contextMemoryFlushOutcome"]?.takeIf(String::isNotBlank)
+  val triggerStage = metadata["contextMemoryFlushTriggerStage"]?.takeIf(String::isNotBlank)
+  val contextWindowTokens = metadata["contextMemoryFlushContextWindowTokens"]?.toIntOrNull()
+  val autoCompactTokenLimit = metadata["contextMemoryFlushAutoCompactTokenLimit"]?.toIntOrNull()
+  val estimatedReplayTokens = metadata["contextMemoryFlushEstimatedReplayTokens"]?.toIntOrNull()
+  val tokenThresholdTriggered = metadata["contextMemoryFlushTokenThresholdTriggered"]?.toBooleanStrictOrNull()
   val omittedMessageCount = metadata["contextMemoryFlushOmittedMessageCount"]?.toIntOrNull()
   val omittedCharCount = metadata["contextMemoryFlushOmittedCharCount"]?.toIntOrNull()
   val signature = metadata["contextMemoryFlushSignature"]?.takeIf(String::isNotBlank)
@@ -277,6 +282,11 @@ internal fun runSnapshotMemoryFlushFromMetadata(
     .filter(String::isNotBlank)
   if (
     outcome == null &&
+    triggerStage == null &&
+    contextWindowTokens == null &&
+    autoCompactTokenLimit == null &&
+    estimatedReplayTokens == null &&
+    tokenThresholdTriggered == null &&
     omittedMessageCount == null &&
     omittedCharCount == null &&
     signature == null &&
@@ -289,6 +299,11 @@ internal fun runSnapshotMemoryFlushFromMetadata(
   }
   return buildMap {
     outcome?.let { put("outcome", it) }
+    triggerStage?.let { put("triggerStage", it) }
+    contextWindowTokens?.let { put("contextWindowTokens", it) }
+    autoCompactTokenLimit?.let { put("autoCompactTokenLimit", it) }
+    estimatedReplayTokens?.let { put("estimatedReplayTokens", it) }
+    tokenThresholdTriggered?.let { put("tokenThresholdTriggered", it) }
     omittedMessageCount?.let { put("omittedMessageCount", it) }
     omittedCharCount?.let { put("omittedCharCount", it) }
     signature?.let { put("signature", it) }
@@ -372,6 +387,15 @@ internal fun runSnapshotDurableCompactionFromMetadata(
   metadata: Map<String, String>,
 ): Map<String, Any?>? {
   val compactedThisRun = metadata["contextDurableCompactionCompactedThisRun"]?.toBooleanStrictOrNull()
+  val triggerStage = metadata["contextDurableCompactionTriggerStage"]?.takeIf(String::isNotBlank)
+  val contextWindowTokens =
+    metadata["contextDurableCompactionContextWindowTokens"]?.toIntOrNull()
+  val autoCompactTokenLimit =
+    metadata["contextDurableCompactionAutoCompactTokenLimit"]?.toIntOrNull()
+  val estimatedReplayTokens =
+    metadata["contextDurableCompactionEstimatedReplayTokens"]?.toIntOrNull()
+  val tokenThresholdTriggered =
+    metadata["contextDurableCompactionTokenThresholdTriggered"]?.toBooleanStrictOrNull()
   val sourceTranscriptMessageCount =
     metadata["contextDurableCompactionSourceTranscriptMessageCount"]?.toIntOrNull()
   val retainedTranscriptMessageCount =
@@ -393,6 +417,11 @@ internal fun runSnapshotDurableCompactionFromMetadata(
   }
   if (
     compactedThisRun == null &&
+    triggerStage == null &&
+    contextWindowTokens == null &&
+    autoCompactTokenLimit == null &&
+    estimatedReplayTokens == null &&
+    tokenThresholdTriggered == null &&
     sourceTranscriptMessageCount == null &&
     retainedTranscriptMessageCount == null &&
     latestCompactedMessageCount == null &&
@@ -405,6 +434,11 @@ internal fun runSnapshotDurableCompactionFromMetadata(
   }
   return buildMap {
     compactedThisRun?.let { put("compactedThisRun", it) }
+    triggerStage?.let { put("triggerStage", it) }
+    contextWindowTokens?.let { put("contextWindowTokens", it) }
+    autoCompactTokenLimit?.let { put("autoCompactTokenLimit", it) }
+    estimatedReplayTokens?.let { put("estimatedReplayTokens", it) }
+    tokenThresholdTriggered?.let { put("tokenThresholdTriggered", it) }
     sourceTranscriptMessageCount?.let { put("sourceTranscriptMessageCount", it) }
     retainedTranscriptMessageCount?.let { put("retainedTranscriptMessageCount", it) }
     latestCompactedMessageCount?.let { put("latestCompactedMessageCount", it) }
@@ -424,6 +458,7 @@ internal fun runSnapshotActiveSkillFromMetadata(
   val invocationControl = metadata["contextActiveSkillInvocationControl"]?.takeIf(String::isNotBlank)
   val executionContext = metadata["contextActiveSkillExecutionContext"]?.takeIf(String::isNotBlank)
   val activationSource = metadata["contextActiveSkillActivationSource"]?.takeIf(String::isNotBlank)
+  val pinned = metadata["contextActiveSkillPinned"]?.toBooleanStrictOrNull()
   val toolRestrictionEnabled = metadata["contextActiveSkillToolRestrictionEnabled"]?.toBooleanStrictOrNull()
   val truncated = metadata["contextActiveSkillTruncated"]?.toBooleanStrictOrNull()
   val allowedToolKeys = metadata["contextActiveSkillAllowedTools"]
@@ -437,6 +472,7 @@ internal fun runSnapshotActiveSkillFromMetadata(
     invocationControl == null &&
     executionContext == null &&
     activationSource == null &&
+    pinned == null &&
     toolRestrictionEnabled == null &&
     truncated == null &&
     allowedToolKeys.isEmpty()
@@ -449,6 +485,7 @@ internal fun runSnapshotActiveSkillFromMetadata(
     invocationControl?.let { put("invocationControl", it) }
     executionContext?.let { put("executionContext", it) }
     activationSource?.let { put("activationSource", it) }
+    pinned?.let { put("pinned", it) }
     toolRestrictionEnabled?.let { put("toolRestrictionEnabled", it) }
     truncated?.let { put("truncated", it) }
     if (allowedToolKeys.isNotEmpty()) {

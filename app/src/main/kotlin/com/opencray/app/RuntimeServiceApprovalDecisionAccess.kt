@@ -244,14 +244,18 @@ internal class RuntimeServiceApprovalDecisionAccess(
     if (!resolution.usesExplicitSubAgentHandleControlPlane()) {
       return false
     }
-    val parentRunId = resolution.subAgentParentRunId ?: return false
     val session = runtimeAccess.hostAccess.session(resolution.sessionId)
-    val handle = session.listSubAgentHandles().firstOrNull { candidate ->
+    val matchingHandles = session.listSubAgentHandles().filter { candidate ->
       subAgentApprovalResumeMatchesHandle(
-        parentRunId = parentRunId,
+        parentRunId = resolution.subAgentParentRunId,
         resume = resolution.subAgentApprovalResume,
         handle = candidate,
       )
+    }
+    val handle = if (resolution.subAgentParentRunId == null) {
+      matchingHandles.singleOrNull()
+    } else {
+      matchingHandles.firstOrNull()
     } ?: return false
     val taskId = detachedSubAgentRecoveryTaskId(
       sessionId = session.sessionId,
@@ -437,12 +441,12 @@ private fun RuntimeServicePendingApprovalSubAgentLifecycle.toApprovalDecisionSub
 )
 
 private fun subAgentApprovalResumeMatchesHandle(
-  parentRunId: String,
+  parentRunId: String?,
   resume: SubAgentApprovalResume?,
   handle: SubAgentHandleState,
 ): Boolean {
   val candidate = resume ?: return false
-  if (handle.parentRunId != parentRunId) {
+  if (parentRunId != null && handle.parentRunId != parentRunId) {
     return false
   }
   if (

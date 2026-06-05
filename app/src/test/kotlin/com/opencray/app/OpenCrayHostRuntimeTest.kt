@@ -6225,6 +6225,77 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun runtimeEventDeltaSequenceIsNotConsumedWhenNoDeltaPayloadIsEmitted() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-runtime-event-delta-no-payload"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(sessionId = activeSessionId)
+    manager.putHandle(handle)
+    val mainThreadPoster = QueuedMainThreadPoster()
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      mainThreadPoster = mainThreadPoster,
+    )
+    val observedDeltas = mutableListOf<Map<String, Any?>>()
+    val deltaDisposer = hostRuntime.observeRuntimeEventDeltas { payload ->
+      observedDeltas += payload
+    }
+    val observedRuntimeSnapshots = mutableListOf<Map<String, Any?>>()
+    val runtimeDisposer = hostRuntime.observeChatRuntime { payload ->
+      observedRuntimeSnapshots += payload
+    }
+    mainThreadPoster.flush()
+    observedDeltas.clear()
+    observedRuntimeSnapshots.clear()
+
+    try {
+      val hiddenTask = AgentTask(
+        id = "hidden-task",
+        type = AgentTaskType.PROMPT,
+        input = "hidden",
+        policyDecision = PolicyDecision(
+          outcome = PolicyDecisionOutcome.ALLOW,
+          reasonCode = "TEST_ALLOW",
+        ),
+        metadata = mapOf(
+          AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "hidden-run",
+        ),
+        createdAtEpochMs = 1_000L,
+      )
+      manager.emitTaskStarted(activeSessionId, hiddenTask)
+      mainThreadPoster.flush()
+
+      assertTrue(observedDeltas.isEmpty())
+      assertTrue(observedRuntimeSnapshots.isEmpty())
+
+      val submission = hostRuntime.submitChatMessage("Read the README")!!
+      mainThreadPoster.flush()
+      observedDeltas.clear()
+      observedRuntimeSnapshots.clear()
+      val task = handle.submittedTasks.single()
+      manager.emitRunEvent(
+        sessionId = activeSessionId,
+        task = task,
+        event = OpenCrayToolCallEvent(
+          runId = submission["runId"] as String,
+          taskId = task.id,
+          turn = 0,
+          call = AgentToolCall(toolName = "Read"),
+          emittedAtEpochMs = 1_500L,
+        ),
+      )
+      mainThreadPoster.flush()
+
+      assertEquals(1, observedDeltas.size)
+      assertEquals(1L, observedDeltas.single()["sequence"])
+    } finally {
+      deltaDisposer()
+      runtimeDisposer()
+    }
+  }
+
+  @Test
   fun chatRuntimeSnapshotPrefersPromptCheckpointHandleStateOverOlderReplayEventState() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-subagent-runtime-merge"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -11635,6 +11706,15 @@ class OpenCrayHostRuntimeTest {
           sessionId = sessionId,
           onResume = resumedSessionIds::add,
         )
+      }
+    }
+
+    fun emitTaskStarted(
+      sessionId: String,
+      task: AgentTask,
+    ) {
+      listeners.forEach { listener ->
+        listener.onTaskStarted(sessionId, task)
       }
     }
 

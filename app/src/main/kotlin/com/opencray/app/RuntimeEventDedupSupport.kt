@@ -157,8 +157,19 @@ internal fun runtimeEventDedupKey(event: OpenCrayAgentRunEvent): String = when (
     event.writtenRecordIds.joinToString(separator = ","),
     event.resolvedRecordIds.joinToString(separator = ","),
     event.suppressedRecordIds.joinToString(separator = ","),
+    event.reopenedRecordIds.joinToString(separator = ","),
     event.reaffirmedRecordIds.joinToString(separator = ","),
     event.expiredRecordIds.joinToString(separator = ","),
+    event.stewardshipPlanSteps.joinToString(separator = ",") { step ->
+      listOf(
+        step.action.wireValue,
+        step.outcome.wireValue,
+        step.recordId.orEmpty(),
+        step.candidateIndex?.toString().orEmpty(),
+        step.producedRecordId.orEmpty(),
+        step.reason.orEmpty(),
+      ).joinToString(separator = ":")
+    },
   ).joinToString(separator = "|")
 
   is OpenCrayCancellationEvent -> listOf(

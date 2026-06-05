@@ -4,6 +4,7 @@ import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.context.ContextPruner
 import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import com.opencray.runtime.context.ReplayPressureEvaluator
+import com.opencray.runtime.context.ReplayPressureSnapshot
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.TranscriptWindowBuilder
@@ -21,6 +22,11 @@ enum class MemoryFlushOutcome {
 
 data class MemoryFlushTrace(
   val outcome: MemoryFlushOutcome? = null,
+  val triggerStage: String = "",
+  val contextWindowTokens: Int = 0,
+  val autoCompactTokenLimit: Int = 0,
+  val estimatedReplayTokens: Int = 0,
+  val tokenThresholdTriggered: Boolean = false,
   val omittedMessageCount: Int = 0,
   val omittedCharCount: Int = 0,
   val signature: String? = null,
@@ -31,6 +37,11 @@ data class MemoryFlushTrace(
 ) {
   val isEmpty: Boolean
     get() = outcome == null &&
+      triggerStage.isBlank() &&
+      contextWindowTokens == 0 &&
+      autoCompactTokenLimit == 0 &&
+      estimatedReplayTokens == 0 &&
+      !tokenThresholdTriggered &&
       omittedMessageCount == 0 &&
       omittedCharCount == 0 &&
       signature == null &&
@@ -83,8 +94,9 @@ class MemoryFlushCoordinator(
     val omittedCharCount = omittedMessages.sumOf { message -> message.content.length }
     if (!effectivePolicy.shouldFlush(omittedMessages, replayPressure)) {
       return MemoryFlushSummary(
-        trace = MemoryFlushTrace(
+        trace = memoryFlushTrace(
           outcome = MemoryFlushOutcome.NO_PRESSURE,
+          replayPressure = replayPressure,
           omittedMessageCount = omittedMessages.size,
           omittedCharCount = omittedCharCount,
         ),
@@ -98,8 +110,9 @@ class MemoryFlushCoordinator(
     syncFlushedCandidateRecordIds(flushedCandidateRecordIds)
     if (lastFlushedSignatureBySession[sessionId] == signature && flushedCandidateRecordIds.isNotEmpty()) {
       return MemoryFlushSummary(
-        trace = MemoryFlushTrace(
+        trace = memoryFlushTrace(
           outcome = MemoryFlushOutcome.ALREADY_FLUSHED,
+          replayPressure = replayPressure,
           omittedMessageCount = omittedMessages.size,
           omittedCharCount = omittedCharCount,
           signature = signature,
@@ -133,8 +146,9 @@ class MemoryFlushCoordinator(
     if (candidates.isEmpty()) {
       lastFlushedSignatureBySession[sessionId] = signature
       return MemoryFlushSummary(
-        trace = MemoryFlushTrace(
+        trace = memoryFlushTrace(
           outcome = MemoryFlushOutcome.NO_CANDIDATES,
+          replayPressure = replayPressure,
           omittedMessageCount = omittedMessages.size,
           omittedCharCount = omittedCharCount,
           signature = signature,
@@ -150,8 +164,9 @@ class MemoryFlushCoordinator(
     if (pendingCandidateEntries.isEmpty()) {
       lastFlushedSignatureBySession[sessionId] = signature
       return MemoryFlushSummary(
-        trace = MemoryFlushTrace(
+        trace = memoryFlushTrace(
           outcome = MemoryFlushOutcome.ALREADY_FLUSHED,
+          replayPressure = replayPressure,
           omittedMessageCount = omittedMessages.size,
           omittedCharCount = omittedCharCount,
           signature = signature,
@@ -165,8 +180,9 @@ class MemoryFlushCoordinator(
     lastFlushedSignatureBySession[sessionId] = signature
     return MemoryFlushSummary(
       writtenRecords = writeSummary.writtenRecords,
-      trace = MemoryFlushTrace(
+      trace = memoryFlushTrace(
         outcome = MemoryFlushOutcome.WRITTEN,
+        replayPressure = replayPressure,
         omittedMessageCount = omittedMessages.size,
         omittedCharCount = omittedCharCount,
         signature = signature,
@@ -185,3 +201,31 @@ class MemoryFlushCoordinator(
     flushedCandidateRecordIds.retainAll(existingRecordIds)
   }
 }
+
+private fun memoryFlushTrace(
+  outcome: MemoryFlushOutcome,
+  replayPressure: ReplayPressureSnapshot,
+  omittedMessageCount: Int,
+  omittedCharCount: Int,
+  signature: String? = null,
+  candidateCount: Int = 0,
+  writtenRecordCount: Int = 0,
+  writtenKinds: List<String> = emptyList(),
+  writtenRecordIds: List<String> = emptyList(),
+): MemoryFlushTrace = MemoryFlushTrace(
+  outcome = outcome,
+  triggerStage = MEMORY_FLUSH_TRIGGER_STAGE_PRE_COMPACTION,
+  contextWindowTokens = replayPressure.contextWindowTokens,
+  autoCompactTokenLimit = replayPressure.autoCompactTokenLimit,
+  estimatedReplayTokens = replayPressure.estimatedReplayTokens,
+  tokenThresholdTriggered = replayPressure.tokenThresholdTriggered,
+  omittedMessageCount = omittedMessageCount,
+  omittedCharCount = omittedCharCount,
+  signature = signature,
+  candidateCount = candidateCount,
+  writtenRecordCount = writtenRecordCount,
+  writtenKinds = writtenKinds,
+  writtenRecordIds = writtenRecordIds,
+)
+
+private const val MEMORY_FLUSH_TRIGGER_STAGE_PRE_COMPACTION: String = "pre_compaction"

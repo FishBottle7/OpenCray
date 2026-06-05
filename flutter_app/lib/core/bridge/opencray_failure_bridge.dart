@@ -50,6 +50,12 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<void> saveShellDestination({
+    required String selectedTab,
+    String? settingsSubpage,
+  }) async {}
+
+  @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
       throw StateError(_failureMessage);
 

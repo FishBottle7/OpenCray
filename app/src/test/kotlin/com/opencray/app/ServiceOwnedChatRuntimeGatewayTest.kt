@@ -6,6 +6,7 @@ import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.orchestrator.EXECUTION_KIND_CHECKPOINT_RESUME
+import com.opencray.core.orchestrator.EXECUTION_KIND_RETRY
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
@@ -909,6 +910,81 @@ class ServiceOwnedChatRuntimeGatewayTest {
   }
 
   @Test
+  fun serviceOwnedChatRuntimeGatewayEmitsRuntimeDeltasForLiveAssistantDraftChanges() {
+    val runtimeHostAccess = RecordingRuntimeHostAccess()
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatRuntimePayload = mapOf(
+        "source" to "projection-runtime",
+        "sessionId" to "session-stream",
+        "updatedAtEpochMs" to 1_000L,
+        "activeRuns" to listOf(
+          mapOf(
+            "runId" to "run-stream",
+            "taskId" to "task-stream",
+            "pendingMessageId" to "pending-stream",
+            "updatedAtEpochMs" to 1_000L,
+            "isTerminal" to false,
+          ),
+        ),
+        "events" to emptyList<Map<String, Any?>>(),
+        "liveAssistantDrafts" to emptyList<Map<String, Any?>>(),
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      runtimeHostAccess = runtimeHostAccess,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedDeltas = mutableListOf<Map<String, Any?>>()
+    val task = AgentTask(
+      id = "task-stream",
+      type = com.opencray.core.contracts.AgentTaskType.PROMPT,
+      input = "hello",
+      state = AgentTaskState.RUNNING,
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "test",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_000L,
+      metadata = mapOf(
+        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-stream",
+        AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to "pending-stream",
+      ),
+    )
+    val disposer = gateway.observeRuntimeEventDeltas { payload ->
+      observedDeltas += payload
+    }
+
+    try {
+      runtimeHostAccess.emitAssistantDraftUpdated(
+        sessionId = "session-stream",
+        task = task,
+        text = "hello",
+        emittedAtEpochMs = 1_234L,
+      )
+      runtimeHostAccess.emitAssistantDraftCleared(
+        sessionId = "session-stream",
+        task = task,
+        emittedAtEpochMs = 1_235L,
+      )
+
+      assertEquals(2, observedDeltas.size)
+      assertEquals(1L, observedDeltas[0]["sequence"])
+      assertEquals(2L, observedDeltas[1]["sequence"])
+      val updatedDrafts = observedDeltas[0]["liveAssistantDrafts"] as List<*>
+      val updatedDraft = updatedDrafts.single() as Map<*, *>
+      assertEquals("pending-stream", updatedDraft["pendingMessageId"])
+      assertEquals("hello", updatedDraft["text"])
+      assertTrue((observedDeltas[1]["liveAssistantDrafts"] as List<*>).isEmpty())
+      assertTrue((observedDeltas[0]["events"] as List<*>).isEmpty())
+      assertTrue((observedDeltas[1]["events"] as List<*>).isEmpty())
+    } finally {
+      disposer()
+    }
+  }
+
+  @Test
   fun serviceOwnedChatRuntimeGatewaySubmitWithoutMutationSkipsNotification() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("service-owned-chat-submit-empty-store"))
     val sessionId = chatStore.loadState().activeSession.sessionId
@@ -1045,6 +1121,74 @@ class ServiceOwnedChatRuntimeGatewayTest {
       runtimeHostAccess.resumeRequests(deferredResumeSessionId),
     )
     assertEquals(listOf(retryRun.taskId), runtimeHostAccess.retriedTaskIds(retrySessionId))
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayTreatsAlreadyStartedRetryAsSuccess() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("service-owned-chat-retry-idempotent-store"),
+    )
+    val queuedRetrySessionId = chatStore.loadState().activeSession.sessionId
+    val runningRetrySessionId = chatStore.copySession(
+      queuedRetrySessionId,
+    ).activeSession.sessionId
+    val queuedRetryRun = AgentRunSnapshot(
+      sessionId = queuedRetrySessionId,
+      runId = "run-queued-retry",
+      taskId = "task-queued-retry",
+      acceptedAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+      lifecycleState = QueueTaskLifecycleState.QUEUED,
+      taskState = AgentTaskState.QUEUED,
+      pendingExecutionKind = EXECUTION_KIND_RETRY,
+    )
+    val runningRetryRun = AgentRunSnapshot(
+      sessionId = runningRetrySessionId,
+      runId = "run-running-retry",
+      taskId = "task-running-retry",
+      acceptedAtEpochMs = 2_000L,
+      updatedAtEpochMs = 2_100L,
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+      taskState = AgentTaskState.RUNNING,
+      executionKind = EXECUTION_KIND_RETRY,
+    )
+    val runtimeHostAccess = RecordingRuntimeHostAccess().apply {
+      putSession(
+        RecordingRuntimeSessionAccess(
+          sessionId = queuedRetrySessionId,
+          resumeHistory = resumeHistory,
+          runs = listOf(queuedRetryRun),
+          retryResult = false,
+        ),
+      )
+      putSession(
+        RecordingRuntimeSessionAccess(
+          sessionId = runningRetrySessionId,
+          resumeHistory = resumeHistory,
+          runs = listOf(runningRetryRun),
+          retryResult = false,
+        ),
+      )
+    }
+    val delegate = RecordingChatGateway("delegate")
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      delegate = delegate,
+      readGateway = RecordingChatGateway("projection"),
+      snapshotNotifier = delegate::notifyChatSnapshotsChanged,
+      chatRunControlAccess = ServiceOwnedChatRunControlAccess(
+        chatSessionStore = chatStore,
+        runtimeHostAccess = runtimeHostAccess,
+      ),
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+
+    gateway.retryChatRun(queuedRetryRun.runId)
+    gateway.retryChatRun(runningRetryRun.runId)
+
+    assertTrue(delegate.retriedRunIds.isEmpty())
+    assertEquals(2, delegate.notifiedChatSnapshotCount)
+    assertTrue(runtimeHostAccess.retriedTaskIds(queuedRetrySessionId).isEmpty())
+    assertTrue(runtimeHostAccess.retriedTaskIds(runningRetrySessionId).isEmpty())
   }
 
   @Test

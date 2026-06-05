@@ -22,6 +22,7 @@ import com.opencray.app.facade.settings.SettingsFacade
 import com.opencray.app.facade.settings.SettingsRouteId
 import com.opencray.app.facade.skills.LocalSkillsFacade
 import com.opencray.app.facade.skills.SkillsFacade
+import com.opencray.app.shell.AppShellDestination
 import com.opencray.app.shell.AppShellStateStore
 import java.nio.file.Path
 
@@ -339,12 +340,14 @@ internal class ServiceOwnedShellGateway(
     val currentLocaleTag: String
     val currentHostLabel: String
     val currentHostSummary: String
+    val destination = stateStore.load()
     synchronized(lock) {
       currentLocaleTag = localeTag
       currentHostLabel = hostLabel
       currentHostSummary = hostSummary
     }
-    put("initialTab", stateStore.load().selectedTab.routeKey)
+    put("initialTab", destination.selectedTab.routeKey)
+    put("settingsSubpage", destination.settingsSubpage.routeKey)
     put("localeTag", currentLocaleTag)
     put("hostLabel", currentHostLabel)
     put("hostSummary", currentHostSummary)
@@ -373,6 +376,19 @@ internal class ServiceOwnedShellGateway(
         listeners -= listener
       }
     }
+  }
+
+  override fun saveShellDestination(
+    selectedTab: String,
+    settingsSubpage: String?,
+  ) {
+    stateStore.save(
+      AppShellDestination.fromRaw(
+        selectedTabRaw = selectedTab,
+        settingsSubpageRaw = settingsSubpage,
+      ),
+    )
+    emitShellSnapshot()
   }
 
   internal fun updateLocalizedResources(
@@ -520,7 +536,12 @@ internal class ServiceOwnedChatRuntimeGateway(
           val hasRuntimeEventDeltaListeners = synchronized(lock) {
             runtimeEventDeltaListeners.isNotEmpty()
           }
-          if (!hasRuntimeEventDeltaListeners) {
+          val emittedRuntimeDelta = if (hasRuntimeEventDeltaListeners) {
+            emitServiceOwnedRuntimeEventDeltaFromSnapshot()
+          } else {
+            false
+          }
+          if (!hasRuntimeEventDeltaListeners && !emittedRuntimeDelta) {
             emitChatRuntimeSnapshot()
           }
         }
@@ -565,7 +586,12 @@ internal class ServiceOwnedChatRuntimeGateway(
           val hasRuntimeEventDeltaListeners = synchronized(lock) {
             runtimeEventDeltaListeners.isNotEmpty()
           }
-          if (!hasRuntimeEventDeltaListeners) {
+          val emittedRuntimeDelta = if (hasRuntimeEventDeltaListeners) {
+            emitServiceOwnedRuntimeEventDeltaFromSnapshot()
+          } else {
+            false
+          }
+          if (!hasRuntimeEventDeltaListeners && !emittedRuntimeDelta) {
             emitChatRuntimeSnapshot()
           }
         }
@@ -732,7 +758,7 @@ internal class ServiceOwnedChatRuntimeGateway(
   }
 
   override fun loadChatRuntimeSnapshot(): Map<String, Any?> =
-    decorateChatRuntimePayload(runtimeSnapshotGateway().loadChatRuntimeSnapshot()).also { payload ->
+    currentDecoratedChatRuntimePayload().also { payload ->
       synchronized(lock) {
         latestChatRuntimePayload = payload
       }
@@ -997,7 +1023,7 @@ internal class ServiceOwnedChatRuntimeGateway(
   }
 
   private fun emitChatRuntimeSnapshot() {
-    emitChatRuntimePayload(loadChatRuntimeSnapshot())
+    emitChatRuntimePayload(currentDecoratedChatRuntimePayload())
   }
 
   private fun emitServiceOwnedRuntimeEventDeltaFromSnapshot(): Boolean {
@@ -1029,8 +1055,11 @@ internal class ServiceOwnedChatRuntimeGateway(
       return
     }
     emitChatPayload(chatPayloadForEmission(loadChatSnapshot()))
-    emitChatRuntimePayload(loadChatRuntimeSnapshot())
+    emitChatRuntimePayload(currentDecoratedChatRuntimePayload())
   }
+
+  private fun currentDecoratedChatRuntimePayload(): Map<String, Any?> =
+    decorateChatRuntimePayload(runtimeSnapshotGateway().loadChatRuntimeSnapshot())
 
   private fun emitLiveAssistantDraftEvent(payload: Map<String, Any?>) {
     if (payload.isEmpty()) {
@@ -1073,6 +1102,9 @@ internal class ServiceOwnedChatRuntimeGateway(
 
   private fun emitChatRuntimePayload(payload: Map<String, Any?>) {
     val listeners = synchronized(lock) {
+      if (delegate == null && payload == latestChatRuntimePayload) {
+        return
+      }
       latestChatRuntimePayload = payload
       chatRuntimeListeners.toList()
     }
@@ -1179,11 +1211,6 @@ internal class ServiceOwnedChatRuntimeGateway(
     ?.trim()
     .orEmpty()
 
-  private fun payloadLiveAssistantDrafts(payload: Map<String, Any?>): List<Map<*, *>> =
-    (payload["liveAssistantDrafts"] as? List<*>)
-      ?.mapNotNull { item -> item as? Map<*, *> }
-      .orEmpty()
-
   private fun withPayloadUpdatedAtEpochMs(
     payload: Map<String, Any?>,
     updatedAtEpochMs: Long,
@@ -1238,9 +1265,9 @@ internal class ServiceOwnedChatRuntimeGateway(
     if (previousPayload.isEmpty() || payloadSessionId(previousPayload) != sessionId) {
       return payload
     }
-    val currentDrafts = payloadLiveAssistantDrafts(payload)
-    val previousDrafts = payloadLiveAssistantDrafts(previousPayload)
-    if (currentDrafts == previousDrafts) {
+    val currentDisplayState = payloadRuntimeDisplayState(payload)
+    val previousDisplayState = payloadRuntimeDisplayState(previousPayload)
+    if (currentDisplayState == previousDisplayState) {
       return withPayloadUpdatedAtEpochMs(
         payload,
         maxOf(
@@ -1249,16 +1276,35 @@ internal class ServiceOwnedChatRuntimeGateway(
         ),
       )
     }
-    val latestDraftEpochMs = currentDrafts.maxOfOrNull { draft ->
-      (draft["updatedAtEpochMs"] as? Number)?.toLong() ?: 0L
-    } ?: 0L
     val updatedAtEpochMs = maxOf(
       payloadUpdatedAtEpochMs(payload),
       payloadUpdatedAtEpochMs(previousPayload) + 1L,
-      latestDraftEpochMs,
+      latestRuntimeDisplayEpochMs(payload),
       System.currentTimeMillis(),
     )
     return withPayloadUpdatedAtEpochMs(payload, updatedAtEpochMs)
+  }
+
+  private fun payloadRuntimeDisplayState(payload: Map<String, Any?>): List<Any?> = listOf(
+    payload["activeRuns"],
+    payload["retainedRuns"],
+    payload["subAgents"],
+    payload["liveAssistantDrafts"],
+    payload["hostLifecycle"],
+  )
+
+  private fun latestRuntimeDisplayEpochMs(payload: Map<String, Any?>): Long {
+    fun collect(value: Any?): Long = when (value) {
+      is Map<*, *> -> {
+        val ownEpoch = (value["updatedAtEpochMs"] as? Number)?.toLong() ?: 0L
+        value.values.fold(ownEpoch) { latest, item -> maxOf(latest, collect(item)) }
+      }
+      is Iterable<*> -> value.fold(0L) { latest, item -> maxOf(latest, collect(item)) }
+      else -> 0L
+    }
+    return payloadRuntimeDisplayState(payload).fold(0L) { latest, item ->
+      maxOf(latest, collect(item))
+    }
   }
 
   private fun decorateChatPayload(

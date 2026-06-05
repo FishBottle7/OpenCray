@@ -237,6 +237,30 @@ String _runtimeRunKey(OpenCrayChatRunSnapshot run) {
   return 'accepted:${run.acceptedAtEpochMs}';
 }
 
+bool _runtimeRunHasContinuationIntent(OpenCrayChatRunSnapshot run) =>
+    _runtimeExecutionKindIsContinuation(run.pendingExecutionKind) ||
+    _runtimeExecutionKindIsContinuation(run.executionKind) ||
+    _normalizedRuntimeRunValue(run.lifecycleState) == 'retry_pending';
+
+bool _runtimeRunIsNonTerminalContinuation(OpenCrayChatRunSnapshot run) =>
+    !run.isTerminal && _runtimeRunHasContinuationIntent(run);
+
+bool _runtimeExecutionKindIsContinuation(String? value) {
+  switch (_normalizedRuntimeRunValue(value)) {
+    case 'retry':
+    case 'approval_resume':
+    case 'checkpoint_resume':
+      return true;
+    default:
+      return false;
+  }
+}
+
+String? _normalizedRuntimeRunValue(String? value) {
+  final String normalized = value?.trim().toLowerCase() ?? '';
+  return normalized.isEmpty ? null : normalized;
+}
+
 OpenCrayChatRunSnapshot _preferRuntimeRunSnapshot(
   OpenCrayChatRunSnapshot left,
   OpenCrayChatRunSnapshot right,
@@ -244,11 +268,19 @@ OpenCrayChatRunSnapshot _preferRuntimeRunSnapshot(
   if (right.isTerminal &&
       !left.isTerminal &&
       right.updatedAtEpochMs >= left.updatedAtEpochMs) {
+    if (_runtimeRunIsNonTerminalContinuation(left) &&
+        !_runtimeRunHasContinuationIntent(right)) {
+      return left;
+    }
     return right;
   }
   if (left.isTerminal &&
       !right.isTerminal &&
       left.updatedAtEpochMs >= right.updatedAtEpochMs) {
+    if (_runtimeRunIsNonTerminalContinuation(right) &&
+        !_runtimeRunHasContinuationIntent(left)) {
+      return right;
+    }
     return left;
   }
   final int leftVersion = _runtimeRunDetailEpochMs(left);
@@ -278,21 +310,31 @@ OpenCrayChatRunSnapshot _mergeRuntimeRunSnapshots(
   if (!_runtimeRunsReferToSameRun(preferred, supplement)) {
     return preferred;
   }
+  final bool clearsTerminalState =
+      _runtimeRunIsNonTerminalContinuation(preferred) && supplement.isTerminal;
   final List<OpenCrayChatManagedProcessSnapshot> managedProcesses =
-      _mergeRuntimeManagedProcesses(
-        preferred.managedProcesses,
-        supplement.managedProcesses,
-      );
-  final List<String> managedProcessIds = _mergeRuntimeStringList(
-    <String>[
-      ...preferred.managedProcessIds,
-      for (final process in preferred.managedProcesses) process.processId,
-    ],
-    <String>[
-      ...supplement.managedProcessIds,
-      for (final process in supplement.managedProcesses) process.processId,
-    ],
-  );
+      clearsTerminalState
+      ? preferred.managedProcesses
+      : _mergeRuntimeManagedProcesses(
+          preferred.managedProcesses,
+          supplement.managedProcesses,
+        );
+  final List<String> managedProcessIds = clearsTerminalState
+      ? _mergeRuntimeStringList(<String>[
+          ...preferred.managedProcessIds,
+          for (final process in preferred.managedProcesses) process.processId,
+        ], const <String>[])
+      : _mergeRuntimeStringList(
+          <String>[
+            ...preferred.managedProcessIds,
+            for (final process in preferred.managedProcesses) process.processId,
+          ],
+          <String>[
+            ...supplement.managedProcessIds,
+            for (final process in supplement.managedProcesses)
+              process.processId,
+          ],
+        );
   return OpenCrayChatRunSnapshot(
     sessionId: _preferNonEmpty(preferred.sessionId, supplement.sessionId),
     runId: _preferNonEmpty(preferred.runId, supplement.runId),
@@ -306,17 +348,23 @@ OpenCrayChatRunSnapshot _mergeRuntimeRunSnapshots(
     ),
     attempt: preferred.attempt != 0 ? preferred.attempt : supplement.attempt,
     isTerminal: preferred.isTerminal,
-    executionOrdinal: preferred.executionOrdinal != 0
+    executionOrdinal: clearsTerminalState
+        ? preferred.executionOrdinal
+        : preferred.executionOrdinal != 0
         ? preferred.executionOrdinal
         : supplement.executionOrdinal,
-    executionId: _preferNonEmptyNullable(
-      preferred.executionId,
-      supplement.executionId,
-    ),
-    executionKind: _preferNonEmptyNullable(
-      preferred.executionKind,
-      supplement.executionKind,
-    ),
+    executionId: clearsTerminalState
+        ? preferred.executionId
+        : _preferNonEmptyNullable(
+            preferred.executionId,
+            supplement.executionId,
+          ),
+    executionKind: clearsTerminalState
+        ? preferred.executionKind
+        : _preferNonEmptyNullable(
+            preferred.executionKind,
+            supplement.executionKind,
+          ),
     pendingExecutionKind: _preferNonEmptyNullable(
       preferred.pendingExecutionKind,
       supplement.pendingExecutionKind,
@@ -329,50 +377,77 @@ OpenCrayChatRunSnapshot _mergeRuntimeRunSnapshots(
       preferred.taskState,
       supplement.taskState,
     ),
-    executionStatus: _preferNonEmptyNullable(
-      preferred.executionStatus,
-      supplement.executionStatus,
-    ),
-    errorCode: _preferNonEmptyNullable(
-      preferred.errorCode,
-      supplement.errorCode,
-    ),
-    errorMessage: _preferNonEmptyNullable(
-      preferred.errorMessage,
-      supplement.errorMessage,
-    ),
-    responseFormat: _preferNonEmptyNullable(
-      preferred.responseFormat,
-      supplement.responseFormat,
-    ),
+    executionStatus: clearsTerminalState
+        ? preferred.executionStatus
+        : _preferNonEmptyNullable(
+            preferred.executionStatus,
+            supplement.executionStatus,
+          ),
+    errorCode: clearsTerminalState
+        ? preferred.errorCode
+        : _preferNonEmptyNullable(preferred.errorCode, supplement.errorCode),
+    errorMessage: clearsTerminalState
+        ? preferred.errorMessage
+        : _preferNonEmptyNullable(
+            preferred.errorMessage,
+            supplement.errorMessage,
+          ),
+    responseFormat: clearsTerminalState
+        ? preferred.responseFormat
+        : _preferNonEmptyNullable(
+            preferred.responseFormat,
+            supplement.responseFormat,
+          ),
     pendingMessageId: _preferNonEmptyNullable(
       preferred.pendingMessageId,
       supplement.pendingMessageId,
     ),
-    finalAttachments: _mergeRuntimeAttachments(
-      preferred.finalAttachments,
-      supplement.finalAttachments,
-    ),
+    finalAttachments: clearsTerminalState
+        ? preferred.finalAttachments
+        : _mergeRuntimeAttachments(
+            preferred.finalAttachments,
+            supplement.finalAttachments,
+          ),
     managedProcessIds: managedProcessIds,
     managedProcesses: managedProcesses,
     runningManagedProcessCount: preferred.runningManagedProcessCount,
     hasLiveManagedProcesses: preferred.hasLiveManagedProcesses,
-    lastEvent: _preferRuntimeRunLastEvent(
-      preferred.lastEvent,
-      supplement.lastEvent,
-    ),
-    llmDiagnostics: preferred.llmDiagnostics ?? supplement.llmDiagnostics,
-    liveContext: preferred.liveContext ?? supplement.liveContext,
-    contextBudget: preferred.contextBudget ?? supplement.contextBudget,
-    memoryTrace: preferred.memoryTrace ?? supplement.memoryTrace,
-    memoryFlush: preferred.memoryFlush ?? supplement.memoryFlush,
-    bootstrap: preferred.bootstrap ?? supplement.bootstrap,
-    durableCompaction:
-        preferred.durableCompaction ?? supplement.durableCompaction,
-    skillInventory: preferred.skillInventory ?? supplement.skillInventory,
-    activeSkill: preferred.activeSkill ?? supplement.activeSkill,
-    diagnostics: preferred.diagnostics ?? supplement.diagnostics,
-    recoveryPlan: preferred.recoveryPlan ?? supplement.recoveryPlan,
+    lastEvent: clearsTerminalState
+        ? preferred.lastEvent
+        : _preferRuntimeRunLastEvent(preferred.lastEvent, supplement.lastEvent),
+    llmDiagnostics: clearsTerminalState
+        ? preferred.llmDiagnostics
+        : preferred.llmDiagnostics ?? supplement.llmDiagnostics,
+    liveContext: clearsTerminalState
+        ? preferred.liveContext
+        : preferred.liveContext ?? supplement.liveContext,
+    contextBudget: clearsTerminalState
+        ? preferred.contextBudget
+        : preferred.contextBudget ?? supplement.contextBudget,
+    memoryTrace: clearsTerminalState
+        ? preferred.memoryTrace
+        : preferred.memoryTrace ?? supplement.memoryTrace,
+    memoryFlush: clearsTerminalState
+        ? preferred.memoryFlush
+        : preferred.memoryFlush ?? supplement.memoryFlush,
+    bootstrap: clearsTerminalState
+        ? preferred.bootstrap
+        : preferred.bootstrap ?? supplement.bootstrap,
+    durableCompaction: clearsTerminalState
+        ? preferred.durableCompaction
+        : preferred.durableCompaction ?? supplement.durableCompaction,
+    skillInventory: clearsTerminalState
+        ? preferred.skillInventory
+        : preferred.skillInventory ?? supplement.skillInventory,
+    activeSkill: clearsTerminalState
+        ? preferred.activeSkill
+        : preferred.activeSkill ?? supplement.activeSkill,
+    diagnostics: clearsTerminalState
+        ? preferred.diagnostics
+        : preferred.diagnostics ?? supplement.diagnostics,
+    recoveryPlan: clearsTerminalState
+        ? preferred.recoveryPlan
+        : preferred.recoveryPlan ?? supplement.recoveryPlan,
   );
 }
 
@@ -940,6 +1015,9 @@ bool shouldReplaceObservedRuntimeSnapshot(
   if (candidateOperationalVersion != currentOperationalVersion) {
     return candidateOperationalVersion > currentOperationalVersion;
   }
+  if (_runtimeSnapshotContinuesTerminalRun(candidate, current)) {
+    return true;
+  }
   if (_runtimeSnapshotTerminalizesRun(candidate, current)) {
     return true;
   }
@@ -969,6 +1047,27 @@ bool shouldReplaceObservedRuntimeSnapshot(
   }
   return _runtimeSnapshotDisplaySignature(candidate) !=
       _runtimeSnapshotDisplaySignature(current);
+}
+
+bool _runtimeSnapshotContinuesTerminalRun(
+  OpenCrayChatRuntimeSnapshot candidate,
+  OpenCrayChatRuntimeSnapshot current,
+) {
+  for (final candidateRun in _visibleRuns(candidate)) {
+    if (!_runtimeRunIsNonTerminalContinuation(candidateRun)) {
+      continue;
+    }
+    final OpenCrayChatRunSnapshot? currentRun = _findRuntimeRun(
+      _visibleRuns(current),
+      candidateRun,
+    );
+    if (currentRun != null &&
+        currentRun.isTerminal &&
+        !_runtimeRunHasContinuationIntent(currentRun)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 bool _runtimeSnapshotTerminalizesRun(
@@ -1894,6 +1993,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       <String, Map<String, OpenCrayChatLiveAssistantDraftSnapshot>>{};
   final Map<String, int> _runtimeEventDeltaSequenceBySession = <String, int>{};
   bool _runtimeEventDeltaResyncInFlight = false;
+  OpenCrayChatRuntimeEventDelta? _queuedRuntimeEventDeltaAfterResync;
   final Set<String> _approvalTaskIdsInFlight = <String>{};
   final Set<String> _interruptRunIdsInFlight = <String>{};
   final Set<String> _retryRunIdsInFlight = <String>{};
@@ -3309,12 +3409,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   void _handleRuntimeEventDelta(OpenCrayChatRuntimeEventDelta delta) {
     if (!mounted ||
         _latestChatSnapshot == null ||
-        !delta.hasRuntimeActivityPatch ||
-        _runtimeEventDeltaResyncInFlight) {
+        !delta.hasRuntimeActivityPatch) {
       return;
     }
     final String sessionId = delta.sessionId.trim();
     if (sessionId.isEmpty || sessionId != _activeSessionId) {
+      return;
+    }
+    if (_runtimeEventDeltaResyncInFlight) {
+      _queuedRuntimeEventDeltaAfterResync = delta;
       return;
     }
     final int previousSequence =
@@ -3333,7 +3436,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         : null;
     if (currentSnapshot == null &&
         delta.activeRuns.isEmpty &&
-        delta.retainedRuns.isEmpty) {
+        delta.retainedRuns.isEmpty &&
+        delta.events.isEmpty &&
+        delta.subAgents.isEmpty &&
+        delta.liveAssistantDrafts.isEmpty &&
+        delta.hostLifecycle == null &&
+        delta.updatedAtEpochMs <= 0) {
       _resyncRuntimeSnapshotAfterDeltaMiss();
       return;
     }
@@ -3383,6 +3491,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return;
     }
     _runtimeEventDeltaResyncInFlight = true;
+    bool resynced = false;
     try {
       final OpenCrayChatRuntimeSnapshot snapshot = await bridge
           .loadChatRuntimeSnapshot();
@@ -3390,8 +3499,19 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         return;
       }
       _handleChatRuntimeSnapshot(snapshot);
+      final String resyncedSessionId = snapshot.sessionId.trim();
+      if (resyncedSessionId.isNotEmpty) {
+        _runtimeEventDeltaSequenceBySession.remove(resyncedSessionId);
+      }
+      resynced = true;
     } finally {
       _runtimeEventDeltaResyncInFlight = false;
+    }
+    final OpenCrayChatRuntimeEventDelta? queuedDelta =
+        _queuedRuntimeEventDeltaAfterResync;
+    _queuedRuntimeEventDeltaAfterResync = null;
+    if (mounted && resynced && queuedDelta != null) {
+      _handleRuntimeEventDelta(queuedDelta);
     }
   }
 
@@ -3408,12 +3528,17 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     final OpenCrayChatRuntimeSnapshot? runtimeSnapshot =
         _latestChatRuntimeSnapshot ?? _latestChatSnapshot?.runtimeActivity;
-    final OpenCrayChatRuntimeSnapshot effectiveRuntime = OpenCrayChatRuntimeSnapshot(
+    final OpenCrayChatRuntimeSnapshot
+    effectiveRuntime = OpenCrayChatRuntimeSnapshot(
       sessionId: sessionId,
-      activeRuns: runtimeSnapshot?.activeRuns ?? const <OpenCrayChatRunSnapshot>[],
-      retainedRuns: runtimeSnapshot?.retainedRuns ?? const <OpenCrayChatRunSnapshot>[],
-      subAgents: runtimeSnapshot?.subAgents ?? const <OpenCrayChatSubAgentSnapshot>[],
-      events: runtimeSnapshot?.events ?? const <OpenCrayChatRuntimeEventSnapshot>[],
+      activeRuns:
+          runtimeSnapshot?.activeRuns ?? const <OpenCrayChatRunSnapshot>[],
+      retainedRuns:
+          runtimeSnapshot?.retainedRuns ?? const <OpenCrayChatRunSnapshot>[],
+      subAgents:
+          runtimeSnapshot?.subAgents ?? const <OpenCrayChatSubAgentSnapshot>[],
+      events:
+          runtimeSnapshot?.events ?? const <OpenCrayChatRuntimeEventSnapshot>[],
       liveAssistantDrafts:
           runtimeSnapshot?.liveAssistantDrafts ??
           const <OpenCrayChatLiveAssistantDraftSnapshot>[],
@@ -3517,64 +3642,6 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (sessionDrafts.isEmpty) {
       _liveAssistantDraftOverridesBySession.remove(sessionId);
     }
-  }
-
-  List<ChatMessageData> _patchMessagesForLiveDraftEvent({
-    required List<ChatMessageData> messages,
-    required String pendingMessageId,
-    required String? text,
-    required int updatedAtEpochMs,
-  }) {
-    final String normalizedMessageId = pendingMessageId.trim();
-    if (normalizedMessageId.isEmpty) {
-      return messages;
-    }
-    final int messageIndex = messages.indexWhere(
-      (message) => message.messageId.trim() == normalizedMessageId,
-    );
-    if (text == null || text.trim().isEmpty) {
-      if (messageIndex < 0) {
-        return messages;
-      }
-      final ChatMessageData existing = messages[messageIndex];
-      if (!existing.isEphemeral) {
-        return messages;
-      }
-      return <ChatMessageData>[
-        ...messages.take(messageIndex),
-        ...messages.skip(messageIndex + 1),
-      ];
-    }
-    if (messageIndex >= 0) {
-      final ChatMessageData existing = messages[messageIndex];
-      if (existing.text == text) {
-        return messages;
-      }
-      final ChatMessageData updatedMessage = ChatMessageData(
-        messageId: existing.messageId,
-        kind: existing.kind,
-        text: text,
-        meta: existing.meta,
-        createdAtEpochMs: existing.createdAtEpochMs,
-        isEphemeral: existing.isEphemeral,
-        attachments: existing.attachments,
-      );
-      return <ChatMessageData>[
-        ...messages.take(messageIndex),
-        updatedMessage,
-        ...messages.skip(messageIndex + 1),
-      ];
-    }
-    return <ChatMessageData>[
-      ...messages,
-      ChatMessageData(
-        messageId: normalizedMessageId,
-        kind: ChatMessageKind.inbound,
-        text: text,
-        createdAtEpochMs: updatedAtEpochMs,
-        isEphemeral: true,
-      ),
-    ];
   }
 
   String? _archivedTodoFingerprint(OpenCrayChatSnapshot snapshot) {
@@ -5371,7 +5438,17 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final String runId = run.runId.trim().isNotEmpty
         ? run.runId.trim()
         : run.taskId.trim();
-    return 'runtime-process-$runId-${process.processId}';
+    final String processId = process.processId.trim();
+    if (processId.isNotEmpty) {
+      return 'runtime-process-$runId-$processId';
+    }
+    final String fingerprint = <String>[
+      process.command.trim(),
+      process.args.join('\u0001'),
+      process.workingDirectory?.trim() ?? '',
+      process.startedAtEpochMs.toString(),
+    ].join('\u0002');
+    return 'runtime-process-$runId-fp-${javaStringHashCode(fingerprint).abs()}';
   }
 
   String _projectedManagedProcessMessageText(
@@ -10397,11 +10474,7 @@ class _ChatSelectionActionButton extends StatelessWidget {
 }
 
 class _SummaryCard extends StatelessWidget {
-  const _SummaryCard({
-    required this.copy,
-    required this.summary,
-    this.bridge,
-  });
+  const _SummaryCard({required this.copy, required this.summary, this.bridge});
 
   final OpenCrayUiCopy copy;
   final ChatSessionSummary summary;
@@ -11050,6 +11123,7 @@ class _ChatTimestampDivider extends StatelessWidget {
 
 class _ChatMessageWithTimestamp extends StatelessWidget {
   const _ChatMessageWithTimestamp({
+    super.key,
     required this.bridge,
     required this.copy,
     required this.message,
@@ -11063,6 +11137,14 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
     required this.onLongPress,
     required this.onSelectionToggle,
     required this.onTextSelectionChanged,
+    this.attachedRunTraces = const <ChatRunTraceData>[],
+    this.interruptConfirmRunId,
+    this.busyInterruptRunIds = const <String>{},
+    this.busyRetryRunIds = const <String>{},
+    this.onArmInterruptRunTrace,
+    this.onDismissInterruptRunTrace,
+    this.onInterruptRunTrace,
+    this.onRetryRunTrace,
   });
 
   final OpenCrayHostBridge? bridge;
@@ -11078,6 +11160,14 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
   final void Function(ChatMessageData, Rect, String?) onLongPress;
   final VoidCallback onSelectionToggle;
   final ValueChanged<OpenCrayMarkdownSelectionSnapshot?> onTextSelectionChanged;
+  final List<ChatRunTraceData> attachedRunTraces;
+  final String? interruptConfirmRunId;
+  final Set<String> busyInterruptRunIds;
+  final Set<String> busyRetryRunIds;
+  final ValueChanged<ChatRunTraceData>? onArmInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onDismissInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onRetryRunTrace;
 
   static const double _threadHorizontalInset = 20;
   static const double _selectionControlGutter = 42;
@@ -11095,6 +11185,14 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
       selectionMode: selectionMode,
       onLongPress: onLongPress,
       onTextSelectionChanged: onTextSelectionChanged,
+      attachedRunTraces: attachedRunTraces,
+      interruptConfirmRunId: interruptConfirmRunId,
+      busyInterruptRunIds: busyInterruptRunIds,
+      busyRetryRunIds: busyRetryRunIds,
+      onArmInterruptRunTrace: onArmInterruptRunTrace,
+      onDismissInterruptRunTrace: onDismissInterruptRunTrace,
+      onInterruptRunTrace: onInterruptRunTrace,
+      onRetryRunTrace: onRetryRunTrace,
     );
     if (!selectionMode) {
       return Padding(
@@ -11254,6 +11352,10 @@ class _MessageList extends StatelessWidget {
     final Map<String, List<ChatRunTraceData>> anchoredRunTracesByMessageId =
         <String, List<ChatRunTraceData>>{};
     final Set<ChatRunTraceData> renderedRunTraces = <ChatRunTraceData>{};
+    final Set<String> visibleMessageIds = messages
+        .map((message) => message.messageId.trim())
+        .where((messageId) => messageId.isNotEmpty)
+        .toSet();
 
     for (final trace in runTraces) {
       final String anchorMessageId = trace.anchorMessageId.trim();
@@ -11265,13 +11367,13 @@ class _MessageList extends StatelessWidget {
           .add(trace);
     }
 
-    void addRunTrace(ChatRunTraceData trace) {
+    void addRunTrace(ChatRunTraceData trace, {required bool showActions}) {
       if (!renderedRunTraces.add(trace)) {
         return;
       }
       children.add(
         Padding(
-          padding: const EdgeInsets.only(bottom: 12),
+          padding: const EdgeInsets.only(bottom: 8),
           child: Align(
             alignment: Alignment.centerLeft,
             child: _RunTraceBubble(
@@ -11280,6 +11382,7 @@ class _MessageList extends StatelessWidget {
               copy: copy,
               trace: trace,
               showSandboxPreviewCard: showSandboxPreviewCards,
+              showInlineActions: showActions,
               showInterruptConfirm: interruptConfirmRunId == trace.interruptId,
               isInterruptBusy: busyInterruptRunIds.contains(trace.interruptId),
               onInterruptRequest: trace.canInterrupt
@@ -11300,6 +11403,12 @@ class _MessageList extends StatelessWidget {
     }
 
     for (final message in messages) {
+      final List<ChatRunTraceData> anchoredTraces =
+          anchoredRunTracesByMessageId[message.messageId.trim()] ??
+          const <ChatRunTraceData>[];
+      for (final trace in anchoredTraces) {
+        addRunTrace(trace, showActions: false);
+      }
       final int? currentTimestampEpochMs = message.createdAtEpochMs;
       if (currentTimestampEpochMs != null &&
           currentTimestampEpochMs > 0 &&
@@ -11345,6 +11454,7 @@ class _MessageList extends StatelessWidget {
         case ChatMessageKind.inbound:
           children.add(
             _ChatMessageWithTimestamp(
+              key: ValueKey<String>(_chatMessageListItemKey(message)),
               bridge: bridge,
               copy: copy,
               message: message,
@@ -11359,11 +11469,20 @@ class _MessageList extends StatelessWidget {
               onSelectionToggle: () => onMessageSelectionToggle(message),
               onTextSelectionChanged: (selectedText) =>
                   onMessageTextSelectionChanged(message, selectedText),
+              attachedRunTraces: anchoredTraces,
+              interruptConfirmRunId: interruptConfirmRunId,
+              busyInterruptRunIds: busyInterruptRunIds,
+              busyRetryRunIds: busyRetryRunIds,
+              onArmInterruptRunTrace: onArmInterruptRunTrace,
+              onDismissInterruptRunTrace: onDismissInterruptRunTrace,
+              onInterruptRunTrace: onInterruptRunTrace,
+              onRetryRunTrace: onRetryRunTrace,
             ),
           );
         case ChatMessageKind.outbound:
           children.add(
             _ChatMessageWithTimestamp(
+              key: ValueKey<String>(_chatMessageListItemKey(message)),
               bridge: bridge,
               copy: copy,
               message: message,
@@ -11378,28 +11497,40 @@ class _MessageList extends StatelessWidget {
               onSelectionToggle: () => onMessageSelectionToggle(message),
               onTextSelectionChanged: (selectedText) =>
                   onMessageTextSelectionChanged(message, selectedText),
+              attachedRunTraces: anchoredTraces,
+              interruptConfirmRunId: interruptConfirmRunId,
+              busyInterruptRunIds: busyInterruptRunIds,
+              busyRetryRunIds: busyRetryRunIds,
+              onArmInterruptRunTrace: onArmInterruptRunTrace,
+              onDismissInterruptRunTrace: onDismissInterruptRunTrace,
+              onInterruptRunTrace: onInterruptRunTrace,
+              onRetryRunTrace: onRetryRunTrace,
             ),
           );
       }
       if (currentTimestampEpochMs != null && currentTimestampEpochMs > 0) {
         previousTimestampEpochMs = currentTimestampEpochMs;
       }
-      final List<ChatRunTraceData>? anchoredTraces =
-          anchoredRunTracesByMessageId[message.messageId.trim()];
-      if (anchoredTraces == null) {
-        continue;
-      }
-      for (final trace in anchoredTraces) {
-        addRunTrace(trace);
-      }
     }
 
     for (final trace in runTraces) {
-      addRunTrace(trace);
+      final String anchorMessageId = trace.anchorMessageId.trim();
+      final bool showActions =
+          anchorMessageId.isEmpty ||
+          !visibleMessageIds.contains(anchorMessageId);
+      addRunTrace(trace, showActions: showActions);
     }
 
     return Column(children: children);
   }
+}
+
+String _chatMessageListItemKey(ChatMessageData message) {
+  final String messageId = message.messageId.trim();
+  if (messageId.isNotEmpty) {
+    return 'chat-message-item-$messageId';
+  }
+  return 'chat-message-item-${message.kind.name}-${message.createdAtEpochMs ?? 0}-${javaStringHashCode(message.text)}';
 }
 
 class _RunTraceBubble extends StatefulWidget {
@@ -11409,6 +11540,7 @@ class _RunTraceBubble extends StatefulWidget {
     required this.copy,
     required this.trace,
     this.showSandboxPreviewCard = false,
+    this.showInlineActions = false,
     this.showInterruptConfirm = false,
     this.onInterruptRequest,
     this.onInterruptDismiss,
@@ -11422,6 +11554,7 @@ class _RunTraceBubble extends StatefulWidget {
   final OpenCrayUiCopy copy;
   final ChatRunTraceData trace;
   final bool showSandboxPreviewCard;
+  final bool showInlineActions;
   final bool showInterruptConfirm;
   final VoidCallback? onInterruptRequest;
   final VoidCallback? onInterruptDismiss;
@@ -11435,47 +11568,57 @@ class _RunTraceBubble extends StatefulWidget {
 }
 
 class _RunTraceBubbleState extends State<_RunTraceBubble> {
-  bool _interruptOutsideDismissReady = false;
-  late final ScrollController _bodyScrollController = ScrollController();
-  final Set<ValueNotifier<ChatRunTraceData>> _openTraceNotifiers =
-      <ValueNotifier<ChatRunTraceData>>{};
+  static final Map<String, Set<ValueNotifier<ChatRunTraceData>>>
+  _openTraceNotifiersByRunKey =
+      <String, Set<ValueNotifier<ChatRunTraceData>>>{};
 
   @override
-  void dispose() {
-    _bodyScrollController.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    _publishTraceUpdate();
   }
 
   @override
   void didUpdateWidget(covariant _RunTraceBubble oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!oldWidget.showInterruptConfirm && widget.showInterruptConfirm) {
-      _interruptOutsideDismissReady = false;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !widget.showInterruptConfirm) {
-          return;
-        }
-        setState(() {
-          _interruptOutsideDismissReady = true;
-        });
-      });
-    } else if (oldWidget.showInterruptConfirm && !widget.showInterruptConfirm) {
-      _interruptOutsideDismissReady = false;
-    }
     if (!identical(oldWidget.trace, widget.trace)) {
       _runTraceDebug(
-        'bubble.traceUpdate run=${widget.trace.runId} openInspectors=${_openTraceNotifiers.length} history=${widget.trace.history.length}',
+        'bubble.traceUpdate run=${widget.trace.runId} openInspectors=${_openNotifierCount(widget.trace)} history=${widget.trace.history.length}',
       );
-      for (final notifier in _openTraceNotifiers.toList(growable: false)) {
-        notifier.value = widget.trace;
-      }
+    }
+    _publishTraceUpdate();
+  }
+
+  static String _traceNotifierKey(ChatRunTraceData trace) {
+    final String runId = trace.runId.trim();
+    if (runId.isNotEmpty) {
+      return runId;
+    }
+    final String taskId = trace.taskId.trim();
+    return taskId.isNotEmpty ? taskId : trace.label.trim();
+  }
+
+  static int _openNotifierCount(ChatRunTraceData trace) =>
+      _openTraceNotifiersByRunKey[_traceNotifierKey(trace)]?.length ?? 0;
+
+  void _publishTraceUpdate() {
+    final Set<ValueNotifier<ChatRunTraceData>>? notifiers =
+        _openTraceNotifiersByRunKey[_traceNotifierKey(widget.trace)];
+    if (notifiers == null || notifiers.isEmpty) {
+      return;
+    }
+    for (final notifier in notifiers.toList(growable: false)) {
+      notifier.value = widget.trace;
     }
   }
 
   Future<void> _openFullscreen() {
     final ValueNotifier<ChatRunTraceData> traceNotifier =
         ValueNotifier<ChatRunTraceData>(widget.trace);
-    _openTraceNotifiers.add(traceNotifier);
+    final String traceKey = _traceNotifierKey(widget.trace);
+    _openTraceNotifiersByRunKey
+        .putIfAbsent(traceKey, () => <ValueNotifier<ChatRunTraceData>>{})
+        .add(traceNotifier);
     return showDialog<void>(
       context: context,
       barrierColor: const Color(0x8A0B0E14),
@@ -11488,7 +11631,12 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
         isRetryBusy: widget.isRetryBusy,
       ),
     ).whenComplete(() {
-      _openTraceNotifiers.remove(traceNotifier);
+      final Set<ValueNotifier<ChatRunTraceData>>? notifiers =
+          _openTraceNotifiersByRunKey[traceKey];
+      notifiers?.remove(traceNotifier);
+      if (notifiers != null && notifiers.isEmpty) {
+        _openTraceNotifiersByRunKey.remove(traceKey);
+      }
       traceNotifier.dispose();
     });
   }
@@ -11522,286 +11670,326 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
         widget.showSandboxPreviewCard ? trace.previewCard : null;
     final _RunTraceCompactPresentation presentation =
         _buildRunTraceCompactPresentation(trace: trace, copy: widget.copy);
-    final String? supplementalBody = _supplementalRunTraceBody(
-      trace: trace,
-      history: trace.history,
-    );
     final double bubbleWidth = math.min(
       MediaQuery.sizeOf(context).width - 76,
       314,
     );
-    final Color surfaceColor = trace.isHighRisk
-        ? _ChatPalette.highRiskSurface
-        : Colors.white;
-    final Color borderColor = trace.isHighRisk
-        ? _ChatPalette.highRiskBorder
-        : _ChatPalette.runTraceBorder;
-    final bool showInterruptAction =
-        widget.onInterruptRequest != null ||
-        widget.showInterruptConfirm ||
-        widget.isInterruptBusy;
-    return TapRegion(
-      onTapOutside: widget.showInterruptConfirm && _interruptOutsideDismissReady
-          ? (_) => widget.onInterruptDismiss?.call()
-          : null,
-      child: GestureDetector(
-        onDoubleTap: _openFullscreen,
-        behavior: HitTestBehavior.deferToChild,
-        child: SizedBox(
-          width: bubbleWidth,
-          child: DecoratedBox(
-            decoration: ShapeDecoration(
-              color: surfaceColor,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(22),
-                side: BorderSide(color: borderColor),
-              ),
+    return GestureDetector(
+      onDoubleTap: _openFullscreen,
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: bubbleWidth,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            _RunTraceStatusLine(
+              trace: trace,
+              presentation: presentation,
+              copy: widget.copy,
+              onTap: _openFullscreen,
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 180),
-                    reverseDuration: const Duration(milliseconds: 140),
-                    switchInCurve: Curves.easeOutCubic,
-                    switchOutCurve: Curves.easeInCubic,
-                    transitionBuilder: (child, animation) {
-                      final curved = CurvedAnimation(
-                        parent: animation,
-                        curve: Curves.easeOutCubic,
-                        reverseCurve: Curves.easeInCubic,
-                      );
-                      return ClipRect(
-                        child: FadeTransition(
-                          opacity: curved,
-                          child: SlideTransition(
-                            position: Tween<Offset>(
-                              begin: const Offset(0.14, 0),
-                              end: Offset.zero,
-                            ).animate(curved),
-                            child: child,
-                          ),
-                        ),
-                      );
-                    },
-                    child: widget.showInterruptConfirm
-                        ? _RunTraceInterruptConfirmRow(
-                            key: ValueKey<String>(
-                              'chat-run-trace-interrupt-confirm-${trace.runId}',
-                            ),
-                            copy: widget.copy,
-                            runId: trace.runId,
-                            isBusy: widget.isInterruptBusy,
-                            onConfirmed: widget.onInterruptConfirm,
-                          )
-                        : Row(
-                            key: ValueKey<String>(
-                              'chat-run-trace-header-${trace.runId}',
-                            ),
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: <Widget>[
-                              Expanded(
-                                child: Wrap(
-                                  spacing: 8,
-                                  runSpacing: 8,
-                                  children: <Widget>[
-                                    _RunTracePill(
-                                      label: presentation.statusLabel,
-                                      foregroundColor: trace.isHighRisk
-                                          ? _ChatPalette.highRiskAccent
-                                          : _ChatPalette.runTraceStatusText,
-                                      backgroundColor: trace.isHighRisk
-                                          ? _ChatPalette.highRiskBadgeSurface
-                                          : _ChatPalette.runTraceStatusSurface,
-                                    ),
-                                    if (presentation.activityLabel != null)
-                                      _RunTracePill(
-                                        label: presentation.activityLabel!,
-                                        foregroundColor:
-                                            _ChatPalette.runTraceActivityText,
-                                        backgroundColor: _ChatPalette
-                                            .runTraceActivitySurface,
-                                      ),
-                                  ],
-                                ),
-                              ),
-                              if (showInterruptAction) ...<Widget>[
-                                const SizedBox(width: 12),
-                                _RunTraceInlineInterruptAction(
-                                  key: ValueKey<String>(
-                                    'chat-run-trace-interrupt-${trace.runId}',
-                                  ),
-                                  label: widget.isInterruptBusy
-                                      ? widget.copy.chatRunInterruptBusy
-                                      : widget.copy.chatRunInterruptAction,
-                                  enabled: !widget.isInterruptBusy,
-                                  onTap: widget.isInterruptBusy
-                                      ? null
-                                      : widget.onInterruptRequest,
-                                ),
-                              ],
-                            ],
-                          ),
-                  ),
-                  const SizedBox(height: 12),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 220),
-                    child: SingleChildScrollView(
-                      key: ValueKey<String>(
-                        'chat-run-trace-scroll-${trace.runId}',
-                      ),
-                      controller: _bodyScrollController,
-                      primary: false,
-                      physics: const ClampingScrollPhysics(),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Text(
-                            presentation.headline,
-                            maxLines: 3,
-                            overflow: TextOverflow.ellipsis,
-                            style: _ChatTextStyles.runTraceHeadline,
-                          ),
-                          if (presentation.description != null) ...<Widget>[
-                            const SizedBox(height: 8),
-                            Text(
-                              presentation.description!,
-                              maxLines: 3,
-                              overflow: TextOverflow.ellipsis,
-                              style: _ChatTextStyles.bodyMuted,
-                            ),
-                          ],
-                          if (presentation.detailLines.isNotEmpty) ...<Widget>[
-                            const SizedBox(height: 12),
-                            DecoratedBox(
-                              decoration: BoxDecoration(
-                                color: _ChatPalette.runTraceDetailSurface,
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: presentation.detailLines
-                                      .asMap()
-                                      .entries
-                                      .map(
-                                        (entry) => Padding(
-                                          padding: EdgeInsets.only(
-                                            bottom:
-                                                entry.key ==
-                                                    presentation
-                                                            .detailLines
-                                                            .length -
-                                                        1
-                                                ? 0
-                                                : 6,
-                                          ),
-                                          child: Text.rich(
-                                            TextSpan(
-                                              children: <InlineSpan>[
-                                                TextSpan(
-                                                  text:
-                                                      '${entry.value.label}${widget.copy.isChinese ? '  ' : '  '}',
-                                                  style: _ChatTextStyles
-                                                      .runTraceDetailLabel,
-                                                ),
-                                                TextSpan(
-                                                  text: entry.value.value,
-                                                  style: _ChatTextStyles
-                                                      .runTraceDetailValue,
-                                                ),
-                                              ],
-                                            ),
-                                            maxLines: 2,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                      )
-                                      .toList(growable: false),
-                                ),
-                              ),
-                            ),
-                          ],
-                          if (presentation.footer != null) ...<Widget>[
-                            const SizedBox(height: 10),
-                            Text(
-                              presentation.footer!,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: _ChatTextStyles.runTraceFooter,
-                            ),
-                          ],
-                          if (trace.isRetryable &&
-                              widget.onRetry != null) ...<Widget>[
-                            const SizedBox(height: 12),
-                            _RunTraceActionButton(
-                              label: widget.isRetryBusy
-                                  ? '${trace.retryLabel!}...'
-                                  : trace.retryLabel!,
-                              onTap: widget.isRetryBusy ? null : widget.onRetry,
-                            ),
-                          ],
-                          if (supplementalBody != null) ...<Widget>[
-                            const SizedBox(height: 12),
-                            DecoratedBox(
-                              decoration: BoxDecoration(
-                                color: _ChatPalette.runTraceDetailSurface,
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Text(
-                                  supplementalBody,
-                                  style: _ChatTextStyles.bodyMuted.copyWith(
-                                    color: _ChatPalette.textPrimary,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-                  if (sessionCard != null) ...<Widget>[
-                    const SizedBox(height: 12),
-                    _RunTraceSandboxSessionCard(
-                      key: ValueKey<String>(
-                        'chat-run-trace-session-card-${trace.runId}',
-                      ),
-                      copy: widget.copy,
-                      runId: trace.runId,
-                      session: sessionCard,
-                      bridge: widget.bridge,
-                    ),
-                  ],
-                  if (previewCard != null) ...<Widget>[
-                    const SizedBox(height: 12),
-                    _RunTracePreviewCard(
-                      key: ValueKey<String>(
-                        'chat-run-trace-preview-card-${trace.runId}',
-                      ),
-                      copy: widget.copy,
-                      runId: trace.runId,
-                      preview: previewCard,
-                      bridge: widget.bridge,
-                      onOpen: widget.bridge == null
-                          ? null
-                          : () => _openPreviewCard(previewCard),
-                      onCopy: () => _copyPreviewUrl(previewCard),
-                    ),
-                  ],
-                ],
+            if (widget.showInlineActions) ...<Widget>[
+              const SizedBox(height: 8),
+              _ChatRunTraceInlineActions(
+                copy: widget.copy,
+                traces: <ChatRunTraceData>[trace],
+                interruptConfirmRunId: widget.showInterruptConfirm
+                    ? trace.interruptId
+                    : null,
+                busyInterruptRunIds: widget.isInterruptBusy
+                    ? <String>{trace.interruptId}
+                    : const <String>{},
+                busyRetryRunIds: widget.isRetryBusy
+                    ? <String>{trace.retryId}
+                    : const <String>{},
+                onArmInterruptRunTrace: widget.onInterruptRequest == null
+                    ? null
+                    : (_) => widget.onInterruptRequest!(),
+                onDismissInterruptRunTrace: widget.onInterruptDismiss == null
+                    ? null
+                    : (_) => widget.onInterruptDismiss!(),
+                onInterruptRunTrace: widget.onInterruptConfirm == null
+                    ? null
+                    : (_) => widget.onInterruptConfirm!(),
+                onRetryRunTrace: widget.onRetry == null
+                    ? null
+                    : (_) => widget.onRetry!(),
               ),
+            ],
+            if (sessionCard != null) ...<Widget>[
+              const SizedBox(height: 10),
+              _RunTraceSandboxSessionCard(
+                key: ValueKey<String>(
+                  'chat-run-trace-session-card-${trace.runId}',
+                ),
+                copy: widget.copy,
+                runId: trace.runId,
+                session: sessionCard,
+                bridge: widget.bridge,
+              ),
+            ],
+            if (previewCard != null) ...<Widget>[
+              const SizedBox(height: 10),
+              _RunTracePreviewCard(
+                key: ValueKey<String>(
+                  'chat-run-trace-preview-card-${trace.runId}',
+                ),
+                copy: widget.copy,
+                runId: trace.runId,
+                preview: previewCard,
+                bridge: widget.bridge,
+                onOpen: widget.bridge == null
+                    ? null
+                    : () => _openPreviewCard(previewCard),
+                onCopy: () => _copyPreviewUrl(previewCard),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RunTraceStatusLine extends StatefulWidget {
+  const _RunTraceStatusLine({
+    required this.trace,
+    required this.presentation,
+    required this.copy,
+    required this.onTap,
+  });
+
+  final ChatRunTraceData trace;
+  final _RunTraceCompactPresentation presentation;
+  final OpenCrayUiCopy copy;
+  final VoidCallback onTap;
+
+  @override
+  State<_RunTraceStatusLine> createState() => _RunTraceStatusLineState();
+}
+
+class _RunTraceStatusLineState extends State<_RunTraceStatusLine>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _shimmerController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1450),
+  );
+
+  bool get _shouldAnimate {
+    final MediaQueryData? mediaQuery = MediaQuery.maybeOf(context);
+    return !widget.trace.isTerminal &&
+        !widget.trace.isRetryable &&
+        mediaQuery?.disableAnimations != true &&
+        !_isAutomatedWidgetTest;
+  }
+
+  bool get _isAutomatedWidgetTest {
+    bool result = false;
+    assert(() {
+      result = WidgetsBinding.instance.runtimeType.toString().contains(
+        'TestWidgetsFlutterBinding',
+      );
+      return true;
+    }());
+    return result;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncAnimation();
+  }
+
+  @override
+  void didUpdateWidget(covariant _RunTraceStatusLine oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncAnimation();
+  }
+
+  void _syncAnimation() {
+    if (_shouldAnimate) {
+      if (!_shimmerController.isAnimating) {
+        _shimmerController.repeat();
+      }
+    } else {
+      _shimmerController.stop();
+      _shimmerController.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _shimmerController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool animate = _shouldAnimate;
+    final Color baseColor = widget.trace.isHighRisk
+        ? _ChatPalette.highRiskAccent
+        : _ChatPalette.runTraceActivityText;
+    final Color mutedColor = widget.trace.isTerminal || widget.trace.isRetryable
+        ? _ChatPalette.textSecondary
+        : baseColor;
+    final String lead = _runTraceStatusLineLead(
+      trace: widget.trace,
+      presentation: widget.presentation,
+      copy: widget.copy,
+    );
+    final String? detail = _runTraceStatusLineDetail(
+      lead: lead,
+      presentation: widget.presentation,
+    );
+    final String label = detail == null ? lead : '$lead · $detail';
+    final TextStyle lineStyle = _ChatTextStyles.timeline.copyWith(
+      color: mutedColor,
+      fontWeight: FontWeight.w700,
+    );
+    final Widget text = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Text(
+          lead,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: lineStyle,
+        ),
+        if (detail != null) ...<Widget>[
+          Text(' · ', style: lineStyle),
+          Flexible(
+            child: Text(
+              detail,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: lineStyle,
+            ),
+          ),
+        ],
+      ],
+    );
+    final Widget animatedText = animate
+        ? AnimatedBuilder(
+            animation: _shimmerController,
+            child: text,
+            builder: (context, child) {
+              final double position = _shimmerController.value;
+              return ShaderMask(
+                shaderCallback: (bounds) {
+                  final double width = math.max(bounds.width, 1);
+                  final double center = (position * 2.4 - 0.7) * width;
+                  return LinearGradient(
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                    colors: <Color>[
+                      mutedColor,
+                      mutedColor.withValues(alpha: 0.54),
+                      mutedColor,
+                    ],
+                    stops: const <double>[0.0, 0.5, 1.0],
+                  ).createShader(
+                    Rect.fromLTWH(center - width, 0, width * 2, bounds.height),
+                  );
+                },
+                child: child,
+              );
+            },
+          )
+        : text;
+    return Semantics(
+      button: true,
+      label: label,
+      child: GestureDetector(
+        onTap: widget.onTap,
+        onDoubleTap: widget.onTap,
+        behavior: HitTestBehavior.opaque,
+        child: SizedBox(
+          width: double.infinity,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 3),
+            child: Row(
+              children: <Widget>[
+                SizedBox(
+                  width: 8,
+                  height: 8,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: mutedColor.withValues(
+                        alpha: animate ? 0.88 : 0.52,
+                      ),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Flexible(child: animatedText),
+                const SizedBox(width: 4),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 16,
+                  color: mutedColor.withValues(alpha: 0.78),
+                ),
+              ],
             ),
           ),
         ),
       ),
     );
   }
+}
+
+String _runTraceStatusLineLead({
+  required ChatRunTraceData trace,
+  required _RunTraceCompactPresentation presentation,
+  required OpenCrayUiCopy copy,
+}) {
+  final String statusLabel = presentation.statusLabel.trim();
+  if (trace.isTerminal || trace.isRetryable) {
+    return statusLabel;
+  }
+  final String genericRunningLabel = copy.isChinese ? '运行中' : 'RUNNING';
+  if (!_runTraceTextsMatch(statusLabel, genericRunningLabel)) {
+    return statusLabel;
+  }
+  return presentation.activityLabel ?? (copy.isChinese ? '思考中' : 'Thinking');
+}
+
+String? _runTraceStatusLineDetail({
+  required String lead,
+  required _RunTraceCompactPresentation presentation,
+}) {
+  final List<String> candidates = <String>[
+    presentation.headline,
+    if (presentation.description != null) presentation.description!,
+    ...presentation.detailLines.map((line) => line.value),
+  ];
+  final List<String> details = <String>[];
+  for (final candidate in candidates) {
+    final String text = candidate.trim();
+    final bool placeholder = _runTraceThinkingPlaceholders.contains(text);
+    if (text.isEmpty ||
+        placeholder ||
+        _runTraceTextsMatch(lead, text) ||
+        _runTraceTextContains(text, lead) ||
+        details.any(
+          (detail) =>
+              _runTraceTextsMatch(detail, text) ||
+              _runTraceTextContains(detail, text) ||
+              _runTraceTextContains(text, detail),
+        )) {
+      continue;
+    }
+    details.add(text);
+  }
+  if (details.isEmpty) {
+    return null;
+  }
+  return details.join(' · ');
 }
 
 class _RunTracePreviewCard extends StatelessWidget {
@@ -14372,6 +14560,172 @@ class _ChatMessageMenuItem extends StatelessWidget {
   }
 }
 
+class _ChatRunTraceInlineActions extends StatefulWidget {
+  const _ChatRunTraceInlineActions({
+    required this.copy,
+    required this.traces,
+    this.interruptConfirmRunId,
+    this.busyInterruptRunIds = const <String>{},
+    this.busyRetryRunIds = const <String>{},
+    this.onArmInterruptRunTrace,
+    this.onDismissInterruptRunTrace,
+    this.onInterruptRunTrace,
+    this.onRetryRunTrace,
+  });
+
+  final OpenCrayUiCopy copy;
+  final List<ChatRunTraceData> traces;
+  final String? interruptConfirmRunId;
+  final Set<String> busyInterruptRunIds;
+  final Set<String> busyRetryRunIds;
+  final ValueChanged<ChatRunTraceData>? onArmInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onDismissInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onRetryRunTrace;
+
+  @override
+  State<_ChatRunTraceInlineActions> createState() =>
+      _ChatRunTraceInlineActionsState();
+}
+
+class _ChatRunTraceInlineActionsState
+    extends State<_ChatRunTraceInlineActions> {
+  bool _outsideDismissReady = false;
+
+  ChatRunTraceData? get _confirmTrace {
+    final String confirmRunId = widget.interruptConfirmRunId?.trim() ?? '';
+    if (confirmRunId.isEmpty) {
+      return null;
+    }
+    for (final trace in widget.traces) {
+      if (trace.interruptId == confirmRunId) {
+        return trace;
+      }
+    }
+    return null;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleOutsideDismissReady();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatRunTraceInlineActions oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.interruptConfirmRunId != widget.interruptConfirmRunId) {
+      _outsideDismissReady = false;
+      _scheduleOutsideDismissReady();
+    }
+  }
+
+  void _scheduleOutsideDismissReady() {
+    if (_confirmTrace == null) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _confirmTrace == null) {
+        return;
+      }
+      setState(() {
+        _outsideDismissReady = true;
+      });
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final List<Widget> rows = <Widget>[];
+    for (final trace in widget.traces) {
+      final bool showConfirm = _confirmTrace == trace;
+      final bool interruptBusy = widget.busyInterruptRunIds.contains(
+        trace.interruptId,
+      );
+      final bool retryBusy = widget.busyRetryRunIds.contains(trace.retryId);
+      final bool canShowInterrupt =
+          widget.onArmInterruptRunTrace != null || showConfirm || interruptBusy;
+      final bool canShowRetry =
+          trace.isRetryable && widget.onRetryRunTrace != null;
+      if (!canShowInterrupt && !canShowRetry) {
+        continue;
+      }
+      if (showConfirm) {
+        rows.add(
+          _RunTraceInterruptConfirmRow(
+            key: ValueKey<String>(
+              'chat-run-trace-interrupt-confirm-${trace.interruptId}',
+            ),
+            copy: widget.copy,
+            runId: trace.interruptId,
+            isBusy: interruptBusy,
+            onConfirmed: widget.onInterruptRunTrace == null
+                ? null
+                : () => widget.onInterruptRunTrace!(trace),
+          ),
+        );
+        continue;
+      }
+      final List<Widget> actions = <Widget>[];
+      if (canShowRetry) {
+        actions.add(
+          _RunTraceActionButton(
+            label: retryBusy ? '${trace.retryLabel!}...' : trace.retryLabel!,
+            onTap: retryBusy ? null : () => widget.onRetryRunTrace!(trace),
+          ),
+        );
+      }
+      if (canShowInterrupt) {
+        actions.add(
+          _RunTraceInlineInterruptAction(
+            key: ValueKey<String>(
+              'chat-run-trace-interrupt-${trace.interruptId}',
+            ),
+            label: interruptBusy
+                ? widget.copy.chatRunInterruptBusy
+                : widget.copy.chatRunInterruptAction,
+            enabled: !interruptBusy,
+            onTap: interruptBusy || widget.onArmInterruptRunTrace == null
+                ? null
+                : () => widget.onArmInterruptRunTrace!(trace),
+          ),
+        );
+      }
+      if (actions.isNotEmpty) {
+        rows.add(Wrap(spacing: 10, runSpacing: 8, children: actions));
+      }
+    }
+    if (rows.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return TapRegion(
+      onTapOutside: _confirmTrace != null && _outsideDismissReady
+          ? (_) {
+              final ChatRunTraceData? trace = _confirmTrace;
+              if (trace != null) {
+                widget.onDismissInterruptRunTrace?.call(trace);
+              }
+            }
+          : null,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: rows
+            .asMap()
+            .entries
+            .map(
+              (entry) => Padding(
+                padding: EdgeInsets.only(
+                  bottom: entry.key == rows.length - 1 ? 0 : 8,
+                ),
+                child: entry.value,
+              ),
+            )
+            .toList(growable: false),
+      ),
+    );
+  }
+}
+
 class _ChatMessageBubble extends StatefulWidget {
   const _ChatMessageBubble({
     required this.bridge,
@@ -14384,6 +14738,14 @@ class _ChatMessageBubble extends StatefulWidget {
     required this.selectionMode,
     required this.onLongPress,
     required this.onTextSelectionChanged,
+    this.attachedRunTraces = const <ChatRunTraceData>[],
+    this.interruptConfirmRunId,
+    this.busyInterruptRunIds = const <String>{},
+    this.busyRetryRunIds = const <String>{},
+    this.onArmInterruptRunTrace,
+    this.onDismissInterruptRunTrace,
+    this.onInterruptRunTrace,
+    this.onRetryRunTrace,
   });
 
   final OpenCrayHostBridge? bridge;
@@ -14396,6 +14758,14 @@ class _ChatMessageBubble extends StatefulWidget {
   final bool selectionMode;
   final void Function(ChatMessageData, Rect, String?) onLongPress;
   final ValueChanged<OpenCrayMarkdownSelectionSnapshot?> onTextSelectionChanged;
+  final List<ChatRunTraceData> attachedRunTraces;
+  final String? interruptConfirmRunId;
+  final Set<String> busyInterruptRunIds;
+  final Set<String> busyRetryRunIds;
+  final ValueChanged<ChatRunTraceData>? onArmInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onDismissInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onRetryRunTrace;
 
   @override
   State<_ChatMessageBubble> createState() => _ChatMessageBubbleState();
@@ -14555,6 +14925,21 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
                     ),
                   );
                 }),
+              ],
+              if (widget.attachedRunTraces.isNotEmpty) ...<Widget>[
+                if (hasText || hasImages || hasOtherAttachments)
+                  const SizedBox(height: 10),
+                _ChatRunTraceInlineActions(
+                  copy: widget.copy,
+                  traces: widget.attachedRunTraces,
+                  interruptConfirmRunId: widget.interruptConfirmRunId,
+                  busyInterruptRunIds: widget.busyInterruptRunIds,
+                  busyRetryRunIds: widget.busyRetryRunIds,
+                  onArmInterruptRunTrace: widget.onArmInterruptRunTrace,
+                  onDismissInterruptRunTrace: widget.onDismissInterruptRunTrace,
+                  onInterruptRunTrace: widget.onInterruptRunTrace,
+                  onRetryRunTrace: widget.onRetryRunTrace,
+                ),
               ],
             ],
           ),
@@ -14872,7 +15257,9 @@ MarkdownStyleSheet _openCrayMarkdownStyleSheet(
   bool preferAccentForStrong = false,
   Color? strongAccentColor,
 }) {
-  final MarkdownStyleSheet base = MarkdownStyleSheet.fromTheme(Theme.of(context));
+  final MarkdownStyleSheet base = MarkdownStyleSheet.fromTheme(
+    Theme.of(context),
+  );
   final bool darkSurface =
       ThemeData.estimateBrightnessForColor(surfaceColor) == Brightness.dark;
   final Color resolvedLinkColor =
@@ -15015,10 +15402,9 @@ class _OpenCrayMarkdownTextBlock extends StatelessWidget {
         surfaceColor: surfaceColor,
         preferAccentForStrong: preferAccentForStrong,
       ),
-      imageBackgroundColor:
-          surfaceColor.withValues(alpha: 0.45),
-      imageBorderColor:
-          (bodyStyle.color ?? _ChatPalette.textPrimary).withValues(alpha: 0.16),
+      imageBackgroundColor: surfaceColor.withValues(alpha: 0.45),
+      imageBorderColor: (bodyStyle.color ?? _ChatPalette.textPrimary)
+          .withValues(alpha: 0.16),
     );
   }
 }
@@ -17597,7 +17983,6 @@ class _ChatPalette {
   static const Color background = Color(0xFFF5F5F7);
   static const Color accent = Color(0xFF007AFF);
   static const Color highRiskAccent = Color(0xFFC84B31);
-  static const Color highRiskSurface = Color(0xFFFFF5F2);
   static const Color highRiskBorder = Color(0xFFF2C6BA);
   static const Color highRiskBadgeSurface = Color(0xFFFFE0D7);
   static const Color textPrimary = Color(0xFF111111);
@@ -17607,7 +17992,6 @@ class _ChatPalette {
   static const Color runTraceBorder = Color(0xFFDCE3ED);
   static const Color runTraceStatusSurface = Color(0xFFEAF2FF);
   static const Color runTraceStatusText = Color(0xFF1B67D9);
-  static const Color runTraceActivitySurface = Color(0xFFF3F5F9);
   static const Color runTraceActivityText = Color(0xFF526071);
   static const Color runTraceDetailSurface = Color(0xFFF5F7FC);
   static const Color runTracePreviewSurface = Color(0xFFF7FAFF);

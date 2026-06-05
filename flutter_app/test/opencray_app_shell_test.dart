@@ -9,6 +9,7 @@ import 'package:opencray/core/models/opencray_files_snapshot.dart';
 import 'package:opencray/core/models/opencray_shell_snapshot.dart';
 import 'package:opencray/features/chat/chat_feature.dart';
 import 'package:opencray/features/files/files.dart';
+import 'package:opencray/features/settings/settings.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -210,6 +211,37 @@ void main() {
       platformCalls.where((call) => call.method == 'SystemNavigator.pop'),
       hasLength(1),
     );
+  });
+
+  testWidgets('shell persists selected tab through the host bridge', (
+    tester,
+  ) async {
+    final bridge = OpenCraySeedBridge(
+      initialSnapshot: const OpenCrayShellSnapshot(
+        initialTab: OpenCrayTab.chat,
+        localeTag: 'en',
+        hostLabel: 'HOST READY',
+        hostSummary: 'Ready',
+        isHostConnected: true,
+      ),
+    );
+    final filesController = FilesFeatureController();
+    final chatController = ChatFeatureController();
+
+    await _pumpShell(
+      tester,
+      bridge: bridge,
+      chatController: chatController,
+      filesController: filesController,
+      initialTab: OpenCrayTab.chat,
+    );
+
+    await tester.tap(find.text('FILES'));
+    await tester.pumpAndSettle();
+
+    final snapshot = await bridge.loadShellSnapshot();
+    expect(snapshot.initialTab, OpenCrayTab.files);
+    expect(snapshot.initialSettingsPage, SettingsPage.home);
   });
 }
 

@@ -370,6 +370,7 @@ data class OpenCrayPromptResumeState(
   val requiresSingleActionReminder: Boolean = false,
   val activeSkillName: String? = null,
   val activeSkillActivationSource: String? = null,
+  val activeSkillPinned: Boolean = false,
   val transcriptDelta: List<RuntimeConversationMessage> = emptyList(),
   val pendingToolCall: OpenCraySerializableToolCall? = null,
   val localContinuationEnvelope: OpenCraySerializableLocalContinuationEnvelope? = null,

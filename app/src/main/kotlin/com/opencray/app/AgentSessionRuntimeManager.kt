@@ -1530,11 +1530,31 @@ private class ManagedAgentSessionHandle(
   private fun restoreDetachedControlTasksLocked() {
     runRecordsById.values.forEach { record ->
       val task = record.detachedTask ?: return@forEach
-      val lastResult = record.lastResult ?: return@forEach
+      val lastResult = record.lastResult
+      val isRecoveryTask = detachedControlTaskSpec(task) is DetachedSubAgentRecoveryWaitTaskSpec
+      if (lastResult == null) {
+        if (isRecoveryTask) {
+          subAgentRecoveryDriver.restoreInFlightTask(
+            submission = record.submission,
+            task = task,
+          )
+        } else {
+          launchDetachedControlExecution(
+            submission = record.submission,
+            task = task,
+            executionKind = task.metadata[METADATA_EXECUTION_KIND]
+              ?.trim()
+              ?.takeIf(String::isNotBlank)
+              ?: EXECUTION_KIND_INITIAL,
+            clearPreviousResult = false,
+          )
+        }
+        return@forEach
+      }
       if (!isDetachedControlAwaitingManualResume(lastResult)) {
         return@forEach
       }
-      if (detachedControlTaskSpec(task) is DetachedSubAgentRecoveryWaitTaskSpec) {
+      if (isRecoveryTask) {
         subAgentRecoveryDriver.restorePendingTask(
           submission = record.submission,
           task = task,

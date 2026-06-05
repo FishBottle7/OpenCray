@@ -6,6 +6,7 @@ enum SettingsPage {
   llm,
   mcp,
   apiIntegrations,
+  privacyTelemetry,
   networkSearch,
   mediaSpeech,
   sandboxProviders,
@@ -33,6 +34,8 @@ extension SettingsPageRouteId on SettingsPage {
         return 'mcp';
       case SettingsPage.apiIntegrations:
         return 'api_integrations';
+      case SettingsPage.privacyTelemetry:
+        return 'privacy_telemetry';
       case SettingsPage.networkSearch:
         return 'network_search';
       case SettingsPage.mediaSpeech:
@@ -66,7 +69,7 @@ SettingsPage settingsPageFromRouteId(String routeId) {
     case 'mcp':
       return SettingsPage.mcp;
     case 'privacy_telemetry':
-      return SettingsPage.apiIntegrations;
+      return SettingsPage.privacyTelemetry;
     case 'api_integrations':
       return SettingsPage.apiIntegrations;
     case 'network_search':

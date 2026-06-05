@@ -25,6 +25,7 @@
 /.android-sdk-linux/
 /.kotlin-tmp/
 /.kotlin/
+**/.kotlin/
 /.kotlin-daemon/
 /.p4a-generated/
 /.p4a-build-venv/

@@ -1811,6 +1811,11 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         override fun loadShellSnapshot(): Map<String, Any?> = emptyMap()
 
         override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
+
+        override fun saveShellDestination(
+          selectedTab: String,
+          settingsSubpage: String?,
+        ) = Unit
       },
       chatRuntimeGateway = object : OpenCrayRuntimeServiceChatGateway {
         override fun loadChatSnapshot(): Map<String, Any?> = emptyMap()

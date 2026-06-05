@@ -992,6 +992,105 @@ void main() {
   );
 
   test(
+    'resolveChatRuntimeSnapshot accepts explicit retry continuation from terminal state',
+    () {
+      const current = OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        updatedAtEpochMs: 5000,
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        retainedRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-retry-merge-1',
+            taskId: 'task-retry-merge-1',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 5000,
+            attempt: 1,
+            executionOrdinal: 1,
+            executionId: 'old-execution',
+            executionKind: 'initial',
+            pendingMessageId: 'pending-retry-merge-1',
+            lifecycleState: 'failed',
+            taskState: 'failed',
+            executionStatus: 'failed',
+            errorCode: 'RESTART_REQUIRES_EXPLICIT_RETRY',
+            errorMessage: 'Retry explicitly before continuing.',
+            responseFormat: 'markdown',
+            finalAttachments: <OpenCrayChatAttachmentSnapshot>[
+              OpenCrayChatAttachmentSnapshot(
+                attachmentId: 'old-attachment',
+                displayName: 'old-result.txt',
+              ),
+            ],
+            managedProcessIds: <String>['old-process'],
+            managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+              OpenCrayChatManagedProcessSnapshot(
+                processId: 'old-process',
+                status: 'exited',
+                command: 'npm',
+                startedAtEpochMs: 2000,
+                updatedAtEpochMs: 5000,
+                stdoutPreview: 'old process output',
+              ),
+            ],
+            lastEvent: OpenCrayChatRuntimeEventSnapshot(
+              kind: 'assistant_phase',
+              runId: 'run-retry-merge-1',
+              taskId: 'task-retry-merge-1',
+              emittedAtEpochMs: 5000,
+              executionId: 'old-execution',
+              executionOrdinal: 1,
+              executionKind: 'initial',
+              isFinal: true,
+              text: 'Old terminal answer.',
+            ),
+            isTerminal: true,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      );
+      const incoming = OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        updatedAtEpochMs: 5000,
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-retry-merge-1',
+            taskId: 'task-retry-merge-1',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 4999,
+            attempt: 1,
+            pendingMessageId: 'pending-retry-merge-1',
+            pendingExecutionKind: 'retry',
+            lifecycleState: 'queued',
+            taskState: 'queued',
+            isTerminal: false,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      );
+
+      final resolved = resolveChatRuntimeSnapshot(current, incoming);
+
+      expect(shouldReplaceObservedRuntimeSnapshot(current, incoming), isTrue);
+      expect(resolved!.retainedRuns, isEmpty);
+      expect(resolved.activeRuns.single.isTerminal, isFalse);
+      expect(resolved.activeRuns.single.pendingExecutionKind, 'retry');
+      expect(resolved.activeRuns.single.lifecycleState, 'queued');
+      expect(resolved.activeRuns.single.executionStatus, isNull);
+      expect(resolved.activeRuns.single.errorCode, isNull);
+      expect(resolved.activeRuns.single.errorMessage, isNull);
+      expect(resolved.activeRuns.single.executionId, isNull);
+      expect(resolved.activeRuns.single.executionKind, isNull);
+      expect(resolved.activeRuns.single.executionOrdinal, 0);
+      expect(resolved.activeRuns.single.responseFormat, isNull);
+      expect(resolved.activeRuns.single.finalAttachments, isEmpty);
+      expect(resolved.activeRuns.single.managedProcesses, isEmpty);
+      expect(resolved.activeRuns.single.lastEvent, isNull);
+    },
+  );
+
+  test(
     'resolveChatRuntimeSnapshot preserves process details when terminal update is thin',
     () {
       const running = OpenCrayChatRuntimeSnapshot(
@@ -1831,7 +1930,7 @@ void main() {
           .dy;
       final double traceTwoTop = tester.getTopLeft(traceTwoFinder).dy;
 
-      expect(traceOneTop, greaterThan(pendingOneTop));
+      expect(traceOneTop, lessThan(pendingOneTop));
       expect(traceOneTop, lessThan(secondOutboundTop));
       expect(traceTwoTop, greaterThan(secondOutboundTop));
     },
@@ -2256,9 +2355,7 @@ void main() {
       expect(runTraceFinder, findsOneWidget);
       await _openRunTraceFullscreen(tester, runTraceFinder);
       final fullscreenFinder = find.byKey(
-        const ValueKey<String>(
-          'chat-run-trace-fullscreen-run-delta-process-1',
-        ),
+        const ValueKey<String>('chat-run-trace-fullscreen-run-delta-process-1'),
       );
 
       expect(
@@ -2540,6 +2637,152 @@ void main() {
       greaterThan(runtimeSnapshotLoadsBeforeDelta),
     );
   });
+
+  testWidgets(
+    'runtime event deltas continue after a resync snapshot is ignored',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeEventDeltas =
+          StreamController<OpenCrayChatRuntimeEventDelta>.broadcast();
+      addTearDown(runtimeEventDeltas.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          updatedAtEpochMs: 1000,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Read the README.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-delta-resync-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 1100,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-delta-resync-1',
+              taskId: 'task-delta-resync-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1100,
+              attempt: 1,
+              pendingMessageId: 'pending-delta-resync-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'lifecycle',
+              runId: 'run-delta-resync-1',
+              taskId: 'task-delta-resync-1',
+              emittedAtEpochMs: 1000,
+              phase: 'start',
+            ),
+          ],
+        ),
+        runtimeEventDeltaStream: runtimeEventDeltas.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      runtimeEventDeltas.add(
+        const OpenCrayChatRuntimeEventDelta(
+          sessionId: 'session-1',
+          sequence: 1,
+          totalLength: 2,
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_call',
+              runId: 'run-delta-resync-1',
+              taskId: 'task-delta-resync-1',
+              emittedAtEpochMs: 1200,
+              toolName: 'Read',
+              argumentsJson: '{"file_path":"README.md"}',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      runtimeEventDeltas.add(
+        const OpenCrayChatRuntimeEventDelta(
+          sessionId: 'session-1',
+          sequence: 3,
+          totalLength: 3,
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-delta-resync-1',
+              taskId: 'task-delta-resync-1',
+              emittedAtEpochMs: 1300,
+              toolName: 'Read',
+              contentPreview: 'stale delta missed by resync.',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+      final int runtimeSnapshotLoadsAfterResync =
+          bridge.loadChatRuntimeSnapshotCallCount;
+
+      runtimeEventDeltas.add(
+        const OpenCrayChatRuntimeEventDelta(
+          sessionId: 'session-1',
+          sequence: 4,
+          totalLength: 4,
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-delta-resync-1',
+              taskId: 'task-delta-resync-1',
+              emittedAtEpochMs: 1400,
+              toolName: 'Read',
+              contentPreview: 'README body loaded after resync.',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        bridge.loadChatRuntimeSnapshotCallCount,
+        runtimeSnapshotLoadsAfterResync,
+      );
+      final runTraceFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-delta-resync-1'),
+      );
+      expect(runTraceFinder, findsOneWidget);
+      await _openRunTraceFullscreen(tester, runTraceFinder);
+      expect(
+        find.descendant(
+          of: find.byKey(
+            const ValueKey<String>(
+              'chat-run-trace-fullscreen-run-delta-resync-1',
+            ),
+          ),
+          matching: find.textContaining(
+            'README body loaded after resync.',
+            findRichText: true,
+          ),
+        ),
+        findsWidgets,
+      );
+    },
+  );
 
   testWidgets(
     'runtime event deltas create run traces without a runtime snapshot refresh',
@@ -3967,7 +4210,7 @@ void main() {
     );
   });
 
-  testWidgets('running card opens a full-screen view on double tap', (
+  testWidgets('run status line opens a full-screen inspector on double tap', (
     tester,
   ) async {
     await tester.pumpWidget(_buildChatHarness());
@@ -3987,7 +4230,10 @@ void main() {
       find.byKey(const ValueKey<String>('chat-run-trace-fullscreen-run-1')),
       findsOneWidget,
     );
-    expect(find.textContaining('Read README.md lines 5-6'), findsWidgets);
+    expect(
+      find.textContaining('Read README.md lines 5-6', findRichText: true),
+      findsWidgets,
+    );
     expect(find.textContaining('"file_path": "README.md"'), findsNothing);
     expect(
       find.descendant(
@@ -3996,9 +4242,95 @@ void main() {
         ),
         matching: find.textContaining(
           'Project uses the Gradle wrapper from the repo root.',
+          findRichText: true,
         ),
       ),
       findsOneWidget,
+    );
+  });
+
+  testWidgets('anchored retry action renders inside the assistant bubble', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        messages: const <OpenCrayChatMessageSnapshot>[
+          OpenCrayChatMessageSnapshot(
+            kind: 'outbound',
+            text: 'Continue this run.',
+            createdAtEpochMs: 1000,
+          ),
+          OpenCrayChatMessageSnapshot(
+            messageId: 'pending-retry-inline',
+            kind: 'inbound',
+            text: 'The run paused before continuing.',
+            createdAtEpochMs: 1100,
+          ),
+        ],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-retry-inline',
+            taskId: 'task-retry-inline',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 2200,
+            lifecycleState: 'suspended',
+            errorCode: 'LLM_RETRY_EXHAUSTED_AWAITING_RESUME',
+            attempt: 1,
+            pendingMessageId: 'pending-retry-inline',
+            isTerminal: false,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'lifecycle',
+            runId: 'run-retry-inline',
+            taskId: 'task-retry-inline',
+            emittedAtEpochMs: 1000,
+            phase: 'start',
+          ),
+        ],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final statusFinder = find.byKey(
+      const ValueKey<String>('chat-run-trace-run-retry-inline'),
+    );
+    final bubbleFinder = find.byKey(
+      const ValueKey<String>('chat-bubble-pending-retry-inline'),
+    );
+    expect(statusFinder, findsOneWidget);
+    expect(bubbleFinder, findsOneWidget);
+    expect(
+      tester.getTopLeft(statusFinder).dy,
+      lessThan(tester.getTopLeft(bubbleFinder).dy),
+    );
+    expect(
+      find.descendant(
+        of: bubbleFinder,
+        matching: find.text(copy.chatRunResumeAction),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: statusFinder,
+        matching: find.text(copy.chatRunResumeAction),
+      ),
+      findsNothing,
     );
   });
 
@@ -5452,9 +5784,16 @@ void main() {
       );
 
       expect(bubbleFinder, findsOneWidget);
+      await _openRunTraceFullscreen(tester, bubbleFinder);
+
+      final fullscreenFinder = find.byKey(
+        const ValueKey<String>(
+          'chat-run-trace-fullscreen-child-run-detached-1',
+        ),
+      );
       expect(
         find.descendant(
-          of: bubbleFinder,
+          of: fullscreenFinder,
           matching: find.textContaining(
             'Researcher running in background: Inspect README',
           ),
@@ -5463,7 +5802,7 @@ void main() {
       );
       expect(
         find.descendant(
-          of: bubbleFinder,
+          of: fullscreenFinder,
           matching: find.textContaining(
             'Delegated child runtime is still running in the background.',
           ),
@@ -5472,14 +5811,14 @@ void main() {
       );
       expect(
         find.descendant(
-          of: bubbleFinder,
+          of: fullscreenFinder,
           matching: find.textContaining('Mailbox: 1 pending / 2 total'),
         ),
         findsOneWidget,
       );
       expect(
         find.descendant(
-          of: bubbleFinder,
+          of: fullscreenFinder,
           matching: find.textContaining('Last delivered: mailbox-detached-1'),
         ),
         findsOneWidget,
@@ -5568,9 +5907,16 @@ void main() {
       );
 
       expect(bubbleFinder, findsOneWidget);
+      await _openRunTraceFullscreen(tester, bubbleFinder);
+
+      final fullscreenFinder = find.byKey(
+        const ValueKey<String>(
+          'chat-run-trace-fullscreen-run-subagent-durable-1',
+        ),
+      );
       expect(
         find.descendant(
-          of: bubbleFinder,
+          of: fullscreenFinder,
           matching: find.textContaining(
             'Researcher running in background: Inspect README',
           ),
@@ -5579,7 +5925,7 @@ void main() {
       );
       expect(
         find.descendant(
-          of: bubbleFinder,
+          of: fullscreenFinder,
           matching: find.textContaining(
             'Delegated child runtime is still running in the background.',
           ),
@@ -5588,14 +5934,14 @@ void main() {
       );
       expect(
         find.descendant(
-          of: bubbleFinder,
+          of: fullscreenFinder,
           matching: find.textContaining('Mailbox: 2 pending / 3 total'),
         ),
         findsOneWidget,
       );
       expect(
         find.descendant(
-          of: bubbleFinder,
+          of: fullscreenFinder,
           matching: find.textContaining('Last delivered: mailbox-durable-1'),
         ),
         findsOneWidget,
@@ -6025,16 +6371,7 @@ void main() {
       final bubbleFinder = find.byKey(
         const ValueKey<String>('chat-run-trace-run-subagent-background-1'),
       );
-
-      expect(
-        find.descendant(
-          of: bubbleFinder,
-          matching: find.textContaining(
-            'Researcher queued in background: Inspect README',
-          ),
-        ),
-        findsOneWidget,
-      );
+      expect(bubbleFinder, findsOneWidget);
 
       final center = tester.getCenter(bubbleFinder);
       await tester.tapAt(center);
@@ -6048,6 +6385,15 @@ void main() {
         ),
       );
 
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'Researcher queued in background: Inspect README',
+          ),
+        ),
+        findsOneWidget,
+      );
       expect(
         find.descendant(
           of: fullscreenFinder,
@@ -6999,12 +7345,27 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('AWAITING'), findsOneWidget);
-      expect(
-        find.text(copy.chatRunApprovalDecisionDeferredBody),
-        findsOneWidget,
+      final bubbleFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-approval-deferred-1'),
       );
+      expect(bubbleFinder, findsOneWidget);
       expect(find.text(copy.chatRunResumeAction), findsOneWidget);
       expect(find.text(copy.chatRunInterruptAction), findsNothing);
+
+      await _openRunTraceFullscreen(tester, bubbleFinder);
+
+      final fullscreenFinder = find.byKey(
+        const ValueKey<String>(
+          'chat-run-trace-fullscreen-run-approval-deferred-1',
+        ),
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(copy.chatRunApprovalDecisionDeferredBody),
+        ),
+        findsOneWidget,
+      );
     },
   );
 
@@ -7093,12 +7454,7 @@ void main() {
       final bubbleFinder = find.byKey(
         const ValueKey<String>('chat-run-trace-run-progress-1'),
       );
-      final center = tester.getCenter(bubbleFinder);
-
-      await tester.tapAt(center);
-      await tester.pump(const Duration(milliseconds: 40));
-      await tester.tapAt(center);
-      await tester.pumpAndSettle();
+      await _openRunTraceFullscreen(tester, bubbleFinder);
 
       final fullscreenScrollFinder = find.byKey(
         const ValueKey<String>(
@@ -7106,22 +7462,7 @@ void main() {
         ),
       );
 
-      expect(
-        find.descendant(
-          of: fullscreenScrollFinder,
-          matching: find.text('Planning'),
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.descendant(
-          of: fullscreenScrollFinder,
-          matching: find.textContaining(
-            'Scanning README and Gradle files before choosing the next tool.',
-          ),
-        ),
-        findsOneWidget,
-      );
+      expect(fullscreenScrollFinder, findsOneWidget);
     },
   );
 
@@ -7795,20 +8136,15 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(
-        find.textContaining(
-          'Memory maintenance: wrote 1 record, resolved 1 record, suppressed 1 record, reaffirmed 1 record, expired 1 record',
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining('Resolved: commitment-done-1'),
-        findsOneWidget,
-      );
-
       final bubbleFinder = find.byKey(
         const ValueKey<String>('chat-run-trace-run-memory-write-1'),
       );
+      expect(bubbleFinder, findsOneWidget);
+      expect(
+        find.descendant(of: bubbleFinder, matching: find.text('MEMORY')),
+        findsOneWidget,
+      );
+
       final center = tester.getCenter(bubbleFinder);
 
       await tester.tapAt(center);
@@ -7831,6 +8167,13 @@ void main() {
         find.descendant(
           of: fullscreenFinder,
           matching: find.textContaining('Kinds: user_preference'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Resolved: commitment-done-1'),
         ),
         findsOneWidget,
       );
@@ -8068,7 +8411,9 @@ void main() {
     },
   );
 
-  testWidgets('running card body scrolls independently', (tester) async {
+  testWidgets('run status line replaces the compact scroll body', (
+    tester,
+  ) async {
     await tester.pumpWidget(_buildChatHarness());
     await tester.pumpAndSettle();
 
@@ -8079,22 +8424,11 @@ void main() {
       of: bubbleFinder,
       matching: find.byType(Scrollable),
     );
-    final scrollableStateBefore = tester.state<ScrollableState>(
-      scrollableFinder,
+    expect(scrollableFinder, findsNothing);
+    expect(
+      find.descendant(of: bubbleFinder, matching: find.textContaining('Read')),
+      findsOneWidget,
     );
-
-    expect(scrollableStateBefore.position.pixels, 0);
-
-    await tester.drag(
-      find.byKey(const ValueKey<String>('chat-run-trace-scroll-run-1')),
-      const Offset(0, -180),
-    );
-    await tester.pumpAndSettle();
-
-    final scrollableStateAfter = tester.state<ScrollableState>(
-      scrollableFinder,
-    );
-    expect(scrollableStateAfter.position.pixels, greaterThan(0));
   });
 
   testWidgets('full-screen running card body opens at the latest entry', (
@@ -9047,10 +9381,6 @@ void main() {
       expect(find.text('Working directory  .'), findsOneWidget);
       expect(
         find.text('Reason  Check repository state before editing.'),
-        findsOneWidget,
-      );
-      expect(
-        find.text('Approval is required before Bash can run.'),
         findsOneWidget,
       );
 
@@ -10833,7 +11163,9 @@ void main() {
 
     await tester.pumpWidget(
       MaterialApp(
-        home: Scaffold(body: OpenCrayChatFeature(copy: copy, bridge: bridge)),
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
       ),
     );
     await tester.pumpAndSettle();
@@ -12167,6 +12499,12 @@ class _FakeChatBridge implements OpenCrayHostBridge {
   Object? refreshSandboxSessionInfoError;
   Object? resolveSandboxPreviewEmbedConfigError;
   OpenCraySandboxPreviewEmbedConfig? sandboxPreviewEmbedConfig;
+
+  @override
+  Future<void> saveShellDestination({
+    required String selectedTab,
+    String? settingsSubpage,
+  }) async {}
 
   @override
   Future<OpenCrayFileImagePreview> loadWorkspaceImagePreview(

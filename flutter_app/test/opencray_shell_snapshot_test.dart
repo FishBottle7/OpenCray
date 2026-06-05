@@ -1,11 +1,13 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opencray/app/opencray_tabs.dart';
 import 'package:opencray/core/models/opencray_shell_snapshot.dart';
+import 'package:opencray/features/settings/settings.dart';
 
 void main() {
   test('shell snapshot parses runtime diagnostics from map payload', () {
     final snapshot = OpenCrayShellSnapshot.fromMap(<Object?, Object?>{
       'initialTab': 'chat',
+      'initialSettingsRouteId': 'privacy_telemetry',
       'localeTag': 'en',
       'hostLabel': 'HOST READY',
       'hostSummary': 'Detached runtime service active.',
@@ -75,6 +77,7 @@ void main() {
     }, defaultHostSummary: 'fallback summary');
 
     expect(snapshot.initialTab, OpenCrayTab.chat);
+    expect(snapshot.initialSettingsPage, SettingsPage.privacyTelemetry);
     expect(snapshot.localRuntimeServerState, isNotNull);
     expect(snapshot.localRuntimeServerState!.phase, 'listening');
     expect(snapshot.localRuntimeServerState!.listeningPort, 42617);

@@ -57,6 +57,7 @@ data class ActiveSkillCapsule(
   val invocationControl: String,
   val executionContext: String,
   val activationSource: String,
+  val pinned: Boolean = false,
   val markdownBody: String,
   val toolPermissionSummary: List<String> = emptyList(),
   val allowedToolKeys: Set<String> = emptySet(),
@@ -71,6 +72,7 @@ data class ActiveSkillTrace(
   val invocationControl: String? = null,
   val executionContext: String? = null,
   val activationSource: String? = null,
+  val pinned: Boolean = false,
   val toolRestrictionEnabled: Boolean = false,
   val allowedToolKeys: List<String> = emptyList(),
   val truncated: Boolean = false,
@@ -316,6 +318,9 @@ class ActiveSkillPromptLayer(
         append(capsule.executionContext)
         append(" activation_source=")
         appendLine(capsule.activationSource)
+        if (capsule.pinned) {
+          appendLine("- pinned=true")
+        }
         append("- path=")
         appendLine(capsule.relativePath)
         if (detailMode != ActiveSkillPromptDetailMode.MINIMAL) {
@@ -346,6 +351,7 @@ class ActiveSkillPromptLayer(
         invocationControl = capsule.invocationControl,
         executionContext = capsule.executionContext,
         activationSource = capsule.activationSource,
+        pinned = capsule.pinned,
         toolRestrictionEnabled = capsule.toolRestrictionEnabled,
         allowedToolKeys = capsule.allowedToolKeys.sorted(),
         truncated = truncated || detailMode != ActiveSkillPromptDetailMode.FULL,

@@ -42,6 +42,7 @@ import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayExecutionMetadataKeys
 import com.opencray.runtime.OpenCrayFinalAttachment
 import com.opencray.runtime.OpenCrayImageGenerationClient
+import com.opencray.runtime.OpenCrayMediaArtifactRegistry
 import com.opencray.runtime.OpenCrayMediaToolSettings
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptCheckpointEmission
@@ -63,6 +64,7 @@ import com.opencray.runtime.SandboxPreviewService
 import com.opencray.runtime.SandboxSessionControlService
 import com.opencray.runtime.SandboxSessionInfoService
 import com.opencray.runtime.ScheduledTaskManager
+import com.opencray.runtime.defaultOpenCrayMediaArtifactRegistry
 import com.opencray.runtime.bootstrap.BootstrapContextResolver
 import com.opencray.runtime.bootstrap.BootstrapMode
 import com.opencray.runtime.PythonScriptRuntime
@@ -185,6 +187,9 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val mediaToolSettingsProvider: () -> OpenCrayMediaToolSettings? = { null },
   private val imageGenerationClientProvider: () -> OpenCrayImageGenerationClient? = { null },
   private val speechSynthesisClientProvider: () -> OpenCraySpeechSynthesisClient? = { null },
+  private val mediaArtifactRegistryProvider: () -> OpenCrayMediaArtifactRegistry = {
+    defaultOpenCrayMediaArtifactRegistry(workspaceRootsProvider().first())
+  },
   private val nativeWebSearchSessionApprovalProvider: (String) -> Boolean = { false },
   private val hiddenToolNamePrefixesProvider: () -> Set<String> = { emptySet() },
   private val subAgentExecutionCoordinatorProvider: ((String) -> SubAgentExecutionCoordinator)? = null,
@@ -513,6 +518,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
         mediaToolSettingsProvider = mediaToolSettingsProvider,
         imageGenerationClient = imageGenerationClientProvider(),
         speechSynthesisClient = speechSynthesisClientProvider(),
+        mediaArtifactRegistry = mediaArtifactRegistryProvider(),
         chatAttachmentResolver = fun(chatAttachmentId: String): OpenCrayChatAttachmentSource? {
           val attachment = sessionContextFactory.resolveChatAttachmentEntry(
             sessionId = sessionId,
@@ -1338,6 +1344,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
         mediaToolSettingsProvider = mediaToolSettingsProvider,
         imageGenerationClient = imageGenerationClientProvider(),
         speechSynthesisClient = speechSynthesisClientProvider(),
+        mediaArtifactRegistry = mediaArtifactRegistryProvider(),
         chatAttachmentResolver = { null },
         memoryToolContext = if (memoryToolsEnabled) {
           MemoryToolContext(
@@ -2377,12 +2384,19 @@ internal class AppAgentSessionTaskRuntimeFactory(
     val artifactsById = OpenCrayAttachmentArtifacts.decodeMetadata(
       json = replayJson,
       metadata = result.metadata,
-    ).associateBy(OpenCrayAttachmentArtifact::artifactId)
+    ).associateByTo(linkedMapOf(), OpenCrayAttachmentArtifact::artifactId)
     val explicitAttachments = requests.mapIndexedNotNull { index, request ->
-      val artifact = request.artifactId
+      val requestedArtifactId = request.artifactId
         ?.trim()
         ?.takeIf(String::isNotBlank)
-        ?.let(artifactsById::get)
+      val artifact = requestedArtifactId?.let { artifactId ->
+        artifactsById[artifactId]
+          ?: resolveWorkspaceMediaArtifact(
+            workspaceRoot = workspaceRoot,
+            artifactId = artifactId,
+            mediaArtifactRegistry = workspaceRoot?.let { mediaArtifactRegistryProvider() },
+          )?.also { resolved -> artifactsById[resolved.artifactId] = resolved }
+      }
       val relativePath = request.relativePath
         ?.trim()
         ?.takeIf(String::isNotBlank)
@@ -2526,10 +2540,34 @@ internal class AppAgentSessionTaskRuntimeFactory(
       .firstOrNull()
       ?.toAbsolutePath()
       ?.normalize()
-    val runCandidates = OpenCrayAttachmentArtifacts.decodeMetadata(
+    val runArtifacts = OpenCrayAttachmentArtifacts.decodeMetadata(
       json = replayJson,
       metadata = result.metadata,
-    ).map { artifact ->
+    )
+    val finalArtifactIds = result.metadata[OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { finalAttachmentsJson ->
+        runCatching {
+          replayJson.decodeFromString(
+            ListSerializer(OpenCrayFinalAttachment.serializer()),
+            finalAttachmentsJson,
+          )
+        }.getOrDefault(emptyList())
+      }
+      .orEmpty()
+      .mapNotNull { attachment -> attachment.artifactId?.trim()?.takeIf(String::isNotBlank) }
+    val artifactsById = runArtifacts.associateByTo(linkedMapOf(), OpenCrayAttachmentArtifact::artifactId)
+    finalArtifactIds.forEach { artifactId ->
+      if (artifactId !in artifactsById) {
+        resolveWorkspaceMediaArtifact(
+          workspaceRoot = workspaceRoot,
+          artifactId = artifactId,
+          mediaArtifactRegistry = workspaceRoot?.let { mediaArtifactRegistryProvider() },
+        )?.let { artifact -> artifactsById[artifact.artifactId] = artifact }
+      }
+    }
+    val runCandidates = artifactsById.values.map { artifact ->
       TranscriptAttachmentMarkdownCandidate(
         attachmentId = artifact.artifactId,
         artifactId = artifact.artifactId,

@@ -206,6 +206,13 @@ internal class OpenCrayLocalRuntimeServer(
     val body = request.jsonBody()
     val payload: Any? = when (request.method to request.path) {
       "GET" to "/v1/shell_snapshot" -> shellGateway.loadShellSnapshot()
+      "POST" to "/v1/save_shell_destination" -> {
+        shellGateway.saveShellDestination(
+          selectedTab = body.optString("selectedTab"),
+          settingsSubpage = body.optString("settingsSubpage").takeIf(String::isNotBlank),
+        )
+        null
+      }
       "GET" to "/v1/files_snapshot" -> localGateway.loadFilesSnapshot()
       "POST" to "/v1/resolve_sandbox_preview_embed_config" -> localGateway.resolveSandboxPreviewEmbedConfig(
         previewUrl = body.optString("previewUrl"),

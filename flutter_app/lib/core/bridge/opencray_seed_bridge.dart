@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../../app/opencray_tabs.dart';
+import '../../features/settings/settings_models.dart';
 import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
 import '../models/opencray_agent_snapshot.dart';
@@ -83,6 +84,10 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
                OpenCraySettingsHomeEntrySnapshot(
                  routeId: 'api_integrations',
                  title: 'API Integrations',
+               ),
+               OpenCraySettingsHomeEntrySnapshot(
+                 routeId: 'privacy_telemetry',
+                 title: 'Privacy & Telemetry',
                ),
                OpenCraySettingsHomeEntrySnapshot(
                  routeId: 'safety_limits',
@@ -478,6 +483,22 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   Stream<OpenCrayShellSnapshot> watchShellSnapshot() async* {
     yield _snapshot;
     yield* _controller.stream;
+  }
+
+  @override
+  Future<void> saveShellDestination({
+    required String selectedTab,
+    String? settingsSubpage,
+  }) async {
+    final tab = _parseTab(selectedTab);
+    final settingsPage = tab == OpenCrayTab.settings
+        ? settingsPageFromRouteId(settingsSubpage ?? 'home')
+        : SettingsPage.home;
+    _snapshot = _snapshot.copyWith(
+      initialTab: tab,
+      initialSettingsPage: settingsPage,
+    );
+    _controller.add(_snapshot);
   }
 
   @override
@@ -2359,8 +2380,36 @@ OpenCraySettingsDetailSnapshot _seedSettingsDetailFor(String routeId) {
           ),
         ],
       );
-    case 'network_search':
     case 'privacy_telemetry':
+      return const OpenCraySettingsDetailSnapshot(
+        routeId: 'privacy_telemetry',
+        title: 'Privacy & Telemetry',
+        subtitle:
+            'Review what stays on device, what can leave it, and how diagnostic signals are handled.',
+        sections: <OpenCraySettingsSectionSnapshot>[
+          OpenCraySettingsSectionSnapshot(
+            title: 'Diagnostics',
+            helperText:
+                'Crash details and lightweight diagnostics can help explain failures without exporting workspace content by default.',
+          ),
+          OpenCraySettingsSectionSnapshot(
+            title: 'Data handling',
+            rows: <OpenCraySettingsRowSnapshot>[
+              OpenCraySettingsRowSnapshot.toggle(
+                title: 'Share crash diagnostics',
+                subtitle: 'Include app and runtime failure summaries only.',
+                toggleValue: false,
+              ),
+              OpenCraySettingsRowSnapshot.toggle(
+                title: 'Share product telemetry',
+                subtitle: 'Send anonymous usage counters for shell and settings flows.',
+                toggleValue: false,
+              ),
+            ],
+          ),
+        ],
+      );
+    case 'network_search':
       return const OpenCraySettingsDetailSnapshot(
         routeId: 'network_search',
         title: 'Network & Search',
@@ -3626,4 +3675,14 @@ OpenCrayMcpSettingsSnapshot _copySeedMcpSettings(
     masterDisabledBody: source.masterDisabledBody,
     servers: servers,
   );
+}
+
+OpenCrayTab _parseTab(String raw) {
+  final normalized = raw.trim().toLowerCase();
+  for (final tab in OpenCrayTab.values) {
+    if (tab.routeSegment.toLowerCase() == normalized) {
+      return tab;
+    }
+  }
+  return OpenCrayTab.chat;
 }

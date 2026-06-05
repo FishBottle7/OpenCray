@@ -579,6 +579,11 @@ class OpenCrayChatRunMemoryTraceSnapshot {
 class OpenCrayChatRunMemoryFlushSnapshot {
   const OpenCrayChatRunMemoryFlushSnapshot({
     this.outcome,
+    this.triggerStage,
+    this.contextWindowTokens,
+    this.autoCompactTokenLimit,
+    this.estimatedReplayTokens,
+    this.tokenThresholdTriggered,
     this.omittedMessageCount,
     this.omittedCharCount,
     this.signature,
@@ -589,6 +594,11 @@ class OpenCrayChatRunMemoryFlushSnapshot {
   });
 
   final String? outcome;
+  final String? triggerStage;
+  final int? contextWindowTokens;
+  final int? autoCompactTokenLimit;
+  final int? estimatedReplayTokens;
+  final bool? tokenThresholdTriggered;
   final int? omittedMessageCount;
   final int? omittedCharCount;
   final String? signature;
@@ -606,6 +616,11 @@ class OpenCrayChatRunMemoryFlushSnapshot {
         map['writtenRecordIds'] as List<Object?>? ?? const <Object?>[];
     return OpenCrayChatRunMemoryFlushSnapshot(
       outcome: map['outcome'] as String?,
+      triggerStage: map['triggerStage'] as String?,
+      contextWindowTokens: map['contextWindowTokens'] as int?,
+      autoCompactTokenLimit: map['autoCompactTokenLimit'] as int?,
+      estimatedReplayTokens: map['estimatedReplayTokens'] as int?,
+      tokenThresholdTriggered: map['tokenThresholdTriggered'] as bool?,
       omittedMessageCount: map['omittedMessageCount'] as int?,
       omittedCharCount: map['omittedCharCount'] as int?,
       signature: map['signature'] as String?,
@@ -886,6 +901,11 @@ class OpenCrayChatRunBootstrapSnapshot {
 class OpenCrayChatRunDurableCompactionSnapshot {
   const OpenCrayChatRunDurableCompactionSnapshot({
     this.compactedThisRun,
+    this.triggerStage,
+    this.contextWindowTokens,
+    this.autoCompactTokenLimit,
+    this.estimatedReplayTokens,
+    this.tokenThresholdTriggered,
     this.sourceTranscriptMessageCount,
     this.retainedTranscriptMessageCount,
     this.latestCompactedMessageCount,
@@ -897,6 +917,11 @@ class OpenCrayChatRunDurableCompactionSnapshot {
   });
 
   final bool? compactedThisRun;
+  final String? triggerStage;
+  final int? contextWindowTokens;
+  final int? autoCompactTokenLimit;
+  final int? estimatedReplayTokens;
+  final bool? tokenThresholdTriggered;
   final int? sourceTranscriptMessageCount;
   final int? retainedTranscriptMessageCount;
   final int? latestCompactedMessageCount;
@@ -911,6 +936,11 @@ class OpenCrayChatRunDurableCompactionSnapshot {
   ) {
     return OpenCrayChatRunDurableCompactionSnapshot(
       compactedThisRun: map['compactedThisRun'] as bool?,
+      triggerStage: map['triggerStage'] as String?,
+      contextWindowTokens: map['contextWindowTokens'] as int?,
+      autoCompactTokenLimit: map['autoCompactTokenLimit'] as int?,
+      estimatedReplayTokens: map['estimatedReplayTokens'] as int?,
+      tokenThresholdTriggered: map['tokenThresholdTriggered'] as bool?,
       sourceTranscriptMessageCount: map['sourceTranscriptMessageCount'] as int?,
       retainedTranscriptMessageCount:
           map['retainedTranscriptMessageCount'] as int?,
@@ -997,6 +1027,7 @@ class OpenCrayChatRunActiveSkillSnapshot {
     this.invocationControl,
     this.executionContext,
     this.activationSource,
+    this.pinned,
     this.toolRestrictionEnabled,
     this.truncated,
     this.allowedToolKeys = const <String>[],
@@ -1007,6 +1038,7 @@ class OpenCrayChatRunActiveSkillSnapshot {
   final String? invocationControl;
   final String? executionContext;
   final String? activationSource;
+  final bool? pinned;
   final bool? toolRestrictionEnabled;
   final bool? truncated;
   final List<String> allowedToolKeys;
@@ -1022,6 +1054,7 @@ class OpenCrayChatRunActiveSkillSnapshot {
       invocationControl: map['invocationControl'] as String?,
       executionContext: map['executionContext'] as String?,
       activationSource: map['activationSource'] as String?,
+      pinned: map['pinned'] as bool?,
       toolRestrictionEnabled: map['toolRestrictionEnabled'] as bool?,
       truncated: map['truncated'] as bool?,
       allowedToolKeys: rawAllowedToolKeys

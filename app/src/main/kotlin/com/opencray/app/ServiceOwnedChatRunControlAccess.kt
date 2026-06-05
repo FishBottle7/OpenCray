@@ -2,6 +2,7 @@ package com.opencray.app
 
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.orchestrator.EXECUTION_KIND_CHECKPOINT_RESUME
+import com.opencray.core.orchestrator.EXECUTION_KIND_RETRY
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayApprovalEvent
@@ -91,10 +92,36 @@ internal class ChatRunControlCoordinator(
       false
     }
     if (!resumed) {
+      if (chatRunRetryAlreadyStarted(run)) {
+        return
+      }
       val retried = runtimeSession.requestRetry(run.taskId)
-      check(retried) {
+      val retryStarted = if (retried) {
+        true
+      } else {
+        findRunSnapshotForIdentifier(taskIdOrRunId)
+          ?.let(::chatRunRetryAlreadyStarted) == true
+      }
+      check(retryStarted) {
         "Unable to retry run '$taskIdOrRunId'."
       }
+    }
+  }
+
+  private fun chatRunRetryAlreadyStarted(run: AgentRunSnapshot): Boolean {
+    val retryExecution =
+      run.pendingExecutionKind.equals(EXECUTION_KIND_RETRY, ignoreCase = true) ||
+        run.executionKind.equals(EXECUTION_KIND_RETRY, ignoreCase = true)
+    if (!retryExecution) {
+      return false
+    }
+    return when (run.lifecycleState) {
+      QueueTaskLifecycleState.QUEUED,
+      QueueTaskLifecycleState.RETRY_PENDING,
+      QueueTaskLifecycleState.RUNNING,
+      -> true
+
+      else -> false
     }
   }
 

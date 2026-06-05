@@ -788,6 +788,19 @@ private class LoopbackHttpOpenCrayShellGateway(
       listener = listener,
       pollIntervalMs = pollIntervalMs,
     )
+
+  override fun saveShellDestination(
+    selectedTab: String,
+    settingsSubpage: String?,
+  ) {
+    requestClient.post(
+      path = "v1/save_shell_destination",
+      body = JSONObject().apply {
+        put("selectedTab", selectedTab)
+        settingsSubpage?.let { put("settingsSubpage", it) }
+      },
+    )
+  }
 }
 
 private class LoopbackHttpOpenCrayChatRuntimeGateway(

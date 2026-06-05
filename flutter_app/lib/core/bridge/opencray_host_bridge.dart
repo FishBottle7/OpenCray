@@ -29,6 +29,11 @@ abstract interface class OpenCrayHostBridge {
 
   Stream<OpenCrayShellSnapshot> watchShellSnapshot();
 
+  Future<void> saveShellDestination({
+    required String selectedTab,
+    String? settingsSubpage,
+  });
+
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot();
 
   Future<OpenCraySandboxPreviewEmbedConfig> resolveSandboxPreviewEmbedConfig(

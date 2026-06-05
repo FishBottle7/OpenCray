@@ -408,6 +408,108 @@ class OpenCrayToolDispatcherMediaToolTest {
     assertEquals("cancelled", pollResult.metadata["jobStatus"])
   }
 
+  @Test
+  fun publishMediaArtifactCopiesRegisteredArtifactAcrossDispatchers() {
+    val workspaceRoot = temporaryFolder.newFolder("media-publish-workspace").toPath()
+    val generator = dispatcher(
+      workspaceRoot = workspaceRoot,
+      imageGenerationClient = object : OpenCrayImageGenerationClient {
+        override fun generate(
+          request: OpenCrayImageGenerationRequest,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayImageGenerationResponse = OpenCrayImageGenerationResponse(
+          images = listOf(
+            OpenCrayBinaryAsset(
+              bytes = byteArrayOf(10, 20, 30),
+              mimeType = "image/png",
+            ),
+          ),
+        )
+      },
+    )
+    val generated = generator.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "GenerateImage",
+        arguments = buildJsonObject {
+          put("prompt", "Draw a reusable icon")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+    val generatedDescriptor = Json.decodeFromString(
+      ListSerializer(OpenCrayAttachmentArtifact.serializer()),
+      generated.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACTS_JSON].orEmpty(),
+    ).single()
+    val publisher = dispatcher(workspaceRoot = workspaceRoot)
+
+    val published = publisher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "PublishMediaArtifact",
+        arguments = buildJsonObject {
+          put("artifact_id", generatedDescriptor.artifactId)
+          put("relative_path", "exports/icon.png")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, published.status)
+    assertEquals("write_file", published.metadata["capabilityKind"])
+    assertTrue(Files.exists(workspaceRoot.resolve(generatedDescriptor.relativePath)))
+    val destination = workspaceRoot.resolve("exports/icon.png")
+    assertTrue(Files.exists(destination))
+    assertEquals(listOf(10.toByte(), 20.toByte(), 30.toByte()), Files.readAllBytes(destination).toList())
+    val publishedDescriptor = Json.decodeFromString(
+      ListSerializer(OpenCrayAttachmentArtifact.serializer()),
+      published.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACTS_JSON].orEmpty(),
+    ).single()
+    assertEquals("exports/icon.png", publishedDescriptor.relativePath)
+    assertEquals("image", publishedDescriptor.kindHint)
+  }
+
+  @Test
+  fun publishMediaArtifactFailsWhenDestinationAlreadyExists() {
+    val workspaceRoot = temporaryFolder.newFolder("media-publish-conflict-workspace").toPath()
+    Files.createDirectories(workspaceRoot.resolve(".opencray/generated-media/images"))
+    Files.write(workspaceRoot.resolve(".opencray/generated-media/images/source.png"), byteArrayOf(1, 2, 3))
+    Files.createDirectories(workspaceRoot.resolve("exports"))
+    Files.write(workspaceRoot.resolve("exports/icon.png"), byteArrayOf(9))
+    val artifact = OpenCrayAttachmentArtifact(
+      artifactId = "artifact-source-image",
+      relativePath = ".opencray/generated-media/images/source.png",
+      displayName = "source.png",
+      kindHint = "image",
+      mimeType = "image/png",
+    )
+    defaultOpenCrayMediaArtifactRegistry(workspaceRoot).register(
+      artifacts = listOf(artifact),
+      source = OpenCrayMediaArtifactSource(
+        runId = "run-source",
+        toolName = "GenerateImage",
+        source = "generated",
+      ),
+    )
+    val publisher = dispatcher(workspaceRoot = workspaceRoot)
+
+    val result = publisher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "PublishMediaArtifact",
+        arguments = buildJsonObject {
+          put("artifact_id", artifact.artifactId)
+          put("relative_path", "exports/icon.png")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.FAILED, result.status)
+    assertEquals("ILLEGAL_ARGUMENT", result.errorCode)
+    assertEquals(listOf(9.toByte()), Files.readAllBytes(workspaceRoot.resolve("exports/icon.png")).toList())
+  }
+
   private fun dispatcher(
     workspaceRoot: Path,
     imageGenerationClient: OpenCrayImageGenerationClient? = null,
@@ -440,6 +542,7 @@ class OpenCrayToolDispatcherMediaToolTest {
       },
       imageGenerationClient = mediaGenerationClient ?: imageGenerationClient,
       speechSynthesisClient = speechSynthesisClient,
+      mediaArtifactRegistry = defaultOpenCrayMediaArtifactRegistry(workspaceRoot),
     ),
   )
 

@@ -110,7 +110,7 @@ class PromptAssembler(
         name = "Active Skill",
         kind = PromptLayerKind.CONTEXT,
         content = input.activeSkillText,
-        transportGroup = transportGroupFor(PromptLayerId.ACTIVE_SKILL, PromptLayerKind.CONTEXT),
+        transportGroup = transportGroupForActiveSkill(input.activeSkillCapsule?.pinned == true),
       )
       addLayer(
         id = PromptLayerId.RECENT_TOOL_OBSERVATIONS,
@@ -251,8 +251,6 @@ class PromptAssembler(
 
       PromptLayerId.CONVERSATION -> PromptLayerTransportGroup.REPLAY_TRANSCRIPT
 
-      // Automatic recall and the current active skill both vary with turn-local state.
-      // Keep them behind the durable front zone until an explicit sticky/pinned contract exists.
       PromptLayerId.RETRIEVED_MEMORY,
       PromptLayerId.ACTIVE_SKILL,
       PromptLayerId.WORKING_STATE,
@@ -271,6 +269,15 @@ class PromptAssembler(
       -> PromptLayerTransportGroup.SYSTEM_PREFIX
     }
   }
+
+  private fun transportGroupForActiveSkill(
+    pinned: Boolean,
+  ): PromptLayerTransportGroup =
+    if (pinned) {
+      PromptLayerTransportGroup.DURABLE_CONTEXT
+    } else {
+      PromptLayerTransportGroup.DYNAMIC_CONTEXT
+    }
 
   @Suppress("UNUSED_PARAMETER")
   private fun renderToolProtocolLayer(

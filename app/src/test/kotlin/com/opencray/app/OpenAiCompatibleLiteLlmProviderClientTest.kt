@@ -6457,11 +6457,13 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   private fun executeWithResponsesResponse(body: String): LiteLlmProviderResult.Success {
     val requestLine = AtomicReference<String>()
     val userAgent = AtomicReference<String>()
+    val serverReady = CountDownLatch(1)
     val responseSent = CountDownLatch(1)
     val serverFailure = AtomicReference<Throwable?>()
     val server = ServerSocket(0, 2, InetAddress.getByName("127.0.0.1"))
     val serverThread = Thread {
       server.use { listeningSocket ->
+        serverReady.countDown()
         repeat(2) {
           val acceptedClient = try {
             listeningSocket.accept()
@@ -6488,6 +6490,7 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
     serverThread.start()
 
     return try {
+      assertTrue(serverReady.await(5, TimeUnit.SECONDS))
       val client = OpenAiCompatibleLiteLlmProviderClient(
         userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent(
           "1.0.0-test",

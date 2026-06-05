@@ -144,6 +144,7 @@ class GlobalContextBudgetCoordinator(
               reduceSkillInventoryLayer(
                 state = state,
                 skillInventory = input.skillInventory,
+                activeSkillCapsule = input.activeSkillCapsule,
                 estimatedTotalTokens = states.sumOf(LayerBudgetState::estimatedTokensAfter),
                 targetInputBudgetTokens = envelope.targetInputBudgetTokens,
                 estimateTokens = estimateTokens,
@@ -419,10 +420,14 @@ class GlobalContextBudgetCoordinator(
 
       PromptLayerId.ACTIVE_SKILL -> LayerBudgetSpec(
         id = layer.id,
-        priorityClass = PromptLayerBudgetClass.BOUNDED_DURABLE_RECALL,
-        retentionPriority = 60,
-        mayDrop = true,
-        minTokens = 0,
+        priorityClass = if (input.activeSkillCapsule?.pinned == true) {
+          PromptLayerBudgetClass.PROTECTED_PROCEDURAL_CONTINUITY
+        } else {
+          PromptLayerBudgetClass.BOUNDED_DURABLE_RECALL
+        },
+        retentionPriority = if (input.activeSkillCapsule?.pinned == true) 30 else 60,
+        mayDrop = input.activeSkillCapsule?.pinned != true,
+        minTokens = if (input.activeSkillCapsule?.pinned == true) compactActiveSkillTokens else 0,
         targetTokens = compactActiveSkillTokens,
         maxTokens = estimatedTokens,
       )
@@ -793,6 +798,7 @@ class GlobalContextBudgetCoordinator(
   private fun reduceSkillInventoryLayer(
     state: LayerBudgetState,
     skillInventory: SkillInventory,
+    activeSkillCapsule: ActiveSkillCapsule?,
     estimatedTotalTokens: Int,
     targetInputBudgetTokens: Int,
     estimateTokens: (String) -> Int,
@@ -838,6 +844,14 @@ class GlobalContextBudgetCoordinator(
       state.currentLayer = layer.copy(content = reduction.text)
       state.estimatedTokensAfter = estimateTokens(reduction.text)
       state.appliedOperators += reduction.operator
+      return
+    }
+    if (activeSkillCapsule?.pinned == true) {
+      if (minimal.text.isNotBlank() && minimal.text != layer.content) {
+        state.currentLayer = layer.copy(content = minimal.text)
+        state.estimatedTokensAfter = estimateTokens(minimal.text)
+        state.appliedOperators += OPERATOR_REDUCE_ACTIVE_SKILL_MINIMAL
+      }
       return
     }
     state.currentLayer = null

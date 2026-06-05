@@ -7,11 +7,18 @@ import java.util.Locale
 data class MemoryStewardshipPlan(
   val acceptedCandidates: List<MemoryCandidate> = emptyList(),
   val resolvedRecords: List<MemoryRecord> = emptyList(),
+  val reopenedRecords: List<MemoryRecord> = emptyList(),
   val reaffirmedRecords: List<MemoryRecord> = emptyList(),
   val droppedCandidates: List<MemoryCandidate> = emptyList(),
+  val planSteps: List<MemoryStewardshipPlanStep> = emptyList(),
 ) {
   val isEmpty: Boolean
-    get() = resolvedRecords.isEmpty() && reaffirmedRecords.isEmpty() && droppedCandidates.isEmpty()
+    get() = acceptedCandidates.isEmpty() &&
+      resolvedRecords.isEmpty() &&
+      reopenedRecords.isEmpty() &&
+      reaffirmedRecords.isEmpty() &&
+      droppedCandidates.isEmpty() &&
+      planSteps.isEmpty()
 }
 
 class MemoryStewardshipService(
@@ -139,30 +146,46 @@ class MemoryStewardshipService(
     val mergedCandidateIndexes = linkedSetOf<Int>()
     val reaffirmedRecords = linkedMapOf<String, MemoryRecord>()
     val resolvedRecords = linkedMapOf<String, MemoryRecord>()
+    val reopenedRecords = linkedMapOf<String, MemoryRecord>()
+    val planSteps = mutableListOf<MemoryStewardshipPlanStep>()
     val supersededCountsByCandidateIndex = linkedMapOf<Int, Int>()
 
     decisions.forEach { decision ->
       when (decision.action) {
         MemoryStewardshipAction.REFRESH_RECORD_WITH_CANDIDATE -> {
-          val relatedRecord = relatedRecords[decision.recordId] ?: return@forEach
-          val candidateIndex = decision.candidateIndex ?: return@forEach
-          val candidateView = candidateViews[candidateIndex] ?: return@forEach
+          val relatedRecord = relatedRecords[decision.recordId] ?: run {
+            planSteps += ignoredStep(decision, "record_not_shortlisted")
+            return@forEach
+          }
+          val candidateIndex = decision.candidateIndex ?: run {
+            planSteps += ignoredStep(decision, "missing_candidate_index")
+            return@forEach
+          }
+          val candidateView = candidateViews[candidateIndex] ?: run {
+            planSteps += ignoredStep(decision, "candidate_not_stewardable")
+            return@forEach
+          }
           if (resolvedRecords.containsKey(relatedRecord.view.id)) {
+            planSteps += ignoredStep(decision, "record_already_resolved")
             return@forEach
           }
           if (droppedCandidateIndexes.size >= MAX_DROPPED_CANDIDATES_PER_TURN) {
+            planSteps += ignoredStep(decision, "dropped_candidate_limit")
             return@forEach
           }
           if (droppedCandidateIndexes.contains(candidateIndex)) {
+            planSteps += ignoredStep(decision, "candidate_already_dropped")
             return@forEach
           }
           if (
             mergedCandidateIndexes.contains(candidateIndex) ||
             supersededCountsByCandidateIndex[candidateIndex] != null
           ) {
+            planSteps += ignoredStep(decision, "candidate_already_consumed")
             return@forEach
           }
           if (!canRefresh(record = relatedRecord, candidate = candidateView)) {
+            planSteps += rejectedStep(decision, "refresh_guard_rejected")
             return@forEach
           }
           droppedCandidateIndexes += candidateView.index
@@ -170,43 +193,77 @@ class MemoryStewardshipService(
             relatedRecord.view.id,
             reaffirmRecord(relatedRecord.record, now),
           )
+          planSteps += appliedStep(
+            decision = decision,
+            producedRecordId = relatedRecord.view.id,
+            reason = "refreshed_existing_record",
+          )
         }
 
         MemoryStewardshipAction.DROP_CANDIDATE -> {
-          val candidateIndex = decision.candidateIndex ?: return@forEach
-          val candidate = candidateViews[candidateIndex] ?: return@forEach
+          val candidateIndex = decision.candidateIndex ?: run {
+            planSteps += ignoredStep(decision, "missing_candidate_index")
+            return@forEach
+          }
+          val candidate = candidateViews[candidateIndex] ?: run {
+            planSteps += ignoredStep(decision, "candidate_not_stewardable")
+            return@forEach
+          }
           if (droppedCandidateIndexes.size >= MAX_DROPPED_CANDIDATES_PER_TURN) {
+            planSteps += ignoredStep(decision, "dropped_candidate_limit")
             return@forEach
           }
           if (
             mergedCandidateIndexes.contains(candidateIndex) ||
             supersededCountsByCandidateIndex[candidateIndex] != null
           ) {
+            planSteps += ignoredStep(decision, "candidate_already_consumed")
             return@forEach
           }
           droppedCandidateIndexes += candidate.index
+          planSteps += appliedStep(
+            decision = decision,
+            reason = "candidate_dropped",
+          )
         }
 
         MemoryStewardshipAction.REAFFIRM_RECORD -> {
-          val relatedRecord = relatedRecords[decision.recordId] ?: return@forEach
+          val relatedRecord = relatedRecords[decision.recordId] ?: run {
+            planSteps += ignoredStep(decision, "record_not_shortlisted")
+            return@forEach
+          }
           if (resolvedRecords.containsKey(relatedRecord.view.id)) {
+            planSteps += ignoredStep(decision, "record_already_resolved")
             return@forEach
           }
           reaffirmedRecords.putIfAbsent(
             relatedRecord.view.id,
             reaffirmRecord(relatedRecord.record, now),
           )
+          planSteps += appliedStep(
+            decision = decision,
+            producedRecordId = relatedRecord.view.id,
+            reason = "record_reaffirmed",
+          )
         }
 
         MemoryStewardshipAction.RESOLVE_RECORD -> {
-          val relatedRecord = relatedRecords[decision.recordId] ?: return@forEach
+          val relatedRecord = relatedRecords[decision.recordId] ?: run {
+            planSteps += ignoredStep(decision, "record_not_shortlisted")
+            return@forEach
+          }
           if (resolvedRecords.size >= MAX_RESOLVED_RECORDS_PER_TURN) {
+            planSteps += ignoredStep(decision, "resolved_record_limit")
             return@forEach
           }
           if (reaffirmedRecords.containsKey(relatedRecord.view.id)) {
+            planSteps += ignoredStep(decision, "record_already_reaffirmed")
             return@forEach
           }
-          val reason = decision.resolutionReason ?: return@forEach
+          val reason = decision.resolutionReason ?: run {
+            planSteps += ignoredStep(decision, "missing_resolution_reason")
+            return@forEach
+          }
           resolvedRecords.putIfAbsent(
             relatedRecord.view.id,
             resolveRecord(
@@ -216,77 +273,195 @@ class MemoryStewardshipService(
               supersededBy = null,
             ),
           )
+          planSteps += appliedStep(
+            decision = decision,
+            producedRecordId = relatedRecord.view.id,
+            reason = "record_resolved_${reason.wireValue}",
+          )
         }
 
         MemoryStewardshipAction.MERGE_RECORD_WITH_CANDIDATE -> {
-          val relatedRecord = relatedRecords[decision.recordId] ?: return@forEach
-          val candidateIndex = decision.candidateIndex ?: return@forEach
-          val candidateView = candidateViews[candidateIndex] ?: return@forEach
-          val candidate = acceptedCandidatesByIndex[candidateIndex] ?: return@forEach
+          val relatedRecord = relatedRecords[decision.recordId] ?: run {
+            planSteps += ignoredStep(decision, "record_not_shortlisted")
+            return@forEach
+          }
+          val candidateIndex = decision.candidateIndex ?: run {
+            planSteps += ignoredStep(decision, "missing_candidate_index")
+            return@forEach
+          }
+          val candidateView = candidateViews[candidateIndex] ?: run {
+            planSteps += ignoredStep(decision, "candidate_not_stewardable")
+            return@forEach
+          }
+          val candidate = acceptedCandidatesByIndex[candidateIndex] ?: run {
+            planSteps += ignoredStep(decision, "candidate_not_pending")
+            return@forEach
+          }
           if (droppedCandidateIndexes.contains(candidateIndex)) {
+            planSteps += ignoredStep(decision, "candidate_already_dropped")
             return@forEach
           }
           if (mergedCandidateIndexes.contains(candidateIndex)) {
+            planSteps += ignoredStep(decision, "candidate_already_merged")
             return@forEach
           }
           if (resolvedRecords.size >= MAX_RESOLVED_RECORDS_PER_TURN) {
+            planSteps += ignoredStep(decision, "resolved_record_limit")
             return@forEach
           }
           if (!canMerge(record = relatedRecord, candidate = candidateView)) {
+            planSteps += rejectedStep(decision, "merge_guard_rejected")
             return@forEach
           }
           val mergedCandidate = mergeCandidate(
             record = relatedRecord,
             candidate = candidate,
-          ) ?: return@forEach
+          ) ?: run {
+            planSteps += rejectedStep(decision, "merge_content_unavailable")
+            return@forEach
+          }
+          val replacementRecordId = stableMemoryRecordId(mergedCandidate)
           val inserted = resolvedRecords.putIfAbsent(
             relatedRecord.view.id,
             resolveRecord(
               record = relatedRecord.record,
               nowEpochMs = now,
               resolutionReason = RESOLUTION_REASON_MERGED,
-              supersededBy = stableMemoryRecordId(mergedCandidate),
+              supersededBy = replacementRecordId,
             ),
           ) == null
           if (!inserted) {
+            planSteps += ignoredStep(decision, "record_already_resolved")
             return@forEach
           }
           acceptedCandidatesByIndex[candidateIndex] = mergedCandidate
           mergedCandidateIndexes += candidateIndex
           reaffirmedRecords.remove(relatedRecord.view.id)
+          planSteps += appliedStep(
+            decision = decision,
+            producedRecordId = replacementRecordId,
+            reason = "record_merged_into_candidate",
+          )
+        }
+
+        MemoryStewardshipAction.REOPEN_RECORD,
+        MemoryStewardshipAction.REOPEN_RECORD_WITH_CANDIDATE,
+        -> {
+          val relatedRecord = relatedRecords[decision.recordId] ?: run {
+            planSteps += ignoredStep(decision, "record_not_shortlisted")
+            return@forEach
+          }
+          val candidateIndex = decision.candidateIndex
+          val candidateView = candidateIndex?.let(candidateViews::get)
+          val candidate = candidateIndex?.let(acceptedCandidatesByIndex::get)
+          if (reopenedRecords.size >= MAX_REOPENED_RECORDS_PER_TURN) {
+            planSteps += ignoredStep(decision, "reopened_record_limit")
+            return@forEach
+          }
+          if (resolvedRecords.containsKey(relatedRecord.view.id)) {
+            planSteps += ignoredStep(decision, "record_already_resolved_this_turn")
+            return@forEach
+          }
+          if (relatedRecord.view.status != MemoryStatus.RESOLVED) {
+            planSteps += rejectedStep(decision, "record_not_resolved")
+            return@forEach
+          }
+          if (decision.action == MemoryStewardshipAction.REOPEN_RECORD_WITH_CANDIDATE) {
+            if (candidateIndex == null || candidateView == null || candidate == null) {
+              planSteps += ignoredStep(decision, "missing_candidate")
+              return@forEach
+            }
+            if (droppedCandidateIndexes.size >= MAX_DROPPED_CANDIDATES_PER_TURN) {
+              planSteps += ignoredStep(decision, "dropped_candidate_limit")
+              return@forEach
+            }
+            if (droppedCandidateIndexes.contains(candidateIndex)) {
+              planSteps += ignoredStep(decision, "candidate_already_dropped")
+              return@forEach
+            }
+            if (
+              mergedCandidateIndexes.contains(candidateIndex) ||
+              supersededCountsByCandidateIndex[candidateIndex] != null
+            ) {
+              planSteps += ignoredStep(decision, "candidate_already_consumed")
+              return@forEach
+            }
+            if (!canReopen(record = relatedRecord, candidate = candidateView)) {
+              planSteps += rejectedStep(decision, "reopen_guard_rejected")
+              return@forEach
+            }
+            droppedCandidateIndexes += candidateIndex
+          } else if (candidateIndex != null) {
+            planSteps += ignoredStep(decision, "candidate_not_allowed_for_plain_reopen")
+            return@forEach
+          }
+          val reopenedRecord = reopenRecord(
+            record = relatedRecord.record,
+            nowEpochMs = now,
+            confirmedByCandidate = candidate?.let(::stableMemoryRecordId),
+          )
+          reopenedRecords.putIfAbsent(relatedRecord.view.id, reopenedRecord)
+          reaffirmedRecords.remove(relatedRecord.view.id)
+          planSteps += appliedStep(
+            decision = decision,
+            producedRecordId = relatedRecord.view.id,
+            reason = if (candidate == null) "record_reopened" else "record_reopened_from_candidate",
+          )
         }
 
         MemoryStewardshipAction.SUPERSEDE_RECORD_WITH_CANDIDATE -> {
-          val relatedRecord = relatedRecords[decision.recordId] ?: return@forEach
-          val candidateIndex = decision.candidateIndex ?: return@forEach
-          val candidateView = candidateViews[candidateIndex] ?: return@forEach
+          val relatedRecord = relatedRecords[decision.recordId] ?: run {
+            planSteps += ignoredStep(decision, "record_not_shortlisted")
+            return@forEach
+          }
+          val candidateIndex = decision.candidateIndex ?: run {
+            planSteps += ignoredStep(decision, "missing_candidate_index")
+            return@forEach
+          }
+          val candidateView = candidateViews[candidateIndex] ?: run {
+            planSteps += ignoredStep(decision, "candidate_not_stewardable")
+            return@forEach
+          }
           if (droppedCandidateIndexes.contains(candidateIndex)) {
+            planSteps += ignoredStep(decision, "candidate_already_dropped")
             return@forEach
           }
           if (mergedCandidateIndexes.contains(candidateIndex)) {
+            planSteps += ignoredStep(decision, "candidate_already_merged")
             return@forEach
           }
           if (resolvedRecords.size >= MAX_RESOLVED_RECORDS_PER_TURN) {
+            planSteps += ignoredStep(decision, "resolved_record_limit")
             return@forEach
           }
           val currentCount = supersededCountsByCandidateIndex[candidateIndex] ?: 0
           if (currentCount >= MAX_SUPERSEDED_RECORDS_PER_CANDIDATE) {
+            planSteps += ignoredStep(decision, "superseded_record_limit")
             return@forEach
           }
           if (!canSupersede(record = relatedRecord, candidate = candidateView)) {
+            planSteps += rejectedStep(decision, "supersede_guard_rejected")
             return@forEach
           }
+          val replacementRecordId = stableMemoryRecordId(proposedCandidates[candidateIndex])
           val inserted = resolvedRecords.putIfAbsent(
             relatedRecord.view.id,
             resolveRecord(
               record = relatedRecord.record,
               nowEpochMs = now,
               resolutionReason = RESOLUTION_REASON_SUPERSEDED,
-              supersededBy = stableMemoryRecordId(proposedCandidates[candidateIndex]),
+              supersededBy = replacementRecordId,
             ),
           ) == null
           if (inserted) {
             supersededCountsByCandidateIndex[candidateIndex] = currentCount + 1
+            planSteps += appliedStep(
+              decision = decision,
+              producedRecordId = replacementRecordId,
+              reason = "record_superseded_by_candidate",
+            )
+          } else {
+            planSteps += ignoredStep(decision, "record_already_resolved")
           }
           reaffirmedRecords.remove(relatedRecord.view.id)
         }
@@ -305,11 +480,17 @@ class MemoryStewardshipService(
     return MemoryStewardshipPlan(
       acceptedCandidates = acceptedCandidates,
       resolvedRecords = resolvedRecords.values.toList(),
-      reaffirmedRecords = reaffirmedRecords
+      reopenedRecords = reopenedRecords
         .filterKeys { recordId -> recordId !in resolvedRecords }
         .values
         .toList(),
+      reaffirmedRecords = reaffirmedRecords
+        .filterKeys { recordId -> recordId !in resolvedRecords }
+        .filterKeys { recordId -> recordId !in reopenedRecords }
+        .values
+        .toList(),
       droppedCandidates = droppedCandidates,
+      planSteps = planSteps,
     )
   }
 
@@ -427,6 +608,7 @@ class MemoryStewardshipService(
         id = record.id,
         kind = metadata.kind,
         scope = metadata.scope,
+        status = metadata.status,
         content = record.content,
         source = metadata.source,
         sourceSessionId = metadata.sourceSessionId,
@@ -450,7 +632,7 @@ class MemoryStewardshipService(
       return null
     }
     val metadata = record.parseMemoryMetadata() ?: return null
-    if (metadata.status != MemoryStatus.ACTIVE) {
+    if (metadata.status != MemoryStatus.ACTIVE && metadata.status != MemoryStatus.RESOLVED) {
       return null
     }
     if (metadata.kind !in recordOnlyReviewKinds) {
@@ -492,6 +674,7 @@ class MemoryStewardshipService(
         id = record.id,
         kind = metadata.kind,
         scope = metadata.scope,
+        status = metadata.status,
         content = record.content,
         source = metadata.source,
         sourceSessionId = metadata.sourceSessionId,
@@ -692,6 +875,32 @@ class MemoryStewardshipService(
         recordContent = record.view.content,
         candidateContent = candidate.content,
       )
+      MemoryKind.TASK_COMMITMENT -> false
+    }
+  }
+
+  private fun canReopen(
+    record: RelatedMemoryRecord,
+    candidate: StewardableMemoryCandidate,
+  ): Boolean {
+    if (record.view.kind != candidate.kind || record.view.scope != candidate.scope) {
+      return false
+    }
+    return when (candidate.kind) {
+      MemoryKind.USER_PREFERENCE -> {
+        candidate.preferenceKey != null &&
+          candidate.preferenceKey == record.view.preferenceKey &&
+          candidate.preferenceValue != null &&
+          candidate.preferenceValue == record.view.preferenceValue
+      }
+
+      MemoryKind.DURABLE_INSTRUCTION,
+      MemoryKind.PROJECT_FACT,
+      -> sharesUnderlyingTopic(
+        recordContent = record.view.content,
+        candidateContent = candidate.content,
+      )
+
       MemoryKind.TASK_COMMITMENT -> false
     }
   }
@@ -931,6 +1140,81 @@ class MemoryStewardshipService(
     )
   }
 
+  private fun reopenRecord(
+    record: MemoryRecord,
+    nowEpochMs: Long,
+    confirmedByCandidate: String?,
+  ): MemoryRecord {
+    val nextExtensions = buildMap<String, String> {
+      putAll(record.extensions)
+      put(MemoryRecordExtensionKeys.STATUS, MemoryStatus.ACTIVE.name.lowercase(Locale.US))
+      put(MemoryRecordExtensionKeys.REOPENED_AT_EPOCH_MS, nowEpochMs.toString())
+      put(MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS, nowEpochMs.toString())
+      remove(MemoryRecordExtensionKeys.RESOLVED_AT_EPOCH_MS)
+      remove(MemoryRecordExtensionKeys.RESOLUTION_REASON)
+      remove(MemoryRecordExtensionKeys.SUPERSEDED_BY)
+      confirmedByCandidate
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { candidateId ->
+          put(MemoryRecordExtensionKeys.REOPENED_BY_CANDIDATE, candidateId)
+        }
+    }
+    return record.copy(
+      tags = record.tags
+        .filterNot { tag -> tag.startsWith("status:") }
+        .plus("status:${MemoryStatus.ACTIVE.name.lowercase(Locale.US)}")
+        .distinct()
+        .sorted(),
+      recordVersion = record.recordVersion + 1L,
+      updatedAtEpochMs = maxOf(record.createdAtEpochMs, nowEpochMs),
+      extensions = nextExtensions,
+    )
+  }
+
+  private fun appliedStep(
+    decision: MemoryStewardshipDecision,
+    producedRecordId: String? = null,
+    reason: String? = null,
+  ): MemoryStewardshipPlanStep = planStep(
+    decision = decision,
+    outcome = MemoryStewardshipPlanStepOutcome.APPLIED,
+    producedRecordId = producedRecordId,
+    reason = reason,
+  )
+
+  private fun rejectedStep(
+    decision: MemoryStewardshipDecision,
+    reason: String,
+  ): MemoryStewardshipPlanStep = planStep(
+    decision = decision,
+    outcome = MemoryStewardshipPlanStepOutcome.REJECTED,
+    reason = reason,
+  )
+
+  private fun ignoredStep(
+    decision: MemoryStewardshipDecision,
+    reason: String,
+  ): MemoryStewardshipPlanStep = planStep(
+    decision = decision,
+    outcome = MemoryStewardshipPlanStepOutcome.IGNORED,
+    reason = reason,
+  )
+
+  private fun planStep(
+    decision: MemoryStewardshipDecision,
+    outcome: MemoryStewardshipPlanStepOutcome,
+    producedRecordId: String? = null,
+    reason: String? = null,
+  ): MemoryStewardshipPlanStep = MemoryStewardshipPlanStep(
+    action = decision.action,
+    outcome = outcome,
+    recordId = decision.recordId,
+    candidateIndex = decision.candidateIndex,
+    producedRecordId = producedRecordId,
+    reason = reason,
+  )
+
   private data class RelatedMemoryRecord(
     val record: MemoryRecord,
     val view: StewardableMemoryRecord,
@@ -951,6 +1235,7 @@ class MemoryStewardshipService(
     const val MAX_RELATED_RECORDS_TOTAL: Int = 8
     const val MAX_RECORD_ONLY_RELATED_RECORDS_TOTAL: Int = 4
     const val MAX_RESOLVED_RECORDS_PER_TURN: Int = 4
+    const val MAX_REOPENED_RECORDS_PER_TURN: Int = 2
     const val MAX_SUPERSEDED_RECORDS_PER_CANDIDATE: Int = 2
     const val MAX_DROPPED_CANDIDATES_PER_TURN: Int = 4
     const val MIN_RECORD_ONLY_RELATED_RECORD_SCORE: Int = 120

@@ -124,9 +124,9 @@ internal class LiteLlmMemoryStewardshipInterpreter(
     appendLine()
     appendLine("Rules:")
     appendLine("- You may only act on active records and proposed candidates that are listed below.")
-    appendLine("- Allowed action values: refresh_record_with_candidate, merge_record_with_candidate, reaffirm_record, resolve_record, supersede_record_with_candidate, drop_candidate.")
+    appendLine("- Allowed action values: refresh_record_with_candidate, merge_record_with_candidate, reaffirm_record, resolve_record, reopen_record, reopen_record_with_candidate, supersede_record_with_candidate, drop_candidate.")
     appendLine("- resolve_record requires resolution_reason with one of: invalidated, obsolete, duplicate.")
-    appendLine("- If there are no proposed candidates, only use resolve_record or reaffirm_record on the listed active records.")
+    appendLine("- If there are no proposed candidates, only use resolve_record or reaffirm_record on the listed records.")
     appendLine("- refresh_record_with_candidate means the candidate is just fresh confirming evidence for that record; drop the candidate and update the record freshness without creating a new memory row.")
     appendLine("- Only choose refresh_record_with_candidate when the candidate does not add new durable detail and does not change a key value inside that same memory.")
     appendLine("- merge_record_with_candidate means the record and candidate describe the same underlying project fact or durable instruction, but the candidate adds compatible durable detail that should be folded into one replacement memory row.")
@@ -144,6 +144,8 @@ internal class LiteLlmMemoryStewardshipInterpreter(
     appendLine("- For project facts, drop speculative, uncertain, guessed, or one-turn-only details instead of storing them as durable memory.")
     appendLine("- For durable instructions, drop one-turn execution directions, temporary task-local asks, or ephemeral operating preferences that should stay in the transcript instead of durable memory.")
     appendLine("- Prefer the current turn's explicit evidence over older conflicting records, especially when the user is clearly correcting or replacing a prior fact, preference, or durable rule.")
+    appendLine("- Use reopen_record only when a listed resolved record is explicitly made valid again by the current turn and no candidate is needed.")
+    appendLine("- Use reopen_record_with_candidate only when a listed resolved record and listed candidate clearly refer to the same memory being restored; the runtime will consume the candidate instead of writing a duplicate row.")
     appendLine("- If the user explicitly corrects a preferred name such as '别再叫我阿澄了，以后叫我阿青', prefer supersede_record_with_candidate for the old preferred-name record when the listed candidate is the clear replacement.")
     appendLine("- If an active user_preferred_name or user_address_style record is explicitly invalidated without a replacement candidate, prefer resolve_record on the old record rather than preserving it.")
     appendLine("- If a proposed candidate is only a negative restatement such as 'Do not call the user 阿澄', drop_candidate that negative candidate and resolve_record the old preferred-name record instead of keeping both.")
@@ -178,6 +180,7 @@ internal class LiteLlmMemoryStewardshipInterpreter(
         append("- id=${record.id}")
         append(", kind=${record.kind.name.lowercase()}")
         append(", scope=${record.scope.name.lowercase()}")
+        append(", status=${record.status.name.lowercase()}")
         record.source?.let { source -> append(", source=${source.name.lowercase()}") }
         record.updatedAtEpochMs?.let { updatedAtEpochMs -> append(", updated_at_epoch_ms=$updatedAtEpochMs") }
         record.lastConfirmedAtEpochMs?.let { lastConfirmedAtEpochMs ->
@@ -211,6 +214,8 @@ internal class LiteLlmMemoryStewardshipInterpreter(
     appendLine("{\"decisions\":[]}")
     appendLine("{\"decisions\":[{\"action\":\"refresh_record_with_candidate\",\"record_id\":\"mem-old\",\"candidate_index\":0}]}")
     appendLine("{\"decisions\":[{\"action\":\"merge_record_with_candidate\",\"record_id\":\"fact-old\",\"candidate_index\":0}]}")
+    appendLine("{\"decisions\":[{\"action\":\"reopen_record\",\"record_id\":\"fact-resolved\"}]}")
+    appendLine("{\"decisions\":[{\"action\":\"reopen_record_with_candidate\",\"record_id\":\"fact-resolved\",\"candidate_index\":0}]}")
     appendLine("{\"decisions\":[{\"action\":\"supersede_record_with_candidate\",\"record_id\":\"mem-old\",\"candidate_index\":0}]}")
     appendLine("{\"decisions\":[{\"action\":\"supersede_record_with_candidate\",\"record_id\":\"pref-old-name\",\"candidate_index\":0}]}")
     appendLine("{\"decisions\":[{\"action\":\"resolve_record\",\"record_id\":\"mem-old\",\"resolution_reason\":\"obsolete\"}]}")

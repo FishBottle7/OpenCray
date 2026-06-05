@@ -32,6 +32,7 @@ import com.opencray.app.facade.settings.SettingsRowSnapshot
 import com.opencray.app.facade.settings.SettingsSectionSnapshot
 import com.opencray.app.facade.skills.LocalSkillsFacade
 import com.opencray.app.facade.skills.SkillsFacade
+import com.opencray.app.shell.AppShellDestination
 import com.opencray.app.shell.AppShellStateStore
 import java.util.Timer
 import java.util.TimerTask
@@ -50,7 +51,9 @@ internal class ProjectionOnlyOpenCrayShellGateway(
 ) : OpenCrayShellGateway {
   override fun loadShellSnapshot(): Map<String, Any?> = buildMap {
     val projectionSnapshot = projectionSnapshotProvider()
-    put("initialTab", stateStore.load().selectedTab.routeKey)
+    val destination = stateStore.load()
+    put("initialTab", destination.selectedTab.routeKey)
+    put("settingsSubpage", destination.settingsSubpage.routeKey)
     put("localeTag", localeTagProvider())
     put("hostLabel", hostLabel)
     put("hostSummary", hostSummary)
@@ -74,6 +77,18 @@ internal class ProjectionOnlyOpenCrayShellGateway(
       listener = listener,
       pollIntervalMs = pollIntervalMs,
     )
+
+  override fun saveShellDestination(
+    selectedTab: String,
+    settingsSubpage: String?,
+  ) {
+    stateStore.save(
+      AppShellDestination.fromRaw(
+        selectedTabRaw = selectedTab,
+        settingsSubpageRaw = settingsSubpage,
+      ),
+    )
+  }
 }
 
 internal class ProjectionOnlyOpenCraySettingsGateway(

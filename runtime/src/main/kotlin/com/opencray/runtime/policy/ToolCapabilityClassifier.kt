@@ -8,6 +8,7 @@ internal class ToolCapabilityClassifier {
     "Edit",
     "MultiEdit",
     "ImportFile",
+    "PublishMediaArtifact",
     "workspace_write_file",
     "workspace_import_file",
     "import_chat_attachment",
@@ -64,7 +65,6 @@ internal class ToolCapabilityClassifier {
     "SkillsInspect",
     "SkillsList",
     "SkillsCheck",
-    "sandbox_session_info",
     "ScheduledTaskList",
     "ScheduledTaskGet",
     "session_search",
@@ -72,6 +72,9 @@ internal class ToolCapabilityClassifier {
     "past_session_search",
     "past_session_get",
     -> PolicyToolClass.READ_FILE
+
+    "sandbox_session_info",
+    -> PolicyToolClass.NETWORK_ACCESS
 
     else -> error("No PolicyToolClass mapping is registered for tool '$toolName'.")
   }
@@ -99,6 +102,7 @@ internal class ToolCapabilityClassifier {
     "PollMediaJob",
     "CancelMediaJob",
     "sandbox_session_close",
+    "sandbox_session_info",
     -> "network_access"
 
     "ProcessList",
@@ -111,8 +115,6 @@ internal class ToolCapabilityClassifier {
     -> "read_skill"
 
     "python_runtime_manifest" -> "read_python_runtime"
-
-    "sandbox_session_info" -> "read_sandbox_session"
 
     "SkillsFind",
     "SkillsInspect",

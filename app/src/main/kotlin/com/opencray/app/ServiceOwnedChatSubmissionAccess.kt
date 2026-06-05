@@ -435,6 +435,15 @@ internal class ChatSubmissionCoordinator(
           artifactsById[artifact.artifactId] = artifact
         }
     }
+    val workspaceRoot = workspaceRootProvider?.invoke()
+    (requestedArtifactIds - artifactsById.keys).forEach { artifactId ->
+      resolveWorkspaceMediaArtifact(
+        workspaceRoot = workspaceRoot,
+        artifactId = artifactId,
+      )?.let { artifact ->
+        artifactsById[artifact.artifactId] = artifact
+      }
+    }
     return attachments.map { attachment ->
       val artifactId = attachment.artifactId?.trim()?.takeIf(String::isNotBlank)
         ?: return@map attachment

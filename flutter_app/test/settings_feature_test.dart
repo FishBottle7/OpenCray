@@ -3021,6 +3021,130 @@ void main() {
     },
   );
 
+  testWidgets('privacy route maps to the privacy detail page', (tester) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: false,
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.privacyTelemetry,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Privacy & Telemetry'), findsOneWidget);
+    expect(find.text('Share crash diagnostics'), findsOneWidget);
+    expect(find.text('API Integrations'), findsNothing);
+  });
+
+  testWidgets('settings page persists shell target for privacy subpage', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: false,
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+      overviewSnapshot: const SettingsOverviewSnapshot(
+        eyebrow: 'APP SHELL',
+        title: 'Settings',
+        subtitle: 'Access, providers, and personal defaults.',
+        deviceTitle: 'OpenCray on this device',
+        deviceSummary: 'API routes: Search + Media',
+        entries: <SettingsHomeEntrySnapshot>[
+          SettingsHomeEntrySnapshot(
+            page: SettingsPage.privacyTelemetry,
+            title: 'Privacy & Telemetry',
+          ),
+        ],
+      ),
+    );
+    final debugBridge = _buildDebugBridge();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          debugBridge: debugBridge,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Privacy & Telemetry'));
+    await tester.pumpAndSettle();
+
+    expect(debugBridge.persistedShellTabs.last, OpenCrayTab.settings);
+    expect(
+      debugBridge.persistedSettingsRouteIds.last,
+      SettingsPage.privacyTelemetry.routeId,
+    );
+  });
+
   testWidgets('standalone E2B page saves backend routing changes', (
     tester,
   ) async {
@@ -4717,6 +4841,7 @@ class _FakeSettingsFacade implements SettingsFacade {
         title: switch (page) {
           SettingsPage.notificationsBackground => 'Notifications & Background',
           SettingsPage.notificationChannels => 'Notification Channels',
+          SettingsPage.privacyTelemetry => 'Privacy & Telemetry',
           SettingsPage.aboutVersion => 'About & Version',
           _ => '',
         },
@@ -4725,6 +4850,8 @@ class _FakeSettingsFacade implements SettingsFacade {
             'Control alerts, service visibility, and wakeups.',
           SettingsPage.notificationChannels =>
             'Choose which events can interrupt you.',
+          SettingsPage.privacyTelemetry =>
+            'Review what stays on device and what diagnostic signals are shared.',
           SettingsPage.aboutVersion => 'Build information and app diagnostics.',
           _ => '',
         },
@@ -4736,6 +4863,20 @@ class _FakeSettingsFacade implements SettingsFacade {
                     SettingsRowSnapshot.value(
                       title: 'Installed version',
                       valueLabel: '1.0.0',
+                    ),
+                  ],
+                ),
+              ]
+            : page == SettingsPage.privacyTelemetry
+            ? const <SettingsSectionSnapshot>[
+                SettingsSectionSnapshot(
+                  title: 'Diagnostics',
+                  rows: <SettingsRowSnapshot>[
+                    SettingsRowSnapshot.toggle(
+                      title: 'Share crash diagnostics',
+                      subtitle:
+                          'Include app and runtime failure summaries only.',
+                      toggleValue: false,
                     ),
                   ],
                 ),
@@ -5188,9 +5329,25 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
   int? lastMemorySliceLines;
   String? lastMemoryActionRecordId;
   String? lastMemoryActionId;
+  final List<OpenCrayTab> persistedShellTabs = <OpenCrayTab>[];
+  final List<String?> persistedSettingsRouteIds = <String?>[];
 
   @override
   Future<OpenCrayShellSnapshot> loadShellSnapshot() async => shellSnapshot;
+
+  @override
+  Future<void> saveShellDestination({
+    required String selectedTab,
+    String? settingsSubpage,
+  }) async {
+    persistedShellTabs.add(
+      OpenCrayTab.values.firstWhere(
+        (tab) => selectedTab == tab.routeSegment || selectedTab == tab.routeName,
+        orElse: () => OpenCrayTab.chat,
+      ),
+    );
+    persistedSettingsRouteIds.add(settingsSubpage);
+  }
 
   @override
   Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot() async =>

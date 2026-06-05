@@ -4,6 +4,7 @@ import 'dart:ui' show FlutterView;
 
 import 'package:flutter/material.dart';
 
+import '../../app/opencray_tabs.dart';
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/models/opencray_agent_snapshot.dart';
 import '../../core/models/opencray_chat_snapshot.dart';
@@ -105,6 +106,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadOverview();
+    _persistShellTarget(_page);
     _overviewSubscription = widget.facade.watchOverview().listen((overview) {
       if (!mounted) {
         return;
@@ -176,6 +178,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
     final nestedBackTarget = _nestedBackTargetForPage(_page);
     void onBack() {
       if (nestedBackTarget != null) {
+        _persistShellTarget(nestedBackTarget);
         setState(() {
           _page = nestedBackTarget;
         });
@@ -185,6 +188,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
         Navigator.of(context).pop();
         return;
       }
+      _persistShellTarget(SettingsPage.home);
       setState(() => _page = SettingsPage.home);
     }
 
@@ -296,24 +300,28 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
           backLabel: backLabel,
         );
       case SettingsPage.aboutVersion:
+      case SettingsPage.privacyTelemetry:
         final detailSnapshot = _detailCache[_page];
         if (detailSnapshot == null) {
           return const _SettingsLoading(
             key: ValueKey<String>('settings-detail-loading'),
           );
         }
-        return _AboutVersionPage(
-          key: const ValueKey<String>('settings-about-version'),
+        return _DetailSettingsPage(
+          key: ValueKey<String>('settings-detail-${_page.routeId}'),
           snapshot: detailSnapshot,
           onBack: onBack,
           backLabel: backLabel,
-          facade: widget.facade,
-          debugBridge: widget.debugBridge,
+          facade: _page == SettingsPage.aboutVersion ? widget.facade : null,
+          debugBridge: _page == SettingsPage.aboutVersion
+              ? widget.debugBridge
+              : null,
         );
     }
   }
 
   void _openPage(SettingsPage page) {
+    _persistShellTarget(page);
     if (!widget.standalone && page != SettingsPage.home) {
       Navigator.of(context).push(
         MaterialPageRoute<void>(
@@ -422,6 +430,19 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
       return false;
     }
     return view.viewInsets.bottom > 0;
+  }
+
+  void _persistShellTarget(SettingsPage page) {
+    final bridge = widget.debugBridge;
+    if (bridge == null) {
+      return;
+    }
+    unawaited(
+      bridge.saveShellDestination(
+        selectedTab: OpenCrayTab.settings.routeSegment,
+        settingsSubpage: page.routeId,
+      ).catchError((Object _) {}),
+    );
   }
 }
 
@@ -553,20 +574,20 @@ List<Widget> _buildDetailSectionCards(
     )
     .toList(growable: false);
 
-class _AboutVersionPage extends StatelessWidget {
-  const _AboutVersionPage({
+class _DetailSettingsPage extends StatelessWidget {
+  const _DetailSettingsPage({
     super.key,
     required this.snapshot,
     required this.onBack,
     required this.backLabel,
-    required this.facade,
-    required this.debugBridge,
+    this.facade,
+    this.debugBridge,
   });
 
   final SettingsDetailSnapshot snapshot;
   final VoidCallback onBack;
   final String backLabel;
-  final SettingsFacade facade;
+  final SettingsFacade? facade;
   final OpenCrayHostBridge? debugBridge;
 
   @override
@@ -583,7 +604,7 @@ class _AboutVersionPage extends StatelessWidget {
           Text(snapshot.subtitle, style: _SettingsTextStyles.subtitle),
           const SizedBox(height: 16),
           ..._buildDetailSectionCards(snapshot.sections),
-          if (debugBridge != null) ...[
+          if (debugBridge != null && facade != null) ...[
             Padding(
               padding: const EdgeInsets.only(bottom: 16),
               child: _SettingsCard(
@@ -604,7 +625,7 @@ class _AboutVersionPage extends StatelessWidget {
                           MaterialPageRoute<void>(
                             builder: (context) => _DebugToolsPage(
                               bridge: debugBridge!,
-                              facade: facade,
+                              facade: facade!,
                               backLabel: snapshot.title,
                             ),
                           ),

@@ -108,16 +108,23 @@ class _ShellEntryState extends State<_ShellEntry> {
               isHostConnected: false,
             );
         final initialTab = widget.tab ?? shellSnapshot.initialTab;
+        final initialSettingsPage = widget.tab == OpenCrayTab.settings
+            ? widget.settingsInitialPage
+            : shellSnapshot.initialSettingsPage;
+        final effectiveShellSnapshot = shellSnapshot.copyWith(
+          initialTab: initialTab,
+          initialSettingsPage: initialSettingsPage,
+        );
         return OpenCrayAppShell(
           bridge: widget.bridge,
-          initialSnapshot: shellSnapshot,
+          initialSnapshot: effectiveShellSnapshot,
           initialTab: initialTab,
+          initialSettingsPage: initialSettingsPage,
           chatController: _chatController,
           filesController: _filesController,
           buildersForSnapshot: (snapshot) => _defaultBuilders(
             snapshot,
             bridge: widget.bridge,
-            settingsInitialPage: widget.settingsInitialPage,
             chatController: _chatController,
             filesController: _filesController,
           ),
@@ -130,7 +137,6 @@ class _ShellEntryState extends State<_ShellEntry> {
 Map<OpenCrayTab, OpenCrayTabBuilder> _defaultBuilders(
   OpenCrayShellSnapshot snapshot, {
   required OpenCrayHostBridge bridge,
-  required SettingsPage settingsInitialPage,
   required ChatFeatureController chatController,
   required FilesFeatureController filesController,
 }) {
@@ -151,7 +157,10 @@ Map<OpenCrayTab, OpenCrayTabBuilder> _defaultBuilders(
       controller: filesController,
     ),
     OpenCrayTab.settings: (context, isActive) => SettingsFeatureScreen(
-      initialPage: settingsInitialPage,
+      key: ValueKey<String>(
+        'settings-screen-${snapshot.initialSettingsPage.routeId}',
+      ),
+      initialPage: snapshot.initialSettingsPage,
       facade: BridgeSettingsFacade(bridge: bridge),
       standalone: false,
       debugBridge: bridge,
@@ -199,7 +208,7 @@ const List<_RouteEntry> _routeEntries = <_RouteEntry>[
   _RouteEntry(
     routeName: '/settings/privacy',
     tab: OpenCrayTab.settings,
-    settingsInitialPage: SettingsPage.apiIntegrations,
+    settingsInitialPage: SettingsPage.privacyTelemetry,
   ),
   _RouteEntry(
     routeName: '/settings/network-search',

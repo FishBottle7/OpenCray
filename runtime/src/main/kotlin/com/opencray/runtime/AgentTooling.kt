@@ -253,6 +253,7 @@ data class OpenCrayToolDispatcherConfig(
   val mediaToolSettingsProvider: () -> OpenCrayMediaToolSettings? = { null },
   val imageGenerationClient: OpenCrayImageGenerationClient? = null,
   val speechSynthesisClient: OpenCraySpeechSynthesisClient? = null,
+  val mediaArtifactRegistry: OpenCrayMediaArtifactRegistry = NoOpOpenCrayMediaArtifactRegistry,
   val chatAttachmentResolver: ((String) -> OpenCrayChatAttachmentSource?)? = null,
   val documentSearchProvider: WorkspaceDocumentSearchProvider = DefaultWorkspaceDocumentSearchProvider(),
   val memoryToolContext: MemoryToolContext? = null,
@@ -587,6 +588,14 @@ class OpenCrayToolDispatcher(
           AgentToolParameter("voice", "string", required = false, description = "Optional voice override. Defaults to the configured voice preset."),
           AgentToolParameter("model", "string", required = false, description = "Optional provider model override. Defaults to the configured speech model."),
           AgentToolParameter("async", "boolean", required = false, description = "Start the request as a background media job and return a job_id instead of waiting for the final audio artifact."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "PublishMediaArtifact",
+        description = "Copy one generated media artifact to a stable workspace-relative path. This never moves the original artifact, and fails if the destination already exists.",
+        parameters = listOf(
+          AgentToolParameter("artifact_id", "string", required = true, description = "Artifact id returned by GenerateImage, GenerateVideo, SynthesizeSpeech, or another workspace artifact-producing tool."),
+          AgentToolParameter("relative_path", "string", required = true, description = "Destination path inside the writable workspace root. Existing files are not overwritten."),
         ),
       ),
       AgentToolDefinition(
@@ -1217,6 +1226,7 @@ class OpenCrayToolDispatcher(
         "GenerateImage" -> generateImage(task = task, arguments = invocation.arguments, hooks = hooks)
         "GenerateVideo" -> generateVideo(task = task, arguments = invocation.arguments, hooks = hooks)
         "SynthesizeSpeech" -> synthesizeSpeech(task = task, arguments = invocation.arguments, hooks = hooks)
+        "PublishMediaArtifact" -> publishMediaArtifact(task = task, arguments = invocation.arguments)
         "PollMediaJob" -> pollMediaJob(arguments = invocation.arguments)
         "CancelMediaJob" -> cancelMediaJob(arguments = invocation.arguments)
         "Edit" -> editWorkspaceFile(task = task, arguments = invocation.arguments)
@@ -1263,6 +1273,7 @@ class OpenCrayToolDispatcher(
           errorCode = "TOOL_NOT_FOUND",
         )
       }
+      registerMediaArtifactsFromResult(task = task, result = result)
       toolCallNormalizer.decorateResult(result = result, invocation = invocation)
     } catch (error: Throwable) {
       toolCallNormalizer.decorateResult(
@@ -1304,7 +1315,6 @@ class OpenCrayToolDispatcher(
         "ProcessList",
         "ProcessRead",
         "python_runtime_manifest",
-        "sandbox_session_info",
         "skills_list",
         "skill_read",
         "SkillsList",
@@ -5745,6 +5755,149 @@ class OpenCrayToolDispatcher(
     return OpenCrayAttachmentArtifacts.encodeMetadata(config.json, descriptors)
   }
 
+  private fun publishMediaArtifact(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val artifactId = arguments.requiredStringFrom("artifact_id", "artifactId")
+    val destination = toolTargetResolver.resolveWritablePath(
+      candidate = arguments.requiredStringFrom("relative_path", "relativePath", "destination_path", "destinationPath"),
+      label = "media artifact publish",
+      defaultToRoot = false,
+    )
+    val registeredArtifact = config.mediaArtifactRegistry.resolve(artifactId)
+      ?: return AgentToolResult(
+        toolName = "PublishMediaArtifact",
+        status = AgentToolResultStatus.FAILED,
+        content = "Media artifact '$artifactId' was not found in the workspace media registry.",
+        errorCode = "MEDIA_ARTIFACT_NOT_FOUND",
+        errorMessage = "Media artifact '$artifactId' was not found in the workspace media registry.",
+        metadata = toolPolicyPipeline.resultMetadata(
+          toolName = "PublishMediaArtifact",
+          request = ToolMetadataContextRequest(
+            targetKind = ToolTargetKind.FILE,
+            primaryPath = destination,
+          ),
+          metadata = mapOf(
+            "artifactId" to artifactId,
+            "path" to toolTargetResolver.displayWritablePath(destination),
+          ),
+        ),
+      )
+    val source = writeBoundary.defaultRoot
+      .resolve(registeredArtifact.artifact.relativePath)
+      .normalize()
+    require(source.startsWith(writeBoundary.defaultRoot)) {
+      "Registered media artifact '$artifactId' escapes the workspace root."
+    }
+    require(Files.isRegularFile(source)) {
+      "Registered media artifact '$artifactId' no longer exists."
+    }
+    if (Files.exists(destination)) {
+      val displayPath = toolTargetResolver.displayWritablePath(destination)
+      return AgentToolResult(
+        toolName = "PublishMediaArtifact",
+        status = AgentToolResultStatus.FAILED,
+        content = "PublishMediaArtifact destination already exists: $displayPath",
+        errorCode = "ILLEGAL_ARGUMENT",
+        errorMessage = "PublishMediaArtifact destination already exists: $displayPath",
+        metadata = toolPolicyPipeline.resultMetadata(
+          toolName = "PublishMediaArtifact",
+          request = ToolMetadataContextRequest(
+            targetKind = ToolTargetKind.FILE,
+            primaryPath = destination,
+          ),
+          metadata = mapOf(
+            "artifactId" to artifactId,
+            "path" to displayPath,
+          ),
+        ),
+      )
+    }
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "PublishMediaArtifact",
+      targetPath = destination,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.FILE,
+        primaryPath = destination,
+      ),
+    )
+    toolPolicyPipeline.gateFileMutation(
+      plan = plan,
+      affectedPaths = mapOf(
+        "path" to toolTargetResolver.displayWritablePath(destination),
+        "sourcePath" to toolTargetResolver.displayWritablePath(source),
+      ),
+    )?.let { return it }
+    Files.createDirectories(destination.parent)
+    Files.copy(source, destination)
+    val artifact = OpenCrayGeneratedWorkspaceArtifact(
+      path = destination,
+      kindHint = registeredArtifact.artifact.kindHint,
+      mimeType = registeredArtifact.artifact.mimeType,
+      displayName = destination.fileName?.toString() ?: registeredArtifact.artifact.displayName,
+      durationMs = registeredArtifact.artifact.durationMs,
+      waveformBars = registeredArtifact.artifact.waveformBars,
+      transcriptText = registeredArtifact.artifact.transcriptText,
+    )
+    val publishedMetadata = attachmentArtifactsMetadata(listOf(artifact))
+    val publishedDescriptor = OpenCrayAttachmentArtifacts.decodeMetadata(config.json, publishedMetadata).firstOrNull()
+    return AgentToolResult(
+      toolName = "PublishMediaArtifact",
+      status = AgentToolResultStatus.SUCCESS,
+      content = buildString {
+        appendLine("Published media artifact.")
+        appendLine("source_artifact_id=$artifactId")
+        publishedDescriptor?.let { descriptor ->
+          appendLine("artifact_id=${descriptor.artifactId}")
+          appendLine("relative_path=${descriptor.relativePath}")
+        }
+        append("Use the published relative_path in the final response attachment if the user requested a workspace file.")
+      }.trim(),
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          "sourceArtifactId" to artifactId,
+          "sourcePath" to toolTargetResolver.displayWritablePath(source),
+          "path" to toolTargetResolver.displayWritablePath(destination),
+        ) + publishedMetadata,
+      ),
+    )
+  }
+
+  private fun registerMediaArtifactsFromResult(
+    task: AgentTask,
+    result: AgentToolResult,
+  ) {
+    if (result.status != AgentToolResultStatus.SUCCESS) {
+      return
+    }
+    val artifacts = OpenCrayAttachmentArtifacts.decodeMetadata(
+      json = config.json,
+      metadata = result.metadata,
+    )
+    if (artifacts.isEmpty()) {
+      return
+    }
+    config.mediaArtifactRegistry.register(
+      artifacts = artifacts,
+      source = OpenCrayMediaArtifactSource(
+        runId = task.metadata["runId"]
+          ?: task.metadata["run_id"],
+        toolName = result.toolName,
+        source = when (result.toolName) {
+          "GenerateImage",
+          "GenerateVideo",
+          "SynthesizeSpeech",
+          "PollMediaJob",
+          -> "generated"
+          else -> "workspace"
+        },
+      ),
+    )
+  }
+
   private fun attachmentArtifactDescriptor(
     artifact: OpenCrayGeneratedWorkspaceArtifact,
   ): OpenCrayAttachmentArtifact? {
@@ -6547,10 +6700,26 @@ class OpenCrayToolDispatcher(
       errorMessage = "Sandbox session info is unavailable on this runtime.",
     )
     val metadataRequest = ToolMetadataContextRequest(
-      targetKind = ToolTargetKind.NONE,
+      targetKind = ToolTargetKind.NETWORK,
+      primaryPath = writeBoundary.defaultRoot,
+      primaryTargetPath = toolTargetResolver.displayWritablePath(writeBoundary.defaultRoot),
       workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
       targetSummary = "sandbox session info",
     )
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "sandbox_session_info",
+      targetPath = writeBoundary.defaultRoot,
+      metadataRequest = metadataRequest,
+    )
+    toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = mapOf(
+        "workspaceRoot" to toolTargetResolver.displayWritablePath(writeBoundary.defaultRoot),
+      ),
+      askDetail = "Approval is required before sandbox_session_info can inspect or refresh a cloud sandbox session.",
+      denyDetail = "Policy denied sandbox_session_info.",
+    )?.let { return it }
     val info = sessionInfoService.inspect(
       SandboxSessionInfoRequest(
         workspaceRoot = writeBoundary.defaultRoot,
@@ -6607,8 +6776,7 @@ class OpenCrayToolDispatcher(
       status = AgentToolResultStatus.SUCCESS,
       content = content,
       metadata = toolPolicyPipeline.resultMetadata(
-        toolName = "sandbox_session_info",
-        request = metadataRequest,
+        plan = plan,
         metadata = buildMap {
           put("workspaceRoot", toolTargetResolver.displayWritablePath(writeBoundary.defaultRoot))
           put("sandboxProvider", info.providerId)

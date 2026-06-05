@@ -51,6 +51,15 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       _watchMap(() => _getMap('v1/shell_snapshot'), _parseShellSnapshot);
 
   @override
+  Future<void> saveShellDestination({
+    required String selectedTab,
+    String? settingsSubpage,
+  }) => _postVoid('v1/save_shell_destination', <String, Object?>{
+    'selectedTab': selectedTab,
+    'settingsSubpage': settingsSubpage,
+  });
+
+  @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
       OpenCrayFilesSnapshot.fromMap(await _getMap('v1/files_snapshot'));
 

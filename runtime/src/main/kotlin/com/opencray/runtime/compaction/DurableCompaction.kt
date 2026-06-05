@@ -5,6 +5,7 @@ import com.opencray.runtime.context.CompactionSummary
 import com.opencray.runtime.context.ContextPruner
 import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import com.opencray.runtime.context.ReplayPressureEvaluator
+import com.opencray.runtime.context.ReplayPressureSnapshot
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.TranscriptWindowBuilder
 import com.opencray.runtime.session.SessionTranscriptStore
@@ -54,6 +55,11 @@ data class DurableCompactionState(
 
 data class DurableCompactionTrace(
   val compactedThisRun: Boolean = false,
+  val triggerStage: String = "",
+  val contextWindowTokens: Int = 0,
+  val autoCompactTokenLimit: Int = 0,
+  val estimatedReplayTokens: Int = 0,
+  val tokenThresholdTriggered: Boolean = false,
   val sourceTranscriptMessageCount: Int = 0,
   val retainedTranscriptMessageCount: Int = 0,
   val latestCompactedMessageCount: Int = 0,
@@ -88,6 +94,11 @@ data class DurableCompactionTrace(
 
   val isEmpty: Boolean
     get() = !compactedThisRun &&
+      triggerStage.isBlank() &&
+      contextWindowTokens == 0 &&
+      autoCompactTokenLimit == 0 &&
+      estimatedReplayTokens == 0 &&
+      !tokenThresholdTriggered &&
       latestCompactedMessageCount == 0 &&
       includedSummaryCount == 0 &&
       omittedSummaryCount == 0 &&
@@ -244,6 +255,7 @@ class DurableCompactionCoordinator(
         compactedThisRun = false,
         sourceTranscriptMessageCount = conversation.size,
         retainedTranscriptMessageCount = conversation.size,
+        replayPressure = replayPressure,
       )
     }
     val summary = compactionPolicy.summarize(selection.omittedMessages)
@@ -252,6 +264,7 @@ class DurableCompactionCoordinator(
         compactedThisRun = false,
         sourceTranscriptMessageCount = conversation.size,
         retainedTranscriptMessageCount = conversation.size,
+        replayPressure = replayPressure,
       )
     val compactedAtEpochMs = clock()
     val updatedState = durableCompactionPolicy.append(
@@ -268,6 +281,7 @@ class DurableCompactionCoordinator(
       retainedTranscriptMessageCount = selection.window.messages.size,
       latestCompactedMessageCount = summary.compactedMessageCount,
       latestCompactedAtEpochMs = compactedAtEpochMs,
+      replayPressure = replayPressure,
     )
   }
 
@@ -286,10 +300,16 @@ class DurableCompactionCoordinator(
     retainedTranscriptMessageCount: Int,
     latestCompactedMessageCount: Int = 0,
     latestCompactedAtEpochMs: Long? = rendered.latestCompactedAtEpochMs,
+    replayPressure: ReplayPressureSnapshot? = null,
   ): DurableCompactionContext = DurableCompactionContext(
     text = rendered.text,
     trace = DurableCompactionTrace(
       compactedThisRun = compactedThisRun,
+      triggerStage = replayPressure?.let { MEMORY_COMPACTION_TRIGGER_STAGE_PRE_COMPACTION }.orEmpty(),
+      contextWindowTokens = replayPressure?.contextWindowTokens ?: 0,
+      autoCompactTokenLimit = replayPressure?.autoCompactTokenLimit ?: 0,
+      estimatedReplayTokens = replayPressure?.estimatedReplayTokens ?: 0,
+      tokenThresholdTriggered = replayPressure?.tokenThresholdTriggered ?: false,
       sourceTranscriptMessageCount = sourceTranscriptMessageCount,
       retainedTranscriptMessageCount = retainedTranscriptMessageCount,
       latestCompactedMessageCount = latestCompactedMessageCount,
@@ -300,3 +320,5 @@ class DurableCompactionCoordinator(
     ),
   )
 }
+
+private const val MEMORY_COMPACTION_TRIGGER_STAGE_PRE_COMPACTION: String = "pre_compaction"

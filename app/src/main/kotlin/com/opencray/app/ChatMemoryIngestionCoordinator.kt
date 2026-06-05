@@ -15,6 +15,7 @@ import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import com.opencray.runtime.memory.MemoryScope
 import com.opencray.runtime.memory.MemoryStewardshipService
+import com.opencray.runtime.memory.MemoryStewardshipPlanStep
 import com.opencray.runtime.memory.MemoryStatus
 import com.opencray.runtime.memory.TaskCommitmentResolver
 import com.opencray.runtime.memory.MemoryTurnEvidence
@@ -32,14 +33,18 @@ import com.opencray.runtime.soul.SoulPlasticity
 internal data class MemoryIngestionSummary(
   val writtenRecords: List<MemoryRecord> = emptyList(),
   val resolvedRecords: List<MemoryRecord> = emptyList(),
+  val reopenedRecords: List<MemoryRecord> = emptyList(),
   val reaffirmedRecords: List<MemoryRecord> = emptyList(),
   val expiredRecordIds: List<String> = emptyList(),
+  val stewardshipPlanSteps: List<MemoryStewardshipPlanStep> = emptyList(),
 ) {
   val isEmpty: Boolean
     get() = writtenRecords.isEmpty() &&
       resolvedRecords.isEmpty() &&
+      reopenedRecords.isEmpty() &&
       reaffirmedRecords.isEmpty() &&
-      expiredRecordIds.isEmpty()
+      expiredRecordIds.isEmpty() &&
+      stewardshipPlanSteps.isEmpty()
 }
 
 internal class ChatMemoryIngestionCoordinator(
@@ -121,6 +126,7 @@ internal class ChatMemoryIngestionCoordinator(
       proposedCandidates = filteredWriteCandidates,
     )
     stewardshipPlan.resolvedRecords.forEach(memoryStore::upsert)
+    stewardshipPlan.reopenedRecords.forEach(memoryStore::upsert)
     stewardshipPlan.reaffirmedRecords.forEach(memoryStore::upsert)
     val writeSummary = writer.write(stewardshipPlan.acceptedCandidates)
     val plasticity = soulPlasticityProvider()
@@ -175,11 +181,13 @@ internal class ChatMemoryIngestionCoordinator(
     val summary = MemoryIngestionSummary(
       writtenRecords = writeSummary.writtenRecords + interactionPreferenceWriteSummary + relationshipWriteSummary,
       resolvedRecords = maintenance.resolvedRecords + stewardshipPlan.resolvedRecords,
+      reopenedRecords = stewardshipPlan.reopenedRecords,
       reaffirmedRecords = maintenance.reaffirmedRecords + stewardshipPlan.reaffirmedRecords,
       expiredRecordIds = maintenance.expiredRecordIds,
+      stewardshipPlanSteps = stewardshipPlan.planSteps,
     )
     if (
-      (summary.writtenRecords + summary.resolvedRecords + summary.reaffirmedRecords)
+      (summary.writtenRecords + summary.resolvedRecords + summary.reopenedRecords + summary.reaffirmedRecords)
         .any(::isActiveSessionScopedRecord)
     ) {
       sessionScopedStateMarker(sessionId)

@@ -68,6 +68,7 @@ import com.opencray.app.facade.settings.SettingsOverviewSnapshot
 import com.opencray.app.facade.settings.SettingsRouteId
 import com.opencray.app.facade.settings.SettingsRowSnapshot
 import com.opencray.app.facade.settings.SettingsSectionSnapshot
+import com.opencray.app.shell.AppShellDestination
 import com.opencray.app.shell.AppShellStateStore
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskType
@@ -442,12 +443,7 @@ internal class OpenCrayHostRuntime private constructor(
             }
             EventEmissionDecision(
               shouldEmit = true,
-              runtimeEventDeltaSequence =
-                if (runtimeEventDeltaListeners.isNotEmpty()) {
-                  nextRuntimeEventDeltaSequenceLocked(sessionId)
-                } else {
-                  null
-                },
+              emitRuntimeEventDelta = runtimeEventDeltaListeners.isNotEmpty(),
               emitRuntimeSnapshotFallback = runtimeEventDeltaListeners.isEmpty(),
             )
           }
@@ -456,13 +452,14 @@ internal class OpenCrayHostRuntime private constructor(
           }
           emitShellSnapshot()
           when {
-            emission.runtimeEventDeltaSequence != null -> {
+            emission.emitRuntimeEventDelta -> {
               buildRuntimeTaskDeltaPayload(
                 sessionId = sessionId,
                 task = task,
-                sequence = emission.runtimeEventDeltaSequence,
-              )?.let(::emitRuntimeEventDelta)
-                ?: emitChatRuntimeSnapshot()
+                sequence = 0L,
+              )?.let { payload ->
+                emitRuntimeEventDelta(assignRuntimeEventDeltaSequence(sessionId, payload))
+              }
             }
 
             emission.emitRuntimeSnapshotFallback -> {
@@ -593,8 +590,10 @@ internal class OpenCrayHostRuntime private constructor(
                     record.extensions["kind"]
                   }.distinct().sorted(),
                   resolvedRecordIds = ingestionSummary.resolvedRecords.map { record -> record.id },
+                  reopenedRecordIds = ingestionSummary.reopenedRecords.map { record -> record.id },
                   reaffirmedRecordIds = ingestionSummary.reaffirmedRecords.map { record -> record.id },
                   expiredRecordIds = ingestionSummary.expiredRecordIds,
+                  stewardshipPlanSteps = ingestionSummary.stewardshipPlanSteps,
                   emittedAtEpochMs = completedTurn.result.finishedAtEpochMs,
                 ),
               )
@@ -618,12 +617,7 @@ internal class OpenCrayHostRuntime private constructor(
             startNextQueuedChatRunLocked(completedTurn.sessionId)
             EventEmissionDecision(
               shouldEmit = true,
-              runtimeEventDeltaSequence =
-                if (runtimeEventDeltaListeners.isNotEmpty()) {
-                  nextRuntimeEventDeltaSequenceLocked(completedTurn.sessionId)
-                } else {
-                  null
-                },
+              emitRuntimeEventDelta = runtimeEventDeltaListeners.isNotEmpty(),
               emitRuntimeSnapshotFallback = runtimeEventDeltaListeners.isEmpty(),
             )
           }
@@ -634,13 +628,14 @@ internal class OpenCrayHostRuntime private constructor(
           emitShellSnapshot()
           emitChatSnapshot()
           when {
-            emission.runtimeEventDeltaSequence != null -> {
+            emission.emitRuntimeEventDelta -> {
               buildRuntimeTaskDeltaPayload(
                 sessionId = completedTurn.sessionId,
                 task = completedTurn.task,
-                sequence = emission.runtimeEventDeltaSequence,
-              )?.let(::emitRuntimeEventDelta)
-                ?: emitChatRuntimeSnapshot()
+                sequence = 0L,
+              )?.let { payload ->
+                emitRuntimeEventDelta(assignRuntimeEventDeltaSequence(completedTurn.sessionId, payload))
+              }
             }
 
             emission.emitRuntimeSnapshotFallback -> emitChatRuntimeSnapshot()
@@ -665,15 +660,9 @@ internal class OpenCrayHostRuntime private constructor(
             )
             EventEmissionDecision(
               shouldEmit = true,
-              runtimeEventDeltaSequence =
-                if (
-                  runtimeEventDeltaListeners.isNotEmpty() &&
-                  shouldEmitRuntimeEventDelta(event)
-                ) {
-                  nextRuntimeEventDeltaSequenceLocked(sessionId)
-                } else {
-                  null
-                },
+              emitRuntimeEventDelta =
+                runtimeEventDeltaListeners.isNotEmpty() &&
+                  shouldEmitRuntimeEventDelta(event),
               emitRuntimeSnapshotFallback = runtimeEventDeltaListeners.isEmpty(),
             )
           }
@@ -681,14 +670,15 @@ internal class OpenCrayHostRuntime private constructor(
             return
           }
           when {
-            emission.runtimeEventDeltaSequence != null -> {
+            emission.emitRuntimeEventDelta -> {
               buildRuntimeTaskDeltaPayload(
                 sessionId = sessionId,
                 task = task,
-                sequence = emission.runtimeEventDeltaSequence,
+                sequence = 0L,
                 event = event,
-              )?.let(::emitRuntimeEventDelta)
-                ?: emitChatRuntimeSnapshot()
+              )?.let { payload ->
+                emitRuntimeEventDelta(assignRuntimeEventDeltaSequence(sessionId, payload))
+              }
             }
 
             emission.emitRuntimeSnapshotFallback && shouldEmitRuntimeEventDelta(event) ->
@@ -792,7 +782,9 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   override fun loadShellSnapshot(): Map<String, Any?> = buildMap {
-    put("initialTab", stateStore.load().selectedTab.routeKey)
+    val destination = stateStore.load()
+    put("initialTab", destination.selectedTab.routeKey)
+    put("settingsSubpage", destination.settingsSubpage.routeKey)
     put("localeTag", strings.localeTag)
     put("hostLabel", strings.shellHostLabel)
     put("hostSummary", strings.shellHostSummary)
@@ -817,6 +809,18 @@ internal class OpenCrayHostRuntime private constructor(
       initialPayload = loadShellSnapshot(),
       listener = listener,
     )
+
+  override fun saveShellDestination(
+    selectedTab: String,
+    settingsSubpage: String?,
+  ) {
+    val destination = AppShellDestination.fromRaw(
+      selectedTabRaw = selectedTab,
+      settingsSubpageRaw = settingsSubpage,
+    )
+    stateStore.save(destination)
+    emitShellSnapshot()
+  }
 
   override fun loadSettingsOverview(): Map<String, Any?> =
     synchronized(lock) { settingsFacade.loadOverview() }.toMap()
@@ -2701,6 +2705,18 @@ internal class OpenCrayHostRuntime private constructor(
     val next = (runtimeEventDeltaSequencesBySession[sessionId] ?: 0L) + 1L
     runtimeEventDeltaSequencesBySession[sessionId] = next
     return next
+  }
+
+  private fun assignRuntimeEventDeltaSequence(
+    sessionId: String,
+    payload: Map<String, Any?>,
+  ): Map<String, Any?> {
+    val sequence = synchronized(lock) {
+      nextRuntimeEventDeltaSequenceLocked(sessionId)
+    }
+    return payload.toMutableMap().apply {
+      put("sequence", sequence)
+    }
   }
 
   private fun buildRuntimeTaskDeltaPayload(
@@ -5784,6 +5800,11 @@ internal class OpenCrayHostRuntime private constructor(
 
   private fun memoryFlushFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
     val outcome = metadata["contextMemoryFlushOutcome"]?.takeIf(String::isNotBlank)
+    val triggerStage = metadata["contextMemoryFlushTriggerStage"]?.takeIf(String::isNotBlank)
+    val contextWindowTokens = metadata["contextMemoryFlushContextWindowTokens"]?.toIntOrNull()
+    val autoCompactTokenLimit = metadata["contextMemoryFlushAutoCompactTokenLimit"]?.toIntOrNull()
+    val estimatedReplayTokens = metadata["contextMemoryFlushEstimatedReplayTokens"]?.toIntOrNull()
+    val tokenThresholdTriggered = metadata["contextMemoryFlushTokenThresholdTriggered"]?.toBooleanStrictOrNull()
     val omittedMessageCount = metadata["contextMemoryFlushOmittedMessageCount"]?.toIntOrNull()
     val omittedCharCount = metadata["contextMemoryFlushOmittedCharCount"]?.toIntOrNull()
     val signature = metadata["contextMemoryFlushSignature"]?.takeIf(String::isNotBlank)
@@ -5801,6 +5822,11 @@ internal class OpenCrayHostRuntime private constructor(
       .filter(String::isNotBlank)
     if (
       outcome == null &&
+      triggerStage == null &&
+      contextWindowTokens == null &&
+      autoCompactTokenLimit == null &&
+      estimatedReplayTokens == null &&
+      tokenThresholdTriggered == null &&
       omittedMessageCount == null &&
       omittedCharCount == null &&
       signature == null &&
@@ -5813,6 +5839,11 @@ internal class OpenCrayHostRuntime private constructor(
     }
     return buildMap {
       outcome?.let { put("outcome", it) }
+      triggerStage?.let { put("triggerStage", it) }
+      contextWindowTokens?.let { put("contextWindowTokens", it) }
+      autoCompactTokenLimit?.let { put("autoCompactTokenLimit", it) }
+      estimatedReplayTokens?.let { put("estimatedReplayTokens", it) }
+      tokenThresholdTriggered?.let { put("tokenThresholdTriggered", it) }
       omittedMessageCount?.let { put("omittedMessageCount", it) }
       omittedCharCount?.let { put("omittedCharCount", it) }
       signature?.let { put("signature", it) }
@@ -5890,6 +5921,15 @@ internal class OpenCrayHostRuntime private constructor(
 
   private fun durableCompactionFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
     val compactedThisRun = metadata["contextDurableCompactionCompactedThisRun"]?.toBooleanStrictOrNull()
+    val triggerStage = metadata["contextDurableCompactionTriggerStage"]?.takeIf(String::isNotBlank)
+    val contextWindowTokens =
+      metadata["contextDurableCompactionContextWindowTokens"]?.toIntOrNull()
+    val autoCompactTokenLimit =
+      metadata["contextDurableCompactionAutoCompactTokenLimit"]?.toIntOrNull()
+    val estimatedReplayTokens =
+      metadata["contextDurableCompactionEstimatedReplayTokens"]?.toIntOrNull()
+    val tokenThresholdTriggered =
+      metadata["contextDurableCompactionTokenThresholdTriggered"]?.toBooleanStrictOrNull()
     val sourceTranscriptMessageCount =
       metadata["contextDurableCompactionSourceTranscriptMessageCount"]?.toIntOrNull()
     val retainedTranscriptMessageCount =
@@ -5911,6 +5951,11 @@ internal class OpenCrayHostRuntime private constructor(
     }
     if (
       compactedThisRun == null &&
+      triggerStage == null &&
+      contextWindowTokens == null &&
+      autoCompactTokenLimit == null &&
+      estimatedReplayTokens == null &&
+      tokenThresholdTriggered == null &&
       sourceTranscriptMessageCount == null &&
       retainedTranscriptMessageCount == null &&
       latestCompactedMessageCount == null &&
@@ -5923,6 +5968,11 @@ internal class OpenCrayHostRuntime private constructor(
     }
     return buildMap {
       compactedThisRun?.let { put("compactedThisRun", it) }
+      triggerStage?.let { put("triggerStage", it) }
+      contextWindowTokens?.let { put("contextWindowTokens", it) }
+      autoCompactTokenLimit?.let { put("autoCompactTokenLimit", it) }
+      estimatedReplayTokens?.let { put("estimatedReplayTokens", it) }
+      tokenThresholdTriggered?.let { put("tokenThresholdTriggered", it) }
       sourceTranscriptMessageCount?.let { put("sourceTranscriptMessageCount", it) }
       retainedTranscriptMessageCount?.let { put("retainedTranscriptMessageCount", it) }
       latestCompactedMessageCount?.let { put("latestCompactedMessageCount", it) }
@@ -5957,6 +6007,7 @@ internal class OpenCrayHostRuntime private constructor(
     val invocationControl = metadata["contextActiveSkillInvocationControl"]?.takeIf(String::isNotBlank)
     val executionContext = metadata["contextActiveSkillExecutionContext"]?.takeIf(String::isNotBlank)
     val activationSource = metadata["contextActiveSkillActivationSource"]?.takeIf(String::isNotBlank)
+    val pinned = metadata["contextActiveSkillPinned"]?.toBooleanStrictOrNull()
     val toolRestrictionEnabled = metadata["contextActiveSkillToolRestrictionEnabled"]?.toBooleanStrictOrNull()
     val truncated = metadata["contextActiveSkillTruncated"]?.toBooleanStrictOrNull()
     val allowedToolKeys = metadata["contextActiveSkillAllowedTools"]
@@ -5970,6 +6021,7 @@ internal class OpenCrayHostRuntime private constructor(
       invocationControl == null &&
       executionContext == null &&
       activationSource == null &&
+      pinned == null &&
       toolRestrictionEnabled == null &&
       truncated == null &&
       allowedToolKeys.isEmpty()
@@ -5982,6 +6034,7 @@ internal class OpenCrayHostRuntime private constructor(
       invocationControl?.let { put("invocationControl", it) }
       executionContext?.let { put("executionContext", it) }
       activationSource?.let { put("activationSource", it) }
+      pinned?.let { put("pinned", it) }
       toolRestrictionEnabled?.let { put("toolRestrictionEnabled", it) }
       truncated?.let { put("truncated", it) }
       if (allowedToolKeys.isNotEmpty()) {
@@ -6269,8 +6322,10 @@ internal class OpenCrayHostRuntime private constructor(
       "writtenKinds" to event.writtenKinds,
       "resolvedRecordIds" to event.resolvedRecordIds,
       "suppressedRecordIds" to event.suppressedRecordIds,
+      "reopenedRecordIds" to event.reopenedRecordIds,
       "reaffirmedRecordIds" to event.reaffirmedRecordIds,
       "expiredRecordIds" to event.expiredRecordIds,
+      "stewardshipPlanSteps" to event.stewardshipPlanSteps.map(::stewardshipPlanStepToMap),
     )
     is OpenCrayCancellationEvent -> mapOf(
       "kind" to "interrupted",
@@ -6966,7 +7021,16 @@ internal class OpenCrayHostRuntime private constructor(
       sessionId = sessionId,
       runId = runId,
       artifactIds = requestedArtifactIds,
-    )
+    ).toMutableMap()
+    val workspaceRoot = workspaceRootProvider?.invoke()
+    (requestedArtifactIds - artifactsById.keys).forEach { artifactId ->
+      resolveWorkspaceMediaArtifact(
+        workspaceRoot = workspaceRoot,
+        artifactId = artifactId,
+      )?.let { artifact ->
+        artifactsById[artifact.artifactId] = artifact.toResolvedAttachmentArtifact()
+      }
+    }
     return attachments.map { attachment ->
       if (!attachment.relativePath.isNullOrBlank() || !attachment.path.isNullOrBlank()) {
         return@map attachment
@@ -7078,6 +7142,17 @@ internal class OpenCrayHostRuntime private constructor(
     }
     return resolved
   }
+
+  private fun OpenCrayAttachmentArtifact.toResolvedAttachmentArtifact(): ResolvedAttachmentArtifact =
+    ResolvedAttachmentArtifact(
+      relativePath = relativePath,
+      displayName = displayName,
+      kindHint = kindHint,
+      mimeType = mimeType,
+      durationMs = durationMs,
+      waveformBars = waveformBars,
+      transcriptText = transcriptText,
+    )
 
   private fun resolvedAttachmentArtifactsFromMetadata(
     metadata: Map<String, String>,
@@ -8658,7 +8733,7 @@ private data class LiveAssistantDraftSnapshot(
 
 private data class EventEmissionDecision(
   val shouldEmit: Boolean,
-  val runtimeEventDeltaSequence: Long? = null,
+  val emitRuntimeEventDelta: Boolean = false,
   val emitRuntimeSnapshotFallback: Boolean = false,
 )
 

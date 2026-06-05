@@ -17,6 +17,16 @@ internal class ServiceBackedOpenCrayShellGateway(
       listener = listener,
     )
 
+  override fun saveShellDestination(
+    selectedTab: String,
+    settingsSubpage: String?,
+  ) {
+    currentGateway().saveShellDestination(
+      selectedTab = selectedTab,
+      settingsSubpage = settingsSubpage,
+    )
+  }
+
   private fun currentGateway(): OpenCrayShellGateway =
     serviceClient.peekShellGateway() ?: fallbackGateway
 }
