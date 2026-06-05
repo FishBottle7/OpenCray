@@ -4335,7 +4335,7 @@ void main() {
   });
 
   testWidgets(
-    'anchored running status stays above process and final bubbles with interrupt action',
+    'anchored running status stays above process and final bubbles while composer owns interrupt',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
       final runtimeSnapshots =
@@ -4422,7 +4422,7 @@ void main() {
         const ValueKey<String>('chat-bubble-pending-interrupt-inline'),
       );
       final interruptFinder = find.byKey(
-        const ValueKey<String>('chat-run-trace-interrupt-run-interrupt-inline'),
+        const ValueKey<String>('chat-composer-interrupt-button'),
       );
       expect(statusFinder, findsOneWidget);
       expect(processBubbleFinder, findsOneWidget);
@@ -4436,8 +4436,16 @@ void main() {
         lessThan(tester.getTopLeft(finalBubbleFinder).dy),
       );
       expect(
-        find.descendant(of: statusFinder, matching: interruptFinder),
-        findsOneWidget,
+        find.descendant(
+          of: statusFinder,
+          matching: find.text(copy.chatRunInterruptAction),
+        ),
+        findsNothing,
+      );
+      expect(interruptFinder, findsOneWidget);
+      expect(
+        find.byKey(const ValueKey<String>('chat-composer-send-button')),
+        findsNothing,
       );
       expect(
         find.descendant(
@@ -4460,6 +4468,17 @@ void main() {
       await tester.pumpAndSettle();
       expect(sliderFinder, findsNothing);
       expect(bridge.cancelledRunIds, isEmpty);
+
+      await tester.enterText(find.byType(TextField), 'continue after this');
+      await tester.pumpAndSettle();
+      expect(interruptFinder, findsNothing);
+      expect(
+        find.byKey(const ValueKey<String>('chat-composer-send-button')),
+        findsOneWidget,
+      );
+      await tester.enterText(find.byType(TextField), '');
+      await tester.pumpAndSettle();
+      expect(interruptFinder, findsOneWidget);
 
       runtimeSnapshots.add(
         const OpenCrayChatRuntimeSnapshot(
@@ -4508,6 +4527,10 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(interruptFinder, findsNothing);
+      expect(
+        find.byKey(const ValueKey<String>('chat-composer-send-button')),
+        findsOneWidget,
+      );
       expect(
         find.descendant(of: statusFinder, matching: find.text('FINISHED')),
         findsOneWidget,
@@ -5427,12 +5450,19 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Interrupt'), findsOneWidget);
-
-    await tester.tap(
+    expect(
+      find.byKey(const ValueKey<String>('chat-composer-interrupt-button')),
+      findsOneWidget,
+    );
+    expect(
       find.byKey(
         const ValueKey<String>('chat-run-trace-interrupt-run-interrupt-1'),
       ),
+      findsNothing,
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('chat-composer-interrupt-button')),
     );
     await tester.pumpAndSettle();
 
@@ -5495,9 +5525,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.tap(
-      find.byKey(
-        const ValueKey<String>('chat-run-trace-interrupt-run-interrupt-2'),
-      ),
+      find.byKey(const ValueKey<String>('chat-composer-interrupt-button')),
     );
     await tester.pumpAndSettle();
 
@@ -5505,7 +5533,7 @@ void main() {
       const ValueKey<String>('chat-run-trace-interrupt-slider-run-interrupt-2'),
     );
 
-    await tester.drag(sliderFinder, const Offset(-280, 0));
+    await tester.drag(sliderFinder, const Offset(-700, 0));
     await tester.pumpAndSettle();
 
     expect(bridge.cancelledRunIds, <String>['run-interrupt-2']);
@@ -5597,11 +5625,7 @@ void main() {
       expect(find.text('Streaming answer in progress'), findsWidgets);
 
       await tester.tap(
-        find.byKey(
-          const ValueKey<String>(
-            'chat-run-trace-interrupt-run-stream-interrupt-1',
-          ),
-        ),
+        find.byKey(const ValueKey<String>('chat-composer-interrupt-button')),
       );
       await tester.pumpAndSettle();
 
@@ -5611,7 +5635,7 @@ void main() {
             'chat-run-trace-interrupt-slider-run-stream-interrupt-1',
           ),
         ),
-        const Offset(-280, 0),
+        const Offset(-700, 0),
       );
       await tester.pumpAndSettle();
 

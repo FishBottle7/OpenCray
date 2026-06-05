@@ -2028,6 +2028,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       ? _ChatRuntimeEnvironment.cloud
       : _ChatRuntimeEnvironment.local;
 
+  ChatRunTraceData? get _composerInterruptTrace {
+    for (final trace in _state.runTraces.reversed) {
+      if (trace.canInterrupt && trace.interruptId.trim().isNotEmpty) {
+        return trace;
+      }
+    }
+    return null;
+  }
+
   String get _activeSessionId {
     for (final session in _state.drawer.sessions) {
       if (session.isSelected) {
@@ -2903,6 +2912,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             onSendPressed: () {
               _sendCurrentState();
             },
+            interruptTrace: _composerInterruptTrace,
+            interruptConfirmRunId: _interruptConfirmRunId,
+            busyInterruptRunIds: _interruptRunIdsInFlight,
+            onArmInterruptRunTrace: _armRunInterruptTrace,
+            onDismissInterruptRunTrace: _dismissRunInterruptTrace,
+            onInterruptRunTrace: _interruptRunTrace,
             onAddActionSelected: _handleAddAction,
             onCommandSelected: _showCommandMenu,
             onAttachmentRemoved: _removeAttachment,
@@ -11431,7 +11446,7 @@ class _MessageList extends StatelessWidget {
           : anchoredRunTracesByMessageId[leadingTraceAnchorMessageId] ??
                 const <ChatRunTraceData>[];
       for (final trace in leadingTraces) {
-        addRunTrace(trace, showRetryAction: false, showInterruptAction: true);
+        addRunTrace(trace, showRetryAction: false, showInterruptAction: false);
       }
       final List<ChatRunTraceData> anchoredTraces =
           anchoredRunTracesByMessageId[message.messageId.trim()] ??
@@ -11548,7 +11563,7 @@ class _MessageList extends StatelessWidget {
       addRunTrace(
         trace,
         showRetryAction: showActions,
-        showInterruptAction: true,
+        showInterruptAction: false,
       );
     }
 
@@ -16990,6 +17005,12 @@ class _ComposerCard extends StatelessWidget {
     required this.focusNode,
     required this.onPlusPressed,
     required this.onSendPressed,
+    required this.interruptTrace,
+    required this.interruptConfirmRunId,
+    required this.busyInterruptRunIds,
+    required this.onArmInterruptRunTrace,
+    required this.onDismissInterruptRunTrace,
+    required this.onInterruptRunTrace,
     required this.onAddActionSelected,
     required this.onCommandSelected,
     required this.onAttachmentRemoved,
@@ -17002,6 +17023,12 @@ class _ComposerCard extends StatelessWidget {
   final FocusNode focusNode;
   final VoidCallback onPlusPressed;
   final VoidCallback onSendPressed;
+  final ChatRunTraceData? interruptTrace;
+  final String? interruptConfirmRunId;
+  final Set<String> busyInterruptRunIds;
+  final ValueChanged<ChatRunTraceData> onArmInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData> onDismissInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData> onInterruptRunTrace;
   final ValueChanged<ChatAddActionData> onAddActionSelected;
   final VoidCallback onCommandSelected;
   final ValueChanged<ChatAttachmentData> onAttachmentRemoved;
@@ -17066,16 +17093,52 @@ class _ComposerCard extends StatelessWidget {
           ),
           const SizedBox(height: 10),
         ],
-        _InputRow(
-          placeholder: state.composer.placeholder,
-          controller: controller,
-          focusNode: focusNode,
-          enabled: state.isInputEnabled,
-          hasIntegratedSurface: hasIntegratedSurface,
-          showDefaultGlass: !hasIntegratedSurface && !hasTodos,
-          plusHighlighted: hasIntegratedSurface,
-          onPlusPressed: onPlusPressed,
-          onSendPressed: onSendPressed,
+        AnimatedBuilder(
+          animation: controller,
+          builder: (BuildContext context, Widget? child) {
+            final bool hasSendableContent =
+                controller.text.trim().isNotEmpty ||
+                state.composer.attachments.isNotEmpty;
+            final ChatRunTraceData? effectiveInterruptTrace =
+                state.isInputEnabled && !hasSendableContent
+                ? interruptTrace
+                : null;
+            final bool showInterruptConfirm =
+                effectiveInterruptTrace != null &&
+                interruptConfirmRunId == effectiveInterruptTrace.interruptId;
+            if (showInterruptConfirm) {
+              return _ComposerInterruptConfirmSurface(
+                copy: copy,
+                trace: effectiveInterruptTrace,
+                isBusy: busyInterruptRunIds.contains(
+                  effectiveInterruptTrace.interruptId,
+                ),
+                onDismiss: () =>
+                    onDismissInterruptRunTrace(effectiveInterruptTrace),
+                onConfirmed: () => onInterruptRunTrace(effectiveInterruptTrace),
+              );
+            }
+            return _InputRow(
+              placeholder: state.composer.placeholder,
+              controller: controller,
+              focusNode: focusNode,
+              enabled: state.isInputEnabled,
+              hasIntegratedSurface: hasIntegratedSurface,
+              showDefaultGlass: !hasIntegratedSurface && !hasTodos,
+              plusHighlighted: hasIntegratedSurface,
+              interruptTrace: effectiveInterruptTrace,
+              isInterruptBusy:
+                  effectiveInterruptTrace != null &&
+                  busyInterruptRunIds.contains(
+                    effectiveInterruptTrace.interruptId,
+                  ),
+              onInterruptPressed: effectiveInterruptTrace == null
+                  ? null
+                  : () => onArmInterruptRunTrace(effectiveInterruptTrace),
+              onPlusPressed: onPlusPressed,
+              onSendPressed: onSendPressed,
+            );
+          },
         ),
         if (state.composer.showAddMenu) ...<Widget>[
           const SizedBox(height: 10),
@@ -17116,6 +17179,73 @@ class _ComposerCard extends StatelessWidget {
     return DecoratedBox(
       decoration: _ChatDecorations.card(),
       child: Padding(padding: const EdgeInsets.all(10), child: content),
+    );
+  }
+}
+
+class _ComposerInterruptConfirmSurface extends StatefulWidget {
+  const _ComposerInterruptConfirmSurface({
+    required this.copy,
+    required this.trace,
+    required this.isBusy,
+    required this.onDismiss,
+    required this.onConfirmed,
+  });
+
+  final OpenCrayUiCopy copy;
+  final ChatRunTraceData trace;
+  final bool isBusy;
+  final VoidCallback onDismiss;
+  final VoidCallback onConfirmed;
+
+  @override
+  State<_ComposerInterruptConfirmSurface> createState() =>
+      _ComposerInterruptConfirmSurfaceState();
+}
+
+class _ComposerInterruptConfirmSurfaceState
+    extends State<_ComposerInterruptConfirmSurface> {
+  bool _outsideDismissReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleOutsideDismissReady();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ComposerInterruptConfirmSurface oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.trace.interruptId != widget.trace.interruptId) {
+      _outsideDismissReady = false;
+      _scheduleOutsideDismissReady();
+    }
+  }
+
+  void _scheduleOutsideDismissReady() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _outsideDismissReady = true;
+      });
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TapRegion(
+      onTapOutside: _outsideDismissReady ? (_) => widget.onDismiss() : null,
+      child: _RunTraceInterruptConfirmRow(
+        key: ValueKey<String>(
+          'chat-composer-interrupt-confirm-${widget.trace.interruptId}',
+        ),
+        copy: widget.copy,
+        runId: widget.trace.interruptId,
+        isBusy: widget.isBusy,
+        onConfirmed: widget.onConfirmed,
+      ),
     );
   }
 }
@@ -17335,6 +17465,9 @@ class _InputRow extends StatelessWidget {
     required this.hasIntegratedSurface,
     required this.showDefaultGlass,
     required this.plusHighlighted,
+    required this.interruptTrace,
+    required this.isInterruptBusy,
+    required this.onInterruptPressed,
     required this.onPlusPressed,
     required this.onSendPressed,
   });
@@ -17346,6 +17479,9 @@ class _InputRow extends StatelessWidget {
   final bool hasIntegratedSurface;
   final bool showDefaultGlass;
   final bool plusHighlighted;
+  final ChatRunTraceData? interruptTrace;
+  final bool isInterruptBusy;
+  final VoidCallback? onInterruptPressed;
   final VoidCallback onPlusPressed;
   final VoidCallback onSendPressed;
 
@@ -17456,12 +17592,30 @@ class _InputRow extends StatelessWidget {
           onPressed: enabled ? onPlusPressed : null,
         ),
         const SizedBox(width: 8),
-        _CircleButton(
-          key: const ValueKey<String>('chat-composer-send-button'),
-          backgroundColor: _ChatPalette.accent,
-          foregroundColor: Colors.white,
-          icon: Icons.arrow_upward_rounded,
-          onPressed: enabled ? onSendPressed : null,
+        AnimatedBuilder(
+          animation: controller,
+          builder: (BuildContext context, Widget? child) {
+            final bool showInterruptButton =
+                enabled &&
+                interruptTrace != null &&
+                controller.text.trim().isEmpty;
+            if (showInterruptButton) {
+              return _CircleButton(
+                key: const ValueKey<String>('chat-composer-interrupt-button'),
+                backgroundColor: _ChatPalette.runTraceInterruptAction,
+                foregroundColor: Colors.white,
+                icon: Icons.stop_rounded,
+                onPressed: isInterruptBusy ? null : onInterruptPressed,
+              );
+            }
+            return _CircleButton(
+              key: const ValueKey<String>('chat-composer-send-button'),
+              backgroundColor: _ChatPalette.accent,
+              foregroundColor: Colors.white,
+              icon: Icons.arrow_upward_rounded,
+              onPressed: enabled ? onSendPressed : null,
+            );
+          },
         ),
       ],
     );
