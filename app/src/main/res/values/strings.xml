@@ -356,6 +356,7 @@
     <string name="runtime_notification_action_approve">Approve</string>
     <string name="runtime_notification_action_reject">Reject</string>
     <string name="runtime_notification_action_review">Review</string>
+    <string name="runtime_notification_action_retry">Retry</string>
     <string name="runtime_notification_schedule_started_title">Scheduled task started</string>
     <string name="runtime_notification_schedule_started_text">%1$s started in %2$s.</string>
     <string name="runtime_notification_schedule_skipped_title">Scheduled task skipped</string>

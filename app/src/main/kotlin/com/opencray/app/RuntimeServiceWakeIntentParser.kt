@@ -128,6 +128,7 @@ internal class DefaultRuntimeServiceIntentDescriptorParser(
         COMMAND_KIND_REPAIR_SCHEDULES,
         COMMAND_KIND_RESET_RUNTIME,
         COMMAND_KIND_RESUME_INTERRUPTED_RUNS,
+        COMMAND_KIND_RUN_SCHEDULE_NOW,
         -> true
 
         else -> false
@@ -152,15 +153,19 @@ internal class DefaultRuntimeServiceIntentDescriptorParser(
 
     COMMAND_KIND_APPROVE_APPROVAL,
     COMMAND_KIND_REJECT_APPROVAL,
+    COMMAND_KIND_RUN_SCHEDULE_NOW,
     -> parseRuntimeNotificationCommand(
       action = when (commandKind) {
         COMMAND_KIND_APPROVE_APPROVAL -> RuntimeNotificationIntentActions.ACTION_APPROVE_RUNTIME_APPROVAL
         COMMAND_KIND_REJECT_APPROVAL -> RuntimeNotificationIntentActions.ACTION_REJECT_RUNTIME_APPROVAL
+        COMMAND_KIND_RUN_SCHEDULE_NOW -> RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW
         else -> action
       },
       sessionId = notificationSessionIdReader(intent),
       taskId = notificationTaskIdReader(intent),
       runId = notificationRunIdReader(intent),
+      scheduleId = scheduleIdReader(intent)
+        ?: safeStringExtra(intent, RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SCHEDULE_ID),
     )?.let(RuntimeServiceWakeIntentCommand::Notification)
 
     COMMAND_KIND_SCHEDULED_TASK ->
@@ -223,6 +228,7 @@ private fun runtimeServiceCommandKindForAction(
   ACTION_RESUME_INTERRUPTED_RUNS -> COMMAND_KIND_RESUME_INTERRUPTED_RUNS
   RuntimeNotificationIntentActions.ACTION_APPROVE_RUNTIME_APPROVAL -> COMMAND_KIND_APPROVE_APPROVAL
   RuntimeNotificationIntentActions.ACTION_REJECT_RUNTIME_APPROVAL -> COMMAND_KIND_REJECT_APPROVAL
+  RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW -> COMMAND_KIND_RUN_SCHEDULE_NOW
   else -> null
 }
 

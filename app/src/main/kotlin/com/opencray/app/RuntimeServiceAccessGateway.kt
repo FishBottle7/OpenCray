@@ -36,6 +36,15 @@ internal interface RuntimeServiceAccessGateway {
     requestCode: Int,
     target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
   ): PendingIntent
+
+  fun scheduleNotificationActionPendingIntent(
+    context: Context,
+    action: String,
+    scheduleId: String,
+    sessionId: String?,
+    requestCode: Int,
+    target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
+  ): PendingIntent = error("Runtime service schedule notification actions are unavailable.")
 }
 
 internal class DefaultRuntimeServiceAccessGateway(
@@ -130,6 +139,22 @@ internal class DefaultRuntimeServiceAccessGateway(
     sessionId = sessionId,
     taskId = taskId,
     runId = runId,
+    requestCode = requestCode,
+    target = target,
+  )
+
+  override fun scheduleNotificationActionPendingIntent(
+    context: Context,
+    action: String,
+    scheduleId: String,
+    sessionId: String?,
+    requestCode: Int,
+    target: RuntimeServiceTarget,
+  ): PendingIntent = accessDependencies.runtimeServiceEndpoint.scheduleNotificationActionPendingIntent(
+    context = context.applicationContext,
+    action = action,
+    scheduleId = scheduleId,
+    sessionId = sessionId,
     requestCode = requestCode,
     target = target,
   )

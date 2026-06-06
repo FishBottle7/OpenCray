@@ -379,6 +379,7 @@ First service-host slice landed:
 - projection-only skills fallback is now strictly local-only: it filters the local snapshot and local instructions without issuing `SkillsList` or `SkillsFind`, which keeps tool-executing skills discovery on the binder-owned pipeline
 - the existing repair worker can now preflight interrupted interactive repair candidates from non-terminal queue snapshots, prompt checkpoints, or durable background subagent handles and wake the runtime service with `ACTION_RESUME_INTERRUPTED_RUNS`
 - runtime-service interrupted-run repair and bootstrap session scan now reuse that same durable per-session repair predicate, so queue-snapshot, prompt-checkpoint, and durable background-subagent recovery candidates no longer depend on whether the wake path started from WorkManager preflight or from the service-side rescan itself
+- schedule-side notification actions now also have a runtime-service command path: skipped-busy and dispatch-failed schedule notifications can emit a `RUN_SCHEDULE_NOW` action through the same stable command envelope, wake the detached runtime target in the foreground, and re-dispatch the schedule as a normal manual scheduled trigger with durable run-record/projection updates
 - this is still a same runtime-process owner/executor; service-shell recreate is now narrower because it reuses a process-level execution controller, and managed-process restore inside that runtime process is now controller-aware with a tested cross-owner reconnect path for reconnectable controllers, but stronger detached ownership beyond that runtime process remains a later slice
 
 ### Recommended checkpoint boundaries
@@ -536,10 +537,11 @@ Already landed in app process:
 - runtime-service wake entrypoints for scheduled dispatch, schedule repair, and interrupted-run resume repair
 - approval notification approve/reject actions now execute through `OpenCrayRuntimeServiceHost` directly instead of routing the service wake path through `OpenCrayHostRuntime`
 - schedule, approval, completion/interruption, and active-runtime notification surfaces
+- schedule notification retry/manual-run actions for skipped-busy and dispatch-failed schedule outcomes, routed through the same runtime-service wake dispatcher and scheduled-task dispatcher used by Android wake triggers
 
 Still pending in this phase:
 
-- richer schedule-side notification actions beyond the current approval/open flows
+- richer schedule-side notification actions beyond the current open plus retry/manual-run flows, such as per-run cancellation, schedule disable/snooze, and schedule-detail affordances
 - broader autonomous repair policy for interrupted interactive runs beyond the current `WorkManager` precheck plus `ACTION_RESUME_INTERRUPTED_RUNS` wake-and-resume scan
 - any future periodic/task-automation expansions that need more than the current wake/dispatch bridge
 
@@ -548,7 +550,7 @@ Still pending in this phase:
 - scheduled task registry
 - `WorkManager` trigger bridge
 - service wake entrypoints
-- notification actions for approval and open flows
+- notification actions for approval, open, and retry/manual scheduled-run flows
 
 ### Behavior
 

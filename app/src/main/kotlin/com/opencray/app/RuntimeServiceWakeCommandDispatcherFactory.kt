@@ -48,6 +48,7 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
     DefaultRuntimeServiceWakeIntentParser(),
   private val approvalNotificationDismisser: (Context, String?) -> Unit =
     { context, taskId -> RuntimeNotificationCoordinator.dismissApprovalNotification(context, taskId) },
+  private val nowEpochMsProvider: () -> Long = System::currentTimeMillis,
 ) : RuntimeServiceWakeCommandDispatcher {
   override fun dispatch(intent: Intent?) {
     when (val command = wakeIntentParser.parse(intent)) {
@@ -61,11 +62,7 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
       }
 
       is RuntimeServiceWakeIntentCommand.ScheduledTask -> {
-        val outcome = dispatcherDependencies
-          .scheduledTaskDispatcherDependencies
-          .createScheduledTaskDispatcher()
-          .dispatch(command.command)
-        projectionCoordinator.onScheduledDispatchOutcome(outcome)
+        dispatchScheduledTask(command.command)
         refreshAndPersist()
       }
 
@@ -98,10 +95,31 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
         dispatcherDependencies.approvalDecisionAccess.reject(
           command.runId ?: command.taskId.orEmpty(),
         )
+
+      is RuntimeServiceNotificationCommand.RunScheduleNow ->
+        nowEpochMsProvider().let { nowEpochMs ->
+          dispatchScheduledTask(
+            ScheduledTaskWakeCommand(
+              scheduleId = command.scheduleId,
+              scheduleRunId = scheduledTaskRunId(command.scheduleId, nowEpochMs),
+              triggeredAtEpochMs = nowEpochMs,
+              triggerReason = ScheduledTaskTriggerReasons.MANUAL,
+              targetSessionId = command.sessionId,
+            ),
+          )
+        }
     }
     gatewayBundle.notifyChatSnapshotsChanged()
     approvalNotificationDismisser(appContext, command.taskId)
     refreshAndPersist()
+  }
+
+  private fun dispatchScheduledTask(command: ScheduledTaskWakeCommand) {
+    val outcome = dispatcherDependencies
+      .scheduledTaskDispatcherDependencies
+      .createScheduledTaskDispatcher()
+      .dispatch(command)
+    projectionCoordinator.onScheduledDispatchOutcome(outcome)
   }
 
   private fun refreshAndPersist() {

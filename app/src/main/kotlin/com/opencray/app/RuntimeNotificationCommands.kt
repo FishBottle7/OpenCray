@@ -18,6 +18,14 @@ internal sealed interface RuntimeServiceNotificationCommand {
     override val taskId: String?,
     override val runId: String?,
   ) : RuntimeServiceNotificationCommand
+
+  data class RunScheduleNow(
+    override val sessionId: String?,
+    val scheduleId: String,
+  ) : RuntimeServiceNotificationCommand {
+    override val taskId: String? = null
+    override val runId: String? = null
+  }
 }
 
 internal fun parseRuntimeNotificationCommand(
@@ -37,6 +45,10 @@ internal fun parseRuntimeNotificationCommand(
       intent = intent,
       key = RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_RUN_ID,
     ),
+    scheduleId = notificationCommandExtra(
+      intent = intent,
+      key = RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SCHEDULE_ID,
+    ),
   )
 }
 
@@ -45,6 +57,7 @@ internal fun parseRuntimeNotificationCommand(
   sessionId: String?,
   taskId: String?,
   runId: String?,
+  scheduleId: String? = null,
 ): RuntimeServiceNotificationCommand? {
   return when (action) {
     RuntimeNotificationIntentActions.ACTION_APPROVE_RUNTIME_APPROVAL ->
@@ -68,6 +81,17 @@ internal fun parseRuntimeNotificationCommand(
           runId = runId,
         )
       }
+
+    RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW -> {
+      val normalizedScheduleId = scheduleId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: return null
+      RuntimeServiceNotificationCommand.RunScheduleNow(
+        sessionId = sessionId,
+        scheduleId = normalizedScheduleId,
+      )
+    }
 
     else -> null
   }

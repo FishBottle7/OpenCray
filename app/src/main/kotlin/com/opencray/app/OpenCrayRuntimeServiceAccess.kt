@@ -72,6 +72,15 @@ internal interface RuntimeServiceEndpoint {
     requestCode: Int,
     target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
   ): PendingIntent
+
+  fun scheduleNotificationActionPendingIntent(
+    context: Context,
+    action: String,
+    scheduleId: String,
+    sessionId: String?,
+    requestCode: Int,
+    target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
+  ): PendingIntent = error("Runtime service schedule notification actions are unavailable.")
 }
 
 private object AndroidRuntimeServiceStarter : RuntimeServiceStarter {
@@ -183,6 +192,26 @@ private object AndroidRuntimeServiceEndpoint : RuntimeServiceEndpoint {
       sessionId = sessionId,
       taskId = taskId,
       runId = runId,
+      target = target,
+    ),
+    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+  )
+
+  override fun scheduleNotificationActionPendingIntent(
+    context: Context,
+    action: String,
+    scheduleId: String,
+    sessionId: String?,
+    requestCode: Int,
+    target: RuntimeServiceTarget,
+  ): PendingIntent = PendingIntent.getService(
+    context,
+    requestCode,
+    androidRuntimeServiceIntentFactory.scheduleNotificationActionIntent(
+      context = context,
+      action = action,
+      scheduleId = scheduleId,
+      sessionId = sessionId,
       target = target,
     ),
     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,

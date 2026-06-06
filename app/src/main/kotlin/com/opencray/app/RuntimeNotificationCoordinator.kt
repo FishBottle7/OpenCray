@@ -27,6 +27,8 @@ internal object RuntimeNotificationIntentActions {
     "com.opencray.app.action.APPROVE_RUNTIME_APPROVAL"
   const val ACTION_REJECT_RUNTIME_APPROVAL: String =
     "com.opencray.app.action.REJECT_RUNTIME_APPROVAL"
+  const val ACTION_RUN_SCHEDULE_NOW: String =
+    "com.opencray.app.action.RUN_SCHEDULE_NOW"
 }
 
 internal object RuntimeNotificationIntentExtras {
@@ -64,6 +66,15 @@ internal data class RuntimeScheduleNotificationModel(
   val scheduleTitle: String,
   val title: String,
   val body: String,
+  val action: RuntimeScheduleNotificationAction? = null,
+)
+
+internal data class RuntimeScheduleNotificationAction(
+  val action: String,
+  val scheduleId: String,
+  val sessionId: String?,
+  val labelResId: Int,
+  val runtimeTarget: RuntimeServiceTarget,
 )
 
 internal class RuntimeNotificationCoordinator(
@@ -493,6 +504,11 @@ internal class RuntimeNotificationCoordinator(
         ?: localizedContext.getString(R.string.runtime_notification_schedule_default_title),
       title = localizedContext.getString(titleResId),
       body = body,
+      action = scheduleNotificationAction(
+        outcome = outcome,
+        spec = spec,
+        sessionId = sessionId,
+      ),
     )
   }
 
@@ -588,27 +604,60 @@ internal class RuntimeNotificationCoordinator(
 
   private fun buildScheduleNotification(
     model: RuntimeScheduleNotificationModel,
-  ): Notification = NotificationCompat.Builder(
-    localizedContext,
-    RuntimeNotificationChannelRegistry.CHANNEL_RUNTIME_SCHEDULE,
-  )
-    .setSmallIcon(android.R.drawable.ic_popup_reminder)
-    .setContentTitle(model.title)
-    .setContentText(model.body)
-    .setSubText(model.scheduleTitle)
-    .setContentIntent(openChatPendingIntent(model.sessionId))
-    .setAutoCancel(true)
-    .setOnlyAlertOnce(true)
-    .setCategory(NotificationCompat.CATEGORY_STATUS)
-    .setPriority(NotificationCompat.PRIORITY_DEFAULT)
-    .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-    .setStyle(NotificationCompat.BigTextStyle().bigText(model.body))
-    .addAction(
-      0,
-      localizedContext.getString(R.string.runtime_notification_action_open),
-      openChatPendingIntent(model.sessionId),
+  ): Notification {
+    val builder = NotificationCompat.Builder(
+      localizedContext,
+      RuntimeNotificationChannelRegistry.CHANNEL_RUNTIME_SCHEDULE,
     )
-    .build()
+      .setSmallIcon(android.R.drawable.ic_popup_reminder)
+      .setContentTitle(model.title)
+      .setContentText(model.body)
+      .setSubText(model.scheduleTitle)
+      .setContentIntent(openChatPendingIntent(model.sessionId))
+      .setAutoCancel(true)
+      .setOnlyAlertOnce(true)
+      .setCategory(NotificationCompat.CATEGORY_STATUS)
+      .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+      .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+      .setStyle(NotificationCompat.BigTextStyle().bigText(model.body))
+      .addAction(
+        0,
+        localizedContext.getString(R.string.runtime_notification_action_open),
+        openChatPendingIntent(model.sessionId),
+      )
+    model.action?.let { action ->
+      builder.addAction(
+        0,
+        localizedContext.getString(action.labelResId),
+        scheduleNotificationActionPendingIntent(action),
+      )
+    }
+    return builder.build()
+  }
+
+  private fun scheduleNotificationAction(
+    outcome: ScheduledTaskDispatchOutcome,
+    spec: ScheduledTaskSpec?,
+    sessionId: String?,
+  ): RuntimeScheduleNotificationAction? {
+    if (spec?.enabled != true) {
+      return null
+    }
+    val labelResId = when (outcome.result) {
+      ScheduledTaskRunResult.SKIPPED_SESSION_BUSY,
+      ScheduledTaskRunResult.FAILED_DISPATCH,
+      -> R.string.runtime_notification_action_retry
+
+      else -> return null
+    }
+    return RuntimeScheduleNotificationAction(
+      action = RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW,
+      scheduleId = outcome.scheduleId,
+      sessionId = sessionId ?: spec.sessionId,
+      labelResId = labelResId,
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    )
+  }
 
   private fun shouldNotifyApproval(task: AgentTask): Boolean =
     (scheduledSpecFor(task)?.policy?.notifyOnApproval ?: true) &&
@@ -798,6 +847,17 @@ internal class RuntimeNotificationCoordinator(
       target = target,
     )
   }
+
+  private fun scheduleNotificationActionPendingIntent(
+    action: RuntimeScheduleNotificationAction,
+  ): PendingIntent = runtimeServiceAccessGateway.scheduleNotificationActionPendingIntent(
+    context = appContext,
+    action = action.action,
+    scheduleId = action.scheduleId,
+    sessionId = action.sessionId,
+    requestCode = stableRequestCode("${action.action}:${action.scheduleId}:${action.sessionId.orEmpty()}"),
+    target = action.runtimeTarget,
+  )
 
   private fun knownSessionIds(): List<String> {
     return knownChatSessionIds(chatSessionStore)

@@ -39,6 +39,25 @@ class RuntimeNotificationCommandsTest {
   }
 
   @Test
+  fun parseRuntimeNotificationCommandParsesScheduleActions() {
+    val command = parseRuntimeNotificationCommand(
+      action = RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW,
+      sessionId = "session-schedule",
+      taskId = null,
+      runId = null,
+      scheduleId = " schedule-now ",
+    )
+
+    assertEquals(
+      RuntimeServiceNotificationCommand.RunScheduleNow(
+        sessionId = "session-schedule",
+        scheduleId = "schedule-now",
+      ),
+      command,
+    )
+  }
+
+  @Test
   fun parseRuntimeNotificationCommandRejectsMissingTargetsAndUnknownActions() {
     assertNull(
       parseRuntimeNotificationCommand(
@@ -54,6 +73,15 @@ class RuntimeNotificationCommandsTest {
         sessionId = "session-c",
         taskId = null,
         runId = "run-c",
+      ),
+    )
+    assertNull(
+      parseRuntimeNotificationCommand(
+        action = RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW,
+        sessionId = "session-c",
+        taskId = null,
+        runId = null,
+        scheduleId = "   ",
       ),
     )
   }

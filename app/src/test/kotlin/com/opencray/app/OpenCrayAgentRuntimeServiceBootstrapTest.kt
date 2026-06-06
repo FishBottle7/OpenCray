@@ -4121,6 +4121,67 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun defaultWakeDispatcherHandlesScheduleNotificationActionAndPersistsProjection() {
+    val context = MinimalContext()
+    val nowEpochMs = 3_000L
+    val fixture = scheduledRepairWakeDispatcherFixture(
+      root = temporaryFolder.newFolder("wake-dispatcher-schedule-notification"),
+      nowEpochMs = nowEpochMs,
+    )
+    val dispatcherDependencies = fixture.serviceHost
+      .toRuntimeServiceBootstrapState()
+      .wakeCommandDispatcherDependencies
+      .let { dependencies ->
+        dependencies.copy(
+          scheduledTaskDispatcherDependencies = dependencies.scheduledTaskDispatcherDependencies.copy(
+            assistantPlaceholderTextProvider = { "Thinking..." },
+          ),
+        )
+      }
+    val gatewayBundle = testServiceGatewayBundle()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
+      appContext = context,
+      dispatcherDependencies = dispatcherDependencies,
+      gatewayBundle = gatewayBundle,
+      projectionCoordinator = projectionCoordinator,
+      wakeIntentParser = RuntimeServiceWakeIntentParser {
+        RuntimeServiceWakeIntentCommand.Notification(
+          RuntimeServiceNotificationCommand.RunScheduleNow(
+            sessionId = fixture.sessionId,
+            scheduleId = fixture.scheduleId,
+          ),
+        )
+      },
+      approvalNotificationDismisser = { _, _ -> },
+      nowEpochMsProvider = { nowEpochMs },
+    )
+
+    dispatcher.dispatch(null)
+
+    val runRecord = requireNotNull(
+      fixture.serviceHost.scheduledTaskRunRecordStore.get(
+        scheduledTaskRunId(fixture.scheduleId, nowEpochMs),
+      ),
+    )
+    assertEquals(fixture.scheduleId, runRecord.scheduleId)
+    assertEquals(fixture.sessionId, runRecord.sessionId)
+    assertEquals(ScheduledTaskTriggerReasons.MANUAL, runRecord.triggerReason)
+    assertEquals(ScheduledTaskRunResult.ACCEPTED, runRecord.result)
+    assertEquals(1, fixture.handle.submittedTasks.size)
+    assertEquals(
+      fixture.scheduleId,
+      fixture.handle.submittedTasks.single().metadata[ScheduledTaskMetadataKeys.SCHEDULE_ID],
+    )
+    assertEquals(1, fixture.handle.ensureProcessingCallCount)
+    assertEquals(1, projectionCoordinator.persistCallCount)
+    assertEquals(1, projectionCoordinator.scheduledDispatchOutcomes.size)
+    assertEquals(ScheduledTaskRunResult.ACCEPTED, projectionCoordinator.scheduledDispatchOutcomes.single().result)
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
   fun defaultWakeDispatcherHandlesChatWriteWakeAndPersistsProjection() {
     val context = MinimalContext()
     var interruptedTaskIdOrRunId: String? = null
@@ -4538,6 +4599,31 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun defaultIntentDescriptorParserMarksScheduleNotificationWakeAsForegroundBootstrap() {
+    val parsed = DefaultRuntimeServiceIntentDescriptorParser(
+      notificationCommandParser = { null },
+      scheduledTaskWakeCommandParser = { null },
+      commandKindReader = { COMMAND_KIND_RUN_SCHEDULE_NOW },
+      commandVersionReader = { RUNTIME_SERVICE_COMMAND_VERSION_CURRENT },
+      actionReader = { RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW },
+      scheduleIdReader = { "schedule-foreground" },
+      notificationSessionIdReader = { "session-foreground" },
+    ).parse(null)
+
+    assertEquals(
+      RuntimeServiceWakeIntentCommand.Notification(
+        RuntimeServiceNotificationCommand.RunScheduleNow(
+          sessionId = "session-foreground",
+          scheduleId = "schedule-foreground",
+        ),
+      ),
+      parsed.wakeCommand,
+    )
+    assertFalse(parsed.requestsRuntimeReset)
+    assertTrue(parsed.requiresBootstrapForeground)
+  }
+
+  @Test
   fun defaultIntentDescriptorParserPrefersExplicitCommandKindEnvelope() {
     val parsed = DefaultRuntimeServiceIntentDescriptorParser(
       notificationCommandParser = { null },
@@ -4611,6 +4697,12 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       taskId = "task-1",
       runId = "run-1",
     )
+    val scheduleActionIntent = factory.scheduleNotificationActionIntent(
+      context = context,
+      action = RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW,
+      scheduleId = "schedule-1",
+      sessionId = "session-1",
+    )
 
     assertEquals(
       RUNTIME_SERVICE_COMMAND_VERSION_CURRENT,
@@ -4627,6 +4719,10 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(
       COMMAND_KIND_APPROVE_APPROVAL,
       approvalIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
+    )
+    assertEquals(
+      COMMAND_KIND_RUN_SCHEDULE_NOW,
+      scheduleActionIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
     )
     assertEquals(
       COMMAND_KIND_CHAT_WRITE_INTERRUPT_RUN,
@@ -4647,6 +4743,50 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(
       RuntimeServiceTarget.INTERACTIVE.wireValue,
       chatWriteIntent?.getStringExtra(EXTRA_RUNTIME_SERVICE_TARGET),
+    )
+    assertEquals(
+      "schedule-1",
+      scheduleActionIntent.getStringExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SCHEDULE_ID),
+    )
+  }
+
+  @Test
+  fun runtimeServiceIntentFactoryRoundTripsScheduleNotificationActions() {
+    val factory = RuntimeServiceIntentFactory(
+      componentProvider = RuntimeServiceComponentProvider {
+        android.content.ComponentName("com.opencray.test", "RuntimeService")
+      },
+      intentBuilder = RuntimeServiceIntentBuilder { _, _ ->
+        RecordingCommandIntent()
+      },
+    )
+    val parser = DefaultRuntimeServiceWakeIntentParser()
+    val context = MinimalContext()
+
+    val intent = factory.scheduleNotificationActionIntent(
+      context = context,
+      action = RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW,
+      scheduleId = "schedule-action",
+      sessionId = "session-action",
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    )
+
+    assertEquals(
+      COMMAND_KIND_RUN_SCHEDULE_NOW,
+      intent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
+    )
+    assertEquals(
+      RuntimeServiceWakeIntentCommand.Notification(
+        RuntimeServiceNotificationCommand.RunScheduleNow(
+          sessionId = "session-action",
+          scheduleId = "schedule-action",
+        ),
+      ),
+      parser.parse(intent),
+    )
+    assertEquals(
+      RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
+      intent.getStringExtra(EXTRA_RUNTIME_SERVICE_TARGET),
     )
   }
 
@@ -5225,6 +5365,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     val scheduledRepairIntentSentinel: Intent = Intent()
     val resetRuntimeIntentSentinel: Intent = Intent()
     val resumeInterruptedRunsIntentSentinel: Intent = Intent()
+    val scheduleNotificationActionPendingIntentSentinel: android.app.PendingIntent? = null
     var chatWriteIntentSentinel: Intent? = null
     var baseIntentCallCount: Int = 0
       private set
@@ -5302,6 +5443,17 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       requestCode: Int,
       target: RuntimeServiceTarget,
     ): android.app.PendingIntent = error("Approval pending intent should not be used in this test.")
+
+    override fun scheduleNotificationActionPendingIntent(
+      context: Context,
+      action: String,
+      scheduleId: String,
+      sessionId: String?,
+      requestCode: Int,
+      target: RuntimeServiceTarget,
+    ): android.app.PendingIntent =
+      scheduleNotificationActionPendingIntentSentinel
+        ?: error("Schedule notification pending intent should not be used in this test.")
   }
 
   private class RecordingRuntimeServiceClientProvider(
