@@ -9981,6 +9981,160 @@ void main() {
   });
 
   testWidgets(
+    'host-backed message delete hides immediately and ignores stale snapshots',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final snapshots = StreamController<OpenCrayChatSnapshot>.broadcast();
+      addTearDown(snapshots.close);
+      OpenCrayChatSnapshot snapshotWithMessage({
+        required int updatedAtEpochMs,
+      }) {
+        return _hostChatSnapshot(
+          updatedAtEpochMs: updatedAtEpochMs,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              messageId: 'message-delete-1',
+              kind: 'inbound',
+              text: 'Delete this message',
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'message-keep-1',
+              kind: 'outbound',
+              text: 'Keep this message',
+            ),
+          ],
+        );
+      }
+
+      final bridge = _FakeChatBridge(
+        chatSnapshot: snapshotWithMessage(updatedAtEpochMs: 1000),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+        chatSnapshotStream: snapshots.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('chat-bubble-message-delete-1')),
+        findsOneWidget,
+      );
+      await tester.longPress(
+        find.byKey(const ValueKey<String>('chat-bubble-message-delete-1')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey<String>('chat-message-menu-action-delete')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(bridge.deletedMessageIds, <String>['message-delete-1']);
+      expect(
+        find.byKey(const ValueKey<String>('chat-bubble-message-delete-1')),
+        findsNothing,
+      );
+      expect(find.text('Keep this message'), findsOneWidget);
+
+      snapshots.add(snapshotWithMessage(updatedAtEpochMs: 2000));
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('chat-bubble-message-delete-1')),
+        findsNothing,
+      );
+      expect(find.text('Keep this message'), findsOneWidget);
+    },
+  );
+
+  testWidgets('selection mode preserves outbound bubble right edge', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(
+            copy: copy,
+            state: ChatFeatureState(
+              variant: ChatPrototypeVariant.main,
+              screenTitle: 'Chat',
+              summary: const ChatSessionSummary(
+                title: 'Session',
+                badge: '2 messages',
+                body: 'Selecting messages',
+              ),
+              messages: const <ChatMessageData>[
+                ChatMessageData(
+                  messageId: 'message-select-user',
+                  kind: ChatMessageKind.outbound,
+                  text: 'Keep me aligned to the right.',
+                ),
+                ChatMessageData(
+                  messageId: 'message-select-assistant',
+                  kind: ChatMessageKind.inbound,
+                  text: 'Assistant reply',
+                ),
+              ],
+              runTraces: const <ChatRunTraceData>[],
+              composer: ChatComposerState(placeholder: 'Message OpenCray'),
+              drawer: ChatSessionsDrawerState(
+                eyebrow: 'Recent sessions',
+                title: 'Recent sessions',
+                ctaLabel: 'New session',
+                sessions: const <ChatSessionListItemData>[],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final userBubbleFinder = find.byKey(
+      const ValueKey<String>('chat-bubble-message-select-user'),
+    );
+    final double normalRight = tester.getTopRight(userBubbleFinder).dx;
+
+    await tester.longPress(userBubbleFinder);
+    await tester.pumpAndSettle();
+    await tester.tap(
+      find.byKey(
+        const ValueKey<String>('chat-message-menu-action-multiSelect'),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(
+        const ValueKey<String>('chat-message-row-message-select-user'),
+      ),
+      findsOneWidget,
+    );
+    expect(tester.getTopRight(userBubbleFinder).dx, closeTo(normalRight, 0.5));
+    expect(
+      tester
+          .getTopRight(
+            find.byKey(
+              const ValueKey<String>('chat-message-row-bg-message-select-user'),
+            ),
+          )
+          .dx,
+      greaterThanOrEqualTo(normalRight),
+    );
+  });
+
+  testWidgets(
     'editing an outbound voice attachment preserves its draft reference and metadata',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
@@ -10241,6 +10395,83 @@ void main() {
     expect(find.text('8 messages'), findsNothing);
     expect(find.text('13 messages'), findsNothing);
   });
+
+  testWidgets(
+    'host-backed session delete updates drawer immediately and ignores stale snapshots',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final snapshots = StreamController<OpenCrayChatSnapshot>.broadcast();
+      addTearDown(snapshots.close);
+      OpenCrayChatSnapshot snapshotWithDeletedSession({
+        required int updatedAtEpochMs,
+      }) {
+        return _hostChatSnapshot(
+          updatedAtEpochMs: updatedAtEpochMs,
+          drawer: OpenCrayChatDrawerSnapshot(
+            eyebrow: 'Recent sessions',
+            title: 'Recent sessions',
+            ctaLabel: 'New session',
+            sessions: const <OpenCrayChatSessionItemSnapshot>[
+              OpenCrayChatSessionItemSnapshot(
+                sessionId: 'session-delete',
+                title: 'Delete session',
+                preview: 'This session will be removed.',
+                meta: '2 messages',
+                isSelected: true,
+              ),
+              OpenCrayChatSessionItemSnapshot(
+                sessionId: 'session-keep',
+                title: 'Keep session',
+                preview: 'This session should remain.',
+                meta: '1 message',
+                isSelected: false,
+              ),
+            ],
+          ),
+        );
+      }
+
+      final bridge = _FakeChatBridge(
+        chatSnapshot: snapshotWithDeletedSession(updatedAtEpochMs: 1000),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-delete',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+        chatSnapshotStream: snapshots.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Sessions'));
+      await tester.pumpAndSettle();
+      expect(find.text('Delete session'), findsOneWidget);
+      expect(find.text('Keep session'), findsOneWidget);
+
+      await tester.longPress(find.text('Delete session'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(copy.filesDeleteAction).last);
+      await tester.pumpAndSettle();
+
+      expect(bridge.deletedSessionIds, <String>['session-delete']);
+      expect(find.text('Delete session'), findsNothing);
+      expect(find.text('Keep session'), findsOneWidget);
+
+      snapshots.add(snapshotWithDeletedSession(updatedAtEpochMs: 2000));
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(find.text('Delete session'), findsNothing);
+      expect(find.text('Keep session'), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'new session drawer action waits for host creation before closing the drawer',
@@ -12721,6 +12952,7 @@ class _FakeChatBridge implements OpenCrayHostBridge {
   Completer<void>? createChatSessionCompleter;
   final List<String> copiedSessionIds = <String>[];
   final List<String> deletedSessionIds = <String>[];
+  final List<String> deletedMessageIds = <String>[];
   final List<String> recalledMessageIds = <String>[];
   final List<String> selectedSessionIds = <String>[];
   Object? pickChatAttachmentsError;
@@ -13051,6 +13283,14 @@ class _FakeChatBridge implements OpenCrayHostBridge {
   @override
   Future<void> deleteChatSession(String sessionId) async {
     deletedSessionIds.add(sessionId);
+  }
+
+  @override
+  Future<void> deleteChatMessage({
+    required String sessionId,
+    required String messageId,
+  }) async {
+    deletedMessageIds.add(messageId);
   }
 
   @override

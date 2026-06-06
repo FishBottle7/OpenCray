@@ -2003,6 +2003,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   final Map<String, String> _selectedTextByMessageId = <String, String>{};
   final Map<String, SelectedContentRange> _selectedTextRangeByMessageId =
       <String, SelectedContentRange>{};
+  final Map<String, Set<String>> _locallyDeletedMessageIdsBySession =
+      <String, Set<String>>{};
+  final Set<String> _locallyDeletedSessionIds = <String>{};
   _ActiveChatMessageMenu? _activeMessageMenu;
   bool _suppressNextTransientUiDismiss = false;
   Timer? _todoArchiveHideTimer;
@@ -2065,7 +2068,175 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (state.drawer.sessions.isNotEmpty) {
       return state.drawer.sessions.first.sessionId;
     }
+    final String runtimeSessionId =
+        _latestChatRuntimeSnapshot?.sessionId.trim() ??
+        _latestChatSnapshot?.runtimeActivity?.sessionId.trim() ??
+        '';
+    if (runtimeSessionId.isNotEmpty) {
+      return runtimeSessionId;
+    }
     return 'chat-session';
+  }
+
+  void _rememberLocallyDeletedMessages(
+    String sessionId,
+    Set<String> messageIds,
+  ) {
+    final String normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty || messageIds.isEmpty) {
+      return;
+    }
+    _locallyDeletedMessageIdsBySession
+        .putIfAbsent(normalizedSessionId, () => <String>{})
+        .addAll(messageIds);
+  }
+
+  void _forgetLocallyDeletedMessages(
+    String sessionId,
+    Iterable<String> messageIds,
+  ) {
+    final String normalizedSessionId = sessionId.trim();
+    final Set<String>? deletedIds =
+        _locallyDeletedMessageIdsBySession[normalizedSessionId];
+    if (deletedIds == null) {
+      return;
+    }
+    for (final String messageId in messageIds) {
+      deletedIds.remove(messageId.trim());
+    }
+    if (deletedIds.isEmpty) {
+      _locallyDeletedMessageIdsBySession.remove(normalizedSessionId);
+    }
+  }
+
+  void _removeSelectionForMessages(Iterable<String> messageIds) {
+    for (final String messageId in messageIds) {
+      final String normalizedMessageId = messageId.trim();
+      if (normalizedMessageId.isEmpty) {
+        continue;
+      }
+      _selectedMessageIds.remove(normalizedMessageId);
+      _selectedTextByMessageId.remove(normalizedMessageId);
+      _selectedTextRangeByMessageId.remove(normalizedMessageId);
+    }
+  }
+
+  ChatFeatureState _applyLocalDeletionTombstones(ChatFeatureState state) {
+    final String sessionId = _sessionIdForState(state).trim();
+    final Set<String> locallyDeletedMessageIds = sessionId.isEmpty
+        ? const <String>{}
+        : _locallyDeletedMessageIdsBySession[sessionId] ?? const <String>{};
+    List<ChatMessageData> messages = state.messages;
+    List<ChatRunTraceData> runTraces = state.runTraces;
+    if (locallyDeletedMessageIds.isNotEmpty) {
+      messages = messages
+          .where(
+            (message) =>
+                !locallyDeletedMessageIds.contains(message.messageId.trim()) &&
+                !locallyDeletedMessageIds.contains(
+                  message.runtimeAnchorMessageId.trim(),
+                ),
+          )
+          .toList(growable: false);
+      runTraces = runTraces
+          .where(
+            (trace) => !locallyDeletedMessageIds.contains(
+              trace.anchorMessageId.trim(),
+            ),
+          )
+          .toList(growable: false);
+    }
+
+    ChatSessionsDrawerState drawer = state.drawer;
+    if (_locallyDeletedSessionIds.isNotEmpty && drawer.sessions.isNotEmpty) {
+      final List<ChatSessionListItemData> remainingSessions = drawer.sessions
+          .where(
+            (session) =>
+                !_locallyDeletedSessionIds.contains(session.sessionId.trim()),
+          )
+          .toList(growable: false);
+      if (remainingSessions.length != drawer.sessions.length) {
+        String selectedSessionId = '';
+        for (final ChatSessionListItemData session in remainingSessions) {
+          if (session.isSelected) {
+            selectedSessionId = session.sessionId;
+            break;
+          }
+        }
+        if (selectedSessionId.isEmpty && remainingSessions.isNotEmpty) {
+          selectedSessionId = remainingSessions.first.sessionId;
+        }
+        drawer = ChatSessionsDrawerState(
+          eyebrow: drawer.eyebrow,
+          title: drawer.title,
+          ctaLabel: drawer.ctaLabel,
+          sessions: remainingSessions
+              .map(
+                (session) => ChatSessionListItemData(
+                  sessionId: session.sessionId,
+                  title: session.title,
+                  preview: session.preview,
+                  meta: session.meta,
+                  isSelected: session.sessionId == selectedSessionId,
+                  lastMessageAtEpochMs: session.lastMessageAtEpochMs,
+                  unreadCount: session.sessionId == selectedSessionId
+                      ? 0
+                      : session.unreadCount,
+                ),
+              )
+              .toList(growable: false),
+        );
+      }
+    }
+
+    final bool threadEmpty = messages.isEmpty && runTraces.isEmpty;
+    return state.copyWith(
+      variant:
+          threadEmpty &&
+              state.composer.todos.isEmpty &&
+              state.pendingApprovals.isEmpty
+          ? ChatPrototypeVariant.empty
+          : ChatPrototypeVariant.main,
+      messages: messages,
+      runTraces: runTraces,
+      drawer: drawer,
+      emptyThreadHeight: threadEmpty ? 260 : 0,
+    );
+  }
+
+  void _pruneLocalDeletionTombstones(OpenCrayChatSnapshot snapshot) {
+    if (_locallyDeletedSessionIds.isNotEmpty) {
+      final Set<String> snapshotSessionIds = snapshot.drawer.sessions
+          .map((session) => session.sessionId.trim())
+          .where((sessionId) => sessionId.isNotEmpty)
+          .toSet();
+      _locallyDeletedSessionIds.removeWhere(
+        (sessionId) => !snapshotSessionIds.contains(sessionId),
+      );
+    }
+
+    final String sessionId = _snapshotActiveSessionId(snapshot).trim();
+    final Set<String>? deletedMessageIds =
+        _locallyDeletedMessageIdsBySession[sessionId];
+    if (sessionId.isEmpty || deletedMessageIds == null) {
+      return;
+    }
+    final Set<String> snapshotMessageIds = snapshot.messages
+        .asMap()
+        .entries
+        .map((entry) {
+          final String messageId = entry.value.messageId.trim();
+          return messageId.isNotEmpty
+              ? messageId
+              : 'message-${entry.key}-${entry.value.kind}';
+        })
+        .toSet();
+    deletedMessageIds.removeWhere(
+      (messageId) => !snapshotMessageIds.contains(messageId),
+    );
+    if (deletedMessageIds.isEmpty) {
+      _locallyDeletedMessageIdsBySession.remove(sessionId);
+    }
   }
 
   ChatComposerState _composerStateForHostSnapshot(ChatFeatureState nextState) {
@@ -2440,31 +2611,44 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   Future<void> _deleteSelectedMessages() async {
-    final List<String> selectedIds = _selectedMessageIds.toList(
-      growable: false,
-    );
+    final List<String> selectedIds = _selectedMessageIds
+        .map((messageId) => messageId.trim())
+        .where((messageId) => messageId.isNotEmpty)
+        .toList(growable: false);
     if (selectedIds.isEmpty) {
       return;
     }
     final bridge = widget.bridge;
     if (bridge != null) {
-      try {
-        for (final messageId in selectedIds) {
+      final String sessionId = _activeSessionId;
+      final Set<String> deletedIds = selectedIds.toSet();
+      setState(() {
+        _rememberLocallyDeletedMessages(sessionId, deletedIds);
+        _removeSelectionForMessages(deletedIds);
+        _state = _applyLocalDeletionTombstones(_state);
+      });
+      final Set<String> pendingIds = <String>{...deletedIds};
+      final Set<String> failedOrUnsentIds = <String>{};
+      for (final String messageId in selectedIds) {
+        try {
           await bridge.deleteChatMessage(
-            sessionId: _activeSessionId,
+            sessionId: sessionId,
             messageId: messageId,
           );
+          pendingIds.remove(messageId);
+        } catch (_) {
+          failedOrUnsentIds
+            ..add(messageId)
+            ..addAll(pendingIds);
+          break;
         }
+      }
+      if (failedOrUnsentIds.isNotEmpty) {
         if (!mounted) {
           return;
         }
-        setState(() {
-          _selectedMessageIds.clear();
-        });
-      } catch (_) {
-        if (!mounted) {
-          return;
-        }
+        _forgetLocallyDeletedMessages(sessionId, failedOrUnsentIds);
+        _applyHostState();
         _showMessageFeedback(widget.copy.chatMessageActionFailed);
       }
       return;
@@ -2472,12 +2656,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     setState(() {
       _state = _state.copyWith(
         messages: _state.messages
-            .where(
-              (message) => !_selectedMessageIds.contains(message.messageId),
-            )
+            .where((message) => !selectedIds.contains(message.messageId))
             .toList(growable: false),
       );
-      _selectedMessageIds.clear();
+      _removeSelectionForMessages(selectedIds);
     });
   }
 
@@ -2570,17 +2752,29 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   Future<void> _deleteChatMessage(ChatMessageData message) async {
+    final String messageId = message.messageId.trim();
+    if (messageId.isEmpty) {
+      return;
+    }
     final bridge = widget.bridge;
     if (bridge != null) {
+      final String sessionId = _activeSessionId;
+      setState(() {
+        _rememberLocallyDeletedMessages(sessionId, <String>{messageId});
+        _removeSelectionForMessages(<String>{messageId});
+        _state = _applyLocalDeletionTombstones(_state);
+      });
       try {
         await bridge.deleteChatMessage(
-          sessionId: _activeSessionId,
-          messageId: message.messageId,
+          sessionId: sessionId,
+          messageId: messageId,
         );
       } catch (_) {
         if (!mounted) {
           return;
         }
+        _forgetLocallyDeletedMessages(sessionId, <String>{messageId});
+        _applyHostState();
         _showMessageFeedback(widget.copy.chatMessageActionFailed);
       }
       return;
@@ -2588,9 +2782,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     setState(() {
       _state = _state.copyWith(
         messages: _state.messages
-            .where((candidate) => candidate.messageId != message.messageId)
+            .where((candidate) => candidate.messageId != messageId)
             .toList(growable: false),
       );
+      _removeSelectionForMessages(<String>{messageId});
     });
   }
 
@@ -3747,14 +3942,17 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (snapshot == null) {
       return;
     }
+    _pruneLocalDeletionTombstones(snapshot);
     _syncTodoArchiveVisibility(snapshot);
     final ChatFeatureState nextState = _mapSnapshot(
       snapshot,
       _latestChatRuntimeSnapshot,
     );
-    final ChatFeatureState resolvedNextState = nextState.copyWith(
-      drawerOpen: _state.drawerOpen,
-      composer: _composerStateForHostSnapshot(nextState),
+    final ChatFeatureState resolvedNextState = _applyLocalDeletionTombstones(
+      nextState.copyWith(
+        drawerOpen: _state.drawerOpen,
+        composer: _composerStateForHostSnapshot(nextState),
+      ),
     );
     if (chatFeatureStatesEquivalent(_state, resolvedNextState)) {
       _syncSandboxSessionAutoRefresh();
@@ -3806,21 +4004,23 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       snapshot,
       effectiveRuntime,
     );
-    final ChatFeatureState nextState = _state.copyWith(
-      variant:
-          runtimeProjection.messages.isEmpty &&
-              runtimeProjection.runTraces.isEmpty &&
-              _state.composer.todos.isEmpty &&
-              _state.pendingApprovals.isEmpty
-          ? ChatPrototypeVariant.empty
-          : ChatPrototypeVariant.main,
-      messages: runtimeProjection.messages,
-      runTraces: runtimeProjection.runTraces,
-      emptyThreadHeight:
-          runtimeProjection.messages.isEmpty &&
-              runtimeProjection.runTraces.isEmpty
-          ? 260
-          : 0,
+    final ChatFeatureState nextState = _applyLocalDeletionTombstones(
+      _state.copyWith(
+        variant:
+            runtimeProjection.messages.isEmpty &&
+                runtimeProjection.runTraces.isEmpty &&
+                _state.composer.todos.isEmpty &&
+                _state.pendingApprovals.isEmpty
+            ? ChatPrototypeVariant.empty
+            : ChatPrototypeVariant.main,
+        messages: runtimeProjection.messages,
+        runTraces: runtimeProjection.runTraces,
+        emptyThreadHeight:
+            runtimeProjection.messages.isEmpty &&
+                runtimeProjection.runTraces.isEmpty
+            ? 260
+            : 0,
+      ),
     );
     final bool shouldScrollToBottom =
         nextState.messages.length > _state.messages.length ||
@@ -4608,21 +4808,31 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   Future<void> _deleteSession(ChatSessionListItemData session) async {
+    final String sessionId = session.sessionId.trim();
+    if (sessionId.isEmpty) {
+      return;
+    }
     final bridge = widget.bridge;
     if (bridge != null) {
+      setState(() {
+        _locallyDeletedSessionIds.add(sessionId);
+        _state = _applyLocalDeletionTombstones(_state);
+      });
       try {
-        await bridge.deleteChatSession(session.sessionId);
+        await bridge.deleteChatSession(sessionId);
       } catch (_) {
         if (!mounted) {
           return;
         }
+        _locallyDeletedSessionIds.remove(sessionId);
+        _applyHostState();
         _showSessionActionFailed();
       }
       return;
     }
     setState(() {
       final remainingSessions = _state.drawer.sessions
-          .where((item) => item.sessionId != session.sessionId)
+          .where((item) => item.sessionId != sessionId)
           .toList(growable: false);
       if (remainingSessions.isEmpty) {
         _state = OpenCrayChatSeedData.empty(widget.copy);
@@ -4704,8 +4914,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     _latestChatSnapshot = snapshot;
     _latestChatRuntimeSnapshot = runtimeSnapshot;
+    _pruneLocalDeletionTombstones(snapshot);
     _syncTodoArchiveVisibility(snapshot);
-    final ChatFeatureState nextState = _mapSnapshot(snapshot, runtimeSnapshot);
+    final ChatFeatureState nextState = _applyLocalDeletionTombstones(
+      _mapSnapshot(snapshot, runtimeSnapshot),
+    );
     final Set<String> retainedSelection = _selectedMessageIds
         .where(
           (messageId) => nextState.messages.any(
@@ -11220,57 +11433,51 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 12),
       child: LayoutBuilder(
         builder: (BuildContext context, BoxConstraints constraints) {
-          final double fullWidth =
-              constraints.maxWidth +
-              (_threadHorizontalInset * 2) +
-              _selectionControlGutter;
-          return Transform.translate(
-            offset: const Offset(
-              -(_threadHorizontalInset + _selectionControlGutter),
-              0,
-            ),
-            child: SizedBox(
-              width: fullWidth,
-              child: GestureDetector(
-                key: ValueKey<String>('chat-message-row-${message.messageId}'),
-                onTap: onSelectionToggle,
-                behavior: HitTestBehavior.opaque,
-                child: Stack(
-                  children: <Widget>[
-                    Positioned.fill(
-                      child: AnimatedContainer(
-                        key: ValueKey<String>(
-                          'chat-message-row-bg-${message.messageId}',
+          return SizedBox(
+            width: constraints.maxWidth,
+            child: GestureDetector(
+              key: ValueKey<String>('chat-message-row-${message.messageId}'),
+              onTap: onSelectionToggle,
+              behavior: HitTestBehavior.opaque,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: <Widget>[
+                  Positioned(
+                    left: -_threadHorizontalInset,
+                    right: -_threadHorizontalInset,
+                    top: 0,
+                    bottom: 0,
+                    child: AnimatedContainer(
+                      key: ValueKey<String>(
+                        'chat-message-row-bg-${message.messageId}',
+                      ),
+                      duration: const Duration(milliseconds: 160),
+                      curve: Curves.easeOutCubic,
+                      color: isSelected
+                          ? _ChatPalette.selectionRowHighlight
+                          : Colors.transparent,
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Row(
+                      children: <Widget>[
+                        SizedBox(
+                          width: _selectionControlGutter,
+                          child: Center(
+                            child: _ChatSelectionControl(
+                              messageId: message.messageId,
+                              isSelected: isSelected,
+                            ),
+                          ),
                         ),
-                        duration: const Duration(milliseconds: 160),
-                        curve: Curves.easeOutCubic,
-                        color: isSelected
-                            ? _ChatPalette.selectionRowHighlight
-                            : Colors.transparent,
-                      ),
-                    ),
-                    Padding(
-                      padding: EdgeInsets.fromLTRB(
-                        _selectionControlGutter + _threadHorizontalInset,
-                        6,
-                        _threadHorizontalInset,
-                        6,
-                      ),
-                      child: Align(alignment: alignment, child: bubble),
-                    ),
-                    Positioned(
-                      left: _selectionControlGutter + 8,
-                      top: 0,
-                      bottom: 0,
-                      child: Center(
-                        child: _ChatSelectionControl(
-                          messageId: message.messageId,
-                          isSelected: isSelected,
+                        Expanded(
+                          child: Align(alignment: alignment, child: bubble),
                         ),
-                      ),
+                      ],
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           );
