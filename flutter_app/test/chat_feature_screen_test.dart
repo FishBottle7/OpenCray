@@ -2063,6 +2063,77 @@ void main() {
     },
   );
 
+  testWidgets('runtime deltas clear stale live assistant draft bubbles', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final runtimeEventDeltas =
+        StreamController<OpenCrayChatRuntimeEventDelta>.broadcast();
+    addTearDown(runtimeEventDeltas.close);
+    const activeRun = OpenCrayChatRunSnapshot(
+      sessionId: 'session-1',
+      runId: 'run-1',
+      taskId: 'task-1',
+      acceptedAtEpochMs: 1000,
+      updatedAtEpochMs: 1200,
+      attempt: 1,
+      pendingMessageId: 'pending-1',
+      isTerminal: false,
+    );
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        messages: const <OpenCrayChatMessageSnapshot>[
+          OpenCrayChatMessageSnapshot(
+            kind: 'outbound',
+            text: 'Write a long summary.',
+          ),
+        ],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[activeRun],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+        liveAssistantDrafts: <OpenCrayChatLiveAssistantDraftSnapshot>[
+          OpenCrayChatLiveAssistantDraftSnapshot(
+            runId: 'run-1',
+            taskId: 'task-1',
+            pendingMessageId: 'pending-1',
+            text: 'Streaming answer in progress',
+            updatedAtEpochMs: 1300,
+          ),
+        ],
+        updatedAtEpochMs: 1300,
+      ),
+      runtimeEventDeltaStream: runtimeEventDeltas.stream,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Streaming answer in progress'), findsOneWidget);
+
+    runtimeEventDeltas.add(
+      const OpenCrayChatRuntimeEventDelta(
+        sessionId: 'session-1',
+        sequence: 1,
+        activeRuns: <OpenCrayChatRunSnapshot>[activeRun],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+        totalLength: 0,
+        liveAssistantDrafts: <OpenCrayChatLiveAssistantDraftSnapshot>[],
+        updatedAtEpochMs: 1500,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Streaming answer in progress'), findsNothing);
+  });
+
   testWidgets(
     'live assistant draft events do not recreate a pending bubble after commentary is projected',
     (tester) async {

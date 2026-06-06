@@ -130,6 +130,41 @@ class LiteRtOnDeviceProviderClientTest {
   }
 
   @Test
+  fun onDeviceProviderUsesMessagesAsAuthoritativeTransport() {
+    val modelFile = Files.createTempFile("gemma-e2b-provider-message-transport-test", ".litertlm")
+      .toFile()
+      .apply { deleteOnExit() }
+    val handle = RecordingEngineHandle(
+      result = LiteRtOnDeviceRuntimeResult.Success(outputText = "ok"),
+    )
+    val runtime = LiteRtOnDeviceRuntime(
+      installStore = readyInstallStore(modelFile),
+      engineFactory = RecordingEngineFactory(handle),
+    )
+    val client = LiteRtOnDeviceLlmProviderClient(runtime = runtime)
+
+    client.execute(
+      onDeviceProviderRequest(
+        gatewayRequest = LiteLlmGatewayRequest(
+          systemPrompt = "System instruction",
+          messages = listOf(
+            LiteLlmGatewayMessage(
+              role = LiteLlmGatewayMessageRole.USER,
+              content = "Hello from messages",
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val runtimeRequest = handle.requests.single()
+    assertEquals("", runtimeRequest.prompt)
+    assertEquals("System instruction", runtimeRequest.systemPrompt)
+    assertEquals(1, runtimeRequest.messages.size)
+    assertEquals("Hello from messages", runtimeRequest.messages.single().content)
+  }
+
+  @Test
   fun runtimeUsesEngineFactoryAfterReadyFilePassesChecks() {
     val modelFile = Files.createTempFile("gemma-e2b-provider-test", ".litertlm")
       .toFile()

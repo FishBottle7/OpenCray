@@ -23,6 +23,11 @@ internal class LiteRtOnDeviceLlmProviderClient(
       modelId = modelId,
       streamingEnabled = streamingEnabled,
     )
+    val transportPrompt = if (request.request.messages.isEmpty()) {
+      request.request.prompt
+    } else {
+      ""
+    }
     val runtimeRequest = LiteRtOnDeviceRuntimeRequest(
       requestId = request.request.requestId,
       modelId = modelId,
@@ -54,7 +59,7 @@ internal class LiteRtOnDeviceLlmProviderClient(
         request.route.metadata[LiteRtOnDeviceMetadataKeys.THINKING_ENABLED]
           ?.toBooleanStrictOrNull()
           ?: LlmSettingsState.DEFAULT_ON_DEVICE_THINKING_ENABLED,
-      prompt = request.request.prompt,
+      prompt = transportPrompt,
       systemPrompt = request.request.systemPrompt,
       messages = request.request.messages,
       tools = request.request.tools,

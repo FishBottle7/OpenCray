@@ -179,6 +179,26 @@ OpenCrayChatRuntimeSnapshot _mergeRuntimeSnapshots(
   );
 }
 
+OpenCrayChatRuntimeSnapshot _mergeRuntimeDeltaSnapshot(
+  OpenCrayChatRuntimeSnapshot current,
+  OpenCrayChatRuntimeSnapshot delta,
+) {
+  final OpenCrayChatRuntimeSnapshot merged = _mergeRuntimeSnapshots(
+    current,
+    delta,
+  );
+  return OpenCrayChatRuntimeSnapshot(
+    sessionId: merged.sessionId,
+    activeRuns: merged.activeRuns,
+    retainedRuns: merged.retainedRuns,
+    subAgents: merged.subAgents,
+    events: merged.events,
+    liveAssistantDrafts: delta.liveAssistantDrafts,
+    hostLifecycle: merged.hostLifecycle,
+    updatedAtEpochMs: merged.updatedAtEpochMs,
+  );
+}
+
 List<OpenCrayChatRunSnapshot> _mergeRuntimeRuns(
   List<OpenCrayChatRunSnapshot> left,
   List<OpenCrayChatRunSnapshot> right,
@@ -3677,7 +3697,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         );
     final OpenCrayChatRuntimeSnapshot patchedSnapshot = currentSnapshot == null
         ? deltaSnapshot
-        : _mergeRuntimeSnapshots(currentSnapshot, deltaSnapshot);
+        : _mergeRuntimeDeltaSnapshot(currentSnapshot, deltaSnapshot);
     if (!shouldReplaceObservedRuntimeSnapshot(
       currentSnapshot,
       patchedSnapshot,

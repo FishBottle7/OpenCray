@@ -616,7 +616,7 @@ private fun LiteRtOnDeviceRuntimeRequest.availableTools(): List<LiteLlmToolDefin
 
 private fun LiteRtOnDeviceRuntimeRequest.toBridgeRequest(): LiteRtLmBridge.Request =
   LiteRtLmBridge.Request(
-    prompt,
+    if (messages.isEmpty()) prompt else "",
     systemPrompt?.trim()?.takeIf(String::isNotBlank),
     messages.map(LiteLlmGatewayMessage::toBridgePayload),
     availableTools().map(LiteLlmToolDefinition::toBridgeDefinition),
