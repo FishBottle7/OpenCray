@@ -98,16 +98,11 @@ class _ShellEntryState extends State<_ShellEntry> {
     return FutureBuilder<OpenCrayShellSnapshot>(
       future: widget.snapshotFuture ?? widget.bridge.loadShellSnapshot(),
       builder: (context, snapshot) {
-        final shellSnapshot =
-            snapshot.data ??
-            const OpenCrayShellSnapshot(
-              initialTab: OpenCrayTab.chat,
-              localeTag: 'en',
-              hostLabel: 'HOST READY',
-              hostSummary: 'Flutter shell is attached to a seed bridge.',
-              isHostConnected: false,
-            );
-        final initialTab = widget.tab ?? shellSnapshot.initialTab;
+        final OpenCrayShellSnapshot? shellSnapshot = snapshot.data;
+        if (shellSnapshot == null) {
+          return const ColoredBox(color: Color(0xFFF8F8FA));
+        }
+        final initialTab = widget.tab ?? OpenCrayTab.chat;
         final initialSettingsPage = widget.tab == OpenCrayTab.settings
             ? widget.settingsInitialPage
             : shellSnapshot.initialSettingsPage;

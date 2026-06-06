@@ -61,9 +61,6 @@ class _OpenCrayAppShellState extends State<OpenCrayAppShell> {
       }
       setState(() {
         _snapshot = snapshot;
-        if (snapshot.initialTab != _selectedTab) {
-          _selectedTab = snapshot.initialTab;
-        }
       });
     });
   }
@@ -152,12 +149,14 @@ class _OpenCrayAppShellState extends State<OpenCrayAppShell> {
     SettingsPage? settingsPage,
   }) {
     unawaited(
-      widget.bridge.saveShellDestination(
-        selectedTab: tab.routeSegment,
-        settingsSubpage: tab == OpenCrayTab.settings
-            ? (settingsPage ?? SettingsPage.home).routeId
-            : null,
-      ).catchError((Object _) {}),
+      widget.bridge
+          .saveShellDestination(
+            selectedTab: tab.routeSegment,
+            settingsSubpage: tab == OpenCrayTab.settings
+                ? (settingsPage ?? SettingsPage.home).routeId
+                : null,
+          )
+          .catchError((Object _) {}),
     );
   }
 }

@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opencray/app/opencray_app.dart';
 import 'package:opencray/app/opencray_tabs.dart';
+import 'package:opencray/core/bridge/opencray_host_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
 import 'package:opencray/core/models/opencray_shell_snapshot.dart';
 import 'package:opencray/features/settings/settings.dart';
@@ -27,24 +30,59 @@ void main() {
     expect(find.text('SETTINGS'), findsOneWidget);
   });
 
-  testWidgets('restores the settings privacy subpage from shell snapshot', (
+  testWidgets('waits for the shell snapshot without rendering seed chat', (
     tester,
   ) async {
-    final bridge = OpenCraySeedBridge(
-      initialSnapshot: const OpenCrayShellSnapshot(
-        initialTab: OpenCrayTab.settings,
-        initialSettingsPage: SettingsPage.privacyTelemetry,
-        localeTag: 'en',
-        hostLabel: 'HOST READY',
-        hostSummary: 'Flutter shell is attached to a seed bridge.',
-        isHostConnected: false,
-      ),
-    );
+    final bridge = _DelayedShellBridge();
 
     await tester.pumpWidget(OpenCrayApp(bridge: bridge));
-    await tester.pumpAndSettle();
+    await tester.pump();
 
-    expect(find.text('Privacy & Telemetry'), findsOneWidget);
-    expect(find.text('API Integrations'), findsNothing);
+    expect(find.text('Why is write access pending?'), findsNothing);
+    expect(find.text('CHAT'), findsNothing);
   });
+
+  testWidgets(
+    'home starts on chat even when shell snapshot persisted settings',
+    (tester) async {
+      final bridge = OpenCraySeedBridge(
+        initialSnapshot: const OpenCrayShellSnapshot(
+          initialTab: OpenCrayTab.settings,
+          initialSettingsPage: SettingsPage.privacyTelemetry,
+          localeTag: 'en',
+          hostLabel: 'HOST READY',
+          hostSummary: 'Flutter shell is attached to a seed bridge.',
+          isHostConnected: false,
+        ),
+      );
+
+      await tester.pumpWidget(OpenCrayApp(bridge: bridge));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Chat'), findsOneWidget);
+      expect(find.text('Privacy & Telemetry'), findsNothing);
+    },
+  );
+}
+
+class _DelayedShellBridge implements OpenCrayHostBridge {
+  final Completer<OpenCrayShellSnapshot> _shellSnapshotCompleter =
+      Completer<OpenCrayShellSnapshot>();
+
+  @override
+  Future<OpenCrayShellSnapshot> loadShellSnapshot() =>
+      _shellSnapshotCompleter.future;
+
+  @override
+  Stream<OpenCrayShellSnapshot> watchShellSnapshot() =>
+      const Stream<OpenCrayShellSnapshot>.empty();
+
+  @override
+  Future<void> saveShellDestination({
+    required String selectedTab,
+    String? settingsSubpage,
+  }) async {}
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }

@@ -243,6 +243,40 @@ void main() {
     expect(snapshot.initialTab, OpenCrayTab.files);
     expect(snapshot.initialSettingsPage, SettingsPage.home);
   });
+
+  testWidgets('shell snapshot updates do not force a tab switch', (
+    tester,
+  ) async {
+    final bridge = OpenCraySeedBridge(
+      initialSnapshot: const OpenCrayShellSnapshot(
+        initialTab: OpenCrayTab.chat,
+        localeTag: 'en',
+        hostLabel: 'HOST READY',
+        hostSummary: 'Ready',
+        isHostConnected: true,
+      ),
+    );
+    final filesController = FilesFeatureController();
+    final chatController = ChatFeatureController();
+
+    await _pumpShell(
+      tester,
+      bridge: bridge,
+      chatController: chatController,
+      filesController: filesController,
+      initialTab: OpenCrayTab.chat,
+    );
+
+    expect(find.byType(OpenCrayChatFeature), findsOneWidget);
+
+    await bridge.saveShellDestination(
+      selectedTab: OpenCrayTab.settings.routeSegment,
+      settingsSubpage: SettingsPage.privacyTelemetry.routeId,
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byType(OpenCrayChatFeature), findsOneWidget);
+  });
 }
 
 Future<void> _pumpShell(
