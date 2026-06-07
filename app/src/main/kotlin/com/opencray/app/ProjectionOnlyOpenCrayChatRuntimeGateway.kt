@@ -129,7 +129,8 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     clock = clock,
   )
 
-  override fun loadChatSnapshot(): Map<String, Any?> = loadProjectionChatSnapshot()
+  override fun loadChatSnapshot(): Map<String, Any?> =
+    chatPayloadWithoutEmbeddedRuntimeActivity(loadProjectionChatSnapshot())
 
   override fun observeChat(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeProjectionWithPolling(
@@ -378,6 +379,17 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "runtimeActivity" to runtimeProjection.snapshot,
     )
   }
+
+  private fun chatPayloadWithoutEmbeddedRuntimeActivity(
+    payload: Map<String, Any?>,
+  ): Map<String, Any?> =
+    if (payload["runtimeActivity"] == null) {
+      payload
+    } else {
+      payload.toMutableMap().apply {
+        this["runtimeActivity"] = null
+      }
+    }
 
   private fun renderedProjectionMessages(
     sessionId: String,

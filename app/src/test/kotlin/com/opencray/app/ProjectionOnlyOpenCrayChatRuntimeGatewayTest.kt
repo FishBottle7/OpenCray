@@ -29,6 +29,7 @@ import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -37,6 +38,33 @@ import org.junit.rules.TemporaryFolder
 class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
   @get:Rule
   val temporaryFolder: TemporaryFolder = TemporaryFolder()
+
+  @Test
+  fun projectionOnlyChatSnapshotDoesNotEmbedRuntimeActivity() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-runtime-activity-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-activity-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot),
+      runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot),
+      runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot),
+      promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot),
+      processRegistryFactory = FileBackedAgentProcessRegistryFactory(runtimeRoot),
+      supplementStoreFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot),
+      strings = projectionTestStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 2_000L },
+    )
+
+    val chatSnapshot = gateway.loadChatSnapshot()
+    val runtimeSnapshot = gateway.loadChatRuntimeSnapshot()
+
+    assertNull(chatSnapshot["runtimeActivity"])
+    assertEquals(sessionId, runtimeSnapshot["sessionId"])
+  }
 
   @Test
   fun projectionOnlyChatRuntimeGatewayProjectsTerminalAssistantTextOverThinkingPlaceholder() {
