@@ -972,6 +972,35 @@ void main() {
     ]);
   });
 
+  test('local runtime bridge posts media save requests over http', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/save_workspace_media_attachment');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, <String, Object?>{
+        'displayName': 'voice-note.m4a',
+        'collection': 'recordings',
+        'uri': 'content://media/audio/42',
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final saved = await bridge.saveWorkspaceMediaAttachment(
+      relativePath: '.opencray/chat-media/session-1/hash/voice-note.m4a',
+      kind: 'voice',
+    );
+
+    expect(
+      capturedBody['relativePath'],
+      '.opencray/chat-media/session-1/hash/voice-note.m4a',
+    );
+    expect(capturedBody['kind'], 'voice');
+    expect(saved.displayName, 'voice-note.m4a');
+    expect(saved.collection, 'recordings');
+    expect(saved.uri, 'content://media/audio/42');
+  });
+
   test('local runtime bridge posts open file requests over http', () async {
     late Map<String, Object?> capturedBody;
     requestHandler = (request) async {

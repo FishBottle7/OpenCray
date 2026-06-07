@@ -192,6 +192,7 @@
     <string name="chat_trace_tool_follow_up">Received %1$s and evaluating the next step.</string>
     <string name="chat_agent_missing_llm">Remote LLM is not ready. Open [Settings -&gt; LLM](/settings/llm) and configure Base URL and API key first.</string>
     <string name="chat_agent_failed">Agent request failed: %1$s</string>
+    <string name="chat_agent_attachment_save_failed">Attachment could not be saved: %1$s</string>
     <string name="chat_agent_cancelled">Agent request was interrupted.</string>
     <string name="chat_approval_required_title">Approval required</string>
     <string name="chat_high_risk_approval_required_title">High-risk approval required</string>

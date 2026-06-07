@@ -9,7 +9,6 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.path.exists
 import kotlin.io.path.isRegularFile
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -176,6 +175,10 @@ class FileBackedOpenCrayMediaArtifactRegistry(
     val artifactId = artifact.artifactId.trim().takeIf(String::isNotBlank) ?: return null
     val relativePath = artifact.relativePath.trim().replace('\\', '/').trim('/')
       .takeIf(String::isNotBlank) ?: return null
+    val normalizedPath = normalizedWorkspaceRoot.resolve(relativePath).normalize()
+    if (!normalizedPath.startsWith(normalizedWorkspaceRoot)) {
+      return null
+    }
     return artifact.copy(
       artifactId = artifactId,
       relativePath = relativePath,

@@ -225,6 +225,51 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun savesWorkspaceMediaAttachmentOverLoopbackHttp() {
+    var capturedRelativePath: String? = null
+    var capturedKind: String? = null
+    val server = localRuntimeServerWithLocalGateway(
+      object : UnsupportedLocalGateway() {
+        override fun saveWorkspaceMediaAttachment(
+          relativePath: String,
+          kind: String,
+        ): Map<String, Any?> {
+          capturedRelativePath = relativePath
+          capturedKind = kind
+          return mapOf(
+            "displayName" to "voice-note.m4a",
+            "collection" to "recordings",
+            "uri" to "content://media/audio/42",
+          )
+        }
+      },
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/save_workspace_media_attachment",
+        body = JSONObject().apply {
+          put("relativePath", ".opencray/chat-media/session-1/hash/voice-note.m4a")
+          put("kind", "voice")
+        }.toString(),
+      )
+      val payload = JSONObject(response.body)
+
+      assertEquals(200, response.statusCode)
+      assertEquals(".opencray/chat-media/session-1/hash/voice-note.m4a", capturedRelativePath)
+      assertEquals("voice", capturedKind)
+      assertEquals("voice-note.m4a", payload.getString("displayName"))
+      assertEquals("recordings", payload.getString("collection"))
+      assertEquals("content://media/audio/42", payload.getString("uri"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun exposesSoulVisualIdentityOverLoopbackHttp() {
     val server = localRuntimeServerWithLocalGateway(
       object : UnsupportedLocalGateway() {

@@ -15210,6 +15210,7 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
                 if (hasText) const SizedBox(height: 10),
                 _ChatImageAttachmentGroup(
                   bridge: widget.bridge,
+                  copy: widget.copy,
                   messageId: widget.message.messageId,
                   attachments: imageAttachments,
                   maxWidth: widget.maxWidth - 28,
@@ -15797,6 +15798,7 @@ class _ChatBubbleMarkdownBody extends StatelessWidget {
                   segment.attachment.kind == ChatAttachmentKind.image) {
                 child = _ChatImageAttachmentPreview(
                   bridge: bridge,
+                  copy: copy,
                   attachment: segment.attachment,
                   maxWidth: contentMaxWidth,
                   isOutgoing: isOutgoing,
@@ -15843,6 +15845,7 @@ MarkdownStyleSheet _chatMarkdownStyleSheet(
 class _ChatImageAttachmentGroup extends StatelessWidget {
   const _ChatImageAttachmentGroup({
     required this.bridge,
+    required this.copy,
     required this.messageId,
     required this.attachments,
     required this.maxWidth,
@@ -15850,6 +15853,7 @@ class _ChatImageAttachmentGroup extends StatelessWidget {
   });
 
   final OpenCrayHostBridge? bridge;
+  final OpenCrayUiCopy copy;
   final String messageId;
   final List<ChatMessageAttachmentData> attachments;
   final double maxWidth;
@@ -15879,6 +15883,7 @@ class _ChatImageAttachmentGroup extends StatelessWidget {
               width: columnCount == 1 ? maxWidth : contentWidth,
               child: _ChatImageAttachmentPreview(
                 bridge: bridge,
+                copy: copy,
                 attachment: attachment,
                 maxWidth: columnCount == 1 ? maxWidth : contentWidth,
                 isOutgoing: isOutgoing,
@@ -15893,12 +15898,14 @@ class _ChatImageAttachmentGroup extends StatelessWidget {
 class _ChatImageAttachmentPreview extends StatefulWidget {
   const _ChatImageAttachmentPreview({
     required this.bridge,
+    required this.copy,
     required this.attachment,
     required this.maxWidth,
     required this.isOutgoing,
   });
 
   final OpenCrayHostBridge? bridge;
+  final OpenCrayUiCopy copy;
   final ChatMessageAttachmentData attachment;
   final double maxWidth;
   final bool isOutgoing;
@@ -15998,21 +16005,38 @@ class _ChatImageAttachmentPreviewState
             aspectRatio: aspectRatio,
             child: ClipRRect(
               borderRadius: BorderRadius.circular(14),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: placeholderColor,
-                  border: Border.all(color: borderColor),
-                ),
-                child: ready
-                    ? OpenCrayImageBytesView(
-                        bytes: preview.bytes,
-                        mimeType: preview.mimeType,
-                        fit: BoxFit.cover,
-                      )
-                    : _ChatImageAttachmentPlaceholderBody(
-                        attachment: widget.attachment,
-                        isOutgoing: widget.isOutgoing,
-                      ),
+              child: Stack(
+                fit: StackFit.expand,
+                children: <Widget>[
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: placeholderColor,
+                      border: Border.all(color: borderColor),
+                    ),
+                    child: ready
+                        ? OpenCrayImageBytesView(
+                            bytes: preview.bytes,
+                            mimeType: preview.mimeType,
+                            fit: BoxFit.cover,
+                          )
+                        : _ChatImageAttachmentPlaceholderBody(
+                            attachment: widget.attachment,
+                            isOutgoing: widget.isOutgoing,
+                          ),
+                  ),
+                  Positioned(
+                    top: 6,
+                    right: 6,
+                    child: _ChatAttachmentActions(
+                      bridge: widget.bridge,
+                      copy: widget.copy,
+                      attachment: widget.attachment,
+                      isOutgoing: widget.isOutgoing,
+                      keyPrefix: 'chat-message-image-attachment',
+                      overlay: true,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -16251,6 +16275,16 @@ class _ChatFileAttachmentTile extends StatelessWidget {
                   ),
                 ),
                 if (canOpen) ...<Widget>[
+                  const SizedBox(width: 8),
+                  _ChatAttachmentActions(
+                    bridge: bridge,
+                    copy: copy,
+                    attachment: attachment,
+                    isOutgoing: isOutgoing,
+                    keyPrefix: 'chat-message-attachment',
+                  ),
+                ],
+                if (canOpen) ...<Widget>[
                   const SizedBox(width: 10),
                   Icon(
                     _isPreviewableTextAttachment(attachment)
@@ -16432,6 +16466,26 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
       );
   }
 
+  Future<void> _shareAttachment() async {
+    _recordChildInteraction();
+    await _shareChatAttachment(
+      context,
+      bridge: widget.bridge,
+      copy: widget.copy,
+      attachment: widget.attachment,
+    );
+  }
+
+  Future<void> _saveAttachment() async {
+    _recordChildInteraction();
+    await _saveChatAttachment(
+      context,
+      bridge: widget.bridge,
+      copy: widget.copy,
+      attachment: widget.attachment,
+    );
+  }
+
   List<int> _effectiveWaveformBars() {
     if (widget.attachment.waveformBars.isNotEmpty) {
       return widget.attachment.waveformBars;
@@ -16496,6 +16550,10 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
             transcriptText != null &&
             _shouldCollapseVoiceTranscript(transcriptText);
         final List<int> waveformBars = _effectiveWaveformBars();
+
+        final bool canUseAttachmentActions =
+            widget.bridge != null &&
+            widget.attachment.localPath.trim().isNotEmpty;
 
         return Ink(
           key: ValueKey<String>(
@@ -16652,6 +16710,18 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
                         ],
                       ),
                     ),
+                    if (canUseAttachmentActions) ...<Widget>[
+                      const SizedBox(width: 8),
+                      _ChatAttachmentActions(
+                        bridge: widget.bridge,
+                        copy: widget.copy,
+                        attachment: widget.attachment,
+                        isOutgoing: widget.isOutgoing,
+                        keyPrefix: 'chat-message-attachment',
+                        onShare: _shareAttachment,
+                        onSave: _saveAttachment,
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -16661,6 +16731,189 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
       },
     );
   }
+}
+
+class _ChatAttachmentActions extends StatelessWidget {
+  const _ChatAttachmentActions({
+    required this.bridge,
+    required this.copy,
+    required this.attachment,
+    required this.isOutgoing,
+    required this.keyPrefix,
+    this.overlay = false,
+    this.onShare,
+    this.onSave,
+  });
+
+  final OpenCrayHostBridge? bridge;
+  final OpenCrayUiCopy copy;
+  final ChatMessageAttachmentData attachment;
+  final bool isOutgoing;
+  final String keyPrefix;
+  final bool overlay;
+  final Future<void> Function()? onShare;
+  final Future<void> Function()? onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool enabled =
+        bridge != null && attachment.localPath.trim().isNotEmpty;
+    final Color foregroundColor = overlay || isOutgoing
+        ? Colors.white
+        : _ChatPalette.textSecondary;
+    final Color backgroundColor = overlay
+        ? Colors.black.withValues(alpha: 0.42)
+        : (isOutgoing
+              ? Colors.white.withValues(alpha: 0.14)
+              : Colors.white.withValues(alpha: 0.72));
+    final BorderSide border = BorderSide(
+      color: overlay || isOutgoing
+          ? Colors.white.withValues(alpha: 0.18)
+          : _ChatPalette.border,
+    );
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.fromBorderSide(border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          _ChatAttachmentActionButton(
+            key: ValueKey<String>(
+              '$keyPrefix-share-${attachment.attachmentId}',
+            ),
+            tooltip: copy.chatAttachmentShareAction,
+            icon: Icons.share_outlined,
+            color: foregroundColor,
+            onPressed: enabled
+                ? () async {
+                    if (onShare != null) {
+                      await onShare!();
+                      return;
+                    }
+                    await _shareChatAttachment(
+                      context,
+                      bridge: bridge,
+                      copy: copy,
+                      attachment: attachment,
+                    );
+                  }
+                : null,
+          ),
+          _ChatAttachmentActionButton(
+            key: ValueKey<String>('$keyPrefix-save-${attachment.attachmentId}'),
+            tooltip: copy.chatAttachmentSaveAction,
+            icon: Icons.download_rounded,
+            color: foregroundColor,
+            onPressed: enabled
+                ? () async {
+                    if (onSave != null) {
+                      await onSave!();
+                      return;
+                    }
+                    await _saveChatAttachment(
+                      context,
+                      bridge: bridge,
+                      copy: copy,
+                      attachment: attachment,
+                    );
+                  }
+                : null,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ChatAttachmentActionButton extends StatelessWidget {
+  const _ChatAttachmentActionButton({
+    super.key,
+    required this.tooltip,
+    required this.icon,
+    required this.color,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final Color color;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      icon: Icon(icon, size: 16),
+      color: color,
+      disabledColor: color.withValues(alpha: 0.36),
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+      padding: EdgeInsets.zero,
+      onPressed: onPressed,
+    );
+  }
+}
+
+Future<void> _shareChatAttachment(
+  BuildContext context, {
+  required OpenCrayHostBridge? bridge,
+  required OpenCrayUiCopy copy,
+  required ChatMessageAttachmentData attachment,
+}) async {
+  final OpenCrayHostBridge? hostBridge = bridge;
+  final String localPath = attachment.localPath.trim();
+  if (hostBridge == null || localPath.isEmpty) {
+    return;
+  }
+  try {
+    await hostBridge.shareWorkspaceEntries(<String>[localPath]);
+  } catch (_) {
+    if (!context.mounted) {
+      return;
+    }
+    _showChatAttachmentFeedback(context, copy.chatAttachmentShareFailed);
+  }
+}
+
+Future<void> _saveChatAttachment(
+  BuildContext context, {
+  required OpenCrayHostBridge? bridge,
+  required OpenCrayUiCopy copy,
+  required ChatMessageAttachmentData attachment,
+}) async {
+  final OpenCrayHostBridge? hostBridge = bridge;
+  final String localPath = attachment.localPath.trim();
+  if (hostBridge == null || localPath.isEmpty) {
+    return;
+  }
+  try {
+    final OpenCraySavedWorkspaceMediaAttachment saved = await hostBridge
+        .saveWorkspaceMediaAttachment(
+          relativePath: localPath,
+          kind: attachment.kind.name,
+        );
+    if (!context.mounted) {
+      return;
+    }
+    final String message = saved.collection == 'recordings'
+        ? copy.chatAttachmentSavedToRecordings
+        : copy.chatAttachmentSavedToDownloads;
+    _showChatAttachmentFeedback(context, message);
+  } catch (_) {
+    if (!context.mounted) {
+      return;
+    }
+    _showChatAttachmentFeedback(context, copy.chatAttachmentSaveFailed);
+  }
+}
+
+void _showChatAttachmentFeedback(BuildContext context, String message) {
+  ScaffoldMessenger.maybeOf(context)
+    ?..hideCurrentSnackBar()
+    ..showSnackBar(SnackBar(content: Text(message)));
 }
 
 class _ChatVoiceWaveform extends StatelessWidget {

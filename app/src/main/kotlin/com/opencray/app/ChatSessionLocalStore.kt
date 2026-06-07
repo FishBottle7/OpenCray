@@ -50,6 +50,24 @@ internal open class ChatSessionLocalStore(
   fun loadSession(sessionId: String): ChatTranscriptSessionEntry? =
     loadWorkspaceOrCreate().sessions.firstOrNull { session -> session.sessionId == sessionId }
 
+  fun referencedAttachmentLocalPaths(): Set<String> {
+    val workspace = loadWorkspaceOrCreate()
+    val referencedPaths = linkedSetOf<String>()
+    workspace.sessions.forEach { session ->
+      session.messages.forEach { message ->
+        message.attachments.forEach { attachment ->
+          normalizedAttachmentLocalPath(attachment.localPath)?.let(referencedPaths::add)
+        }
+      }
+      pendingUserInputsFrom(workspace = workspace, sessionId = session.sessionId).forEach { pendingInput ->
+        pendingInput.attachments.forEach { attachment ->
+          normalizedAttachmentLocalPath(attachment.localPath)?.let(referencedPaths::add)
+        }
+      }
+    }
+    return referencedPaths
+  }
+
   internal fun isReusableEmptySession(sessionId: String): Boolean {
     if (sessionId.isBlank()) {
       return false
@@ -1213,6 +1231,13 @@ internal open class ChatSessionLocalStore(
   }
 
   private fun pendingUserInputExtensionKey(sessionId: String): String = "pendingUserInputs.$sessionId"
+
+  private fun normalizedAttachmentLocalPath(localPath: String): String? =
+    localPath
+      .trim()
+      .replace('\\', '/')
+      .trim('/')
+      .takeIf(String::isNotBlank)
 
   private fun workspaceWithTodos(
     workspace: ChatWorkspaceRecord,

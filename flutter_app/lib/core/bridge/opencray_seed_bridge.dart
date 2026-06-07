@@ -755,6 +755,14 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<OpenCraySavedWorkspaceMediaAttachment> saveWorkspaceMediaAttachment({
+    required String relativePath,
+    required String kind,
+  }) async {
+    throw StateError('Seed bridge does not support media saving.');
+  }
+
+  @override
   Future<void> showNativeToast(String message) async {
     final normalized = message.trim();
     if (normalized.isEmpty) {
@@ -2402,7 +2410,8 @@ OpenCraySettingsDetailSnapshot _seedSettingsDetailFor(String routeId) {
               ),
               OpenCraySettingsRowSnapshot.toggle(
                 title: 'Share product telemetry',
-                subtitle: 'Send anonymous usage counters for shell and settings flows.',
+                subtitle:
+                    'Send anonymous usage counters for shell and settings flows.',
                 toggleValue: false,
               ),
             ],

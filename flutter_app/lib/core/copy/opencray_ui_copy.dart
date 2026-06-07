@@ -517,6 +517,16 @@ class OpenCrayUiCopy {
       isChinese ? '已添加引用到输入框。' : 'Added quote to the composer.';
   String get chatMessageActionFailed =>
       isChinese ? '处理消息操作失败。' : 'Failed to process the message action.';
+  String get chatAttachmentShareAction => isChinese ? '分享' : 'Share';
+  String get chatAttachmentSaveAction => isChinese ? '保存' : 'Save';
+  String get chatAttachmentSavedToDownloads =>
+      isChinese ? '已保存到下载目录。' : 'Saved to Downloads.';
+  String get chatAttachmentSavedToRecordings =>
+      isChinese ? '已保存到录音目录。' : 'Saved to Recordings.';
+  String get chatAttachmentShareFailed =>
+      isChinese ? '分享附件失败。' : 'Failed to share the attachment.';
+  String get chatAttachmentSaveFailed =>
+      isChinese ? '保存附件失败。' : 'Failed to save the attachment.';
   String get markdownLinkUnsupported =>
       isChinese ? '暂不支持这种链接。' : 'This link target is not supported.';
   String get markdownLinkHttpOnly => isChinese

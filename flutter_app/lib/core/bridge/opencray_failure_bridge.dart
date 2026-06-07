@@ -139,6 +139,12 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
       throw StateError(_failureMessage);
 
   @override
+  Future<OpenCraySavedWorkspaceMediaAttachment> saveWorkspaceMediaAttachment({
+    required String relativePath,
+    required String kind,
+  }) async => throw StateError(_failureMessage);
+
+  @override
   Future<void> showNativeToast(String message) async {}
 
   @override

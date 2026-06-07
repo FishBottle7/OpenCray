@@ -279,6 +279,41 @@ class OpenCrayFlutterHostBridgeTest {
   }
 
   @Test
+  fun saveWorkspaceMediaAttachmentMethodCallRoutesThroughLocalHostGateway() {
+    val localGateway = RecordingLocalGateway().apply {
+      saveWorkspaceMediaAttachmentResult = mapOf(
+        "displayName" to "voice-note.m4a",
+        "collection" to "recordings",
+        "uri" to "content://media/audio/42",
+      )
+    }
+    val bridge = hostBridge(
+      chatGateway = RecordingChatRuntimeGateway(),
+      localHostGateway = localGateway,
+    )
+    val result = RecordingMethodResult()
+
+    bridge.onMethodCall(
+      MethodCall(
+        "saveWorkspaceMediaAttachment",
+        mapOf(
+          "relativePath" to ".opencray/chat-media/session-1/hash/voice-note.m4a",
+          "kind" to "voice",
+        ),
+      ),
+      result,
+    )
+
+    assertTrue(result.successCalled)
+    assertEquals(".opencray/chat-media/session-1/hash/voice-note.m4a", localGateway.lastSavedMediaPath)
+    assertEquals("voice", localGateway.lastSavedMediaKind)
+    assertEquals(
+      "recordings",
+      (result.successPayload as Map<*, *>)["collection"],
+    )
+  }
+
+  @Test
   fun loadChatSnapshotMethodCallRunsOnBackgroundRunner() {
     val chatGateway = RecordingChatRuntimeGateway().apply {
       loadChatSnapshotResult = mapOf("messages" to listOf("hello"))
@@ -1061,6 +1096,11 @@ class OpenCrayFlutterHostBridgeTest {
     var loadWorkspaceImagePreviewCallCount: Int = 0
       private set
     var loadWorkspaceImagePreviewResult: Map<String, Any?> = emptyMap()
+    var lastSavedMediaPath: String? = null
+      private set
+    var lastSavedMediaKind: String? = null
+      private set
+    var saveWorkspaceMediaAttachmentResult: Map<String, Any?> = emptyMap()
     var lastImportedRequestedKind: String? = null
       private set
     var lastImportedUriStrings: List<String> = emptyList()
@@ -1090,6 +1130,12 @@ class OpenCrayFlutterHostBridgeTest {
     override fun loadWorkspaceImagePreview(relativePath: String): Map<String, Any?> {
       loadWorkspaceImagePreviewCallCount += 1
       return loadWorkspaceImagePreviewResult
+    }
+
+    override fun saveWorkspaceMediaAttachment(relativePath: String, kind: String): Map<String, Any?> {
+      lastSavedMediaPath = relativePath
+      lastSavedMediaKind = kind
+      return saveWorkspaceMediaAttachmentResult
     }
 
     override fun importDraftChatAttachments(

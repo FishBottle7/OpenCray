@@ -192,6 +192,7 @@
     <string name="chat_trace_tool_follow_up">已收到 %1$s 的结果，正在判断下一步。</string>
     <string name="chat_agent_missing_llm">远程 LLM 尚未就绪。请先打开[设置 -&gt; LLM](/settings/llm)，配好 Base URL 和 API key。</string>
     <string name="chat_agent_failed">Agent 请求失败：%1$s</string>
+    <string name="chat_agent_attachment_save_failed">附件未能保存：%1$s</string>
     <string name="chat_agent_cancelled">Agent 请求已中断。</string>
     <string name="chat_approval_required_title">需要审批</string>
     <string name="chat_high_risk_approval_required_title">需要高风险审批</string>

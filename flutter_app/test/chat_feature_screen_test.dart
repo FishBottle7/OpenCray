@@ -11498,6 +11498,123 @@ void main() {
     ]);
   });
 
+  testWidgets('host attachment action buttons share and save workspace media', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        messages: <OpenCrayChatMessageSnapshot>[
+          const OpenCrayChatMessageSnapshot(
+            messageId: 'assistant-actions-media',
+            kind: 'inbound',
+            text: '',
+            attachments: <OpenCrayChatAttachmentSnapshot>[
+              OpenCrayChatAttachmentSnapshot(
+                attachmentId: 'image-action-1',
+                kind: 'image',
+                displayName: 'diagram.png',
+                localPath: '.opencray/chat-media/session-1/hash-a/diagram.png',
+              ),
+              OpenCrayChatAttachmentSnapshot(
+                attachmentId: 'voice-action-1',
+                kind: 'voice',
+                displayName: 'voice-note.m4a',
+                localPath:
+                    '.opencray/chat-media/session-1/hash-b/voice-note.m4a',
+                durationMs: 4200,
+              ),
+              OpenCrayChatAttachmentSnapshot(
+                attachmentId: 'file-action-1',
+                kind: 'file',
+                displayName: 'report.pdf',
+                localPath: '.opencray/chat-media/session-1/hash-c/report.pdf',
+                sizeBytes: 4096,
+              ),
+            ],
+          ),
+        ],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+      imagePreviews: <String, OpenCrayFileImagePreview>{
+        '.opencray/chat-media/session-1/hash-a/diagram.png': _fakeImagePreview(
+          name: 'diagram.png',
+          relativePath: '.opencray/chat-media/session-1/hash-a/diagram.png',
+        ),
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(
+        const ValueKey<String>('chat-message-attachment-share-file-action-1'),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(
+      find.byKey(
+        const ValueKey<String>('chat-message-attachment-save-file-action-1'),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(
+      find.byKey(
+        const ValueKey<String>('chat-message-attachment-save-voice-action-1'),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(
+      find.byKey(
+        const ValueKey<String>(
+          'chat-message-image-attachment-share-image-action-1',
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(
+      find.byKey(
+        const ValueKey<String>(
+          'chat-message-image-attachment-save-image-action-1',
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(bridge.sharedWorkspaceEntries, <List<String>>[
+      <String>['.opencray/chat-media/session-1/hash-c/report.pdf'],
+      <String>['.opencray/chat-media/session-1/hash-a/diagram.png'],
+    ]);
+    expect(bridge.savedWorkspaceMediaAttachments, hasLength(3));
+    expect(
+      bridge.savedWorkspaceMediaAttachments[0].relativePath,
+      '.opencray/chat-media/session-1/hash-c/report.pdf',
+    );
+    expect(bridge.savedWorkspaceMediaAttachments[0].kind, 'file');
+    expect(
+      bridge.savedWorkspaceMediaAttachments[1].relativePath,
+      '.opencray/chat-media/session-1/hash-b/voice-note.m4a',
+    );
+    expect(bridge.savedWorkspaceMediaAttachments[1].kind, 'voice');
+    expect(
+      bridge.savedWorkspaceMediaAttachments[2].relativePath,
+      '.opencray/chat-media/session-1/hash-a/diagram.png',
+    );
+    expect(bridge.savedWorkspaceMediaAttachments[2].kind, 'image');
+    expect(find.text(copy.chatAttachmentSavedToDownloads), findsOneWidget);
+  });
+
   testWidgets('assistant message bubbles render markdown emphasis', (
     tester,
   ) async {
@@ -13018,6 +13135,9 @@ class _FakeChatBridge implements OpenCrayHostBridge {
   final List<String> loadedVoicePlaybackSources = <String>[];
   final List<String> openedWorkspaceEntries = <String>[];
   final List<String> openedExternalUris = <String>[];
+  final List<List<String>> sharedWorkspaceEntries = <List<String>>[];
+  final List<_SavedWorkspaceMediaRequest> savedWorkspaceMediaAttachments =
+      <_SavedWorkspaceMediaRequest>[];
   final List<String> shownNativeToasts = <String>[];
   int createChatSessionCallCount = 0;
   Completer<void>? createChatSessionCompleter;
@@ -13287,6 +13407,25 @@ class _FakeChatBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<void> shareWorkspaceEntries(List<String> relativePaths) async {
+    sharedWorkspaceEntries.add(List<String>.of(relativePaths));
+  }
+
+  @override
+  Future<OpenCraySavedWorkspaceMediaAttachment> saveWorkspaceMediaAttachment({
+    required String relativePath,
+    required String kind,
+  }) async {
+    savedWorkspaceMediaAttachments.add(
+      _SavedWorkspaceMediaRequest(relativePath: relativePath, kind: kind),
+    );
+    return OpenCraySavedWorkspaceMediaAttachment(
+      displayName: relativePath.split('/').last,
+      collection: kind == 'voice' ? 'recordings' : 'downloads',
+    );
+  }
+
+  @override
   Future<void> showNativeToast(String message) async {
     shownNativeToasts.add(message);
   }
@@ -13383,6 +13522,16 @@ class _FakeChatBridge implements OpenCrayHostBridge {
 
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _SavedWorkspaceMediaRequest {
+  const _SavedWorkspaceMediaRequest({
+    required this.relativePath,
+    required this.kind,
+  });
+
+  final String relativePath;
+  final String kind;
 }
 
 class _FakeVoicePlaybackLog {

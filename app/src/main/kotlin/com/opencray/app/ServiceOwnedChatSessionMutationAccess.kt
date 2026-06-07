@@ -9,6 +9,7 @@ internal class ChatSessionMutationCoordinator(
   private val pendingApprovalState: ChatPendingApprovalState = ChatPendingApprovalState(),
   private val runtimeEventState: ChatRuntimeEventState = ChatRuntimeEventState(),
   private val terminalReplayRepairer: (String, List<AgentRunSnapshot>) -> Unit = { _, _ -> },
+  private val mediaGc: () -> Unit = {},
 ) {
   fun createChatSession(): String {
     val sessionId = chatSessionStore.createSession().activeSession.sessionId
@@ -50,6 +51,7 @@ internal class ChatSessionMutationCoordinator(
     if (shouldDiscardCurrentEmptySession) {
       discardSession(currentSessionId)
       chatSessionStore.deleteSession(currentSessionId)
+      runMediaGc()
     }
     val selectedSessionId = chatSessionStore.selectSession(sessionId).activeSession.sessionId
     activateSession(selectedSessionId)
@@ -62,6 +64,7 @@ internal class ChatSessionMutationCoordinator(
     }
     discardSession(sessionId)
     val nextSessionId = chatSessionStore.deleteSession(sessionId).activeSession.sessionId
+    runMediaGc()
     activateSession(nextSessionId)
     return nextSessionId
   }
@@ -78,6 +81,7 @@ internal class ChatSessionMutationCoordinator(
     }
     cancelPendingMessageIds(sessionId = sessionId, pendingMessageIds = setOf(messageId))
     chatSessionStore.deleteMessage(sessionId, messageId)
+    runMediaGc()
     return sessionId
   }
 
@@ -103,6 +107,7 @@ internal class ChatSessionMutationCoordinator(
         .mapTo(linkedSetOf()) { message -> message.messageId },
     )
     chatSessionStore.recallMessageCascade(sessionId, messageId)
+    runMediaGc()
     return sessionId
   }
 
@@ -188,6 +193,10 @@ internal class ChatSessionMutationCoordinator(
       checkpointStore.remove(approval.taskId)
     }
   }
+
+  private fun runMediaGc() {
+    runCatching { mediaGc() }
+  }
 }
 
 internal class ServiceOwnedChatSessionMutationAccess(
@@ -197,6 +206,7 @@ internal class ServiceOwnedChatSessionMutationAccess(
   private val pendingApprovalState: ChatPendingApprovalState = ChatPendingApprovalState(),
   private val runtimeEventState: ChatRuntimeEventState = ChatRuntimeEventState(),
   private val terminalReplayRepairer: (String, List<AgentRunSnapshot>) -> Unit = { _, _ -> },
+  private val mediaGc: () -> Unit = {},
 ) {
   private val lock = Any()
   private val coordinator = ChatSessionMutationCoordinator(
@@ -206,6 +216,7 @@ internal class ServiceOwnedChatSessionMutationAccess(
     pendingApprovalState = pendingApprovalState,
     runtimeEventState = runtimeEventState,
     terminalReplayRepairer = terminalReplayRepairer,
+    mediaGc = mediaGc,
   )
 
   fun createChatSession() {

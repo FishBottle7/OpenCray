@@ -24,6 +24,29 @@ import '../models/opencray_strong_background.dart';
 import '../models/opencray_twin_import_source_probe.dart';
 import '../models/opencray_workspace_text_document.dart';
 
+final class OpenCraySavedWorkspaceMediaAttachment {
+  const OpenCraySavedWorkspaceMediaAttachment({
+    required this.displayName,
+    required this.collection,
+    this.uri,
+    this.absolutePath,
+  });
+
+  factory OpenCraySavedWorkspaceMediaAttachment.fromMap(
+    Map<Object?, Object?> map,
+  ) => OpenCraySavedWorkspaceMediaAttachment(
+    displayName: map['displayName'] as String? ?? '',
+    collection: map['collection'] as String? ?? '',
+    uri: map['uri'] as String?,
+    absolutePath: map['absolutePath'] as String?,
+  );
+
+  final String displayName;
+  final String collection;
+  final String? uri;
+  final String? absolutePath;
+}
+
 abstract interface class OpenCrayHostBridge {
   Future<OpenCrayShellSnapshot> loadShellSnapshot();
 
@@ -94,6 +117,11 @@ abstract interface class OpenCrayHostBridge {
   });
 
   Future<void> shareWorkspaceEntries(List<String> relativePaths);
+
+  Future<OpenCraySavedWorkspaceMediaAttachment> saveWorkspaceMediaAttachment({
+    required String relativePath,
+    required String kind,
+  });
 
   Future<void> showNativeToast(String message);
 

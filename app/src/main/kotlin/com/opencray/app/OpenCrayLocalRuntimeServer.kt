@@ -277,6 +277,10 @@ internal class OpenCrayLocalRuntimeServer(
         )
         null
       }
+      "POST" to "/v1/save_workspace_media_attachment" -> localGateway.saveWorkspaceMediaAttachment(
+        relativePath = body.optString("relativePath"),
+        kind = body.optString("kind"),
+      )
       "GET" to "/v1/settings_overview" -> settingsGateway.loadSettingsOverview()
       "GET" to "/v1/settings_detail" -> settingsGateway.loadSettingsDetail(
         routeIdRaw = request.queryParameter("routeId"),

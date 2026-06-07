@@ -2332,6 +2332,61 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun taskSuccessShowsFailureTextWhenAssistantAttachmentCannotBeArchived() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-assistant-attachment-failure"),
+    )
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val workspaceRoot = temporaryFolder.newFolder("chat-attachment-failure-workspace").toPath()
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      workspaceRootProvider = { workspaceRoot },
+    )
+
+    hostRuntime.submitChatMessage("Send the generated image.")
+    val task = handle.submittedTasks.single()
+    val attachmentsJson = Json.encodeToString(
+      ListSerializer(OpenCrayFinalAttachment.serializer()),
+      listOf(
+        OpenCrayFinalAttachment(
+          kind = "image",
+          relativePath = "outputs/missing.png",
+          displayName = "missing.png",
+        ),
+      ),
+    )
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON to attachmentsJson,
+        ),
+      ),
+    )
+
+    val assistantMessage = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+      .last()
+
+    assertEquals(emptyList<ChatAttachmentEntry>(), assistantMessage.attachments)
+    assertTrue(assistantMessage.text.orEmpty().contains("Attachment could not be saved"))
+    assertTrue(assistantMessage.text.orEmpty().contains("1 attachment was missing"))
+  }
+
+  @Test
   fun taskSuccessResolvesArtifactOnlyAttachmentsAfterArtifactEventFallsOutOfLiveHistory() {
     val chatStore = ChatSessionLocalStore(
       temporaryFolder.newFolder("chat-store-assistant-artifact-attachments-overflow"),

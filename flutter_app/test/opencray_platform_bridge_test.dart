@@ -1128,6 +1128,40 @@ void main() {
   });
 
   test(
+    'platform bridge forwards media save requests to the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return <String, Object?>{
+              'displayName': 'voice-note.m4a',
+              'collection': 'recordings',
+              'uri': 'content://media/audio/42',
+            };
+          });
+
+      final saved = await bridge.saveWorkspaceMediaAttachment(
+        relativePath: '.opencray/chat-media/session-1/hash/voice-note.m4a',
+        kind: 'voice',
+      );
+
+      expect(capturedCall.method, 'saveWorkspaceMediaAttachment');
+      expect(capturedCall.arguments, isA<Map<Object?, Object?>>());
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(
+        arguments['relativePath'],
+        '.opencray/chat-media/session-1/hash/voice-note.m4a',
+      );
+      expect(arguments['kind'], 'voice');
+      expect(saved.displayName, 'voice-note.m4a');
+      expect(saved.collection, 'recordings');
+      expect(saved.uri, 'content://media/audio/42');
+    },
+  );
+
+  test(
     'platform bridge forwards open file requests to the host channel',
     () async {
       late MethodCall capturedCall;

@@ -19,6 +19,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -508,6 +509,31 @@ class OpenCrayToolDispatcherMediaToolTest {
     assertEquals(AgentToolResultStatus.FAILED, result.status)
     assertEquals("ILLEGAL_ARGUMENT", result.errorCode)
     assertEquals(listOf(9.toByte()), Files.readAllBytes(workspaceRoot.resolve("exports/icon.png")).toList())
+  }
+
+  @Test
+  fun mediaArtifactRegistryRejectsPathsOutsideWorkspace() {
+    val workspaceRoot = temporaryFolder.newFolder("media-registry-boundary-workspace").toPath()
+    val registry = defaultOpenCrayMediaArtifactRegistry(workspaceRoot)
+
+    registry.register(
+      artifacts = listOf(
+        OpenCrayAttachmentArtifact(
+          artifactId = "artifact-escape",
+          relativePath = "../outside.png",
+          displayName = "outside.png",
+          kindHint = "image",
+          mimeType = "image/png",
+        ),
+      ),
+      source = OpenCrayMediaArtifactSource(
+        runId = "run-escape",
+        toolName = "GenerateImage",
+        source = "generated",
+      ),
+    )
+
+    assertNull(registry.resolve("artifact-escape"))
   }
 
   private fun dispatcher(

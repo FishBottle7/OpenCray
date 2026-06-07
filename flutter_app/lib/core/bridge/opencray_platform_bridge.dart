@@ -69,10 +69,13 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   Future<void> saveShellDestination({
     required String selectedTab,
     String? settingsSubpage,
-  }) => _methodChannel.invokeMethod<void>('saveShellDestination', <String, Object?>{
-    'selectedTab': selectedTab,
-    'settingsSubpage': settingsSubpage,
-  });
+  }) => _methodChannel.invokeMethod<void>(
+    'saveShellDestination',
+    <String, Object?>{
+      'selectedTab': selectedTab,
+      'settingsSubpage': settingsSubpage,
+    },
+  );
 
   @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
@@ -237,6 +240,17 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
         'shareWorkspaceEntries',
         <String, Object?>{'relativePaths': relativePaths},
       );
+
+  @override
+  Future<OpenCraySavedWorkspaceMediaAttachment> saveWorkspaceMediaAttachment({
+    required String relativePath,
+    required String kind,
+  }) async => OpenCraySavedWorkspaceMediaAttachment.fromMap(
+    await _invokeMap(
+      'saveWorkspaceMediaAttachment',
+      arguments: <String, Object?>{'relativePath': relativePath, 'kind': kind},
+    ),
+  );
 
   @override
   Future<void> showNativeToast(String message) =>

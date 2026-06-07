@@ -276,6 +276,10 @@ internal class OpenCrayFlutterHostBridge(
           )
           null
         }
+        "saveWorkspaceMediaAttachment" -> localHostGateway.saveWorkspaceMediaAttachment(
+          relativePath = call.argument<String>("relativePath").orEmpty(),
+          kind = call.argument<String>("kind").orEmpty(),
+        )
         "showNativeToast" -> {
           localHostGateway.showNativeToast(
             message = call.argument<String>("message").orEmpty(),

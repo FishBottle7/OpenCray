@@ -56,22 +56,26 @@
 - 已支持当前 run 内通过 `artifactId` 引用 `Write / Import / Move` 等工具刚产出的文件附件
 - 已支持音频类 `artifactId` 默认落到 `voice` 语义
 - 当前真正展示给聊天消息的图片、语音、文件副本，仍然都是 `session` 私有副本
-- 当前跨 `session` 复用媒体时，应以工作区里的稳定 `relativePath` 文件为源，而不是复用旧 `session` 私有媒体路径
+- 跨 `run/session` 的生成媒体 artifact 已接入工作区级 registry：默认持久化到 `.opencray/media-artifacts/media-artifact-registry.json`
+- `PublishMediaArtifact` 已落地，支持把 registry 中的生成媒体复制发布到用户指定的工作区 `relativePath`
+- 聊天附件已支持系统分享，并可保存到系统下载目录或录音目录
+- 删除消息、撤回消息、删除会话后会触发保守 GC：只清理未被当前消息或 pending 输入引用的 `.opencray/chat-media/...` 文件，并 sweep stale registry 记录
+- 当前跨 `session` 复用媒体时，优先使用 registry artifact 或工作区里的稳定 `relativePath` 文件；不要把旧 `session` 私有媒体路径当作长期 API
 
-本次实现里暂未落地的点：
+本次实现后的剩余边界：
 
-- `artifactId` 还没有接入跨 run、跨会话可查询的真实宿主 artifact registry
-- 当前实现是 `run` 级 alias：runtime 把文件产物写进 tool result metadata，host 仅在当前 run 内回查
-- 因此当前 `artifactId` 主要适用于“本轮刚生成/导入/移动出来，接着立即发送”的附件
-- `PublishMediaArtifact` 还没有落地；当前若要跨 `session` 复用图片、语音或文件，仍应先保留到工作区稳定相对路径
-- 还没有工作区级全局 artifact/media registry；当前生成媒体更接近“本 run 内可引用的 artifact + 已落库的 session 私有副本”
+- artifact registry 记录的是工作区内真实文件路径、hash/size、来源 run/tool；若源文件被外部删除，registry sweep 会移除记录
+- `PublishMediaArtifact` 第一版只复制，不移动；目标已存在时失败，避免静默覆盖用户文件
+- GC 第一版只删除未引用的 `.opencray/chat-media/...` 会话媒体副本，不删除已发布到工作区的文件，也不主动删除 `.opencray/generated-media/...` 临时生成源
+- 自动 ASR、后台定时 sweep、发布目标覆盖/自动重命名策略仍留到后续决策
 
 这意味着当前代码状态更接近：
 
 - `Phase 1` 已完成主链路
 - `Phase 2` 已完成图片预览、语音内置播放、文本文件内置预览、普通文件外部打开
 - `Phase 2` 语音增强已完成波形、拖动 seek、转写展示
-- `Phase 3` 已部分完成：`GenerateImage` / `SynthesizeSpeech` 与最小可用 `artifactId` 发送闭环已经落地，但完整 artifact registry 与 `PublishMediaArtifact` 仍属于后续实现
+- `Phase 3` 已完成主闭环：`GenerateImage` / `SynthesizeSpeech`、跨 run/session artifact registry、`PublishMediaArtifact`、final attachment 发送都已接上
+- `Phase 4` 已完成第一版：附件系统分享、保存到下载/录音目录、保守 GC、附件保存失败可见文案
 
 说明：
 
@@ -141,12 +145,12 @@ Flutter 的 `ChatMessageData` 也只有：
 - `ChatAttachmentData`
 - composer 区域的附件卡片样式和 seed data
 
-问题在于这些能力目前主要服务于：
+最初的问题在于这些能力主要服务于：
 
 - 输入区附件展示
 - 原型态 UI
 
-而不是宿主真实聊天消息。也就是说当前仍然缺少：
+而不是宿主真实聊天消息。也就是说本计划需要补齐：
 
 - 宿主快照里的 message attachments
 - host snapshot 到 `ChatMessageData` 的 attachments 映射
@@ -687,7 +691,7 @@ agent 侧选择规则建议固定为：
 - 当前代码里已经落地 `GenerateImage` 和 `SynthesizeSpeech`
 - 当前实现使用 `OpenCrayConfigurableMediaProviderClient` 直连可配置 provider
 - 当前没有单独再抽一层独立 media gateway；接口抽象体现在 runtime 的 `OpenCrayImageGenerationClient` / `OpenCraySpeechSynthesisClient`
-- 当前仍未落地 `PublishMediaArtifact`
+- 当前已经落地 `PublishMediaArtifact`，并通过 `ToolPolicyPipeline` 走文件写入策略
 
 这一层建议独立于 `LiteLlmGateway`，不要塞进当前文本 LLM 抽象。
 
@@ -717,7 +721,7 @@ agent 侧选择规则建议固定为：
 
 - `GenerateImage` 已落地
 - `SynthesizeSpeech` 已落地
-- `PublishMediaArtifact` 未落地
+- `PublishMediaArtifact` 已落地
 
 其中：
 
@@ -763,7 +767,7 @@ agent 侧选择规则建议固定为：
 - `.opencray/chat-media/...` 是消息层稳定真源
 - 工作区发布文件只是副本
 - `PublishMediaArtifact` 不提供 `move`
-- 当前还没有工作区级全局 artifact registry，所以跨 `session` 复用仍应优先依赖工作区稳定文件，而不是历史 session 私有副本或临时 `artifactId`
+- 工作区级 artifact registry 支持跨 `run/session` 查询生成媒体，但旧 `session` 私有媒体路径仍不应当作长期共享 API
 
 最终是否“发送”由 final action 决定：
 
@@ -777,7 +781,7 @@ agent 侧选择规则建议固定为：
 
 这部分不能省，否则媒体功能上线后很快会变成垃圾文件制造机。
 
-建议新增轻量 `ChatMediaAssetStore` 或等价引用计数机制。
+已新增等价的保守 GC 机制。
 
 目标：
 
@@ -788,12 +792,13 @@ agent 侧选择规则建议固定为：
 - 发布到工作区的导出副本不反向变成消息真源
 - session 私有媒体库对重复内容做 `SHA-256` 哈希去重，同一图片或文件内容在同一 session 只存一份
 
-建议第一版：
+第一版实际策略：
 
-- 只对 `generated` 资产做引用计数
-- `workspace/imported` 资产不自动删
+- 只清理 `.opencray/chat-media/...` 下未被任何消息或 pending 输入引用的文件
+- 工作区原始文件和发布文件不自动删
 - `PublishMediaArtifact` 只做复制，不做移动
-- 未被 final action 引用的临时 `artifactId` 产物按短期临时资产处理，避免堆积
+- registry sweep 会移除指向缺失文件或越界路径的 stale 记录
+- 未被 final action 引用的 `.opencray/generated-media/...` 临时产物暂不自动删，留给后续后台 sweep 策略
 - session 私有媒体库按 `SHA-256` 内容哈希建索引，统一覆盖图片、语音和文件附件去重
 
 ### 8. 上下文注入策略
@@ -880,8 +885,8 @@ agent 侧选择规则建议固定为：
 - `GenerateImage` 已完成
 - `SynthesizeSpeech` 已完成
 - provider 配置页已进入实现范围
-- `PublishMediaArtifact` 未完成
-- 工作区级全局 artifact/media registry 未完成
+- `PublishMediaArtifact` 已完成
+- 工作区级全局 artifact/media registry 已完成第一版
 
 验收标准：
 
@@ -902,6 +907,12 @@ agent 侧选择规则建议固定为：
 - 分享到系统
 - 保存到下载或录音目录
 - 更好的失败文案和 unavailable 状态
+
+当前状态：
+
+- 已完成保守 GC：删除、撤回、删会话后清理未被引用的 `.opencray/chat-media/...` 文件，并 sweep stale registry 记录
+- 已完成聊天附件系统分享，以及保存到下载或录音目录
+- 已补 final attachment 保存失败的可见文案；用户提交侧 unresolved attachment reference 继续显式失败
 
 ## 建议的文件改动面
 
@@ -970,11 +981,13 @@ agent 侧选择规则建议固定为：
 
 ### 2. `PublishMediaArtifact` 的目标冲突策略
 
-- 目标路径已存在时是否直接报错
-- 是否自动重命名
-- 是否允许覆盖
+这一项已经定案并落代码：
 
-当前更推荐第一版先“报错并要求 agent 改目标路径”，避免静默覆盖用户文件。
+- 目标路径已存在时直接报错
+- 不自动重命名
+- 不允许覆盖
+
+这样可以避免静默覆盖用户文件；agent 需要重新选择目标路径。
 
 ### 3. 音频元数据的补全策略
 

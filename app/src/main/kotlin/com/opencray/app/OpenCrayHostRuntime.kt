@@ -273,6 +273,7 @@ internal class OpenCrayHostRuntime private constructor(
     pendingApprovalState = chatPendingApprovalState,
     runtimeEventState = chatRuntimeEventState,
     terminalReplayRepairer = terminalReplayRepairer,
+    mediaGc = ::sweepWorkspaceChatMedia,
   )
   private val chatSubmissionCoordinator = ChatSubmissionCoordinator(
     chatSessionStore = chatSessionStore,
@@ -491,15 +492,17 @@ internal class OpenCrayHostRuntime private constructor(
               task = task,
               text = baseFinalText,
             )
-            val finalAttachments = finalAttachmentsForResultLocked(
+            val finalAttachmentArchive = finalAttachmentArchiveForResultLocked(
               sessionId = sessionId,
               task = task,
               result = result,
               compatibilityAttachments = markdownCompatibility.attachments,
             )
+            val finalAttachments = finalAttachmentArchive.attachments
             val finalText = finalizedAssistantText(
               text = markdownCompatibility.rewrittenText,
               attachments = finalAttachments,
+              attachmentFailureText = finalAttachmentArchive.failureText,
             )
             val llmRetryPausedResult = isLlmRetryPausedResult(result)
             if (llmRetryPausedResult) {
@@ -2108,6 +2111,14 @@ internal class OpenCrayHostRuntime private constructor(
     chatSessionMutationCoordinator.repairTerminalReplay(resolvedSessionId)
     emitChatSnapshot()
     emitChatRuntimeSnapshot()
+  }
+
+  private fun sweepWorkspaceChatMedia() {
+    val workspaceRoot = workspaceRootProvider?.invoke() ?: return
+    AppAgentWorkspaceMediaGc.sweep(
+      workspaceRoot = workspaceRoot,
+      chatSessionStore = chatSessionStore,
+    )
   }
 
   override fun approveChatApproval(taskIdOrRunId: String) {
@@ -6610,17 +6621,20 @@ internal class OpenCrayHostRuntime private constructor(
     }.getOrDefault(emptyList())
   }
 
-  private fun finalAttachmentsForResultLocked(
+  private fun finalAttachmentArchiveForResultLocked(
     sessionId: String,
     task: AgentTask,
     result: ExecutionResult,
     compatibilityAttachments: List<OpenCrayFinalAttachment> = emptyList(),
-  ): List<ChatAttachmentEntry> {
+  ): FinalAttachmentArchiveResult {
     val explicitAttachments = finalAttachmentRequestsForResult(result)
     if (explicitAttachments.isEmpty() && compatibilityAttachments.isEmpty()) {
-      return emptyList()
+      return FinalAttachmentArchiveResult()
     }
-    val workspaceRoot = workspaceRootProvider?.invoke() ?: return emptyList()
+    val workspaceRoot = workspaceRootProvider?.invoke()
+      ?: return FinalAttachmentArchiveResult(
+        failureText = strings.agentAttachmentSaveFailed("workspace is unavailable"),
+      )
     val resolvedExplicitAttachments = resolveFinalChatAttachmentsLocked(
       sessionId = sessionId,
       attachments = resolveFinalAttachmentArtifactsLocked(
@@ -6633,23 +6647,61 @@ internal class OpenCrayHostRuntime private constructor(
       attachments = resolvedExplicitAttachments + compatibilityAttachments,
     )
     return runCatching {
-      AppChatAttachmentArchiver.archive(
+      val archivedAttachments = AppChatAttachmentArchiver.archive(
         workspaceRoot = workspaceRoot,
         approvedReadRoots = approvedReadRootsProvider().roots,
         sessionId = sessionId,
         attachments = resolvedAttachments,
         voiceMetadataAnalyzer = NoOpVoiceMetadataAnalyzer,
       )
-    }.getOrDefault(emptyList())
+      FinalAttachmentArchiveResult(
+        attachments = archivedAttachments,
+        failureText = missingAttachmentFailureText(
+          requestedCount = resolvedAttachments.size,
+          archivedCount = archivedAttachments.size,
+        ),
+      )
+    }.getOrElse { throwable ->
+      FinalAttachmentArchiveResult(
+        failureText = strings.agentAttachmentSaveFailed(
+          throwable.message?.trim()?.takeIf(String::isNotBlank) ?: throwable::class.java.simpleName,
+        ),
+      )
+    }
+  }
+
+  private fun missingAttachmentFailureText(
+    requestedCount: Int,
+    archivedCount: Int,
+  ): String? {
+    val missingCount = requestedCount - archivedCount
+    if (missingCount <= 0) {
+      return null
+    }
+    val detail = if (missingCount == 1) {
+      "1 attachment was missing, outside approved roots, or unsupported"
+    } else {
+      "$missingCount attachments were missing, outside approved roots, or unsupported"
+    }
+    return strings.agentAttachmentSaveFailed(detail)
   }
 
   private fun finalizedAssistantText(
     text: String,
     attachments: List<ChatAttachmentEntry>,
-  ): String = if (text.isBlank() && attachments.isNotEmpty()) {
-    ""
-  } else {
-    text
+    attachmentFailureText: String? = null,
+  ): String {
+    val failureText = attachmentFailureText?.trim()?.takeIf(String::isNotBlank)
+    val baseText = if (text.isBlank() && attachments.isNotEmpty()) {
+      ""
+    } else {
+      text
+    }
+    return when {
+      failureText == null -> baseText
+      baseText.isBlank() -> failureText
+      else -> "$baseText\n\n$failureText"
+    }
   }
 
   private fun attachmentMarkdownCompatibilityLocked(
@@ -7800,6 +7852,11 @@ internal class OpenCrayHostRuntime private constructor(
     val attachments: List<OpenCrayFinalAttachment> = emptyList(),
   )
 
+  private data class FinalAttachmentArchiveResult(
+    val attachments: List<ChatAttachmentEntry> = emptyList(),
+    val failureText: String? = null,
+  )
+
   private fun chatModeLabelFor(mode: SafetyAutomationMode): String = when (mode) {
     SafetyAutomationMode.SAFE -> strings.chatModeSafeLabel
     SafetyAutomationMode.AUTO -> strings.chatModeLabel
@@ -8594,6 +8651,9 @@ internal class OpenCrayHostRuntime private constructor(
       ),
       agentFailed = { detail ->
         context.getString(R.string.chat_agent_failed, detail)
+      },
+      agentAttachmentSaveFailed = { detail ->
+        context.getString(R.string.chat_agent_attachment_save_failed, detail)
       },
       chatApprovalApproveLabel = context.getStringByNameOrFallback(
         resourceName = "chat_approval_approve_label",

@@ -201,6 +201,17 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   );
 
   @override
+  Future<OpenCraySavedWorkspaceMediaAttachment> saveWorkspaceMediaAttachment({
+    required String relativePath,
+    required String kind,
+  }) async => OpenCraySavedWorkspaceMediaAttachment.fromMap(
+    await _postMap('v1/save_workspace_media_attachment', <String, Object?>{
+      'relativePath': relativePath,
+      'kind': kind,
+    }),
+  );
+
+  @override
   Future<void> showNativeToast(String message) async {}
 
   @override
