@@ -445,7 +445,7 @@ internal class ServiceOwnedChatRuntimeGateway(
   private var latestChatRuntimePayload: Map<String, Any?> = emptyMap()
 
   init {
-    latestChatPayload = decorateChatPayload(chatSnapshotGateway().loadChatSnapshot())
+    latestChatPayload = currentChatPayload()
     latestChatRuntimePayload =
       decorateChatRuntimePayload(runtimeSnapshotGateway().loadChatRuntimeSnapshot())
   }
@@ -736,7 +736,7 @@ internal class ServiceOwnedChatRuntimeGateway(
   }
 
   override fun loadChatSnapshot(): Map<String, Any?> =
-    decorateChatPayload(chatSnapshotGateway().loadChatSnapshot()).also { payload ->
+    currentChatPayload().also { payload ->
       synchronized(lock) {
         latestChatPayload = payload
       }
@@ -1019,7 +1019,7 @@ internal class ServiceOwnedChatRuntimeGateway(
   }
 
   private fun emitChatSnapshot() {
-    emitChatPayload(chatPayloadForEmission(loadChatSnapshot()))
+    emitChatPayload(loadChatSnapshot())
   }
 
   private fun emitChatRuntimeSnapshot() {
@@ -1054,9 +1054,12 @@ internal class ServiceOwnedChatRuntimeGateway(
     if (delegate != null) {
       return
     }
-    emitChatPayload(chatPayloadForEmission(loadChatSnapshot()))
+    emitChatPayload(loadChatSnapshot())
     emitChatRuntimePayload(currentDecoratedChatRuntimePayload())
   }
+
+  private fun currentChatPayload(): Map<String, Any?> =
+    chatPayloadForEmission(decorateChatPayload(chatSnapshotGateway().loadChatSnapshot()))
 
   private fun currentDecoratedChatRuntimePayload(): Map<String, Any?> =
     decorateChatRuntimePayload(runtimeSnapshotGateway().loadChatRuntimeSnapshot())

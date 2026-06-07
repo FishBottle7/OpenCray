@@ -3402,6 +3402,36 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun chatObserverInitialSnapshotDoesNotEmbedRuntimeActivity() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-chat-observer-initial-runtime"),
+    )
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeManager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(sessionId = activeSessionId)
+    runtimeManager.putHandle(handle)
+    val mainThreadPoster = QueuedMainThreadPoster()
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = runtimeManager,
+      mainThreadPoster = mainThreadPoster,
+    )
+
+    hostRuntime.submitChatMessage("Start a run before observing")
+    val fullSnapshot = hostRuntime.loadChatSnapshot()
+    val observedSnapshots = mutableListOf<Map<String, Any?>>()
+    val dispose = hostRuntime.observeChat { snapshot ->
+      observedSnapshots += snapshot
+    }
+    mainThreadPoster.flush()
+    dispose()
+
+    assertTrue(fullSnapshot["runtimeActivity"] is Map<*, *>)
+    assertTrue(observedSnapshots.isNotEmpty())
+    assertEquals(null, observedSnapshots.first()["runtimeActivity"])
+  }
+
+  @Test
   fun chatObserverReceivesSettledSnapshotAfterTaskFinish() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-settled-observer"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId

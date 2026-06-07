@@ -32,6 +32,60 @@ class ServiceOwnedChatRuntimeGatewayTest {
   val temporaryFolder: TemporaryFolder = TemporaryFolder()
 
   @Test
+  fun serviceOwnedChatRuntimeGatewayExposesChatSnapshotWithoutEmbeddedRuntimeActivity() {
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatPayload = mapOf(
+        "source" to "projection-chat",
+        "runtimeActivity" to mapOf(
+          "sessionId" to "session-runtime",
+          "updatedAtEpochMs" to 1_000L,
+          "activeRuns" to listOf(
+            mapOf(
+              "runId" to "run-runtime",
+              "taskId" to "task-runtime",
+              "isTerminal" to false,
+            ),
+          ),
+        ),
+      )
+      chatRuntimePayload = mapOf(
+        "source" to "projection-runtime",
+        "sessionId" to "session-runtime",
+        "updatedAtEpochMs" to 1_000L,
+        "activeRuns" to listOf(
+          mapOf(
+            "runId" to "run-runtime",
+            "taskId" to "task-runtime",
+            "isTerminal" to false,
+          ),
+        ),
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedPayloads = mutableListOf<Map<String, Any?>>()
+    val disposer = gateway.observeChat { payload ->
+      observedPayloads += payload
+    }
+
+    try {
+      val loadedPayload = gateway.loadChatSnapshot()
+      val runtimePayload = gateway.loadChatRuntimeSnapshot()
+
+      assertEquals("projection-chat", loadedPayload["source"])
+      assertNull(loadedPayload["runtimeActivity"])
+      assertTrue(observedPayloads.isNotEmpty())
+      assertNull(observedPayloads.first()["runtimeActivity"])
+      assertEquals("projection-runtime", runtimePayload["source"])
+      assertEquals("session-runtime", runtimePayload["sessionId"])
+    } finally {
+      disposer()
+    }
+  }
+
+  @Test
   fun serviceOwnedChatRuntimeGatewayRoutesSessionMutationsThroughServiceOwnedAccess() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("service-owned-chat-store"))
     val initialSessionId = chatStore.loadState().activeSession.sessionId

@@ -1877,7 +1877,7 @@ internal class OpenCrayHostRuntime private constructor(
   override fun observeChat(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     observeWithInitial(
       listeners = chatListeners,
-      initialPayload = loadChatSnapshot(),
+      initialPayload = loadChatSnapshotForEmission(),
       listener = listener,
     )
 
