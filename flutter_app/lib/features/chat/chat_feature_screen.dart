@@ -48,6 +48,16 @@ class _RuntimeProjectionPatch {
   final List<ChatRunTraceData> runTraces;
 }
 
+class _RuntimeProjectedMessagePatch {
+  const _RuntimeProjectedMessagePatch({
+    required this.anchorMessageId,
+    required this.text,
+  });
+
+  final String anchorMessageId;
+  final String text;
+}
+
 @visibleForTesting
 OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshot(
   OpenCrayChatRuntimeSnapshot? embedded,
@@ -1453,6 +1463,8 @@ bool _chatRunTracesEquivalent(
         leftTrace.isHighRisk == rightTrace.isHighRisk &&
         leftTrace.isTerminal == rightTrace.isTerminal &&
         leftTrace.canInterrupt == rightTrace.canInterrupt &&
+        leftTrace.isWritingAssistantDraft ==
+            rightTrace.isWritingAssistantDraft &&
         leftTrace.retryLabel == rightTrace.retryLabel &&
         _chatRunTracePreviewCardsEquivalent(
           leftTrace.previewCard,
@@ -2010,9 +2022,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   _runtimeEventDeltaSubscription;
   OpenCrayChatSnapshot? _latestChatSnapshot;
   OpenCrayChatRuntimeSnapshot? _latestChatRuntimeSnapshot;
+  Timer? _runtimeProjectionFlushTimer;
+  OpenCrayChatRuntimeSnapshot? _pendingRuntimeProjectionSnapshot;
   final Map<String, Map<String, OpenCrayChatLiveAssistantDraftSnapshot>>
   _liveAssistantDraftOverridesBySession =
       <String, Map<String, OpenCrayChatLiveAssistantDraftSnapshot>>{};
+  final Map<String, Map<String, int>>
+  _liveAssistantDraftEventEpochBySessionAndMessage =
+      <String, Map<String, int>>{};
   final Map<String, int> _runtimeEventDeltaSequenceBySession = <String, int>{};
   bool _runtimeEventDeltaResyncInFlight = false;
   OpenCrayChatRuntimeEventDelta? _queuedRuntimeEventDeltaAfterResync;
@@ -2334,6 +2351,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _chatRuntimeSubscription?.cancel();
     _liveAssistantDraftSubscription?.cancel();
     _runtimeEventDeltaSubscription?.cancel();
+    _runtimeProjectionFlushTimer?.cancel();
     _todoArchiveHideTimer?.cancel();
     _sandboxSessionAutoRefreshTimer?.cancel();
     _sandboxSessionLifecycleRefreshTimer?.cancel();
@@ -3711,7 +3729,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (delta.sequence > 0) {
       _runtimeEventDeltaSequenceBySession[sessionId] = delta.sequence;
     }
-    _applyRuntimeActivityPatch(patchedSnapshot);
+    _queueRuntimeActivityPatch(patchedSnapshot);
   }
 
   Future<void> _resyncRuntimeSnapshotAfterDeltaMiss() async {
@@ -3780,26 +3798,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         event.updatedAtEpochMs,
       ),
     );
-    final ChatFeatureState previousState = _state;
-    _applyRuntimeActivityPatch(effectiveRuntime);
-    if (!mounted) {
-      return;
-    }
-    final bool appendedMessage =
-        _state.messages.length > previousState.messages.length ||
-        (previousState.messages.isNotEmpty &&
-            _state.messages.isNotEmpty &&
-            previousState.messages.last.messageId !=
-                _state.messages.last.messageId);
-    final String? visibleText = event.cleared
-        ? null
-        : _visibleAssistantDraftText(event.text);
-    if (appendedMessage) {
-      _scheduleScrollToBottom();
-    } else if (visibleText != null &&
-        !chatMessagesEquivalent(previousState.messages, _state.messages)) {
-      _scheduleScrollToBottom(animated: false);
-    }
+    _queueRuntimeActivityPatch(effectiveRuntime);
   }
 
   void _storeLiveAssistantDraftOverride(
@@ -3809,6 +3808,19 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final String pendingMessageId = event.pendingMessageId.trim();
     if (sessionId.isEmpty || pendingMessageId.isEmpty) {
       return;
+    }
+    final Map<String, int> sessionEventEpochs =
+        _liveAssistantDraftEventEpochBySessionAndMessage.putIfAbsent(
+          sessionId,
+          () => <String, int>{},
+        );
+    final int eventEpochMs = event.updatedAtEpochMs;
+    final int previousEventEpochMs = sessionEventEpochs[pendingMessageId] ?? 0;
+    if (eventEpochMs > 0 && previousEventEpochMs > eventEpochMs) {
+      return;
+    }
+    if (eventEpochMs > 0) {
+      sessionEventEpochs[pendingMessageId] = eventEpochMs;
     }
     final Map<String, OpenCrayChatLiveAssistantDraftSnapshot> sessionDrafts =
         _liveAssistantDraftOverridesBySession.putIfAbsent(
@@ -4004,6 +4016,34 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     _syncSandboxSessionAutoRefresh();
     _syncSandboxSessionLifecycleAutoRefresh();
+  }
+
+  void _queueRuntimeActivityPatch(OpenCrayChatRuntimeSnapshot runtimeSnapshot) {
+    _pendingRuntimeProjectionSnapshot = runtimeSnapshot;
+    if (_runtimeProjectionFlushTimer != null) {
+      return;
+    }
+    _runtimeProjectionFlushTimer = Timer(
+      const Duration(milliseconds: 16),
+      _flushQueuedRuntimeActivityPatch,
+    );
+  }
+
+  void _flushQueuedRuntimeActivityPatch() {
+    _runtimeProjectionFlushTimer = null;
+    if (!mounted) {
+      _pendingRuntimeProjectionSnapshot = null;
+      return;
+    }
+    final OpenCrayChatRuntimeSnapshot? runtimeSnapshot =
+        _pendingRuntimeProjectionSnapshot ??
+        _latestChatRuntimeSnapshot ??
+        _latestChatSnapshot?.runtimeActivity;
+    _pendingRuntimeProjectionSnapshot = null;
+    if (runtimeSnapshot == null) {
+      return;
+    }
+    _applyRuntimeActivityPatch(runtimeSnapshot);
   }
 
   void _applyRuntimeActivityPatch(OpenCrayChatRuntimeSnapshot runtimeSnapshot) {
@@ -5064,10 +5104,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     );
     final Map<String, String> liveDraftTextByMessageId =
         _liveDraftTextByMessageId(effectiveRuntime);
+    final Map<String, _RuntimeProjectedMessagePatch>
+    runtimeProjectedMessagePatches = _runtimeProjectedMessagePatchesByMessageId(
+      effectiveRuntime,
+    );
     final List<ChatMessageData> anchoredMessages = _mapMessages(
       snapshot.messages,
       hideThinkingPlaceholder: false,
       draftTextByMessageId: liveDraftTextByMessageId,
+      runtimeProjectedMessagePatches: runtimeProjectedMessagePatches,
     );
     final Set<String> existingMessageIds = anchoredMessages
         .map((message) => message.messageId.trim())
@@ -5113,29 +5158,107 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return visibleDrafts;
   }
 
+  Map<String, _RuntimeProjectedMessagePatch>
+  _runtimeProjectedMessagePatchesByMessageId(
+    OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
+  ) {
+    if (runtimeSnapshot == null) {
+      return const <String, _RuntimeProjectedMessagePatch>{};
+    }
+    final Map<String, _RuntimeProjectedMessagePatch> patchesByMessageId =
+        <String, _RuntimeProjectedMessagePatch>{};
+    final List<OpenCrayChatRunSnapshot> visibleRuns = _visibleRuns(
+      runtimeSnapshot,
+    );
+    final Map<String, OpenCrayChatRunSnapshot> visibleRunsByRunId =
+        <String, OpenCrayChatRunSnapshot>{
+          for (final run in visibleRuns)
+            if (run.runId.trim().isNotEmpty) run.runId.trim(): run,
+        };
+    final Map<String, OpenCrayChatRunSnapshot> visibleRunsByTaskId =
+        <String, OpenCrayChatRunSnapshot>{
+          for (final run in visibleRuns)
+            if (run.taskId.trim().isNotEmpty) run.taskId.trim(): run,
+        };
+    for (final event in runtimeSnapshot.events) {
+      if (event.kind != 'assistant_phase' ||
+          event.isFinal == true ||
+          _hideAssistantPhaseBubble(event)) {
+        continue;
+      }
+      final OpenCrayChatRunSnapshot? run =
+          visibleRunsByRunId[event.runId.trim()] ??
+          visibleRunsByTaskId[event.taskId.trim()];
+      final String anchorMessageId = run?.pendingMessageId?.trim() ?? '';
+      if (run == null ||
+          anchorMessageId.isEmpty ||
+          !run.matchesRuntimeEvent(event)) {
+        continue;
+      }
+      final String text = _projectedAssistantPhaseMessageText(event);
+      if (text.trim().isEmpty) {
+        continue;
+      }
+      patchesByMessageId[_assistantPhaseMessageId(
+        event,
+      )] = _RuntimeProjectedMessagePatch(
+        anchorMessageId: anchorMessageId,
+        text: text,
+      );
+    }
+    for (final run in visibleRuns) {
+      final String anchorMessageId = run.pendingMessageId?.trim() ?? '';
+      if (anchorMessageId.isEmpty) {
+        continue;
+      }
+      for (final process in run.managedProcesses) {
+        final String text = _projectedManagedProcessMessageText(process);
+        if (text.trim().isEmpty) {
+          continue;
+        }
+        patchesByMessageId[_projectedManagedProcessMessageId(
+          run: run,
+          process: process,
+        )] = _RuntimeProjectedMessagePatch(
+          anchorMessageId: anchorMessageId,
+          text: text,
+        );
+      }
+    }
+    return patchesByMessageId;
+  }
+
   List<ChatMessageData> _mapMessages(
     List<OpenCrayChatMessageSnapshot> messages, {
     required bool hideThinkingPlaceholder,
     required Map<String, String> draftTextByMessageId,
+    Map<String, _RuntimeProjectedMessagePatch> runtimeProjectedMessagePatches =
+        const <String, _RuntimeProjectedMessagePatch>{},
   }) {
     final mapped = messages
         .asMap()
         .entries
-        .map(
-          (entry) => ChatMessageData(
-            messageId: entry.value.messageId.trim().isNotEmpty
-                ? entry.value.messageId
-                : 'message-${entry.key}-${entry.value.kind}',
+        .map((entry) {
+          final String messageId = entry.value.messageId.trim().isNotEmpty
+              ? entry.value.messageId
+              : 'message-${entry.key}-${entry.value.kind}';
+          final _RuntimeProjectedMessagePatch? runtimePatch =
+              runtimeProjectedMessagePatches[messageId];
+          return ChatMessageData(
+            messageId: messageId,
             kind: switch (entry.value.kind) {
               'timeline' => ChatMessageKind.timeline,
               'outbound' => ChatMessageKind.outbound,
               _ => ChatMessageKind.inbound,
             },
-            text: _resolvedChatMessageText(
-              message: entry.value,
-              draftTextByMessageId: draftTextByMessageId,
-            ),
+            text:
+                runtimePatch?.text ??
+                _resolvedChatMessageText(
+                  message: entry.value,
+                  draftTextByMessageId: draftTextByMessageId,
+                ),
             meta: entry.value.meta,
+            runtimeAnchorMessageId: runtimePatch?.anchorMessageId ?? '',
             createdAtEpochMs: entry.value.createdAtEpochMs,
             isEphemeral: entry.value.isEphemeral,
             attachments: entry.value.attachments
@@ -5162,8 +5285,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                   ),
                 )
                 .toList(growable: false),
-          ),
-        )
+          );
+        })
         .toList(growable: true);
     if (hideThinkingPlaceholder && mapped.isNotEmpty) {
       return _trimHiddenThinkingPlaceholder(
@@ -5670,9 +5793,44 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (latestEvent == null) {
       return true;
     }
+    if (latestEvent.kind == 'interrupted') {
+      return false;
+    }
     return latestEvent.kind != 'assistant_phase' ||
         latestEvent.isFinal == true ||
         _hideAssistantPhaseBubble(latestEvent);
+  }
+
+  bool _runHasVisibleLiveAssistantDraft({
+    required OpenCrayChatRunSnapshot run,
+    required OpenCrayChatRuntimeSnapshot runtimeSnapshot,
+  }) {
+    if (run.isTerminal) {
+      return false;
+    }
+    final String pendingMessageId = run.pendingMessageId?.trim() ?? '';
+    if (pendingMessageId.isEmpty) {
+      return false;
+    }
+    for (final draft in runtimeSnapshot.liveAssistantDrafts) {
+      if (draft.pendingMessageId.trim() != pendingMessageId ||
+          _visibleAssistantDraftText(draft.text)?.isNotEmpty != true ||
+          !_shouldDisplayLiveAssistantDraft(
+            runId: draft.runId,
+            taskId: draft.taskId,
+            runtimeSnapshot: runtimeSnapshot,
+          )) {
+        continue;
+      }
+      final String draftRunId = draft.runId.trim();
+      final String draftTaskId = draft.taskId.trim();
+      if ((draftRunId.isNotEmpty && draftRunId == run.runId.trim()) ||
+          (draftTaskId.isNotEmpty && draftTaskId == run.taskId.trim()) ||
+          (draftRunId.isEmpty && draftTaskId.isEmpty)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   bool _hideAssistantPhaseBubble(OpenCrayChatRuntimeEventSnapshot event) {
@@ -5760,6 +5918,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       pendingApproval: pendingApproval,
       durableSubAgentEvents: durableSubAgentEvents,
     );
+    final bool isWritingAssistantDraft = _runHasVisibleLiveAssistantDraft(
+      run: run,
+      runtimeSnapshot: runtimeSnapshot,
+    );
     _runTraceDebug(
       'feature.mapRunTrace run=${run.runId} task=${run.taskId} events=${runEvents.length} history=${history.length} managedProcesses=${run.managedProcesses.length} runningManagedProcesses=${run.runningManagedProcessCount} liveManagedProcesses=${run.hasLiveManagedProcesses}',
     );
@@ -5780,6 +5942,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       isHighRisk: isHighRisk,
       isTerminal: run.isTerminal,
       canInterrupt: canInterruptOverride ?? canInterrupt,
+      isWritingAssistantDraft: isWritingAssistantDraft,
       retryLabel: retryLabel,
       previewCard: previewCard,
       sessionCard: sessionCard,
@@ -13999,6 +14162,20 @@ _RunTraceCompactPresentation _buildRunTraceCompactPresentation({
         (entry) => !_runTraceThinkingPlaceholders.contains(entry.body.trim()),
       )
       .toList(growable: false);
+  if (trace.isWritingAssistantDraft && !trace.isTerminal) {
+    return _RunTraceCompactPresentation(
+      statusLabel: copy.isChinese ? '正在写回复' : 'WRITING REPLY',
+      activityLabel: copy.isChinese ? '写回复' : 'Writing reply',
+      headline: copy.isChinese ? '生成最终回答' : 'Writing final answer',
+      description: null,
+      detailLines: const <_RunTraceCompactDetailLine>[],
+      footer: trace.history.isNotEmpty || trace.isRetryable
+          ? (copy.isChinese
+                ? '双击查看完整历史。'
+                : 'Double tap to inspect the full history.')
+          : null,
+    );
+  }
   final ChatRunTraceHistoryEntry? currentEntry = _resolveCompactRunTraceEntry(
     trace: trace,
     visibleHistory: visibleHistory,

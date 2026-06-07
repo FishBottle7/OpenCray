@@ -2063,6 +2063,77 @@ void main() {
     },
   );
 
+  testWidgets(
+    'live assistant draft events coalesce to the latest visible text without rolling back',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final draftEvents =
+          StreamController<OpenCrayChatLiveAssistantDraftEvent>.broadcast();
+      addTearDown(draftEvents.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Write a concise report.',
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-coalesce-1',
+              taskId: 'task-coalesce-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1200,
+              attempt: 1,
+              pendingMessageId: 'pending-coalesce-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+        liveAssistantDraftEventStream: draftEvents.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      draftEvents.add(
+        const OpenCrayChatLiveAssistantDraftEvent(
+          sessionId: 'session-1',
+          runId: 'run-coalesce-1',
+          taskId: 'task-coalesce-1',
+          pendingMessageId: 'pending-coalesce-1',
+          text: 'Complete streamed answer.',
+          updatedAtEpochMs: 1500,
+        ),
+      );
+      draftEvents.add(
+        const OpenCrayChatLiveAssistantDraftEvent(
+          sessionId: 'session-1',
+          runId: 'run-coalesce-1',
+          taskId: 'task-coalesce-1',
+          pendingMessageId: 'pending-coalesce-1',
+          text: 'Complete',
+          updatedAtEpochMs: 1400,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Complete streamed answer.'), findsOneWidget);
+      expect(find.text('Complete'), findsNothing);
+    },
+  );
+
   testWidgets('runtime deltas clear stale live assistant draft bubbles', (
     tester,
   ) async {
@@ -3366,6 +3437,127 @@ void main() {
           matching: find.textContaining('status: finished', findRichText: true),
         ),
         findsOneWidget,
+      );
+    },
+  );
+
+  testWidgets(
+    'runtime patches existing projected process bubbles and anchors the status line above the agent group',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          updatedAtEpochMs: 1000,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              messageId: 'user-runtime-anchor-1',
+              kind: 'outbound',
+              text: 'Start the preview server.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'runtime-process-run-runtime-anchor-1-proc-1',
+              kind: 'inbound',
+              text: 'Process proc-1\n\nrunning: npm run dev\n\nstale output',
+              createdAtEpochMs: 1200,
+              isEphemeral: true,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-runtime-anchor-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1300,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 1700,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-runtime-anchor-1',
+              taskId: 'task-runtime-anchor-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1700,
+              attempt: 1,
+              pendingMessageId: 'pending-runtime-anchor-1',
+              managedProcessIds: <String>['proc-1'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-1',
+                  status: 'running',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1200,
+                  updatedAtEpochMs: 1700,
+                  stdoutPreview: 'fresh output from runtime',
+                ),
+              ],
+              runningManagedProcessCount: 1,
+              hasLiveManagedProcesses: true,
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-runtime-anchor-1',
+              taskId: 'task-runtime-anchor-1',
+              emittedAtEpochMs: 1400,
+              toolName: 'WebFetch',
+              contentPreview: 'Fetched page content.',
+            ),
+          ],
+          liveAssistantDrafts: <OpenCrayChatLiveAssistantDraftSnapshot>[
+            OpenCrayChatLiveAssistantDraftSnapshot(
+              runId: 'run-runtime-anchor-1',
+              taskId: 'task-runtime-anchor-1',
+              pendingMessageId: 'pending-runtime-anchor-1',
+              text: 'The preview server is running.',
+              updatedAtEpochMs: 1700,
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final runTraceFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-runtime-anchor-1'),
+      );
+      final processBubbleFinder = find.byKey(
+        const ValueKey<String>(
+          'chat-bubble-runtime-process-run-runtime-anchor-1-proc-1',
+        ),
+      );
+      final draftBubbleFinder = find.byKey(
+        const ValueKey<String>('chat-bubble-pending-runtime-anchor-1'),
+      );
+
+      expect(runTraceFinder, findsOneWidget);
+      expect(processBubbleFinder, findsOneWidget);
+      expect(draftBubbleFinder, findsOneWidget);
+      expect(find.text('WRITING REPLY'), findsOneWidget);
+      expect(find.textContaining('fresh output from runtime'), findsWidgets);
+      expect(find.textContaining('stale output'), findsNothing);
+
+      expect(
+        tester.getTopLeft(runTraceFinder).dy,
+        lessThan(tester.getTopLeft(processBubbleFinder).dy),
+      );
+      expect(
+        tester.getTopLeft(processBubbleFinder).dy,
+        lessThan(tester.getTopLeft(draftBubbleFinder).dy),
       );
     },
   );
