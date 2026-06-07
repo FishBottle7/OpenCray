@@ -191,8 +191,9 @@ OpenCrayChatRuntimeSnapshot _mergeRuntimeSnapshots(
 
 OpenCrayChatRuntimeSnapshot _mergeRuntimeDeltaSnapshot(
   OpenCrayChatRuntimeSnapshot current,
-  OpenCrayChatRuntimeSnapshot delta,
-) {
+  OpenCrayChatRuntimeSnapshot delta, {
+  required bool hasLiveAssistantDraftsPatch,
+}) {
   final OpenCrayChatRuntimeSnapshot merged = _mergeRuntimeSnapshots(
     current,
     delta,
@@ -203,7 +204,9 @@ OpenCrayChatRuntimeSnapshot _mergeRuntimeDeltaSnapshot(
     retainedRuns: merged.retainedRuns,
     subAgents: merged.subAgents,
     events: merged.events,
-    liveAssistantDrafts: delta.liveAssistantDrafts,
+    liveAssistantDrafts: hasLiveAssistantDraftsPatch
+        ? delta.liveAssistantDrafts
+        : merged.liveAssistantDrafts,
     hostLifecycle: merged.hostLifecycle,
     updatedAtEpochMs: merged.updatedAtEpochMs,
   );
@@ -1135,13 +1138,10 @@ OpenCrayChatRunSnapshot? _findRuntimeRun(
 
 List<OpenCrayChatRunSnapshot> _visibleRuns(
   OpenCrayChatRuntimeSnapshot snapshot,
-) => <OpenCrayChatRunSnapshot>[
-  ...snapshot.activeRuns,
-  ...snapshot.retainedRuns,
-];
+) => _mergeRuntimeRuns(snapshot.activeRuns, snapshot.retainedRuns);
 
 int _visibleRunCount(OpenCrayChatRuntimeSnapshot snapshot) =>
-    snapshot.activeRuns.length + snapshot.retainedRuns.length;
+    _visibleRuns(snapshot).length;
 
 String _hostInstanceId(OpenCrayChatRuntimeSnapshot snapshot) =>
     snapshot.hostLifecycle?.hostInstanceId?.trim() ?? '';
@@ -3921,7 +3921,34 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (!shouldReplaceObservedChatSnapshot(_latestChatSnapshot, snapshot)) {
       return;
     }
-    _reconcileLiveAssistantDraftOverrides(snapshot.runtimeActivity);
+    final OpenCrayChatRuntimeSnapshot? embeddedRuntime =
+        snapshot.runtimeActivity;
+    if (embeddedRuntime != null) {
+      final OpenCrayChatRuntimeSnapshot resolvedRuntime =
+          _latestChatRuntimeSnapshot != null &&
+              !_runtimeSnapshotsShareSession(
+                _latestChatRuntimeSnapshot!,
+                embeddedRuntime,
+              ) &&
+              embeddedRuntime.sessionId.trim().isNotEmpty
+          ? embeddedRuntime
+          : resolveChatRuntimeSnapshot(
+                  _latestChatRuntimeSnapshot,
+                  embeddedRuntime,
+                ) ??
+                embeddedRuntime;
+      _reconcileLiveAssistantDraftOverrides(resolvedRuntime);
+      if (shouldReplaceObservedRuntimeSnapshot(
+        _latestChatRuntimeSnapshot,
+        resolvedRuntime,
+      )) {
+        _latestChatRuntimeSnapshot = resolvedRuntime;
+        final String resolvedSessionId = resolvedRuntime.sessionId.trim();
+        if (resolvedSessionId.isNotEmpty) {
+          _runtimeEventDeltaSequenceBySession.remove(resolvedSessionId);
+        }
+      }
+    }
     _latestChatSnapshot = snapshot;
     _applyHostState();
   }
@@ -4020,7 +4047,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         );
     final OpenCrayChatRuntimeSnapshot patchedSnapshot = currentSnapshot == null
         ? deltaSnapshot
-        : _mergeRuntimeDeltaSnapshot(currentSnapshot, deltaSnapshot);
+        : _mergeRuntimeDeltaSnapshot(
+            currentSnapshot,
+            deltaSnapshot,
+            hasLiveAssistantDraftsPatch: delta.hasLiveAssistantDraftsPatch,
+          );
     if (!shouldReplaceObservedRuntimeSnapshot(
       currentSnapshot,
       patchedSnapshot,
@@ -12154,7 +12185,9 @@ class _MessageList extends StatelessWidget {
           child: Align(
             alignment: Alignment.centerLeft,
             child: _RunTraceBubble(
-              key: ValueKey<String>('chat-run-trace-${trace.runId}'),
+              key: ValueKey<String>(
+                'chat-run-trace-${_stableRunTraceKey(trace)}',
+              ),
               bridge: bridge,
               copy: copy,
               trace: trace,
@@ -12387,6 +12420,18 @@ String _runtimeProjectedTraceAnchorMessageIdForMessage(
   return bestAnchorMessageId;
 }
 
+String _stableRunTraceKey(ChatRunTraceData trace) {
+  final String runId = trace.runId.trim();
+  if (runId.isNotEmpty) {
+    return runId;
+  }
+  final String taskId = trace.taskId.trim();
+  if (taskId.isNotEmpty) {
+    return taskId;
+  }
+  return trace.label.trim();
+}
+
 String _chatMessageListItemKey(ChatMessageData message) {
   final String messageId = message.messageId.trim();
   if (messageId.isNotEmpty) {
@@ -12453,25 +12498,38 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
     _publishTraceUpdate();
   }
 
-  static String _traceNotifierKey(ChatRunTraceData trace) {
-    final String runId = trace.runId.trim();
-    if (runId.isNotEmpty) {
-      return runId;
-    }
+  static List<String> _traceNotifierKeys(ChatRunTraceData trace) {
+    final List<String> keys = <String>[];
     final String taskId = trace.taskId.trim();
-    return taskId.isNotEmpty ? taskId : trace.label.trim();
+    final String runId = trace.runId.trim();
+    if (taskId.isNotEmpty) {
+      keys.add('task:$taskId');
+    }
+    if (runId.isNotEmpty) {
+      keys.add('run:$runId');
+    }
+    if (keys.isEmpty) {
+      keys.add('label:${trace.label.trim()}');
+    }
+    return keys;
   }
 
   static int _openNotifierCount(ChatRunTraceData trace) =>
-      _openTraceNotifiersByRunKey[_traceNotifierKey(trace)]?.length ?? 0;
+      _traceNotifierKeys(trace).fold<int>(
+        0,
+        (total, key) => total + (_openTraceNotifiersByRunKey[key]?.length ?? 0),
+      );
 
   void _publishTraceUpdate() {
-    final Set<ValueNotifier<ChatRunTraceData>>? notifiers =
-        _openTraceNotifiersByRunKey[_traceNotifierKey(widget.trace)];
-    if (notifiers == null || notifiers.isEmpty) {
-      return;
+    final Set<ValueNotifier<ChatRunTraceData>> notifiers =
+        <ValueNotifier<ChatRunTraceData>>{};
+    for (final key in _traceNotifierKeys(widget.trace)) {
+      notifiers.addAll(
+        _openTraceNotifiersByRunKey[key] ??
+            const <ValueNotifier<ChatRunTraceData>>{},
+      );
     }
-    for (final notifier in notifiers.toList(growable: false)) {
+    for (final notifier in notifiers) {
       notifier.value = widget.trace;
     }
   }
@@ -12479,10 +12537,12 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
   Future<void> _openFullscreen() {
     final ValueNotifier<ChatRunTraceData> traceNotifier =
         ValueNotifier<ChatRunTraceData>(widget.trace);
-    final String traceKey = _traceNotifierKey(widget.trace);
-    _openTraceNotifiersByRunKey
-        .putIfAbsent(traceKey, () => <ValueNotifier<ChatRunTraceData>>{})
-        .add(traceNotifier);
+    final List<String> traceKeys = _traceNotifierKeys(widget.trace);
+    for (final traceKey in traceKeys) {
+      _openTraceNotifiersByRunKey
+          .putIfAbsent(traceKey, () => <ValueNotifier<ChatRunTraceData>>{})
+          .add(traceNotifier);
+    }
     return showDialog<void>(
       context: context,
       barrierColor: const Color(0x8A0B0E14),
@@ -12495,11 +12555,13 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
         isRetryBusy: widget.isRetryBusy,
       ),
     ).whenComplete(() {
-      final Set<ValueNotifier<ChatRunTraceData>>? notifiers =
-          _openTraceNotifiersByRunKey[traceKey];
-      notifiers?.remove(traceNotifier);
-      if (notifiers != null && notifiers.isEmpty) {
-        _openTraceNotifiersByRunKey.remove(traceKey);
+      for (final traceKey in traceKeys) {
+        final Set<ValueNotifier<ChatRunTraceData>>? notifiers =
+            _openTraceNotifiersByRunKey[traceKey];
+        notifiers?.remove(traceNotifier);
+        if (notifiers != null && notifiers.isEmpty) {
+          _openTraceNotifiersByRunKey.remove(traceKey);
+        }
       }
       traceNotifier.dispose();
     });

@@ -1655,6 +1655,7 @@ class OpenCrayChatRuntimeEventDelta {
     this.retainedRuns = const <OpenCrayChatRunSnapshot>[],
     this.subAgents = const <OpenCrayChatSubAgentSnapshot>[],
     this.liveAssistantDrafts = const <OpenCrayChatLiveAssistantDraftSnapshot>[],
+    this.hasLiveAssistantDraftsPatch = false,
     this.hostLifecycle,
     this.updatedAtEpochMs = 0,
   });
@@ -1667,6 +1668,7 @@ class OpenCrayChatRuntimeEventDelta {
   final List<OpenCrayChatRunSnapshot> retainedRuns;
   final List<OpenCrayChatSubAgentSnapshot> subAgents;
   final List<OpenCrayChatLiveAssistantDraftSnapshot> liveAssistantDrafts;
+  final bool hasLiveAssistantDraftsPatch;
   final OpenCrayHostLifecycleSnapshot? hostLifecycle;
   final int updatedAtEpochMs;
 
@@ -1678,6 +1680,7 @@ class OpenCrayChatRuntimeEventDelta {
         map['retainedRuns'] as List<Object?>? ?? const <Object?>[];
     final rawSubAgents =
         map['subAgents'] as List<Object?>? ?? const <Object?>[];
+    final hasLiveAssistantDraftsPatch = map.containsKey('liveAssistantDrafts');
     final rawLiveAssistantDrafts =
         map['liveAssistantDrafts'] as List<Object?>? ?? const <Object?>[];
     final rawHostLifecycle = map['hostLifecycle'];
@@ -1705,6 +1708,7 @@ class OpenCrayChatRuntimeEventDelta {
           .whereType<Map<Object?, Object?>>()
           .map(OpenCrayChatLiveAssistantDraftSnapshot.fromMap)
           .toList(growable: false),
+      hasLiveAssistantDraftsPatch: hasLiveAssistantDraftsPatch,
       hostLifecycle: rawHostLifecycle is Map<Object?, Object?>
           ? OpenCrayHostLifecycleSnapshot.fromMap(rawHostLifecycle)
           : null,
@@ -1717,6 +1721,7 @@ class OpenCrayChatRuntimeEventDelta {
       activeRuns.isNotEmpty ||
       retainedRuns.isNotEmpty ||
       subAgents.isNotEmpty ||
+      hasLiveAssistantDraftsPatch ||
       liveAssistantDrafts.isNotEmpty ||
       hostLifecycle != null ||
       updatedAtEpochMs > 0;
