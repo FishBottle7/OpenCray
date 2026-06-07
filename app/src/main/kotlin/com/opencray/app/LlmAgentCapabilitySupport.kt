@@ -147,7 +147,9 @@ internal fun LlmAgentCapabilitySnapshot.runtimeMetadataOverrides(): Map<String, 
   }
   if (wasVerified) {
     put("responsesContinuationSupported", responsesContinuationSupported.toString())
-    put("nativeWebSearchEnabled", builtinWebSearchSupported.toString())
+    if (builtinWebSearchSupported) {
+      put("nativeWebSearchEnabled", "true")
+    }
     put("assistantPhaseSupported", assistantPhaseSupported.toString())
     put("citationIncludeSupported", citationIncludeSupported.toString())
   }

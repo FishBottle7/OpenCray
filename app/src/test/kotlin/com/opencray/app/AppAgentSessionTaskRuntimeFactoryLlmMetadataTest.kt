@@ -1,8 +1,12 @@
 package com.opencray.app
 
+import com.opencray.llm.LiteLlmBuiltinToolDefinition
+import com.opencray.llm.LiteLlmBuiltinToolType
+import com.opencray.runtime.AgentToolDefinition
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -64,6 +68,45 @@ class AppAgentSessionTaskRuntimeFactoryLlmMetadataTest {
     assertFalse(metadata.containsKey("reserved_output_tokens"))
   }
 
+  @Test
+  fun builtinToolsForWarmupDefaultsResponsesRouteToNativeWebSearch() {
+    val factory = createFactory()
+
+    val builtinTools = builtinToolsForWarmupForTest(
+      factory = factory,
+      visibleToolDefinitions = listOf(
+        AgentToolDefinition(
+          name = "WebSearch",
+          description = "Search the web.",
+        ),
+      ),
+      llmMetadata = mapOf("protocol" to LlmProviderProtocols.OPENAI_RESPONSES),
+    )
+
+    assertEquals(LiteLlmBuiltinToolType.WEB_SEARCH, builtinTools.single().type)
+  }
+
+  @Test
+  fun builtinToolsForWarmupKeepsExplicitNativeWebSearchDisable() {
+    val factory = createFactory()
+
+    val builtinTools = builtinToolsForWarmupForTest(
+      factory = factory,
+      visibleToolDefinitions = listOf(
+        AgentToolDefinition(
+          name = "WebSearch",
+          description = "Search the web.",
+        ),
+      ),
+      llmMetadata = mapOf(
+        "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+        "nativeWebSearchEnabled" to "false",
+      ),
+    )
+
+    assertTrue(builtinTools.isEmpty())
+  }
+
   private fun createFactory(): AppAgentSessionTaskRuntimeFactory {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-llm-metadata"))
     val workspaceRoot = temporaryFolder.newFolder("workspace-root-llm-metadata").toPath()
@@ -109,5 +152,24 @@ class AppAgentSessionTaskRuntimeFactoryLlmMetadataTest {
       llmSettings,
       routeMetadata,
     ) as Map<String, String>
+  }
+
+  @Suppress("UNCHECKED_CAST")
+  private fun builtinToolsForWarmupForTest(
+    factory: AppAgentSessionTaskRuntimeFactory,
+    visibleToolDefinitions: List<AgentToolDefinition>,
+    llmMetadata: Map<String, String>,
+  ): List<LiteLlmBuiltinToolDefinition> {
+    val method = AppAgentSessionTaskRuntimeFactory::class.java.getDeclaredMethod(
+      "builtinToolsForWarmup",
+      List::class.java,
+      Map::class.java,
+    )
+    method.isAccessible = true
+    return method.invoke(
+      factory,
+      visibleToolDefinitions,
+      llmMetadata,
+    ) as List<LiteLlmBuiltinToolDefinition>
   }
 }

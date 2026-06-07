@@ -71,6 +71,51 @@ class LlmRouteCapabilityMetadataTest {
   }
 
   @Test
+  fun effectiveLlmRouteMetadataDoesNotDisableResponsesNativeSearchFromUnobservedProbe() {
+    val metadata = effectiveLlmRouteMetadata(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot(
+        routeFingerprint = llmRouteFingerprint(
+          protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+          baseUrl = "https://api.openai.com/v1",
+          model = "gpt-5-mini",
+        ),
+        verifiedAtEpochMs = 123L,
+        nativeToolCallingAvailable = true,
+        builtinWebSearchSupported = false,
+      ),
+    )
+
+    assertEquals("openai_responses", metadata["protocol"])
+    assertEquals(null, metadata["nativeWebSearchEnabled"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataEnablesNativeSearchWhenVerifiedSupported() {
+    val metadata = effectiveLlmRouteMetadata(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot(
+        routeFingerprint = llmRouteFingerprint(
+          protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+          baseUrl = "https://api.openai.com/v1",
+          model = "gpt-5-mini",
+        ),
+        verifiedAtEpochMs = 123L,
+        nativeToolCallingAvailable = true,
+        builtinWebSearchSupported = true,
+      ),
+    )
+
+    assertEquals("true", metadata["nativeWebSearchEnabled"])
+  }
+
+  @Test
   fun effectiveLlmCapabilityMetadataUsesProviderDeclaredOverrideFromRouteMetadata() {
     val metadata = effectiveLlmCapabilityMetadata(
       providerId = "custom",

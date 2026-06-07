@@ -1408,7 +1408,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
           "false" -> false
           else -> null
         }
-      } ?: false
+      } ?: (llmMetadata["protocol"]?.trim()?.lowercase() == LlmProviderProtocols.OPENAI_RESPONSES)
     if (!nativeProviderWebSearchEnabled) {
       return emptyList()
     }
