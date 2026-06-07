@@ -142,20 +142,36 @@ internal class RuntimeServiceIntentFactory(
     action: String,
     scheduleId: String,
     sessionId: String?,
+    taskId: String? = null,
+    runId: String? = null,
     target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
-  ): Intent = commandIntent(
-    context = context,
-    target = target,
-    action = action,
-    commandKind = runtimeServiceCommandKindForNotificationAction(action),
-  ).apply {
-    putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SCHEDULE_ID, scheduleId)
-    sessionId
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let { resolvedSessionId ->
-        putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SESSION_ID, resolvedSessionId)
+  ): Intent {
+    val commandKind = runtimeServiceCommandKindForScheduleNotificationAction(action)
+    val resolvedSessionId = sessionId?.trim()?.takeIf(String::isNotBlank)
+    val resolvedTaskId = taskId?.trim()?.takeIf(String::isNotBlank)
+    val resolvedRunId = runId?.trim()?.takeIf(String::isNotBlank)
+    return commandIntent(
+      context = context,
+      target = target,
+      action = action,
+      commandKind = commandKind,
+    ).apply {
+      putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SCHEDULE_ID, scheduleId)
+      resolvedSessionId?.let { value ->
+        putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SESSION_ID, value)
       }
+      resolvedTaskId?.let { value ->
+        putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_TASK_ID, value)
+      }
+      resolvedRunId?.let { value ->
+        putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_RUN_ID, value)
+      }
+      if (commandKind == COMMAND_KIND_CHAT_WRITE_INTERRUPT_RUN) {
+        (resolvedRunId ?: resolvedTaskId)?.let { identifier ->
+          putExtra(EXTRA_CHAT_WRITE_IDENTIFIER, identifier)
+        }
+      }
+    }
   }
 
   private fun commandIntent(
@@ -186,6 +202,15 @@ private fun runtimeServiceCommandKindForChatWriteWake(
   is OpenCrayChatWriteCommand.InterruptChatRun -> COMMAND_KIND_CHAT_WRITE_INTERRUPT_RUN
   is OpenCrayChatWriteCommand.RetryChatRun -> COMMAND_KIND_CHAT_WRITE_RETRY_RUN
   else -> null
+}
+
+internal fun runtimeServiceCommandKindForScheduleNotificationAction(
+  action: String,
+): String? = when (action) {
+  RuntimeNotificationIntentActions.ACTION_CANCEL_SCHEDULED_RUN ->
+    COMMAND_KIND_CHAT_WRITE_INTERRUPT_RUN
+
+  else -> runtimeServiceCommandKindForNotificationAction(action)
 }
 
 private fun runtimeServiceChatWriteWakeIdentifier(

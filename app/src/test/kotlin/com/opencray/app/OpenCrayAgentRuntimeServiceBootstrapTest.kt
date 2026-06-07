@@ -4755,6 +4755,49 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun defaultIntentDescriptorParserMarksCancelScheduledRunNotificationWakeAsForegroundBootstrap() {
+    val parsed = DefaultRuntimeServiceIntentDescriptorParser(
+      notificationCommandParser = { null },
+      scheduledTaskWakeCommandParser = { null },
+      commandKindReader = { COMMAND_KIND_CHAT_WRITE_INTERRUPT_RUN },
+      commandVersionReader = { RUNTIME_SERVICE_COMMAND_VERSION_CURRENT },
+      actionReader = { RuntimeNotificationIntentActions.ACTION_CANCEL_SCHEDULED_RUN },
+      chatWriteIdentifierReader = { "run-scheduled-cancel" },
+    ).parse(null)
+
+    assertEquals(
+      RuntimeServiceWakeIntentCommand.ChatWrite(
+        OpenCrayChatWriteCommand.InterruptChatRun("run-scheduled-cancel"),
+      ),
+      parsed.wakeCommand,
+    )
+    assertFalse(parsed.requestsRuntimeReset)
+    assertTrue(parsed.requiresBootstrapForeground)
+  }
+
+  @Test
+  fun defaultIntentDescriptorParserMapsCancelScheduledRunActionToChatWriteWake() {
+    val parsed = DefaultRuntimeServiceIntentDescriptorParser(
+      notificationCommandParser = { null },
+      scheduledTaskWakeCommandParser = { null },
+      commandKindReader = { null },
+      commandVersionReader = { 0 },
+      actionReader = { RuntimeNotificationIntentActions.ACTION_CANCEL_SCHEDULED_RUN },
+      chatWriteIdentifierReader = { "task-scheduled-cancel" },
+    ).parse(null)
+
+    assertEquals(
+      RuntimeServiceWakeIntentCommand.ChatWrite(
+        OpenCrayChatWriteCommand.InterruptChatRun("task-scheduled-cancel"),
+      ),
+      parsed.wakeCommand,
+    )
+    assertFalse(parsed.requestsRuntimeReset)
+    assertTrue(parsed.requiresBootstrapForeground)
+  }
+
+
+  @Test
   fun defaultIntentDescriptorParserPrefersExplicitCommandKindEnvelope() {
     val parsed = DefaultRuntimeServiceIntentDescriptorParser(
       notificationCommandParser = { null },
@@ -4871,9 +4914,25 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       scheduleId = "schedule-snooze-1",
       sessionId = "session-snooze-1",
     )
+    val cancelScheduledRunActionIntent = factory.scheduleNotificationActionIntent(
+      context = context,
+      action = RuntimeNotificationIntentActions.ACTION_CANCEL_SCHEDULED_RUN,
+      scheduleId = "schedule-cancel-1",
+      sessionId = "session-cancel-1",
+      taskId = "task-cancel-1",
+      runId = "run-cancel-1",
+    )
     assertEquals(
       COMMAND_KIND_SNOOZE_SCHEDULE,
       snoozeScheduleActionIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
+    )
+    assertEquals(
+      COMMAND_KIND_CHAT_WRITE_INTERRUPT_RUN,
+      cancelScheduledRunActionIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
+    )
+    assertEquals(
+      "run-cancel-1",
+      cancelScheduledRunActionIntent.getStringExtra(EXTRA_CHAT_WRITE_IDENTIFIER),
     )
     assertEquals(
       COMMAND_KIND_CHAT_WRITE_INTERRUPT_RUN,
@@ -4935,6 +4994,23 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       sessionId = "session-snooze-action",
       target = RuntimeServiceTarget.DETACHED_BACKGROUND,
     )
+    val cancelRunIntent = factory.scheduleNotificationActionIntent(
+      context = context,
+      action = RuntimeNotificationIntentActions.ACTION_CANCEL_SCHEDULED_RUN,
+      scheduleId = "schedule-cancel-action",
+      sessionId = "session-cancel-action",
+      taskId = "task-cancel-action",
+      runId = "run-cancel-action",
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    )
+    val cancelRunByTaskIntent = factory.scheduleNotificationActionIntent(
+      context = context,
+      action = RuntimeNotificationIntentActions.ACTION_CANCEL_SCHEDULED_RUN,
+      scheduleId = "schedule-cancel-task-action",
+      sessionId = "session-cancel-task-action",
+      taskId = "task-cancel-task-action",
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    )
 
     assertEquals(
       COMMAND_KIND_RUN_SCHEDULE_NOW,
@@ -4982,6 +5058,26 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(
       RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
       snoozeIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_TARGET),
+    )
+    assertEquals(
+      COMMAND_KIND_CHAT_WRITE_INTERRUPT_RUN,
+      cancelRunIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
+    )
+    assertEquals(
+      RuntimeServiceWakeIntentCommand.ChatWrite(
+        OpenCrayChatWriteCommand.InterruptChatRun("run-cancel-action"),
+      ),
+      parser.parse(cancelRunIntent),
+    )
+    assertEquals(
+      RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
+      cancelRunIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_TARGET),
+    )
+    assertEquals(
+      RuntimeServiceWakeIntentCommand.ChatWrite(
+        OpenCrayChatWriteCommand.InterruptChatRun("task-cancel-task-action"),
+      ),
+      parser.parse(cancelRunByTaskIntent),
     )
   }
 
@@ -5644,6 +5740,8 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       action: String,
       scheduleId: String,
       sessionId: String?,
+      taskId: String?,
+      runId: String?,
       requestCode: Int,
       target: RuntimeServiceTarget,
     ): android.app.PendingIntent =

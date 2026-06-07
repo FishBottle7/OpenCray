@@ -237,6 +237,7 @@ private fun runtimeServiceCommandKindForAction(
   RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW -> COMMAND_KIND_RUN_SCHEDULE_NOW
   RuntimeNotificationIntentActions.ACTION_DISABLE_SCHEDULE -> COMMAND_KIND_DISABLE_SCHEDULE
   RuntimeNotificationIntentActions.ACTION_SNOOZE_SCHEDULE -> COMMAND_KIND_SNOOZE_SCHEDULE
+  RuntimeNotificationIntentActions.ACTION_CANCEL_SCHEDULED_RUN -> COMMAND_KIND_CHAT_WRITE_INTERRUPT_RUN
   else -> null
 }
 

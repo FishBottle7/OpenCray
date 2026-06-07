@@ -359,6 +359,7 @@
     <string name="runtime_notification_action_retry">Retry</string>
     <string name="runtime_notification_action_disable_schedule">Disable</string>
     <string name="runtime_notification_action_snooze_schedule">Snooze</string>
+    <string name="runtime_notification_action_cancel_run">Cancel</string>
     <string name="runtime_notification_schedule_started_title">Scheduled task started</string>
     <string name="runtime_notification_schedule_started_text">%1$s started in %2$s.</string>
     <string name="runtime_notification_schedule_skipped_title">Scheduled task skipped</string>
