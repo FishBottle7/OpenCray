@@ -332,6 +332,108 @@ class GlobalContextBudgetCoordinatorTest {
   }
 
   @Test
+  fun rebalanceKeepsPinnedActiveSkillUnderBudgetPressure() {
+    val activeSkillPromptLayer = ActiveSkillPromptLayer(
+      config = ActiveSkillPromptLayerConfig(
+        maxBodyChars = 3_200,
+        maxPermissionEntries = 8,
+        maxCompactBodyChars = 480,
+        maxCompactPermissionEntries = 2,
+        maxMinimalBodyChars = 160,
+        maxMinimalPermissionEntries = 1,
+      ),
+    )
+    val activeSkillCapsule = ActiveSkillCapsule(
+      name = "ui-ux-pro-max",
+      description = "High-end UI review workflow.",
+      relativePath = ".codex/skills/ui-ux-pro-max/SKILL.md",
+      invocationControl = "explicit-only",
+      executionContext = "fork",
+      activationSource = "skill_read",
+      pinned = true,
+      markdownBody = """
+        # UI UX Pro Max
+
+        1. Audit the current interface in detail.
+        2. Produce a concrete design system.
+        3. Verify the implementation against the design system.
+        4. Document the remaining gaps clearly.
+        5. ${"Inspect typography, spacing, motion, hierarchy, and color direction carefully. ".repeat(24).trim()}
+      """.trimIndent(),
+      toolPermissionSummary = listOf("read:allow", "write:allow", "search:allow"),
+      allowedToolKeys = setOf("read", "write", "search"),
+    )
+    val input = ManagedPromptContext(
+      task = promptTask(),
+      baseSystemPrompt = "Base identity.",
+      activeSkillCapsule = activeSkillCapsule,
+      activeSkillText = activeSkillPromptLayer.render(activeSkillCapsule).text,
+      llmMetadata = budgetMetadata(
+        contextWindowTokens = 1_400,
+        reservedOutputTokens = 256,
+        safetyMarginTokens = 96,
+        effectiveInputPercent = "0.7",
+      ),
+    )
+    val layers = listOf(
+      PromptLayer(
+        id = PromptLayerId.IDENTITY,
+        name = "Identity",
+        kind = PromptLayerKind.SYSTEM,
+        content = "Base identity.",
+      ),
+      PromptLayer(
+        id = PromptLayerId.RUNTIME_RULES,
+        name = "Runtime Rules",
+        kind = PromptLayerKind.SYSTEM,
+        content = "Follow runtime rules.",
+      ),
+      PromptLayer(
+        id = PromptLayerId.TOOL_PROTOCOL,
+        name = "Tool Protocol",
+        kind = PromptLayerKind.PROTOCOL,
+        content = "Protocol ".repeat(8).trim(),
+      ),
+      PromptLayer(
+        id = PromptLayerId.TASK_METADATA,
+        name = "Task Metadata",
+        kind = PromptLayerKind.CONTEXT,
+        content = "Task metadata: task_id=task-context",
+      ),
+      PromptLayer(
+        id = PromptLayerId.ACTIVE_SKILL,
+        name = "Active Skill",
+        kind = PromptLayerKind.CONTEXT,
+        content = input.activeSkillText,
+      ),
+    )
+
+    val coordinated = GlobalContextBudgetCoordinator(
+      activeSkillPromptLayer = activeSkillPromptLayer,
+    ).rebalance(
+      input = input,
+      layers = layers,
+      estimateTokens = { text -> text.length },
+      renderConversationLayer = { window ->
+        window.messages.joinToString(separator = "\n") { message -> message.content }
+      },
+    )
+
+    val activeSkillLayer = coordinated.layers.first { layer -> layer.id == PromptLayerId.ACTIVE_SKILL }
+    val activeSkillBudgetReport = coordinated.report.layers.first { layer -> layer.id == PromptLayerId.ACTIVE_SKILL }
+
+    assertTrue(activeSkillLayer.content.contains("name=ui-ux-pro-max"))
+    assertTrue(activeSkillLayer.content.contains("pinned=true"))
+    assertTrue(activeSkillBudgetReport.reduced)
+    assertFalse(activeSkillBudgetReport.omitted)
+    assertTrue(
+      activeSkillBudgetReport.appliedOperators.contains("reduce_active_skill_compact") ||
+        activeSkillBudgetReport.appliedOperators.contains("reduce_active_skill_minimal"),
+    )
+    assertReducedLayerFinalStateMatchesOperators(activeSkillBudgetReport)
+  }
+
+  @Test
   fun rebalanceStructurallyReducesBootstrapBeforeOmittingItWhenCompactSubsetFits() {
     val bootstrapPromptLayer = BootstrapPromptLayer(
       config = BootstrapPromptLayerConfig(

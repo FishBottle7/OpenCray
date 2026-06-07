@@ -1036,6 +1036,51 @@ class PromptAssemblerTest {
   }
 
   @Test
+  fun assembleInjectsPinnedActiveSkillIntoDurableContextLayer() {
+    val contextManager = ContextManager()
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(),
+          activeSkillCapsule = ActiveSkillCapsule(
+            name = "ui-ux-pro-max",
+            description = "High-end UI review workflow.",
+            relativePath = ".codex/skills/ui-ux-pro-max/SKILL.md",
+            invocationControl = "explicit-only",
+            executionContext = "inline",
+            activationSource = "skill_read",
+            pinned = true,
+            markdownBody = """
+              # UI UX Pro Max
+
+              1. Audit the current interface.
+              2. Produce a concrete design system.
+            """.trimIndent(),
+            toolPermissionSummary = listOf("read:allow", "write:allow"),
+            allowedToolKeys = setOf("read", "write"),
+          ),
+          toolDefinitions = emptyList(),
+          liveConversation = emptyList(),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.taskPrompt.contains("[Active Skill]"))
+    assertTrue(prompt.taskPrompt.contains("pinned=true"))
+    assertTrue(prompt.durableContextPrompt.contains("[Active Skill]"))
+    assertFalse(prompt.dynamicContextPrompt.contains("[Active Skill]"))
+    assertTrue(prompt.report.activeSkillTrace.pinned)
+    assertEquals(
+      PromptLayerTransportGroup.DURABLE_CONTEXT,
+      prompt.report.layers.first { layer -> layer.id == PromptLayerId.ACTIVE_SKILL }.transportGroup,
+    )
+  }
+
+  @Test
   fun assembleBudgetCoordinatorDropsArchiveAndSupportLayersBeforeWorkingState() {
     val contextManager = ContextManager(
       transcriptWindowBuilder = TranscriptWindowBuilder(

@@ -6964,9 +6964,36 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             ? '省略字符 ${flush.omittedCharCount}'
             : '${flush.omittedCharCount} omitted char(s)',
     ];
+    final List<String> pressure = <String>[
+      if (_nonEmpty(flush.triggerStage) != null)
+        widget.copy.isChinese
+            ? '触发 ${flush.triggerStage}'
+            : 'Trigger: ${flush.triggerStage}',
+      if (flush.contextWindowTokens != null)
+        widget.copy.isChinese
+            ? '窗口 ${flush.contextWindowTokens}'
+            : 'Window ${flush.contextWindowTokens}',
+      if (flush.autoCompactTokenLimit != null)
+        widget.copy.isChinese
+            ? '阈值 ${flush.autoCompactTokenLimit}'
+            : 'Threshold ${flush.autoCompactTokenLimit}',
+      if (flush.estimatedReplayTokens != null)
+        widget.copy.isChinese
+            ? '估算 ${flush.estimatedReplayTokens}'
+            : 'Estimated ${flush.estimatedReplayTokens}',
+      if (flush.tokenThresholdTriggered != null)
+        widget.copy.isChinese
+            ? (flush.tokenThresholdTriggered! ? '已达阈值' : '未达阈值')
+            : (flush.tokenThresholdTriggered!
+                  ? 'Threshold triggered'
+                  : 'Threshold not triggered'),
+    ];
     return _joinTraceSections(<String?>[
       summary.isEmpty ? null : summary.join(widget.copy.isChinese ? '，' : ', '),
       omitted.isEmpty ? null : omitted.join(widget.copy.isChinese ? '，' : ', '),
+      pressure.isEmpty
+          ? null
+          : pressure.join(widget.copy.isChinese ? '，' : ', '),
       flush.signature == null
           ? null
           : widget.copy.isChinese
@@ -7082,11 +7109,38 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             ? '累计压缩 ${durableCompaction.totalCompactedMessageCount} 条'
             : '${durableCompaction.totalCompactedMessageCount} total compacted message(s)',
     ];
+    final List<String> pressure = <String>[
+      if (_nonEmpty(durableCompaction.triggerStage) != null)
+        widget.copy.isChinese
+            ? '触发 ${durableCompaction.triggerStage}'
+            : 'Trigger: ${durableCompaction.triggerStage}',
+      if (durableCompaction.contextWindowTokens != null)
+        widget.copy.isChinese
+            ? '窗口 ${durableCompaction.contextWindowTokens}'
+            : 'Window ${durableCompaction.contextWindowTokens}',
+      if (durableCompaction.autoCompactTokenLimit != null)
+        widget.copy.isChinese
+            ? '阈值 ${durableCompaction.autoCompactTokenLimit}'
+            : 'Threshold ${durableCompaction.autoCompactTokenLimit}',
+      if (durableCompaction.estimatedReplayTokens != null)
+        widget.copy.isChinese
+            ? '估算 ${durableCompaction.estimatedReplayTokens}'
+            : 'Estimated ${durableCompaction.estimatedReplayTokens}',
+      if (durableCompaction.tokenThresholdTriggered != null)
+        widget.copy.isChinese
+            ? (durableCompaction.tokenThresholdTriggered! ? '已达阈值' : '未达阈值')
+            : (durableCompaction.tokenThresholdTriggered!
+                  ? 'Threshold triggered'
+                  : 'Threshold not triggered'),
+    ];
     return _joinTraceSections(<String?>[
       summary.isEmpty ? null : summary.join(widget.copy.isChinese ? '，' : ', '),
       summaryCounts.isEmpty
           ? null
           : summaryCounts.join(widget.copy.isChinese ? '，' : ', '),
+      pressure.isEmpty
+          ? null
+          : pressure.join(widget.copy.isChinese ? '，' : ', '),
       durableCompaction.latestCompactedAtEpochMs == null
           ? null
           : widget.copy.isChinese
@@ -7186,6 +7240,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             : (activeSkill.toolRestrictionEnabled!
                   ? 'Tool restriction enabled'
                   : 'Tool restriction disabled'),
+      if (activeSkill.pinned != null)
+        widget.copy.isChinese
+            ? (activeSkill.pinned! ? '已固定' : '未固定')
+            : (activeSkill.pinned! ? 'Pinned' : 'Not pinned'),
       if (activeSkill.truncated != null)
         widget.copy.isChinese
             ? (activeSkill.truncated! ? '胶囊已截断' : '胶囊未截断')

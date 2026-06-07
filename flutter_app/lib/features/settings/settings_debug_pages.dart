@@ -1973,8 +1973,35 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                     label: 'Omitted msgs',
                     value: '${memoryFlush.omittedMessageCount ?? 0}',
                   ),
+                  if (memoryFlush.tokenThresholdTriggered != null)
+                    _DebugValueChip(
+                      label: 'Token threshold',
+                      value: memoryFlush.tokenThresholdTriggered == true
+                          ? 'hit'
+                          : 'clear',
+                    ),
                 ],
               ),
+              if (memoryFlush.triggerStage?.trim().isNotEmpty == true)
+                _DebugKeyValueLine(
+                  'Trigger stage',
+                  memoryFlush.triggerStage!.trim(),
+                ),
+              if ((memoryFlush.contextWindowTokens ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Context window',
+                  '${memoryFlush.contextWindowTokens}',
+                ),
+              if ((memoryFlush.autoCompactTokenLimit ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Auto-compact threshold',
+                  '${memoryFlush.autoCompactTokenLimit}',
+                ),
+              if ((memoryFlush.estimatedReplayTokens ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Estimated replay tokens',
+                  '${memoryFlush.estimatedReplayTokens}',
+                ),
               if ((memoryFlush.omittedCharCount ?? 0) > 0)
                 _DebugKeyValueLine(
                   'Omitted chars',
@@ -2031,8 +2058,35 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                     label: 'Summaries',
                     value: '${durableCompaction.totalSummaryCount ?? 0}',
                   ),
+                  if (durableCompaction.tokenThresholdTriggered != null)
+                    _DebugValueChip(
+                      label: 'Token threshold',
+                      value: durableCompaction.tokenThresholdTriggered == true
+                          ? 'hit'
+                          : 'clear',
+                    ),
                 ],
               ),
+              if (durableCompaction.triggerStage?.trim().isNotEmpty == true)
+                _DebugKeyValueLine(
+                  'Trigger stage',
+                  durableCompaction.triggerStage!.trim(),
+                ),
+              if ((durableCompaction.contextWindowTokens ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Context window',
+                  '${durableCompaction.contextWindowTokens}',
+                ),
+              if ((durableCompaction.autoCompactTokenLimit ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Auto-compact threshold',
+                  '${durableCompaction.autoCompactTokenLimit}',
+                ),
+              if ((durableCompaction.estimatedReplayTokens ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Estimated replay tokens',
+                  '${durableCompaction.estimatedReplayTokens}',
+                ),
               if ((durableCompaction.latestCompactedMessageCount ?? 0) > 0)
                 _DebugKeyValueLine(
                   'Latest compacted msgs',
@@ -2301,6 +2355,11 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                     label: 'Truncated',
                     value: activeSkill.truncated == true ? 'yes' : 'no',
                   ),
+                  if (activeSkill.pinned != null)
+                    _DebugValueChip(
+                      label: 'Pinned',
+                      value: activeSkill.pinned == true ? 'yes' : 'no',
+                    ),
                 ],
               ),
               if (activeSkill.name?.trim().isNotEmpty == true)

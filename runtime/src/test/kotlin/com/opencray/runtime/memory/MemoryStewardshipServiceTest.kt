@@ -352,6 +352,173 @@ class MemoryStewardshipServiceTest {
   }
 
   @Test
+  fun planCanReopenResolvedProjectFactWithoutCandidateWhenConfigured() {
+    val existing = resolvedWorkspaceProjectFactRecord(
+      id = "fact-resolved",
+      content = "Project runs on port 8000",
+    )
+    val service = MemoryStewardshipService(
+      clock = { 8_000L },
+      interpreter = object : MemoryStewardshipInterpreter {
+        override fun interpret(
+          request: MemoryStewardshipRequest,
+        ): MemoryStewardshipInterpretation {
+          assertEquals(listOf("fact-resolved"), request.activeRecords.map(StewardableMemoryRecord::id))
+          assertEquals(MemoryStatus.RESOLVED, request.activeRecords.single().status)
+          assertTrue(request.proposedCandidates.isEmpty())
+          return MemoryStewardshipInterpretation.Success(
+            decisions = listOf(
+              MemoryStewardshipDecision(
+                action = MemoryStewardshipAction.REOPEN_RECORD,
+                recordId = existing.id,
+              ),
+            ),
+          )
+        }
+      },
+      recordOnlyReviewKinds = setOf(MemoryKind.PROJECT_FACT),
+    )
+
+    val plan = service.plan(
+      existingRecords = listOf(existing),
+      evidence = turnEvidence(
+        userInput = "The project still runs on port 8000; reopen that stored fact.",
+      ),
+      proposedCandidates = emptyList(),
+    )
+
+    assertTrue(plan.acceptedCandidates.isEmpty())
+    assertTrue(plan.resolvedRecords.isEmpty())
+    assertEquals(listOf(existing.id), plan.reopenedRecords.map(MemoryRecord::id))
+    assertTrue(plan.reaffirmedRecords.isEmpty())
+    assertTrue(plan.droppedCandidates.isEmpty())
+    assertEquals("active", plan.reopenedRecords.single().extensions[MemoryRecordExtensionKeys.STATUS])
+    assertEquals("8000", plan.reopenedRecords.single().extensions[MemoryRecordExtensionKeys.REOPENED_AT_EPOCH_MS])
+    assertEquals("8000", plan.reopenedRecords.single().extensions[MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS])
+    assertEquals(null, plan.reopenedRecords.single().extensions[MemoryRecordExtensionKeys.RESOLVED_AT_EPOCH_MS])
+    assertEquals(null, plan.reopenedRecords.single().extensions[MemoryRecordExtensionKeys.RESOLUTION_REASON])
+    assertEquals(
+      listOf(MemoryStewardshipPlanStepOutcome.APPLIED),
+      plan.planSteps.map(MemoryStewardshipPlanStep::outcome),
+    )
+  }
+
+  @Test
+  fun planCanReopenResolvedProjectFactWithMatchingCandidateAndConsumeCandidate() {
+    val existing = resolvedWorkspaceProjectFactRecord(
+      id = "fact-resolved",
+      content = "Project runs on port 8000",
+    )
+    val candidate = workspaceProjectFactCandidate(
+      content = "Project runs on port 8000",
+    )
+    val service = MemoryStewardshipService(
+      clock = { 8_000L },
+      interpreter = object : MemoryStewardshipInterpreter {
+        override fun interpret(
+          request: MemoryStewardshipRequest,
+        ): MemoryStewardshipInterpretation {
+          assertEquals(listOf("fact-resolved"), request.activeRecords.map(StewardableMemoryRecord::id))
+          assertEquals(listOf(0), request.proposedCandidates.map(StewardableMemoryCandidate::index))
+          return MemoryStewardshipInterpretation.Success(
+            decisions = listOf(
+              MemoryStewardshipDecision(
+                action = MemoryStewardshipAction.REOPEN_RECORD_WITH_CANDIDATE,
+                recordId = existing.id,
+                candidateIndex = 0,
+              ),
+            ),
+          )
+        }
+      },
+      recordOnlyReviewKinds = setOf(MemoryKind.PROJECT_FACT),
+    )
+
+    val plan = service.plan(
+      existingRecords = listOf(existing),
+      evidence = turnEvidence(
+        userInput = "The project runs on port 8000 again.",
+      ),
+      proposedCandidates = listOf(candidate),
+    )
+
+    assertTrue(plan.acceptedCandidates.isEmpty())
+    assertEquals(listOf(candidate), plan.droppedCandidates)
+    assertEquals(listOf(existing.id), plan.reopenedRecords.map(MemoryRecord::id))
+    assertEquals(
+      testStableMemoryRecordId(candidate),
+      plan.reopenedRecords.single().extensions[MemoryRecordExtensionKeys.REOPENED_BY_CANDIDATE],
+    )
+    assertEquals("active", plan.reopenedRecords.single().extensions[MemoryRecordExtensionKeys.STATUS])
+    assertEquals(
+      listOf(MemoryStewardshipPlanStepOutcome.APPLIED),
+      plan.planSteps.map(MemoryStewardshipPlanStep::outcome),
+    )
+  }
+
+  @Test
+  fun planStepsTraceAppliedRejectedAndIgnoredMaintenanceDecisions() {
+    val existing = workspaceProjectFactRecord(
+      id = "fact-plan-step",
+      content = "Project runs on port 8000",
+    )
+    val candidate = workspaceProjectFactCandidate(
+      content = "Project runs on port 8000",
+    )
+    val service = MemoryStewardshipService(
+      clock = { 8_000L },
+      interpreter = object : MemoryStewardshipInterpreter {
+        override fun interpret(
+          request: MemoryStewardshipRequest,
+        ): MemoryStewardshipInterpretation = MemoryStewardshipInterpretation.Success(
+          decisions = listOf(
+            MemoryStewardshipDecision(
+              action = MemoryStewardshipAction.DROP_CANDIDATE,
+              candidateIndex = 0,
+            ),
+            MemoryStewardshipDecision(
+              action = MemoryStewardshipAction.REOPEN_RECORD,
+              recordId = existing.id,
+            ),
+            MemoryStewardshipDecision(
+              action = MemoryStewardshipAction.REAFFIRM_RECORD,
+              recordId = "missing-record",
+            ),
+          ),
+        )
+      },
+    )
+
+    val plan = service.plan(
+      existingRecords = listOf(existing),
+      evidence = turnEvidence(
+        userInput = "Keep the current project port 8000 memory tidy.",
+      ),
+      proposedCandidates = listOf(candidate),
+    )
+
+    assertEquals(listOf(candidate), plan.droppedCandidates)
+    assertEquals(
+      listOf(
+        MemoryStewardshipAction.DROP_CANDIDATE,
+        MemoryStewardshipAction.REOPEN_RECORD,
+        MemoryStewardshipAction.REAFFIRM_RECORD,
+      ),
+      plan.planSteps.map(MemoryStewardshipPlanStep::action),
+    )
+    assertEquals(
+      listOf(
+        MemoryStewardshipPlanStepOutcome.APPLIED,
+        MemoryStewardshipPlanStepOutcome.REJECTED,
+        MemoryStewardshipPlanStepOutcome.IGNORED,
+      ),
+      plan.planSteps.map(MemoryStewardshipPlanStep::outcome),
+    )
+    assertEquals("record_not_resolved", plan.planSteps[1].reason)
+    assertEquals("record_not_shortlisted", plan.planSteps[2].reason)
+  }
+
+  @Test
   fun planCanCombineCandidateDrivenAndRecordOnlyMaintenanceInSameTurn() {
     val existingPreference = userPreferenceRecord(
       id = "pref-old",
@@ -1067,6 +1234,27 @@ class MemoryStewardshipServiceTest {
       MemoryRecordExtensionKeys.WORKSPACE_ID to "workspace-main",
       MemoryRecordExtensionKeys.TTL_MS to (90L * 24L * 60L * 60L * 1000L).toString(),
       MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS to "1000",
+    ),
+  )
+
+  private fun resolvedWorkspaceProjectFactRecord(
+    id: String,
+    content: String,
+  ): MemoryRecord = baseRecord(
+    id = id,
+    content = content,
+    tags = listOf("kind:project_fact", "scope:workspace", "status:resolved"),
+    extensions = mapOf(
+      MemoryRecordExtensionKeys.KIND to "project_fact",
+      MemoryRecordExtensionKeys.SCOPE to "workspace",
+      MemoryRecordExtensionKeys.STATUS to "resolved",
+      MemoryRecordExtensionKeys.SOURCE to "user_input",
+      MemoryRecordExtensionKeys.SOURCE_SESSION_ID to "session-0",
+      MemoryRecordExtensionKeys.WORKSPACE_ID to "workspace-main",
+      MemoryRecordExtensionKeys.TTL_MS to (90L * 24L * 60L * 60L * 1000L).toString(),
+      MemoryRecordExtensionKeys.LAST_CONFIRMED_AT_EPOCH_MS to "1000",
+      MemoryRecordExtensionKeys.RESOLVED_AT_EPOCH_MS to "3000",
+      MemoryRecordExtensionKeys.RESOLUTION_REASON to "obsolete",
     ),
   )
 

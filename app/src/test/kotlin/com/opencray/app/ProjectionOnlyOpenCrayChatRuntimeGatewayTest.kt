@@ -1107,10 +1107,21 @@ class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
             "contextBudgetApplied" to "true",
             "contextMatchedMemoryCount" to "1",
             "contextMemoryFlushOutcome" to "written",
+            "contextMemoryFlushTriggerStage" to "pre_compaction",
+            "contextMemoryFlushContextWindowTokens" to "128000",
+            "contextMemoryFlushAutoCompactTokenLimit" to "115200",
+            "contextMemoryFlushEstimatedReplayTokens" to "116000",
+            "contextMemoryFlushTokenThresholdTriggered" to "true",
             "contextBootstrapMode" to "workspace",
             "contextDurableCompactionCompactedThisRun" to "true",
+            "contextDurableCompactionTriggerStage" to "pre_compaction",
+            "contextDurableCompactionContextWindowTokens" to "128000",
+            "contextDurableCompactionAutoCompactTokenLimit" to "115200",
+            "contextDurableCompactionEstimatedReplayTokens" to "116000",
+            "contextDurableCompactionTokenThresholdTriggered" to "true",
             "contextVisibleSkillCount" to "1",
             "contextActiveSkillName" to "ui-ux-pro-max",
+            "contextActiveSkillPinned" to "true",
           ),
         ),
       ),
@@ -1149,10 +1160,21 @@ class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
     assertEquals(true, contextBudget["applied"])
     assertEquals(1, memoryTrace["matchedRecordCount"])
     assertEquals("written", memoryFlush["outcome"])
+    assertEquals("pre_compaction", memoryFlush["triggerStage"])
+    assertEquals(128000, memoryFlush["contextWindowTokens"])
+    assertEquals(115200, memoryFlush["autoCompactTokenLimit"])
+    assertEquals(116000, memoryFlush["estimatedReplayTokens"])
+    assertEquals(true, memoryFlush["tokenThresholdTriggered"])
     assertEquals("workspace", bootstrap["mode"])
     assertEquals(true, durableCompaction["compactedThisRun"])
+    assertEquals("pre_compaction", durableCompaction["triggerStage"])
+    assertEquals(128000, durableCompaction["contextWindowTokens"])
+    assertEquals(115200, durableCompaction["autoCompactTokenLimit"])
+    assertEquals(116000, durableCompaction["estimatedReplayTokens"])
+    assertEquals(true, durableCompaction["tokenThresholdTriggered"])
     assertEquals(1, skillInventory["visibleSkillCount"])
     assertEquals("ui-ux-pro-max", activeSkill["name"])
+    assertEquals(true, activeSkill["pinned"])
   }
 
   private fun projectionTestStrings(): ProjectionOnlyChatStrings = ProjectionOnlyChatStrings(
