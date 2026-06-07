@@ -67,6 +67,11 @@ class MemoryFlushCoordinatorTest {
     )
 
     assertTrue(summary.wasWritten)
+    assertEquals("pre_compaction", summary.trace.triggerStage)
+    assertEquals(64, summary.trace.contextWindowTokens)
+    assertEquals(57, summary.trace.autoCompactTokenLimit)
+    assertTrue(summary.trace.estimatedReplayTokens >= summary.trace.autoCompactTokenLimit)
+    assertTrue(summary.trace.tokenThresholdTriggered)
     assertEquals(1, summary.writtenRecords.size)
     assertEquals("Project uses Gradle Kotlin DSL", summary.writtenRecords.single().content)
     assertEquals("tool_observation", summary.writtenRecords.single().extensions[MemoryRecordExtensionKeys.SOURCE])
@@ -104,6 +109,11 @@ class MemoryFlushCoordinatorTest {
 
     assertFalse(summary.wasWritten)
     assertEquals(MemoryFlushOutcome.NO_PRESSURE, summary.trace.outcome)
+    assertEquals("pre_compaction", summary.trace.triggerStage)
+    assertEquals(4096, summary.trace.contextWindowTokens)
+    assertEquals(3686, summary.trace.autoCompactTokenLimit)
+    assertTrue(summary.trace.estimatedReplayTokens < summary.trace.autoCompactTokenLimit)
+    assertFalse(summary.trace.tokenThresholdTriggered)
     assertTrue(store.list().isEmpty())
   }
 
@@ -176,10 +186,15 @@ class MemoryFlushCoordinatorTest {
 
     assertTrue(balancedSummary.wasWritten)
     assertEquals(MemoryFlushOutcome.WRITTEN, balancedSummary.trace.outcome)
+    assertEquals("pre_compaction", balancedSummary.trace.triggerStage)
+    assertEquals(64, balancedSummary.trace.contextWindowTokens)
+    assertEquals(57, balancedSummary.trace.autoCompactTokenLimit)
+    assertTrue(balancedSummary.trace.tokenThresholdTriggered)
     assertEquals(4, balancedSummary.trace.omittedMessageCount)
     assertEquals(1, balancedSummary.writtenRecords.size)
     assertFalse(expandedSummary.wasWritten)
     assertEquals(MemoryFlushOutcome.NO_PRESSURE, expandedSummary.trace.outcome)
+    assertEquals("pre_compaction", expandedSummary.trace.triggerStage)
     assertEquals(0, expandedSummary.trace.omittedMessageCount)
   }
 

@@ -341,6 +341,11 @@
     <string name="files_open_error_outside_workspace">只能打开当前工作区里的内容。</string>
     <string name="files_open_error_prepare_failed">准备打开所选文件时失败了。</string>
     <string name="files_open_error_launch_failed">无法打开所选文件。</string>
+    <string name="media_save_error_missing_entry">所选媒体文件已经不存在了。</string>
+    <string name="media_save_error_not_file">只能把文件保存到设备媒体库。</string>
+    <string name="media_save_error_storage_unavailable">设备媒体存储当前不可用。</string>
+    <string name="media_save_error_prepare_failed">无法保存所选媒体文件。</string>
+    <string name="media_save_error_outside_workspace">只能保存当前工作区里的媒体文件。</string>
     <string name="runtime_notification_active_channel_name">后台运行任务</string>
     <string name="runtime_notification_active_channel_description">当 OpenCray 在后台继续运行 agent 任务时显示。</string>
     <string name="runtime_notification_active_title">OpenCray 正在后台运行</string>

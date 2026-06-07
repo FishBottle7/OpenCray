@@ -571,6 +571,9 @@ class OpenCrayFlutterHostBridgeTest {
       throw UnsupportedOperationException()
     }
 
+    override fun saveWorkspaceMediaAttachment(relativePath: String, kind: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
     override fun showNativeToast(message: String) {
       throw UnsupportedOperationException()
     }

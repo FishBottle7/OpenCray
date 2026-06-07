@@ -1337,6 +1337,11 @@ internal class OpenCrayHostRuntime private constructor(
     localHostGateway.shareWorkspaceEntries(relativePaths)
   }
 
+  override fun saveWorkspaceMediaAttachment(
+    relativePath: String,
+    kind: String,
+  ): Map<String, Any?> = localHostGateway.saveWorkspaceMediaAttachment(relativePath, kind)
+
   override fun showNativeToast(message: String) {
     localHostGateway.showNativeToast(message)
   }

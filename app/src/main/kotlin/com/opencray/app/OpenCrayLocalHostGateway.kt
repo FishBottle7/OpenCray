@@ -46,6 +46,8 @@ internal interface OpenCrayLocalHostGateway {
 
   fun shareWorkspaceEntries(relativePaths: List<String>)
 
+  fun saveWorkspaceMediaAttachment(relativePath: String, kind: String): Map<String, Any?>
+
   fun showNativeToast(message: String)
 
   fun resolveSandboxPreviewEmbedConfig(previewUrl: String): Map<String, Any?> =
@@ -308,6 +310,23 @@ internal class DefaultOpenCrayLocalHostGateway(
     failure?.let { throwable -> throw throwable }
   }
 
+  override fun saveWorkspaceMediaAttachment(
+    relativePath: String,
+    kind: String,
+  ): Map<String, Any?> {
+    val context = requireNotNull(appContext) {
+      "Workspace media saving is unavailable."
+    }
+    return synchronized(lock) {
+      AppAgentWorkspaceMediaSaver.saveAttachment(
+        appContext = context,
+        workspaceRoot = requireWorkspaceRoot(),
+        relativePath = relativePath,
+        kind = kind,
+      ).toMap()
+    }
+  }
+
   override fun showNativeToast(message: String) {
     val normalizedMessage = message.trim()
     if (normalizedMessage.isEmpty()) {
@@ -505,6 +524,13 @@ private fun defaultSandboxPreviewEmbedConfigService(
     settingsProvider = sandboxSettingsRepository::load,
     sessionStore = sessionStore,
   )
+}
+
+private fun SavedWorkspaceMediaAttachment.toMap(): Map<String, Any?> = buildMap {
+  put("displayName", displayName)
+  put("collection", collection)
+  uri?.let { value -> put("uri", value) }
+  absolutePath?.let { value -> put("absolutePath", value) }
 }
 
 private fun chatDraftAttachmentMap(

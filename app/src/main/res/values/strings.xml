@@ -341,6 +341,11 @@
     <string name="files_open_error_outside_workspace">Only items inside the current workspace can be opened.</string>
     <string name="files_open_error_prepare_failed">Could not prepare the selected item for opening.</string>
     <string name="files_open_error_launch_failed">Could not open the selected item.</string>
+    <string name="media_save_error_missing_entry">The selected media file is no longer available.</string>
+    <string name="media_save_error_not_file">Only files can be saved to the device media library.</string>
+    <string name="media_save_error_storage_unavailable">Device media storage is unavailable.</string>
+    <string name="media_save_error_prepare_failed">Could not save the selected media file.</string>
+    <string name="media_save_error_outside_workspace">Only media files inside the current workspace can be saved.</string>
     <string name="runtime_notification_active_channel_name">Active runtime tasks</string>
     <string name="runtime_notification_active_channel_description">Shows when OpenCray keeps agent work running in the background.</string>
     <string name="runtime_notification_active_title">OpenCray is running in the background</string>
