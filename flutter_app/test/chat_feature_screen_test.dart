@@ -858,6 +858,71 @@ void main() {
   );
 
   test(
+    'shouldReplaceObservedRuntimeSnapshot accepts same-version inspector detail changes',
+    () {
+      const current = OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        updatedAtEpochMs: 3000,
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-inspector-detail-1',
+            taskId: 'task-inspector-detail-1',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 3000,
+            attempt: 1,
+            pendingMessageId: 'pending-inspector-detail-1',
+            llmDiagnostics: OpenCrayChatRunLlmDiagnosticsSnapshot(
+              lastSuccessfulToolName: 'WebFetch',
+            ),
+            isTerminal: false,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'lifecycle',
+            runId: 'run-inspector-detail-1',
+            taskId: 'task-inspector-detail-1',
+            emittedAtEpochMs: 1000,
+            phase: 'start',
+          ),
+        ],
+      );
+      const incoming = OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        updatedAtEpochMs: 3000,
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-inspector-detail-1',
+            taskId: 'task-inspector-detail-1',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 3000,
+            attempt: 1,
+            pendingMessageId: 'pending-inspector-detail-1',
+            llmDiagnostics: OpenCrayChatRunLlmDiagnosticsSnapshot(
+              lastSuccessfulToolName: 'ResponsesWebSearch',
+            ),
+            isTerminal: false,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'lifecycle',
+            runId: 'run-inspector-detail-1',
+            taskId: 'task-inspector-detail-1',
+            emittedAtEpochMs: 1000,
+            phase: 'start',
+          ),
+        ],
+      );
+
+      expect(runtimeSnapshotVersion(current), runtimeSnapshotVersion(incoming));
+      expect(shouldReplaceObservedRuntimeSnapshot(current, incoming), isTrue);
+    },
+  );
+
+  test(
     'resolveChatRuntimeSnapshot merges process details with newer drafts',
     () {
       const embedded = OpenCrayChatRuntimeSnapshot(
@@ -3558,6 +3623,98 @@ void main() {
       expect(
         tester.getTopLeft(processBubbleFinder).dy,
         lessThan(tester.getTopLeft(draftBubbleFinder).dy),
+      );
+    },
+  );
+
+  testWidgets(
+    'host projected process bubbles anchor the status line even before runtime patches arrive',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          updatedAtEpochMs: 1000,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              messageId: 'user-runtime-host-process-1',
+              kind: 'outbound',
+              text: 'Start the preview server.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'runtime-process-run-runtime-host-process-1-proc-1',
+              kind: 'inbound',
+              text: 'Process proc-1\n\nrunning: npm run dev',
+              createdAtEpochMs: 1200,
+              isEphemeral: true,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-runtime-host-process-1',
+              kind: 'inbound',
+              text: 'The server is starting.',
+              createdAtEpochMs: 1300,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 1700,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-runtime-host-process-1',
+              taskId: 'task-runtime-host-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1700,
+              attempt: 1,
+              pendingMessageId: 'pending-runtime-host-process-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_call',
+              runId: 'run-runtime-host-process-1',
+              taskId: 'task-runtime-host-process-1',
+              emittedAtEpochMs: 1400,
+              toolName: 'Bash',
+              argumentsJson: '{"cmd":"npm run dev"}',
+            ),
+          ],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final runTraceFinder = find.byKey(
+        const ValueKey<String>('chat-run-trace-run-runtime-host-process-1'),
+      );
+      final processBubbleFinder = find.byKey(
+        const ValueKey<String>(
+          'chat-bubble-runtime-process-run-runtime-host-process-1-proc-1',
+        ),
+      );
+      final finalBubbleFinder = find.byKey(
+        const ValueKey<String>('chat-bubble-pending-runtime-host-process-1'),
+      );
+
+      expect(runTraceFinder, findsOneWidget);
+      expect(processBubbleFinder, findsOneWidget);
+      expect(finalBubbleFinder, findsOneWidget);
+      expect(
+        tester.getTopLeft(runTraceFinder).dy,
+        lessThan(tester.getTopLeft(processBubbleFinder).dy),
+      );
+      expect(
+        tester.getTopLeft(processBubbleFinder).dy,
+        lessThan(tester.getTopLeft(finalBubbleFinder).dy),
       );
     },
   );

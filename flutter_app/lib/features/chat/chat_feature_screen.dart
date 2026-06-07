@@ -1202,6 +1202,311 @@ Map<String, Object?> _runtimeRunDisplaySignature(OpenCrayChatRunSnapshot run) {
     'lastEvent': run.lastEvent == null
         ? null
         : _runtimeEventDisplaySignature(run.lastEvent!),
+    'llmDiagnostics': _runtimeLlmDiagnosticsDisplaySignature(
+      run.llmDiagnostics,
+    ),
+    'liveContext': _runtimeLiveContextDisplaySignature(run.liveContext),
+    'contextBudget': _runtimeContextBudgetDisplaySignature(run.contextBudget),
+    'memoryTrace': _runtimeMemoryTraceDisplaySignature(run.memoryTrace),
+    'memoryFlush': _runtimeMemoryFlushDisplaySignature(run.memoryFlush),
+    'bootstrap': _runtimeBootstrapDisplaySignature(run.bootstrap),
+    'durableCompaction': _runtimeDurableCompactionDisplaySignature(
+      run.durableCompaction,
+    ),
+    'skillInventory': _runtimeSkillInventoryDisplaySignature(
+      run.skillInventory,
+    ),
+    'activeSkill': _runtimeActiveSkillDisplaySignature(run.activeSkill),
+    'diagnostics': _runtimeDiagnosticsDisplaySignature(run.diagnostics),
+    'recoveryPlan': _runtimeRecoveryPlanDisplaySignature(run.recoveryPlan),
+  };
+}
+
+Map<String, Object?>? _runtimeLlmDiagnosticsDisplaySignature(
+  OpenCrayChatRunLlmDiagnosticsSnapshot? diagnostics,
+) {
+  if (diagnostics == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'nativeToolCallRequested': diagnostics.nativeToolCallRequested,
+    'providerResponseShape': diagnostics.providerResponseShape,
+    'nativeToolCallObserved': diagnostics.nativeToolCallObserved,
+    'parsedToolCallObserved': diagnostics.parsedToolCallObserved,
+    'fallbackParserAttempted': diagnostics.fallbackParserAttempted,
+    'fallbackParserSucceeded': diagnostics.fallbackParserSucceeded,
+    'responsesContinuationRecoveryCount':
+        diagnostics.responsesContinuationRecoveryCount,
+    'responsesContinuationRecoveryLastReason':
+        diagnostics.responsesContinuationRecoveryLastReason,
+    'localContinuationUsedCount': diagnostics.localContinuationUsedCount,
+    'localContinuationFallbackCount':
+        diagnostics.localContinuationFallbackCount,
+    'localContinuationLastMode': diagnostics.localContinuationLastMode,
+    'localContinuationLastReason': diagnostics.localContinuationLastReason,
+    'toolCallEventEmitted': diagnostics.toolCallEventEmitted,
+    'toolResultEventEmitted': diagnostics.toolResultEventEmitted,
+    'contextCacheBreakReason': diagnostics.contextCacheBreakReason,
+    'lastSuccessfulToolName': diagnostics.lastSuccessfulToolName,
+  };
+}
+
+Map<String, Object?>? _runtimeLiveContextDisplaySignature(
+  OpenCrayChatRunLiveContextSnapshot? context,
+) {
+  if (context == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'mode': context.mode,
+    'soulEnabled': context.soulEnabled,
+    'memoryRecallEnabled': context.memoryRecallEnabled,
+  };
+}
+
+Map<String, Object?>? _runtimeContextBudgetDisplaySignature(
+  OpenCrayChatRunContextBudgetSnapshot? budget,
+) {
+  if (budget == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'applied': budget.applied,
+    'pressureMode': budget.pressureMode,
+    'selectedPreset': budget.selectedPreset,
+    'effectivePreset': budget.effectivePreset,
+    'presetSource': budget.presetSource,
+    'presetDiverged': budget.presetDiverged,
+    'sourcePreset': budget.sourcePreset,
+    'sourceTranscriptMaxMessages': budget.sourceTranscriptMaxMessages,
+    'sourceInjectedMemoryMaxRecords': budget.sourceInjectedMemoryMaxRecords,
+    'sourceMemoryRecallMaxRecords': budget.sourceMemoryRecallMaxRecords,
+    'sourceBootstrapMaxChars': budget.sourceBootstrapMaxChars,
+    'sourceSkillInventoryMaxSkills': budget.sourceSkillInventoryMaxSkills,
+    'sourceActiveSkillMaxChars': budget.sourceActiveSkillMaxChars,
+    'sourceRecentObservationMaxEntries':
+        budget.sourceRecentObservationMaxEntries,
+    'sourceMemoryFlushMaxToolObservations':
+        budget.sourceMemoryFlushMaxToolObservations,
+    'contextWindowTokens': budget.contextWindowTokens,
+    'reservedOutputTokens': budget.reservedOutputTokens,
+    'safetyMarginTokens': budget.safetyMarginTokens,
+    'hardInputTokens': budget.hardInputTokens,
+    'targetInputTokens': budget.targetInputTokens,
+    'emergencyInputTokens': budget.emergencyInputTokens,
+    'unresolvedOverflow': budget.unresolvedOverflow,
+    'fullLayerCount': budget.fullLayerCount,
+    'compactLayerCount': budget.compactLayerCount,
+    'minimalLayerCount': budget.minimalLayerCount,
+    'omittedLayerCount': budget.omittedLayerCount,
+    'reducedLayerNames': budget.reducedLayerNames,
+    'omittedLayerNames': budget.omittedLayerNames,
+    'layers': budget.layers
+        .map(_runtimeContextBudgetLayerDisplaySignature)
+        .toList(growable: false),
+    'layerSummary': budget.layerSummary,
+  };
+}
+
+Map<String, Object?> _runtimeContextBudgetLayerDisplaySignature(
+  OpenCrayChatRunContextBudgetLayerSnapshot layer,
+) => <String, Object?>{
+  'id': layer.id,
+  'name': layer.name,
+  'priorityClass': layer.priorityClass,
+  'retentionPriority': layer.retentionPriority,
+  'estimatedTokensBefore': layer.estimatedTokensBefore,
+  'estimatedTokensAfter': layer.estimatedTokensAfter,
+  'finalState': layer.finalState,
+  'omitted': layer.omitted,
+  'reduced': layer.reduced,
+  'appliedOperators': layer.appliedOperators,
+};
+
+Map<String, Object?>? _runtimeMemoryTraceDisplaySignature(
+  OpenCrayChatRunMemoryTraceSnapshot? trace,
+) {
+  if (trace == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'matchedRecordCount': trace.matchedRecordCount,
+    'injectedRecordCount': trace.injectedRecordCount,
+    'omittedRecordCount': trace.omittedRecordCount,
+    'queryTerms': trace.queryTerms,
+    'selected': trace.selected
+        .map(
+          (record) => <String, Object?>{
+            'id': record.id,
+            'score': record.score,
+            'matchedTerms': record.matchedTerms,
+          },
+        )
+        .toList(growable: false),
+    'omitted': trace.omitted
+        .map(
+          (record) => <String, Object?>{
+            'id': record.id,
+            'reason': record.reason,
+          },
+        )
+        .toList(growable: false),
+    'filteredCounts': trace.filteredCounts,
+  };
+}
+
+Map<String, Object?>? _runtimeMemoryFlushDisplaySignature(
+  OpenCrayChatRunMemoryFlushSnapshot? flush,
+) {
+  if (flush == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'outcome': flush.outcome,
+    'triggerStage': flush.triggerStage,
+    'contextWindowTokens': flush.contextWindowTokens,
+    'autoCompactTokenLimit': flush.autoCompactTokenLimit,
+    'estimatedReplayTokens': flush.estimatedReplayTokens,
+    'tokenThresholdTriggered': flush.tokenThresholdTriggered,
+    'omittedMessageCount': flush.omittedMessageCount,
+    'omittedCharCount': flush.omittedCharCount,
+    'signature': flush.signature,
+    'candidateCount': flush.candidateCount,
+    'writtenRecordCount': flush.writtenRecordCount,
+    'writtenKinds': flush.writtenKinds,
+    'writtenRecordIds': flush.writtenRecordIds,
+  };
+}
+
+Map<String, Object?>? _runtimeBootstrapDisplaySignature(
+  OpenCrayChatRunBootstrapSnapshot? bootstrap,
+) {
+  if (bootstrap == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'mode': bootstrap.mode,
+    'visibleFileCount': bootstrap.visibleFileCount,
+    'injectedFileCount': bootstrap.injectedFileCount,
+    'omittedFileCount': bootstrap.omittedFileCount,
+    'truncatedFileCount': bootstrap.truncatedFileCount,
+    'files': bootstrap.files
+        .map(
+          (file) => <String, Object?>{
+            'name': file.name,
+            'relativePath': file.relativePath,
+            'sourceCharCount': file.sourceCharCount,
+            'injectedCharCount': file.injectedCharCount,
+            'truncated': file.truncated,
+          },
+        )
+        .toList(growable: false),
+  };
+}
+
+Map<String, Object?>? _runtimeDurableCompactionDisplaySignature(
+  OpenCrayChatRunDurableCompactionSnapshot? compaction,
+) {
+  if (compaction == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'compactedThisRun': compaction.compactedThisRun,
+    'triggerStage': compaction.triggerStage,
+    'contextWindowTokens': compaction.contextWindowTokens,
+    'autoCompactTokenLimit': compaction.autoCompactTokenLimit,
+    'estimatedReplayTokens': compaction.estimatedReplayTokens,
+    'tokenThresholdTriggered': compaction.tokenThresholdTriggered,
+    'sourceTranscriptMessageCount': compaction.sourceTranscriptMessageCount,
+    'retainedTranscriptMessageCount': compaction.retainedTranscriptMessageCount,
+    'latestCompactedMessageCount': compaction.latestCompactedMessageCount,
+    'includedSummaryCount': compaction.includedSummaryCount,
+    'omittedSummaryCount': compaction.omittedSummaryCount,
+    'totalSummaryCount': compaction.totalSummaryCount,
+    'totalCompactedMessageCount': compaction.totalCompactedMessageCount,
+    'latestCompactedAtEpochMs': compaction.latestCompactedAtEpochMs,
+  };
+}
+
+Map<String, Object?>? _runtimeSkillInventoryDisplaySignature(
+  OpenCrayChatRunSkillInventorySnapshot? inventory,
+) {
+  if (inventory == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'visibleSkillCount': inventory.visibleSkillCount,
+    'injectedSkillCount': inventory.injectedSkillCount,
+    'omittedSkillCount': inventory.omittedSkillCount,
+    'implicitSkillCount': inventory.implicitSkillCount,
+    'invalidSkillCount': inventory.invalidSkillCount,
+    'omittedTraceSkillCount': inventory.omittedTraceSkillCount,
+    'skills': inventory.skills
+        .map(
+          (skill) => <String, Object?>{
+            'name': skill.name,
+            'relativePath': skill.relativePath,
+            'invocationControl': skill.invocationControl,
+            'userInvocable': skill.userInvocable,
+            'executionContext': skill.executionContext,
+          },
+        )
+        .toList(growable: false),
+  };
+}
+
+Map<String, Object?>? _runtimeActiveSkillDisplaySignature(
+  OpenCrayChatRunActiveSkillSnapshot? skill,
+) {
+  if (skill == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'name': skill.name,
+    'relativePath': skill.relativePath,
+    'invocationControl': skill.invocationControl,
+    'executionContext': skill.executionContext,
+    'activationSource': skill.activationSource,
+    'pinned': skill.pinned,
+    'toolRestrictionEnabled': skill.toolRestrictionEnabled,
+    'truncated': skill.truncated,
+    'allowedToolKeys': skill.allowedToolKeys,
+  };
+}
+
+Map<String, Object?>? _runtimeDiagnosticsDisplaySignature(
+  OpenCrayChatRunDiagnosticsSnapshot? diagnostics,
+) {
+  if (diagnostics == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'processStartId': diagnostics.processStartId,
+    'hostInstanceId': diagnostics.hostInstanceId,
+    'runtimeOwnerId': diagnostics.runtimeOwnerId,
+    'submissionSource': diagnostics.submissionSource,
+    'recoveryReason': diagnostics.recoveryReason,
+    'queueRestoreEpochMs': diagnostics.queueRestoreEpochMs,
+    'previousLifecycleState': diagnostics.previousLifecycleState,
+    'restoredFromDurableStore': diagnostics.restoredFromDurableStore,
+  };
+}
+
+Map<String, Object?>? _runtimeRecoveryPlanDisplaySignature(
+  OpenCrayChatRunRecoveryPlanSnapshot? plan,
+) {
+  if (plan == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'action': plan.action,
+    'reasonCode': plan.reasonCode,
+    'summary': plan.summary,
+    'safeToAutoResume': plan.safeToAutoResume,
+    'requiresUserAction': plan.requiresUserAction,
+    'checkpointKind': plan.checkpointKind,
+    'approvalState': plan.approvalState,
+    'journalTailKind': plan.journalTailKind,
   };
 }
 
@@ -11815,6 +12120,7 @@ class _MessageList extends StatelessWidget {
     int? previousTimestampEpochMs;
     final Map<String, List<ChatRunTraceData>> anchoredRunTracesByMessageId =
         <String, List<ChatRunTraceData>>{};
+    final List<ChatRunTraceData> anchoredRunTraces = <ChatRunTraceData>[];
     final Set<ChatRunTraceData> renderedRunTraces = <ChatRunTraceData>{};
     final Set<String> visibleMessageIds = messages
         .map((message) => message.messageId.trim())
@@ -11826,6 +12132,7 @@ class _MessageList extends StatelessWidget {
       if (anchorMessageId.isEmpty) {
         continue;
       }
+      anchoredRunTraces.add(trace);
       anchoredRunTracesByMessageId
           .putIfAbsent(anchorMessageId, () => <ChatRunTraceData>[])
           .add(trace);
@@ -11884,6 +12191,7 @@ class _MessageList extends StatelessWidget {
           _leadingTraceAnchorMessageIdForMessage(
             message,
             anchoredRunTracesByMessageId,
+            anchoredRunTraces,
           );
       final List<ChatRunTraceData> leadingTraces =
           leadingTraceAnchorMessageId.isEmpty
@@ -12019,6 +12327,7 @@ class _MessageList extends StatelessWidget {
 String _leadingTraceAnchorMessageIdForMessage(
   ChatMessageData message,
   Map<String, List<ChatRunTraceData>> anchoredRunTracesByMessageId,
+  Iterable<ChatRunTraceData> anchoredRunTraces,
 ) {
   final String messageId = message.messageId.trim();
   if (messageId.isNotEmpty &&
@@ -12030,7 +12339,52 @@ String _leadingTraceAnchorMessageIdForMessage(
       anchoredRunTracesByMessageId.containsKey(runtimeAnchorMessageId)) {
     return runtimeAnchorMessageId;
   }
+  final String runtimeProjectedAnchorMessageId =
+      _runtimeProjectedTraceAnchorMessageIdForMessage(
+        messageId,
+        anchoredRunTraces,
+      );
+  if (runtimeProjectedAnchorMessageId.isNotEmpty &&
+      anchoredRunTracesByMessageId.containsKey(
+        runtimeProjectedAnchorMessageId,
+      )) {
+    return runtimeProjectedAnchorMessageId;
+  }
   return '';
+}
+
+String _runtimeProjectedTraceAnchorMessageIdForMessage(
+  String messageId,
+  Iterable<ChatRunTraceData> anchoredRunTraces,
+) {
+  if (messageId.isEmpty ||
+      (!messageId.startsWith('runtime-process-') &&
+          !messageId.startsWith('runtime-assistant-'))) {
+    return '';
+  }
+  String bestAnchorMessageId = '';
+  int bestKeyLength = 0;
+  void considerKey(String key, String anchorMessageId) {
+    if (key.isEmpty || anchorMessageId.isEmpty || key.length <= bestKeyLength) {
+      return;
+    }
+    final bool matchesProcessId = messageId.startsWith('runtime-process-$key-');
+    final bool matchesAssistantId =
+        messageId.startsWith('runtime-assistant-') &&
+        messageId.contains('-$key-');
+    if (!matchesProcessId && !matchesAssistantId) {
+      return;
+    }
+    bestKeyLength = key.length;
+    bestAnchorMessageId = anchorMessageId;
+  }
+
+  for (final trace in anchoredRunTraces) {
+    final String anchorMessageId = trace.anchorMessageId.trim();
+    considerKey(trace.runId.trim(), anchorMessageId);
+    considerKey(trace.taskId.trim(), anchorMessageId);
+  }
+  return bestAnchorMessageId;
 }
 
 String _chatMessageListItemKey(ChatMessageData message) {
