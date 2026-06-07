@@ -37,6 +37,7 @@ internal object ScheduledTaskRepairReasons {
   const val BOOT_COMPLETED: String = "boot_completed"
   const val PACKAGE_REPLACED: String = "package_replaced"
   const val WORK_MANAGER: String = "work_manager"
+  const val PERIODIC: String = "periodic"
   const val BROADCAST: String = "broadcast"
 }
 
@@ -604,6 +605,7 @@ internal fun scheduledTaskTriggerReasonForRepair(
   ScheduledTaskRepairReasons.BOOT_COMPLETED,
   ScheduledTaskRepairReasons.PACKAGE_REPLACED,
   ScheduledTaskRepairReasons.APP_START,
+  ScheduledTaskRepairReasons.PERIODIC,
   ScheduledTaskRepairReasons.BROADCAST,
   -> ScheduledTaskTriggerReasons.REPAIR
   else -> ScheduledTaskTriggerReasons.REPAIR

@@ -96,6 +96,7 @@ Implemented in code:
 - caller-side `OpenCrayClientGatewayBundleFactory` now also caches the assembled client gateway bundle per `RuntimeServiceTarget` and reuses one app-scoped `OpenCrayLocalHostGateway`, so ordinary Flutter activity or bridge recreation no longer rebuilds the whole service-backed plus projection fallback gateway stack on every attach
 - the existing repair worker now preflights interrupted interactive repair candidates from persisted queue snapshots, prompt checkpoints, or durable background subagent handles and can wake `OpenCrayAgentRuntimeService` with `ACTION_RESUME_INTERRUPTED_RUNS`
 - runtime-service interrupted-run repair plus first-bootstrap session scan now reuse that same durable per-session repair predicate, so persisted queue, checkpoint, and durable background-subagent recovery candidates are not lost just because the service-side rescan starts from an empty in-memory session projection
+- app-start and boot/package-replaced paths now also keep a unique periodic `WorkManager` repair registered, so interrupted interactive repair and schedule reconciliation get recurring autonomous checks instead of only a one-shot app-start or broadcast pass
 - service-backed chat/skills/settings gateways now keep fallback strictly projection-only for reads; binder-unavailable writes and tool-executing commands fail explicitly instead of silently dropping back to the UI-side facade
 - the shell snapshot surface now goes through a dedicated `OpenCrayShellGateway`, and the Flutter bridge plus loopback HTTP server prefer a binder-backed service shell gateway for shell loads and shell observation
 - chat/runtime commands and snapshots are now fronted by a dedicated `OpenCrayChatRuntimeGateway`, and both the Flutter host bridge and the loopback HTTP server use that gateway for the execution-facing path
@@ -321,7 +322,7 @@ Relevant files:
 
 Current state:
 
-- app bootstrap no longer eagerly starts `OpenCrayAgentRuntimeService`; it only performs app-level bootstrap plus repair/schedule registration. When the runtime service is later started by an explicit wake or binder-demanding path, that service bootstraps the local loopback server on `onCreate()`
+- app bootstrap no longer eagerly starts `OpenCrayAgentRuntimeService`; it only performs app-level bootstrap plus repair/schedule registration, including one-shot app-start repair and unique periodic repair registration. When the runtime service is later started by an explicit wake or binder-demanding path, that service bootstraps the local loopback server on `onCreate()`
 - execution now routes through a dedicated `:runtime` Android `Service` host boundary rather than directly through a UI-owned host facade
 - execution is still ultimately backed by runtime-process singletons and executors
 - `AlarmManager` plus `WorkManager` trigger bridges now exist for scheduled wake-up and repair, but interactive active runs still execute under that runtime-process owner
@@ -690,7 +691,7 @@ What should we do?
 - keep the lifecycle boundary observable with explicit IDs and recovery reasons
 - keep expanding durable journal and checkpoint coverage
 - keep moving execution ownership toward a more detached service owner
-- extend scheduler-owned repair beyond the current `ACTION_RESUME_INTERRUPTED_RUNS` wake-and-rescan path
+- extend scheduler-owned repair beyond the current periodic `ACTION_RESUME_INTERRUPTED_RUNS` wake-and-rescan path
 - layer richer `WorkManager`-based scheduling on top of that runtime foundation
 
 That is the path that fixes the current restart bug and also gives OpenCray a solid base for future keepalive and timed tasks.

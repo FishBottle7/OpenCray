@@ -5,8 +5,10 @@ import android.content.Context
 import android.content.Intent
 import androidx.work.Constraints
 import androidx.work.Data
+import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
@@ -23,6 +25,8 @@ internal interface ScheduledWorkScheduler {
   fun cancel(scheduleId: String)
 
   fun enqueueRepair(reason: String)
+
+  fun ensurePeriodicRepair()
 }
 
 internal class WorkManagerScheduledWorkScheduler(
@@ -69,6 +73,26 @@ internal class WorkManagerScheduledWorkScheduler(
     workManager.enqueueUniqueWork(
       REPAIR_WORK_NAME,
       ExistingWorkPolicy.KEEP,
+      request,
+    )
+  }
+
+  override fun ensurePeriodicRepair() {
+    val request = PeriodicWorkRequestBuilder<ScheduledTaskRepairWorker>(
+      PERIODIC_REPAIR_INTERVAL_HOURS,
+      TimeUnit.HOURS,
+    )
+      .setInputData(
+        Data.Builder()
+          .putString(WORK_DATA_REPAIR_REASON, ScheduledTaskRepairReasons.PERIODIC)
+          .build(),
+      )
+      .setConstraints(defaultConstraints())
+      .addTag(PERIODIC_REPAIR_WORK_NAME)
+      .build()
+    workManager.enqueueUniquePeriodicWork(
+      PERIODIC_REPAIR_WORK_NAME,
+      ExistingPeriodicWorkPolicy.KEEP,
       request,
     )
   }
@@ -181,7 +205,9 @@ internal class ScheduledTaskRepairReceiver : BroadcastReceiver() {
     runCatching {
       resyncEnabledScheduledTasksFromContext(appContext)
     }
-    WorkManagerScheduledWorkScheduler.fromContext(appContext).enqueueRepair(reason)
+    val scheduler = WorkManagerScheduledWorkScheduler.fromContext(appContext)
+    scheduler.enqueueRepair(reason)
+    scheduler.ensurePeriodicRepair()
   }
 }
 
@@ -270,6 +296,8 @@ private fun scheduleWakeWorkName(scheduleId: String): String =
   "scheduled-task-wake-${FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(scheduleId)}"
 
 internal const val REPAIR_WORK_NAME: String = "scheduled-task-repair"
+internal const val PERIODIC_REPAIR_WORK_NAME: String = "scheduled-task-periodic-repair"
+internal const val PERIODIC_REPAIR_INTERVAL_HOURS: Long = 1L
 internal const val WORK_DATA_SCHEDULE_ID: String = "schedule_id"
 internal const val WORK_DATA_SCHEDULED_FOR_EPOCH_MS: String = "scheduled_for_epoch_ms"
 internal const val WORK_DATA_REPAIR_REASON: String = "repair_reason"

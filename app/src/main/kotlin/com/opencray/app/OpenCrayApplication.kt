@@ -65,6 +65,9 @@ internal fun bootstrapOpenCrayApplication(
   enqueueRepair: (Context, String) -> Unit = { context, reason ->
     WorkManagerScheduledWorkScheduler.fromContext(context).enqueueRepair(reason)
   },
+  ensurePeriodicRepair: (Context) -> Unit = { context ->
+    WorkManagerScheduledWorkScheduler.fromContext(context).ensurePeriodicRepair()
+  },
 ) {
   registerVisibility(application)
   bootstrapOpenCrayRuntimeProcessSupport(
@@ -76,6 +79,7 @@ internal fun bootstrapOpenCrayApplication(
     resyncEnabledSchedules(application)
   }
   enqueueRepair(application, ScheduledTaskRepairReasons.APP_START)
+  ensurePeriodicRepair(application)
 }
 
 internal fun bootstrapOpenCrayRuntimeProcessSupport(

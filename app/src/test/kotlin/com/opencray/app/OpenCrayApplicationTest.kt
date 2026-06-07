@@ -72,6 +72,9 @@ class OpenCrayApplicationTest {
       enqueueRepair = { _, reason ->
         steps += "enqueue_repair:$reason"
       },
+      ensurePeriodicRepair = {
+        steps += "ensure_periodic_repair"
+      },
     )
 
     assertEquals(
@@ -81,6 +84,7 @@ class OpenCrayApplicationTest {
         "seed_skills",
         "resync_schedules",
         "enqueue_repair:${ScheduledTaskRepairReasons.APP_START}",
+        "ensure_periodic_repair",
       ),
       steps,
     )
@@ -151,6 +155,9 @@ class OpenCrayApplicationTest {
       enqueueRepair = { _, reason ->
         steps += "enqueue_repair:$reason"
       },
+      ensurePeriodicRepair = {
+        steps += "ensure_periodic_repair"
+      },
     )
 
     assertEquals(
@@ -160,6 +167,7 @@ class OpenCrayApplicationTest {
         "seed_skills",
         "resync_schedules",
         "enqueue_repair:${ScheduledTaskRepairReasons.APP_START}",
+        "ensure_periodic_repair",
       ),
       steps,
     )

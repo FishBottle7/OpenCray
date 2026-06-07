@@ -370,6 +370,14 @@ class ScheduledTaskRuntimeTest {
     )
   }
 
+  @Test
+  fun scheduledTaskTriggerReasonForRepairMapsPeriodicRepairToRepairTrigger() {
+    assertEquals(
+      ScheduledTaskTriggerReasons.REPAIR,
+      scheduledTaskTriggerReasonForRepair(ScheduledTaskRepairReasons.PERIODIC),
+    )
+  }
+
   private fun scheduledTaskSpec(
     sessionId: String,
     scheduleId: String = "schedule-default",
