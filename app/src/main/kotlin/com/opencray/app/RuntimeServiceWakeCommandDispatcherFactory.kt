@@ -108,6 +108,12 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
             ),
           )
         }
+
+      is RuntimeServiceNotificationCommand.DisableSchedule ->
+        dispatcherDependencies.scheduledTaskRepairDependencies.disableScheduledTask(
+          scheduleId = command.scheduleId,
+          nowEpochMs = nowEpochMsProvider(),
+        )
     }
     gatewayBundle.notifyChatSnapshotsChanged()
     approvalNotificationDismisser(appContext, command.taskId)

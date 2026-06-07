@@ -164,7 +164,7 @@ Implemented in code:
 - the service-owned skills gateway now resolves skills snapshot/observation, install and batch-install, update check/update, source inspection, instructions, install-source activation, and local skill toggles/delete/refresh through `LocalSkillsFacade` plus a narrowed skills snapshot notifier, which removes another cluster of facade-backed skills flows from `OpenCrayHostRuntime`
 - projection-only skills fallback is now strictly local-only and no longer issues `SkillsList` or `SkillsFind`, which keeps tool-executing skills discovery and remote install metadata on the binder-owned pipeline
 - the runtime service now promotes itself to foreground while keepalive-required work exists, and service-owned notification flows now cover active-runtime, approval-needed, completion/interruption, and scheduled-dispatch surfaces
-- scheduled-dispatch notifications now also have a service-backed retry/manual-run action for skipped-busy and dispatch-failed outcomes; the action is parsed by the runtime-service wake-command pipeline, starts the detached target in the foreground, and enqueues a new manual scheduled trigger through the normal scheduled-task dispatcher
+- scheduled-dispatch notifications now also have service-backed retry/manual-run and disable actions for skipped-busy and dispatch-failed outcomes; those actions are parsed by the runtime-service wake-command pipeline, start the detached target in the foreground, and either enqueue a new manual scheduled trigger through the normal scheduled-task dispatcher or disable the durable schedule with trigger re-sync
 - completion/interruption notifications now backfill from durable run state when the app is backgrounded, and terminal delivery is deduped across restore/backfill via a persistent notification-delivery store
 - this service slice is still intentionally same-process: foreground keepalive, notification surfaces, scheduled wake-up semantics, target-aware UI write routing, target-scoped projection fallback, and target-scoped local loopback transport have landed, but binder-driven control flow as the dominant path and stronger detached ownership semantics are still later slices
 
@@ -325,7 +325,7 @@ Current state:
 - app bootstrap no longer eagerly starts `OpenCrayAgentRuntimeService`; it only performs app-level bootstrap plus repair/schedule registration, including one-shot app-start repair and unique periodic repair registration. When the runtime service is later started by an explicit wake or binder-demanding path, that service bootstraps the local loopback server on `onCreate()`
 - execution now routes through a dedicated `:runtime` Android `Service` host boundary rather than directly through a UI-owned host facade
 - execution is still ultimately backed by runtime-process singletons and executors
-- `AlarmManager` plus `WorkManager` trigger bridges now exist for scheduled wake-up and repair, but interactive active runs still execute under that runtime-process owner
+- `AlarmManager` plus `WorkManager` trigger bridges now exist for scheduled wake-up and repair, and schedule notifications can retry/manual-run or disable failed/skipped schedules through the runtime-service wake path, but interactive active runs still execute under that runtime-process owner
 
 Conclusion:
 

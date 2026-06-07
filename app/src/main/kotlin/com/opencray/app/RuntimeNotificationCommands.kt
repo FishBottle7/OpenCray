@@ -26,6 +26,14 @@ internal sealed interface RuntimeServiceNotificationCommand {
     override val taskId: String? = null
     override val runId: String? = null
   }
+
+  data class DisableSchedule(
+    override val sessionId: String?,
+    val scheduleId: String,
+  ) : RuntimeServiceNotificationCommand {
+    override val taskId: String? = null
+    override val runId: String? = null
+  }
 }
 
 internal fun parseRuntimeNotificationCommand(
@@ -88,6 +96,17 @@ internal fun parseRuntimeNotificationCommand(
         ?.takeIf(String::isNotBlank)
         ?: return null
       RuntimeServiceNotificationCommand.RunScheduleNow(
+        sessionId = sessionId,
+        scheduleId = normalizedScheduleId,
+      )
+    }
+
+    RuntimeNotificationIntentActions.ACTION_DISABLE_SCHEDULE -> {
+      val normalizedScheduleId = scheduleId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: return null
+      RuntimeServiceNotificationCommand.DisableSchedule(
         sessionId = sessionId,
         scheduleId = normalizedScheduleId,
       )

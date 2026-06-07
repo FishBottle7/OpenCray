@@ -40,12 +40,19 @@ class RuntimeNotificationCommandsTest {
 
   @Test
   fun parseRuntimeNotificationCommandParsesScheduleActions() {
-    val command = parseRuntimeNotificationCommand(
+    val runNow = parseRuntimeNotificationCommand(
       action = RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW,
       sessionId = "session-schedule",
       taskId = null,
       runId = null,
       scheduleId = " schedule-now ",
+    )
+    val disable = parseRuntimeNotificationCommand(
+      action = RuntimeNotificationIntentActions.ACTION_DISABLE_SCHEDULE,
+      sessionId = "session-schedule",
+      taskId = null,
+      runId = null,
+      scheduleId = " schedule-disable ",
     )
 
     assertEquals(
@@ -53,7 +60,14 @@ class RuntimeNotificationCommandsTest {
         sessionId = "session-schedule",
         scheduleId = "schedule-now",
       ),
-      command,
+      runNow,
+    )
+    assertEquals(
+      RuntimeServiceNotificationCommand.DisableSchedule(
+        sessionId = "session-schedule",
+        scheduleId = "schedule-disable",
+      ),
+      disable,
     )
   }
 
@@ -82,6 +96,15 @@ class RuntimeNotificationCommandsTest {
         taskId = null,
         runId = null,
         scheduleId = "   ",
+      ),
+    )
+    assertNull(
+      parseRuntimeNotificationCommand(
+        action = RuntimeNotificationIntentActions.ACTION_DISABLE_SCHEDULE,
+        sessionId = "session-c",
+        taskId = null,
+        runId = null,
+        scheduleId = null,
       ),
     )
   }

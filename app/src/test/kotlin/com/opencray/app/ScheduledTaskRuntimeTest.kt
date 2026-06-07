@@ -10,6 +10,7 @@ import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.subagent.SubAgentApprovalResume
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -376,6 +377,44 @@ class ScheduledTaskRuntimeTest {
       ScheduledTaskTriggerReasons.REPAIR,
       scheduledTaskTriggerReasonForRepair(ScheduledTaskRepairReasons.PERIODIC),
     )
+  }
+
+  @Test
+  fun disableScheduledTaskDisablesSpecAndCancelsRegisteredTrigger() {
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val triggerSyncStateStore = inMemoryScheduledTaskTriggerSyncStateStoreFactory().create()
+    specStore.upsert(
+      scheduledTaskSpec(
+        sessionId = "session-disable",
+        scheduleId = "schedule-disable",
+        updatedAtEpochMs = 2_000L,
+      ),
+    )
+    specStore.upsert(
+      scheduledTaskSpec(
+        sessionId = "session-other",
+        scheduleId = "schedule-other",
+        updatedAtEpochMs = 3_000L,
+      ),
+    )
+    triggerSyncStateStore.replaceScheduleIds(linkedSetOf("schedule-disable", "schedule-other"))
+
+    val disabled = disableScheduledTask(
+      scheduleId = " schedule-disable ",
+      specStore = specStore,
+      triggerRegistrar = registrar,
+      triggerSyncStateStore = triggerSyncStateStore,
+      nowEpochMs = 2_500L,
+    )
+
+    assertTrue(disabled)
+    val disabledSpec = requireNotNull(specStore.get("schedule-disable"))
+    assertFalse(disabledSpec.enabled)
+    assertEquals(2_500L, disabledSpec.updatedAtEpochMs)
+    assertEquals(listOf("schedule-disable"), registrar.cancelledScheduleIds)
+    assertEquals(listOf("schedule-other"), registrar.syncedScheduleIds)
+    assertEquals(linkedSetOf("schedule-other"), triggerSyncStateStore.loadScheduleIds())
   }
 
   private fun scheduledTaskSpec(

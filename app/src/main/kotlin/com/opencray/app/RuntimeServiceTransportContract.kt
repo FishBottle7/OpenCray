@@ -31,6 +31,7 @@ internal const val COMMAND_KIND_RESUME_INTERRUPTED_RUNS: String = "resume_interr
 internal const val COMMAND_KIND_APPROVE_APPROVAL: String = "approve_approval"
 internal const val COMMAND_KIND_REJECT_APPROVAL: String = "reject_approval"
 internal const val COMMAND_KIND_RUN_SCHEDULE_NOW: String = "run_schedule_now"
+internal const val COMMAND_KIND_DISABLE_SCHEDULE: String = "disable_schedule"
 internal const val COMMAND_KIND_CHAT_WRITE_APPROVE_APPROVAL: String = "chat_write_approve_approval"
 internal const val COMMAND_KIND_CHAT_WRITE_APPROVE_APPROVAL_FOR_SESSION: String =
   "chat_write_approve_approval_for_session"

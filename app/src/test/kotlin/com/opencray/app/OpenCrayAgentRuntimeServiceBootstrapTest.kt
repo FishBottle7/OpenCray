@@ -4182,6 +4182,46 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun defaultWakeDispatcherHandlesDisableScheduleNotificationActionAndPersistsProjection() {
+    val context = MinimalContext()
+    val nowEpochMs = 4_000L
+    val fixture = scheduledRepairWakeDispatcherFixture(
+      root = temporaryFolder.newFolder("wake-dispatcher-disable-schedule-notification"),
+      nowEpochMs = nowEpochMs,
+    )
+    val gatewayBundle = testServiceGatewayBundle()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
+      appContext = context,
+      dispatcherDependencies = fixture.serviceHost.toRuntimeServiceBootstrapState().wakeCommandDispatcherDependencies,
+      gatewayBundle = gatewayBundle,
+      projectionCoordinator = projectionCoordinator,
+      wakeIntentParser = RuntimeServiceWakeIntentParser {
+        RuntimeServiceWakeIntentCommand.Notification(
+          RuntimeServiceNotificationCommand.DisableSchedule(
+            sessionId = fixture.sessionId,
+            scheduleId = fixture.scheduleId,
+          ),
+        )
+      },
+      approvalNotificationDismisser = { _, _ -> },
+      nowEpochMsProvider = { nowEpochMs },
+    )
+
+    dispatcher.dispatch(null)
+
+    val disabledSpec = requireNotNull(fixture.serviceHost.scheduledTaskSpecStore.get(fixture.scheduleId))
+    assertFalse(disabledSpec.enabled)
+    assertEquals(nowEpochMs, disabledSpec.updatedAtEpochMs)
+    assertTrue(fixture.handle.submittedTasks.isEmpty())
+    assertEquals(0, fixture.handle.ensureProcessingCallCount)
+    assertEquals(1, projectionCoordinator.persistCallCount)
+    assertTrue(projectionCoordinator.scheduledDispatchOutcomes.isEmpty())
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
   fun defaultWakeDispatcherHandlesChatWriteWakeAndPersistsProjection() {
     val context = MinimalContext()
     var interruptedTaskIdOrRunId: String? = null
@@ -4624,6 +4664,31 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun defaultIntentDescriptorParserMarksDisableScheduleNotificationWakeAsForegroundBootstrap() {
+    val parsed = DefaultRuntimeServiceIntentDescriptorParser(
+      notificationCommandParser = { null },
+      scheduledTaskWakeCommandParser = { null },
+      commandKindReader = { COMMAND_KIND_DISABLE_SCHEDULE },
+      commandVersionReader = { RUNTIME_SERVICE_COMMAND_VERSION_CURRENT },
+      actionReader = { RuntimeNotificationIntentActions.ACTION_DISABLE_SCHEDULE },
+      scheduleIdReader = { "schedule-disable-foreground" },
+      notificationSessionIdReader = { "session-disable-foreground" },
+    ).parse(null)
+
+    assertEquals(
+      RuntimeServiceWakeIntentCommand.Notification(
+        RuntimeServiceNotificationCommand.DisableSchedule(
+          sessionId = "session-disable-foreground",
+          scheduleId = "schedule-disable-foreground",
+        ),
+      ),
+      parsed.wakeCommand,
+    )
+    assertFalse(parsed.requestsRuntimeReset)
+    assertTrue(parsed.requiresBootstrapForeground)
+  }
+
+  @Test
   fun defaultIntentDescriptorParserPrefersExplicitCommandKindEnvelope() {
     val parsed = DefaultRuntimeServiceIntentDescriptorParser(
       notificationCommandParser = { null },
@@ -4724,6 +4789,16 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       COMMAND_KIND_RUN_SCHEDULE_NOW,
       scheduleActionIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
     )
+    val disableScheduleActionIntent = factory.scheduleNotificationActionIntent(
+      context = context,
+      action = RuntimeNotificationIntentActions.ACTION_DISABLE_SCHEDULE,
+      scheduleId = "schedule-disable-1",
+      sessionId = "session-disable-1",
+    )
+    assertEquals(
+      COMMAND_KIND_DISABLE_SCHEDULE,
+      disableScheduleActionIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
+    )
     assertEquals(
       COMMAND_KIND_CHAT_WRITE_INTERRUPT_RUN,
       chatWriteIntent?.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
@@ -4763,17 +4838,24 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     val parser = DefaultRuntimeServiceWakeIntentParser()
     val context = MinimalContext()
 
-    val intent = factory.scheduleNotificationActionIntent(
+    val runNowIntent = factory.scheduleNotificationActionIntent(
       context = context,
       action = RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW,
       scheduleId = "schedule-action",
       sessionId = "session-action",
       target = RuntimeServiceTarget.DETACHED_BACKGROUND,
     )
+    val disableIntent = factory.scheduleNotificationActionIntent(
+      context = context,
+      action = RuntimeNotificationIntentActions.ACTION_DISABLE_SCHEDULE,
+      scheduleId = "schedule-disable-action",
+      sessionId = "session-disable-action",
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    )
 
     assertEquals(
       COMMAND_KIND_RUN_SCHEDULE_NOW,
-      intent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
+      runNowIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
     )
     assertEquals(
       RuntimeServiceWakeIntentCommand.Notification(
@@ -4782,11 +4864,24 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           scheduleId = "schedule-action",
         ),
       ),
-      parser.parse(intent),
+      parser.parse(runNowIntent),
+    )
+    assertEquals(
+      COMMAND_KIND_DISABLE_SCHEDULE,
+      disableIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
+    )
+    assertEquals(
+      RuntimeServiceWakeIntentCommand.Notification(
+        RuntimeServiceNotificationCommand.DisableSchedule(
+          sessionId = "session-disable-action",
+          scheduleId = "schedule-disable-action",
+        ),
+      ),
+      parser.parse(disableIntent),
     )
     assertEquals(
       RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
-      intent.getStringExtra(EXTRA_RUNTIME_SERVICE_TARGET),
+      disableIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_TARGET),
     )
   }
 

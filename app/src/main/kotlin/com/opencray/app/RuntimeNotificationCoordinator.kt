@@ -29,6 +29,8 @@ internal object RuntimeNotificationIntentActions {
     "com.opencray.app.action.REJECT_RUNTIME_APPROVAL"
   const val ACTION_RUN_SCHEDULE_NOW: String =
     "com.opencray.app.action.RUN_SCHEDULE_NOW"
+  const val ACTION_DISABLE_SCHEDULE: String =
+    "com.opencray.app.action.DISABLE_SCHEDULE"
 }
 
 internal object RuntimeNotificationIntentExtras {
@@ -66,7 +68,7 @@ internal data class RuntimeScheduleNotificationModel(
   val scheduleTitle: String,
   val title: String,
   val body: String,
-  val action: RuntimeScheduleNotificationAction? = null,
+  val actions: List<RuntimeScheduleNotificationAction> = emptyList(),
 )
 
 internal data class RuntimeScheduleNotificationAction(
@@ -504,7 +506,7 @@ internal class RuntimeNotificationCoordinator(
         ?: localizedContext.getString(R.string.runtime_notification_schedule_default_title),
       title = localizedContext.getString(titleResId),
       body = body,
-      action = scheduleNotificationAction(
+      actions = scheduleNotificationActions(
         outcome = outcome,
         spec = spec,
         sessionId = sessionId,
@@ -625,7 +627,7 @@ internal class RuntimeNotificationCoordinator(
         localizedContext.getString(R.string.runtime_notification_action_open),
         openChatPendingIntent(model.sessionId),
       )
-    model.action?.let { action ->
+    model.actions.forEach { action ->
       builder.addAction(
         0,
         localizedContext.getString(action.labelResId),
@@ -635,27 +637,40 @@ internal class RuntimeNotificationCoordinator(
     return builder.build()
   }
 
-  private fun scheduleNotificationAction(
+  private fun scheduleNotificationActions(
     outcome: ScheduledTaskDispatchOutcome,
     spec: ScheduledTaskSpec?,
     sessionId: String?,
-  ): RuntimeScheduleNotificationAction? {
+  ): List<RuntimeScheduleNotificationAction> {
     if (spec?.enabled != true) {
-      return null
+      return emptyList()
     }
-    val labelResId = when (outcome.result) {
+    val canRetry = when (outcome.result) {
       ScheduledTaskRunResult.SKIPPED_SESSION_BUSY,
       ScheduledTaskRunResult.FAILED_DISPATCH,
-      -> R.string.runtime_notification_action_retry
+      -> true
 
-      else -> return null
+      else -> false
     }
-    return RuntimeScheduleNotificationAction(
-      action = RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW,
-      scheduleId = outcome.scheduleId,
-      sessionId = sessionId ?: spec.sessionId,
-      labelResId = labelResId,
-      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    if (!canRetry) {
+      return emptyList()
+    }
+    val resolvedSessionId = sessionId ?: spec.sessionId
+    return listOf(
+      RuntimeScheduleNotificationAction(
+        action = RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW,
+        scheduleId = outcome.scheduleId,
+        sessionId = resolvedSessionId,
+        labelResId = R.string.runtime_notification_action_retry,
+        runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      ),
+      RuntimeScheduleNotificationAction(
+        action = RuntimeNotificationIntentActions.ACTION_DISABLE_SCHEDULE,
+        scheduleId = outcome.scheduleId,
+        sessionId = resolvedSessionId,
+        labelResId = R.string.runtime_notification_action_disable_schedule,
+        runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      ),
     )
   }
 

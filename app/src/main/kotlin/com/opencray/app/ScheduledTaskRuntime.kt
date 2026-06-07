@@ -584,6 +584,48 @@ internal fun ScheduledTaskRepairDependencies.repairScheduledTasks(
   return outcomes
 }
 
+internal fun ScheduledTaskRepairDependencies.disableScheduledTask(
+  scheduleId: String,
+  nowEpochMs: Long = System.currentTimeMillis(),
+): Boolean = disableScheduledTask(
+  scheduleId = scheduleId,
+  specStore = specStore,
+  triggerRegistrar = triggerRegistrar,
+  triggerSyncStateStore = triggerSyncStateStore,
+  nowEpochMs = nowEpochMs,
+)
+
+internal fun disableScheduledTask(
+  scheduleId: String,
+  specStore: ScheduledTaskSpecStore,
+  triggerRegistrar: ScheduledTriggerRegistrar,
+  triggerSyncStateStore: ScheduledTaskTriggerSyncStateStore,
+  nowEpochMs: Long = System.currentTimeMillis(),
+): Boolean {
+  val normalizedScheduleId = scheduleId.trim().takeIf(String::isNotBlank) ?: return false
+  val existing = specStore.get(normalizedScheduleId) ?: return false
+  if (!existing.enabled) {
+    resyncEnabledScheduledTasks(
+      specStore = specStore,
+      triggerRegistrar = triggerRegistrar,
+      triggerSyncStateStore = triggerSyncStateStore,
+    )
+    return false
+  }
+  specStore.upsert(
+    existing.copy(
+      enabled = false,
+      updatedAtEpochMs = maxOf(nowEpochMs, existing.updatedAtEpochMs + 1L),
+    ),
+  )
+  resyncEnabledScheduledTasks(
+    specStore = specStore,
+    triggerRegistrar = triggerRegistrar,
+    triggerSyncStateStore = triggerSyncStateStore,
+  )
+  return true
+}
+
 internal fun plannedRepairWakeCommands(
   enabledSpecs: List<ScheduledTaskSpec>,
   nowEpochMs: Long,
