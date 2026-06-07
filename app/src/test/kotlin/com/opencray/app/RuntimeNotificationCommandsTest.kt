@@ -54,6 +54,13 @@ class RuntimeNotificationCommandsTest {
       runId = null,
       scheduleId = " schedule-disable ",
     )
+    val snooze = parseRuntimeNotificationCommand(
+      action = RuntimeNotificationIntentActions.ACTION_SNOOZE_SCHEDULE,
+      sessionId = "session-schedule",
+      taskId = null,
+      runId = null,
+      scheduleId = " schedule-snooze ",
+    )
 
     assertEquals(
       RuntimeServiceNotificationCommand.RunScheduleNow(
@@ -68,6 +75,13 @@ class RuntimeNotificationCommandsTest {
         scheduleId = "schedule-disable",
       ),
       disable,
+    )
+    assertEquals(
+      RuntimeServiceNotificationCommand.SnoozeSchedule(
+        sessionId = "session-schedule",
+        scheduleId = "schedule-snooze",
+      ),
+      snooze,
     )
   }
 
@@ -105,6 +119,15 @@ class RuntimeNotificationCommandsTest {
         taskId = null,
         runId = null,
         scheduleId = null,
+      ),
+    )
+    assertNull(
+      parseRuntimeNotificationCommand(
+        action = RuntimeNotificationIntentActions.ACTION_SNOOZE_SCHEDULE,
+        sessionId = "session-c",
+        taskId = null,
+        runId = null,
+        scheduleId = "",
       ),
     )
   }

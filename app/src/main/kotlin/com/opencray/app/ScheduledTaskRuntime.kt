@@ -41,6 +41,8 @@ internal object ScheduledTaskRepairReasons {
   const val BROADCAST: String = "broadcast"
 }
 
+internal const val SCHEDULED_TASK_NOTIFICATION_SNOOZE_DELAY_MS: Long = 15L * 60L * 1_000L
+
 internal data class ScheduledTaskWakeCommand(
   val scheduleId: String,
   val scheduleRunId: String,
@@ -265,8 +267,7 @@ internal class ScheduledTaskDispatcher(
       )
     }
 
-    val spec = specStore.get(command.scheduleId)
-    if (spec == null) {
+    var spec = specStore.get(command.scheduleId) ?: run {
       recordFailure(
         command = command,
         sessionId = command.targetSessionId ?: UNRESOLVED_SESSION_ID,
@@ -281,6 +282,12 @@ internal class ScheduledTaskDispatcher(
         failureReason = "schedule_not_found",
       )
     }
+    val nowForDispatchEpochMs = maxOf(clock(), command.triggeredAtEpochMs)
+    spec = clearSnoozeForDispatchIfNeeded(
+      spec = spec,
+      command = command,
+      nowEpochMs = nowForDispatchEpochMs,
+    )
     if (!spec.enabled) {
       triggerRegistrar.cancel(spec.scheduleId)
       recordFailure(
@@ -295,6 +302,28 @@ internal class ScheduledTaskDispatcher(
         scheduleRunId = command.scheduleRunId,
         sessionId = spec.sessionId,
         failureReason = "schedule_disabled",
+      )
+    }
+    val snoozedUntilEpochMs = spec.snoozedUntilEpochMs
+    if (snoozedUntilEpochMs != null && snoozedUntilEpochMs > nowForDispatchEpochMs) {
+      triggerRegistrar.syncSpec(spec)
+      val record = ScheduledTaskRunRecord(
+        scheduleRunId = command.scheduleRunId,
+        scheduleId = spec.scheduleId,
+        sessionId = spec.sessionId,
+        triggerReason = command.triggerReason,
+        triggeredAtEpochMs = command.triggeredAtEpochMs,
+        result = ScheduledTaskRunResult.SKIPPED_SNOOZED,
+        failureReason = "schedule_snoozed",
+        updatedAtEpochMs = clock(),
+      )
+      runRecordStore.upsert(record)
+      return ScheduledTaskDispatchOutcome(
+        result = ScheduledTaskRunResult.SKIPPED_SNOOZED,
+        scheduleId = spec.scheduleId,
+        scheduleRunId = command.scheduleRunId,
+        sessionId = spec.sessionId,
+        failureReason = "schedule_snoozed",
       )
     }
     val targetSessionId = command.targetSessionId
@@ -492,6 +521,25 @@ internal class ScheduledTaskDispatcher(
     )
   }
 
+  private fun clearSnoozeForDispatchIfNeeded(
+    spec: ScheduledTaskSpec,
+    command: ScheduledTaskWakeCommand,
+    nowEpochMs: Long,
+  ): ScheduledTaskSpec {
+    val snoozedUntilEpochMs = spec.snoozedUntilEpochMs ?: return spec
+    val shouldClearSnooze = command.triggerReason == ScheduledTaskTriggerReasons.MANUAL ||
+      snoozedUntilEpochMs <= nowEpochMs
+    if (!shouldClearSnooze) {
+      return spec
+    }
+    val updated = spec.copy(
+      snoozedUntilEpochMs = null,
+      updatedAtEpochMs = maxOf(nowEpochMs, spec.updatedAtEpochMs + 1L),
+    )
+    specStore.upsert(updated)
+    return updated
+  }
+
   private fun scheduledTaskMetadata(
     spec: ScheduledTaskSpec,
     command: ScheduledTaskWakeCommand,
@@ -595,6 +643,19 @@ internal fun ScheduledTaskRepairDependencies.disableScheduledTask(
   nowEpochMs = nowEpochMs,
 )
 
+internal fun ScheduledTaskRepairDependencies.snoozeScheduledTask(
+  scheduleId: String,
+  snoozedUntilEpochMs: Long,
+  nowEpochMs: Long = System.currentTimeMillis(),
+): Boolean = snoozeScheduledTask(
+  scheduleId = scheduleId,
+  snoozedUntilEpochMs = snoozedUntilEpochMs,
+  specStore = specStore,
+  triggerRegistrar = triggerRegistrar,
+  triggerSyncStateStore = triggerSyncStateStore,
+  nowEpochMs = nowEpochMs,
+)
+
 internal fun disableScheduledTask(
   scheduleId: String,
   specStore: ScheduledTaskSpecStore,
@@ -615,6 +676,44 @@ internal fun disableScheduledTask(
   specStore.upsert(
     existing.copy(
       enabled = false,
+      updatedAtEpochMs = maxOf(nowEpochMs, existing.updatedAtEpochMs + 1L),
+    ),
+  )
+  resyncEnabledScheduledTasks(
+    specStore = specStore,
+    triggerRegistrar = triggerRegistrar,
+    triggerSyncStateStore = triggerSyncStateStore,
+  )
+  return true
+}
+
+internal fun snoozeScheduledTask(
+  scheduleId: String,
+  snoozedUntilEpochMs: Long,
+  specStore: ScheduledTaskSpecStore,
+  triggerRegistrar: ScheduledTriggerRegistrar,
+  triggerSyncStateStore: ScheduledTaskTriggerSyncStateStore,
+  nowEpochMs: Long = System.currentTimeMillis(),
+): Boolean {
+  val normalizedScheduleId = scheduleId.trim().takeIf(String::isNotBlank) ?: return false
+  if (snoozedUntilEpochMs <= nowEpochMs) {
+    return false
+  }
+  val existing = specStore.get(normalizedScheduleId) ?: return false
+  if (!existing.enabled) {
+    resyncEnabledScheduledTasks(
+      specStore = specStore,
+      triggerRegistrar = triggerRegistrar,
+      triggerSyncStateStore = triggerSyncStateStore,
+    )
+    return false
+  }
+  specStore.upsert(
+    existing.copy(
+      snoozedUntilEpochMs = maxOf(
+        snoozedUntilEpochMs,
+        existing.snoozedUntilEpochMs ?: 0L,
+      ),
       updatedAtEpochMs = maxOf(nowEpochMs, existing.updatedAtEpochMs + 1L),
     ),
   )
@@ -788,6 +887,37 @@ private fun scheduledTaskWakeReceiverIntent(
 private fun nextScheduledTriggerAtEpochMs(
   spec: ScheduledTaskSpec,
   nowEpochMs: Long,
+): Long? {
+  val snoozedUntilEpochMs = spec.snoozedUntilEpochMs
+    ?.takeIf { candidate -> candidate > nowEpochMs }
+    ?: return nextTriggerIgnoringSnooze(spec, nowEpochMs)
+  val dueEpochMs = dueTriggerIgnoringSnooze(spec, nowEpochMs)
+  if (dueEpochMs != null) {
+    return snoozedUntilEpochMs
+  }
+  val nextEpochMs = nextTriggerIgnoringSnooze(spec, nowEpochMs) ?: return null
+  return maxOf(nextEpochMs, snoozedUntilEpochMs)
+}
+
+internal fun dueScheduledTriggerAtEpochMs(
+  spec: ScheduledTaskSpec,
+  nowEpochMs: Long,
+): Long? {
+  val snoozedUntilEpochMs = spec.snoozedUntilEpochMs
+  if (snoozedUntilEpochMs != null && snoozedUntilEpochMs > nowEpochMs) {
+    return null
+  }
+  val dueEpochMs = dueTriggerIgnoringSnooze(spec, nowEpochMs) ?: return null
+  return if (snoozedUntilEpochMs != null) {
+    maxOf(dueEpochMs, snoozedUntilEpochMs)
+  } else {
+    dueEpochMs
+  }
+}
+
+private fun nextTriggerIgnoringSnooze(
+  spec: ScheduledTaskSpec,
+  nowEpochMs: Long,
 ): Long? = when (val trigger = spec.trigger) {
   is ScheduledTrigger.RunAtTimestamp ->
     trigger.triggerAtEpochMs.takeIf { triggerAtEpochMs -> triggerAtEpochMs > nowEpochMs }
@@ -809,7 +939,7 @@ private fun nextScheduledTriggerAtEpochMs(
   }
 }
 
-internal fun dueScheduledTriggerAtEpochMs(
+private fun dueTriggerIgnoringSnooze(
   spec: ScheduledTaskSpec,
   nowEpochMs: Long,
 ): Long? = when (val trigger = spec.trigger) {

@@ -31,6 +31,8 @@ internal object RuntimeNotificationIntentActions {
     "com.opencray.app.action.RUN_SCHEDULE_NOW"
   const val ACTION_DISABLE_SCHEDULE: String =
     "com.opencray.app.action.DISABLE_SCHEDULE"
+  const val ACTION_SNOOZE_SCHEDULE: String =
+    "com.opencray.app.action.SNOOZE_SCHEDULE"
 }
 
 internal object RuntimeNotificationIntentExtras {
@@ -471,7 +473,9 @@ internal class RuntimeNotificationCoordinator(
     }
     val shouldNotify = when (outcome.result) {
       ScheduledTaskRunResult.ACCEPTED -> spec?.policy?.notifyOnQueued == true
-      ScheduledTaskRunResult.SKIPPED_DUPLICATE -> false
+      ScheduledTaskRunResult.SKIPPED_DUPLICATE,
+      ScheduledTaskRunResult.SKIPPED_SNOOZED,
+      -> false
       else -> true
     }
     if (!shouldNotify || !shouldDeliverUserNotification(userEvent)) {
@@ -622,11 +626,6 @@ internal class RuntimeNotificationCoordinator(
       .setPriority(NotificationCompat.PRIORITY_DEFAULT)
       .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
       .setStyle(NotificationCompat.BigTextStyle().bigText(model.body))
-      .addAction(
-        0,
-        localizedContext.getString(R.string.runtime_notification_action_open),
-        openChatPendingIntent(model.sessionId),
-      )
     model.actions.forEach { action ->
       builder.addAction(
         0,
@@ -662,6 +661,13 @@ internal class RuntimeNotificationCoordinator(
         scheduleId = outcome.scheduleId,
         sessionId = resolvedSessionId,
         labelResId = R.string.runtime_notification_action_retry,
+        runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      ),
+      RuntimeScheduleNotificationAction(
+        action = RuntimeNotificationIntentActions.ACTION_SNOOZE_SCHEDULE,
+        scheduleId = outcome.scheduleId,
+        sessionId = resolvedSessionId,
+        labelResId = R.string.runtime_notification_action_snooze_schedule,
         runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
       ),
       RuntimeScheduleNotificationAction(

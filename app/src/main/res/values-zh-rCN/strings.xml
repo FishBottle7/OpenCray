@@ -357,6 +357,7 @@
     <string name="runtime_notification_action_review">查看</string>
     <string name="runtime_notification_action_retry">重试</string>
     <string name="runtime_notification_action_disable_schedule">停用</string>
+    <string name="runtime_notification_action_snooze_schedule">稍后提醒</string>
     <string name="runtime_notification_schedule_started_title">定时任务已开始</string>
     <string name="runtime_notification_schedule_started_text">%1$s 已在 %2$s 中开始。</string>
     <string name="runtime_notification_schedule_skipped_title">定时任务已跳过</string>

@@ -4222,6 +4222,47 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun defaultWakeDispatcherHandlesSnoozeScheduleNotificationActionAndPersistsProjection() {
+    val context = MinimalContext()
+    val nowEpochMs = 5_000L
+    val fixture = scheduledRepairWakeDispatcherFixture(
+      root = temporaryFolder.newFolder("wake-dispatcher-snooze-schedule-notification"),
+      nowEpochMs = nowEpochMs,
+    )
+    val gatewayBundle = testServiceGatewayBundle()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
+      appContext = context,
+      dispatcherDependencies = fixture.serviceHost.toRuntimeServiceBootstrapState().wakeCommandDispatcherDependencies,
+      gatewayBundle = gatewayBundle,
+      projectionCoordinator = projectionCoordinator,
+      wakeIntentParser = RuntimeServiceWakeIntentParser {
+        RuntimeServiceWakeIntentCommand.Notification(
+          RuntimeServiceNotificationCommand.SnoozeSchedule(
+            sessionId = fixture.sessionId,
+            scheduleId = fixture.scheduleId,
+          ),
+        )
+      },
+      approvalNotificationDismisser = { _, _ -> },
+      nowEpochMsProvider = { nowEpochMs },
+    )
+
+    dispatcher.dispatch(null)
+
+    val snoozedSpec = requireNotNull(fixture.serviceHost.scheduledTaskSpecStore.get(fixture.scheduleId))
+    assertTrue(snoozedSpec.enabled)
+    assertEquals(nowEpochMs + SCHEDULED_TASK_NOTIFICATION_SNOOZE_DELAY_MS, snoozedSpec.snoozedUntilEpochMs)
+    assertEquals(nowEpochMs, snoozedSpec.updatedAtEpochMs)
+    assertTrue(fixture.handle.submittedTasks.isEmpty())
+    assertEquals(0, fixture.handle.ensureProcessingCallCount)
+    assertEquals(1, projectionCoordinator.persistCallCount)
+    assertTrue(projectionCoordinator.scheduledDispatchOutcomes.isEmpty())
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
   fun defaultWakeDispatcherHandlesChatWriteWakeAndPersistsProjection() {
     val context = MinimalContext()
     var interruptedTaskIdOrRunId: String? = null
@@ -4689,6 +4730,31 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun defaultIntentDescriptorParserMarksSnoozeScheduleNotificationWakeAsForegroundBootstrap() {
+    val parsed = DefaultRuntimeServiceIntentDescriptorParser(
+      notificationCommandParser = { null },
+      scheduledTaskWakeCommandParser = { null },
+      commandKindReader = { COMMAND_KIND_SNOOZE_SCHEDULE },
+      commandVersionReader = { RUNTIME_SERVICE_COMMAND_VERSION_CURRENT },
+      actionReader = { RuntimeNotificationIntentActions.ACTION_SNOOZE_SCHEDULE },
+      scheduleIdReader = { "schedule-snooze-foreground" },
+      notificationSessionIdReader = { "session-snooze-foreground" },
+    ).parse(null)
+
+    assertEquals(
+      RuntimeServiceWakeIntentCommand.Notification(
+        RuntimeServiceNotificationCommand.SnoozeSchedule(
+          sessionId = "session-snooze-foreground",
+          scheduleId = "schedule-snooze-foreground",
+        ),
+      ),
+      parsed.wakeCommand,
+    )
+    assertFalse(parsed.requestsRuntimeReset)
+    assertTrue(parsed.requiresBootstrapForeground)
+  }
+
+  @Test
   fun defaultIntentDescriptorParserPrefersExplicitCommandKindEnvelope() {
     val parsed = DefaultRuntimeServiceIntentDescriptorParser(
       notificationCommandParser = { null },
@@ -4799,6 +4865,16 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       COMMAND_KIND_DISABLE_SCHEDULE,
       disableScheduleActionIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
     )
+    val snoozeScheduleActionIntent = factory.scheduleNotificationActionIntent(
+      context = context,
+      action = RuntimeNotificationIntentActions.ACTION_SNOOZE_SCHEDULE,
+      scheduleId = "schedule-snooze-1",
+      sessionId = "session-snooze-1",
+    )
+    assertEquals(
+      COMMAND_KIND_SNOOZE_SCHEDULE,
+      snoozeScheduleActionIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
+    )
     assertEquals(
       COMMAND_KIND_CHAT_WRITE_INTERRUPT_RUN,
       chatWriteIntent?.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
@@ -4852,6 +4928,13 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       sessionId = "session-disable-action",
       target = RuntimeServiceTarget.DETACHED_BACKGROUND,
     )
+    val snoozeIntent = factory.scheduleNotificationActionIntent(
+      context = context,
+      action = RuntimeNotificationIntentActions.ACTION_SNOOZE_SCHEDULE,
+      scheduleId = "schedule-snooze-action",
+      sessionId = "session-snooze-action",
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    )
 
     assertEquals(
       COMMAND_KIND_RUN_SCHEDULE_NOW,
@@ -4882,6 +4965,23 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(
       RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
       disableIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_TARGET),
+    )
+    assertEquals(
+      COMMAND_KIND_SNOOZE_SCHEDULE,
+      snoozeIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_COMMAND_KIND),
+    )
+    assertEquals(
+      RuntimeServiceWakeIntentCommand.Notification(
+        RuntimeServiceNotificationCommand.SnoozeSchedule(
+          sessionId = "session-snooze-action",
+          scheduleId = "schedule-snooze-action",
+        ),
+      ),
+      parser.parse(snoozeIntent),
+    )
+    assertEquals(
+      RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
+      snoozeIntent.getStringExtra(EXTRA_RUNTIME_SERVICE_TARGET),
     )
   }
 

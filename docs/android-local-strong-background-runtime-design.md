@@ -1,6 +1,6 @@
 # Android Local Strong Background Runtime Design
 
-Last updated: 2026-05-06
+Last updated: 2026-06-07
 
 ## Status
 
@@ -92,7 +92,7 @@ But the background product surface is still incomplete:
 - projection shell/chat fallback built from the same client bundle now shares one explicit `HostRuntimeLifecycleDescriptor`, which removes avoidable diagnostics churn when the UI bounces between fallback surfaces before binder attach
 - `AlarmManager` and `WorkManager` trigger bridges now exist for scheduled wake-up and repair
 - active-runtime, approval-needed, completion/interruption, and scheduled-dispatch notifications now exist, including notification-side approve/reject entry for approval waits
-- scheduled-dispatch notifications now also expose service-backed retry/manual-run and disable actions for skipped-busy and dispatch-failed outcomes, so a notification action can wake `:runtime`, enqueue a fresh manual scheduled trigger, or disable the durable schedule without reopening the UI first
+- scheduled-dispatch notifications now also expose service-backed retry/manual-run, disable, and snooze actions for skipped-busy and dispatch-failed outcomes, so a notification action can wake `:runtime`, enqueue a fresh manual scheduled trigger, disable the durable schedule, or persist a short deferral without reopening the UI first
 - file-backed managed-process registries can now reattach live controllers across registry or host rebuild while the same app process remains alive, and that restore path is now scoped by runtime controller identity instead of only durable directory; reconnectable managed-process backends now also have a tested cross-owner restore path when a rebuilt runtime owner reopens the same durable session directory; registry read/modify/write operations now also use a directory-scoped JVM lock plus OS file lock so concurrent detached owners or projection readers do not overwrite each other's managed-process snapshots, although the overall detached runtime is still only isolated to the dedicated `:runtime` process rather than a stronger controller tier
 - checkpoint-backed observational managed-process restore is now also narrower and safer: interrupted `ProcessRead` or `ProcessWait` can auto-resume only when the durable pending action still matches the same live `process_id` and the reconnect state is already stable (`attached_live` or `completed`), while `connecting`, `retry_scheduled`, `failed_terminal`, or other ambiguous reconnect states remain explicit interruption instead of silent replay
 - recovery diagnostics now stamp run attempts and checkpoint ids on recovery-aware queue rewrites and append non-runtime recovery markers to the durable run journal, so strong-background reports can distinguish an initial submission from a checkpoint-backed restore without relying only on queue state
@@ -391,7 +391,7 @@ Responsibilities:
 - decide when to enter foreground mode
 - publish the active-task notification
 - downgrade and stop foreground mode when no eligible active work remains
-- attach notification actions for open, approve/reject, and supported scheduled retry/manual-run plus disable flows
+- attach notification actions for open, approve/reject, and supported scheduled retry/manual-run, snooze, and disable flows
 
 ## 5. Notification model
 
@@ -457,6 +457,8 @@ Current implemented controls:
 
 - `Open`
 - `Retry` for skipped-busy or dispatch-failed schedule outcomes, routed as a stable `RUN_SCHEDULE_NOW` runtime-service command that re-dispatches the schedule as a normal manual scheduled trigger
+- `Snooze` for skipped-busy or dispatch-failed schedule outcomes, routed as a stable `SNOOZE_SCHEDULE` runtime-service command that persists a short deferral and re-syncs the original trigger without rewriting it
+- `Disable` for skipped-busy or dispatch-failed schedule outcomes, routed as a stable `DISABLE_SCHEDULE` runtime-service command that disables the durable schedule and cancels registered triggers
 
 ## 6. Battery optimization and OEM posture
 
@@ -612,7 +614,7 @@ The current rollout already uses:
 
 - `com.opencray.app:runtime`
 - an explicit runtime-service intent descriptor parser that derives wake dispatch, reset intent, and bootstrap-foreground requirements from one normalized command model instead of scattering those action checks across shell and wake paths
-- schedule notification retry/manual-run plus disable actions that route through that same command model and detached runtime target instead of holding direct object references from the notification
+- schedule notification retry/manual-run, snooze, and disable actions that route through that same command model and detached runtime target instead of holding direct object references from the notification
 
 as a dedicated process for stronger isolation from UI crashes and Flutter engine churn.
 

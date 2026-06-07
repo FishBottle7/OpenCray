@@ -372,6 +372,35 @@ class ScheduledTaskRuntimeTest {
   }
 
   @Test
+  fun plannedRepairWakeCommandsSkipsSnoozedSchedulesUntilSnoozeExpires() {
+    val snoozed = scheduledTaskSpec(
+      sessionId = "session-snoozed",
+      scheduleId = "schedule-snoozed",
+    ).copy(
+      snoozedUntilEpochMs = 20_000L,
+      updatedAtEpochMs = 11_000L,
+    )
+
+    val beforeExpiry = plannedRepairWakeCommands(
+      enabledSpecs = listOf(snoozed),
+      nowEpochMs = 15_000L,
+      repairReason = ScheduledTaskRepairReasons.PERIODIC,
+    )
+    val afterExpiry = plannedRepairWakeCommands(
+      enabledSpecs = listOf(snoozed),
+      nowEpochMs = 20_000L,
+      repairReason = ScheduledTaskRepairReasons.PERIODIC,
+    )
+
+    assertTrue(beforeExpiry.isEmpty())
+    assertEquals(1, afterExpiry.size)
+    assertEquals(
+      scheduledTaskRunId("schedule-snoozed", 20_000L),
+      afterExpiry.single().scheduleRunId,
+    )
+  }
+
+  @Test
   fun scheduledTaskTriggerReasonForRepairMapsPeriodicRepairToRepairTrigger() {
     assertEquals(
       ScheduledTaskTriggerReasons.REPAIR,
@@ -417,6 +446,173 @@ class ScheduledTaskRuntimeTest {
     assertEquals(linkedSetOf("schedule-other"), triggerSyncStateStore.loadScheduleIds())
   }
 
+  @Test
+  fun snoozeScheduledTaskPersistsDeferralAndResyncsRegisteredTrigger() {
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val triggerSyncStateStore = inMemoryScheduledTaskTriggerSyncStateStoreFactory().create()
+    specStore.upsert(
+      scheduledTaskSpec(
+        sessionId = "session-snooze",
+        scheduleId = "schedule-snooze",
+        updatedAtEpochMs = 2_000L,
+      ),
+    )
+    triggerSyncStateStore.replaceScheduleIds(linkedSetOf("schedule-snooze"))
+
+    val snoozed = snoozeScheduledTask(
+      scheduleId = " schedule-snooze ",
+      snoozedUntilEpochMs = 10_000L,
+      specStore = specStore,
+      triggerRegistrar = registrar,
+      triggerSyncStateStore = triggerSyncStateStore,
+      nowEpochMs = 4_000L,
+    )
+
+    assertTrue(snoozed)
+    val spec = requireNotNull(specStore.get("schedule-snooze"))
+    assertTrue(spec.enabled)
+    assertEquals(10_000L, spec.snoozedUntilEpochMs)
+    assertEquals(4_000L, spec.updatedAtEpochMs)
+    assertEquals(listOf("schedule-snooze"), registrar.syncedScheduleIds)
+    assertEquals(linkedSetOf("schedule-snooze"), triggerSyncStateStore.loadScheduleIds())
+  }
+
+  @Test
+  fun defaultScheduledTriggerRegistrarSchedulesSnoozedSpecAtDeferralTime() {
+    val alarmScheduler = RecordingScheduledAlarmScheduler()
+    val workScheduler = RecordingScheduledWorkScheduler()
+    val registrar = DefaultScheduledTriggerRegistrar(
+      alarmScheduler = alarmScheduler,
+      workScheduler = workScheduler,
+      clock = { 5_000L },
+    )
+    val spec = scheduledTaskSpec(
+      sessionId = "session-snooze-sync",
+      scheduleId = "schedule-snooze-sync",
+    ).copy(
+      snoozedUntilEpochMs = 10_000L,
+      updatedAtEpochMs = 5_000L,
+    )
+
+    registrar.syncSpec(spec)
+
+    assertEquals(
+      listOf(ScheduledAlarmRequest("schedule-snooze-sync", 10_000L, true)),
+      alarmScheduler.scheduledRequests,
+    )
+    assertTrue(workScheduler.scheduledWakeRequests.isEmpty())
+  }
+
+  @Test
+  fun scheduledTaskDispatcherClearsExpiredSnoozeBeforeDispatching() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-dispatch-snooze")
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val runRecordStore = InMemoryScheduledTaskRunRecordStoreFactory().create()
+    val session = RecordingScheduledTaskSessionAccess(sessionId = sessionId)
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val spec = scheduledTaskSpec(
+      sessionId = sessionId,
+      scheduleId = "schedule-dispatch-snooze",
+    ).copy(
+      snoozedUntilEpochMs = 8_000L,
+      updatedAtEpochMs = 4_000L,
+    )
+    specStore.upsert(spec)
+    val dispatcher = ScheduledTaskDispatcher(
+      hostAccess = RecordingScheduledRuntimeHostAccess(session),
+      chatSessionStore = chatStore,
+      safetySettingsFacade = EmptySafetySettingsFacade,
+      approvedReadRootsProvider = {
+        ApprovedReadRootsSnapshot(
+          roots = emptySet(),
+          summary = "workspace=/workspace",
+        )
+      },
+      lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      localizedContext = ContextWrapper(null),
+      assistantPlaceholderTextProvider = { "Thinking..." },
+      specStore = specStore,
+      runRecordStore = runRecordStore,
+      triggerRegistrar = registrar,
+      clock = { 8_000L },
+    )
+
+    val outcome = dispatcher.dispatch(
+      ScheduledTaskWakeCommand(
+        scheduleId = spec.scheduleId,
+        scheduleRunId = scheduledTaskRunId(spec.scheduleId, 8_000L),
+        triggeredAtEpochMs = 8_000L,
+        triggerReason = ScheduledTaskTriggerReasons.WORK_MANAGER,
+      ),
+    )
+
+    assertEquals(ScheduledTaskRunResult.ACCEPTED, outcome.result)
+    val persisted = requireNotNull(specStore.get(spec.scheduleId))
+    assertNull(persisted.snoozedUntilEpochMs)
+    assertEquals(8_000L, persisted.updatedAtEpochMs)
+    assertEquals(1, session.submittedTasks.size)
+  }
+
+  @Test
+  fun scheduledTaskDispatcherSkipsStaleWakeWhileScheduleIsSnoozed() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-dispatch-stale-snooze")
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val runRecordStore = InMemoryScheduledTaskRunRecordStoreFactory().create()
+    val session = RecordingScheduledTaskSessionAccess(sessionId = sessionId)
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val spec = scheduledTaskSpec(
+      sessionId = sessionId,
+      scheduleId = "schedule-stale-snooze",
+    ).copy(
+      snoozedUntilEpochMs = 8_000L,
+      updatedAtEpochMs = 4_000L,
+    )
+    specStore.upsert(spec)
+    val dispatcher = ScheduledTaskDispatcher(
+      hostAccess = RecordingScheduledRuntimeHostAccess(session),
+      chatSessionStore = chatStore,
+      safetySettingsFacade = EmptySafetySettingsFacade,
+      approvedReadRootsProvider = {
+        ApprovedReadRootsSnapshot(
+          roots = emptySet(),
+          summary = "workspace=/workspace",
+        )
+      },
+      lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      localizedContext = ContextWrapper(null),
+      assistantPlaceholderTextProvider = { "Thinking..." },
+      specStore = specStore,
+      runRecordStore = runRecordStore,
+      triggerRegistrar = registrar,
+      clock = { 6_000L },
+    )
+
+    val outcome = dispatcher.dispatch(
+      ScheduledTaskWakeCommand(
+        scheduleId = spec.scheduleId,
+        scheduleRunId = scheduledTaskRunId(spec.scheduleId, 5_000L),
+        triggeredAtEpochMs = 5_000L,
+        triggerReason = ScheduledTaskTriggerReasons.WORK_MANAGER,
+      ),
+    )
+
+    assertEquals(ScheduledTaskRunResult.SKIPPED_SNOOZED, outcome.result)
+    assertEquals("schedule_snoozed", outcome.failureReason)
+    assertTrue(session.submittedTasks.isEmpty())
+    assertEquals(0, session.ensureProcessingCount)
+    assertEquals(listOf(spec.scheduleId), registrar.syncedScheduleIds)
+    assertEquals(
+      ScheduledTaskRunResult.SKIPPED_SNOOZED,
+      runRecordStore.get(scheduledTaskRunId(spec.scheduleId, 5_000L))?.result,
+    )
+    assertEquals(8_000L, requireNotNull(specStore.get(spec.scheduleId)).snoozedUntilEpochMs)
+  }
+
   private fun scheduledTaskSpec(
     sessionId: String,
     scheduleId: String = "schedule-default",
@@ -449,6 +645,45 @@ class ScheduledTaskRuntimeTest {
 
     override fun cancel(scheduleId: String) {
       cancelledScheduleIds += scheduleId
+    }
+  }
+
+  private class RecordingScheduledAlarmScheduler : ScheduledAlarmScheduler {
+    val scheduledRequests = mutableListOf<ScheduledAlarmRequest>()
+    val cancelledScheduleIds = mutableListOf<String>()
+
+    override fun schedule(request: ScheduledAlarmRequest) {
+      scheduledRequests += request
+    }
+
+    override fun cancel(scheduleId: String) {
+      cancelledScheduleIds += scheduleId
+    }
+  }
+
+  private class RecordingScheduledWorkScheduler : ScheduledWorkScheduler {
+    val scheduledWakeRequests = mutableListOf<Pair<String, Long>>()
+    val cancelledScheduleIds = mutableListOf<String>()
+    val repairReasons = mutableListOf<String>()
+    var periodicRepairEnsured = false
+
+    override fun scheduleWake(
+      scheduleId: String,
+      triggerAtEpochMs: Long,
+    ) {
+      scheduledWakeRequests += scheduleId to triggerAtEpochMs
+    }
+
+    override fun cancel(scheduleId: String) {
+      cancelledScheduleIds += scheduleId
+    }
+
+    override fun enqueueRepair(reason: String) {
+      repairReasons += reason
+    }
+
+    override fun ensurePeriodicRepair() {
+      periodicRepairEnsured = true
     }
   }
 

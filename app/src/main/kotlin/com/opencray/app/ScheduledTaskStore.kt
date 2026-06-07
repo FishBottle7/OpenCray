@@ -139,6 +139,7 @@ internal data class ScheduledTaskSpec(
   val trigger: ScheduledTrigger,
   val payload: ScheduledTaskPayload,
   val policy: ScheduledTaskPolicy = ScheduledTaskPolicy(),
+  val snoozedUntilEpochMs: Long? = null,
   val createdAtEpochMs: Long,
   val updatedAtEpochMs: Long,
 ) {
@@ -146,6 +147,9 @@ internal data class ScheduledTaskSpec(
     require(scheduleId.isNotBlank()) { "ScheduledTaskSpec scheduleId must not be blank." }
     require(sessionId.isNotBlank()) { "ScheduledTaskSpec sessionId must not be blank." }
     require(title.isNotBlank()) { "ScheduledTaskSpec title must not be blank." }
+    require(snoozedUntilEpochMs == null || snoozedUntilEpochMs >= 0L) {
+      "ScheduledTaskSpec snoozedUntilEpochMs must be >= 0."
+    }
     require(updatedAtEpochMs >= createdAtEpochMs) {
       "ScheduledTaskSpec updatedAtEpochMs must be >= createdAtEpochMs."
     }
@@ -272,6 +276,7 @@ internal enum class ScheduledTaskRunResult {
   COMPLETED_INTERRUPTED,
   SKIPPED_DUPLICATE,
   SKIPPED_SESSION_BUSY,
+  SKIPPED_SNOOZED,
   FAILED_DISABLED,
   FAILED_MISSING_SPEC,
   FAILED_MISSING_SESSION,

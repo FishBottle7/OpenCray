@@ -114,6 +114,15 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
           scheduleId = command.scheduleId,
           nowEpochMs = nowEpochMsProvider(),
         )
+
+      is RuntimeServiceNotificationCommand.SnoozeSchedule ->
+        nowEpochMsProvider().let { nowEpochMs ->
+          dispatcherDependencies.scheduledTaskRepairDependencies.snoozeScheduledTask(
+            scheduleId = command.scheduleId,
+            snoozedUntilEpochMs = nowEpochMs + SCHEDULED_TASK_NOTIFICATION_SNOOZE_DELAY_MS,
+            nowEpochMs = nowEpochMs,
+          )
+        }
     }
     gatewayBundle.notifyChatSnapshotsChanged()
     approvalNotificationDismisser(appContext, command.taskId)
