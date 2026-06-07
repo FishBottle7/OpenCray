@@ -76,6 +76,109 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun potentialInterruptedRunRepairTargetsRoutesInteractiveQueueTaskToInteractive() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-target-interactive")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = "task-interactive",
+          runId = "run-interactive",
+          lifecycleState = QueueTaskLifecycleState.RUNNING,
+          taskState = AgentTaskState.RUNNING,
+        ),
+      ),
+    )
+
+    assertEquals(
+      setOf(RuntimeServiceTarget.INTERACTIVE),
+      potentialInterruptedRunRepairTargets(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      ),
+    )
+  }
+
+  @Test
+  fun potentialInterruptedRunRepairTargetsRoutesScheduledQueueTaskToDetachedBackground() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-target-scheduled")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = "task-scheduled",
+          runId = "run-scheduled",
+          lifecycleState = QueueTaskLifecycleState.QUEUED,
+          taskState = AgentTaskState.QUEUED,
+          metadata = mapOf(ScheduledTaskMetadataKeys.SCHEDULE_ID to "schedule-nightly"),
+        ),
+      ),
+    )
+
+    assertEquals(
+      setOf(RuntimeServiceTarget.DETACHED_BACKGROUND),
+      potentialInterruptedRunRepairTargets(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      ),
+    )
+  }
+
+  @Test
+  fun potentialInterruptedRunRepairTargetsRoutesDetachedControlQueueTaskToDetachedBackground() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-target-detached-control")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = "task-detached-control",
+          runId = "run-detached-control",
+          lifecycleState = QueueTaskLifecycleState.RETRY_PENDING,
+          taskState = AgentTaskState.QUEUED,
+          metadata = mapOf(
+            METADATA_DETACHED_CONTROL_KIND to DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(
+      setOf(RuntimeServiceTarget.DETACHED_BACKGROUND),
+      potentialInterruptedRunRepairTargets(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      ),
+    )
+  }
+
+  @Test
   fun hasPotentialInteractiveRunRepairWorkReturnsTrueWhenPromptCheckpointExistsWithoutQueueWork() {
     val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-checkpoint")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
@@ -121,6 +224,83 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun potentialInterruptedRunRepairTargetsRoutesCheckpointThroughMatchingQueueTask() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-target-checkpoint")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = "task-checkpoint-scheduled",
+          runId = "run-checkpoint-scheduled",
+          lifecycleState = QueueTaskLifecycleState.COMPLETED,
+          taskState = AgentTaskState.COMPLETED,
+          metadata = mapOf(ScheduledTaskMetadataKeys.SCHEDULE_ID to "schedule-checkpoint"),
+        ),
+      ),
+    )
+    promptCheckpointStoreFactory.forChatSession(sessionId).upsert(
+      PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = "run-checkpoint-scheduled",
+        taskId = "task-checkpoint-scheduled",
+        checkpointId = "checkpoint-scheduled",
+        checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+        createdAtEpochMs = 1_000L,
+        updatedAtEpochMs = 1_100L,
+      ),
+    )
+
+    assertEquals(
+      setOf(RuntimeServiceTarget.DETACHED_BACKGROUND),
+      potentialInterruptedRunRepairTargets(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      ),
+    )
+  }
+
+  @Test
+  fun potentialInterruptedRunRepairTargetsDefaultsCheckpointWithoutQueueTaskToInteractive() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-target-checkpoint-only")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+
+    promptCheckpointStoreFactory.forChatSession(sessionId).upsert(
+      PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = "run-checkpoint-only",
+        taskId = "task-checkpoint-only",
+        checkpointId = "checkpoint-only",
+        checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+        createdAtEpochMs = 1_000L,
+        updatedAtEpochMs = 1_100L,
+      ),
+    )
+
+    assertEquals(
+      setOf(RuntimeServiceTarget.INTERACTIVE),
+      potentialInterruptedRunRepairTargets(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      ),
+    )
+  }
+
+  @Test
   fun hasPotentialInteractiveRunRepairWorkReturnsTrueWhenDurableBackgroundSubAgentHandleExists() {
     val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-subagent")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
@@ -137,6 +317,30 @@ class ScheduledTaskWorkManagerTest {
 
     assertTrue(
       hasPotentialInteractiveRunRepairWork(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      ),
+    )
+  }
+
+  @Test
+  fun potentialInterruptedRunRepairTargetsRoutesDurableBackgroundSubAgentToDetachedBackground() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-target-subagent")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+
+    subAgentHandleStoreFactory.forChatSession(sessionId).upsert(
+      backgroundSubAgentHandle(agentId = "child-detached"),
+    )
+
+    assertEquals(
+      setOf(RuntimeServiceTarget.DETACHED_BACKGROUND),
+      potentialInterruptedRunRepairTargets(
         chatSessionStore = chatSessionStore,
         snapshotStoreFactory = snapshotStoreFactory,
         promptCheckpointStoreFactory = promptCheckpointStoreFactory,
@@ -211,6 +415,53 @@ class ScheduledTaskWorkManagerTest {
     )
   }
 
+  @Test
+  fun startInterruptedRunRepairTargetsAttemptsAllTargetsAndReportsAggregateResult() {
+    val startedTargets = mutableListOf<RuntimeServiceTarget>()
+
+    val started = startInterruptedRunRepairTargets(
+      targets = setOf(
+        RuntimeServiceTarget.INTERACTIVE,
+        RuntimeServiceTarget.DETACHED_BACKGROUND,
+      ),
+      startRepair = { target ->
+        startedTargets += target
+        target == RuntimeServiceTarget.INTERACTIVE
+      },
+    )
+
+    assertFalse(started)
+    assertEquals(
+      listOf(RuntimeServiceTarget.DETACHED_BACKGROUND, RuntimeServiceTarget.INTERACTIVE),
+      startedTargets,
+    )
+  }
+
+  @Test
+  fun startInterruptedRunRepairTargetsContinuesAfterTargetStartThrows() {
+    val startedTargets = mutableListOf<RuntimeServiceTarget>()
+
+    val started = startInterruptedRunRepairTargets(
+      targets = setOf(
+        RuntimeServiceTarget.INTERACTIVE,
+        RuntimeServiceTarget.DETACHED_BACKGROUND,
+      ),
+      startRepair = { target ->
+        startedTargets += target
+        if (target == RuntimeServiceTarget.DETACHED_BACKGROUND) {
+          error("detached start failed")
+        }
+        true
+      },
+    )
+
+    assertFalse(started)
+    assertEquals(
+      listOf(RuntimeServiceTarget.DETACHED_BACKGROUND, RuntimeServiceTarget.INTERACTIVE),
+      startedTargets,
+    )
+  }
+
   private fun queueSnapshot(
     sessionId: String,
     taskSnapshot: SessionQueueTaskSnapshot,
@@ -229,6 +480,7 @@ class ScheduledTaskWorkManagerTest {
     runId: String,
     lifecycleState: QueueTaskLifecycleState,
     taskState: AgentTaskState,
+    metadata: Map<String, String> = emptyMap(),
   ): SessionQueueTaskSnapshot = SessionQueueTaskSnapshot(
     enqueueOrder = 1L,
     task = AgentTask(
@@ -245,7 +497,7 @@ class ScheduledTaskWorkManagerTest {
       metadata = mapOf(
         AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
         AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to sessionId,
-      ),
+      ) + metadata,
     ),
     lifecycleState = lifecycleState,
   )

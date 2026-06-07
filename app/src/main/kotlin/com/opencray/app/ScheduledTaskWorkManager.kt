@@ -12,6 +12,8 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
+import com.opencray.core.orchestrator.QueueTaskLifecycleState
+import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
 import java.util.concurrent.TimeUnit
@@ -168,7 +170,7 @@ internal class ScheduledTaskRepairWorker(
         nowEpochMs = System.currentTimeMillis(),
         repairReason = reason,
       ).isNotEmpty()
-      val hasInteractiveRepairWork = hasPotentialInteractiveRunRepairWork(applicationContext)
+      val interruptedRunRepairTargets = potentialInterruptedRunRepairTargets(applicationContext)
       val scheduledRepairStarted = when {
         !hasDueCommands -> true
         else -> runtimeEnvironment.runtimeServiceAccessGateway.repairSchedules(
@@ -177,16 +179,18 @@ internal class ScheduledTaskRepairWorker(
           target = RuntimeServiceTarget.DETACHED_BACKGROUND,
         )
       }
-      val interactiveRepairStarted = when {
-        !hasInteractiveRepairWork -> true
-        else -> runtimeEnvironment.runtimeServiceAccessGateway.resumeInterruptedRuns(
-          applicationContext,
-          reason,
-          target = RuntimeServiceTarget.INTERACTIVE,
-        )
-      }
+      val interruptedRunRepairStarted = startInterruptedRunRepairTargets(
+        targets = interruptedRunRepairTargets,
+        startRepair = { target ->
+          runtimeEnvironment.runtimeServiceAccessGateway.resumeInterruptedRuns(
+            applicationContext,
+            reason,
+            target = target,
+          )
+        },
+      )
       when {
-        scheduledRepairStarted && interactiveRepairStarted -> Result.success()
+        scheduledRepairStarted && interruptedRunRepairStarted -> Result.success()
         else -> Result.retry()
       }
     }.getOrElse {
@@ -236,12 +240,12 @@ internal fun hasPotentialInteractiveRunRepairWork(
   context: Context,
 ): Boolean {
   val appContext = context.applicationContext
-  return hasPotentialInteractiveRunRepairWork(
+  return potentialInterruptedRunRepairTargets(
     chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
     snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
     promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
     subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
-  )
+  ).isNotEmpty()
 }
 
 internal fun hasPotentialInteractiveRunRepairWork(
@@ -249,21 +253,47 @@ internal fun hasPotentialInteractiveRunRepairWork(
   snapshotStoreFactory: AgentQueueSnapshotStoreFactory,
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
-): Boolean {
+): Boolean = potentialInterruptedRunRepairTargets(
+  chatSessionStore = chatSessionStore,
+  snapshotStoreFactory = snapshotStoreFactory,
+  promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+  subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+).isNotEmpty()
+
+internal fun potentialInterruptedRunRepairTargets(
+  context: Context,
+): Set<RuntimeServiceTarget> {
+  val appContext = context.applicationContext
+  return potentialInterruptedRunRepairTargets(
+    chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
+    snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
+    promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
+    subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
+  )
+}
+
+internal fun potentialInterruptedRunRepairTargets(
+  chatSessionStore: ChatSessionLocalStore,
+  snapshotStoreFactory: AgentQueueSnapshotStoreFactory,
+  promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
+  subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
+): Set<RuntimeServiceTarget> {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
     snapshotStoreFactory = snapshotStoreFactory,
     promptCheckpointStoreFactory = promptCheckpointStoreFactory,
     subAgentHandleStoreFactory = subAgentHandleStoreFactory,
   )
-  return knownSessionIds.any { sessionId ->
-    hasPotentialInteractiveRunRepairWorkForSession(
+  val targets = linkedSetOf<RuntimeServiceTarget>()
+  knownSessionIds.forEach { sessionId ->
+    targets += potentialInterruptedRunRepairTargetsForSession(
       sessionId = sessionId,
       snapshotStoreFactory = snapshotStoreFactory,
       promptCheckpointStoreFactory = promptCheckpointStoreFactory,
       subAgentHandleStoreFactory = subAgentHandleStoreFactory,
     )
   }
+  return targets
 }
 
 internal fun hasPotentialInteractiveRunRepairWorkForSession(
@@ -271,26 +301,84 @@ internal fun hasPotentialInteractiveRunRepairWorkForSession(
   snapshotStoreFactory: AgentQueueSnapshotStoreFactory,
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
-): Boolean {
-  val hasNonTerminalQueueTask = snapshotStoreFactory.forChatSession(sessionId)
+): Boolean = potentialInterruptedRunRepairTargetsForSession(
+  sessionId = sessionId,
+  snapshotStoreFactory = snapshotStoreFactory,
+  promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+  subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+).isNotEmpty()
+
+internal fun potentialInterruptedRunRepairTargetsForSession(
+  sessionId: String,
+  snapshotStoreFactory: AgentQueueSnapshotStoreFactory,
+  promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
+  subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
+): Set<RuntimeServiceTarget> {
+  val taskSnapshots = snapshotStoreFactory.forChatSession(sessionId)
     .load()
     ?.tasks
-    ?.any { taskSnapshot ->
-      taskSnapshot.lifecycleState != com.opencray.core.orchestrator.QueueTaskLifecycleState.COMPLETED &&
-        taskSnapshot.lifecycleState != com.opencray.core.orchestrator.QueueTaskLifecycleState.FAILED &&
-        taskSnapshot.lifecycleState != com.opencray.core.orchestrator.QueueTaskLifecycleState.CANCELLED
-    } == true
-  val hasRecoverableSubAgentHandle = subAgentHandleStoreFactory.forChatSession(sessionId)
+    .orEmpty()
+  val targets = linkedSetOf<RuntimeServiceTarget>()
+  taskSnapshots
+    .filter(::isPotentialRunRepairQueueTask)
+    .forEach { taskSnapshot ->
+      targets += runtimeServiceTargetForTask(taskSnapshot.task)
+    }
+  promptCheckpointStoreFactory.forChatSession(sessionId)
     .list()
-    .any(::isPotentialInteractiveRepairSubAgentHandle)
-  return hasNonTerminalQueueTask ||
-    hasRecoverableSubAgentHandle ||
-    promptCheckpointStoreFactory.forChatSession(sessionId).list().isNotEmpty()
+    .forEach { checkpoint ->
+      targets += runtimeServiceTargetForCheckpoint(
+        checkpoint = checkpoint,
+        taskSnapshots = taskSnapshots,
+      ) ?: RuntimeServiceTarget.INTERACTIVE
+    }
+  if (
+    subAgentHandleStoreFactory.forChatSession(sessionId)
+      .list()
+      .any(::isPotentialDetachedSubAgentRepairHandle)
+  ) {
+    targets += RuntimeServiceTarget.DETACHED_BACKGROUND
+  }
+  return targets
 }
 
-private fun isPotentialInteractiveRepairSubAgentHandle(handle: SubAgentHandleState): Boolean =
+internal fun startInterruptedRunRepairTargets(
+  targets: Set<RuntimeServiceTarget>,
+  startRepair: (RuntimeServiceTarget) -> Boolean,
+): Boolean = INTERRUPTED_RUN_REPAIR_TARGET_WAKE_ORDER
+  .filter(targets::contains)
+  .map { target ->
+    runCatching {
+      startRepair(target)
+    }.getOrDefault(false)
+  }
+  .all { started -> started }
+
+private fun isPotentialRunRepairQueueTask(
+  taskSnapshot: SessionQueueTaskSnapshot,
+): Boolean = taskSnapshot.lifecycleState !in TERMINAL_QUEUE_TASK_LIFECYCLES
+
+private fun runtimeServiceTargetForCheckpoint(
+  checkpoint: PersistedPromptCheckpoint,
+  taskSnapshots: List<SessionQueueTaskSnapshot>,
+): RuntimeServiceTarget? = taskSnapshots
+  .firstOrNull { taskSnapshot -> taskSnapshot.task.id == checkpoint.taskId }
+  ?.let { taskSnapshot -> runtimeServiceTargetForTask(taskSnapshot.task) }
+
+private fun isPotentialDetachedSubAgentRepairHandle(handle: SubAgentHandleState): Boolean =
   handle.snapshot.state == SubAgentExecutionState.BACKGROUND_QUEUED ||
     handle.snapshot.state == SubAgentExecutionState.BACKGROUND_RUNNING
+
+private val TERMINAL_QUEUE_TASK_LIFECYCLES: Set<QueueTaskLifecycleState> = setOf(
+  QueueTaskLifecycleState.COMPLETED,
+  QueueTaskLifecycleState.FAILED,
+  QueueTaskLifecycleState.CANCELLED,
+)
+
+private val INTERRUPTED_RUN_REPAIR_TARGET_WAKE_ORDER: List<RuntimeServiceTarget> = listOf(
+  RuntimeServiceTarget.DETACHED_BACKGROUND,
+  RuntimeServiceTarget.INTERACTIVE,
+)
 
 private fun scheduleWakeWorkName(scheduleId: String): String =
   "scheduled-task-wake-${FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(scheduleId)}"
