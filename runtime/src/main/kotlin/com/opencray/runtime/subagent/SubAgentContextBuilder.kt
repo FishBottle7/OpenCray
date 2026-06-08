@@ -130,6 +130,10 @@ class SubAgentContextBuilder {
     canonicalMessageCount = request.parentSessionContext.liveContextTrace.canonicalMessageCount,
     canonicalHistoryPreserved =
       request.parentSessionContext.liveContextTrace.canonicalHistoryPreserved ?: true,
+    inheritanceSource = CHILD_INHERITANCE_SOURCE_PARENT_LIVE_POLICY,
+    parentMode = request.parentSessionContext.liveContextTrace.mode,
+    parentReplayMessageCount = request.parentConversation.size,
+    budgetPreset = request.parentSessionContext.liveContextTrace.budgetPreset,
   )
 
   private fun parentCanonicalSource(parentTrace: LiveContextTrace): String =
@@ -208,5 +212,6 @@ class SubAgentContextBuilder {
     private const val CHILD_REPLAY_SOURCE_MIRRORED: String = "parent_runtime_replay_mirror"
     private const val PARENT_CANONICAL_SOURCE_PREFIX: String = "parent_"
     private const val DEFAULT_PARENT_CANONICAL_SOURCE: String = "parent_canonical_chat_history"
+    private const val CHILD_INHERITANCE_SOURCE_PARENT_LIVE_POLICY: String = "parent_live_context_policy"
   }
 }

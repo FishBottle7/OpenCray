@@ -56,6 +56,7 @@ data class DurableCompactionState(
 data class DurableCompactionTrace(
   val compactedThisRun: Boolean = false,
   val triggerStage: String = "",
+  val maintenanceTask: String = "",
   val contextWindowTokens: Int = 0,
   val autoCompactTokenLimit: Int = 0,
   val estimatedReplayTokens: Int = 0,
@@ -67,6 +68,7 @@ data class DurableCompactionTrace(
   val omittedSummaryCount: Int = 0,
   val totalCompactedMessageCount: Int = 0,
   val latestCompactedAtEpochMs: Long? = null,
+  val entryTraces: List<DurableCompactionEntryTrace> = emptyList(),
 ) {
   init {
     require(sourceTranscriptMessageCount >= 0) {
@@ -95,6 +97,7 @@ data class DurableCompactionTrace(
   val isEmpty: Boolean
     get() = !compactedThisRun &&
       triggerStage.isBlank() &&
+      maintenanceTask.isBlank() &&
       contextWindowTokens == 0 &&
       autoCompactTokenLimit == 0 &&
       estimatedReplayTokens == 0 &&
@@ -103,7 +106,35 @@ data class DurableCompactionTrace(
       includedSummaryCount == 0 &&
       omittedSummaryCount == 0 &&
       totalCompactedMessageCount == 0 &&
-      latestCompactedAtEpochMs == null
+      latestCompactedAtEpochMs == null &&
+      entryTraces.isEmpty()
+}
+
+data class DurableCompactionEntryTrace(
+  val compactedMessageCount: Int,
+  val omittedUserMessageCount: Int = 0,
+  val omittedAssistantMessageCount: Int = 0,
+  val omittedToolMessageCount: Int = 0,
+  val omittedSystemMessageCount: Int = 0,
+  val compactedAtEpochMs: Long? = null,
+) {
+  init {
+    require(compactedMessageCount >= 0) {
+      "DurableCompactionEntryTrace compactedMessageCount must be >= 0."
+    }
+    require(omittedUserMessageCount >= 0) {
+      "DurableCompactionEntryTrace omittedUserMessageCount must be >= 0."
+    }
+    require(omittedAssistantMessageCount >= 0) {
+      "DurableCompactionEntryTrace omittedAssistantMessageCount must be >= 0."
+    }
+    require(omittedToolMessageCount >= 0) {
+      "DurableCompactionEntryTrace omittedToolMessageCount must be >= 0."
+    }
+    require(omittedSystemMessageCount >= 0) {
+      "DurableCompactionEntryTrace omittedSystemMessageCount must be >= 0."
+    }
+  }
 }
 
 data class DurableCompactionContext(
@@ -171,11 +202,13 @@ class DurableCompactionRenderer(
     val latestCompactedAtEpochMs = state.entries.lastOrNull()
       ?.compactedAtEpochMs
       ?.takeIf { compactedAtEpochMs -> compactedAtEpochMs > 0L }
+    val entryTraces = state.entries.map { entry -> entry.toTrace() }
     if (includedEntries.isEmpty()) {
       return RenderedDurableCompaction(
         omittedSummaryCount = state.entries.size,
         totalCompactedMessageCount = totalCompactedMessageCount,
         latestCompactedAtEpochMs = latestCompactedAtEpochMs,
+        entryTraces = entryTraces,
       )
     }
     return RenderedDurableCompaction(
@@ -184,8 +217,19 @@ class DurableCompactionRenderer(
       omittedSummaryCount = (state.entries.size - includedEntries.size).coerceAtLeast(0),
       totalCompactedMessageCount = totalCompactedMessageCount,
       latestCompactedAtEpochMs = latestCompactedAtEpochMs,
+      entryTraces = entryTraces,
     )
   }
+
+  private fun DurableCompactionEntry.toTrace(): DurableCompactionEntryTrace =
+    DurableCompactionEntryTrace(
+      compactedMessageCount = compactedMessageCount,
+      omittedUserMessageCount = omittedUserMessageCount,
+      omittedAssistantMessageCount = omittedAssistantMessageCount,
+      omittedToolMessageCount = omittedToolMessageCount,
+      omittedSystemMessageCount = omittedSystemMessageCount,
+      compactedAtEpochMs = compactedAtEpochMs.takeIf { value -> value > 0L },
+    )
 }
 
 internal data class RenderedDurableCompaction(
@@ -194,6 +238,7 @@ internal data class RenderedDurableCompaction(
   val omittedSummaryCount: Int = 0,
   val totalCompactedMessageCount: Int = 0,
   val latestCompactedAtEpochMs: Long? = null,
+  val entryTraces: List<DurableCompactionEntryTrace> = emptyList(),
 )
 
 interface SessionCompactionStore {
@@ -237,6 +282,29 @@ class DurableCompactionCoordinator(
     transcriptStore: SessionTranscriptStore,
     compactionStore: SessionCompactionStore,
     llmMetadata: Map<String, String> = emptyMap(),
+  ): DurableCompactionContext = compact(
+    triggerStage = MEMORY_COMPACTION_TRIGGER_STAGE_PRE_COMPACTION,
+    transcriptStore = transcriptStore,
+    compactionStore = compactionStore,
+    llmMetadata = llmMetadata,
+  )
+
+  fun compactMidTurn(
+    transcriptStore: SessionTranscriptStore,
+    compactionStore: SessionCompactionStore,
+    llmMetadata: Map<String, String> = emptyMap(),
+  ): DurableCompactionContext = compact(
+    triggerStage = MEMORY_COMPACTION_TRIGGER_STAGE_MID_TURN,
+    transcriptStore = transcriptStore,
+    compactionStore = compactionStore,
+    llmMetadata = llmMetadata,
+  )
+
+  private fun compact(
+    triggerStage: String,
+    transcriptStore: SessionTranscriptStore,
+    compactionStore: SessionCompactionStore,
+    llmMetadata: Map<String, String> = emptyMap(),
   ): DurableCompactionContext {
     val conversation = transcriptStore.snapshot()
     val effectiveTranscriptWindowBuilder = sourceBudgetPolicy
@@ -256,6 +324,7 @@ class DurableCompactionCoordinator(
         sourceTranscriptMessageCount = conversation.size,
         retainedTranscriptMessageCount = conversation.size,
         replayPressure = replayPressure,
+        triggerStage = triggerStage,
       )
     }
     val summary = compactionPolicy.summarize(selection.omittedMessages)
@@ -265,6 +334,7 @@ class DurableCompactionCoordinator(
         sourceTranscriptMessageCount = conversation.size,
         retainedTranscriptMessageCount = conversation.size,
         replayPressure = replayPressure,
+        triggerStage = triggerStage,
       )
     val compactedAtEpochMs = clock()
     val updatedState = durableCompactionPolicy.append(
@@ -282,6 +352,7 @@ class DurableCompactionCoordinator(
       latestCompactedMessageCount = summary.compactedMessageCount,
       latestCompactedAtEpochMs = compactedAtEpochMs,
       replayPressure = replayPressure,
+      triggerStage = triggerStage,
     )
   }
 
@@ -301,11 +372,13 @@ class DurableCompactionCoordinator(
     latestCompactedMessageCount: Int = 0,
     latestCompactedAtEpochMs: Long? = rendered.latestCompactedAtEpochMs,
     replayPressure: ReplayPressureSnapshot? = null,
+    triggerStage: String = MEMORY_COMPACTION_TRIGGER_STAGE_PRE_COMPACTION,
   ): DurableCompactionContext = DurableCompactionContext(
     text = rendered.text,
     trace = DurableCompactionTrace(
       compactedThisRun = compactedThisRun,
-      triggerStage = replayPressure?.let { MEMORY_COMPACTION_TRIGGER_STAGE_PRE_COMPACTION }.orEmpty(),
+      triggerStage = replayPressure?.let { triggerStage }.orEmpty(),
+      maintenanceTask = replayPressure?.let { "durable_compaction:$triggerStage" }.orEmpty(),
       contextWindowTokens = replayPressure?.contextWindowTokens ?: 0,
       autoCompactTokenLimit = replayPressure?.autoCompactTokenLimit ?: 0,
       estimatedReplayTokens = replayPressure?.estimatedReplayTokens ?: 0,
@@ -317,8 +390,10 @@ class DurableCompactionCoordinator(
       omittedSummaryCount = rendered.omittedSummaryCount,
       totalCompactedMessageCount = rendered.totalCompactedMessageCount,
       latestCompactedAtEpochMs = latestCompactedAtEpochMs,
+      entryTraces = rendered.entryTraces,
     ),
   )
 }
 
 private const val MEMORY_COMPACTION_TRIGGER_STAGE_PRE_COMPACTION: String = "pre_compaction"
+private const val MEMORY_COMPACTION_TRIGGER_STAGE_MID_TURN: String = "mid_turn"

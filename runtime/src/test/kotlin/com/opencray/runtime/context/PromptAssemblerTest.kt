@@ -1081,6 +1081,63 @@ class PromptAssemblerTest {
   }
 
   @Test
+  fun assembleInjectsStickyMemoryIntoDurableContextLayer() {
+    val contextManager = ContextManager()
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(
+            recalledMemory = MemoryRecallResult(
+              memories = listOf(
+                RetrievedMemory(
+                  id = "memory-sticky-layer",
+                  kind = MemoryKind.DURABLE_INSTRUCTION,
+                  scope = MemoryScope.USER,
+                  status = MemoryStatus.ACTIVE,
+                  content = "Keep this durable instruction in the sticky capsule.",
+                  lastConfirmedAtEpochMs = 42L,
+                  sticky = true,
+                  score = 900,
+                ),
+                RetrievedMemory(
+                  id = "memory-dynamic-layer",
+                  kind = MemoryKind.PROJECT_FACT,
+                  scope = MemoryScope.WORKSPACE,
+                  status = MemoryStatus.ACTIVE,
+                  content = "Keep this project fact in dynamic recall.",
+                  lastConfirmedAtEpochMs = 43L,
+                  score = 800,
+                ),
+              ),
+              matchedRecordCount = 2,
+            ),
+          ),
+          toolDefinitions = emptyList(),
+          liveConversation = emptyList(),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.taskPrompt.contains("[Sticky Memory]"))
+    assertTrue(prompt.durableContextPrompt.contains("[Sticky Memory]"))
+    assertFalse(prompt.dynamicContextPrompt.contains("[Sticky Memory]"))
+    assertTrue(prompt.taskPrompt.contains("Keep this durable instruction in the sticky capsule."))
+    assertTrue(prompt.taskPrompt.contains("[Retrieved Memory]"))
+    assertTrue(prompt.dynamicContextPrompt.contains("Keep this project fact in dynamic recall."))
+    assertFalse(prompt.dynamicContextPrompt.contains("Keep this durable instruction in the sticky capsule."))
+    assertEquals(1, prompt.report.stickyMemoryTrace.injectedRecordCount)
+    assertEquals(listOf("memory-sticky-layer"), prompt.report.stickyMemoryTrace.selectedRecordIds)
+    assertEquals(
+      PromptLayerTransportGroup.DURABLE_CONTEXT,
+      prompt.report.layers.first { layer -> layer.id == PromptLayerId.STICKY_MEMORY }.transportGroup,
+    )
+  }
+
+  @Test
   fun assembleBudgetCoordinatorDropsArchiveAndSupportLayersBeforeWorkingState() {
     val contextManager = ContextManager(
       transcriptWindowBuilder = TranscriptWindowBuilder(

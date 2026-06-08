@@ -994,6 +994,10 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     String onDeviceAccelerator = 'gpu',
     bool onDeviceThinkingEnabled = false,
     bool onDeviceLiteModeEnabled = false,
+    String? contextBudgetPreset,
+    int? contextBudgetReservedOutputTokens,
+    int? contextBudgetSafetyMarginTokens,
+    double? contextBudgetEffectiveInputPercent,
   }) async {
     final isConfigured = providerMode == 'on_device_model'
         ? _llmConfig.onDeviceModels.any(
@@ -1004,6 +1008,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
         : (baseUrl.trim().isNotEmpty &&
               apiKey.trim().isNotEmpty &&
               model.trim().isNotEmpty);
+    final hasExplicitContextBudgetPayload = contextBudgetPreset != null;
     _llmConfig = OpenCrayLlmConfigSnapshot(
       localeTag: _llmConfig.localeTag,
       enabled: isConfigured,
@@ -1041,6 +1046,16 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       onDeviceAccelerator: onDeviceAccelerator,
       onDeviceThinkingEnabled: onDeviceThinkingEnabled,
       onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
+      contextBudgetPreset: contextBudgetPreset ?? _llmConfig.contextBudgetPreset,
+      contextBudgetReservedOutputTokens: hasExplicitContextBudgetPayload
+          ? contextBudgetReservedOutputTokens
+          : _llmConfig.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens: hasExplicitContextBudgetPayload
+          ? contextBudgetSafetyMarginTokens
+          : _llmConfig.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent: hasExplicitContextBudgetPayload
+          ? contextBudgetEffectiveInputPercent
+          : _llmConfig.contextBudgetEffectiveInputPercent,
     );
     return _llmConfig;
   }
@@ -1124,6 +1139,14 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       onDeviceTemperature: _llmConfig.onDeviceTemperature,
       onDeviceAccelerator: _llmConfig.onDeviceAccelerator,
       onDeviceThinkingEnabled: _llmConfig.onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: _llmConfig.onDeviceLiteModeEnabled,
+      contextBudgetPreset: _llmConfig.contextBudgetPreset,
+      contextBudgetReservedOutputTokens:
+          _llmConfig.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens:
+          _llmConfig.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent:
+          _llmConfig.contextBudgetEffectiveInputPercent,
     );
     return _llmConfig;
   }
@@ -1247,6 +1270,28 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       reasoningEffort: _llmConfig.reasoningEffort,
       systemPrompt: _llmConfig.systemPrompt,
       helperText: _llmConfig.helperText,
+      openAiPromptCacheKeyStrategy: _llmConfig.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention: _llmConfig.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled:
+          _llmConfig.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl: _llmConfig.anthropicPromptCacheTtl,
+      onDeviceModels: _llmConfig.onDeviceModels,
+      selectedOnDeviceModelId: _llmConfig.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: _llmConfig.onDeviceMaxContextWindow,
+      onDeviceMaxTokens: _llmConfig.onDeviceMaxTokens,
+      onDeviceTopK: _llmConfig.onDeviceTopK,
+      onDeviceTopP: _llmConfig.onDeviceTopP,
+      onDeviceTemperature: _llmConfig.onDeviceTemperature,
+      onDeviceAccelerator: _llmConfig.onDeviceAccelerator,
+      onDeviceThinkingEnabled: _llmConfig.onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: _llmConfig.onDeviceLiteModeEnabled,
+      contextBudgetPreset: _llmConfig.contextBudgetPreset,
+      contextBudgetReservedOutputTokens:
+          _llmConfig.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens:
+          _llmConfig.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent:
+          _llmConfig.contextBudgetEffectiveInputPercent,
     );
     _snapshot = _snapshot.copyWith(localeTag: languageId);
     update(_snapshot);

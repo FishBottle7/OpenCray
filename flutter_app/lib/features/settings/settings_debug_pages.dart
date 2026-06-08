@@ -1665,6 +1665,7 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
     final liveContext = run.liveContext;
     final contextBudget = run.contextBudget;
     final bootstrap = run.bootstrap;
+    final stickyMemory = run.stickyMemory;
     final memoryFlush = run.memoryFlush;
     final durableCompaction = run.durableCompaction;
     return _SettingsCard(
@@ -1677,10 +1678,11 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
               liveContext == null &&
               contextBudget == null &&
               bootstrap == null &&
+              stickyMemory == null &&
               memoryFlush == null &&
               durableCompaction == null)
             const Text(
-              'No LLM diagnostics, live-context, context-budget, bootstrap, memory flush, or durable compaction trace was captured for this run.',
+              'No LLM diagnostics, live-context, context-budget, bootstrap, sticky memory, memory flush, or durable compaction trace was captured for this run.',
               style: _SettingsTextStyles.body,
             )
           else ...[
@@ -2023,10 +2025,36 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                   memoryFlush.writtenRecordIds.join(', '),
                 ),
             ],
+            if (stickyMemory != null) ...[
+              if (liveContext != null ||
+                  contextBudget != null ||
+                  bootstrap != null ||
+                  memoryFlush != null)
+                const SizedBox(height: 16),
+              const Text('Sticky memory', style: _SettingsTextStyles.bodyStrong),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  _DebugValueChip(
+                    label: 'Injected',
+                    value: '${stickyMemory.injectedRecordCount ?? 0}',
+                  ),
+                  _DebugValueChip(
+                    label: 'Omitted',
+                    value: '${stickyMemory.omittedRecordCount ?? 0}',
+                  ),
+                ],
+              ),
+              if (stickyMemory.recordIds.isNotEmpty)
+                _DebugKeyValueLine('Pinned ids', stickyMemory.recordIds.join(', ')),
+            ],
             if (durableCompaction != null) ...[
               if (liveContext != null ||
                   contextBudget != null ||
                   bootstrap != null ||
+                  stickyMemory != null ||
                   memoryFlush != null)
                 const SizedBox(height: 16),
               const Text(

@@ -1813,6 +1813,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     "liveContext" to runSnapshotLiveContextFromMetadata(run.resultMetadata),
     "contextBudget" to runSnapshotContextBudgetFromMetadata(run.resultMetadata),
     "memoryTrace" to runSnapshotMemoryTraceFromMetadata(run.resultMetadata),
+    "stickyMemory" to runSnapshotStickyMemoryFromMetadata(run.resultMetadata),
     "memoryFlush" to runSnapshotMemoryFlushFromMetadata(run.resultMetadata),
     "bootstrap" to runSnapshotBootstrapFromMetadata(run.resultMetadata),
     "durableCompaction" to runSnapshotDurableCompactionFromMetadata(run.resultMetadata),
@@ -2038,6 +2039,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "reaffirmedRecordIds" to event.reaffirmedRecordIds,
       "expiredRecordIds" to event.expiredRecordIds,
       "stewardshipPlanSteps" to event.stewardshipPlanSteps.map(::stewardshipPlanStepToMap),
+      "stewardshipPlanGraph" to stewardshipPlanGraphToMap(event.stewardshipPlanGraph),
     )
     is OpenCrayCancellationEvent -> mapOf(
       "kind" to "interrupted",

@@ -14,6 +14,7 @@ import com.opencray.runtime.memory.MemoryKind
 import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import com.opencray.runtime.memory.MemoryScope
+import com.opencray.runtime.memory.MemoryStewardshipPlanGraph
 import com.opencray.runtime.memory.MemoryStewardshipService
 import com.opencray.runtime.memory.MemoryStewardshipPlanStep
 import com.opencray.runtime.memory.MemoryStatus
@@ -37,6 +38,7 @@ internal data class MemoryIngestionSummary(
   val reaffirmedRecords: List<MemoryRecord> = emptyList(),
   val expiredRecordIds: List<String> = emptyList(),
   val stewardshipPlanSteps: List<MemoryStewardshipPlanStep> = emptyList(),
+  val stewardshipPlanGraph: MemoryStewardshipPlanGraph = MemoryStewardshipPlanGraph(),
 ) {
   val isEmpty: Boolean
     get() = writtenRecords.isEmpty() &&
@@ -44,7 +46,8 @@ internal data class MemoryIngestionSummary(
       reopenedRecords.isEmpty() &&
       reaffirmedRecords.isEmpty() &&
       expiredRecordIds.isEmpty() &&
-      stewardshipPlanSteps.isEmpty()
+      stewardshipPlanSteps.isEmpty() &&
+      stewardshipPlanGraph.isEmpty
 }
 
 internal class ChatMemoryIngestionCoordinator(
@@ -72,6 +75,19 @@ internal class ChatMemoryIngestionCoordinator(
     llmMetadata: Map<String, String> = emptyMap(),
     taskId: String? = null,
   ): MemoryFlushSummary = flushCoordinator.flushBeforeCompaction(
+    sessionId = sessionId,
+    workspaceId = workspaceIdProvider(),
+    conversation = conversation,
+    llmMetadata = llmMetadata,
+    taskId = taskId,
+  )
+
+  fun flushMidTurn(
+    sessionId: String,
+    conversation: List<RuntimeConversationMessage>,
+    llmMetadata: Map<String, String> = emptyMap(),
+    taskId: String? = null,
+  ): MemoryFlushSummary = flushCoordinator.flushMidTurn(
     sessionId = sessionId,
     workspaceId = workspaceIdProvider(),
     conversation = conversation,
@@ -185,6 +201,7 @@ internal class ChatMemoryIngestionCoordinator(
       reaffirmedRecords = maintenance.reaffirmedRecords + stewardshipPlan.reaffirmedRecords,
       expiredRecordIds = maintenance.expiredRecordIds,
       stewardshipPlanSteps = stewardshipPlan.planSteps,
+      stewardshipPlanGraph = stewardshipPlan.planGraph,
     )
     if (
       (summary.writtenRecords + summary.resolvedRecords + summary.reopenedRecords + summary.reaffirmedRecords)

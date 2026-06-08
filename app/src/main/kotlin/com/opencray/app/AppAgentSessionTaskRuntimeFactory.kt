@@ -41,6 +41,8 @@ import com.opencray.runtime.OpenCrayAssistantPhaseEvent
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayExecutionMetadataKeys
 import com.opencray.runtime.OpenCrayFinalAttachment
+import com.opencray.runtime.OpenCrayMidTurnMaintenanceRequest
+import com.opencray.runtime.OpenCrayMidTurnMaintenanceResult
 import com.opencray.runtime.OpenCrayImageGenerationClient
 import com.opencray.runtime.OpenCrayMediaArtifactRegistry
 import com.opencray.runtime.OpenCrayMediaToolSettings
@@ -576,6 +578,21 @@ internal class AppAgentSessionTaskRuntimeFactory(
             sessionId = sessionId,
             task = task,
             emission = emission,
+          )
+        },
+        midTurnMaintenance = { request ->
+          runMidTurnContextMaintenance(
+            sessionId = sessionId,
+            workspaceId = workspaceId,
+            request = request,
+            transcriptStore = transcriptStore,
+            llmMetadata = llmMetadata,
+            sourceBudgetProfile = sourceBudgetProfile,
+            liveContextMode = effectiveLiveContextMode,
+            liveContextPolicy = liveContextPolicyFor(effectiveLiveContextMode),
+            memoryToolsEnabled = effectiveMemoryToolsEnabled,
+            enabled = task.type == com.opencray.core.contracts.AgentTaskType.PROMPT &&
+              detachedControlTask == null,
           )
         },
         contextManager = contextManagerFor(sourceBudgetProfile),
@@ -1885,6 +1902,8 @@ internal class AppAgentSessionTaskRuntimeFactory(
           mode = liveContextMode.wireValue,
           soulEnabled = liveContextPolicy.soulEnabled,
           memoryRecallEnabled = liveContextPolicy.memoryRecallEnabled,
+          budgetPreset = llmMetadata["contextBudgetPreset"]
+            ?: llmMetadata["context_budget_preset"],
         ),
         recalledMemory = if (liveContextPolicy.memoryRecallEnabled) {
           recalledMemoryFor(
@@ -1911,6 +1930,87 @@ internal class AppAgentSessionTaskRuntimeFactory(
       "context.prepareDone session=$sessionId task=$taskId durationMs=${System.currentTimeMillis() - prepareStartedAtEpochMs} turnSemanticSignal=${if (preparedContext.sessionContext.turnSemanticSignal != null) "present" else "absent"} durableMemoryCount=${preparedContext.effectiveMemoryRecords.size}",
     )
     return preparedContext
+  }
+
+  private fun runMidTurnContextMaintenance(
+    sessionId: String,
+    workspaceId: String?,
+    request: OpenCrayMidTurnMaintenanceRequest,
+    transcriptStore: SessionTranscriptStore,
+    llmMetadata: Map<String, String>,
+    sourceBudgetProfile: ContextSourceBudgetProfile,
+    liveContextMode: LiveContextMode,
+    liveContextPolicy: LiveContextPolicy,
+    memoryToolsEnabled: Boolean,
+    enabled: Boolean,
+  ): OpenCrayMidTurnMaintenanceResult {
+    if (!enabled) {
+      return OpenCrayMidTurnMaintenanceResult(
+        sessionContext = request.sessionContext,
+        conversation = request.conversation,
+      )
+    }
+    val maintenanceStartedAtEpochMs = System.currentTimeMillis()
+    transcriptStore.replace(request.conversation)
+    val memoryFlushSummary = memoryIngestionCoordinator?.flushMidTurn(
+      sessionId = sessionId,
+      conversation = transcriptStore.snapshot(),
+      llmMetadata = llmMetadata,
+      taskId = request.task.id,
+    )
+    val effectiveMemoryRecords = if (memoryFlushSummary?.wasWritten == true) {
+      memoryRecordsProvider()
+    } else {
+      memoryRecordsProvider()
+    }
+    val durableCompaction = durableCompactionCoordinator.compactMidTurn(
+      transcriptStore = transcriptStore,
+      compactionStore = compactionStoreForSession(sessionId),
+      llmMetadata = llmMetadata,
+    )
+    val updatedConversation = transcriptStore.snapshot()
+    val updatedContext = request.sessionContext.copy(
+      soulProfile = if (liveContextPolicy.soulEnabled) {
+        memoryBackedSoulResolver.overlay(
+          baseProfile = request.sessionContext.soulProfile,
+          records = effectiveMemoryRecords,
+          sessionId = sessionId,
+          workspaceId = workspaceId,
+        )
+      } else {
+        request.sessionContext.soulProfile
+      },
+      injectionPolicy = liveContextPolicy.injectionPolicy,
+      memoryToolsEnabled = memoryToolsEnabled,
+      liveContextTrace = request.sessionContext.liveContextTrace.copy(
+        mode = liveContextMode.wireValue,
+        soulEnabled = liveContextPolicy.soulEnabled,
+        memoryRecallEnabled = liveContextPolicy.memoryRecallEnabled,
+        budgetPreset = llmMetadata["contextBudgetPreset"]
+          ?: llmMetadata["context_budget_preset"],
+      ),
+      recalledMemory = if (liveContextPolicy.memoryRecallEnabled) {
+        recalledMemoryFor(
+          sessionId = sessionId,
+          taskInput = request.task.input,
+          memoryRecords = effectiveMemoryRecords,
+          workspaceId = workspaceId,
+          sourceBudgetProfile = sourceBudgetProfile,
+        )
+      } else {
+        MemoryRecallResult()
+      },
+      memoryFlushTrace = memoryFlushSummary?.trace ?: request.sessionContext.memoryFlushTrace,
+      durableCompaction = durableCompaction,
+      conversation = updatedConversation,
+    )
+    sessionContextDebug(
+      "context.midTurnMaintenance session=$sessionId task=${request.task.id} turn=${request.turn} durationMs=${System.currentTimeMillis() - maintenanceStartedAtEpochMs} flush=${memoryFlushSummary?.trace?.outcome ?: "skipped"} compacted=${durableCompaction.trace.compactedThisRun} messages=${updatedConversation.size}",
+    )
+    return OpenCrayMidTurnMaintenanceResult(
+      sessionContext = updatedContext,
+      conversation = updatedConversation,
+    )
   }
 
   private fun transcriptAwareEventSink(

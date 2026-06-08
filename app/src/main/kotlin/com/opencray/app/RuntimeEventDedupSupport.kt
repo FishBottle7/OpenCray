@@ -15,14 +15,11 @@ import com.opencray.runtime.OpenCrayToolResultEvent
 internal fun dedupeRuntimeEventsPreservingOrder(
   events: Iterable<OpenCrayAgentRunEvent>,
 ): List<OpenCrayAgentRunEvent> {
-  val deduped = ArrayList<OpenCrayAgentRunEvent>()
-  val seen = linkedSetOf<String>()
+  val dedupedByKey = linkedMapOf<String, OpenCrayAgentRunEvent>()
   events.forEach { event ->
-    if (seen.add(runtimeEventDedupKey(event))) {
-      deduped += event
-    }
+    dedupedByKey[runtimeEventDedupKey(event)] = event
   }
-  return deduped
+  return dedupedByKey.values.toList()
 }
 
 internal fun runtimeEventDedupKey(event: OpenCrayAgentRunEvent): String = when (event) {
@@ -169,6 +166,21 @@ internal fun runtimeEventDedupKey(event: OpenCrayAgentRunEvent): String = when (
         step.producedRecordId.orEmpty(),
         step.reason.orEmpty(),
       ).joinToString(separator = ":")
+    },
+    event.stewardshipPlanGraph.nodes.joinToString(separator = ",") { node ->
+      listOf(
+        node.id,
+        node.kind,
+        node.action.orEmpty(),
+        node.outcome.orEmpty(),
+        node.recordId.orEmpty(),
+        node.candidateIndex?.toString().orEmpty(),
+        node.producedRecordId.orEmpty(),
+        node.reason.orEmpty(),
+      ).joinToString(separator = ":")
+    },
+    event.stewardshipPlanGraph.edges.joinToString(separator = ",") { edge ->
+      listOf(edge.from, edge.to, edge.kind).joinToString(separator = ":")
     },
   ).joinToString(separator = "|")
 

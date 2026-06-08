@@ -210,6 +210,10 @@ class BridgeSettingsFacade implements SettingsFacade {
     String onDeviceAccelerator = 'gpu',
     bool onDeviceThinkingEnabled = false,
     bool onDeviceLiteModeEnabled = false,
+    String? contextBudgetPreset,
+    int? contextBudgetReservedOutputTokens,
+    int? contextBudgetSafetyMarginTokens,
+    double? contextBudgetEffectiveInputPercent,
   }) async => _mapLlmConfig(
     await _bridge.saveLlmConfig(
       enabled: enabled,
@@ -238,6 +242,10 @@ class BridgeSettingsFacade implements SettingsFacade {
       onDeviceAccelerator: onDeviceAccelerator,
       onDeviceThinkingEnabled: onDeviceThinkingEnabled,
       onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
+      contextBudgetPreset: contextBudgetPreset,
+      contextBudgetReservedOutputTokens: contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens: contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent: contextBudgetEffectiveInputPercent,
     ),
   );
 
@@ -616,6 +624,12 @@ class BridgeSettingsFacade implements SettingsFacade {
       onDeviceAccelerator: snapshot.onDeviceAccelerator,
       onDeviceThinkingEnabled: snapshot.onDeviceThinkingEnabled,
       onDeviceLiteModeEnabled: snapshot.onDeviceLiteModeEnabled,
+      contextBudgetPreset: snapshot.contextBudgetPreset,
+      contextBudgetReservedOutputTokens:
+          snapshot.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens: snapshot.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent:
+          snapshot.contextBudgetEffectiveInputPercent,
     );
   }
 

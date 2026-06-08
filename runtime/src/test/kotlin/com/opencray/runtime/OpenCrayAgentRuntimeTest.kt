@@ -5500,6 +5500,7 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("ui-ux-pro-max", result.metadata["contextActiveSkillName"])
     assertEquals("skill_read", result.metadata["contextActiveSkillActivationSource"])
+    assertEquals("false", result.metadata["contextActiveSkillPinned"])
     assertEquals("true", result.metadata["contextActiveSkillToolRestrictionEnabled"])
     assertEquals("read,write", result.metadata["contextActiveSkillAllowedTools"])
     assertEquals(2, gateway.requests.size)
@@ -5508,6 +5509,112 @@ class OpenCrayAgentRuntimeTest {
     assertTrue(gateway.requests[1].prompt.contains("Audit the current interface first"))
     assertTrue(gateway.requests[1].prompt.contains("- Read:"))
     assertFalse(gateway.requests[1].prompt.contains("- Bash:"))
+  }
+
+  @Test
+  fun runPromptTaskPromotesReadSkillAsPinnedOnlyWhenRequested() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-active-skill-pinned-workspace")
+    val skillsRoot = temporaryFolder.newFolder("agent-active-skill-pinned-root")
+    writeSkill(
+      root = skillsRoot,
+      relativeDirectory = "ui-ux-pro-max",
+      frontMatter = """
+        name: ui-ux-pro-max
+        description: High-end UI review workflow.
+        invocation-control: explicit-only
+        user-invocable: true
+        allowed-tools: [ read, write ]
+      """.trimIndent(),
+      body = "# UI UX Pro Max\n\nAudit the interface.",
+    )
+    val skillCatalog = SkillCatalogResolver().resolve(listOf(skillsRoot))
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"skill_read","arguments":{"name":"ui-ux-pro-max","pin":true}}""",
+        """{"type":"final","answer":"Used pinned skill."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          skillsRoots = listOf(skillsRoot),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        sessionContext = AgentRuntimeSessionContext(
+          skillInventory = skillCatalog.inventory,
+          skillCatalog = skillCatalog,
+        ),
+      ),
+      clock = IncrementingClock(start = 2_750L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Load the UI skill as pinned, then follow it."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("ui-ux-pro-max", result.metadata["contextActiveSkillName"])
+    assertEquals("true", result.metadata["contextActiveSkillPinned"])
+    assertTrue(gateway.requests[1].prompt.contains("[Active Skill]"))
+    assertTrue(gateway.requests[1].prompt.contains("pinned=true"))
+  }
+
+  @Test
+  fun runPromptTaskExecutesInlineSkillAsActiveCapsule() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-skill-execute-inline-workspace")
+    val skillsRoot = temporaryFolder.newFolder("agent-skill-execute-inline-root")
+    writeSkill(
+      root = skillsRoot,
+      relativeDirectory = "review-skill",
+      frontMatter = """
+        name: review-skill
+        description: Review workflow.
+        invocation-control: explicit-and-implicit
+        execution-context: inline
+        user-invocable: true
+        allowed-tools: [ read ]
+      """.trimIndent(),
+      body = "# Review Skill\n\nRead first, then answer.",
+    )
+    val skillCatalog = SkillCatalogResolver().resolve(listOf(skillsRoot))
+    val gateway = RecordingGateway(
+      outputs = listOf(
+        """{"type":"tool_call","tool_name":"skill_execute","arguments":{"name":"review-skill"}}""",
+        """{"type":"final","answer":"Used skill_execute."}""",
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+          skillsRoots = listOf(skillsRoot),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        sessionContext = AgentRuntimeSessionContext(
+          skillInventory = skillCatalog.inventory,
+          skillCatalog = skillCatalog,
+        ),
+      ),
+      clock = IncrementingClock(start = 2_760L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Execute the review skill."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("review-skill", result.metadata["contextActiveSkillName"])
+    assertEquals("skill_execute", result.metadata["contextActiveSkillActivationSource"])
+    assertEquals("false", result.metadata["contextActiveSkillPinned"])
+    assertTrue(gateway.requests[1].prompt.contains("[Active Skill]"))
+    assertTrue(gateway.requests[1].prompt.contains("name=review-skill"))
   }
 
   @Test

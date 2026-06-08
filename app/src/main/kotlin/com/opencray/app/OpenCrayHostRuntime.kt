@@ -594,6 +594,7 @@ internal class OpenCrayHostRuntime private constructor(
                   reaffirmedRecordIds = ingestionSummary.reaffirmedRecords.map { record -> record.id },
                   expiredRecordIds = ingestionSummary.expiredRecordIds,
                   stewardshipPlanSteps = ingestionSummary.stewardshipPlanSteps,
+                  stewardshipPlanGraph = ingestionSummary.stewardshipPlanGraph,
                   emittedAtEpochMs = completedTurn.result.finishedAtEpochMs,
                 ),
               )
@@ -2749,8 +2750,10 @@ internal class OpenCrayHostRuntime private constructor(
       put("sequence", sequence)
       put("updatedAtEpochMs", updatedAtEpochMs)
       put("events", visibleEvent?.let(::runtimeEventToMap)?.let(::listOf) ?: emptyList<Map<String, Any?>>())
-      put("activeRuns", activeRuns)
-      put("retainedRuns", retainedRuns)
+      if (visibleRun != null) {
+        put("activeRuns", activeRuns)
+        put("retainedRuns", retainedRuns)
+      }
     }
   }
 
@@ -5437,6 +5440,7 @@ internal class OpenCrayHostRuntime private constructor(
     "liveContext" to liveContextFromMetadata(run.resultMetadata),
     "contextBudget" to contextBudgetFromMetadata(run.resultMetadata),
     "memoryTrace" to memoryTraceFromMetadata(run.resultMetadata),
+    "stickyMemory" to stickyMemoryFromMetadata(run.resultMetadata),
     "memoryFlush" to memoryFlushFromMetadata(run.resultMetadata),
     "bootstrap" to bootstrapFromMetadata(run.resultMetadata),
     "durableCompaction" to durableCompactionFromMetadata(run.resultMetadata),
@@ -5627,13 +5631,45 @@ internal class OpenCrayHostRuntime private constructor(
     val mode = metadata["contextLiveMode"]?.takeIf(String::isNotBlank)
     val soulEnabled = metadata["contextLiveSoulEnabled"]?.toBooleanStrictOrNull()
     val memoryRecallEnabled = metadata["contextLiveMemoryRecallEnabled"]?.toBooleanStrictOrNull()
-    if (mode == null && soulEnabled == null && memoryRecallEnabled == null) {
+    val replaySource = metadata["contextLiveReplaySource"]?.takeIf(String::isNotBlank)
+    val replayMessageCount = metadata["contextLiveReplayMessageCount"]?.toIntOrNull()
+    val canonicalSource = metadata["contextLiveCanonicalSource"]?.takeIf(String::isNotBlank)
+    val canonicalMessageCount = metadata["contextLiveCanonicalMessageCount"]?.toIntOrNull()
+    val canonicalHistoryPreserved =
+      metadata["contextLiveCanonicalHistoryPreserved"]?.toBooleanStrictOrNull()
+    val inheritanceSource = metadata["contextLiveInheritanceSource"]?.takeIf(String::isNotBlank)
+    val parentMode = metadata["contextLiveParentMode"]?.takeIf(String::isNotBlank)
+    val parentReplayMessageCount = metadata["contextLiveParentReplayMessageCount"]?.toIntOrNull()
+    val budgetPreset = metadata["contextLiveBudgetPreset"]?.takeIf(String::isNotBlank)
+    if (
+      mode == null &&
+      soulEnabled == null &&
+      memoryRecallEnabled == null &&
+      replaySource == null &&
+      replayMessageCount == null &&
+      canonicalSource == null &&
+      canonicalMessageCount == null &&
+      canonicalHistoryPreserved == null &&
+      inheritanceSource == null &&
+      parentMode == null &&
+      parentReplayMessageCount == null &&
+      budgetPreset == null
+    ) {
       return null
     }
     return buildMap {
       mode?.let { put("mode", it) }
       soulEnabled?.let { put("soulEnabled", it) }
       memoryRecallEnabled?.let { put("memoryRecallEnabled", it) }
+      replaySource?.let { put("replaySource", it) }
+      replayMessageCount?.let { put("replayMessageCount", it) }
+      canonicalSource?.let { put("canonicalSource", it) }
+      canonicalMessageCount?.let { put("canonicalMessageCount", it) }
+      canonicalHistoryPreserved?.let { put("canonicalHistoryPreserved", it) }
+      inheritanceSource?.let { put("inheritanceSource", it) }
+      parentMode?.let { put("parentMode", it) }
+      parentReplayMessageCount?.let { put("parentReplayMessageCount", it) }
+      budgetPreset?.let { put("budgetPreset", it) }
     }
   }
 
@@ -5806,6 +5842,7 @@ internal class OpenCrayHostRuntime private constructor(
   private fun memoryFlushFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
     val outcome = metadata["contextMemoryFlushOutcome"]?.takeIf(String::isNotBlank)
     val triggerStage = metadata["contextMemoryFlushTriggerStage"]?.takeIf(String::isNotBlank)
+    val maintenanceTask = metadata["contextMemoryFlushMaintenanceTask"]?.takeIf(String::isNotBlank)
     val contextWindowTokens = metadata["contextMemoryFlushContextWindowTokens"]?.toIntOrNull()
     val autoCompactTokenLimit = metadata["contextMemoryFlushAutoCompactTokenLimit"]?.toIntOrNull()
     val estimatedReplayTokens = metadata["contextMemoryFlushEstimatedReplayTokens"]?.toIntOrNull()
@@ -5825,9 +5862,15 @@ internal class OpenCrayHostRuntime private constructor(
       .split(',')
       .map(String::trim)
       .filter(String::isNotBlank)
+    val candidateRecordIds = metadata["contextMemoryFlushCandidateRecordIds"]
+      .orEmpty()
+      .split(',')
+      .map(String::trim)
+      .filter(String::isNotBlank)
     if (
       outcome == null &&
       triggerStage == null &&
+      maintenanceTask == null &&
       contextWindowTokens == null &&
       autoCompactTokenLimit == null &&
       estimatedReplayTokens == null &&
@@ -5838,13 +5881,15 @@ internal class OpenCrayHostRuntime private constructor(
       candidateCount == null &&
       writtenRecordCount == null &&
       writtenKinds.isEmpty() &&
-      writtenRecordIds.isEmpty()
+      writtenRecordIds.isEmpty() &&
+      candidateRecordIds.isEmpty()
     ) {
       return null
     }
     return buildMap {
       outcome?.let { put("outcome", it) }
       triggerStage?.let { put("triggerStage", it) }
+      maintenanceTask?.let { put("maintenanceTask", it) }
       contextWindowTokens?.let { put("contextWindowTokens", it) }
       autoCompactTokenLimit?.let { put("autoCompactTokenLimit", it) }
       estimatedReplayTokens?.let { put("estimatedReplayTokens", it) }
@@ -5859,6 +5904,29 @@ internal class OpenCrayHostRuntime private constructor(
       }
       if (writtenRecordIds.isNotEmpty()) {
         put("writtenRecordIds", writtenRecordIds)
+      }
+      if (candidateRecordIds.isNotEmpty()) {
+        put("candidateRecordIds", candidateRecordIds)
+      }
+    }
+  }
+
+  private fun stickyMemoryFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
+    val injectedRecordCount = metadata["contextStickyMemoryInjectedRecordCount"]?.toIntOrNull()
+    val omittedRecordCount = metadata["contextStickyMemoryOmittedRecordCount"]?.toIntOrNull()
+    val recordIds = metadata["contextStickyMemoryRecordIds"]
+      .orEmpty()
+      .split(',')
+      .map(String::trim)
+      .filter(String::isNotBlank)
+    if (injectedRecordCount == null && omittedRecordCount == null && recordIds.isEmpty()) {
+      return null
+    }
+    return buildMap {
+      injectedRecordCount?.let { put("injectedRecordCount", it) }
+      omittedRecordCount?.let { put("omittedRecordCount", it) }
+      if (recordIds.isNotEmpty()) {
+        put("recordIds", recordIds)
       }
     }
   }
@@ -5927,6 +5995,7 @@ internal class OpenCrayHostRuntime private constructor(
   private fun durableCompactionFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
     val compactedThisRun = metadata["contextDurableCompactionCompactedThisRun"]?.toBooleanStrictOrNull()
     val triggerStage = metadata["contextDurableCompactionTriggerStage"]?.takeIf(String::isNotBlank)
+    val maintenanceTask = metadata["contextDurableCompactionMaintenanceTask"]?.takeIf(String::isNotBlank)
     val contextWindowTokens =
       metadata["contextDurableCompactionContextWindowTokens"]?.toIntOrNull()
     val autoCompactTokenLimit =
@@ -5949,6 +6018,9 @@ internal class OpenCrayHostRuntime private constructor(
       metadata["contextDurableCompactionTotalCompactedMessageCount"]?.toIntOrNull()
     val latestCompactedAtEpochMs =
       metadata["contextDurableCompactionLatestAtEpochMs"]?.toLongOrNull()
+    val entries = parseDurableCompactionEntryTrace(
+      metadata["contextDurableCompactionEntryTraceSummary"].orEmpty(),
+    )
     val totalSummaryCount = if (includedSummaryCount != null || omittedSummaryCount != null) {
       (includedSummaryCount ?: 0) + (omittedSummaryCount ?: 0)
     } else {
@@ -5957,6 +6029,7 @@ internal class OpenCrayHostRuntime private constructor(
     if (
       compactedThisRun == null &&
       triggerStage == null &&
+      maintenanceTask == null &&
       contextWindowTokens == null &&
       autoCompactTokenLimit == null &&
       estimatedReplayTokens == null &&
@@ -5967,13 +6040,15 @@ internal class OpenCrayHostRuntime private constructor(
       includedSummaryCount == null &&
       omittedSummaryCount == null &&
       totalCompactedMessageCount == null &&
-      latestCompactedAtEpochMs == null
+      latestCompactedAtEpochMs == null &&
+      entries.isEmpty()
     ) {
       return null
     }
     return buildMap {
       compactedThisRun?.let { put("compactedThisRun", it) }
       triggerStage?.let { put("triggerStage", it) }
+      maintenanceTask?.let { put("maintenanceTask", it) }
       contextWindowTokens?.let { put("contextWindowTokens", it) }
       autoCompactTokenLimit?.let { put("autoCompactTokenLimit", it) }
       estimatedReplayTokens?.let { put("estimatedReplayTokens", it) }
@@ -5986,6 +6061,9 @@ internal class OpenCrayHostRuntime private constructor(
       totalCompactedMessageCount?.let { put("totalCompactedMessageCount", it) }
       totalSummaryCount?.let { put("totalSummaryCount", it) }
       latestCompactedAtEpochMs?.let { put("latestCompactedAtEpochMs", it) }
+      if (entries.isNotEmpty()) {
+        put("entries", entries)
+      }
     }
   }
 
@@ -6092,6 +6170,31 @@ internal class OpenCrayHostRuntime private constructor(
         "id" to id,
         "reason" to reason,
       )
+    }
+
+  private fun parseDurableCompactionEntryTrace(raw: String): List<Map<String, Any?>> = raw
+    .split(';')
+    .map(String::trim)
+    .filter(String::isNotBlank)
+    .mapNotNull { token ->
+      val parts = token.split('|')
+      if (parts.size < 6) {
+        return@mapNotNull null
+      }
+      val compactedMessageCount = parts[0].trim().toIntOrNull() ?: return@mapNotNull null
+      val omittedUserMessageCount = parts[1].trim().toIntOrNull() ?: 0
+      val omittedAssistantMessageCount = parts[2].trim().toIntOrNull() ?: 0
+      val omittedToolMessageCount = parts[3].trim().toIntOrNull() ?: 0
+      val omittedSystemMessageCount = parts[4].trim().toIntOrNull() ?: 0
+      val compactedAtEpochMs = parts[5].trim().toLongOrNull()?.takeIf { value -> value > 0L }
+      buildMap {
+        put("compactedMessageCount", compactedMessageCount)
+        put("omittedUserMessageCount", omittedUserMessageCount)
+        put("omittedAssistantMessageCount", omittedAssistantMessageCount)
+        put("omittedToolMessageCount", omittedToolMessageCount)
+        put("omittedSystemMessageCount", omittedSystemMessageCount)
+        compactedAtEpochMs?.let { put("compactedAtEpochMs", it) }
+      }
     }
 
   private fun parseVisibleSkillTrace(raw: String): List<Map<String, Any?>> = raw
@@ -6331,6 +6434,7 @@ internal class OpenCrayHostRuntime private constructor(
       "reaffirmedRecordIds" to event.reaffirmedRecordIds,
       "expiredRecordIds" to event.expiredRecordIds,
       "stewardshipPlanSteps" to event.stewardshipPlanSteps.map(::stewardshipPlanStepToMap),
+      "stewardshipPlanGraph" to stewardshipPlanGraphToMap(event.stewardshipPlanGraph),
     )
     is OpenCrayCancellationEvent -> mapOf(
       "kind" to "interrupted",

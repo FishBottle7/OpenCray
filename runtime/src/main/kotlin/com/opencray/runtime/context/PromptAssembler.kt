@@ -85,6 +85,13 @@ class PromptAssembler(
         transportGroup = transportGroupFor(PromptLayerId.WORKING_STATE, PromptLayerKind.CONTEXT),
       )
       addLayer(
+        id = PromptLayerId.STICKY_MEMORY,
+        name = "Sticky Memory",
+        kind = PromptLayerKind.CONTEXT,
+        content = input.stickyMemoryText,
+        transportGroup = transportGroupFor(PromptLayerId.STICKY_MEMORY, PromptLayerKind.CONTEXT),
+      )
+      addLayer(
         id = PromptLayerId.RETRIEVED_MEMORY,
         name = "Retrieved Memory",
         kind = PromptLayerKind.CONTEXT,
@@ -194,6 +201,7 @@ class PromptAssembler(
         injectedMemoryRecordCount = input.report.injectedMemoryRecordCount,
         omittedMemoryRecordCount = input.report.omittedMemoryRecordCount,
         memoryRecallTrace = input.report.memoryRecallTrace,
+        stickyMemoryTrace = input.report.stickyMemoryTrace,
         memoryFlushTrace = input.report.memoryFlushTrace,
         durableCompactionTrace = input.report.durableCompactionTrace,
         workingStateTrace = input.report.workingStateTrace,
@@ -245,6 +253,7 @@ class PromptAssembler(
     }
     return when (id) {
       PromptLayerId.DURABLE_COMPACTION,
+      PromptLayerId.STICKY_MEMORY,
       PromptLayerId.SKILL_INVENTORY,
       PromptLayerId.TOOL_PROTOCOL,
       -> PromptLayerTransportGroup.DURABLE_CONTEXT

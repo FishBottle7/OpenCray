@@ -516,6 +516,14 @@ class MemoryStewardshipServiceTest {
     )
     assertEquals("record_not_resolved", plan.planSteps[1].reason)
     assertEquals("record_not_shortlisted", plan.planSteps[2].reason)
+    assertEquals(
+      setOf("step:0", "step:1", "step:2", "record:fact-plan-step", "record:missing-record", "candidate:0"),
+      plan.planGraph.nodes.map { node -> node.id }.toSet(),
+    )
+    assertEquals(
+      setOf("input_candidate", "input_record"),
+      plan.planGraph.edges.map { edge -> edge.kind }.toSet(),
+    )
   }
 
   @Test
@@ -659,6 +667,97 @@ class MemoryStewardshipServiceTest {
       plan.acceptedCandidates.single().extensions[MemoryRecordExtensionKeys.MERGE_STRATEGY],
     )
     assertTrue(plan.reaffirmedRecords.isEmpty())
+    assertTrue(plan.droppedCandidates.isEmpty())
+  }
+
+  @Test
+  fun planCanMergeMultipleCompatibleProjectFactsIntoOneCandidate() {
+    val existingGradle = workspaceProjectFactRecord(
+      id = "fact-gradle-old",
+      content = "Project uses Gradle",
+    )
+    val existingWrapper = workspaceProjectFactRecord(
+      id = "fact-wrapper-old",
+      content = "Project uses the Gradle wrapper",
+    )
+    val candidate = workspaceProjectFactCandidate(
+      content = "Use the Gradle wrapper from the repo root",
+    )
+    val service = MemoryStewardshipService(
+      clock = { 6_000L },
+      interpreter = object : MemoryStewardshipInterpreter {
+        override fun interpret(
+          request: MemoryStewardshipRequest,
+        ): MemoryStewardshipInterpretation = MemoryStewardshipInterpretation.Success(
+          decisions = listOf(
+            MemoryStewardshipDecision(
+              action = MemoryStewardshipAction.MERGE_RECORD_WITH_CANDIDATE,
+              recordId = existingGradle.id,
+              candidateIndex = 0,
+            ),
+            MemoryStewardshipDecision(
+              action = MemoryStewardshipAction.MERGE_RECORD_WITH_CANDIDATE,
+              recordId = existingWrapper.id,
+              candidateIndex = 0,
+            ),
+          ),
+        )
+      },
+    )
+
+    val plan = service.plan(
+      existingRecords = listOf(existingGradle, existingWrapper),
+      evidence = turnEvidence(
+        userInput = "记住这个项目用 Gradle wrapper，并且 wrapper 要从仓库根目录运行。",
+      ),
+      proposedCandidates = listOf(candidate),
+    )
+    val acceptedCandidate = plan.acceptedCandidates.single()
+    val finalReplacementRecordId = testStableMemoryRecordId(acceptedCandidate)
+
+    assertTrue(acceptedCandidate.content.contains("Project uses Gradle"))
+    assertTrue(acceptedCandidate.content.contains("Project uses the Gradle wrapper"))
+    assertTrue(acceptedCandidate.content.contains("Use the Gradle wrapper from the repo root"))
+    assertEquals(
+      setOf(existingGradle.id, existingWrapper.id),
+      acceptedCandidate.extensions[MemoryRecordExtensionKeys.MERGED_FROM_RECORD_IDS]
+        .orEmpty()
+        .split(',')
+        .map(String::trim)
+        .filter(String::isNotBlank)
+        .toSet(),
+    )
+    assertEquals(
+      setOf(existingGradle.id, existingWrapper.id),
+      plan.resolvedRecords.map(MemoryRecord::id).toSet(),
+    )
+    assertEquals(
+      setOf("merged"),
+      plan.resolvedRecords.map { record ->
+        record.extensions[MemoryRecordExtensionKeys.RESOLUTION_REASON]
+      }.toSet(),
+    )
+    assertEquals(
+      setOf(finalReplacementRecordId),
+      plan.resolvedRecords.map { record ->
+        record.extensions[MemoryRecordExtensionKeys.SUPERSEDED_BY]
+      }.toSet(),
+    )
+    assertEquals(
+      listOf(
+        MemoryStewardshipPlanStepOutcome.APPLIED,
+        MemoryStewardshipPlanStepOutcome.APPLIED,
+      ),
+      plan.planSteps.map(MemoryStewardshipPlanStep::outcome),
+    )
+    assertEquals(
+      setOf("candidate:0", "record:${existingGradle.id}", "record:${existingWrapper.id}"),
+      plan.planGraph.nodes
+        .filter { node -> node.kind == "candidate" || node.id == "record:${existingGradle.id}" || node.id == "record:${existingWrapper.id}" }
+        .map { node -> node.id }
+        .toSet(),
+    )
+    assertTrue(plan.planGraph.edges.any { edge -> edge.kind == "produces_record" })
     assertTrue(plan.droppedCandidates.isEmpty())
   }
 

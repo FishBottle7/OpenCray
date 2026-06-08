@@ -11,6 +11,7 @@ data class MemoryStewardshipPlan(
   val reaffirmedRecords: List<MemoryRecord> = emptyList(),
   val droppedCandidates: List<MemoryCandidate> = emptyList(),
   val planSteps: List<MemoryStewardshipPlanStep> = emptyList(),
+  val planGraph: MemoryStewardshipPlanGraph = MemoryStewardshipPlanGraph(),
 ) {
   val isEmpty: Boolean
     get() = acceptedCandidates.isEmpty() &&
@@ -18,7 +19,8 @@ data class MemoryStewardshipPlan(
       reopenedRecords.isEmpty() &&
       reaffirmedRecords.isEmpty() &&
       droppedCandidates.isEmpty() &&
-      planSteps.isEmpty()
+      planSteps.isEmpty() &&
+      planGraph.isEmpty
 }
 
 class MemoryStewardshipService(
@@ -143,7 +145,7 @@ class MemoryStewardshipService(
       .mapIndexed { index, candidate -> index to candidate }
       .toMap(linkedMapOf())
     val droppedCandidateIndexes = linkedSetOf<Int>()
-    val mergedCandidateIndexes = linkedSetOf<Int>()
+    val mergedRecordIdsByCandidateIndex = linkedMapOf<Int, MutableSet<String>>()
     val reaffirmedRecords = linkedMapOf<String, MemoryRecord>()
     val resolvedRecords = linkedMapOf<String, MemoryRecord>()
     val reopenedRecords = linkedMapOf<String, MemoryRecord>()
@@ -178,7 +180,7 @@ class MemoryStewardshipService(
             return@forEach
           }
           if (
-            mergedCandidateIndexes.contains(candidateIndex) ||
+            mergedRecordIdsByCandidateIndex.containsKey(candidateIndex) ||
             supersededCountsByCandidateIndex[candidateIndex] != null
           ) {
             planSteps += ignoredStep(decision, "candidate_already_consumed")
@@ -214,7 +216,7 @@ class MemoryStewardshipService(
             return@forEach
           }
           if (
-            mergedCandidateIndexes.contains(candidateIndex) ||
+            mergedRecordIdsByCandidateIndex.containsKey(candidateIndex) ||
             supersededCountsByCandidateIndex[candidateIndex] != null
           ) {
             planSteps += ignoredStep(decision, "candidate_already_consumed")
@@ -289,7 +291,7 @@ class MemoryStewardshipService(
             planSteps += ignoredStep(decision, "missing_candidate_index")
             return@forEach
           }
-          val candidateView = candidateViews[candidateIndex] ?: run {
+          candidateViews[candidateIndex] ?: run {
             planSteps += ignoredStep(decision, "candidate_not_stewardable")
             return@forEach
           }
@@ -301,15 +303,20 @@ class MemoryStewardshipService(
             planSteps += ignoredStep(decision, "candidate_already_dropped")
             return@forEach
           }
-          if (mergedCandidateIndexes.contains(candidateIndex)) {
-            planSteps += ignoredStep(decision, "candidate_already_merged")
-            return@forEach
-          }
           if (resolvedRecords.size >= MAX_RESOLVED_RECORDS_PER_TURN) {
             planSteps += ignoredStep(decision, "resolved_record_limit")
             return@forEach
           }
-          if (!canMerge(record = relatedRecord, candidate = candidateView)) {
+          val mergedRecordIds = mergedRecordIdsByCandidateIndex[candidateIndex].orEmpty()
+          if (relatedRecord.view.id in mergedRecordIds) {
+            planSteps += ignoredStep(decision, "record_already_merged_into_candidate")
+            return@forEach
+          }
+          val currentCandidateView = candidate.toStewardableCandidate(index = candidateIndex) ?: run {
+            planSteps += ignoredStep(decision, "candidate_not_stewardable")
+            return@forEach
+          }
+          if (!canMerge(record = relatedRecord, candidate = currentCandidateView)) {
             planSteps += rejectedStep(decision, "merge_guard_rejected")
             return@forEach
           }
@@ -335,7 +342,18 @@ class MemoryStewardshipService(
             return@forEach
           }
           acceptedCandidatesByIndex[candidateIndex] = mergedCandidate
-          mergedCandidateIndexes += candidateIndex
+          val updatedMergedRecordIds = mergedRecordIdsByCandidateIndex.getOrPut(candidateIndex) {
+            linkedSetOf()
+          }
+          updatedMergedRecordIds += relatedRecord.view.id
+          updatedMergedRecordIds
+            .asSequence()
+            .filter { recordId -> recordId != relatedRecord.view.id }
+            .forEach { recordId ->
+              resolvedRecords[recordId]?.let { resolvedRecord ->
+                resolvedRecords[recordId] = resolvedRecord.withSupersededBy(replacementRecordId)
+              }
+            }
           reaffirmedRecords.remove(relatedRecord.view.id)
           planSteps += appliedStep(
             decision = decision,
@@ -380,7 +398,7 @@ class MemoryStewardshipService(
               return@forEach
             }
             if (
-              mergedCandidateIndexes.contains(candidateIndex) ||
+              mergedRecordIdsByCandidateIndex.containsKey(candidateIndex) ||
               supersededCountsByCandidateIndex[candidateIndex] != null
             ) {
               planSteps += ignoredStep(decision, "candidate_already_consumed")
@@ -426,7 +444,7 @@ class MemoryStewardshipService(
             planSteps += ignoredStep(decision, "candidate_already_dropped")
             return@forEach
           }
-          if (mergedCandidateIndexes.contains(candidateIndex)) {
+          if (mergedRecordIdsByCandidateIndex.containsKey(candidateIndex)) {
             planSteps += ignoredStep(decision, "candidate_already_merged")
             return@forEach
           }
@@ -491,6 +509,7 @@ class MemoryStewardshipService(
         .toList(),
       droppedCandidates = droppedCandidates,
       planSteps = planSteps,
+      planGraph = buildPlanGraph(planSteps),
     )
   }
 
@@ -1055,6 +1074,11 @@ class MemoryStewardshipService(
       extensions = buildMap {
         putAll(candidate.extensions)
         val mergedFromRecordIds = linkedSetOf<String>()
+        candidate.extensions[MemoryRecordExtensionKeys.MERGED_FROM_RECORD_IDS]
+          ?.split(',')
+          ?.map(String::trim)
+          ?.filter(String::isNotBlank)
+          ?.forEach(mergedFromRecordIds::add)
         record.record.extensions[MemoryRecordExtensionKeys.MERGED_FROM_RECORD_IDS]
           ?.split(',')
           ?.map(String::trim)
@@ -1140,6 +1164,10 @@ class MemoryStewardshipService(
     )
   }
 
+  private fun MemoryRecord.withSupersededBy(recordId: String): MemoryRecord = copy(
+    extensions = extensions + mapOf(MemoryRecordExtensionKeys.SUPERSEDED_BY to recordId),
+  )
+
   private fun reopenRecord(
     record: MemoryRecord,
     nowEpochMs: Long,
@@ -1214,6 +1242,93 @@ class MemoryStewardshipService(
     producedRecordId = producedRecordId,
     reason = reason,
   )
+
+  private fun buildPlanGraph(
+    steps: List<MemoryStewardshipPlanStep>,
+  ): MemoryStewardshipPlanGraph {
+    if (steps.isEmpty()) {
+      return MemoryStewardshipPlanGraph()
+    }
+    val nodes = linkedMapOf<String, MemoryStewardshipPlanGraphNode>()
+    val edges = mutableListOf<MemoryStewardshipPlanGraphEdge>()
+    fun putNode(node: MemoryStewardshipPlanGraphNode) {
+      nodes.putIfAbsent(node.id, node)
+    }
+    steps.forEachIndexed { index, step ->
+      val stepNodeId = "step:$index"
+      putNode(
+        MemoryStewardshipPlanGraphNode(
+          id = stepNodeId,
+          kind = "step",
+          label = step.action.wireValue,
+          action = step.action.wireValue,
+          outcome = step.outcome.wireValue,
+          recordId = step.recordId,
+          candidateIndex = step.candidateIndex,
+          producedRecordId = step.producedRecordId,
+          reason = step.reason,
+        ),
+      )
+      step.recordId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { recordId ->
+          val recordNodeId = "record:$recordId"
+          putNode(
+            MemoryStewardshipPlanGraphNode(
+              id = recordNodeId,
+              kind = "record",
+              label = recordId,
+              recordId = recordId,
+            ),
+          )
+          edges += MemoryStewardshipPlanGraphEdge(
+            from = recordNodeId,
+            to = stepNodeId,
+            kind = "input_record",
+          )
+        }
+      step.candidateIndex?.let { candidateIndex ->
+        val candidateNodeId = "candidate:$candidateIndex"
+        putNode(
+          MemoryStewardshipPlanGraphNode(
+            id = candidateNodeId,
+            kind = "candidate",
+            label = "candidate[$candidateIndex]",
+            candidateIndex = candidateIndex,
+          ),
+        )
+        edges += MemoryStewardshipPlanGraphEdge(
+          from = candidateNodeId,
+          to = stepNodeId,
+          kind = "input_candidate",
+        )
+      }
+      step.producedRecordId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { producedRecordId ->
+          val producedNodeId = "record:$producedRecordId"
+          putNode(
+            MemoryStewardshipPlanGraphNode(
+              id = producedNodeId,
+              kind = "record",
+              label = producedRecordId,
+              recordId = producedRecordId,
+            ),
+          )
+          edges += MemoryStewardshipPlanGraphEdge(
+            from = stepNodeId,
+            to = producedNodeId,
+            kind = "produces_record",
+          )
+        }
+    }
+    return MemoryStewardshipPlanGraph(
+      nodes = nodes.values.toList(),
+      edges = edges,
+    )
+  }
 
   private data class RelatedMemoryRecord(
     val record: MemoryRecord,

@@ -557,6 +557,10 @@ class LlmConfigSnapshot {
     this.onDeviceAccelerator = 'gpu',
     this.onDeviceThinkingEnabled = false,
     this.onDeviceLiteModeEnabled = false,
+    this.contextBudgetPreset = 'balanced',
+    this.contextBudgetReservedOutputTokens,
+    this.contextBudgetSafetyMarginTokens,
+    this.contextBudgetEffectiveInputPercent,
   });
 
   final String localeTag;
@@ -589,6 +593,10 @@ class LlmConfigSnapshot {
   final String onDeviceAccelerator;
   final bool onDeviceThinkingEnabled;
   final bool onDeviceLiteModeEnabled;
+  final String contextBudgetPreset;
+  final int? contextBudgetReservedOutputTokens;
+  final int? contextBudgetSafetyMarginTokens;
+  final double? contextBudgetEffectiveInputPercent;
 
   LlmConfigSnapshot copyWith({
     List<LlmOnDeviceModelOption>? onDeviceModels,
@@ -626,6 +634,10 @@ class LlmConfigSnapshot {
       onDeviceAccelerator: onDeviceAccelerator,
       onDeviceThinkingEnabled: onDeviceThinkingEnabled,
       onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
+      contextBudgetPreset: contextBudgetPreset,
+      contextBudgetReservedOutputTokens: contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens: contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent: contextBudgetEffectiveInputPercent,
     );
   }
 }

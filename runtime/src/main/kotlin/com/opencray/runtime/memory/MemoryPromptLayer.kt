@@ -67,6 +67,69 @@ class MemoryPromptLayer(
   private fun MemoryScope.renderToken(): String = name.lowercase(Locale.US)
 }
 
+data class StickyMemoryCapsule(
+  val memories: List<RetrievedMemory> = emptyList(),
+) {
+  val isEmpty: Boolean
+    get() = memories.isEmpty()
+}
+
+data class StickyMemoryTrace(
+  val injectedRecordCount: Int = 0,
+  val omittedRecordCount: Int = 0,
+  val selectedRecordIds: List<String> = emptyList(),
+) {
+  val isEmpty: Boolean
+    get() = injectedRecordCount == 0 &&
+      omittedRecordCount == 0 &&
+      selectedRecordIds.isEmpty()
+}
+
+data class RenderedStickyMemoryCapsule(
+  val text: String = "",
+  val trace: StickyMemoryTrace = StickyMemoryTrace(),
+)
+
+class StickyMemoryCapsuleSelector(
+  private val maxRecords: Int = 3,
+) {
+  init {
+    require(maxRecords >= 1) { "StickyMemoryCapsuleSelector maxRecords must be >= 1." }
+  }
+
+  fun select(result: MemoryRecallResult): StickyMemoryCapsule {
+    val stickyMemories = result.memories
+      .filter(::isStickyMemory)
+      .take(maxRecords)
+    return StickyMemoryCapsule(stickyMemories)
+  }
+
+  private fun isStickyMemory(memory: RetrievedMemory): Boolean =
+    memory.sticky
+}
+
+class StickyMemoryCapsulePromptLayer {
+  fun render(capsule: StickyMemoryCapsule): RenderedStickyMemoryCapsule {
+    if (capsule.memories.isEmpty()) {
+      return RenderedStickyMemoryCapsule()
+    }
+    return RenderedStickyMemoryCapsule(
+      text = buildString {
+        appendLine("Selected durable memory is pinned for this run family.")
+        appendLine("Treat these entries as stable unless newer explicit user instructions conflict.")
+        appendLine()
+        capsule.memories.forEach { memory ->
+          appendLine("- kind=${memory.kind.name.lowercase()} scope=${memory.scope.name.lowercase()} id=${memory.id} content=${memory.content}")
+        }
+      }.trim(),
+      trace = StickyMemoryTrace(
+        injectedRecordCount = capsule.memories.size,
+        selectedRecordIds = capsule.memories.map(RetrievedMemory::id),
+      ),
+    )
+  }
+}
+
 data class MemoryPromptLayerConfig(
   val maxCompactMemories: Int = 2,
   val maxMinimalMemories: Int = 1,

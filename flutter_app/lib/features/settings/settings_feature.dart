@@ -1688,6 +1688,12 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     '5m',
     '1h',
   ];
+  static const List<String> _contextBudgetPresetOptions = <String>[
+    'compact',
+    'balanced',
+    'expanded',
+    'dev',
+  ];
   static const List<String> _acceleratorOptions = <String>['gpu', 'cpu'];
   static const int _minOnDeviceContextWindow = 1024;
   static const int _maxOnDeviceContextWindow = 131072;
@@ -1710,6 +1716,12 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   final TextEditingController _onDeviceTopPController = TextEditingController();
   final TextEditingController _onDeviceTemperatureController =
       TextEditingController();
+  final TextEditingController _contextBudgetReservedOutputController =
+      TextEditingController();
+  final TextEditingController _contextBudgetSafetyMarginController =
+      TextEditingController();
+  final TextEditingController _contextBudgetEffectiveInputPercentController =
+      TextEditingController();
   final FocusNode _providerNameFocusNode = FocusNode();
   final FocusNode _providerNotesFocusNode = FocusNode();
   final FocusNode _baseUrlFocusNode = FocusNode();
@@ -1721,6 +1733,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   final FocusNode _onDeviceTopKFocusNode = FocusNode();
   final FocusNode _onDeviceTopPFocusNode = FocusNode();
   final FocusNode _onDeviceTemperatureFocusNode = FocusNode();
+  final FocusNode _contextBudgetReservedOutputFocusNode = FocusNode();
+  final FocusNode _contextBudgetSafetyMarginFocusNode = FocusNode();
+  final FocusNode _contextBudgetEffectiveInputPercentFocusNode = FocusNode();
 
   LlmConfigSnapshot? _snapshot;
   String _providerMode = 'cloud';
@@ -1742,6 +1757,10 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   String _onDeviceAccelerator = 'gpu';
   bool _onDeviceThinkingEnabled = false;
   bool _onDeviceLiteModeEnabled = false;
+  String _contextBudgetPreset = 'balanced';
+  int? _contextBudgetReservedOutputTokens;
+  int? _contextBudgetSafetyMarginTokens;
+  double? _contextBudgetEffectiveInputPercent;
   bool _isApplyingSnapshot = false;
   bool _isSavingDraft = false;
   bool _isSavingCustomProvider = false;
@@ -1780,6 +1799,18 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       _onDeviceTemperatureFocusNode,
       onBlur: _normalizeOnDeviceTemperatureField,
     );
+    _registerAutosaveFocusNode(
+      _contextBudgetReservedOutputFocusNode,
+      onBlur: _normalizeContextBudgetReservedOutputField,
+    );
+    _registerAutosaveFocusNode(
+      _contextBudgetSafetyMarginFocusNode,
+      onBlur: _normalizeContextBudgetSafetyMarginField,
+    );
+    _registerAutosaveFocusNode(
+      _contextBudgetEffectiveInputPercentFocusNode,
+      onBlur: _normalizeContextBudgetEffectiveInputPercentField,
+    );
     _providerNameController.addListener(_handleCustomProviderDraftChanged);
     _providerNotesController.addListener(_handleCustomProviderDraftChanged);
     _baseUrlController.addListener(_handleCustomProviderDraftChanged);
@@ -1802,6 +1833,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     _onDeviceTopKController.dispose();
     _onDeviceTopPController.dispose();
     _onDeviceTemperatureController.dispose();
+    _contextBudgetReservedOutputController.dispose();
+    _contextBudgetSafetyMarginController.dispose();
+    _contextBudgetEffectiveInputPercentController.dispose();
     _providerNameFocusNode.dispose();
     _providerNotesFocusNode.dispose();
     _baseUrlFocusNode.dispose();
@@ -1813,6 +1847,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     _onDeviceTopKFocusNode.dispose();
     _onDeviceTopPFocusNode.dispose();
     _onDeviceTemperatureFocusNode.dispose();
+    _contextBudgetReservedOutputFocusNode.dispose();
+    _contextBudgetSafetyMarginFocusNode.dispose();
+    _contextBudgetEffectiveInputPercentFocusNode.dispose();
     super.dispose();
   }
 
@@ -1869,11 +1906,15 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
               reasoningLabel,
             ),
             const SizedBox(height: 16),
+            _buildContextBudgetCard(copy),
+            const SizedBox(height: 16),
             _buildAdvancedPromptCard(copy, snapshot.helperText),
           ] else ...[
             _buildOnDeviceModelCard(copy, snapshot.onDeviceModels),
             const SizedBox(height: 16),
             _buildOnDeviceSamplingCard(copy),
+            const SizedBox(height: 16),
+            _buildContextBudgetCard(copy),
             const SizedBox(height: 16),
             _buildOnDeviceRuntimeCard(copy),
           ],
@@ -2130,6 +2171,77 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
               onTap: _openReasoningSheet,
             ),
           ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContextBudgetCard(OpenCrayUiCopy copy) {
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Context budget', style: _SettingsTextStyles.cardTitle),
+          const SizedBox(height: 8),
+          const Text(
+            'Preset controls the normal context envelope; raw overrides are for development.',
+            style: _SettingsTextStyles.body,
+          ),
+          const SizedBox(height: 12),
+          _SegmentedSettingRow(
+            label: 'Preset',
+            width: 248,
+            selectedId: _contextBudgetPreset,
+            options: _contextBudgetPresetOptions,
+            labelBuilder: _contextBudgetPresetTitle,
+            onSelected: _handleContextBudgetPresetSelected,
+          ),
+          const SizedBox(height: 12),
+          _BudgetOverrideRow(
+            label: 'Reserved output',
+            fieldKey: const ValueKey<String>(
+              'settings-llm-context-budget-reserved-output',
+            ),
+            controller: _contextBudgetReservedOutputController,
+            focusNode: _contextBudgetReservedOutputFocusNode,
+            suffix: 'tokens',
+            onChanged: _handleContextBudgetReservedOutputChanged,
+            onClear: () => _clearContextBudgetOverride(
+              controller: _contextBudgetReservedOutputController,
+              setValue: () => _contextBudgetReservedOutputTokens = null,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _BudgetOverrideRow(
+            label: 'Safety margin',
+            fieldKey: const ValueKey<String>(
+              'settings-llm-context-budget-safety-margin',
+            ),
+            controller: _contextBudgetSafetyMarginController,
+            focusNode: _contextBudgetSafetyMarginFocusNode,
+            suffix: 'tokens',
+            onChanged: _handleContextBudgetSafetyMarginChanged,
+            onClear: () => _clearContextBudgetOverride(
+              controller: _contextBudgetSafetyMarginController,
+              setValue: () => _contextBudgetSafetyMarginTokens = null,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _BudgetOverrideRow(
+            label: 'Effective input',
+            fieldKey: const ValueKey<String>(
+              'settings-llm-context-budget-effective-input',
+            ),
+            controller: _contextBudgetEffectiveInputPercentController,
+            focusNode: _contextBudgetEffectiveInputPercentFocusNode,
+            suffix: '0.50-0.99',
+            decimal: true,
+            onChanged: _handleContextBudgetEffectiveInputPercentChanged,
+            onClear: () => _clearContextBudgetOverride(
+              controller: _contextBudgetEffectiveInputPercentController,
+              setValue: () => _contextBudgetEffectiveInputPercent = null,
+            ),
+          ),
         ],
       ),
     );
@@ -3023,7 +3135,22 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         : 'gpu';
     _onDeviceThinkingEnabled = snapshot.onDeviceThinkingEnabled;
     _onDeviceLiteModeEnabled = snapshot.onDeviceLiteModeEnabled;
+    _contextBudgetPreset = _normalizedContextBudgetPreset(
+      snapshot.contextBudgetPreset,
+    );
+    _contextBudgetReservedOutputTokens =
+        _normalizedContextBudgetTokenOverride(
+          snapshot.contextBudgetReservedOutputTokens,
+        );
+    _contextBudgetSafetyMarginTokens = _normalizedContextBudgetTokenOverride(
+      snapshot.contextBudgetSafetyMarginTokens,
+    );
+    _contextBudgetEffectiveInputPercent =
+        _normalizedContextBudgetEffectiveInputPercent(
+          snapshot.contextBudgetEffectiveInputPercent,
+        );
     _syncOnDeviceControllers();
+    _syncContextBudgetControllers();
     _isApplyingSnapshot = false;
   }
 
@@ -3058,7 +3185,21 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         _onDeviceTemperature != snapshot.onDeviceTemperature ||
         _onDeviceAccelerator != snapshot.onDeviceAccelerator ||
         _onDeviceThinkingEnabled != snapshot.onDeviceThinkingEnabled ||
-        _onDeviceLiteModeEnabled != snapshot.onDeviceLiteModeEnabled;
+        _onDeviceLiteModeEnabled != snapshot.onDeviceLiteModeEnabled ||
+        _contextBudgetPreset !=
+            _normalizedContextBudgetPreset(snapshot.contextBudgetPreset) ||
+        _contextBudgetReservedOutputTokens !=
+            _normalizedContextBudgetTokenOverride(
+              snapshot.contextBudgetReservedOutputTokens,
+            ) ||
+        _contextBudgetSafetyMarginTokens !=
+            _normalizedContextBudgetTokenOverride(
+              snapshot.contextBudgetSafetyMarginTokens,
+            ) ||
+        _contextBudgetEffectiveInputPercent !=
+            _normalizedContextBudgetEffectiveInputPercent(
+              snapshot.contextBudgetEffectiveInputPercent,
+            );
   }
 
   bool _draftIsConfigured() => _providerMode == 'on_device_model'
@@ -3125,6 +3266,12 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         onDeviceAccelerator: _onDeviceAccelerator,
         onDeviceThinkingEnabled: _onDeviceThinkingEnabled,
         onDeviceLiteModeEnabled: _onDeviceLiteModeEnabled,
+        contextBudgetPreset: _contextBudgetPreset,
+        contextBudgetReservedOutputTokens:
+            _contextBudgetReservedOutputTokens,
+        contextBudgetSafetyMarginTokens: _contextBudgetSafetyMarginTokens,
+        contextBudgetEffectiveInputPercent:
+            _contextBudgetEffectiveInputPercent,
       );
       if (!mounted) {
         return;
@@ -3211,6 +3358,19 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
 
   String _anthropicPromptCacheTtlTitle(String ttl) =>
       _copyForSnapshot().llmAnthropicPromptCacheTtlTitle(ttl);
+
+  String _contextBudgetPresetTitle(String preset) {
+    switch (preset) {
+      case 'compact':
+        return 'Compact';
+      case 'expanded':
+        return 'Expanded';
+      case 'dev':
+        return 'Dev';
+      default:
+        return 'Balanced';
+    }
+  }
 
   void _handleProviderModeSelected(String providerMode) {
     if (!mounted ||
@@ -3585,6 +3745,28 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     return (clamped * 100).round() / 100;
   }
 
+  String _normalizedContextBudgetPreset(String value) {
+    final normalized = value.trim().toLowerCase();
+    return _contextBudgetPresetOptions.contains(normalized)
+        ? normalized
+        : 'balanced';
+  }
+
+  int? _normalizedContextBudgetTokenOverride(int? value) {
+    if (value == null || value <= 0) {
+      return null;
+    }
+    return value.clamp(256, 262144).toInt();
+  }
+
+  double? _normalizedContextBudgetEffectiveInputPercent(double? value) {
+    if (value == null || value <= 0) {
+      return null;
+    }
+    final clamped = value.clamp(0.50, 0.99).toDouble();
+    return (clamped * 100).round() / 100;
+  }
+
   String _formatDouble(double value) => value.toStringAsFixed(2);
 
   void _syncOnDeviceControllers() {
@@ -3593,6 +3775,17 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     _onDeviceTopKController.text = _onDeviceTopK.toString();
     _onDeviceTopPController.text = _formatDouble(_onDeviceTopP);
     _onDeviceTemperatureController.text = _formatDouble(_onDeviceTemperature);
+  }
+
+  void _syncContextBudgetControllers() {
+    _contextBudgetReservedOutputController.text =
+        _contextBudgetReservedOutputTokens?.toString() ?? '';
+    _contextBudgetSafetyMarginController.text =
+        _contextBudgetSafetyMarginTokens?.toString() ?? '';
+    _contextBudgetEffectiveInputPercentController.text =
+        _contextBudgetEffectiveInputPercent == null
+        ? ''
+        : _formatDouble(_contextBudgetEffectiveInputPercent!);
   }
 
   void _handleOnDeviceMaxContextChanged(String value) {
@@ -3645,6 +3838,64 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     setState(() {
       _onDeviceTemperature = _normalizedOnDeviceTemperature(parsed);
     });
+  }
+
+  void _handleContextBudgetPresetSelected(String preset) {
+    final normalized = _normalizedContextBudgetPreset(preset);
+    if (!mounted || normalized == _contextBudgetPreset) {
+      return;
+    }
+    setState(() {
+      _contextBudgetPreset = normalized;
+    });
+    unawaited(_saveDraft());
+  }
+
+  void _handleContextBudgetReservedOutputChanged(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _contextBudgetReservedOutputTokens =
+          _normalizedContextBudgetTokenOverride(parsed);
+    });
+  }
+
+  void _handleContextBudgetSafetyMarginChanged(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _contextBudgetSafetyMarginTokens =
+          _normalizedContextBudgetTokenOverride(parsed);
+    });
+  }
+
+  void _handleContextBudgetEffectiveInputPercentChanged(String value) {
+    final parsed = double.tryParse(value.trim());
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _contextBudgetEffectiveInputPercent =
+          _normalizedContextBudgetEffectiveInputPercent(parsed);
+    });
+  }
+
+  void _clearContextBudgetOverride({
+    required TextEditingController controller,
+    required VoidCallback setValue,
+  }) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      controller.clear();
+      setValue();
+    });
+    unawaited(_saveDraft());
   }
 
   void _normalizeOnDeviceMaxContextField() {
@@ -3717,6 +3968,53 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     setState(() {
       _onDeviceTemperature = normalized;
       _syncOnDeviceControllers();
+    });
+  }
+
+  void _normalizeContextBudgetReservedOutputField() {
+    final normalized = _normalizedContextBudgetTokenOverride(
+      int.tryParse(_contextBudgetReservedOutputController.text.trim()),
+    );
+    if (!mounted) {
+      _contextBudgetReservedOutputController.text =
+          normalized?.toString() ?? '';
+      return;
+    }
+    setState(() {
+      _contextBudgetReservedOutputTokens = normalized;
+      _syncContextBudgetControllers();
+    });
+  }
+
+  void _normalizeContextBudgetSafetyMarginField() {
+    final normalized = _normalizedContextBudgetTokenOverride(
+      int.tryParse(_contextBudgetSafetyMarginController.text.trim()),
+    );
+    if (!mounted) {
+      _contextBudgetSafetyMarginController.text = normalized?.toString() ?? '';
+      return;
+    }
+    setState(() {
+      _contextBudgetSafetyMarginTokens = normalized;
+      _syncContextBudgetControllers();
+    });
+  }
+
+  void _normalizeContextBudgetEffectiveInputPercentField() {
+    final normalized = _normalizedContextBudgetEffectiveInputPercent(
+      double.tryParse(
+        _contextBudgetEffectiveInputPercentController.text.trim(),
+      ),
+    );
+    if (!mounted) {
+      _contextBudgetEffectiveInputPercentController.text = normalized == null
+          ? ''
+          : _formatDouble(normalized);
+      return;
+    }
+    setState(() {
+      _contextBudgetEffectiveInputPercent = normalized;
+      _syncContextBudgetControllers();
     });
   }
 }
@@ -5433,6 +5731,7 @@ class _SegmentedSelector extends StatelessWidget {
 
 class _CompactInlineValueField extends StatelessWidget {
   const _CompactInlineValueField({
+    this.fieldKey,
     required this.controller,
     this.focusNode,
     required this.width,
@@ -5440,6 +5739,7 @@ class _CompactInlineValueField extends StatelessWidget {
     this.onChanged,
   });
 
+  final Key? fieldKey;
   final TextEditingController controller;
   final FocusNode? focusNode;
   final double width;
@@ -5452,10 +5752,12 @@ class _CompactInlineValueField extends StatelessWidget {
       width: width,
       child: _PrototypeFieldSurface(
         child: TextField(
+          key: fieldKey,
           controller: controller,
           focusNode: focusNode,
           onChanged: onChanged,
           keyboardType: keyboardType,
+          textInputAction: TextInputAction.done,
           textAlign: TextAlign.center,
           autocorrect: false,
           enableSuggestions: true,
@@ -5472,6 +5774,71 @@ class _CompactInlineValueField extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _BudgetOverrideRow extends StatelessWidget {
+  const _BudgetOverrideRow({
+    required this.label,
+    this.fieldKey,
+    required this.controller,
+    this.focusNode,
+    required this.suffix,
+    this.decimal = false,
+    this.onChanged,
+    required this.onClear,
+  });
+
+  final String label;
+  final Key? fieldKey;
+  final TextEditingController controller;
+  final FocusNode? focusNode;
+  final String suffix;
+  final bool decimal;
+  final ValueChanged<String>? onChanged;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(label, style: _SettingsTextStyles.fieldValue),
+        ),
+        const SizedBox(width: 12),
+        _CompactInlineValueField(
+          fieldKey: fieldKey,
+          controller: controller,
+          focusNode: focusNode,
+          width: decimal ? 82 : 92,
+          keyboardType: decimal
+              ? const TextInputType.numberWithOptions(decimal: true)
+              : TextInputType.number,
+          onChanged: onChanged,
+        ),
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 62,
+          child: Text(
+            suffix,
+            overflow: TextOverflow.ellipsis,
+            style: _SettingsTextStyles.body,
+          ),
+        ),
+        InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onClear,
+          child: const Padding(
+            padding: EdgeInsets.all(6),
+            child: Icon(
+              Icons.close_rounded,
+              size: 16,
+              color: OpenCrayColors.textSecondary,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

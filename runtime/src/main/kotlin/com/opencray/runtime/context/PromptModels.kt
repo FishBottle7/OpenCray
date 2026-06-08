@@ -11,6 +11,8 @@ import com.opencray.runtime.compaction.DurableCompactionTrace
 import com.opencray.runtime.memory.MemoryFlushTrace
 import com.opencray.runtime.memory.MemoryRecallTrace
 import com.opencray.runtime.memory.MemoryRecallResult
+import com.opencray.runtime.memory.StickyMemoryCapsule
+import com.opencray.runtime.memory.StickyMemoryTrace
 import com.opencray.runtime.soul.SoulTurnSemanticSignal
 import com.opencray.runtime.skills.ActiveSkillCapsule
 import com.opencray.runtime.skills.ActiveSkillTrace
@@ -178,6 +180,10 @@ data class LiveContextTrace(
   val canonicalSource: String? = null,
   val canonicalMessageCount: Int? = null,
   val canonicalHistoryPreserved: Boolean? = null,
+  val inheritanceSource: String? = null,
+  val parentMode: String? = null,
+  val parentReplayMessageCount: Int? = null,
+  val budgetPreset: String? = null,
 ) {
   val isEmpty: Boolean
     get() = mode.isNullOrBlank() &&
@@ -187,7 +193,11 @@ data class LiveContextTrace(
       replayMessageCount == null &&
       canonicalSource.isNullOrBlank() &&
       canonicalMessageCount == null &&
-      canonicalHistoryPreserved == null
+      canonicalHistoryPreserved == null &&
+      inheritanceSource.isNullOrBlank() &&
+      parentMode.isNullOrBlank() &&
+      parentReplayMessageCount == null &&
+      budgetPreset.isNullOrBlank()
 }
 
 data class AgentRuntimeSessionContext(
@@ -199,6 +209,7 @@ data class AgentRuntimeSessionContext(
   val liveContextTrace: LiveContextTrace = LiveContextTrace(),
   val bootstrapContext: BootstrapContext = BootstrapContext(),
   val recalledMemory: MemoryRecallResult = MemoryRecallResult(),
+  val stickyMemoryCapsule: StickyMemoryCapsule = StickyMemoryCapsule(),
   val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
   val durableCompaction: DurableCompactionContext = DurableCompactionContext(),
   val workingState: WorkingState = WorkingState(),
@@ -232,12 +243,14 @@ data class ManagedPromptContext(
   val bootstrapFiles: List<BootstrapSnippet> = emptyList(),
   val workingState: WorkingState = WorkingState(),
   val selectedMemory: MemoryRecallResult = MemoryRecallResult(),
+  val stickyMemoryCapsule: StickyMemoryCapsule = StickyMemoryCapsule(),
   val durableCompaction: DurableCompactionContext = DurableCompactionContext(),
   val skillInventory: SkillInventory = SkillInventory(),
   val activeSkillCapsule: ActiveSkillCapsule? = null,
   val recentToolObservationLayer: RecentToolObservationLayer? = null,
   val workingStateText: String = "",
   val memoryText: String = "",
+  val stickyMemoryText: String = "",
   val durableCompactionText: String = "",
   val skillInventoryText: String = "",
   val activeSkillText: String = "",
@@ -274,6 +287,7 @@ data class ContextSelectionReport(
   val injectedMemoryRecordCount: Int = 0,
   val omittedMemoryRecordCount: Int = 0,
   val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
+  val stickyMemoryTrace: StickyMemoryTrace = StickyMemoryTrace(),
   val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
   val durableCompactionTrace: DurableCompactionTrace = DurableCompactionTrace(),
   val workingStateTrace: WorkingStateTrace = WorkingStateTrace(),
@@ -318,6 +332,7 @@ enum class PromptLayerId {
   TURN_RESPONSE_POLICY,
   BOOTSTRAP,
   WORKING_STATE,
+  STICKY_MEMORY,
   RETRIEVED_MEMORY,
   DURABLE_COMPACTION,
   SKILL_INVENTORY,
@@ -406,6 +421,7 @@ data class ContextAssemblyReport(
   val injectedMemoryRecordCount: Int = 0,
   val omittedMemoryRecordCount: Int = 0,
   val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
+  val stickyMemoryTrace: StickyMemoryTrace = StickyMemoryTrace(),
   val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
   val durableCompactionTrace: DurableCompactionTrace = DurableCompactionTrace(),
   val workingStateTrace: WorkingStateTrace = WorkingStateTrace(),
