@@ -49,7 +49,6 @@ internal fun runtimeEventDedupKey(event: OpenCrayAgentRunEvent): String = when (
     event.responseFormat.trimToDedupField(),
     event.isFinal.toString(),
     event.stage.trimToDedupField(),
-    event.text.collapseWhitespaceForDedup(),
   ).joinToString(separator = "|")
 
   is OpenCraySupplementEvent -> listOf(

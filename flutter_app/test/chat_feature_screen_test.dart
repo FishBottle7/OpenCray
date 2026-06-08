@@ -7987,11 +7987,18 @@ void main() {
         find.descendant(
           of: fullscreenFinder,
           matching: find.textContaining(
-            'Delegated child runtime resumed in the background.',
+            'Researcher running in background: Inspect README',
             findRichText: true,
           ),
         ),
         findsWidgets,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Mailbox: 1 pending / 2 total'),
+        ),
+        findsOneWidget,
       );
       expect(
         find.descendant(

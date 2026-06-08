@@ -853,23 +853,26 @@ int _runtimeEventDetailWeight(OpenCrayChatRuntimeEventSnapshot event) =>
     (event.returnedLineCount == null ? 0 : 4) +
     (event.totalLineCount == null ? 0 : 4);
 
-String _runtimeEventMergeKey(OpenCrayChatRuntimeEventSnapshot event) =>
-    <String>[
-      event.kind,
-      event.runId,
-      event.taskId,
-      event.executionId ?? '',
-      event.executionOrdinal?.toString() ?? '',
-      event.executionKind ?? '',
-      event.emittedAtEpochMs.toString(),
-      event.phase ?? '',
-      event.stage ?? '',
-      event.toolName ?? '',
-      event.childRunId ?? '',
-      event.childTaskId ?? '',
-      event.entryId ?? '',
-      event.text ?? '',
-    ].join('\u0001');
+String _runtimeEventMergeKey(OpenCrayChatRuntimeEventSnapshot event) {
+  final bool mergeAssistantPhaseText =
+      event.kind.trim().toLowerCase() == 'assistant_phase';
+  return <String>[
+    event.kind,
+    event.runId,
+    event.taskId,
+    event.executionId ?? '',
+    event.executionOrdinal?.toString() ?? '',
+    event.executionKind ?? '',
+    event.emittedAtEpochMs.toString(),
+    event.phase ?? '',
+    event.stage ?? '',
+    event.toolName ?? '',
+    event.childRunId ?? '',
+    event.childTaskId ?? '',
+    event.entryId ?? '',
+    mergeAssistantPhaseText ? '' : event.text ?? '',
+  ].join('\u0001');
+}
 
 List<OpenCrayChatSubAgentSnapshot> _mergeRuntimeSubAgents(
   List<OpenCrayChatSubAgentSnapshot> left,
@@ -7002,8 +7005,17 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final timedHistory = <_TimedChatRunTraceHistoryEntry>[];
     final consumedIndexes = <int>{};
     int nextSourceOrder = 0;
+    final Set<String> durableSubAgentKeys = durableSubAgentEvents
+        .map(_subAgentRegistryKeyForEvent)
+        .toSet();
     for (int index = 0; index < runEvents.length; index += 1) {
       if (consumedIndexes.contains(index)) {
+        continue;
+      }
+      if (runEvents[index].kind == 'subagent' &&
+          durableSubAgentKeys.contains(
+            _subAgentRegistryKeyForEvent(runEvents[index]),
+          )) {
         continue;
       }
       final mapped = _mapRunTraceHistoryEntry(
