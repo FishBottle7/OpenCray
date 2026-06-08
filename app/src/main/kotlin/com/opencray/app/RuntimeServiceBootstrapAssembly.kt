@@ -123,6 +123,7 @@ internal fun createRuntimeServiceBootstrapAssembly(
     promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
     subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
     runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
+    runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext),
   )
   resyncEnabledScheduledTasks(
     specStore = bootstrap.scheduledTaskSpecStore,
@@ -340,6 +341,9 @@ private fun RuntimeServiceBootstrapAssembly.toWakeCommandDispatcherDependencies(
         runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(
           bootstrapContext.localizedContext.applicationContext,
         ),
+        runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(
+          bootstrapContext.localizedContext.applicationContext,
+        ),
       )
     },
     approvalDecisionAccess = approvalDecisionAccess,
@@ -396,6 +400,7 @@ internal fun bootstrapRuntimeServiceSessions(
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory? = null,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory? = null,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
+  runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
 ): RuntimeServiceBootstrapResult {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
@@ -403,6 +408,7 @@ internal fun bootstrapRuntimeServiceSessions(
     promptCheckpointStoreFactory = promptCheckpointStoreFactory,
     subAgentHandleStoreFactory = subAgentHandleStoreFactory,
     runRecordStoreFactory = runRecordStoreFactory,
+    runEventJournalStoreFactory = runEventJournalStoreFactory,
   )
   val resumedSessionIds = mutableListOf<String>()
   val repairedSessionIds = mutableListOf<String>()
@@ -418,6 +424,7 @@ internal fun bootstrapRuntimeServiceSessions(
         promptCheckpointStoreFactory = promptCheckpointStoreFactory,
         subAgentHandleStoreFactory = subAgentHandleStoreFactory,
         runRecordStoreFactory = runRecordStoreFactory,
+        runEventJournalStoreFactory = runEventJournalStoreFactory,
       )
     if (!shouldResume) {
       return@forEach
@@ -449,6 +456,7 @@ internal fun resumeInterruptedRuntimeServiceRuns(
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory? = null,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory? = null,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
+  runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
 ): RuntimeServiceInterruptedRunRepairResult {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
@@ -456,6 +464,7 @@ internal fun resumeInterruptedRuntimeServiceRuns(
     promptCheckpointStoreFactory = promptCheckpointStoreFactory,
     subAgentHandleStoreFactory = subAgentHandleStoreFactory,
     runRecordStoreFactory = runRecordStoreFactory,
+    runEventJournalStoreFactory = runEventJournalStoreFactory,
   )
   val resumedSessionIds = mutableListOf<String>()
   val repairedSessionIds = mutableListOf<String>()
@@ -471,6 +480,7 @@ internal fun resumeInterruptedRuntimeServiceRuns(
         promptCheckpointStoreFactory = promptCheckpointStoreFactory,
         subAgentHandleStoreFactory = subAgentHandleStoreFactory,
         runRecordStoreFactory = runRecordStoreFactory,
+        runEventJournalStoreFactory = runEventJournalStoreFactory,
       )
     if (!shouldResume) {
       return@forEach
@@ -500,6 +510,7 @@ private fun hasDurableInteractiveRepairWorkForSession(
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory?,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory?,
   runRecordStoreFactory: AgentRunRecordStoreFactory?,
+  runEventJournalStoreFactory: RunEventJournalStoreFactory?,
 ): Boolean {
   if (
     snapshotStoreFactory == null ||
@@ -514,6 +525,7 @@ private fun hasDurableInteractiveRepairWorkForSession(
     promptCheckpointStoreFactory = promptCheckpointStoreFactory,
     subAgentHandleStoreFactory = subAgentHandleStoreFactory,
     runRecordStoreFactory = runRecordStoreFactory,
+    runEventJournalStoreFactory = runEventJournalStoreFactory,
   )
 }
 
@@ -523,10 +535,12 @@ internal fun recoveryCandidateSessionIds(
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory?,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory?,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
+  runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
 ): List<String> = buildSet {
   addAll(knownChatSessionIds(chatSessionStore))
   snapshotStoreFactory?.knownSessionIds()?.let(::addAll)
   promptCheckpointStoreFactory?.knownSessionIds()?.let(::addAll)
   subAgentHandleStoreFactory?.knownSessionIds()?.let(::addAll)
   runRecordStoreFactory?.knownSessionIds()?.let(::addAll)
+  runEventJournalStoreFactory?.knownSessionIds()?.let(::addAll)
 }.toList()

@@ -431,13 +431,56 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
-  fun hasPotentialInteractiveRunRepairWorkIgnoresTerminalRunRecordOnlySession() {
+  fun hasPotentialInteractiveRunRepairWorkFindsJournalOnlySession() {
+    val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-journal")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory()
+    val durableOnlySessionId = "session-journal-only"
+
+    runEventJournalStoreFactory.forChatSession(durableOnlySessionId).append(
+      OpenCrayAssistantEvent(
+        runId = "run-journal-only",
+        taskId = "task-journal-only",
+        turn = 0,
+        text = "Recovered journal-only progress.",
+        isFinal = false,
+        emittedAtEpochMs = 1_100L,
+      ),
+    )
+
+    assertTrue(
+      hasPotentialInteractiveRunRepairWork(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+        runEventJournalStoreFactory = runEventJournalStoreFactory,
+      ),
+    )
+    assertEquals(
+      setOf(RuntimeServiceTarget.INTERACTIVE),
+      potentialInterruptedRunRepairTargets(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+        runEventJournalStoreFactory = runEventJournalStoreFactory,
+      ),
+    )
+  }
+
+  @Test
+  fun hasPotentialInteractiveRunRepairWorkIgnoresTerminalRunRecordWithStaleJournal() {
     val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-terminal-run-record")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
     val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
     val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
     val runRecordStoreFactory = InMemoryAgentRunRecordStoreFactory()
+    val runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory()
 
     runRecordStoreFactory.forChatSession("session-terminal-record").upsert(
       PersistedAgentRunRecord(
@@ -453,6 +496,16 @@ class ScheduledTaskWorkManagerTest {
         ),
       ),
     )
+    runEventJournalStoreFactory.forChatSession("session-terminal-record").append(
+      OpenCrayAssistantEvent(
+        runId = "run-terminal-record",
+        taskId = "task-terminal-record",
+        turn = 0,
+        text = "Older non-terminal journal event.",
+        isFinal = false,
+        emittedAtEpochMs = 1_050L,
+      ),
+    )
 
     assertFalse(
       hasPotentialInteractiveRunRepairWork(
@@ -461,6 +514,48 @@ class ScheduledTaskWorkManagerTest {
         promptCheckpointStoreFactory = promptCheckpointStoreFactory,
         subAgentHandleStoreFactory = subAgentHandleStoreFactory,
         runRecordStoreFactory = runRecordStoreFactory,
+        runEventJournalStoreFactory = runEventJournalStoreFactory,
+      ),
+    )
+  }
+
+  @Test
+  fun hasPotentialInteractiveRunRepairWorkIgnoresFinalJournalOnlySession() {
+    val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-final-journal")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory()
+
+    runEventJournalStoreFactory.forChatSession("session-final-journal").append(
+      OpenCrayAssistantEvent(
+        runId = "run-final-journal",
+        taskId = "task-final-journal",
+        turn = 0,
+        text = "Done.",
+        isFinal = true,
+        emittedAtEpochMs = 1_100L,
+      ),
+    )
+
+    assertFalse(
+      hasPotentialInteractiveRunRepairWork(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+        runEventJournalStoreFactory = runEventJournalStoreFactory,
+      ),
+    )
+    assertEquals(
+      emptySet<RuntimeServiceTarget>(),
+      potentialInterruptedRunRepairTargets(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+        runEventJournalStoreFactory = runEventJournalStoreFactory,
       ),
     )
   }

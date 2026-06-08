@@ -119,6 +119,28 @@ class RunEventJournalStoreFactoryTest {
   }
 
   @Test
+  fun knownSessionIdsOnlyIncludesSessionsWithJournalEntries() {
+    val runtimeRoot = temporaryFolder.newFolder("runtime-journal-store-known-sessions")
+    val factory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    factory.forChatSession("session-empty")
+    factory.forChatSession("session-with-journal").append(
+      OpenCrayAssistantEvent(
+        runId = "run-journal",
+        taskId = "task-journal",
+        turn = 0,
+        text = "Durable journal evidence",
+        isFinal = false,
+        stage = "scan",
+        emittedAtEpochMs = 100L,
+      ),
+    )
+
+    val restoredFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+
+    assertEquals(listOf("session-with-journal"), restoredFactory.knownSessionIds())
+  }
+
+  @Test
   fun fileBackedStoreClearsEntriesWithoutListingLockSidecar() {
     val runtimeRoot = temporaryFolder.newFolder("runtime-journal-store-clear")
     val factory = FileBackedRunEventJournalStoreFactory(runtimeRoot)

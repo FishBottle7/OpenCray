@@ -19,6 +19,8 @@ import kotlinx.serialization.json.Json
 
 internal interface RunEventJournalStoreFactory {
   fun forChatSession(sessionId: String): RunEventJournalStore
+
+  fun knownSessionIds(): List<String> = emptyList()
 }
 
 internal interface RunEventJournalStore {
@@ -65,6 +67,13 @@ internal class InMemoryRunEventJournalStoreFactory : RunEventJournalStoreFactory
   override fun forChatSession(sessionId: String): RunEventJournalStore = synchronized(lock) {
     stores.getOrPut(sessionId) { InMemoryRunEventJournalStore(sessionId = sessionId) }
   }
+
+  override fun knownSessionIds(): List<String> = synchronized(lock) {
+    stores
+      .filterValues(RunEventJournalStore::hasEntries)
+      .keys
+      .toList()
+  }
 }
 
 internal class FileBackedRunEventJournalStoreFactory(
@@ -86,6 +95,16 @@ internal class FileBackedRunEventJournalStoreFactory(
       )
     }
   }
+
+  override fun knownSessionIds(): List<String> = runtimeRootDirectory.listFiles()
+    .orEmpty()
+    .filter(File::isDirectory)
+    .mapNotNull { directory ->
+      FileBackedAgentQueueSnapshotStoreFactory.decodeSessionId(directory.name)
+    }
+    .filter { sessionId ->
+      forChatSession(sessionId).hasEntries()
+    }
 
   internal fun directoryForSession(sessionId: String): File =
     File(runtimeRootDirectory, FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(sessionId))

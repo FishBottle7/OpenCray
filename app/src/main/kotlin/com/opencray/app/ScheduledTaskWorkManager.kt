@@ -246,6 +246,7 @@ internal fun hasPotentialInteractiveRunRepairWork(
     promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
     subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
     runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
+    runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext),
   ).isNotEmpty()
 }
 
@@ -255,12 +256,14 @@ internal fun hasPotentialInteractiveRunRepairWork(
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
+  runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
 ): Boolean = potentialInterruptedRunRepairTargets(
   chatSessionStore = chatSessionStore,
   snapshotStoreFactory = snapshotStoreFactory,
   promptCheckpointStoreFactory = promptCheckpointStoreFactory,
   subAgentHandleStoreFactory = subAgentHandleStoreFactory,
   runRecordStoreFactory = runRecordStoreFactory,
+  runEventJournalStoreFactory = runEventJournalStoreFactory,
 ).isNotEmpty()
 
 internal fun potentialInterruptedRunRepairTargets(
@@ -273,6 +276,7 @@ internal fun potentialInterruptedRunRepairTargets(
     promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
     subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
     runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
+    runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext),
   )
 }
 
@@ -282,6 +286,7 @@ internal fun potentialInterruptedRunRepairTargets(
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
+  runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
 ): Set<RuntimeServiceTarget> {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
@@ -289,6 +294,7 @@ internal fun potentialInterruptedRunRepairTargets(
     promptCheckpointStoreFactory = promptCheckpointStoreFactory,
     subAgentHandleStoreFactory = subAgentHandleStoreFactory,
     runRecordStoreFactory = runRecordStoreFactory,
+    runEventJournalStoreFactory = runEventJournalStoreFactory,
   )
   val targets = linkedSetOf<RuntimeServiceTarget>()
   knownSessionIds.forEach { sessionId ->
@@ -298,6 +304,7 @@ internal fun potentialInterruptedRunRepairTargets(
       promptCheckpointStoreFactory = promptCheckpointStoreFactory,
       subAgentHandleStoreFactory = subAgentHandleStoreFactory,
       runRecordStoreFactory = runRecordStoreFactory,
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
     )
   }
   return targets
@@ -309,12 +316,14 @@ internal fun hasPotentialInteractiveRunRepairWorkForSession(
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
+  runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
 ): Boolean = potentialInterruptedRunRepairTargetsForSession(
   sessionId = sessionId,
   snapshotStoreFactory = snapshotStoreFactory,
   promptCheckpointStoreFactory = promptCheckpointStoreFactory,
   subAgentHandleStoreFactory = subAgentHandleStoreFactory,
   runRecordStoreFactory = runRecordStoreFactory,
+  runEventJournalStoreFactory = runEventJournalStoreFactory,
 ).isNotEmpty()
 
 internal fun potentialInterruptedRunRepairTargetsForSession(
@@ -323,6 +332,7 @@ internal fun potentialInterruptedRunRepairTargetsForSession(
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
+  runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
 ): Set<RuntimeServiceTarget> {
   val taskSnapshots = snapshotStoreFactory.forChatSession(sessionId)
     .load()
@@ -349,9 +359,10 @@ internal fun potentialInterruptedRunRepairTargetsForSession(
   ) {
     targets += RuntimeServiceTarget.DETACHED_BACKGROUND
   }
-  runRecordStoreFactory?.forChatSession(sessionId)
+  val runRecords = runRecordStoreFactory?.forChatSession(sessionId)
     ?.list()
     .orEmpty()
+  runRecords
     .filter(::isPotentialRunRepairRecord)
     .forEach { record ->
       targets += taskSnapshots
@@ -359,6 +370,16 @@ internal fun potentialInterruptedRunRepairTargetsForSession(
         ?.let { taskSnapshot -> runtimeServiceTargetForTask(taskSnapshot.task) }
         ?: RuntimeServiceTarget.INTERACTIVE
     }
+  if (
+    hasPotentialRunRepairJournalEvidence(
+      journalEntries = runEventJournalStoreFactory?.forChatSession(sessionId)?.list().orEmpty(),
+      terminalRunIds = runRecords
+        .filter { record -> record.lastResult != null }
+        .mapTo(mutableSetOf(), PersistedAgentRunRecord::runId),
+    )
+  ) {
+    targets += RuntimeServiceTarget.INTERACTIVE
+  }
   return targets
 }
 
@@ -385,6 +406,45 @@ private fun isPotentialRunRepairRecord(record: PersistedAgentRunRecord): Boolean
   return record.lastEvent != null || record.managedProcessIds.isNotEmpty()
 }
 
+private fun hasPotentialRunRepairJournalEvidence(
+  journalEntries: List<PersistedRunJournalEntry>,
+  terminalRunIds: Set<String>,
+): Boolean {
+  if (journalEntries.isEmpty()) {
+    return false
+  }
+  val latestEntriesByRunId = linkedMapOf<String, PersistedRunJournalEntry>()
+  journalEntries
+    .filterNot { entry -> entry.runId in terminalRunIds }
+    .forEach { entry ->
+      latestEntriesByRunId[entry.runId] = entry
+    }
+  return latestEntriesByRunId.values.any(::isPotentialRunRepairJournalTail)
+}
+
+private fun isPotentialRunRepairJournalTail(entry: PersistedRunJournalEntry): Boolean =
+  when (entry.payload.kind) {
+    PersistedAgentRunEventKind.LIFECYCLE ->
+      TERMINAL_JOURNAL_LIFECYCLE_PHASES.none { phase ->
+        entry.payload.phase?.equals(phase, ignoreCase = true) == true
+      }
+    PersistedAgentRunEventKind.ASSISTANT_PHASE ->
+      entry.payload.phase?.equals(FINAL_ASSISTANT_PHASE, ignoreCase = true) != true &&
+        entry.payload.isFinal != true
+    PersistedAgentRunEventKind.CANCELLATION,
+    PersistedAgentRunEventKind.CHECKPOINT,
+    PersistedAgentRunEventKind.RECOVERY,
+    -> false
+    PersistedAgentRunEventKind.SUPPLEMENT,
+    PersistedAgentRunEventKind.APPROVAL,
+    PersistedAgentRunEventKind.SUBAGENT,
+    PersistedAgentRunEventKind.TOOL_CALL,
+    PersistedAgentRunEventKind.TOOL_RESULT,
+    PersistedAgentRunEventKind.MEMORY_RETRIEVAL,
+    PersistedAgentRunEventKind.MEMORY_WRITE,
+    -> true
+  }
+
 private fun runtimeServiceTargetForCheckpoint(
   checkpoint: PersistedPromptCheckpoint,
   taskSnapshots: List<SessionQueueTaskSnapshot>,
@@ -401,6 +461,14 @@ private val TERMINAL_QUEUE_TASK_LIFECYCLES: Set<QueueTaskLifecycleState> = setOf
   QueueTaskLifecycleState.FAILED,
   QueueTaskLifecycleState.CANCELLED,
 )
+
+private val TERMINAL_JOURNAL_LIFECYCLE_PHASES: Set<String> = setOf(
+  "END",
+  "ERROR",
+  "CANCELLED",
+)
+
+private const val FINAL_ASSISTANT_PHASE: String = "FINAL_ANSWER"
 
 private val INTERRUPTED_RUN_REPAIR_TARGET_WAKE_ORDER: List<RuntimeServiceTarget> = listOf(
   RuntimeServiceTarget.DETACHED_BACKGROUND,

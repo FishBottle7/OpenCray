@@ -316,6 +316,82 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
   }
 
   @Test
+  fun resumeInterruptedRuntimeServiceRunsScansDurableJournalOnlySessions() {
+    val root = temporaryFolder.newFolder("runtime-service-interactive-repair-journal")
+    val runtimeRoot = root.resolve("runtime")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val durableOnlySessionId = "session-journal-only"
+    runEventJournalStoreFactory.forChatSession(durableOnlySessionId).append(
+      com.opencray.runtime.OpenCrayAssistantEvent(
+        runId = "run-journal-only",
+        taskId = "task-journal-only",
+        turn = 0,
+        text = "Recovered journal-only progress.",
+        isFinal = false,
+        emittedAtEpochMs = 1_100L,
+      ),
+    )
+
+    val activeSession = RecordingRuntimeSessionAccess(
+      chatSessionStore.loadState().activeSession.sessionId,
+      runs = emptyList(),
+    )
+    val durableRun = AgentRunSnapshot(
+      sessionId = durableOnlySessionId,
+      runId = "run-journal-only",
+      taskId = "task-journal-only",
+      acceptedAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+      taskState = AgentTaskState.RUNNING,
+    )
+    val durableOnlySession = RecordingRuntimeSessionAccess(
+      durableOnlySessionId,
+      runs = listOf(durableRun),
+    )
+    val repairedSessions = mutableListOf<String>()
+    val runtimeAccess = OpenCrayRuntimeOwnerAccess(
+      lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      hostAccess = RecordingRuntimeHostAccess(
+        sessions = mapOf(
+          activeSession.sessionId to activeSession,
+          durableOnlySessionId to durableOnlySession,
+        ),
+      ),
+      transcriptMessagesProvider = { emptyList<RuntimeConversationMessage>() },
+      memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
+        memoryStore = InMemoryMemoryStore(),
+      ),
+      replayAccess = OpenCrayRuntimeReplayAccess(
+        approvalRejectionRecorder = { _, _, _, _, _, _ -> },
+        approvalApprovedRecorder = { _, _, _, _, _, _ -> },
+        subAgentReplayRecorder = { _, _ -> },
+        runCancellationRecorder = { _, _, _, _, _ -> },
+        terminalReplayRepairer = { sessionId, _ ->
+          repairedSessions += sessionId
+        },
+      ),
+    )
+
+    val result = resumeInterruptedRuntimeServiceRuns(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+      runtimeReplayAccess = runtimeAccess.replayAccess,
+      snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot),
+      promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot),
+      subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory(runtimeRoot),
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+    )
+
+    assertTrue(durableOnlySessionId in result.scannedSessionIds)
+    assertEquals(listOf(durableOnlySessionId), result.resumedSessionIds)
+    assertEquals(listOf(durableOnlySessionId), result.repairedSessionIds)
+    assertEquals(1, durableOnlySession.resumeCallCount)
+    assertEquals(listOf(durableOnlySessionId), repairedSessions)
+  }
+
+  @Test
   fun resumeInterruptedRuntimeServiceRunsSubmitsRecoveryTaskForQueuedDetachedSubAgent() {
     val root = temporaryFolder.newFolder("runtime-service-interactive-repair-subagent-recovery")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
