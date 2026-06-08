@@ -2900,6 +2900,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       appContext = context,
       mainHandler = mainHandler,
       bootstrapDependencies = bootstrapResolver,
+      serviceProcessDescriptorProvider = { runtimeServiceProcessDescriptorForTest() },
     )
 
     assertSame(expectedShellControlBundle, resolved.shellControlBundle)
@@ -2933,6 +2934,42 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       RUNTIME_SERVICE_PROCESS_SUFFIX,
       capturedLifecycle?.serviceProcess?.expectedProcessSuffix,
     )
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
+  fun openCrayAgentRuntimeServiceBootstrapRejectsWrongProcessBeforeOwnerBootstrap() {
+    val context = MinimalContext()
+    val service = TestRuntimeService()
+    var bootstrapStateProviderCalled = false
+    val bootstrapDependencies = guardOnlyRuntimeServiceBootstrapDependencies {
+      bootstrapStateProviderCalled = true
+    }
+    val processDescriptor = runtimeServiceProcessDescriptor(
+      packageName = "org.opencray.app",
+      processName = "org.opencray.app",
+    )
+    var failureMessage: String? = null
+
+    try {
+      openCrayAgentRuntimeServiceBootstrap(
+        service = service,
+        appContext = context,
+        mainHandler = Handler(),
+        bootstrapDependencies = bootstrapDependencies,
+        serviceProcessDescriptorProvider = { processDescriptor },
+      )
+    } catch (expected: IllegalStateException) {
+      failureMessage = expected.message
+    }
+
+    assertEquals(
+      "OpenCrayAgentRuntimeService must run in org.opencray.app:runtime; " +
+        "current process is org.opencray.app (main_process).",
+      failureMessage,
+    )
+    assertFalse(bootstrapStateProviderCalled)
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
   }
@@ -4532,6 +4569,69 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     context = context,
     serviceLifecycle = serviceLifecycleFactory(),
   ).bootstrapState
+
+  private fun runtimeServiceProcessDescriptorForTest(): RuntimeServiceProcessDescriptor =
+    runtimeServiceProcessDescriptor(
+      packageName = "org.opencray.app",
+      processName = "org.opencray.app:runtime",
+    )
+
+  private fun guardOnlyRuntimeServiceBootstrapDependencies(
+    bootstrapStateProviderCalled: () -> Unit,
+  ): RuntimeServiceBootstrapDependencies = RuntimeServiceBootstrapDependencies(
+    runtimeServiceBootstrapStateProvider = RuntimeServiceBootstrapStateProvider { _, _, _ ->
+      bootstrapStateProviderCalled()
+      error("runtime owner bootstrap should not run")
+    },
+    localHostGatewayProvider = { error("unused") },
+    runtimeServiceGatewayBundleFactory = RuntimeServiceGatewayBundleFactory { _, _, _, _ ->
+      error("unused")
+    },
+    runtimeServiceTransportBootstrapFactory = OpenCrayRuntimeServiceTransportBootstrapFactory {
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+        _,
+      ->
+      error("unused")
+    },
+    runtimeServiceExecutionCoordinatorFactory = RuntimeServiceExecutionCoordinatorFactory {
+        _,
+        _,
+        _,
+        _,
+      ->
+      error("unused")
+    },
+    runtimeServiceShellControlBundleFactory = RuntimeServiceShellControlBundleFactory {
+        _,
+        _,
+        _,
+        _,
+      ->
+      error("unused")
+    },
+    runtimeServiceWakeCommandDispatcherFactory = RuntimeServiceWakeCommandDispatcherFactory {
+        _,
+        _,
+        _,
+        _,
+      ->
+      error("unused")
+    },
+    runtimeServiceBinderEndpointFactory = RuntimeServiceBinderEndpointFactory {
+        _,
+        _,
+        _,
+        _,
+      ->
+      error("unused")
+    },
+  )
 
   private fun clearRuntimeSingletons() {
     resetDefaultRuntimeServiceExecutionController()

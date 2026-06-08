@@ -70,3 +70,18 @@ internal fun runtimeServiceProcessDescriptor(
 
 private fun String?.normalizedOrNull(): String? =
   this?.trim()?.takeIf(String::isNotBlank)
+
+internal fun requireDedicatedRuntimeServiceProcess(
+  descriptor: RuntimeServiceProcessDescriptor,
+): RuntimeServiceProcessDescriptor {
+  if (descriptor.isDedicatedRuntimeProcess) {
+    return descriptor
+  }
+  val expectedProcessName = descriptor.expectedProcessName ?: "<unknown>"
+  val currentProcessName = descriptor.processName ?: "<unknown>"
+  val mismatchReason = descriptor.mismatchReason ?: "unknown"
+  error(
+    "OpenCrayAgentRuntimeService must run in $expectedProcessName; " +
+      "current process is $currentProcessName ($mismatchReason).",
+  )
+}

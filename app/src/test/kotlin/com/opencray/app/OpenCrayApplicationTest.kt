@@ -88,6 +88,37 @@ class OpenCrayApplicationTest {
   }
 
   @Test
+  fun requireDedicatedRuntimeServiceProcessReturnsDedicatedDescriptor() {
+    val descriptor = runtimeServiceProcessDescriptor(
+      packageName = "org.opencray.app",
+      processName = "org.opencray.app:runtime",
+    )
+
+    assertSame(descriptor, requireDedicatedRuntimeServiceProcess(descriptor))
+  }
+
+  @Test
+  fun requireDedicatedRuntimeServiceProcessRejectsMainProcessDescriptor() {
+    val descriptor = runtimeServiceProcessDescriptor(
+      packageName = "org.opencray.app",
+      processName = "org.opencray.app",
+    )
+    var failureMessage: String? = null
+
+    try {
+      requireDedicatedRuntimeServiceProcess(descriptor)
+    } catch (expected: IllegalStateException) {
+      failureMessage = expected.message
+    }
+
+    assertEquals(
+      "OpenCrayAgentRuntimeService must run in org.opencray.app:runtime; " +
+        "current process is org.opencray.app (main_process).",
+      failureMessage,
+    )
+  }
+
+  @Test
   fun bootstrapOpenCrayApplicationResyncsSchedulesAndQueuesRepairWithoutStartingRuntime() {
     val application = Application()
     val steps = mutableListOf<String>()

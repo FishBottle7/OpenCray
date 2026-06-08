@@ -28,7 +28,7 @@ Today OpenCray already has a service-host boundary:
 
 - `OpenCrayAgentRuntimeService` exists and bootstraps the runtime owner
 - the production runtime service now runs in a dedicated `:runtime` process, while the owner and executors still live inside that service process
-- each service-shell lifecycle now records a runtime-service process descriptor with the package name, expected `:runtime` process name, observed process name, and mismatch reason, and the descriptor is persisted through the runtime-service projection snapshot for binder-unavailable diagnostics
+- each service-shell lifecycle now records a runtime-service process descriptor with the package name, expected `:runtime` process name, observed process name, and mismatch reason, the descriptor is persisted through the runtime-service projection snapshot for binder-unavailable diagnostics, and service bootstrap rejects a mismatched process before creating the runtime owner
 - `OpenCrayHostRuntime` is no longer the production execution owner
 - UI transport can detach without immediately destroying runtime ownership
 - same-process service-shell rebuild still reuses the retained execution controller, and explicit retained-owner replacement now reuses the same in-process session/executor core while only rotating runtime-owner lifecycle plus owner-bound access wrappers
@@ -75,7 +75,7 @@ Today OpenCray already has a service-host boundary:
 But the background product surface is still incomplete:
 
 - execution is still driven by in-runtime-process executors rather than a deeper controller/process split, even though the service shell now reuses a process-singleton execution controller across service recreate and now exposes process-placement diagnostics
-- the runtime service now promotes itself to foreground while keepalive-required work exists, but execution ownership is still only isolated to the dedicated runtime service process and not yet a separate stronger controller tier; the new process descriptor catches regressions in that placement but does not provide stronger ownership by itself
+- the runtime service now promotes itself to foreground while keepalive-required work exists, but execution ownership is still only isolated to the dedicated runtime service process and not yet a separate stronger controller tier; the process guard prevents silent owner creation in the wrong app process but does not provide stronger ownership by itself
 - the service shell now also treats app visibility plus the strong-background tier as first-class keepalive inputs: when the app goes invisible, idle-grace stop deadlines can stretch by tier and foreground notification retention can continue through idle grace for `active_background` or `strong_background`, which removes one of the remaining software-caused interruption paths during ordinary backgrounding
 - the service shell now also returns `START_STICKY` while keepalive or foreground-notification state remains active after a start command, and only falls back to `START_NOT_STICKY` for idle/no-work starts, which gives Android a restart path for live detached work without replaying already-consumed wake intents
 - the retained keepalive shell path now also uses `stopSelfResult(startId)` for delayed idle shutdown, so a stale idle-grace stop cannot tear down a newer service start generation once detached work has already advanced
@@ -742,7 +742,7 @@ Exit criteria:
 
 Status:
 
-- still pending
+- partially implemented; the production service already runs in a dedicated `:runtime` process and bootstrap now rejects mismatched service-process placement before creating runtime ownership, while deeper controller/runtime-tier isolation is still pending
 
 - evaluate dedicated runtime process
 - continue hardening any remaining direct-file/runtime command edges beyond the now process-safe run journal append path and version-gated explicit command envelopes
