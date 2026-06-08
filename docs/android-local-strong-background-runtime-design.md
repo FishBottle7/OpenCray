@@ -1,6 +1,6 @@
 # Android Local Strong Background Runtime Design
 
-Last updated: 2026-06-07
+Last updated: 2026-06-08
 
 ## Status
 
@@ -96,6 +96,7 @@ But the background product surface is still incomplete:
 - file-backed managed-process registries can now reattach live controllers across registry or host rebuild while the same app process remains alive, and that restore path is now scoped by runtime controller identity instead of only durable directory; reconnectable managed-process backends now also have a tested cross-owner restore path when a rebuilt runtime owner reopens the same durable session directory; registry read/modify/write operations now also use a directory-scoped JVM lock plus OS file lock so concurrent detached owners or projection readers do not overwrite each other's managed-process snapshots, although the overall detached runtime is still only isolated to the dedicated `:runtime` process rather than a stronger controller tier
 - checkpoint-backed observational managed-process restore is now also narrower and safer: interrupted `ProcessRead` or `ProcessWait` can auto-resume only when the durable pending action still matches the same live `process_id` and the reconnect state is already stable (`attached_live` or `completed`), while `connecting`, `retry_scheduled`, `failed_terminal`, or other ambiguous reconnect states remain explicit interruption instead of silent replay
 - recovery diagnostics now stamp run attempts and checkpoint ids on recovery-aware queue rewrites and append non-runtime recovery markers to the durable run journal, so strong-background reports can distinguish an initial submission from a checkpoint-backed restore without relying only on queue state
+- direct-file durable run journal append/list/clear now serializes through a session-level sidecar OS lock, allocates sequence numbers from disk while holding that lock, and persists entries via temp-file atomic moves, so concurrent detached owners or projection readers cannot overwrite each other's journal events during reconnect churn
 - startup plus boot/package-replaced repair paths now re-register scheduled work, enqueue one-shot repair, and keep a unique periodic `WorkManager` repair registered; the repair worker can also wake `OpenCrayAgentRuntimeService` with `ACTION_RESUME_INTERRUPTED_RUNS` when queue or checkpoint state suggests interrupted interactive work, but continuation still reuses the normal checkpoint-aware resume path rather than a separate long-lived repair controller
 - notification/background settings now expose notification, exact-alarm, and battery-optimization system actions, including direct exemption request where Android allows it
 
@@ -743,7 +744,7 @@ Status:
 - still pending
 
 - evaluate dedicated runtime process
-- continue hardening remaining direct-file stores such as run journal append paths, plus service command protocol edges beyond the now-version-gated explicit command envelopes
+- continue hardening any remaining direct-file/runtime command edges beyond the now process-safe run journal append path and version-gated explicit command envelopes
 - add richer OEM guidance
 
 Exit criteria:

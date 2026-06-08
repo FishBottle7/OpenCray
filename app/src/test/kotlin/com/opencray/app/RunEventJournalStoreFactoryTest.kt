@@ -9,6 +9,7 @@ import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -63,6 +64,98 @@ class RunEventJournalStoreFactoryTest {
     assertEquals(listOf("run-1", "run-1"), runtimeEvents.map { event -> event.runId })
     assertTrue(runtimeEvents.any { event -> event is OpenCrayAssistantEvent && !event.isFinal })
     assertTrue(runtimeEvents.any { event -> event is OpenCrayToolCallEvent })
+  }
+
+  @Test
+  fun fileBackedStoreAllocatesSeqFromDiskAcrossFactoryInstances() {
+    val runtimeRoot = temporaryFolder.newFolder("runtime-journal-store-cross-owner")
+    val firstFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val firstStore = firstFactory.forChatSession("session-1")
+    val secondStore = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+      .forChatSession("session-1")
+
+    val firstEntry = firstStore.append(
+      OpenCrayAssistantEvent(
+        runId = "run-1",
+        taskId = "task-1",
+        turn = 0,
+        text = "First owner",
+        isFinal = false,
+        stage = "scan",
+        emittedAtEpochMs = 100L,
+      ),
+    )
+    val secondEntry = secondStore.append(
+      OpenCrayToolCallEvent(
+        runId = "run-1",
+        taskId = "task-1",
+        turn = 1,
+        call = AgentToolCall(toolName = "Read"),
+        emittedAtEpochMs = 200L,
+      ),
+    )
+    val thirdEntry = firstStore.append(
+      OpenCrayAssistantEvent(
+        runId = "run-1",
+        taskId = "task-1",
+        turn = 2,
+        text = "First owner after reconnect",
+        isFinal = true,
+        stage = "final",
+        emittedAtEpochMs = 300L,
+      ),
+    )
+
+    val restoredStore = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+      .forChatSession("session-1")
+    val entries = restoredStore.listForRun("run-1")
+    val sessionDirectory = firstFactory.directoryForSession("session-1")
+
+    assertEquals(listOf(1L, 2L, 3L), listOf(firstEntry.seq, secondEntry.seq, thirdEntry.seq))
+    assertEquals(listOf(1L, 2L, 3L), entries.map(PersistedRunJournalEntry::seq))
+    assertEquals(3, entries.size)
+    assertTrue(File(sessionDirectory, ".run-journal.lock").isFile)
+    assertEquals(3, restoredStore.list().size)
+  }
+
+  @Test
+  fun fileBackedStoreClearsEntriesWithoutListingLockSidecar() {
+    val runtimeRoot = temporaryFolder.newFolder("runtime-journal-store-clear")
+    val factory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val store = factory.forChatSession("session-1")
+
+    store.append(
+      OpenCrayAssistantEvent(
+        runId = "run-1",
+        taskId = "task-1",
+        turn = 0,
+        text = "Before clear",
+        isFinal = false,
+        stage = "scan",
+        emittedAtEpochMs = 100L,
+      ),
+    )
+
+    store.clear()
+    val postClearEntry = store.append(
+      OpenCrayAssistantEvent(
+        runId = "run-1",
+        taskId = "task-1",
+        turn = 1,
+        text = "After clear",
+        isFinal = true,
+        stage = "final",
+        emittedAtEpochMs = 200L,
+      ),
+    )
+
+    val entries = store.listForRun("run-1")
+    val sessionDirectory = factory.directoryForSession("session-1")
+
+    assertTrue(File(sessionDirectory, ".run-journal.lock").isFile)
+    assertEquals(1L, postClearEntry.seq)
+    assertEquals(listOf(1L), entries.map(PersistedRunJournalEntry::seq))
+    assertEquals(1, store.list().size)
   }
 
   @Test

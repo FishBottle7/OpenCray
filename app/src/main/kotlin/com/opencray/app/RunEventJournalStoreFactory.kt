@@ -6,8 +6,14 @@ import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.runtime.OpenCrayPromptCheckpointEmission
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import java.io.File
+import java.io.IOException
+import java.io.RandomAccessFile
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -211,15 +217,13 @@ private class InMemoryRunEventJournalStore(
 
 private class FileBackedRunEventJournalStore(
   private val sessionId: String,
-  sessionDirectory: File,
+  private val sessionDirectory: File,
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) : RunEventJournalStore {
-  private val lock = Any()
   private val journalDirectory = File(sessionDirectory, JOURNAL_DIRECTORY_NAME)
-  private val nextSeqByRunId = linkedMapOf<String, Long>()
 
   override fun append(event: com.opencray.runtime.OpenCrayAgentRunEvent): PersistedRunJournalEntry =
-    synchronized(lock) {
+    withJournalLock {
       appendPayloadLocked(event.toPersistedRecord())
     }
 
@@ -227,7 +231,7 @@ private class FileBackedRunEventJournalStore(
     runId: String,
     taskId: String,
     emission: OpenCrayPromptCheckpointEmission,
-  ): PersistedRunJournalEntry = synchronized(lock) {
+  ): PersistedRunJournalEntry = withJournalLock {
     appendPayloadLocked(
       checkpointPayload(
         runId = runId,
@@ -242,7 +246,7 @@ private class FileBackedRunEventJournalStore(
     taskId: String,
     emittedAtEpochMs: Long,
     metadata: Map<String, String>,
-  ): PersistedRunJournalEntry = synchronized(lock) {
+  ): PersistedRunJournalEntry = withJournalLock {
     appendPayloadLocked(
       recoveryPayload(
         runId = runId,
@@ -253,7 +257,7 @@ private class FileBackedRunEventJournalStore(
     )
   }
 
-  override fun list(): List<PersistedRunJournalEntry> = synchronized(lock) {
+  override fun list(): List<PersistedRunJournalEntry> = withJournalLock {
     journalDirectory.listFiles()
       ?.asSequence()
       ?.filter(File::isDirectory)
@@ -265,7 +269,7 @@ private class FileBackedRunEventJournalStore(
       .orEmpty()
   }
 
-  override fun hasEntries(): Boolean = synchronized(lock) {
+  override fun hasEntries(): Boolean = withJournalLock {
     journalDirectory.listFiles()
       ?.asSequence()
       ?.filter(File::isDirectory)
@@ -274,10 +278,10 @@ private class FileBackedRunEventJournalStore(
       ?: false
   }
 
-  override fun listForRun(runId: String): List<PersistedRunJournalEntry> = synchronized(lock) {
+  override fun listForRun(runId: String): List<PersistedRunJournalEntry> = withJournalLock {
     val runDirectory = directoryForRun(runId)
     if (!runDirectory.exists()) {
-      return@synchronized emptyList()
+      return@withJournalLock emptyList()
     }
     runDirectory.listFiles()
       ?.asSequence()
@@ -289,16 +293,18 @@ private class FileBackedRunEventJournalStore(
   }
 
   override fun clear() {
-    synchronized(lock) {
+    withJournalLock {
       if (journalDirectory.exists()) {
         journalDirectory.deleteRecursively()
       }
-      nextSeqByRunId.clear()
     }
   }
 
   private fun directoryForRun(runId: String): File =
     File(journalDirectory, "run-${FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(runId)}")
+
+  private fun <T> withJournalLock(block: () -> T): T =
+    RunEventJournalStoreFileLock.withLock(sessionDirectory, block)
 
   private fun inferNextSeq(runDirectory: File): Long = runDirectory.listFiles()
     ?.asSequence()
@@ -324,13 +330,8 @@ private class FileBackedRunEventJournalStore(
   private fun appendPayloadLocked(
     payload: PersistedAgentRunEvent,
   ): PersistedRunJournalEntry {
-    val runDirectory = directoryForRun(payload.runId).apply {
-      if (!exists()) {
-        mkdirs()
-      }
-    }
-    val seq = nextSeqByRunId[payload.runId] ?: inferNextSeq(runDirectory)
-    nextSeqByRunId[payload.runId] = seq + 1L
+    val runDirectory = ensureDirectory(directoryForRun(payload.runId))
+    val seq = inferNextSeq(runDirectory)
     val persistedAtEpochMs = clock()
     val entry = PersistedRunJournalEntry(
       sessionId = sessionId,
@@ -343,12 +344,12 @@ private class FileBackedRunEventJournalStore(
       persistedAtEpochMs = persistedAtEpochMs,
       payload = payload,
     )
-    journalFileFor(runDirectory, entry).writeText(
-      PersistenceJson.instance.encodeToString(
+    writeJournalEntryAtomically(
+      file = journalFileFor(runDirectory, entry),
+      text = PersistenceJson.instance.encodeToString(
         serializer = PersistedRunJournalEntry.serializer(),
         value = entry,
       ),
-      Charsets.UTF_8,
     )
     return entry
   }
@@ -360,9 +361,84 @@ private class FileBackedRunEventJournalStore(
     )
   }.getOrNull()
 
+  private fun ensureDirectory(directory: File): File {
+    if (directory.exists()) {
+      if (!directory.isDirectory) {
+        throw IOException("Run journal path must be a directory: ${directory.path}")
+      }
+      return directory
+    }
+    if (!directory.mkdirs()) {
+      throw IOException("Failed to create run journal directory: ${directory.path}")
+    }
+    return directory
+  }
+
+  private fun writeJournalEntryAtomically(file: File, text: String) {
+    if (file.exists()) {
+      throw IOException("Run journal entry already exists: ${file.path}")
+    }
+    val tmp = Files.createTempFile(file.parentFile.toPath(), "${file.name}.", ".tmp").toFile()
+    try {
+      tmp.writeText(text, Charsets.UTF_8)
+      replaceAtomically(tmp = tmp, destination = file)
+    } finally {
+      if (tmp.exists()) {
+        tmp.delete()
+      }
+    }
+  }
+
+  private fun replaceAtomically(tmp: File, destination: File) {
+    try {
+      Files.move(
+        tmp.toPath(),
+        destination.toPath(),
+        StandardCopyOption.ATOMIC_MOVE,
+      )
+    } catch (_: AtomicMoveNotSupportedException) {
+      Files.move(
+        tmp.toPath(),
+        destination.toPath(),
+      )
+    }
+  }
+
   private companion object {
     private const val JOURNAL_DIRECTORY_NAME = "run-journal"
     private const val FILE_SUFFIX = ".json"
+  }
+}
+
+private object RunEventJournalStoreFileLock {
+  private const val LOCK_FILE_NAME = ".run-journal.lock"
+  private val locksByDirectory = ConcurrentHashMap<String, Any>()
+
+  fun <T> withLock(sessionDirectory: File, block: () -> T): T {
+    val normalizedDirectory = sessionDirectory.absoluteFile.normalize()
+    val directoryKey = normalizedDirectory.path
+    val processLocalLock = locksByDirectory.computeIfAbsent(directoryKey) { Any() }
+    synchronized(processLocalLock) {
+      ensureDirectory(normalizedDirectory)
+      val lockFile = File(normalizedDirectory, LOCK_FILE_NAME)
+      RandomAccessFile(lockFile, "rw").channel.use { channel ->
+        channel.lock().use {
+          return block()
+        }
+      }
+    }
+  }
+
+  private fun ensureDirectory(directory: File) {
+    if (directory.exists()) {
+      require(directory.isDirectory) {
+        "Run journal lock path must be a directory: ${directory.path}"
+      }
+      return
+    }
+    require(directory.mkdirs()) {
+      "Failed to create run journal lock directory: ${directory.path}"
+    }
   }
 }
 
