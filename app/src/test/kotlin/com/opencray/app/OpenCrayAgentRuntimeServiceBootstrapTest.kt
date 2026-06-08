@@ -5170,6 +5170,39 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertFalse(parsed.requiresBootstrapForeground)
   }
 
+  @Test
+  fun defaultIntentDescriptorParserRejectsExplicitScheduleActionWhenCommandVersionMismatches() {
+    val parsed = DefaultRuntimeServiceIntentDescriptorParser(
+      notificationCommandParser = { null },
+      scheduledTaskWakeCommandParser = { null },
+      commandKindReader = { COMMAND_KIND_RUN_SCHEDULE_NOW },
+      commandVersionReader = { RUNTIME_SERVICE_COMMAND_VERSION_CURRENT + 1 },
+      actionReader = { RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW },
+      scheduleIdReader = { "schedule-version-mismatch" },
+      notificationSessionIdReader = { "session-version-mismatch" },
+    ).parse(null)
+
+    assertNull(parsed.wakeCommand)
+    assertFalse(parsed.requestsRuntimeReset)
+    assertFalse(parsed.requiresBootstrapForeground)
+  }
+
+  @Test
+  fun defaultIntentDescriptorParserRejectsExplicitResetWhenCommandVersionMismatches() {
+    val parsed = DefaultRuntimeServiceIntentDescriptorParser(
+      notificationCommandParser = { null },
+      scheduledTaskWakeCommandParser = { null },
+      commandKindReader = { COMMAND_KIND_RESET_RUNTIME },
+      commandVersionReader = { RUNTIME_SERVICE_COMMAND_VERSION_CURRENT + 1 },
+      actionReader = { ACTION_RESET_RUNTIME },
+      forceRuntimeResetReader = { true },
+    ).parse(null)
+
+    assertNull(parsed.wakeCommand)
+    assertFalse(parsed.requestsRuntimeReset)
+    assertFalse(parsed.requiresBootstrapForeground)
+  }
+
   private data class PendingApprovalWakeDispatcherFixture(
     val serviceHost: OpenCrayRuntimeServiceHost,
     val sessionId: String,

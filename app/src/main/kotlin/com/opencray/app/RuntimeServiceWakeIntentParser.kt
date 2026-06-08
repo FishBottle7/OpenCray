@@ -103,10 +103,17 @@ internal class DefaultRuntimeServiceIntentDescriptorParser(
 ) : RuntimeServiceIntentDescriptorParser {
   override fun parse(intent: Intent?): RuntimeServiceIntentDescriptor {
     val action = actionReader(intent)
+    val hasExplicitCommandKind = commandKindReader(intent) != null
+    val commandVersion = commandVersionReader(intent)
+    if (hasExplicitCommandKind && commandVersion != RUNTIME_SERVICE_COMMAND_VERSION_CURRENT) {
+      return RuntimeServiceIntentDescriptor(
+        runtimeTarget = runtimeTargetReader(intent),
+      )
+    }
     val commandKind = runtimeServiceCommandKind(
       intent = intent,
       commandKindReader = commandKindReader,
-      commandVersionReader = commandVersionReader,
+      commandVersion = commandVersion,
       action = action,
     )
     val wakeCommand = wakeCommandFrom(
@@ -244,10 +251,10 @@ private fun runtimeServiceCommandKindForAction(
 private fun runtimeServiceCommandKind(
   intent: Intent?,
   commandKindReader: (Intent?) -> String?,
-  commandVersionReader: (Intent?) -> Int,
+  commandVersion: Int,
   action: String?,
 ): String? = commandKindReader(intent)
-  ?.takeIf { commandVersionReader(intent) == RUNTIME_SERVICE_COMMAND_VERSION_CURRENT }
+  ?.takeIf { commandVersion == RUNTIME_SERVICE_COMMAND_VERSION_CURRENT }
   ?: runtimeServiceCommandKindForAction(action)
 
 private fun parseRuntimeServiceChatWriteWakeCommand(
