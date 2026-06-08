@@ -1,8 +1,10 @@
 package com.opencray.persistence.store.file
 
 import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import java.io.File
 import java.io.IOException
+import java.io.RandomAccessFile
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -20,8 +22,12 @@ class DirectoryDurableTextStorage(
 
   override fun readText(name: String): String? {
     val file = fileFor(name)
-    if (!file.exists()) return null
-    return file.readText(Charsets.UTF_8)
+    if (!directory.exists()) return null
+    return synchronized(lockFor(file)) {
+      withFileLock(file) {
+        readExistingText(file)
+      }
+    }
   }
 
   override fun writeText(name: String, text: String) {
@@ -29,22 +35,40 @@ class DirectoryDurableTextStorage(
     ensureDirectory()
 
     synchronized(lockFor(file)) {
-      val tmp = Files.createTempFile(file.parentFile.toPath(), "${file.name}.", ".tmp").toFile()
-      try {
-        tmp.writeText(text, Charsets.UTF_8)
-        replaceAtomically(tmp = tmp, destination = file)
-      } finally {
-        if (tmp.exists()) {
-          tmp.delete()
-        }
+      withFileLock(file) {
+        writeTextLocked(file, text)
       }
     }
   }
 
   override fun delete(name: String): Boolean {
     val file = fileFor(name)
+    if (!directory.exists()) return false
     synchronized(lockFor(file)) {
-      return file.exists() && file.delete()
+      return withFileLock(file) {
+        deleteLocked(file)
+      }
+    }
+  }
+
+  override fun <T> updateText(
+    name: String,
+    update: (String?) -> DurableTextUpdate<T>,
+  ): T {
+    val file = fileFor(name)
+    ensureDirectory()
+    return synchronized(lockFor(file)) {
+      withFileLock(file) {
+        val updated = update(readExistingText(file))
+        if (updated.write) {
+          if (updated.text == null) {
+            deleteLocked(file)
+          } else {
+            writeTextLocked(file, updated.text)
+          }
+        }
+        updated.result
+      }
     }
   }
 
@@ -77,6 +101,43 @@ class DirectoryDurableTextStorage(
         destination.toPath(),
         StandardCopyOption.REPLACE_EXISTING,
       )
+    }
+  }
+
+  private fun readExistingText(file: File): String? =
+    if (!file.exists()) {
+      null
+    } else {
+      file.readText(Charsets.UTF_8)
+    }
+
+  private fun writeTextLocked(file: File, text: String) {
+    val tmp = Files.createTempFile(file.parentFile.toPath(), "${file.name}.", ".tmp").toFile()
+    try {
+      tmp.writeText(text, Charsets.UTF_8)
+      replaceAtomically(tmp = tmp, destination = file)
+    } finally {
+      if (tmp.exists()) {
+        tmp.delete()
+      }
+    }
+  }
+
+  private fun deleteLocked(file: File): Boolean =
+    file.exists() && file.delete()
+
+  private fun <T> withFileLock(
+    file: File,
+    block: () -> T,
+  ): T {
+    ensureDirectory()
+    val lockFile = File(file.parentFile, "${file.name}.lock")
+    RandomAccessFile(lockFile, "rw").use { randomAccessFile ->
+      randomAccessFile.channel.use { channel ->
+        channel.lock().use {
+          return block()
+        }
+      }
     }
   }
 

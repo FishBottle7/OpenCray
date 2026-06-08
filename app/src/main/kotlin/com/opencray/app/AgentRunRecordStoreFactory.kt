@@ -7,6 +7,8 @@ import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.RecordStorageUpdate
+import com.opencray.persistence.store.file.updateRecord
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
@@ -194,17 +196,16 @@ private class FileBackedAgentRunRecordStore(
 
   override fun upsert(record: PersistedAgentRunRecord) {
     synchronized(lock) {
-      val existing = loadNormalizedRecord()
-      val normalizedRuns = normalizeRuns(
-        existing.runs.filterNot { persisted -> persisted.runId == record.runId } + record,
-      )
-      saveRecord(
+      updateRecord { existing ->
+        val normalizedRuns = normalizeRuns(
+          existing.runs.filterNot { persisted -> persisted.runId == record.runId } + record,
+        )
         existing.copy(
           recordVersion = existing.recordVersion + 1L,
           updatedAtEpochMs = clock(),
           runs = normalizedRuns,
-        ),
-      )
+        )
+      }
     }
   }
 
@@ -232,6 +233,31 @@ private class FileBackedAgentRunRecordStore(
     )
     saveRecord(repaired)
     return repaired
+  }
+
+  private fun updateRecord(update: (AgentRunStoreRecord) -> AgentRunStoreRecord) {
+    storage.updateRecord(
+      name = FILE_NAME,
+      serializer = AgentRunStoreRecord.serializer(),
+    ) { current ->
+      RecordStorageUpdate(
+        value = update(normalizeRecord(current ?: AgentRunStoreRecord())),
+        result = Unit,
+      )
+    }
+  }
+
+  private fun normalizeRecord(record: AgentRunStoreRecord): AgentRunStoreRecord {
+    val normalizedRuns = normalizeRuns(record.runs)
+    return if (normalizedRuns == record.runs) {
+      record
+    } else {
+      record.copy(
+        recordVersion = record.recordVersion + 1L,
+        updatedAtEpochMs = clock(),
+        runs = normalizedRuns,
+      )
+    }
   }
 
   private fun normalizeRuns(runs: List<PersistedAgentRunRecord>): List<PersistedAgentRunRecord> {

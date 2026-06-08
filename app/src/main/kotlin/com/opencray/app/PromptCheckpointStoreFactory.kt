@@ -6,6 +6,8 @@ import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.RecordStorageUpdate
+import com.opencray.persistence.store.file.updateRecord
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
@@ -322,18 +324,23 @@ private class FileBackedPromptCheckpointStore(
     taskId: String,
     checkpointKinds: Set<PromptCheckpointKind>,
   ): PersistedPromptCheckpoint? = synchronized(lock) {
-    val existing = loadNormalizedRecord()
-    val checkpoint = existing.checkpoints.firstOrNull { persisted ->
-      persisted.taskId == taskId && persisted.checkpointKind in checkpointKinds
-    } ?: return null
-    saveRecord(
-      existing.copy(
-        recordVersion = existing.recordVersion + 1L,
-        updatedAtEpochMs = clock(),
-        checkpoints = existing.checkpoints.filterNot { persisted -> persisted.taskId == taskId },
-      ),
-    )
-    checkpoint
+    updateRecord { existing ->
+      val checkpoint = existing.checkpoints.firstOrNull { persisted ->
+        persisted.taskId == taskId && persisted.checkpointKind in checkpointKinds
+      } ?: return@updateRecord RecordStorageUpdate(
+        value = existing,
+        result = null,
+        write = false,
+      )
+      RecordStorageUpdate(
+        value = existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = clock(),
+          checkpoints = existing.checkpoints.filterNot { persisted -> persisted.taskId == taskId },
+        ),
+        result = checkpoint,
+      )
+    }
   }
 
   override fun upsert(checkpoint: PersistedPromptCheckpoint) {
@@ -341,50 +348,64 @@ private class FileBackedPromptCheckpointStore(
       "Prompt checkpoint session mismatch: expected $sessionId but was ${checkpoint.sessionId}."
     }
     synchronized(lock) {
-      val existing = loadNormalizedRecord()
-      val normalizedCheckpoints = normalizeCheckpoints(
-        existing.checkpoints.filterNot { persisted -> persisted.taskId == checkpoint.taskId } + checkpoint,
-      )
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = clock(),
-          checkpoints = normalizedCheckpoints,
-        ),
-      )
+      updateRecord { existing ->
+        val normalizedCheckpoints = normalizeCheckpoints(
+          existing.checkpoints.filterNot { persisted -> persisted.taskId == checkpoint.taskId } + checkpoint,
+        )
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            checkpoints = normalizedCheckpoints,
+          ),
+          result = Unit,
+        )
+      }
     }
   }
 
   override fun remove(taskId: String) {
     synchronized(lock) {
-      val existing = loadNormalizedRecord()
-      if (existing.checkpoints.none { checkpoint -> checkpoint.taskId == taskId }) {
-        return
+      updateRecord { existing ->
+        if (existing.checkpoints.none { checkpoint -> checkpoint.taskId == taskId }) {
+          return@updateRecord RecordStorageUpdate(
+            value = existing,
+            result = Unit,
+            write = false,
+          )
+        }
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            checkpoints = existing.checkpoints.filterNot { checkpoint -> checkpoint.taskId == taskId },
+          ),
+          result = Unit,
+        )
       }
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = clock(),
-          checkpoints = existing.checkpoints.filterNot { checkpoint -> checkpoint.taskId == taskId },
-        ),
-      )
     }
   }
 
   override fun retainKnownTasks(taskIds: Set<String>) {
     synchronized(lock) {
-      val existing = loadNormalizedRecord()
-      val retained = existing.checkpoints.filter { checkpoint -> checkpoint.taskId in taskIds }
-      if (retained.size == existing.checkpoints.size) {
-        return
+      updateRecord { existing ->
+        val retained = existing.checkpoints.filter { checkpoint -> checkpoint.taskId in taskIds }
+        if (retained.size == existing.checkpoints.size) {
+          return@updateRecord RecordStorageUpdate(
+            value = existing,
+            result = Unit,
+            write = false,
+          )
+        }
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            checkpoints = retained,
+          ),
+          result = Unit,
+        )
       }
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = clock(),
-          checkpoints = retained,
-        ),
-      )
     }
   }
 
@@ -418,6 +439,29 @@ private class FileBackedPromptCheckpointStore(
     )
     saveRecord(repaired)
     return repaired
+  }
+
+  private fun <T> updateRecord(
+    update: (PromptCheckpointRecord) -> RecordStorageUpdate<PromptCheckpointRecord, T>,
+  ): T =
+    storage.updateRecord(
+      name = FILE_NAME,
+      serializer = PromptCheckpointRecord.serializer(),
+    ) { current ->
+      update(normalizeRecord(current ?: PromptCheckpointRecord()))
+    }
+
+  private fun normalizeRecord(record: PromptCheckpointRecord): PromptCheckpointRecord {
+    val normalizedCheckpoints = normalizeCheckpoints(record.checkpoints)
+    return if (normalizedCheckpoints == record.checkpoints) {
+      record
+    } else {
+      record.copy(
+        recordVersion = record.recordVersion + 1L,
+        updatedAtEpochMs = clock(),
+        checkpoints = normalizedCheckpoints,
+      )
+    }
   }
 
   private fun normalizeCheckpoints(

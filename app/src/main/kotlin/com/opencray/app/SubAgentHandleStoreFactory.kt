@@ -5,6 +5,8 @@ import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.RecordStorageUpdate
+import com.opencray.persistence.store.file.updateRecord
 import com.opencray.runtime.subagent.SubAgentExecutionKey
 import com.opencray.runtime.subagent.SubAgentHandleState
 import java.io.File
@@ -170,53 +172,66 @@ private class FileBackedSubAgentHandleStore(
 
   override fun upsert(handle: SubAgentHandleState) {
     synchronized(lock) {
-      val existing = loadNormalizedRecord()
-      val normalizedHandles = normalizeHandles(
-        existing.handles.filterNot { stored ->
-          stored.parentRunId == handle.parentRunId && stored.agentId == handle.agentId
-        } + handle,
-      )
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = clock(),
-          handles = normalizedHandles,
-        ),
-      )
+      updateRecord { existing ->
+        val normalizedHandles = normalizeHandles(
+          existing.handles.filterNot { stored ->
+            stored.parentRunId == handle.parentRunId && stored.agentId == handle.agentId
+          } + handle,
+        )
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            handles = normalizedHandles,
+          ),
+          result = Unit,
+        )
+      }
     }
   }
 
   override fun remove(parentRunId: String, agentId: String): SubAgentHandleState? = synchronized(lock) {
-    val existing = loadNormalizedRecord()
-    val removed = existing.handles.firstOrNull { handle ->
-      handle.parentRunId == parentRunId && handle.agentId == agentId
-    } ?: return null
-    saveRecord(
-      existing.copy(
-        recordVersion = existing.recordVersion + 1L,
-        updatedAtEpochMs = clock(),
-        handles = existing.handles.filterNot { handle ->
-          handle.parentRunId == parentRunId && handle.agentId == agentId
-        },
-      ),
-    )
-    removed
+    updateRecord { existing ->
+      val removed = existing.handles.firstOrNull { handle ->
+        handle.parentRunId == parentRunId && handle.agentId == agentId
+      } ?: return@updateRecord RecordStorageUpdate(
+        value = existing,
+        result = null,
+        write = false,
+      )
+      RecordStorageUpdate(
+        value = existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = clock(),
+          handles = existing.handles.filterNot { handle ->
+            handle.parentRunId == parentRunId && handle.agentId == agentId
+          },
+        ),
+        result = removed,
+      )
+    }
   }
 
   override fun retainKnownParentRuns(parentRunIds: Set<String>) {
     synchronized(lock) {
-      val existing = loadNormalizedRecord()
-      val retained = existing.handles.filter { handle -> handle.parentRunId in parentRunIds }
-      if (retained.size == existing.handles.size) {
-        return
+      updateRecord { existing ->
+        val retained = existing.handles.filter { handle -> handle.parentRunId in parentRunIds }
+        if (retained.size == existing.handles.size) {
+          return@updateRecord RecordStorageUpdate(
+            value = existing,
+            result = Unit,
+            write = false,
+          )
+        }
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            handles = retained,
+          ),
+          result = Unit,
+        )
       }
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = clock(),
-          handles = retained,
-        ),
-      )
     }
   }
 
@@ -251,6 +266,30 @@ private class FileBackedSubAgentHandleStore(
     )
     saveRecord(repaired)
     return repaired
+  }
+
+  private fun <T> updateRecord(
+    update: (SubAgentHandleRecord) -> RecordStorageUpdate<SubAgentHandleRecord, T>,
+  ): T =
+    storage.updateRecord(
+      name = FILE_NAME,
+      serializer = SubAgentHandleRecord.serializer(),
+    ) { current ->
+      update(normalizeRecord(current ?: SubAgentHandleRecord(sessionId = sessionId)))
+    }
+
+  private fun normalizeRecord(record: SubAgentHandleRecord): SubAgentHandleRecord {
+    val normalizedHandles = normalizeHandles(record.handles)
+    return if (normalizedHandles == record.handles && record.sessionId == sessionId) {
+      record
+    } else {
+      record.copy(
+        sessionId = sessionId,
+        recordVersion = record.recordVersion + 1L,
+        updatedAtEpochMs = clock(),
+        handles = normalizedHandles,
+      )
+    }
   }
 
   private fun normalizeHandles(

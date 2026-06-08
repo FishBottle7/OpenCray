@@ -662,6 +662,7 @@ Status:
 - accepted scheduled-run notifications now also expose a Cancel action that wakes `:runtime` through the existing service-owned chat-write interrupt command, so per-run cancellation does not require a UI-side runtime owner
 - tapping a schedule notification now opens the existing Notifications & Background settings detail entrypoint while preserving the schedule id in `notificationScheduleId`; a concrete schedule management/detail page keyed by that id is still a later UI slice
 - explicit runtime-service command envelopes now reject mismatched `runtimeServiceCommandVersion` values before wake dispatch, so stale schedule/reset/chat-write intents cannot bypass the typed protocol through action fallback
+- shared durable text storage now also takes per-file sidecar OS locks around read/write/delete/update before atomic replacement, and the queue snapshot, run-record, checkpoint, schedule spec/run-record, memory, and subagent-handle read-modify-write paths now use that single-file update primitive so foreground, service, and repair processes are less likely to lose concurrent JSON state updates
 - the runtime service now also resolves wake intent parsing and dispatch through a dedicated wake-command-dispatcher seam, so notification approval actions, scheduled task wakes, interrupted-run resume wakes, and schedule repair wakes all share the same service-owned handoff boundary instead of living inline in `OpenCrayAgentRuntimeService`
 - the shell controller now honors explicit runtime-reset requests without conflating them with ordinary interrupted-run resume wakes, so the `:runtime` process can still dispose the current shell, replace retained runtime ownership inside the existing execution controller, and attach a fresh shell when reset is actually requested, while `ACTION_RESUME_INTERRUPTED_RUNS` continues through the normal repair/resume path without forcing a retained-runtime rebuild
 - `RuntimeServiceIntentFactory` and the environment-owned `RuntimeServiceAccessGateway` now also expose a standalone `ACTION_RESET_RUNTIME` / `resetRuntime(...)` wake path, and the shell controller recognizes either that explicit action or `EXTRA_FORCE_RUNTIME_RESET`, so repair or diagnostics callers in the app process can ask the runtime process to rebuild retained ownership instead of resetting controller state locally in the wrong process
@@ -742,7 +743,7 @@ Status:
 - still pending
 
 - evaluate dedicated runtime process
-- continue hardening the remaining process-safe stores and service command protocol edges beyond the now-version-gated explicit command envelopes
+- continue hardening remaining direct-file stores such as run journal append paths, plus service command protocol edges beyond the now-version-gated explicit command envelopes
 - add richer OEM guidance
 
 Exit criteria:

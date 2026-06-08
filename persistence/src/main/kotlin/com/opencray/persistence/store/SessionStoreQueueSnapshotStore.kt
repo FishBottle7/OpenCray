@@ -21,9 +21,34 @@ class SessionStoreQueueSnapshotStore(
   }
 
   override fun save(snapshot: SessionQueueSnapshot) {
-    val existing = safeLoadRecord()
     val encodedSnapshot = ContractJson.instance.encodeToString(snapshot)
+    try {
+      sessionStore.update { existing ->
+        SessionStoreUpdate(
+          record = recordForSnapshot(
+            snapshot = snapshot,
+            existing = existing,
+            encodedSnapshot = encodedSnapshot,
+          ),
+          result = Unit,
+        )
+      }
+    } catch (_: IllegalStateException) {
+      sessionStore.save(
+        recordForSnapshot(
+          snapshot = snapshot,
+          existing = null,
+          encodedSnapshot = encodedSnapshot,
+        ),
+      )
+    }
+  }
 
+  private fun recordForSnapshot(
+    snapshot: SessionQueueSnapshot,
+    existing: SessionRecord?,
+    encodedSnapshot: String,
+  ): SessionRecord {
     val mergedState = existing?.state.orEmpty() + mapOf(
       StateKeys.QUEUE_STATE to snapshot.lifecycleState.name.lowercase(),
       StateKeys.QUEUE_NEXT_ENQUEUE_ORDER to snapshot.nextEnqueueOrder.toString(),
@@ -41,8 +66,7 @@ class SessionStoreQueueSnapshotStore(
       termuxMetadata = existing?.termuxMetadata.orEmpty(),
       extensions = existing?.extensions.orEmpty(),
     )
-
-    sessionStore.save(record)
+    return record
   }
 
   override fun clear() {

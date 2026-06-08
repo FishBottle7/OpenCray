@@ -5,6 +5,8 @@ import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.RecordStorageUpdate
+import com.opencray.persistence.store.file.updateRecord
 import java.io.File
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -371,33 +373,41 @@ private class FileBackedScheduledTaskSpecStore(
 
   override fun upsert(spec: ScheduledTaskSpec) {
     synchronized(lock) {
-      val existing = loadNormalizedRecord()
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = clock(),
-          specs = normalizeSpecs(
-            existing.specs.filterNot { persisted -> persisted.scheduleId == spec.scheduleId } + spec,
+      updateRecord { existing ->
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            specs = normalizeSpecs(
+              existing.specs.filterNot { persisted -> persisted.scheduleId == spec.scheduleId } + spec,
+            ),
           ),
-        ),
-      )
+          result = Unit,
+        )
+      }
     }
   }
 
   override fun remove(scheduleId: String) {
     synchronized(lock) {
-      val existing = loadNormalizedRecord()
-      val retained = existing.specs.filterNot { spec -> spec.scheduleId == scheduleId }
-      if (retained.size == existing.specs.size) {
-        return
+      updateRecord { existing ->
+        val retained = existing.specs.filterNot { spec -> spec.scheduleId == scheduleId }
+        if (retained.size == existing.specs.size) {
+          return@updateRecord RecordStorageUpdate(
+            value = existing,
+            result = Unit,
+            write = false,
+          )
+        }
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            specs = retained,
+          ),
+          result = Unit,
+        )
       }
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = clock(),
-          specs = retained,
-        ),
-      )
     }
   }
 
@@ -408,15 +418,18 @@ private class FileBackedScheduledTaskSpecStore(
   }
 
   private fun loadNormalizedRecord(): ScheduledTaskSpecStoreRecord {
-    val normalized = loadRecord().copy(
-      specs = normalizeSpecs(loadRecord().specs),
-    )
-    return if (normalized == loadRecord()) {
-      normalized
-    } else {
-      saveRecord(normalized.copy(updatedAtEpochMs = clock()))
-      normalized
+    val existing = loadRecord()
+    val normalizedSpecs = normalizeSpecs(existing.specs)
+    if (normalizedSpecs == existing.specs) {
+      return existing
     }
+    val repaired = existing.copy(
+      recordVersion = existing.recordVersion + 1L,
+      updatedAtEpochMs = clock(),
+      specs = normalizedSpecs,
+    )
+    saveRecord(repaired)
+    return repaired
   }
 
   private fun loadRecord(): ScheduledTaskSpecStoreRecord {
@@ -438,6 +451,29 @@ private class FileBackedScheduledTaskSpecStore(
         record,
       ),
     )
+  }
+
+  private fun <T> updateRecord(
+    update: (ScheduledTaskSpecStoreRecord) -> RecordStorageUpdate<ScheduledTaskSpecStoreRecord, T>,
+  ): T =
+    storage.updateRecord(
+      name = SPEC_STORE_FILE_NAME,
+      serializer = ScheduledTaskSpecStoreRecord.serializer(),
+    ) { current ->
+      update(normalizeRecord(current ?: ScheduledTaskSpecStoreRecord()))
+    }
+
+  private fun normalizeRecord(record: ScheduledTaskSpecStoreRecord): ScheduledTaskSpecStoreRecord {
+    val normalizedSpecs = normalizeSpecs(record.specs)
+    return if (normalizedSpecs == record.specs) {
+      record
+    } else {
+      record.copy(
+        recordVersion = record.recordVersion + 1L,
+        updatedAtEpochMs = clock(),
+        specs = normalizedSpecs,
+      )
+    }
   }
 
   private fun normalizeSpecs(specs: List<ScheduledTaskSpec>): List<ScheduledTaskSpec> = specs
@@ -472,16 +508,18 @@ private class FileBackedScheduledTaskRunRecordStore(
 
   override fun upsert(record: ScheduledTaskRunRecord) {
     synchronized(lock) {
-      val existing = loadNormalizedRecord()
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = clock(),
-          records = normalizeRunRecords(
-            existing.records.filterNot { persisted -> persisted.scheduleRunId == record.scheduleRunId } + record,
+      updateRecord { existing ->
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            records = normalizeRunRecords(
+              existing.records.filterNot { persisted -> persisted.scheduleRunId == record.scheduleRunId } + record,
+            ),
           ),
-        ),
-      )
+          result = Unit,
+        )
+      }
     }
   }
 
@@ -492,15 +530,18 @@ private class FileBackedScheduledTaskRunRecordStore(
   }
 
   private fun loadNormalizedRecord(): ScheduledTaskRunRecordStoreRecord {
-    val normalized = loadRecord().copy(
-      records = normalizeRunRecords(loadRecord().records),
-    )
-    return if (normalized == loadRecord()) {
-      normalized
-    } else {
-      saveRecord(normalized.copy(updatedAtEpochMs = clock()))
-      normalized
+    val existing = loadRecord()
+    val normalizedRecords = normalizeRunRecords(existing.records)
+    if (normalizedRecords == existing.records) {
+      return existing
     }
+    val repaired = existing.copy(
+      recordVersion = existing.recordVersion + 1L,
+      updatedAtEpochMs = clock(),
+      records = normalizedRecords,
+    )
+    saveRecord(repaired)
+    return repaired
   }
 
   private fun loadRecord(): ScheduledTaskRunRecordStoreRecord {
@@ -522,6 +563,29 @@ private class FileBackedScheduledTaskRunRecordStore(
         record,
       ),
     )
+  }
+
+  private fun <T> updateRecord(
+    update: (ScheduledTaskRunRecordStoreRecord) -> RecordStorageUpdate<ScheduledTaskRunRecordStoreRecord, T>,
+  ): T =
+    storage.updateRecord(
+      name = RUN_RECORD_STORE_FILE_NAME,
+      serializer = ScheduledTaskRunRecordStoreRecord.serializer(),
+    ) { current ->
+      update(normalizeRecord(current ?: ScheduledTaskRunRecordStoreRecord()))
+    }
+
+  private fun normalizeRecord(record: ScheduledTaskRunRecordStoreRecord): ScheduledTaskRunRecordStoreRecord {
+    val normalizedRecords = normalizeRunRecords(record.records)
+    return if (normalizedRecords == record.records) {
+      record
+    } else {
+      record.copy(
+        recordVersion = record.recordVersion + 1L,
+        updatedAtEpochMs = clock(),
+        records = normalizedRecords,
+      )
+    }
   }
 
   private fun normalizeRunRecords(
