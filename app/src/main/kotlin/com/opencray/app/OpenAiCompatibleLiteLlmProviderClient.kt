@@ -10,7 +10,9 @@ import com.opencray.llm.LiteLlmBuiltinToolDefinition
 import com.opencray.llm.LiteLlmBuiltinWebSearchObservation
 import com.opencray.llm.LiteLlmBuiltinWebSearchSource
 import com.opencray.llm.LiteLlmBuiltinToolType
+import com.opencray.llm.LiteLlmCompactResult
 import com.opencray.llm.LiteLlmMetadataKeys
+import com.opencray.llm.LiteLlmProviderCompactRequest
 import com.opencray.llm.LiteLlmProviderRequest
 import com.opencray.llm.LiteLlmProviderResult
 import com.opencray.llm.LiteLlmStructuredCompletion
@@ -74,6 +76,13 @@ private data class PromptCacheUsageSnapshot(
   val write5mTokens: Long? = null,
   val write1hTokens: Long? = null,
   val retention: String? = null,
+)
+
+private data class ResponsesCompactionSummary(
+  val summaryText: String,
+  val outputItemCount: Int,
+  val compactionItemCount: Int,
+  val encryptedContentCount: Int,
 )
 
 private enum class OpenAiBuiltinWebSearchDialect(
@@ -272,6 +281,112 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     }
   }
 
+  override fun compactConversation(request: LiteLlmProviderCompactRequest): LiteLlmCompactResult {
+    val baseUrl = request.route.baseUrl?.trim().orEmpty()
+    if (baseUrl.isEmpty()) {
+      return LiteLlmCompactResult.Failure(
+        errorCode = "PROVIDER_BASE_URL_MISSING",
+        errorMessage = "Provider route baseUrl is required.",
+        metadata = compactDiagnosticsMetadata(request),
+      )
+    }
+    val protocol = resolvedProtocol(request)
+    if (protocol != LlmProviderProtocols.OPENAI_RESPONSES) {
+      return LiteLlmCompactResult.Unavailable(
+        reason = "protocol_remote_compaction_not_supported",
+        metadata = compactDiagnosticsMetadata(request),
+      )
+    }
+    if (!responsesRemoteCompactionSupported(request)) {
+      return LiteLlmCompactResult.Unavailable(
+        reason = "responses_remote_compaction_not_enabled",
+        metadata = compactDiagnosticsMetadata(request),
+      )
+    }
+    invalidToolMessageContract(request.request.gatewayRequest.messages)?.let { validationError ->
+      return LiteLlmCompactResult.Failure(
+        errorCode = "PROVIDER_COMPACT_REQUEST_INVALID_TOOL_CALL_ID",
+        errorMessage = validationError,
+        metadata = compactDiagnosticsMetadata(request),
+      )
+    }
+    val endpoint = buildResponsesCompactEndpointUrl(baseUrl)
+    val timeoutMs = request.route.timeoutMs
+    val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+      requestMethod = "POST"
+      connectTimeout = timeoutMs.toInt()
+      readTimeout = timeoutMs.toInt()
+      doInput = true
+      doOutput = true
+      setRequestProperty("Content-Type", "application/json")
+      setRequestProperty("Accept", "application/json")
+      request.request.gatewayRequest.authHeaders.forEach { (name, value) ->
+        if (name.isNotBlank() && value.isNotBlank()) {
+          setRequestProperty(name, value)
+        }
+      }
+      setRequestProperty("User-Agent", userAgent)
+    }
+
+    val diagnostics = compactDiagnosticsMetadata(request)
+    return try {
+      val body = buildOpenAiResponsesCompactRequestBody(request)
+      connection.outputStream.use { output ->
+        output.write(body.toByteArray(StandardCharsets.UTF_8))
+      }
+      val responseCode = connection.responseCode
+      val responseText = if (responseCode in 200..299) {
+        readStream(connection.inputStream)
+      } else {
+        readStream(connection.errorStream)
+      }
+      when {
+        responseCode !in 200..299 -> LiteLlmCompactResult.Failure(
+          errorCode = "HTTP_$responseCode",
+          errorMessage = extractErrorMessage(responseText).ifBlank {
+            "Provider compact endpoint returned HTTP $responseCode."
+          },
+          metadata = diagnostics + mapOf("statusCode" to responseCode.toString()),
+        )
+
+        else -> {
+          val payload = JSONObject(responseText)
+          val summary = responsesCompactionSummary(payload)
+          LiteLlmCompactResult.Success(
+            summaryText = summary.summaryText,
+            outputItemCount = summary.outputItemCount,
+            compactionItemCount = summary.compactionItemCount,
+            encryptedContentCount = summary.encryptedContentCount,
+            metadata = diagnostics + mapOf(
+              "statusCode" to responseCode.toString(),
+              LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_REQUESTED to "true",
+              LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_USED to "true",
+              LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_TRIGGER_STAGE to request.request.triggerStage,
+              LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_OUTPUT_ITEM_COUNT to summary.outputItemCount.toString(),
+              LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_ITEM_COUNT to summary.compactionItemCount.toString(),
+              LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_ENCRYPTED_CONTENT_COUNT to
+                summary.encryptedContentCount.toString(),
+            ),
+          )
+        }
+      }
+    } catch (timeout: java.net.SocketTimeoutException) {
+      LiteLlmCompactResult.Failure(
+        errorCode = "PROVIDER_COMPACT_TIMEOUT",
+        errorMessage = timeout.message ?: "Provider compact request timed out.",
+        metadata = diagnostics,
+      )
+    } catch (exception: Exception) {
+      LiteLlmCompactResult.Failure(
+        errorCode = "PROVIDER_COMPACT_TRANSPORT_ERROR",
+        errorMessage = exception.message ?: exception::class.java.simpleName,
+        metadata = diagnostics + mapOf("exceptionType" to exception::class.java.name),
+      )
+    } finally {
+      connection.disconnect()
+    }
+  }
+
   private fun LiteLlmProviderRequest.debugSummary(
     protocol: String,
     streamResponses: Boolean,
@@ -401,6 +516,30 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       }
     }
   }
+
+  private fun buildResponsesCompactEndpointUrl(baseUrl: String): String {
+    val trimmed = baseUrl.trimEnd('/')
+    return when {
+      trimmed.endsWith("/v1/responses/compact") -> trimmed
+      trimmed.endsWith("/v1/responses") -> "$trimmed/compact"
+      trimmed.endsWith("/v1") -> "$trimmed/responses/compact"
+      else -> "$trimmed/v1/responses/compact"
+    }
+  }
+
+  private fun buildOpenAiResponsesCompactRequestBody(request: LiteLlmProviderCompactRequest): String {
+    val payload = JSONObject(buildOpenAiResponsesRequestBody(request.toProviderRequestForPayload()))
+    payload.remove("stream")
+    payload.remove("previous_response_id")
+    return payload.toString()
+  }
+
+  private fun LiteLlmProviderCompactRequest.toProviderRequestForPayload(): LiteLlmProviderRequest =
+    LiteLlmProviderRequest(
+      route = route,
+      request = request.gatewayRequest,
+      selection = selection,
+    )
 
   private fun buildRequestBody(request: LiteLlmProviderRequest): String {
     val protocol = resolvedProtocol(request)
@@ -745,6 +884,31 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           output.optJSONObject(index)?.let(::add)
         }
       },
+    )
+  }
+
+  private fun responsesCompactionSummary(payload: JSONObject): ResponsesCompactionSummary {
+    val output = payload.optJSONArray("output") ?: JSONArray()
+    val outputItems = buildList {
+      for (index in 0 until output.length()) {
+        output.optJSONObject(index)?.let(::add)
+      }
+    }
+    val textSegments = responsesTextSegments(outputItems)
+    var compactionItemCount = 0
+    var encryptedContentCount = 0
+    outputItems.forEach { item ->
+      if (item.optString("type") == "compaction") {
+        compactionItemCount += 1
+      }
+      item.nonBlankString("encrypted_content")
+        ?.let { encryptedContentCount += 1 }
+    }
+    return ResponsesCompactionSummary(
+      summaryText = textSegments.ordered.joinToString(separator = "\n").trim(),
+      outputItemCount = outputItems.size,
+      compactionItemCount = compactionItemCount,
+      encryptedContentCount = encryptedContentCount,
     )
   }
 
@@ -2047,12 +2211,54 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         ?.trim()
         ?.lowercase() == "true"
 
+  private fun resolvedProtocol(request: LiteLlmProviderCompactRequest): String =
+    LlmProviderProtocols.normalize(request.route.metadata["protocol"])
+
+  private fun responsesRemoteCompactionSupported(request: LiteLlmProviderCompactRequest): Boolean =
+    compactRequestMetadataBoolean(request, LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_REMOTE_COMPACTION) ||
+      request.route.metadata[LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_SUPPORTED]
+        ?.trim()
+        ?.lowercase() == "true" ||
+      request.route.metadata["responsesRemoteCompactionSupported"]
+        ?.trim()
+        ?.lowercase() == "true"
+
+  private fun compactDiagnosticsMetadata(
+    request: LiteLlmProviderCompactRequest,
+  ): Map<String, String> = buildMap {
+    put("providerId", request.route.providerId)
+    put("model", request.route.model)
+    put("routeId", request.route.id)
+    put("protocol", resolvedProtocol(request))
+    put(LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_REQUESTED, "true")
+    put(
+      LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_SUPPORTED,
+      responsesRemoteCompactionSupported(request).toString(),
+    )
+    request.request.triggerStage
+      .trim()
+      .takeIf(String::isNotBlank)
+      ?.let { triggerStage ->
+        put(LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_TRIGGER_STAGE, triggerStage)
+      }
+  }
+
   private fun requestMetadataBoolean(
     request: LiteLlmProviderRequest,
     key: String,
   ): Boolean = request.request.metadata[key]
     ?.trim()
     ?.lowercase() == "true"
+
+  private fun compactRequestMetadataBoolean(
+    request: LiteLlmProviderCompactRequest,
+    key: String,
+  ): Boolean = request.request.metadata[key]
+    ?.trim()
+    ?.lowercase() == "true" ||
+    request.request.gatewayRequest.metadata[key]
+      ?.trim()
+      ?.lowercase() == "true"
 
   private fun buildOpenAiToolsArray(request: LiteLlmProviderRequest): JSONArray = JSONArray().apply {
     val builtinWebSearchDialect = openAiBuiltinWebSearchDialect(request)

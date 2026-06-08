@@ -3156,6 +3156,11 @@ class OpenCrayAgentRuntime(
           ?.let { entryTraceSummary ->
             put("contextDurableCompactionEntryTraceSummary", entryTraceSummary)
           }
+        report.durableCompactionTrace.remoteCompactionMetadata.forEach { (key, value) ->
+          if (key.isNotBlank() && value.isNotBlank()) {
+            put(key, value)
+          }
+        }
       }
       if (!report.liveContextTrace.isEmpty) {
         report.liveContextTrace.mode?.let { mode ->

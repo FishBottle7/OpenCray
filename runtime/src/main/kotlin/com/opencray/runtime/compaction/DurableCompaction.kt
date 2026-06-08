@@ -69,6 +69,7 @@ data class DurableCompactionTrace(
   val totalCompactedMessageCount: Int = 0,
   val latestCompactedAtEpochMs: Long? = null,
   val entryTraces: List<DurableCompactionEntryTrace> = emptyList(),
+  val remoteCompactionMetadata: Map<String, String> = emptyMap(),
 ) {
   init {
     require(sourceTranscriptMessageCount >= 0) {
@@ -107,7 +108,8 @@ data class DurableCompactionTrace(
       omittedSummaryCount == 0 &&
       totalCompactedMessageCount == 0 &&
       latestCompactedAtEpochMs == null &&
-      entryTraces.isEmpty()
+      entryTraces.isEmpty() &&
+      remoteCompactionMetadata.isEmpty()
 }
 
 data class DurableCompactionEntryTrace(
@@ -135,6 +137,51 @@ data class DurableCompactionEntryTrace(
       "DurableCompactionEntryTrace omittedSystemMessageCount must be >= 0."
     }
   }
+}
+
+data class RemoteCompactionRequest(
+  val triggerStage: String,
+  val conversation: List<RuntimeConversationMessage>,
+  val omittedMessages: List<RuntimeConversationMessage>,
+  val retainedMessages: List<RuntimeConversationMessage>,
+  val llmMetadata: Map<String, String> = emptyMap(),
+  val replayPressure: ReplayPressureSnapshot,
+)
+
+sealed interface RemoteCompactionResult {
+  data class Success(
+    val summary: CompactionSummary,
+    val metadata: Map<String, String> = emptyMap(),
+  ) : RemoteCompactionResult
+
+  data class Unavailable(
+    val reason: String,
+    val metadata: Map<String, String> = emptyMap(),
+  ) : RemoteCompactionResult {
+    init {
+      require(reason.isNotBlank()) { "RemoteCompactionResult.Unavailable reason must not be blank." }
+    }
+  }
+
+  data class Failure(
+    val errorCode: String,
+    val errorMessage: String,
+    val metadata: Map<String, String> = emptyMap(),
+  ) : RemoteCompactionResult {
+    init {
+      require(errorCode.isNotBlank()) { "RemoteCompactionResult.Failure errorCode must not be blank." }
+      require(errorMessage.isNotBlank()) { "RemoteCompactionResult.Failure errorMessage must not be blank." }
+    }
+  }
+}
+
+fun interface RemoteCompactionProvider {
+  fun compact(request: RemoteCompactionRequest): RemoteCompactionResult
+}
+
+object NoOpRemoteCompactionProvider : RemoteCompactionProvider {
+  override fun compact(request: RemoteCompactionRequest): RemoteCompactionResult =
+    RemoteCompactionResult.Unavailable("remote_compaction_not_configured")
 }
 
 data class DurableCompactionContext(
@@ -282,22 +329,26 @@ class DurableCompactionCoordinator(
     transcriptStore: SessionTranscriptStore,
     compactionStore: SessionCompactionStore,
     llmMetadata: Map<String, String> = emptyMap(),
+    remoteCompactionProvider: RemoteCompactionProvider = NoOpRemoteCompactionProvider,
   ): DurableCompactionContext = compact(
     triggerStage = MEMORY_COMPACTION_TRIGGER_STAGE_PRE_COMPACTION,
     transcriptStore = transcriptStore,
     compactionStore = compactionStore,
     llmMetadata = llmMetadata,
+    remoteCompactionProvider = remoteCompactionProvider,
   )
 
   fun compactMidTurn(
     transcriptStore: SessionTranscriptStore,
     compactionStore: SessionCompactionStore,
     llmMetadata: Map<String, String> = emptyMap(),
+    remoteCompactionProvider: RemoteCompactionProvider = NoOpRemoteCompactionProvider,
   ): DurableCompactionContext = compact(
     triggerStage = MEMORY_COMPACTION_TRIGGER_STAGE_MID_TURN,
     transcriptStore = transcriptStore,
     compactionStore = compactionStore,
     llmMetadata = llmMetadata,
+    remoteCompactionProvider = remoteCompactionProvider,
   )
 
   private fun compact(
@@ -305,6 +356,7 @@ class DurableCompactionCoordinator(
     transcriptStore: SessionTranscriptStore,
     compactionStore: SessionCompactionStore,
     llmMetadata: Map<String, String> = emptyMap(),
+    remoteCompactionProvider: RemoteCompactionProvider = NoOpRemoteCompactionProvider,
   ): DurableCompactionContext {
     val conversation = transcriptStore.snapshot()
     val effectiveTranscriptWindowBuilder = sourceBudgetPolicy
@@ -327,7 +379,23 @@ class DurableCompactionCoordinator(
         triggerStage = triggerStage,
       )
     }
-    val summary = compactionPolicy.summarize(selection.omittedMessages)
+    val remoteResult = remoteCompactionProvider.compact(
+      RemoteCompactionRequest(
+        triggerStage = triggerStage,
+        conversation = conversation,
+        omittedMessages = selection.omittedMessages,
+        retainedMessages = selection.window.messages,
+        llmMetadata = llmMetadata,
+        replayPressure = replayPressure,
+      ),
+    )
+    val remoteCompactionMetadata = remoteResult.metadata()
+    val summary = when (remoteResult) {
+      is RemoteCompactionResult.Success -> remoteResult.summary
+      is RemoteCompactionResult.Unavailable,
+      is RemoteCompactionResult.Failure,
+      -> compactionPolicy.summarize(selection.omittedMessages)
+    }
       ?: return toContext(
         rendered = renderer.render(currentState),
         compactedThisRun = false,
@@ -335,6 +403,7 @@ class DurableCompactionCoordinator(
         retainedTranscriptMessageCount = conversation.size,
         replayPressure = replayPressure,
         triggerStage = triggerStage,
+        remoteCompactionMetadata = remoteCompactionMetadata,
       )
     val compactedAtEpochMs = clock()
     val updatedState = durableCompactionPolicy.append(
@@ -353,6 +422,7 @@ class DurableCompactionCoordinator(
       latestCompactedAtEpochMs = compactedAtEpochMs,
       replayPressure = replayPressure,
       triggerStage = triggerStage,
+      remoteCompactionMetadata = remoteCompactionMetadata,
     )
   }
 
@@ -373,6 +443,7 @@ class DurableCompactionCoordinator(
     latestCompactedAtEpochMs: Long? = rendered.latestCompactedAtEpochMs,
     replayPressure: ReplayPressureSnapshot? = null,
     triggerStage: String = MEMORY_COMPACTION_TRIGGER_STAGE_PRE_COMPACTION,
+    remoteCompactionMetadata: Map<String, String> = emptyMap(),
   ): DurableCompactionContext = DurableCompactionContext(
     text = rendered.text,
     trace = DurableCompactionTrace(
@@ -391,8 +462,15 @@ class DurableCompactionCoordinator(
       totalCompactedMessageCount = rendered.totalCompactedMessageCount,
       latestCompactedAtEpochMs = latestCompactedAtEpochMs,
       entryTraces = rendered.entryTraces,
+      remoteCompactionMetadata = remoteCompactionMetadata,
     ),
   )
+}
+
+private fun RemoteCompactionResult.metadata(): Map<String, String> = when (this) {
+  is RemoteCompactionResult.Success -> metadata
+  is RemoteCompactionResult.Unavailable -> metadata
+  is RemoteCompactionResult.Failure -> metadata
 }
 
 private const val MEMORY_COMPACTION_TRIGGER_STAGE_PRE_COMPACTION: String = "pre_compaction"

@@ -5,6 +5,9 @@ import kotlinx.serialization.json.JsonObject
 
 interface LiteLlmGateway {
   fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult
+
+  fun compactConversation(request: LiteLlmCompactRequest): LiteLlmCompactResult =
+    LiteLlmCompactResult.Unavailable("gateway_compaction_not_supported")
 }
 
 interface LiteLlmVisibleTextObserver {
@@ -444,6 +447,23 @@ data class LiteLlmProviderRequest(
   val selection: LiteLlmRouteSelectionMetadata,
 )
 
+data class LiteLlmCompactRequest(
+  val requestId: String = "compact-${UUID.randomUUID()}",
+  val gatewayRequest: LiteLlmGatewayRequest,
+  val triggerStage: String = "",
+  val metadata: Map<String, String> = emptyMap(),
+) {
+  init {
+    require(requestId.isNotBlank()) { "LiteLlmCompactRequest requestId must not be blank." }
+  }
+}
+
+data class LiteLlmProviderCompactRequest(
+  val route: ProviderRoute,
+  val request: LiteLlmCompactRequest,
+  val selection: LiteLlmRouteSelectionMetadata,
+)
+
 sealed interface LiteLlmProviderResult {
   data class Success(
     val outputText: String,
@@ -480,8 +500,47 @@ sealed interface LiteLlmProviderResult {
   }
 }
 
+sealed interface LiteLlmCompactResult {
+  data class Success(
+    val summaryText: String,
+    val outputItemCount: Int = 0,
+    val compactionItemCount: Int = 0,
+    val encryptedContentCount: Int = 0,
+    val metadata: Map<String, String> = emptyMap(),
+  ) : LiteLlmCompactResult {
+    init {
+      require(outputItemCount >= 0) { "LiteLlmCompactResult outputItemCount must be >= 0." }
+      require(compactionItemCount >= 0) { "LiteLlmCompactResult compactionItemCount must be >= 0." }
+      require(encryptedContentCount >= 0) { "LiteLlmCompactResult encryptedContentCount must be >= 0." }
+    }
+  }
+
+  data class Unavailable(
+    val reason: String,
+    val metadata: Map<String, String> = emptyMap(),
+  ) : LiteLlmCompactResult {
+    init {
+      require(reason.isNotBlank()) { "LiteLlmCompactResult.Unavailable reason must not be blank." }
+    }
+  }
+
+  data class Failure(
+    val errorCode: String = "PROVIDER_COMPACT_FAILURE",
+    val errorMessage: String,
+    val metadata: Map<String, String> = emptyMap(),
+  ) : LiteLlmCompactResult {
+    init {
+      require(errorCode.isNotBlank()) { "LiteLlmCompactResult.Failure errorCode must not be blank." }
+      require(errorMessage.isNotBlank()) { "LiteLlmCompactResult.Failure errorMessage must not be blank." }
+    }
+  }
+}
+
 interface LiteLlmProviderClient {
   fun execute(request: LiteLlmProviderRequest): LiteLlmProviderResult
+
+  fun compactConversation(request: LiteLlmProviderCompactRequest): LiteLlmCompactResult =
+    LiteLlmCompactResult.Unavailable("provider_compaction_not_supported")
 }
 
 interface LiteLlmRoutingSettingsStore {
@@ -613,6 +672,22 @@ class DefaultLiteLlmGateway(
   private val logger: LiteLlmGatewayLogger = NoOpLiteLlmGatewayLogger,
   private val clock: () -> Long = System::currentTimeMillis,
 ) : LiteLlmGateway {
+
+  override fun compactConversation(request: LiteLlmCompactRequest): LiteLlmCompactResult {
+    val routing = routingStore.readRouting()
+    val activeProfile = routing.activeProfile()
+      ?: return LiteLlmCompactResult.Unavailable("routing_profile_missing")
+    val selectedRoute = activeProfile.orderedRoutes().firstOrNull()
+      ?: return LiteLlmCompactResult.Unavailable("routing_route_missing")
+    val routeMetadata = activeProfile.safeSelectionMetadata(routeId = selectedRoute.id)
+    return providerClient.compactConversation(
+      LiteLlmProviderCompactRequest(
+        route = selectedRoute,
+        request = request,
+        selection = routeMetadata,
+      ),
+    )
+  }
 
   override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
     val startedAtEpochMs = clock()

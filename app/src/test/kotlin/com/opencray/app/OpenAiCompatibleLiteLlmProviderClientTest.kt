@@ -2,6 +2,8 @@ package com.opencray.app
 
 import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.LiteLlmAssistantPhase
+import com.opencray.llm.LiteLlmCompactRequest
+import com.opencray.llm.LiteLlmCompactResult
 import com.opencray.llm.LiteLlmGatewayAttachment
 import com.opencray.llm.LiteLlmGatewayAttachmentKind
 import com.opencray.llm.LiteLlmGatewayMessage
@@ -10,6 +12,7 @@ import com.opencray.llm.LiteLlmGatewayToolResult
 import com.opencray.llm.LiteLlmBuiltinToolDefinition
 import com.opencray.llm.LiteLlmBuiltinToolType
 import com.opencray.llm.LiteLlmMetadataKeys
+import com.opencray.llm.LiteLlmProviderCompactRequest
 import com.opencray.llm.LiteLlmProviderRequest
 import com.opencray.llm.LiteLlmProviderResult
 import com.opencray.llm.LiteLlmRouteSelectionMetadata
@@ -875,6 +878,168 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       runCatching { server.close() }
       serverThread.join(5_000L)
     }
+  }
+
+  @Test
+  fun compactConversationUsesResponsesCompactEndpointAndParsesCompactionOutput() {
+    val requestLine = AtomicReference<String>()
+    val userAgent = AtomicReference<String>()
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, requestLine, userAgent, requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "resp_compact",
+                "output": [
+                  {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                      { "type": "output_text", "text": "Remote compacted summary." }
+                    ]
+                  },
+                  {
+                    "type": "compaction",
+                    "encrypted_content": "opaque-capsule"
+                  }
+                ]
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.compactConversation(
+        LiteLlmProviderCompactRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "reasoning_effort" to "medium",
+              "responsesRemoteCompactionSupported" to "true",
+            ),
+          ),
+          request = LiteLlmCompactRequest(
+            gatewayRequest = LiteLlmGatewayRequest(
+              prompt = "fallback prompt",
+              systemPrompt = "system prompt",
+              messages = listOf(
+                LiteLlmGatewayMessage(
+                  role = LiteLlmGatewayMessageRole.USER,
+                  content = "Older task context",
+                ),
+                LiteLlmGatewayMessage(
+                  role = LiteLlmGatewayMessageRole.ASSISTANT,
+                  toolCalls = listOf(sampleStructuredToolCall(id = "oc-call-compact")),
+                ),
+                LiteLlmGatewayMessage(
+                  role = LiteLlmGatewayMessageRole.TOOL,
+                  toolResult = LiteLlmGatewayToolResult(
+                    toolCallId = "oc-call-compact",
+                    toolName = "EchoProbe",
+                    content = """{"status":"success"}""",
+                  ),
+                ),
+              ),
+              tools = listOf(sampleToolDefinition()),
+              toolChoice = LiteLlmToolChoice(
+                mode = LiteLlmToolChoiceMode.TOOL,
+                toolName = "EchoProbe",
+              ),
+              parallelToolCalls = false,
+              previousResponseId = "resp_previous",
+              responseApiPreferred = true,
+              authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            ),
+            triggerStage = "pre_compaction",
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      assertEquals("POST /v1/responses/compact HTTP/1.1", requestLine.get())
+      assertTrue(result is LiteLlmCompactResult.Success)
+      val success = result as LiteLlmCompactResult.Success
+      assertEquals("Remote compacted summary.", success.summaryText)
+      assertEquals(2, success.outputItemCount)
+      assertEquals(1, success.compactionItemCount)
+      assertEquals(1, success.encryptedContentCount)
+      assertEquals("true", success.metadata[LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_USED])
+      assertEquals("pre_compaction", success.metadata[LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_TRIGGER_STAGE])
+
+      val payload = JSONObject(requestBody.get())
+      assertEquals("gpt-5-mini", payload.getString("model"))
+      assertFalse(payload.has("previous_response_id"))
+      assertFalse(payload.has("stream"))
+      assertEquals("system prompt", payload.getString("instructions"))
+      assertEquals("medium", payload.getJSONObject("reasoning").getString("effort"))
+      assertEquals(false, payload.getBoolean("parallel_tool_calls"))
+      val input = payload.getJSONArray("input")
+      assertEquals("Older task context", input.getJSONObject(0).getString("content"))
+      assertEquals("function_call", input.getJSONObject(1).getString("type"))
+      assertEquals("function_call_output", input.getJSONObject(2).getString("type"))
+      assertEquals("function", payload.getJSONArray("tools").getJSONObject(0).getString("type"))
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun compactConversationReturnsUnavailableForNonResponsesProtocols() {
+    val client = OpenAiCompatibleLiteLlmProviderClient()
+
+    val result = client.compactConversation(
+      LiteLlmProviderCompactRequest(
+        route = ProviderRoute(
+          id = "route-openai-chat",
+          providerId = "openai",
+          baseUrl = "http://127.0.0.1:1/v1",
+          model = "gpt-4o-mini",
+          metadata = mapOf("protocol" to LlmProviderProtocols.OPENAI),
+        ),
+        request = LiteLlmCompactRequest(
+          gatewayRequest = LiteLlmGatewayRequest(prompt = "Compact this conversation."),
+        ),
+        selection = LiteLlmRouteSelectionMetadata(
+          profileId = "profile-test",
+          routeId = "route-openai-chat",
+          providerId = "openai",
+          model = "gpt-4o-mini",
+          attemptIndex = 0,
+        ),
+      ),
+    )
+
+    assertTrue(result is LiteLlmCompactResult.Unavailable)
+    assertEquals(
+      "protocol_remote_compaction_not_supported",
+      (result as LiteLlmCompactResult.Unavailable).reason,
+    )
   }
 
   @Test

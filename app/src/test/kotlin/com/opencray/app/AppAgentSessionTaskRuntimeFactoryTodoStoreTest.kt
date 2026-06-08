@@ -10,6 +10,7 @@ import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
+import com.opencray.llm.LiteLlmMetadataKeys
 import com.opencray.runtime.AgentTodoEntry
 import com.opencray.runtime.AgentTodoStatus
 import com.opencray.runtime.AgentToolCall
@@ -29,6 +30,10 @@ import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.bootstrap.BootstrapMode
+import com.opencray.runtime.compaction.RemoteCompactionProvider
+import com.opencray.runtime.compaction.RemoteCompactionRequest
+import com.opencray.runtime.compaction.RemoteCompactionResult
+import com.opencray.runtime.context.CompactionSummary
 import com.opencray.runtime.memory.MemoryCandidateExtractor
 import com.opencray.runtime.memory.MemoryFlushOutcome
 import com.opencray.runtime.memory.MemoryInteractionPreferenceExtensionKeys
@@ -2238,6 +2243,81 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertFalse(prepared.sessionContext.conversation.first().content.contains("Conversation message 1"))
   }
 
+  @Test
+  fun prepareSessionContextUsesRemoteDurableCompactionWhenAvailable() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-remote-durable-compaction"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-remote-durable-compaction").toPath()
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    (1..15).forEach { index ->
+      chatStore.appendMessage(
+        sessionId = sessionId,
+        role = com.opencray.persistence.model.ChatTranscriptRole.USER,
+        text = "Remote compact candidate message $index that should be summarized by provider.",
+      )
+    }
+    val remoteProvider = RecordingRemoteCompactionProvider(
+      RemoteCompactionResult.Success(
+        summary = CompactionSummary(
+          text = "Provider-side compacted history capsule.",
+          compactedMessageCount = 4,
+          omittedUserMessageCount = 4,
+        ),
+        metadata = mapOf(
+          LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_REQUESTED to "true",
+          LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_USED to "true",
+          LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_TRIGGER_STAGE to "pre_compaction",
+        ),
+      ),
+    )
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    val prepared = factory.prepareSessionContext(
+      sessionId = sessionId,
+      workspaceId = "workspace-remote-durable",
+      visibleThroughMessageId = null,
+      excludedMessageIds = emptySet(),
+      soulProfile = null,
+      taskType = AgentTaskType.PROMPT,
+      taskId = "task-remote-durable-compaction",
+      taskInput = "Continue after remote durable compaction.",
+      transcriptStore = factory.transcriptStoreForSession(sessionId),
+      memoryRecords = emptyList(),
+      llmMetadata = mapOf("context_window_tokens" to "256"),
+      remoteCompactionProvider = remoteProvider,
+    )
+
+    assertTrue(prepared.sessionContext.durableCompaction.included)
+    assertTrue(prepared.sessionContext.durableCompaction.text.contains("Provider-side compacted history capsule."))
+    assertFalse(
+      prepared.sessionContext.durableCompaction.text.contains(
+        "Compacted 4 older message",
+        ignoreCase = true,
+      ),
+    )
+    assertEquals(1, remoteProvider.requests.size)
+    assertEquals("pre_compaction", remoteProvider.requests.single().triggerStage)
+    assertEquals(4, remoteProvider.requests.single().omittedMessages.size)
+    assertTrue(prepared.sessionContext.durableCompaction.trace.compactedThisRun)
+    assertEquals(12, prepared.sessionContext.conversation.size)
+    assertEquals(
+      "true",
+      prepared.sessionContext.durableCompaction.trace
+        .remoteCompactionMetadata[LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_USED],
+    )
+    assertEquals(
+      "pre_compaction",
+      prepared.sessionContext.durableCompaction.trace
+        .remoteCompactionMetadata[LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_TRIGGER_STAGE],
+    )
+  }
+
   private fun memoryRecord(
     id: String,
     content: String,
@@ -2450,6 +2530,17 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
       val hadRecords = records.isNotEmpty()
       records.clear()
       return hadRecords
+    }
+  }
+
+  private class RecordingRemoteCompactionProvider(
+    private val result: RemoteCompactionResult,
+  ) : RemoteCompactionProvider {
+    val requests = mutableListOf<RemoteCompactionRequest>()
+
+    override fun compact(request: RemoteCompactionRequest): RemoteCompactionResult {
+      requests += request
+      return result
     }
   }
 }
