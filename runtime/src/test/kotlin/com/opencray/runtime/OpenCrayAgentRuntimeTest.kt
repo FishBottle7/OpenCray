@@ -23,6 +23,7 @@ import com.opencray.llm.LiteLlmMetadataKeys
 import com.opencray.llm.LiteLlmGatewayStatus
 import com.opencray.llm.LiteLlmRouteSelectionMetadata
 import com.opencray.llm.LiteLlmStructuredCompletion
+import com.opencray.llm.LiteLlmStructuredFinalAttachment
 import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.runtime.bootstrap.BootstrapContext
 import com.opencray.runtime.bootstrap.BootstrapFileTrace
@@ -4776,6 +4777,69 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(4_200L, attachments.last().durationMs)
     assertEquals(listOf(12, 48, 80), attachments.last().waveformBars)
     assertEquals("Voice summary", attachments.last().transcriptText)
+  }
+
+  @Test
+  fun runPromptTaskCarriesNativeFinalAttachmentsIntoResultMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-native-final-attachments-workspace")
+    val gateway = ScriptedGateway(
+      results = listOf(
+        gatewaySuccessResult(
+          outputText = "",
+          completion = LiteLlmStructuredCompletion(
+            finalText = "Attached native media.",
+            finalAttachments = listOf(
+              LiteLlmStructuredFinalAttachment(
+                kind = " image ",
+                artifactId = " artifact-native-image-1 ",
+                displayName = " native.png ",
+                mimeType = " image/png ",
+              ),
+              LiteLlmStructuredFinalAttachment(
+                kind = "voice",
+                relativePath = "outputs/native-voice.m4a",
+                durationMs = 3_200L,
+                waveformBars = listOf(10, 20, 30),
+                transcriptText = " Native voice summary ",
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      clock = IncrementingClock(start = 2_350L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Send native media attachments."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Attached native media.", result.stdout)
+    assertEquals("native_structured_final", result.metadata["responseFormat"])
+    val attachmentsJson = result.metadata[OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON].orEmpty()
+    val attachments = Json.decodeFromString(
+      ListSerializer(OpenCrayFinalAttachment.serializer()),
+      attachmentsJson,
+    )
+    assertEquals(2, attachments.size)
+    assertEquals("artifact-native-image-1", attachments.first().artifactId)
+    assertEquals("image", attachments.first().kind)
+    assertEquals("native.png", attachments.first().displayName)
+    assertEquals("image/png", attachments.first().mimeType)
+    assertEquals("outputs/native-voice.m4a", attachments.last().relativePath)
+    assertEquals("voice", attachments.last().kind)
+    assertEquals(3_200L, attachments.last().durationMs)
+    assertEquals(listOf(10, 20, 30), attachments.last().waveformBars)
+    assertEquals("Native voice summary", attachments.last().transcriptText)
   }
 
   @Test

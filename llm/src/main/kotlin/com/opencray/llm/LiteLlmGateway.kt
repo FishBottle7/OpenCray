@@ -387,9 +387,23 @@ data class LiteLlmStructuredToolCall(
   }
 }
 
+data class LiteLlmStructuredFinalAttachment(
+  val kind: String? = null,
+  val relativePath: String? = null,
+  val path: String? = null,
+  val artifactId: String? = null,
+  val chatAttachmentId: String? = null,
+  val displayName: String? = null,
+  val mimeType: String? = null,
+  val durationMs: Long? = null,
+  val waveformBars: List<Int> = emptyList(),
+  val transcriptText: String? = null,
+)
+
 data class LiteLlmStructuredCompletion(
   val toolCalls: List<LiteLlmStructuredToolCall> = emptyList(),
   val finalText: String? = null,
+  val finalAttachments: List<LiteLlmStructuredFinalAttachment> = emptyList(),
   val commentaryText: String? = null,
   val commentaryTexts: List<String> = commentaryText
     ?.trim()
@@ -403,6 +417,7 @@ data class LiteLlmStructuredCompletion(
   val hasStructuredActions: Boolean
     get() = toolCalls.isNotEmpty() ||
       !finalText.isNullOrBlank() ||
+      finalAttachments.isNotEmpty() ||
       commentaryTexts.any(String::isNotBlank) ||
       !commentaryText.isNullOrBlank()
 

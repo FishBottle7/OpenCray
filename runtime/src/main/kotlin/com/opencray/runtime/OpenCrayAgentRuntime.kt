@@ -28,6 +28,7 @@ import com.opencray.llm.LiteLlmMetadataKeys
 import com.opencray.llm.LiteLlmGatewayStatus
 import com.opencray.llm.LiteLlmGatewayToolResult
 import com.opencray.llm.LiteLlmStructuredCompletion
+import com.opencray.llm.LiteLlmStructuredFinalAttachment
 import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.llm.LiteLlmToolDefinition
 import com.opencray.llm.LiteLlmToolChoice
@@ -1274,16 +1275,21 @@ class OpenCrayAgentRuntime(
       .mapTo(actions) { toolCall ->
         AgentModelAction.ToolCall(call = parseStructuredToolCall(toolCall))
       }
-    completion.finalText
+    val finalText = completion.finalText
       ?.trim()
       ?.takeIf(String::isNotBlank)
-      ?.takeIf { completion.toolCalls.isEmpty() }
-      ?.let { finalText ->
-        actions += AgentModelAction.Final(
-          answer = finalText,
-          responseFormat = "native_text_final",
-        )
-      }
+    val finalAttachments = completion.finalAttachments.map(::toOpenCrayFinalAttachment)
+    if (completion.toolCalls.isEmpty() && (finalText != null || finalAttachments.isNotEmpty())) {
+      actions += AgentModelAction.Final(
+        answer = finalText.orEmpty(),
+        responseFormat = if (finalAttachments.isEmpty()) {
+          "native_text_final"
+        } else {
+          "native_structured_final"
+        },
+        attachments = finalAttachments,
+      )
+    }
     if (actions.isNotEmpty()) {
       return ParsedModelActionBatch.Actions(
         actions = actions,
@@ -1470,6 +1476,7 @@ class OpenCrayAgentRuntime(
   ): Boolean = !gatewayResult.outputText.isNullOrBlank() ||
     !gatewayResult.completion?.rawText.isNullOrBlank() ||
     !gatewayResult.completion?.finalText.isNullOrBlank() ||
+    gatewayResult.completion?.finalAttachments?.isNotEmpty() == true ||
     gatewayResult.completion?.let(::structuredCompletionCommentaryTexts).orEmpty().isNotEmpty() ||
     gatewayResult.completion?.toolCalls?.isNotEmpty() == true
 
@@ -2766,6 +2773,7 @@ class OpenCrayAgentRuntime(
       ?: parsed.primitiveContent("decision")?.trim()?.lowercase()
     val hasToolCallShape = parsed.primitiveContent("tool_name")?.isNotBlank() == true
     val hasFinalAnswerShape = parsed.primitiveContent("answer")?.isNotBlank() == true
+    val hasFinalAttachmentShape = (parsed["attachments"] as? JsonArray)?.isNotEmpty() == true
     val toolCalls = (parsed["tool_calls"] as? JsonArray)
       ?.map { element ->
         val toolCallObject = element as? JsonObject ?: error("Each entry inside 'tool_calls' must be a JSON object.")
@@ -2813,7 +2821,8 @@ class OpenCrayAgentRuntime(
           parsed.primitiveContent("tool_name")?.isNotBlank() == true,
       )
 
-      type in setOf("final", "answer") || (type == null && hasFinalAnswerShape) -> ParsedActionObject(
+      type in setOf("final", "answer") ||
+        (type == null && (hasFinalAnswerShape || hasFinalAttachmentShape)) -> ParsedActionObject(
         actions = listOf(parseFinalAction(parsed)),
       )
 
@@ -2900,6 +2909,21 @@ class OpenCrayAgentRuntime(
       )
     }
     .orEmpty()
+
+  private fun toOpenCrayFinalAttachment(
+    attachment: LiteLlmStructuredFinalAttachment,
+  ): OpenCrayFinalAttachment = OpenCrayFinalAttachment(
+    kind = attachment.kind?.trim()?.takeIf(String::isNotBlank),
+    relativePath = attachment.relativePath?.trim()?.takeIf(String::isNotBlank),
+    path = attachment.path?.trim()?.takeIf(String::isNotBlank),
+    artifactId = attachment.artifactId?.trim()?.takeIf(String::isNotBlank),
+    chatAttachmentId = attachment.chatAttachmentId?.trim()?.takeIf(String::isNotBlank),
+    displayName = attachment.displayName?.trim()?.takeIf(String::isNotBlank),
+    mimeType = attachment.mimeType?.trim()?.takeIf(String::isNotBlank),
+    durationMs = attachment.durationMs,
+    waveformBars = attachment.waveformBars,
+    transcriptText = attachment.transcriptText?.trim()?.takeIf(String::isNotBlank),
+  )
 
   private fun finalAttachmentMetadata(
     attachments: List<OpenCrayFinalAttachment>,

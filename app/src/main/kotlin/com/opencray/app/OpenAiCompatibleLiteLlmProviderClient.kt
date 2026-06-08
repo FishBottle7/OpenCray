@@ -14,6 +14,7 @@ import com.opencray.llm.LiteLlmMetadataKeys
 import com.opencray.llm.LiteLlmProviderRequest
 import com.opencray.llm.LiteLlmProviderResult
 import com.opencray.llm.LiteLlmStructuredCompletion
+import com.opencray.llm.LiteLlmStructuredFinalAttachment
 import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.llm.LiteLlmToolChoice
 import com.opencray.llm.LiteLlmToolChoiceMode
@@ -883,6 +884,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     return parsed.optJSONArray("tool_calls") != null ||
       parsed.optString("tool_name").isNotBlank() ||
       parsed.optString("answer").isNotBlank() ||
+      (parsed.optJSONArray("attachments")?.length() ?: 0) > 0 ||
       type in setOf("tool_call", "tool", "final", "answer", "progress", "commentary", "status")
   }
 
@@ -984,10 +986,13 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         message = message,
       )?.trim()?.takeIf(String::isNotBlank),
     )
+    val finalAttachmentPayload = protocolPayload?.toProtocolFinalPayloadOrNull()
+    val finalAttachments = finalAttachmentPayload?.structuredFinalAttachments().orEmpty()
     val commentaryText = textContent?.takeIf { toolCalls.isNotEmpty() }
-    val finalText = textContent?.takeUnless { text ->
-      toolCalls.isNotEmpty() || looksLikeProtocolPayload(text)
-    }
+    val finalText = finalAttachmentPayload?.nonBlankString("answer")
+      ?: textContent?.takeUnless { text ->
+        toolCalls.isNotEmpty() || looksLikeProtocolPayload(text)
+      }
     val reasoningText = extractOpenAiReasoningText(
       choice = choice,
       message = message,
@@ -1003,6 +1008,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     return buildStructuredCompletion(
       toolCalls = toolCalls,
       finalText = finalText,
+      finalAttachments = finalAttachments,
       commentaryText = commentaryText,
       reasoningText = reasoningText,
       rawText = rawText,
@@ -1087,6 +1093,13 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       finalPhaseText,
       unphasedText?.takeIf { toolCalls.isEmpty() },
     )?.takeUnless(::looksLikeProtocolPayload)
+    val finalAttachmentPayload = firstNonBlankString(
+      orderedText?.takeIf(::looksLikeProtocolPayload),
+      finalPhaseText?.takeIf(::looksLikeProtocolPayload),
+      unphasedText?.takeIf(::looksLikeProtocolPayload),
+    )?.toProtocolFinalPayloadOrNull()
+    val nativeFinalText = finalAttachmentPayload?.nonBlankString("answer") ?: finalText
+    val finalAttachments = finalAttachmentPayload?.structuredFinalAttachments().orEmpty()
     val reasoningText = extractResponsesReasoningText(payload)
     val rawText = when {
       orderedText != null && looksLikeProtocolPayload(orderedText) -> orderedText
@@ -1096,7 +1109,8 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     }
     return buildStructuredCompletion(
       toolCalls = toolCalls,
-      finalText = finalText,
+      finalText = nativeFinalText,
+      finalAttachments = finalAttachments,
       commentaryText = commentaryText,
       commentaryTexts = commentaryTexts,
       reasoningText = reasoningText,
@@ -1215,6 +1229,11 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val finalText = textContent?.takeUnless { text ->
       toolCalls.isNotEmpty() || looksLikeProtocolPayload(text)
     }
+    val finalAttachmentPayload = textContent
+      ?.takeIf(::looksLikeProtocolPayload)
+      ?.toProtocolFinalPayloadOrNull()
+    val nativeFinalText = finalAttachmentPayload?.nonBlankString("answer") ?: finalText
+    val finalAttachments = finalAttachmentPayload?.structuredFinalAttachments().orEmpty()
     val rawText = when {
       textContent != null && looksLikeProtocolPayload(textContent) -> textContent
       toolCallErrors.isNotEmpty() -> content.toString().trim().takeIf(String::isNotBlank)
@@ -1224,7 +1243,8 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val reasoningText = thinkingBlocks.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
     return buildStructuredCompletion(
       toolCalls = toolCalls,
-      finalText = finalText,
+      finalText = nativeFinalText,
+      finalAttachments = finalAttachments,
       commentaryText = commentaryText,
       reasoningText = reasoningText,
       rawText = rawText,
@@ -1235,6 +1255,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   private fun buildStructuredCompletion(
     toolCalls: List<LiteLlmStructuredToolCall>,
     finalText: String? = null,
+    finalAttachments: List<LiteLlmStructuredFinalAttachment> = emptyList(),
     commentaryText: String? = null,
     commentaryTexts: List<String> = emptyList(),
     reasoningText: String? = null,
@@ -1242,6 +1263,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     toolCallErrors: List<String> = emptyList(),
   ): LiteLlmStructuredCompletion? {
     val normalizedFinalText = finalText?.trim()?.takeIf(String::isNotBlank)
+    val normalizedFinalAttachments = finalAttachments.map(::normalizeStructuredFinalAttachment)
     val normalizedCommentaryTexts = commentaryTexts
       .map(String::trim)
       .filter(String::isNotBlank)
@@ -1258,6 +1280,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     if (
       toolCalls.isEmpty() &&
       normalizedFinalText == null &&
+      normalizedFinalAttachments.isEmpty() &&
       normalizedCommentaryTexts.isEmpty() &&
       normalizedReasoningText == null &&
       normalizedRawText == null &&
@@ -1268,6 +1291,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     return LiteLlmStructuredCompletion(
       toolCalls = toolCalls,
       finalText = normalizedFinalText,
+      finalAttachments = normalizedFinalAttachments,
       commentaryText = normalizedCommentaryText,
       commentaryTexts = normalizedCommentaryTexts,
       reasoningText = normalizedReasoningText,
@@ -1279,6 +1303,64 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   private fun jsonObjectFrom(payload: JSONObject): JsonObject = runCatching {
     JSON_CODEC.parseToJsonElement(payload.toString()) as? JsonObject
   }.getOrNull() ?: JsonObject(emptyMap())
+
+  private fun String.toProtocolFinalPayloadOrNull(): JSONObject? {
+    val candidate = extractEmbeddedJsonObject(this) ?: return null
+    val parsed = runCatching { JSONObject(candidate) }.getOrNull() ?: return null
+    val type = parsed.optString("type").trim().lowercase()
+      .ifBlank { parsed.optString("decision").trim().lowercase() }
+    val hasFinalShape = type in setOf("final", "answer") ||
+      parsed.optString("answer").isNotBlank() ||
+      (parsed.optJSONArray("attachments")?.length() ?: 0) > 0
+    return parsed.takeIf { hasFinalShape }
+  }
+
+  private fun JSONObject.structuredFinalAttachments(): List<LiteLlmStructuredFinalAttachment> {
+    val rawAttachments = optJSONArray("attachments") ?: return emptyList()
+    return buildList {
+      for (index in 0 until rawAttachments.length()) {
+        val attachment = rawAttachments.optJSONObject(index) ?: continue
+        add(
+          LiteLlmStructuredFinalAttachment(
+            kind = attachment.nonBlankString("kind"),
+            relativePath = attachment.nonBlankString("relative_path")
+              ?: attachment.nonBlankString("relativePath"),
+            path = attachment.nonBlankString("path"),
+            artifactId = attachment.nonBlankString("artifact_id")
+              ?: attachment.nonBlankString("artifactId"),
+            chatAttachmentId = attachment.nonBlankString("chat_attachment_id")
+              ?: attachment.nonBlankString("chatAttachmentId"),
+            displayName = attachment.nonBlankString("display_name")
+              ?: attachment.nonBlankString("displayName"),
+            mimeType = attachment.nonBlankString("mime_type")
+              ?: attachment.nonBlankString("mimeType"),
+            durationMs = attachment.optLongValue("duration_ms")
+              ?: attachment.optLongValue("durationMs"),
+            waveformBars = attachment.optIntArray("waveform_bars")
+              ?: attachment.optIntArray("waveformBars")
+              ?: emptyList(),
+            transcriptText = attachment.nonBlankString("transcript_text")
+              ?: attachment.nonBlankString("transcriptText"),
+          ),
+        )
+      }
+    }
+  }
+
+  private fun normalizeStructuredFinalAttachment(
+    attachment: LiteLlmStructuredFinalAttachment,
+  ): LiteLlmStructuredFinalAttachment = LiteLlmStructuredFinalAttachment(
+    kind = attachment.kind?.trim()?.takeIf(String::isNotBlank),
+    relativePath = attachment.relativePath?.trim()?.takeIf(String::isNotBlank),
+    path = attachment.path?.trim()?.takeIf(String::isNotBlank),
+    artifactId = attachment.artifactId?.trim()?.takeIf(String::isNotBlank),
+    chatAttachmentId = attachment.chatAttachmentId?.trim()?.takeIf(String::isNotBlank),
+    displayName = attachment.displayName?.trim()?.takeIf(String::isNotBlank),
+    mimeType = attachment.mimeType?.trim()?.takeIf(String::isNotBlank),
+    durationMs = attachment.durationMs,
+    waveformBars = attachment.waveformBars,
+    transcriptText = attachment.transcriptText?.trim()?.takeIf(String::isNotBlank),
+  )
 
   private fun finishReasonFor(
     payload: JSONObject,
@@ -1697,6 +1779,20 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       is Number -> rawValue.toLong()
       is String -> rawValue.trim().toLongOrNull()
       else -> null
+    }
+  }
+
+  private fun JSONObject.optIntArray(
+    key: String,
+  ): List<Int>? {
+    val rawArray = optJSONArray(key) ?: return null
+    return buildList {
+      for (index in 0 until rawArray.length()) {
+        when (val rawValue = rawArray.opt(index)) {
+          is Number -> add(rawValue.toInt())
+          is String -> rawValue.trim().toIntOrNull()?.let(::add)
+        }
+      }
     }
   }
 

@@ -8,6 +8,7 @@ import com.opencray.llm.LiteLlmGatewayAttachment
 import com.opencray.llm.LiteLlmGatewayMessageRole
 import com.opencray.llm.LiteLlmGatewayToolResult
 import com.opencray.llm.LiteLlmStructuredCompletion
+import com.opencray.llm.LiteLlmStructuredFinalAttachment
 import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.llm.LiteLlmToolChoice
 import com.opencray.llm.LiteLlmToolChoiceMode
@@ -787,7 +788,7 @@ private sealed interface LiteRtLegacyAction {
 
   data class Final(
     val answer: String,
-    val hasAttachments: Boolean,
+    val attachments: List<LiteLlmStructuredFinalAttachment> = emptyList(),
   ) : LiteRtLegacyAction
 
   data class ToolCall(
@@ -826,6 +827,7 @@ private fun JsonObject.toLegacyActionBatch(): List<LiteRtLegacyAction> {
     ?: primitiveContent("decision")?.trim()?.lowercase()
   val hasToolCallShape = primitiveContent("tool_name")?.isNotBlank() == true
   val hasFinalAnswerShape = primitiveContent("answer")?.isNotBlank() == true
+  val hasFinalAttachmentShape = (this["attachments"] as? JsonArray)?.isNotEmpty() == true
   val toolCalls = (this["tool_calls"] as? JsonArray)
     ?.map { element ->
       val toolCallObject = element as? JsonObject
@@ -861,10 +863,10 @@ private fun JsonObject.toLegacyActionBatch(): List<LiteRtLegacyAction> {
       ),
     )
 
-    type in setOf("final", "answer") || (type == null && hasFinalAnswerShape) -> listOf(
+    type in setOf("final", "answer") || (type == null && (hasFinalAnswerShape || hasFinalAttachmentShape)) -> listOf(
       LiteRtLegacyAction.Final(
         answer = primitiveContent("answer")?.trim().orEmpty(),
-        hasAttachments = (this["attachments"] as? JsonArray)?.isNotEmpty() == true,
+        attachments = structuredFinalAttachments(),
       ),
     )
 
@@ -902,7 +904,7 @@ private fun List<LiteRtLegacyAction>.toStructuredCompletionOrNull(
   if (finalAction != null && (toolCallActions.isNotEmpty() || commentaryActions.isNotEmpty())) {
     return null
   }
-  if (finalAction != null && (finalAction.hasAttachments || finalAction.answer.isBlank())) {
+  if (finalAction != null && finalAction.answer.isBlank() && finalAction.attachments.isEmpty()) {
     return null
   }
   return LiteLlmStructuredCompletion(
@@ -917,12 +919,70 @@ private fun List<LiteRtLegacyAction>.toStructuredCompletionOrNull(
     finalText = finalAction?.answer?.takeIf {
       toolCallActions.isEmpty() && commentaryActions.isEmpty() && it.isNotBlank()
     },
+    finalAttachments = finalAction?.attachments.orEmpty(),
     commentaryText = commentaryActions.singleOrNull()?.text?.trim()?.takeIf(String::isNotBlank),
   ).takeIf { completion -> completion.hasStructuredActions }
 }
 
 private fun JsonObject.primitiveContent(key: String): String? =
   (this[key] as? JsonPrimitive)?.content
+
+private fun JsonObject.longContent(key: String): Long? =
+  (this[key] as? JsonPrimitive)
+    ?.content
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?.toLongOrNull()
+
+private fun JsonObject.intArrayContent(key: String): List<Int>? =
+  (this[key] as? JsonArray)
+    ?.mapNotNull { element ->
+      (element as? JsonPrimitive)
+        ?.content
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.toIntOrNull()
+    }
+
+private fun JsonObject.structuredFinalAttachments(): List<LiteLlmStructuredFinalAttachment> =
+  (this["attachments"] as? JsonArray)
+    ?.mapNotNull { element -> element as? JsonObject }
+    ?.map { attachment ->
+      LiteLlmStructuredFinalAttachment(
+        kind = attachment.primitiveContent("kind")?.trim()?.takeIf(String::isNotBlank),
+        relativePath = attachment.primitiveContent("relative_path")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: attachment.primitiveContent("relativePath")?.trim()?.takeIf(String::isNotBlank),
+        path = attachment.primitiveContent("path")?.trim()?.takeIf(String::isNotBlank),
+        artifactId = attachment.primitiveContent("artifact_id")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: attachment.primitiveContent("artifactId")?.trim()?.takeIf(String::isNotBlank),
+        chatAttachmentId = attachment.primitiveContent("chat_attachment_id")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: attachment.primitiveContent("chatAttachmentId")?.trim()?.takeIf(String::isNotBlank),
+        displayName = attachment.primitiveContent("display_name")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: attachment.primitiveContent("displayName")?.trim()?.takeIf(String::isNotBlank),
+        mimeType = attachment.primitiveContent("mime_type")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: attachment.primitiveContent("mimeType")?.trim()?.takeIf(String::isNotBlank),
+        durationMs = attachment.longContent("duration_ms")
+          ?: attachment.longContent("durationMs"),
+        waveformBars = attachment.intArrayContent("waveform_bars")
+          ?: attachment.intArrayContent("waveformBars")
+          ?: emptyList(),
+        transcriptText = attachment.primitiveContent("transcript_text")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: attachment.primitiveContent("transcriptText")?.trim()?.takeIf(String::isNotBlank),
+      )
+    }
+    .orEmpty()
 
 private fun LiteLlmBuiltinToolDefinition.toFunctionToolDefinition(): LiteLlmToolDefinition? = when (
   type

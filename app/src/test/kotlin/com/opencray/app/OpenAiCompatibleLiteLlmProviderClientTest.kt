@@ -1380,6 +1380,43 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
+  fun executeParsesOpenAiProtocolFinalAttachmentsIntoStructuredCompletion() {
+    val result = executeWithOpenAiResponse(
+      """
+      {
+        "id": "req_final_attachments",
+        "choices": [
+          {
+            "message": {
+              "content": "{\"attachments\":[{\"artifact_id\":\"artifact-image-1\",\"kind\":\"image\",\"display_name\":\"diagram.png\",\"mime_type\":\"image/png\"},{\"relative_path\":\"outputs/voice.m4a\",\"kind\":\"voice\",\"duration_ms\":3200,\"waveform_bars\":[10,20,30],\"transcript_text\":\"Voice summary\"}]}"
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      }
+      """.trimIndent(),
+    )
+
+    val success = result as LiteLlmProviderResult.Success
+    val completion = requireNotNull(success.completion)
+    assertTrue(completion.finalText.isNullOrBlank())
+    assertEquals(2, completion.finalAttachments.size)
+    assertEquals("artifact-image-1", completion.finalAttachments.first().artifactId)
+    assertEquals("image", completion.finalAttachments.first().kind)
+    assertEquals("diagram.png", completion.finalAttachments.first().displayName)
+    assertEquals("image/png", completion.finalAttachments.first().mimeType)
+    assertEquals("outputs/voice.m4a", completion.finalAttachments.last().relativePath)
+    assertEquals("voice", completion.finalAttachments.last().kind)
+    assertEquals(3_200L, completion.finalAttachments.last().durationMs)
+    assertEquals(listOf(10, 20, 30), completion.finalAttachments.last().waveformBars)
+    assertEquals("Voice summary", completion.finalAttachments.last().transcriptText)
+    assertEquals(
+      "{\"attachments\":[{\"artifact_id\":\"artifact-image-1\",\"kind\":\"image\",\"display_name\":\"diagram.png\",\"mime_type\":\"image/png\"},{\"relative_path\":\"outputs/voice.m4a\",\"kind\":\"voice\",\"duration_ms\":3200,\"waveform_bars\":[10,20,30],\"transcript_text\":\"Voice summary\"}]}",
+      completion.rawText,
+    )
+  }
+
+  @Test
   fun executeUsesReasoningContentWhenItCarriesProtocolJson() {
     val result = executeWithOpenAiResponse(
       """
