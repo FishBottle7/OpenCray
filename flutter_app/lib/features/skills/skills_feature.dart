@@ -200,10 +200,15 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                 onChanged: (page) => setState(() => _selectedPage = page),
               ),
               const SizedBox(height: 16),
-              if (_selectedPage == SkillsPage.manage)
-                _buildManagePage(installedSkills)
-              else
-                _buildInstallPage(availableSkills),
+              OpenCrayDirectionalSwitcher(
+                activeKey: ValueKey<String>(
+                  'skills-page-${_selectedPage.name}',
+                ),
+                direction: _selectedPage == SkillsPage.install ? 1 : -1,
+                child: _selectedPage == SkillsPage.manage
+                    ? _buildManagePage(installedSkills)
+                    : _buildInstallPage(availableSkills),
+              ),
             ],
           ),
         ),

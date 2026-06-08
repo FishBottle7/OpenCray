@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
 import 'package:opencray/core/copy/opencray_ui_copy.dart';
+import 'package:opencray/core/design/opencray_motion.dart';
 import 'package:opencray/core/models/opencray_skills_snapshot.dart';
 import 'package:opencray/features/skills/skills_feature.dart';
 
@@ -364,6 +365,31 @@ void main() {
 
     expect(bridge.lastSuggestedLimit, 20);
     expect(find.text('find-skill-9'), findsOneWidget);
+  });
+
+  testWidgets('manage and install pages switch with horizontal direction', (
+    tester,
+  ) async {
+    final bridge = _RecordingSkillsBridge(
+      initialSkillsSnapshot: _skillsSnapshotWithSources(),
+    );
+
+    await _pumpSkillsScreen(tester, bridge: bridge);
+
+    OpenCrayDirectionalSwitcher switcher = tester
+        .widget<OpenCrayDirectionalSwitcher>(
+          find.byType(OpenCrayDirectionalSwitcher),
+        );
+    expect(switcher.direction, -1);
+
+    await tester.tap(find.text('Install'));
+    await tester.pump();
+
+    switcher = tester.widget<OpenCrayDirectionalSwitcher>(
+      find.byType(OpenCrayDirectionalSwitcher),
+    );
+    expect(switcher.direction, 1);
+    expect(find.text('GitHub URL'), findsOneWidget);
   });
 
   testWidgets('install page can preview suggested skill contents', (

@@ -2590,8 +2590,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     reverseCurve: OpenCrayMotion.exit,
   );
 
-  late ChatFeatureState _state =
-      widget.state ?? OpenCrayChatSeedData.main(widget.copy);
+  late ChatFeatureState _state = _initialStateForWidget();
   late final TextEditingController _composerController =
       TextEditingController();
   late final FocusNode _composerFocusNode = FocusNode();
@@ -2646,6 +2645,37 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   bool _sandboxSessionRefreshInFlight = false;
 
   bool get _usesHostBridge => widget.bridge != null;
+
+  ChatFeatureState _initialStateForWidget() {
+    final ChatFeatureState? providedState = widget.state;
+    if (providedState != null) {
+      return providedState;
+    }
+    if (!_usesHostBridge) {
+      return OpenCrayChatSeedData.main(widget.copy);
+    }
+    return ChatFeatureState(
+      variant: ChatPrototypeVariant.empty,
+      screenTitle: widget.copy.chatSeedScreenTitle,
+      summary: ChatSessionSummary(
+        title: widget.copy.chatSeedEmptyTitle,
+        badge: '',
+        body: widget.copy.chatSeedEmptyBody,
+      ),
+      messages: const <ChatMessageData>[],
+      runTraces: const <ChatRunTraceData>[],
+      composer: ChatComposerState(
+        placeholder: widget.copy.chatComposerPlaceholder,
+      ),
+      drawer: ChatSessionsDrawerState(
+        eyebrow: widget.copy.chatSeedDrawerEyebrow,
+        title: widget.copy.chatSeedRecentSessions,
+        ctaLabel: widget.copy.chatSeedNewSession,
+        sessions: const <ChatSessionListItemData>[],
+      ),
+      emptyThreadHeight: 260,
+    );
+  }
 
   _ChatRuntimeEnvironment get _selectedRuntimeEnvironment =>
       _sandboxSettings.defaultBackend == 'sandbox'
@@ -18625,18 +18655,99 @@ class _ComposerCard extends StatelessWidget {
             );
           },
         ),
-        if (state.composer.showAddMenu) ...<Widget>[
-          const SizedBox(height: 10),
+        AnimatedSwitcher(
+          duration: OpenCrayMotion.resolve(context, OpenCrayMotion.expand),
+          reverseDuration: OpenCrayMotion.resolve(
+            context,
+            OpenCrayMotion.quick,
+          ),
+          switchInCurve: OpenCrayMotion.expandCurve,
+          switchOutCurve: OpenCrayMotion.exit,
+          transitionBuilder: (child, animation) {
+            if (OpenCrayMotion.reduce(context)) {
+              return FadeTransition(opacity: animation, child: child);
+            }
+            final curved = CurvedAnimation(
+              parent: animation,
+              curve: OpenCrayMotion.expandCurve,
+              reverseCurve: OpenCrayMotion.exit,
+            );
+            return FadeTransition(
+              opacity: curved,
+              child: SizeTransition(
+                sizeFactor: curved,
+                axisAlignment: -1,
+                child: child,
+              ),
+            );
+          },
+          child: state.composer.showAddMenu
+              ? _ComposerAddMenu(
+                  key: const ValueKey<String>('chat-composer-add-menu'),
+                  copy: copy,
+                  actions: state.composer.addActions,
+                  onAddActionSelected: onAddActionSelected,
+                )
+              : const SizedBox.shrink(
+                  key: ValueKey<String>('chat-composer-add-menu-empty'),
+                ),
+        ),
+      ],
+    );
+
+    final Widget surface;
+    if (hasTodos) {
+      surface = _ComposerGlassSurface(
+        child: Padding(padding: const EdgeInsets.all(12), child: content),
+      );
+    } else if (!hasIntegratedSurface) {
+      surface = content;
+    } else {
+      surface = DecoratedBox(
+        decoration: _ChatDecorations.card(),
+        child: Padding(padding: const EdgeInsets.all(10), child: content),
+      );
+    }
+
+    return AnimatedSize(
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.expand),
+      curve: OpenCrayMotion.expandCurve,
+      alignment: Alignment.bottomCenter,
+      child: surface,
+    );
+  }
+}
+
+class _ComposerAddMenu extends StatelessWidget {
+  const _ComposerAddMenu({
+    super.key,
+    required this.copy,
+    required this.actions,
+    required this.onAddActionSelected,
+  });
+
+  final OpenCrayUiCopy copy;
+  final List<ChatAddActionData> actions;
+  final ValueChanged<ChatAddActionData> onAddActionSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 10),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
           Text(copy.chatAddToMessage, style: _ChatTextStyles.sectionLabel),
           const SizedBox(height: 10),
           Row(
-            children: state.composer.addActions
+            children: actions
                 .map(
                   (ChatAddActionData action) => Expanded(
                     flex: action.label == copy.chatActionCommand ? 12 : 9,
                     child: Padding(
                       padding: EdgeInsets.only(
-                        right: action == state.composer.addActions.last ? 0 : 8,
+                        right: action == actions.last ? 0 : 8,
                       ),
                       child: _AddActionPill(
                         action: action,
@@ -18648,22 +18759,7 @@ class _ComposerCard extends StatelessWidget {
                 .toList(),
           ),
         ],
-      ],
-    );
-
-    if (hasTodos) {
-      return _ComposerGlassSurface(
-        child: Padding(padding: const EdgeInsets.all(12), child: content),
-      );
-    }
-
-    if (!hasIntegratedSurface) {
-      return content;
-    }
-
-    return DecoratedBox(
-      decoration: _ChatDecorations.card(),
-      child: Padding(padding: const EdgeInsets.all(10), child: content),
+      ),
     );
   }
 }

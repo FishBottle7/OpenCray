@@ -12138,6 +12138,65 @@ void main() {
     expect(find.text('3'), findsOneWidget);
   });
 
+  testWidgets('host-backed chat does not show seed content while loading', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+    );
+    bridge.loadChatSnapshotCompleter = Completer<OpenCrayChatSnapshot>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text(copy.chatSeedWorkspaceReady), findsNothing);
+    expect(find.text(copy.chatSeedSafeModeAsks), findsNothing);
+    expect(find.text('Inspect the workspace.'), findsNothing);
+    expect(find.text(copy.chatSeedEmptyTitle), findsOneWidget);
+
+    bridge.loadChatSnapshotCompleter!.complete(bridge.chatSnapshot);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Inspect the workspace.'), findsOneWidget);
+  });
+
+  testWidgets('plus menu expands inside animated composer surface', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_buildChatHarness());
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('chat-composer-plus-button')),
+    );
+    await tester.pump();
+
+    final addMenuFinder = find.byKey(
+      const ValueKey<String>('chat-composer-add-menu'),
+    );
+    expect(addMenuFinder, findsOneWidget);
+    expect(
+      find.ancestor(of: addMenuFinder, matching: find.byType(AnimatedSwitcher)),
+      findsOneWidget,
+    );
+    expect(
+      find.ancestor(of: addMenuFinder, matching: find.byType(AnimatedSize)),
+      findsWidgets,
+    );
+  });
+
   testWidgets('session drawer opens from the left edge', (tester) async {
     await tester.pumpWidget(
       _buildChatHarness(

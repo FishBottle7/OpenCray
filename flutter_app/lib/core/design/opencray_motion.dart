@@ -158,18 +158,15 @@ class _OpenCrayDirectionalIndexedStackState
   Widget _buildLayer(int index, int safeIndex, Widget child) {
     final bool isCurrent = index == safeIndex;
     final bool isPrevious = index == _previousIndex;
-    if (!isCurrent && !isPrevious) {
-      return Offstage(
-        offstage: true,
-        child: TickerMode(enabled: false, child: child),
-      );
-    }
     return Positioned.fill(
-      child: IgnorePointer(
-        ignoring: !isCurrent,
-        child: TickerMode(
-          enabled: isCurrent,
-          child: _buildTransition(index, child),
+      child: Offstage(
+        offstage: !isCurrent && !isPrevious,
+        child: IgnorePointer(
+          ignoring: !isCurrent,
+          child: TickerMode(
+            enabled: isCurrent,
+            child: _buildTransition(index, child),
+          ),
         ),
       ),
     );
@@ -177,21 +174,17 @@ class _OpenCrayDirectionalIndexedStackState
 
   Widget _buildTransition(int index, Widget child) {
     final bool isPrevious = index == _previousIndex;
-    if (_controller.value == 1 && !isPrevious) {
-      return child;
-    }
     return AnimatedBuilder(
       animation: _controller,
       child: child,
       builder: (context, child) {
         final double t = OpenCrayMotion.spatial.transform(_controller.value);
         final double offsetX = isPrevious
-            ? -_direction * 0.055 * t
-            : _direction * 0.08 * (1 - t);
-        final double opacity = isPrevious ? 1 - (0.16 * t) : 0.92 + (0.08 * t);
+            ? -_direction * 0.032 * t
+            : _direction * 0.048 * (1 - t);
         return FractionalTranslation(
           translation: Offset(offsetX, 0),
-          child: Opacity(opacity: opacity, child: child),
+          child: child,
         );
       },
     );
