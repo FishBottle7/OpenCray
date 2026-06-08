@@ -2339,6 +2339,15 @@ void main() {
         findsOneWidget,
       );
       expect(
+        find.descendant(
+          of: pendingBubble,
+          matching: find.byKey(
+            const ValueKey<String>('chat-streaming-indicator-pending-1'),
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
         find.descendant(of: pendingBubble, matching: find.text('Thinking')),
         findsNothing,
       );
@@ -12632,6 +12641,131 @@ void main() {
   });
 
   testWidgets(
+    'runtime streaming does not force-scroll when the reader is away from bottom',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeSnapshots =
+          StreamController<OpenCrayChatRuntimeSnapshot>.broadcast();
+      addTearDown(runtimeSnapshots.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: _streamingScrollMessages(),
+          updatedAtEpochMs: 1000,
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-scroll',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+          updatedAtEpochMs: 1000,
+        ),
+        runtimeSnapshotStream: runtimeSnapshots.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final ScrollController controller = _mainChatScrollController(tester);
+      expect(controller.position.maxScrollExtent, greaterThan(0));
+      controller.jumpTo(0);
+      await tester.pump();
+      final double previousMaxExtent = controller.position.maxScrollExtent;
+
+      runtimeSnapshots.add(
+        _streamingProcessRuntimeSnapshot(
+          output: _streamingProcessOutput(18),
+          updatedAtEpochMs: 2000,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 20));
+      await tester.pumpAndSettle();
+
+      expect(
+        controller.position.maxScrollExtent,
+        greaterThan(previousMaxExtent),
+      );
+      expect(
+        find.byKey(
+          const ValueKey<String>(
+            'chat-streaming-indicator-runtime-process-task-scroll-process-scroll',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(controller.position.pixels, lessThan(8));
+    },
+  );
+
+  testWidgets(
+    'runtime streaming follows a pinned bottom without waiting for scroll animation',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeSnapshots =
+          StreamController<OpenCrayChatRuntimeSnapshot>.broadcast();
+      addTearDown(runtimeSnapshots.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: _streamingScrollMessages(),
+          updatedAtEpochMs: 1000,
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-scroll',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+          updatedAtEpochMs: 1000,
+        ),
+        runtimeSnapshotStream: runtimeSnapshots.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final ScrollController controller = _mainChatScrollController(tester);
+      controller.jumpTo(controller.position.maxScrollExtent);
+      await tester.pump();
+      final double previousMaxExtent = controller.position.maxScrollExtent;
+
+      runtimeSnapshots.add(
+        _streamingProcessRuntimeSnapshot(
+          output: _streamingProcessOutput(18),
+          updatedAtEpochMs: 2000,
+        ),
+      );
+      await tester.pump(const Duration(milliseconds: 20));
+      await tester.pump();
+
+      expect(
+        controller.position.maxScrollExtent,
+        greaterThan(previousMaxExtent),
+      );
+      expect(
+        find.byKey(
+          const ValueKey<String>(
+            'chat-streaming-indicator-runtime-process-task-scroll-process-scroll',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        (controller.position.maxScrollExtent - controller.position.pixels)
+            .abs(),
+        lessThan(1),
+      );
+    },
+  );
+
+  testWidgets(
     'new session drawer action waits for host creation before closing the drawer',
     (tester) async {
       final bridge = _FakeChatBridge(
@@ -15050,6 +15184,79 @@ double _topYForDescendantText(WidgetTester tester, Finder scope, String text) {
   );
   expect(finder, findsWidgets);
   return tester.getTopLeft(finder.first).dy;
+}
+
+ScrollController _mainChatScrollController(WidgetTester tester) {
+  final Finder finder = find.byWidgetPredicate(
+    (Widget widget) =>
+        widget is SingleChildScrollView &&
+        widget.controller != null &&
+        widget.scrollDirection == Axis.vertical,
+  );
+  expect(finder, findsWidgets);
+  return tester.widget<SingleChildScrollView>(finder.first).controller!;
+}
+
+List<OpenCrayChatMessageSnapshot> _streamingScrollMessages() {
+  return List<OpenCrayChatMessageSnapshot>.generate(34, (int index) {
+    final bool outbound = index.isEven;
+    return OpenCrayChatMessageSnapshot(
+      messageId: index == 33
+          ? 'scroll-anchor-message'
+          : 'scroll-message-$index',
+      kind: outbound ? 'outbound' : 'inbound',
+      text:
+          'Scrollable message ${index + 1}\n'
+          'Line A keeps this thread tall enough to scroll.\n'
+          'Line B keeps this thread tall enough to scroll.',
+      createdAtEpochMs: 1000 + index,
+    );
+  });
+}
+
+String _streamingProcessOutput(int lineCount) {
+  return List<String>.generate(
+    lineCount,
+    (int index) => 'streamed stdout line ${index + 1}',
+  ).join('\n');
+}
+
+OpenCrayChatRuntimeSnapshot _streamingProcessRuntimeSnapshot({
+  required String output,
+  required int updatedAtEpochMs,
+}) {
+  return OpenCrayChatRuntimeSnapshot(
+    sessionId: 'session-scroll',
+    activeRuns: <OpenCrayChatRunSnapshot>[
+      OpenCrayChatRunSnapshot(
+        sessionId: 'session-scroll',
+        runId: 'run-scroll',
+        taskId: 'task-scroll',
+        acceptedAtEpochMs: 1500,
+        updatedAtEpochMs: updatedAtEpochMs,
+        attempt: 1,
+        pendingMessageId: 'scroll-anchor-message',
+        isTerminal: false,
+        managedProcessIds: const <String>['process-scroll'],
+        managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+          OpenCrayChatManagedProcessSnapshot(
+            processId: 'process-scroll',
+            status: 'running',
+            command: 'python',
+            args: const <String>['script.py'],
+            processStarted: true,
+            startedAtEpochMs: 1500,
+            updatedAtEpochMs: updatedAtEpochMs,
+            stdout: output,
+          ),
+        ],
+        runningManagedProcessCount: 1,
+        hasLiveManagedProcesses: true,
+      ),
+    ],
+    events: const <OpenCrayChatRuntimeEventSnapshot>[],
+    updatedAtEpochMs: updatedAtEpochMs,
+  );
 }
 
 class _FakeChatBridge implements OpenCrayHostBridge {

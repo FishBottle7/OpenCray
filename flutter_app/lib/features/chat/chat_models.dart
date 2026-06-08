@@ -265,6 +265,7 @@ class ChatMessageData {
     this.runtimeAnchorMessageId = '',
     this.createdAtEpochMs,
     this.isEphemeral = false,
+    this.isStreaming = false,
     this.attachments = const <ChatMessageAttachmentData>[],
   });
 
@@ -275,6 +276,7 @@ class ChatMessageData {
   final String runtimeAnchorMessageId;
   final int? createdAtEpochMs;
   final bool isEphemeral;
+  final bool isStreaming;
   final List<ChatMessageAttachmentData> attachments;
 }
 

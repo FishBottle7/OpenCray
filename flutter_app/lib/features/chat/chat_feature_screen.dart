@@ -52,10 +52,12 @@ class _RuntimeProjectedMessagePatch {
   const _RuntimeProjectedMessagePatch({
     required this.anchorMessageId,
     required this.text,
+    required this.isStreaming,
   });
 
   final String anchorMessageId;
   final String text;
+  final bool isStreaming;
 }
 
 @visibleForTesting
@@ -1860,12 +1862,23 @@ bool chatMessagesEquivalent(
             rightMessage.runtimeAnchorMessageId &&
         leftMessage.createdAtEpochMs == rightMessage.createdAtEpochMs &&
         leftMessage.isEphemeral == rightMessage.isEphemeral &&
+        leftMessage.isStreaming == rightMessage.isStreaming &&
         _listsEquivalent(
           leftMessage.attachments,
           rightMessage.attachments,
           _chatMessageAttachmentsEquivalent,
         ),
   );
+}
+
+bool _runtimeProjectionVisibleStateEquivalent(
+  ChatFeatureState left,
+  ChatFeatureState right,
+) {
+  return left.variant == right.variant &&
+      left.emptyThreadHeight == right.emptyThreadHeight &&
+      chatMessagesEquivalent(left.messages, right.messages) &&
+      _chatRunTracesEquivalent(left.runTraces, right.runTraces);
 }
 
 bool _chatSessionSummariesEquivalent(
@@ -2640,6 +2653,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   bool _queuedSandboxSessionLifecycleRefresh = false;
   String? _interruptConfirmRunId;
   double _composerHeight = 0;
+  bool _scrollToBottomScheduled = false;
+  bool _scheduledScrollToBottomAnimated = true;
   OpenCraySandboxSettingsSnapshot _sandboxSettings =
       _defaultSandboxSettingsSnapshot;
   bool _sandboxSessionRefreshInFlight = false;
@@ -3966,8 +3981,35 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     });
   }
 
-  void _scheduleScrollToBottom({bool animated = true}) {
+  bool _isChatScrollPinnedToBottom({double tolerance = 48}) {
+    if (!_chatScrollController.hasClients) {
+      return true;
+    }
+    final ScrollPosition position = _chatScrollController.position;
+    return position.maxScrollExtent - position.pixels <= tolerance;
+  }
+
+  void _scheduleScrollToBottom({
+    bool animated = true,
+    bool onlyIfPinned = false,
+    bool? wasPinnedToBottom,
+  }) {
+    final bool pinnedBeforeUpdate =
+        wasPinnedToBottom ?? _isChatScrollPinnedToBottom();
+    if (onlyIfPinned && !pinnedBeforeUpdate) {
+      return;
+    }
+    if (_scrollToBottomScheduled) {
+      _scheduledScrollToBottomAnimated =
+          _scheduledScrollToBottomAnimated && animated;
+      return;
+    }
+    _scrollToBottomScheduled = true;
+    _scheduledScrollToBottomAnimated = animated;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      final bool shouldAnimate = _scheduledScrollToBottomAnimated;
+      _scrollToBottomScheduled = false;
+      _scheduledScrollToBottomAnimated = true;
       if (!mounted || !_chatScrollController.hasClients) {
         return;
       }
@@ -3976,7 +4018,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       if ((target - position.pixels).abs() < 1) {
         return;
       }
-      if (animated) {
+      if (shouldAnimate) {
         _chatScrollController.animateTo(
           target,
           duration: const Duration(milliseconds: 220),
@@ -4297,7 +4339,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (resolvedSessionId.isNotEmpty) {
       _runtimeEventDeltaSequenceBySession.remove(resolvedSessionId);
     }
-    _applyHostState();
+    _queueRuntimeActivityPatch(resolvedSnapshot);
   }
 
   void _handleRuntimeEventDelta(OpenCrayChatRuntimeEventDelta delta) {
@@ -4660,6 +4702,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       _syncSandboxSessionLifecycleAutoRefresh();
       return;
     }
+    final bool wasPinnedToBottom = _isChatScrollPinnedToBottom();
     final bool shouldScrollToBottom =
         resolvedNextState.messages.length > _state.messages.length ||
         resolvedNextState.runTraces.length > _state.runTraces.length ||
@@ -4681,7 +4724,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         ..addAll(retainedSelection);
     });
     if (shouldScrollToBottom) {
-      _scheduleScrollToBottom();
+      _scheduleScrollToBottom(
+        onlyIfPinned: true,
+        wasPinnedToBottom: wasPinnedToBottom,
+      );
     }
     _syncSandboxSessionAutoRefresh();
     _syncSandboxSessionLifecycleAutoRefresh();
@@ -4762,9 +4808,18 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             : 0,
       ),
     );
+    final bool wasPinnedToBottom = _isChatScrollPinnedToBottom();
     final bool shouldScrollToBottom =
         nextState.messages.length > _state.messages.length ||
         nextState.runTraces.length > _state.runTraces.length;
+    final bool hasOpenInspector =
+        _RunTraceBubbleState.hasOpenInspectorForTraces(nextState.runTraces);
+    if (!hasOpenInspector &&
+        _runtimeProjectionVisibleStateEquivalent(_state, nextState)) {
+      _syncSandboxSessionAutoRefresh();
+      _syncSandboxSessionLifecycleAutoRefresh();
+      return;
+    }
     final Set<String> retainedSelection = _selectedMessageIds
         .where(
           (messageId) => nextState.messages.any(
@@ -4781,7 +4836,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         ..addAll(retainedSelection);
     });
     if (shouldScrollToBottom) {
-      _scheduleScrollToBottom();
+      _scheduleScrollToBottom(
+        animated: false,
+        onlyIfPinned: true,
+        wasPinnedToBottom: wasPinnedToBottom,
+      );
     }
     _syncSandboxSessionAutoRefresh();
     _syncSandboxSessionLifecycleAutoRefresh();
@@ -5952,6 +6011,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         patchesByMessageId[messageId] = _RuntimeProjectedMessagePatch(
           anchorMessageId: anchorMessageId,
           text: text,
+          isStreaming: true,
         );
       }
     }
@@ -5972,6 +6032,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           patchesByMessageId[messageId] = _RuntimeProjectedMessagePatch(
             anchorMessageId: anchorMessageId,
             text: text,
+            isStreaming: !run.isTerminal && _managedProcessIsStreaming(process),
           );
         }
       }
@@ -5995,6 +6056,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               : 'message-${entry.key}-${entry.value.kind}';
           final _RuntimeProjectedMessagePatch? runtimePatch =
               runtimeProjectedMessagePatches[messageId];
+          final bool hasLiveDraftText =
+              draftTextByMessageId.containsKey(messageId) &&
+              _shouldReplacePendingThinkingBubble(
+                messageKind: entry.value.kind,
+                text: entry.value.text,
+              );
           return ChatMessageData(
             messageId: messageId,
             kind: switch (entry.value.kind) {
@@ -6012,6 +6079,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             runtimeAnchorMessageId: runtimePatch?.anchorMessageId ?? '',
             createdAtEpochMs: entry.value.createdAtEpochMs,
             isEphemeral: entry.value.isEphemeral,
+            isStreaming: runtimePatch?.isStreaming ?? hasLiveDraftText,
             attachments: entry.value.attachments
                 .map(
                   (attachment) => ChatMessageAttachmentData(
@@ -6410,6 +6478,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               runtimeAnchorMessageId: anchorMessageId,
               createdAtEpochMs: event.emittedAtEpochMs,
               isEphemeral: true,
+              isStreaming: true,
             ),
           );
     }
@@ -6456,6 +6525,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                 runtimeAnchorMessageId: anchorMessageId,
                 createdAtEpochMs: _managedProcessSortEpochMs(process),
                 isEphemeral: true,
+                isStreaming:
+                    !run.isTerminal && _managedProcessIsStreaming(process),
               ),
             );
       }
@@ -6518,6 +6589,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           kind: ChatMessageKind.inbound,
           text: text,
           isEphemeral: true,
+          isStreaming: true,
         ),
       );
     }
@@ -6687,6 +6759,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       '${_managedProcessStatusSummary(process)}: $command',
       output.isEmpty ? null : output,
     ]);
+  }
+
+  bool _managedProcessIsStreaming(OpenCrayChatManagedProcessSnapshot process) {
+    final String status = process.status.trim().toLowerCase();
+    return status.isEmpty || status == 'running';
   }
 
   ChatRunTraceData _mapRunTrace({
@@ -13123,6 +13200,15 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
         (total, key) => total + (_openTraceNotifiersByRunKey[key]?.length ?? 0),
       );
 
+  static bool hasOpenInspectorForTraces(Iterable<ChatRunTraceData> traces) {
+    for (final trace in traces) {
+      if (_openNotifierCount(trace) > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   void _publishTraceUpdate() {
     final Set<ValueNotifier<ChatRunTraceData>> notifiers =
         <ValueNotifier<ChatRunTraceData>>{};
@@ -16421,6 +16507,10 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
     final bool hasText = inlineBody.segments.isNotEmpty;
     final bool hasImages = imageAttachments.isNotEmpty;
     final bool hasOtherAttachments = otherAttachments.isNotEmpty;
+    final bool showStreamingIndicator =
+        hasText &&
+        widget.message.kind == ChatMessageKind.inbound &&
+        widget.message.isStreaming;
     final Widget bubble = ConstrainedBox(
       key: ValueKey<String>('chat-bubble-${widget.message.messageId}'),
       constraints: BoxConstraints(maxWidth: widget.maxWidth),
@@ -16437,28 +16527,33 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               if (hasText)
-                _ChatBubbleMarkdownBody(
-                  bridge: widget.bridge,
-                  copy: widget.copy,
-                  content: inlineBody,
-                  textColor: widget.textColor,
-                  backgroundColor: widget.backgroundColor,
+                _ChatBubbleStreamingTextBody(
                   messageId: widget.message.messageId,
-                  contentMaxWidth: widget.maxWidth - 28,
-                  selectionTheme: selectionTheme,
-                  onSelectionChanged: (selection) {
-                    _selectedText = selection?.plainText;
-                    widget.onTextSelectionChanged(selection);
-                  },
-                  contextMenuBuilder:
-                      (
-                        BuildContext context,
-                        SelectableRegionState selectableRegionState,
-                        OpenCrayMarkdownSelectionSnapshot? selection,
-                      ) => const SizedBox.shrink(),
-                  voicePlaybackControllerFactory:
-                      widget.voicePlaybackControllerFactory,
-                  isOutgoing: widget.message.kind == ChatMessageKind.outbound,
+                  textColor: widget.textColor,
+                  showIndicator: showStreamingIndicator,
+                  child: _ChatBubbleMarkdownBody(
+                    bridge: widget.bridge,
+                    copy: widget.copy,
+                    content: inlineBody,
+                    textColor: widget.textColor,
+                    backgroundColor: widget.backgroundColor,
+                    messageId: widget.message.messageId,
+                    contentMaxWidth: widget.maxWidth - 28,
+                    selectionTheme: selectionTheme,
+                    onSelectionChanged: (selection) {
+                      _selectedText = selection?.plainText;
+                      widget.onTextSelectionChanged(selection);
+                    },
+                    contextMenuBuilder:
+                        (
+                          BuildContext context,
+                          SelectableRegionState selectableRegionState,
+                          OpenCrayMarkdownSelectionSnapshot? selection,
+                        ) => const SizedBox.shrink(),
+                    voicePlaybackControllerFactory:
+                        widget.voicePlaybackControllerFactory,
+                    isOutgoing: widget.message.kind == ChatMessageKind.outbound,
+                  ),
                 ),
               if (hasImages) ...<Widget>[
                 if (hasText) const SizedBox(height: 10),
@@ -16519,6 +16614,135 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
       onPointerUp: (_) => _cancelLongPressTimer(),
       onPointerCancel: (_) => _cancelLongPressTimer(),
       child: bubble,
+    );
+  }
+}
+
+class _ChatBubbleStreamingTextBody extends StatelessWidget {
+  const _ChatBubbleStreamingTextBody({
+    required this.messageId,
+    required this.textColor,
+    required this.showIndicator,
+    required this.child,
+  });
+
+  final String messageId;
+  final Color textColor;
+  final bool showIndicator;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!showIndicator) {
+      return child;
+    }
+    final String keySuffix = messageId.trim().isNotEmpty
+        ? messageId.trim()
+        : 'anonymous';
+    return Stack(
+      clipBehavior: Clip.none,
+      children: <Widget>[
+        Padding(padding: const EdgeInsets.only(right: 14), child: child),
+        Positioned(
+          right: 1,
+          bottom: 2,
+          child: _ChatStreamingTailIndicator(
+            key: ValueKey<String>('chat-streaming-indicator-$keySuffix'),
+            color: textColor,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ChatStreamingTailIndicator extends StatefulWidget {
+  const _ChatStreamingTailIndicator({super.key, required this.color});
+
+  final Color color;
+
+  @override
+  State<_ChatStreamingTailIndicator> createState() =>
+      _ChatStreamingTailIndicatorState();
+}
+
+class _ChatStreamingTailIndicatorState
+    extends State<_ChatStreamingTailIndicator> {
+  Timer? _pulseTimer;
+  bool _highlighted = true;
+
+  @override
+  void initState() {
+    super.initState();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncPulseTimer();
+  }
+
+  void _syncPulseTimer() {
+    final bool disableAnimations =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    if (disableAnimations) {
+      _pulseTimer?.cancel();
+      _pulseTimer = null;
+      _highlighted = true;
+      return;
+    }
+    _pulseTimer ??= Timer.periodic(const Duration(milliseconds: 920), (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _highlighted = !_highlighted;
+      });
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatStreamingTailIndicator oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.color != widget.color) {
+      _syncPulseTimer();
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulseTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool disableAnimations =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    return ExcludeSemantics(
+      child: SizedBox(
+        width: 10,
+        height: 10,
+        child: Center(
+          child: AnimatedOpacity(
+            opacity: disableAnimations || _highlighted ? 0.95 : 0.38,
+            duration: const Duration(milliseconds: 460),
+            curve: Curves.easeInOut,
+            child: AnimatedScale(
+              scale: disableAnimations || _highlighted ? 1.08 : 0.82,
+              duration: const Duration(milliseconds: 460),
+              curve: Curves.easeInOut,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: widget.color.withValues(alpha: 0.78),
+                  shape: BoxShape.circle,
+                ),
+                child: const SizedBox(width: 5.5, height: 5.5),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
