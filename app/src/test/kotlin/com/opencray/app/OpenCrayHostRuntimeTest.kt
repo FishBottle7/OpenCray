@@ -2332,6 +2332,95 @@ class OpenCrayHostRuntimeTest {
   }
 
   @Test
+  fun taskSuccessKeepsResolvedFinalAttachmentsWhenOneReferenceIsMissing() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-assistant-mixed-artifact-attachments"),
+    )
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val workspaceRoot = temporaryFolder.newFolder("chat-mixed-artifact-workspace").toPath()
+    Files.createDirectories(workspaceRoot.resolve("outputs"))
+    Files.write(workspaceRoot.resolve("outputs").resolve("diagram.png"), byteArrayOf(1, 2, 3, 4))
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      onResume = manager.resumedSessionIds::add,
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      workspaceRootProvider = { workspaceRoot },
+    )
+
+    hostRuntime.submitChatMessage("Send the generated image by artifact id.")
+    val task = handle.submittedTasks.single()
+    val run = handle.submissions.single()
+    manager.emitRunEvent(
+      sessionId = activeSessionId,
+      task = task,
+      event = OpenCrayToolResultEvent(
+        runId = run.runId,
+        taskId = task.id,
+        turn = 0,
+        call = AgentToolCall(toolName = "workspace_write_file"),
+        result = AgentToolResult(
+          toolName = "workspace_write_file",
+          status = AgentToolResultStatus.SUCCESS,
+          content = "Wrote outputs/diagram.png successfully.",
+          metadata = mapOf(
+            OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_ID to "artifact-diagram-1234abcd",
+            OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_RELATIVE_PATH to "outputs/diagram.png",
+            OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_DISPLAY_NAME to "diagram.png",
+            OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_KIND_HINT to "image",
+            OpenCrayAttachmentArtifactMetadataKeys.ARTIFACT_MIME_TYPE to "image/png",
+          ),
+        ),
+        emittedAtEpochMs = 1_000L,
+      ),
+    )
+    val attachmentsJson = Json.encodeToString(
+      ListSerializer(OpenCrayFinalAttachment.serializer()),
+      listOf(
+        OpenCrayFinalAttachment(
+          artifactId = "artifact-diagram-1234abcd",
+        ),
+        OpenCrayFinalAttachment(
+          artifactId = "artifact-stale-missing",
+          kind = "image",
+          displayName = "missing.png",
+        ),
+      ),
+    )
+    manager.emitTaskFinished(
+      sessionId = activeSessionId,
+      task = task,
+      result = ExecutionResult(
+        taskId = task.id,
+        status = com.opencray.core.contracts.ExecutionStatus.SUCCESS,
+        stdout = "",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_001L,
+        metadata = task.metadata + mapOf(
+          OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON to attachmentsJson,
+        ),
+      ),
+    )
+
+    val assistantMessage = chatStore.loadState().activeSession.messages
+      .filter { message -> message.role != ChatTranscriptRole.SYSTEM }
+      .last()
+    val attachment = assistantMessage.attachments.single()
+
+    assertEquals(ChatAttachmentKind.IMAGE, attachment.kind)
+    assertEquals("diagram.png", attachment.displayName)
+    assertEquals("image/png", attachment.mimeType)
+    assertTrue(attachment.localPath.startsWith(".opencray/chat-media/$activeSessionId/"))
+    assertTrue(Files.exists(workspaceRoot.resolve(attachment.localPath)))
+    assertTrue(assistantMessage.text.orEmpty().contains("Attachment could not be saved"))
+    assertTrue(assistantMessage.text.orEmpty().contains("1 attachment was missing"))
+  }
+
+  @Test
   fun taskSuccessShowsFailureTextWhenAssistantAttachmentCannotBeArchived() {
     val chatStore = ChatSessionLocalStore(
       temporaryFolder.newFolder("chat-store-assistant-attachment-failure"),

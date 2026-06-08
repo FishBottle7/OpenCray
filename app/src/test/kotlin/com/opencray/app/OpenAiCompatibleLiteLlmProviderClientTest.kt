@@ -4812,7 +4812,7 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
-  fun executeSendsOpenAiStructuredFinalJsonSchemaForOfficialOpenAiRoutes() {
+  fun executeSendsOpenAiStructuredFinalJsonSchemaWhenRouteExplicitlySupportsIt() {
     val capturedBody = AtomicReference<String>()
     val result = executeWithCapturedProviderRequest(
       routeProviderId = "openai",
@@ -4832,6 +4832,9 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
         }
       """.trimIndent(),
       capturedBody = capturedBody,
+      routeMetadata = mapOf(
+        LlmStructuredFinalMetadataKeys.STRUCTURED_FINAL_SCHEMA_SUPPORTED to "true",
+      ),
     )
 
     assertTrue(result is LiteLlmProviderResult.Success)
@@ -4881,7 +4884,33 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
-  fun executeSendsOpenAiResponsesStructuredFinalJsonSchemaForOfficialOpenAiRoutes() {
+  fun executeOmitsStructuredFinalJsonSchemaForOpenAiProviderWithCustomBaseUrlByDefault() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "openai",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "gpt-4o-mini",
+      responseBody = """
+        {
+          "id": "req_openai_provider_custom_base_no_schema",
+          "choices": [
+            {
+              "message": { "content": "OK" },
+              "finish_reason": "stop"
+            }
+          ]
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val payload = JSONObject(capturedBody.get())
+    assertFalse(payload.has("response_format"))
+  }
+
+  @Test
+  fun executeSendsOpenAiResponsesStructuredFinalJsonSchemaWhenRouteExplicitlySupportsIt() {
     val capturedBody = AtomicReference<String>()
     val result = executeWithCapturedProviderRequest(
       routeProviderId = "openai",
@@ -4903,6 +4932,9 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
         }
       """.trimIndent(),
       capturedBody = capturedBody,
+      routeMetadata = mapOf(
+        LlmStructuredFinalMetadataKeys.STRUCTURED_FINAL_SCHEMA_SUPPORTED to "true",
+      ),
     )
 
     assertTrue(result is LiteLlmProviderResult.Success)
@@ -4919,7 +4951,37 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
-  fun executeSendsAndParsesAnthropicStructuredFinalToolForOfficialAnthropicRoutes() {
+  fun executeOmitsOpenAiResponsesStructuredFinalJsonSchemaForOpenAiProviderWithCustomBaseUrlByDefault() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      responseBody = """
+        {
+          "id": "resp_openai_provider_custom_base_no_schema",
+          "status": "completed",
+          "output": [
+            {
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                { "type": "output_text", "text": "OK" }
+              ]
+            }
+          ]
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val payload = JSONObject(capturedBody.get())
+    assertFalse(payload.has("text"))
+  }
+
+  @Test
+  fun executeSendsAndParsesAnthropicStructuredFinalToolWhenRouteExplicitlySupportsIt() {
     val capturedBody = AtomicReference<String>()
     val result = executeWithCapturedProviderRequest(
       routeProviderId = "anthropic",
@@ -4958,6 +5020,9 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
         }
       """.trimIndent(),
       capturedBody = capturedBody,
+      routeMetadata = mapOf(
+        LlmStructuredFinalMetadataKeys.ANTHROPIC_STRUCTURED_FINAL_TOOL_SUPPORTED to "true",
+      ),
     )
 
     assertTrue(result is LiteLlmProviderResult.Success)
@@ -4978,6 +5043,34 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
     assertEquals(1, completion.finalAttachments.size)
     assertEquals("artifact-image-1", completion.finalAttachments.single().artifactId)
     assertEquals("image/png", completion.finalAttachments.single().mimeType)
+  }
+
+  @Test
+  fun executeOmitsAnthropicStructuredFinalToolForAnthropicProviderWithCustomBaseUrlByDefault() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "anthropic",
+      protocol = LlmProviderProtocols.ANTHROPIC,
+      model = "claude-3-5-sonnet",
+      authHeaders = mapOf("x-api-key" to "test-key"),
+      responseBody = """
+        {
+          "id": "msg_anthropic_provider_custom_base_no_final_tool",
+          "content": [
+            {
+              "type": "text",
+              "text": "OK"
+            }
+          ],
+          "stop_reason": "end_turn"
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val payload = JSONObject(capturedBody.get())
+    assertFalse(payload.has("tools"))
   }
 
   @Test

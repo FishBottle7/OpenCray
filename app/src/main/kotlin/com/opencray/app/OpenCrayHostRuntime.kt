@@ -6646,12 +6646,13 @@ internal class OpenCrayHostRuntime private constructor(
     val resolvedAttachments = dedupeFinalAttachments(
       attachments = resolvedExplicitAttachments + compatibilityAttachments,
     )
+    val archivableAttachments = resolvedAttachments.filterNot(::isUnresolvedFinalAttachmentReference)
     return runCatching {
       val archivedAttachments = AppChatAttachmentArchiver.archive(
         workspaceRoot = workspaceRoot,
         approvedReadRoots = approvedReadRootsProvider().roots,
         sessionId = sessionId,
-        attachments = resolvedAttachments,
+        attachments = archivableAttachments,
         voiceMetadataAnalyzer = NoOpVoiceMetadataAnalyzer,
       )
       FinalAttachmentArchiveResult(
@@ -6669,6 +6670,14 @@ internal class OpenCrayHostRuntime private constructor(
       )
     }
   }
+
+  private fun isUnresolvedFinalAttachmentReference(attachment: OpenCrayFinalAttachment): Boolean =
+    attachment.relativePath.isNullOrBlank() &&
+      attachment.path.isNullOrBlank() &&
+      (
+        !attachment.artifactId.isNullOrBlank() ||
+          !attachment.chatAttachmentId.isNullOrBlank()
+        )
 
   private fun missingAttachmentFailureText(
     requestedCount: Int,

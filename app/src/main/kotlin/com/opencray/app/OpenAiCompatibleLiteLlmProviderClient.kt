@@ -1900,17 +1900,11 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   }
 
   private fun isOfficialOpenAiRoute(request: LiteLlmProviderRequest): Boolean {
-    if (request.route.providerId.equals("openai", ignoreCase = true)) {
-      return true
-    }
     val host = providerHost(request)
     return host == "api.openai.com" || host.endsWith(".openai.com")
   }
 
   private fun isOfficialAnthropicRoute(request: LiteLlmProviderRequest): Boolean {
-    if (request.route.providerId.equals("anthropic", ignoreCase = true)) {
-      return true
-    }
     val host = providerHost(request)
     return host == "api.anthropic.com" || host.endsWith(".anthropic.com")
   }
