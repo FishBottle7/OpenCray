@@ -31,8 +31,8 @@ This document is intentionally deeper than the earlier audit and roadmap documen
 - `docs/multi-agent-runtime-design.md`
 - `docs/memory-design.md`
 - `docs/memory-soul-image-reference-design.md`
-- `docs/context-cache-hit-maximization-design.md`
-  - confirmed cache-hit policy follow-up covering immediate setting changes, deterministic replay projection, and late-triggered semantic compaction
+- `docs/codex-claude-balanced-context-management-plan.md`
+  - current successor plan for Codex/Claude-style cache zones, deterministic replay projection, late-triggered compaction, and OpenCray memory/soul balance
 - `docs/done/design-p0-live-queue-persistence.md`
 - `docs/done/design-p0-session-runtime-manager.md`
 - `docs/done/design-p0-prompt-layer-architecture.md`
@@ -875,7 +875,7 @@ That means:
 Related designs:
 
 - `docs/working-state-layer-design.md`
-- `docs/global-context-budget-coordination-design.md`
+- `docs/codex-claude-balanced-context-management-plan.md`
 
 ### Goal 7: observable assembly
 
@@ -1182,7 +1182,7 @@ Important boundary:
 
 Related design:
 
-- `docs/global-context-budget-coordination-design.md`
+- `docs/codex-claude-balanced-context-management-plan.md`
 
 ### Current code-backed checkpoint
 

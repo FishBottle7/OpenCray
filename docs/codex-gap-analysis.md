@@ -702,7 +702,7 @@ Recommended design direction:
 
 Design references:
 
-- `docs/global-context-budget-coordination-design.md`
+- `docs/codex-claude-balanced-context-management-plan.md`
 - `docs/working-state-layer-design.md`
 
 ### 4.6 Commentary-first behavior now has an explicit prompt contract, but runtime enforcement is still softer than Codex
