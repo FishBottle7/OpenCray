@@ -434,12 +434,260 @@ Acceptance:
 
 ## Screens To Prioritize
 
-1. Chat: composer focus, action rail, drawer, streaming/active work feedback.
-2. Settings: home-to-subpage navigation, option sheets, inline sections.
-3. Files: preview/create dialogs, editor/preview transitions, busy/selection
+Current focus: Skills.
+
+1. Skills: segmented control, Manage/Install horizontal switching, search result
+   reveal, install/manage state changes.
+2. Chat: composer focus, add-menu expansion, action rail, drawer,
+   streaming/active work feedback.
+3. Settings: home-to-subpage navigation, option sheets, inline sections.
+4. Files: preview/create dialogs, editor/preview transitions, busy/selection
    states.
-4. Skills: segmented control, search result reveal, install/manage state
-   changes.
+
+## Current Revision Plan: Skills And Chat Composer
+
+This revision responds to the follow-up QA findings after the first motion pass:
+
+- Right-to-left page movement can feel like it hesitates at the start.
+- Skills Manage/Install switching can show overlapping elements during the
+  transition.
+- The Skills segmented tab changes state instead of feeling connected to the
+  content movement.
+- The Chat composer add menu appears to expand upward from below the composer,
+  but the intended geometry is that the menu grows out from the input row and
+  pushes the composer upward while the composer bottom stays anchored.
+- Chat composer material changes, including transparent-to-white surface changes
+  and plus-button active color changes, need gradual transitions.
+
+### Skills Manage/Install Switching
+
+Files:
+
+- `flutter_app/lib/features/skills/skills_feature.dart`
+- `flutter_app/lib/core/design/opencray_motion.dart`
+
+Current behavior:
+
+- Manage/Install content uses `OpenCrayDirectionalSwitcher`, which is based on
+  `AnimatedSwitcher`.
+- `AnimatedSwitcher` keeps outgoing and incoming children in the same transition
+  stack. With tall lists and different page content, the transition can read as
+  two pages overlapping instead of one viewport sliding.
+- The outgoing child also uses an exit curve that can make one direction feel
+  slower at the start than the opposite direction.
+
+Target behavior:
+
+- Manage and Install behave like two adjacent horizontal pages inside one clipped
+  viewport.
+- Switching to Install moves content left: Manage exits to the left, Install
+  enters from the right.
+- Switching back to Manage moves content right: Install exits to the right,
+  Manage enters from the left.
+- The old page is clipped by the viewport instead of fading over the new page.
+- During transition, only the selected page accepts input.
+- Different page heights should not create visible overlap, scroll flashes, or
+  unexpected vertical jumps.
+
+Implementation details:
+
+- Replace the Skills content `OpenCrayDirectionalSwitcher` usage with a
+  Skills-specific horizontal viewport, or add a shared helper only if the same
+  geometry is useful outside Skills.
+- Use `ClipRect` around the transition area.
+- Drive both outgoing and incoming pages from one animation progress so their
+  positions stay locked:
+  - forward: outgoing `0 -> -1`, incoming `1 -> 0`
+  - backward: outgoing `0 -> 1`, incoming `-1 -> 0`
+- Prefer `FractionalTranslation` or `SlideTransition` over animating layout
+  offsets directly.
+- Avoid meaningful fade. If opacity is needed to soften subpixel edges, keep it
+  near `1.0` so it never reads as a flash.
+- Keep old/new pages in a `Stack` only as moving neighbors, not as centered
+  overlapping pages.
+- Update or add focused widget coverage to verify direction and that the
+  transition helper is present for Manage/Install.
+
+Acceptance:
+
+- Mid-transition screenshots should show adjacent pages sliding, not two pages
+  centered on top of each other.
+- Manage -> Install and Install -> Manage have mirrored directions.
+- Repeated fast tab taps do not leave stale outgoing content.
+- The content does not flash or briefly show the wrong seed/loading page.
+
+### Skills Segmented Tab
+
+Files:
+
+- `flutter_app/lib/features/skills/skills_feature.dart`
+
+Current behavior:
+
+- Each segment animates its own selected background.
+- The selected state changes visually, but there is no physical relationship
+  between the tab indicator and the page movement.
+
+Target behavior:
+
+- The segmented control uses one sliding selected capsule.
+- The capsule moves horizontally with the same direction as the page switch.
+- Text color and weight transition with the capsule movement.
+- The tab control keeps stable height, hit targets, and text layout.
+
+Implementation details:
+
+- Refactor `_SegmentedControl` so the selected capsule is a single positioned
+  indicator behind the two labels.
+- Use a deterministic two-position animation:
+  - Manage selected: indicator aligned to the left half.
+  - Install selected: indicator aligned to the right half.
+- Use shared motion timing:
+  - tab indicator: `OpenCrayMotion.expand` or a nearby `220-240ms` duration
+  - curve: spatial, with immediate movement and soft arrival
+- Keep label widgets fixed in place; only colors/weight change.
+- Avoid scaling the tab labels or changing segment dimensions.
+
+Acceptance:
+
+- The tab reads as one control with a moving selection indicator.
+- Label text never shifts, clips, or changes hit target size.
+- The tab and content agree on direction.
+
+### Chat Composer Add Menu
+
+Files:
+
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+- `flutter_app/lib/core/design/opencray_motion.dart`
+
+Current behavior:
+
+- The composer surface uses `AnimatedSize` with bottom alignment.
+- The add menu uses `AnimatedSwitcher` and `SizeTransition`.
+- The resulting motion can read as the composer expanding from the bottom upward,
+  instead of the menu growing from the input row downward while the composer is
+  pushed upward.
+- The composer surface/background and plus button active colors change too
+  abruptly.
+
+Target behavior:
+
+- Tapping plus makes the add menu grow out from the input row.
+- The add menu reveals below the input row.
+- The composer bottom stays anchored to the screen bottom; as the add menu grows,
+  the whole composer moves upward to make room.
+- Closing the menu reverses the same path: the tray collapses back into the input
+  row, and the composer settles back down.
+- The input surface transitions from the non-expanded material to the expanded
+  white card material gradually.
+- The plus button background and icon color animate with the same state change.
+
+Implementation details:
+
+- Replace the add-menu `AnimatedSwitcher` with an explicit add tray whose height
+  is driven by open progress.
+- Put the tray directly below `_InputRow` in the composer column.
+- Use `ClipRect` plus `Align(heightFactor: progress, alignment: topCenter)` so
+  the tray reveals downward from the input row.
+- Keep the outer composer `AnimatedSize` aligned to `Alignment.bottomCenter` so
+  the bottom edge remains anchored while the new height pushes content upward.
+- Drive surface state from the same `showAddMenu` progress:
+  - card/background color blend
+  - border color blend
+  - optional subtle shadow or stroke change
+  - plus-button background color blend
+  - plus-button foreground color blend
+- Keep focus outline and add-menu active material separate so tapping plus does
+  not look like a text-field focus jump.
+- Use open timing around `220-260ms` and close timing around `180-220ms`.
+- Avoid bounce, generic pop, or center-scale effects.
+
+Acceptance:
+
+- The menu visibly originates at the input row and opens downward from that
+  source.
+- The composer bottom edge remains anchored during expansion/collapse.
+- Surface and plus-button state changes are smooth, not instant.
+- Reduced-motion mode preserves state clarity without large spatial movement.
+
+### Page And Switch Curve Correction
+
+Files:
+
+- `flutter_app/lib/core/design/opencray_motion.dart`
+- Any route/switch helper that applies page-level horizontal movement.
+
+Current behavior:
+
+- Page and switch code can reuse `OpenCrayMotion.exit` for spatial movement.
+- `exit` is useful for opacity or closing affordances, but for horizontal page
+  movement it can create a near-zero initial velocity in one sampled direction,
+  making a right-to-left transition feel like it sticks before moving.
+
+Target behavior:
+
+- Page-level horizontal movement uses a spatial curve that starts moving
+  immediately enough to feel responsive and lands softly.
+- Forward and reverse directions should feel symmetric even though they move in
+  opposite directions.
+- Exit curves remain available for opacity, scrim, and non-spatial close states.
+
+Implementation details:
+
+- Add or tune a dedicated spatial curve token for page movement.
+- Use that spatial curve for both incoming and outgoing horizontal page
+  translation where a single transition progress controls both pages.
+- Avoid double-curving the same animation in `AnimatedSwitcher` and inside the
+  transition builder.
+- Keep durations in the existing page range unless manual QA shows a clear need
+  to adjust.
+
+Acceptance:
+
+- Right-to-left and left-to-right transitions start without a visible pause.
+- Transitions do not feel linear or sticky.
+- No new flash is introduced by opacity.
+
+### Current Revision Checklist
+
+Skills first:
+
+- [ ] Replace Skills Manage/Install `AnimatedSwitcher`-style transition with a
+  clipped horizontal viewport.
+- [ ] Make Manage -> Install slide left and Install -> Manage slide right.
+- [ ] Prevent old/new page centered overlap during the transition.
+- [ ] Keep only the selected Skills page interactive during motion.
+- [ ] Refactor Skills segmented control to a single sliding capsule indicator.
+- [ ] Keep Skills tab label layout and hit targets stable.
+- [ ] Add or update focused Skills widget tests.
+
+Chat composer next:
+
+- [ ] Replace Chat composer add-menu switcher with a tray that expands downward
+  from the input row.
+- [ ] Keep composer bottom anchored while expanded height pushes the composer
+  upward.
+- [ ] Animate composer material, border, and plus-button colors with the open
+  progress.
+- [ ] Keep focus outline behavior distinct from add-menu active behavior.
+- [ ] Add or update focused Chat composer widget tests.
+
+Shared motion:
+
+- [ ] Tune page spatial curve so right-to-left and left-to-right movement feel
+  symmetric.
+- [ ] Use spatial movement curves for page translation and keep exit curves for
+  opacity/close affordances.
+- [ ] Verify reduced-motion fallbacks for Skills and Chat composer.
+
+Verification:
+
+- [ ] Run `dart analyze flutter_app`.
+- [ ] Run focused Skills tests.
+- [ ] Run focused Chat composer tests.
+- [ ] Rebuild debug APK after implementation.
+- [ ] Create a focused Conventional Commit in Chinese.
 
 ## Acceptance Criteria
 
