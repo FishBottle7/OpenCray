@@ -475,6 +475,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     openAiPromptCacheRetention(request)?.let { retention ->
       payload.put("prompt_cache_retention", retention)
     }
+    if (openAiStructuredFinalSchemaSupported(request)) {
+      payload.put("response_format", openAiStructuredFinalResponseFormat())
+    }
     if (streamResponses) {
       payload.put("stream", true)
     }
@@ -493,9 +496,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         request.route.metadata["max_tokens"]?.toIntOrNull() ?: DEFAULT_ANTHROPIC_MAX_TOKENS,
       )
 
-    if (request.request.tools.isNotEmpty() || request.request.builtinTools.isNotEmpty()) {
-      payload.put("tools", buildAnthropicToolsArray(request))
-    }
+    buildAnthropicToolsArray(request)
+      .takeIf { tools -> tools.length() > 0 }
+      ?.let { tools -> payload.put("tools", tools) }
 
     applyAnthropicToolControl(payload, request.request)
     request.request.systemPrompt?.takeIf { it.isNotBlank() }?.let { systemPrompt ->
@@ -572,11 +575,110 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     openAiPromptCacheRetention(request)?.let { retention ->
       payload.put("prompt_cache_retention", retention)
     }
+    if (openAiStructuredFinalSchemaSupported(request)) {
+      payload.put("text", openAiResponsesStructuredFinalTextFormat())
+    }
     if (streamResponses) {
       payload.put("stream", true)
     }
     return payload.toString()
   }
+
+  private fun openAiStructuredFinalResponseFormat(): JSONObject = JSONObject()
+    .put("type", "json_schema")
+    .put(
+      "json_schema",
+      JSONObject()
+        .put("name", STRUCTURED_FINAL_SCHEMA_NAME)
+        .put("strict", true)
+        .put("schema", structuredFinalSchema()),
+    )
+
+  private fun openAiResponsesStructuredFinalTextFormat(): JSONObject = JSONObject()
+    .put(
+      "format",
+      JSONObject()
+        .put("type", "json_schema")
+        .put("name", STRUCTURED_FINAL_SCHEMA_NAME)
+        .put("strict", true)
+        .put("schema", structuredFinalSchema()),
+    )
+
+  private fun structuredFinalSchema(): JSONObject = JSONObject()
+    .put("type", "object")
+    .put("additionalProperties", false)
+    .put(
+      "required",
+      JSONArray()
+        .put("type")
+        .put("answer")
+        .put("attachments"),
+    )
+    .put(
+      "properties",
+      JSONObject()
+        .put(
+          "type",
+          JSONObject()
+            .put("type", "string")
+            .put("enum", JSONArray().put("final")),
+        )
+        .put(
+          "answer",
+          JSONObject()
+            .put("type", "string"),
+        )
+        .put(
+          "attachments",
+          JSONObject()
+            .put("type", "array")
+            .put("items", structuredFinalAttachmentSchema()),
+        ),
+    )
+
+  private fun structuredFinalAttachmentSchema(): JSONObject = JSONObject()
+    .put("type", "object")
+    .put("additionalProperties", false)
+    .put(
+      "required",
+      JSONArray()
+        .put("kind")
+        .put("artifact_id")
+        .put("relative_path")
+        .put("path")
+        .put("chat_attachment_id")
+        .put("display_name")
+        .put("mime_type")
+        .put("duration_ms")
+        .put("waveform_bars")
+        .put("transcript_text"),
+    )
+    .put(
+      "properties",
+      JSONObject()
+        .put("kind", nullableStringSchema())
+        .put("artifact_id", nullableStringSchema())
+        .put("relative_path", nullableStringSchema())
+        .put("path", nullableStringSchema())
+        .put("chat_attachment_id", nullableStringSchema())
+        .put("display_name", nullableStringSchema())
+        .put("mime_type", nullableStringSchema())
+        .put(
+          "duration_ms",
+          JSONObject()
+            .put("type", JSONArray().put("integer").put("null")),
+        )
+        .put(
+          "waveform_bars",
+          JSONObject()
+            .put("type", "array")
+            .put("items", JSONObject().put("type", "integer")),
+        )
+        .put("transcript_text", nullableStringSchema()),
+    )
+
+  private fun nullableStringSchema(): JSONObject = JSONObject()
+    .put("type", JSONArray().put("string").put("null"))
 
   private fun extractMessageContent(
     payload: JSONObject,
@@ -1225,24 +1327,29 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       }
     }
     val textContent = textBlocks.joinToString(separator = "").trim().takeIf(String::isNotBlank)
-    val commentaryText = textContent?.takeIf { toolCalls.isNotEmpty() }
+    val structuredFinalToolPayload = extractAnthropicStructuredFinalToolPayload(toolCalls)
+    val executableToolCalls = toolCalls.filterNot { toolCall ->
+      toolCall.toolName == ANTHROPIC_STRUCTURED_FINAL_TOOL_NAME
+    }
+    val commentaryText = textContent?.takeIf { executableToolCalls.isNotEmpty() }
     val finalText = textContent?.takeUnless { text ->
-      toolCalls.isNotEmpty() || looksLikeProtocolPayload(text)
+      executableToolCalls.isNotEmpty() || looksLikeProtocolPayload(text)
     }
     val finalAttachmentPayload = textContent
       ?.takeIf(::looksLikeProtocolPayload)
       ?.toProtocolFinalPayloadOrNull()
+      ?: structuredFinalToolPayload
     val nativeFinalText = finalAttachmentPayload?.nonBlankString("answer") ?: finalText
     val finalAttachments = finalAttachmentPayload?.structuredFinalAttachments().orEmpty()
     val rawText = when {
       textContent != null && looksLikeProtocolPayload(textContent) -> textContent
       toolCallErrors.isNotEmpty() -> content.toString().trim().takeIf(String::isNotBlank)
-      toolCalls.isNotEmpty() -> null
+      executableToolCalls.isNotEmpty() -> null
       else -> finalText
     }
     val reasoningText = thinkingBlocks.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
     return buildStructuredCompletion(
-      toolCalls = toolCalls,
+      toolCalls = executableToolCalls,
       finalText = nativeFinalText,
       finalAttachments = finalAttachments,
       commentaryText = commentaryText,
@@ -1250,6 +1357,15 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       rawText = rawText,
       toolCallErrors = toolCallErrors,
     )
+  }
+
+  private fun extractAnthropicStructuredFinalToolPayload(
+    toolCalls: List<LiteLlmStructuredToolCall>,
+  ): JSONObject? {
+    val finalToolCall = toolCalls.firstOrNull { toolCall ->
+      toolCall.toolName == ANTHROPIC_STRUCTURED_FINAL_TOOL_NAME
+    } ?: return null
+    return runCatching { JSONObject(finalToolCall.arguments.toString()) }.getOrNull()
   }
 
   private fun buildStructuredCompletion(
@@ -1404,6 +1520,12 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED,
       nativeToolCallObserved(payload, protocol).toString(),
     )
+    if (openAiStructuredFinalSchemaSupported(request)) {
+      put(LlmStructuredFinalMetadataKeys.STRUCTURED_FINAL_SCHEMA_SUPPORTED, "true")
+    }
+    if (anthropicStructuredFinalToolSupported(request)) {
+      put(LlmStructuredFinalMetadataKeys.ANTHROPIC_STRUCTURED_FINAL_TOOL_SUPPORTED, "true")
+    }
     val builtinWebSearchObservations = builtinWebSearchObservations(
       request = request,
       payload = payload,
@@ -1736,6 +1858,76 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     }.getOrDefault("")
     return host == "api.openai.com" || host.endsWith(".openai.com")
   }
+
+  private fun openAiStructuredFinalSchemaSupported(
+    request: LiteLlmProviderRequest,
+  ): Boolean {
+    if (resolvedProtocol(request) != LlmProviderProtocols.OPENAI &&
+      resolvedProtocol(request) != LlmProviderProtocols.OPENAI_RESPONSES
+    ) {
+      return false
+    }
+    resolvedStructuredFinalMetadataValue(
+      request = request,
+      key = LlmStructuredFinalMetadataKeys.STRUCTURED_FINAL_SCHEMA_SUPPORTED,
+    )?.lowercase()?.let { rawValue ->
+      return when (rawValue) {
+        "true" -> true
+        "false" -> false
+        else -> false
+      }
+    }
+    return isOfficialOpenAiRoute(request)
+  }
+
+  private fun anthropicStructuredFinalToolSupported(
+    request: LiteLlmProviderRequest,
+  ): Boolean {
+    if (resolvedProtocol(request) != LlmProviderProtocols.ANTHROPIC) {
+      return false
+    }
+    resolvedStructuredFinalMetadataValue(
+      request = request,
+      key = LlmStructuredFinalMetadataKeys.ANTHROPIC_STRUCTURED_FINAL_TOOL_SUPPORTED,
+    )?.lowercase()?.let { rawValue ->
+      return when (rawValue) {
+        "true" -> true
+        "false" -> false
+        else -> false
+      }
+    }
+    return isOfficialAnthropicRoute(request)
+  }
+
+  private fun isOfficialOpenAiRoute(request: LiteLlmProviderRequest): Boolean {
+    if (request.route.providerId.equals("openai", ignoreCase = true)) {
+      return true
+    }
+    val host = providerHost(request)
+    return host == "api.openai.com" || host.endsWith(".openai.com")
+  }
+
+  private fun isOfficialAnthropicRoute(request: LiteLlmProviderRequest): Boolean {
+    if (request.route.providerId.equals("anthropic", ignoreCase = true)) {
+      return true
+    }
+    val host = providerHost(request)
+    return host == "api.anthropic.com" || host.endsWith(".anthropic.com")
+  }
+
+  private fun providerHost(request: LiteLlmProviderRequest): String = runCatching {
+    URI(request.route.baseUrl?.trim().orEmpty()).host.orEmpty().lowercase()
+  }.getOrDefault("")
+
+  private fun resolvedStructuredFinalMetadataValue(
+    request: LiteLlmProviderRequest,
+    key: String,
+  ): String? = request.request.metadata[key]
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: request.route.metadata[key]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
 
   private fun resolvedPromptCacheKeyStrategy(
     request: LiteLlmProviderRequest,
@@ -2779,6 +2971,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           },
       )
     }
+    if (anthropicStructuredFinalToolSupported(request)) {
+      put(anthropicStructuredFinalTool())
+    }
   }
 
   private fun buildAnthropicBuiltinTool(
@@ -2818,6 +3013,14 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       )
     }
   }
+
+  private fun anthropicStructuredFinalTool(): JSONObject = JSONObject()
+    .put("name", ANTHROPIC_STRUCTURED_FINAL_TOOL_NAME)
+    .put(
+      "description",
+      "Return the final user-facing answer, optionally referencing existing OpenCray media artifacts.",
+    )
+    .put("input_schema", structuredFinalSchema())
 
   private fun buildAnthropicToolChoice(
     toolChoice: LiteLlmToolChoice,
@@ -3131,7 +3334,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         } else {
           for (index in 0 until content.length()) {
             val block = content.optJSONObject(index) ?: continue
-            if (block.optString("type") == "tool_use") {
+            if (isExecutableAnthropicToolUse(block)) {
               return true
             }
           }
@@ -3610,6 +3813,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val content = payload.optJSONArray("content") ?: return "anthropic_empty"
     var hasText = false
     var hasToolUse = false
+    var hasStructuredFinalTool = false
     val hasBuiltinWebSearch = builtinWebSearchObserved(
       request = request,
       payload = payload,
@@ -3625,10 +3829,18 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           hasText = true
         }
 
-        "tool_use" -> hasToolUse = true
+        "tool_use" -> if (isExecutableAnthropicToolUse(block)) {
+          hasToolUse = true
+        } else if (block.optString("name") == ANTHROPIC_STRUCTURED_FINAL_TOOL_NAME) {
+          hasStructuredFinalTool = true
+        }
       }
     }
     return when {
+      hasText && hasToolUse && hasStructuredFinalTool -> "anthropic_text_tool_use_and_structured_final_tool"
+      hasToolUse && hasStructuredFinalTool -> "anthropic_tool_use_and_structured_final_tool"
+      hasText && hasStructuredFinalTool -> "anthropic_text_and_structured_final_tool"
+      hasStructuredFinalTool -> "anthropic_structured_final_tool"
       hasText && hasToolUse && hasBuiltinWebSearch -> "anthropic_text_tool_use_and_builtin_web_search"
       hasText && hasBuiltinWebSearch -> "anthropic_text_and_builtin_web_search"
       hasBuiltinWebSearch -> "anthropic_builtin_web_search"
@@ -3639,6 +3851,10 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       else -> "anthropic_empty"
     }
   }
+
+  private fun isExecutableAnthropicToolUse(block: JSONObject): Boolean =
+    block.optString("type") == "tool_use" &&
+      block.optString("name") != ANTHROPIC_STRUCTURED_FINAL_TOOL_NAME
 
   private fun extractErrorMessage(responseText: String): String = runCatching {
     val errorObject = JSONObject(responseText).optJSONObject("error")
@@ -5628,6 +5844,8 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     private const val MAX_INLINE_PDF_BYTES: Long = 32L * 1024L * 1024L
     private const val ANTHROPIC_WEB_SEARCH_TOOL_TYPE: String = "web_search_20250305"
     private const val ANTHROPIC_WEB_SEARCH_TOOL_NAME: String = "web_search"
+    private const val STRUCTURED_FINAL_SCHEMA_NAME: String = "opencray_final_response"
+    private const val ANTHROPIC_STRUCTURED_FINAL_TOOL_NAME: String = "OpenCrayFinalResponse"
     private const val DEFAULT_ANTHROPIC_WEB_SEARCH_MAX_USES: Int = 5
     private const val ANTHROPIC_SERVER_TOOL_CONTINUATION_CONTENT_KEY: String =
       "_host.anthropicServerToolContinuationContent"

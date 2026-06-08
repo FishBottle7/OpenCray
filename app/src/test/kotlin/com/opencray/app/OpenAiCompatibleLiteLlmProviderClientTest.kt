@@ -4812,6 +4812,175 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
+  fun executeSendsOpenAiStructuredFinalJsonSchemaForOfficialOpenAiRoutes() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "openai",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "gpt-4o-mini",
+      responseBody = """
+        {
+          "id": "req_structured_final_schema",
+          "choices": [
+            {
+              "message": {
+                "content": "{\"type\":\"final\",\"answer\":\"OK\",\"attachments\":[]}"
+              },
+              "finish_reason": "stop"
+            }
+          ]
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val success = result as LiteLlmProviderResult.Success
+    assertEquals("true", success.metadata[LlmStructuredFinalMetadataKeys.STRUCTURED_FINAL_SCHEMA_SUPPORTED])
+    val payload = JSONObject(capturedBody.get())
+    val responseFormat = payload.getJSONObject("response_format")
+    assertEquals("json_schema", responseFormat.getString("type"))
+    val jsonSchema = responseFormat.getJSONObject("json_schema")
+    assertEquals("opencray_final_response", jsonSchema.getString("name"))
+    assertEquals(true, jsonSchema.getBoolean("strict"))
+    val schema = jsonSchema.getJSONObject("schema")
+    assertEquals(false, schema.getBoolean("additionalProperties"))
+    assertEquals("attachments", schema.getJSONArray("required").getString(2))
+    val attachmentSchema = schema
+      .getJSONObject("properties")
+      .getJSONObject("attachments")
+      .getJSONObject("items")
+    assertEquals(false, attachmentSchema.getBoolean("additionalProperties"))
+    assertEquals("artifact_id", attachmentSchema.getJSONArray("required").getString(1))
+  }
+
+  @Test
+  fun executeOmitsStructuredFinalJsonSchemaForThirdPartyOpenAiRoutesByDefault() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "custom-openai-compatible",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "third-party-model",
+      responseBody = """
+        {
+          "id": "req_third_party_no_schema",
+          "choices": [
+            {
+              "message": { "content": "OK" },
+              "finish_reason": "stop"
+            }
+          ]
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val payload = JSONObject(capturedBody.get())
+    assertFalse(payload.has("response_format"))
+  }
+
+  @Test
+  fun executeSendsOpenAiResponsesStructuredFinalJsonSchemaForOfficialOpenAiRoutes() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      responseBody = """
+        {
+          "id": "resp_structured_final_schema",
+          "status": "completed",
+          "output": [
+            {
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                { "type": "output_text", "text": "{\"type\":\"final\",\"answer\":\"OK\",\"attachments\":[]}" }
+              ]
+            }
+          ]
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val success = result as LiteLlmProviderResult.Success
+    assertEquals("true", success.metadata[LlmStructuredFinalMetadataKeys.STRUCTURED_FINAL_SCHEMA_SUPPORTED])
+    val payload = JSONObject(capturedBody.get())
+    val format = payload
+      .getJSONObject("text")
+      .getJSONObject("format")
+    assertEquals("json_schema", format.getString("type"))
+    assertEquals("opencray_final_response", format.getString("name"))
+    assertEquals(true, format.getBoolean("strict"))
+    assertEquals("object", format.getJSONObject("schema").getString("type"))
+  }
+
+  @Test
+  fun executeSendsAndParsesAnthropicStructuredFinalToolForOfficialAnthropicRoutes() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "anthropic",
+      protocol = LlmProviderProtocols.ANTHROPIC,
+      model = "claude-3-5-sonnet",
+      authHeaders = mapOf("x-api-key" to "test-key"),
+      responseBody = """
+        {
+          "id": "msg_structured_final_tool",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu_final_1",
+              "name": "OpenCrayFinalResponse",
+              "input": {
+                "type": "final",
+                "answer": "Created the image.",
+                "attachments": [
+                  {
+                    "kind": "image",
+                    "artifact_id": "artifact-image-1",
+                    "relative_path": null,
+                    "path": null,
+                    "chat_attachment_id": null,
+                    "display_name": "diagram.png",
+                    "mime_type": "image/png",
+                    "duration_ms": null,
+                    "waveform_bars": [],
+                    "transcript_text": null
+                  }
+                ]
+              }
+            }
+          ],
+          "stop_reason": "tool_use"
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val success = result as LiteLlmProviderResult.Success
+    assertEquals("true", success.metadata[LlmStructuredFinalMetadataKeys.ANTHROPIC_STRUCTURED_FINAL_TOOL_SUPPORTED])
+    assertEquals("false", success.metadata[LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED])
+    val tool = JSONObject(capturedBody.get())
+      .getJSONArray("tools")
+      .let { tools ->
+        (0 until tools.length())
+          .map { index -> tools.getJSONObject(index) }
+          .single { candidate -> candidate.getString("name") == "OpenCrayFinalResponse" }
+      }
+    assertEquals("object", tool.getJSONObject("input_schema").getString("type"))
+    val completion = requireNotNull(success.completion)
+    assertTrue(completion.toolCalls.isEmpty())
+    assertEquals("Created the image.", completion.finalText)
+    assertEquals(1, completion.finalAttachments.size)
+    assertEquals("artifact-image-1", completion.finalAttachments.single().artifactId)
+    assertEquals("image/png", completion.finalAttachments.single().mimeType)
+  }
+
+  @Test
   fun executeBuildsOpenAiCanonicalMessagesWhenGatewayMessagesArePresent() {
     val requestLine = AtomicReference<String>()
     val userAgent = AtomicReference<String>()
@@ -6342,6 +6511,80 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
     assertEquals("8192", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_WRITE_TOKENS])
     assertEquals("8192", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_WRITE_1H_TOKENS])
     assertEquals("1h", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION])
+  }
+
+  private fun executeWithCapturedProviderRequest(
+    routeProviderId: String,
+    protocol: String,
+    model: String,
+    responseBody: String,
+    capturedBody: AtomicReference<String>,
+    authHeaders: Map<String, String> = mapOf("Authorization" to "Bearer test-key"),
+    routeMetadata: Map<String, String> = emptyMap(),
+    requestMetadata: Map<String, String> = emptyMap(),
+  ): LiteLlmProviderResult {
+    val requestLine = AtomicReference<String>()
+    val userAgent = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, requestLine, userAgent, capturedBody)
+          writeHttpResponse(
+            client = client,
+            body = responseBody,
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    return try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent(
+          "1.0.0-test",
+        ),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-captured",
+            providerId = routeProviderId,
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = model,
+            timeoutMs = 5_000L,
+            metadata = mapOf("protocol" to protocol) + routeMetadata,
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            metadata = requestMetadata,
+            authHeaders = authHeaders,
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-captured",
+            providerId = routeProviderId,
+            model = model,
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val expectedPath = when (protocol) {
+        LlmProviderProtocols.ANTHROPIC -> "/v1/messages"
+        LlmProviderProtocols.OPENAI_RESPONSES -> "/v1/responses"
+        else -> "/v1/chat/completions"
+      }
+      assertEquals("POST $expectedPath HTTP/1.1", requestLine.get())
+      assertNotNull(userAgent.get())
+      result
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
   }
 
   private fun executeWithOpenAiResponse(

@@ -223,6 +223,11 @@ internal object LlmPromptCachingMetadataKeys {
   const val ANTHROPIC_PROMPT_CACHE_TTL: String = "anthropicPromptCacheTtl"
 }
 
+internal object LlmStructuredFinalMetadataKeys {
+  const val STRUCTURED_FINAL_SCHEMA_SUPPORTED: String = "structuredFinalSchemaSupported"
+  const val ANTHROPIC_STRUCTURED_FINAL_TOOL_SUPPORTED: String = "anthropicStructuredFinalToolSupported"
+}
+
 internal object LlmPromptCacheKeyStrategies {
   const val NONE: String = "none"
   const val ROUTE: String = "route"
