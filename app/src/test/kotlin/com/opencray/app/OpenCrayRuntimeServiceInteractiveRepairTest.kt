@@ -313,6 +313,9 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     assertEquals(listOf(durableOnlySessionId), result.repairedSessionIds)
     assertEquals(1, durableOnlySession.resumeCallCount)
     assertEquals(listOf(durableOnlySessionId), repairedSessions)
+    val evidence = result.repairEvidenceBySession.getValue(durableOnlySessionId)
+    assertEquals(listOf(InterruptedRunRepairEvidenceKind.RUN_RECORD), evidence.map { it.kind })
+    assertEquals(RuntimeServiceTarget.INTERACTIVE, evidence.single().target)
   }
 
   @Test
@@ -389,6 +392,9 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     assertEquals(listOf(durableOnlySessionId), result.repairedSessionIds)
     assertEquals(1, durableOnlySession.resumeCallCount)
     assertEquals(listOf(durableOnlySessionId), repairedSessions)
+    val evidence = result.repairEvidenceBySession.getValue(durableOnlySessionId)
+    assertEquals(listOf(InterruptedRunRepairEvidenceKind.JOURNAL_TAIL), evidence.map { it.kind })
+    assertEquals(RuntimeServiceTarget.INTERACTIVE, evidence.single().target)
   }
 
   @Test

@@ -238,17 +238,7 @@ internal fun resyncEnabledScheduledTasksFromContext(context: Context) {
 
 internal fun hasPotentialInteractiveRunRepairWork(
   context: Context,
-): Boolean {
-  val appContext = context.applicationContext
-  return potentialInterruptedRunRepairTargets(
-    chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
-    snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
-    promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
-    subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
-    runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
-    runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext),
-  ).isNotEmpty()
-}
+): Boolean = potentialInterruptedRunRepairEvidence(context).isNotEmpty()
 
 internal fun hasPotentialInteractiveRunRepairWork(
   chatSessionStore: ChatSessionLocalStore,
@@ -257,7 +247,7 @@ internal fun hasPotentialInteractiveRunRepairWork(
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
-): Boolean = potentialInterruptedRunRepairTargets(
+): Boolean = potentialInterruptedRunRepairEvidence(
   chatSessionStore = chatSessionStore,
   snapshotStoreFactory = snapshotStoreFactory,
   promptCheckpointStoreFactory = promptCheckpointStoreFactory,
@@ -266,19 +256,41 @@ internal fun hasPotentialInteractiveRunRepairWork(
   runEventJournalStoreFactory = runEventJournalStoreFactory,
 ).isNotEmpty()
 
+internal data class InterruptedRunRepairEvidence(
+  val sessionId: String,
+  val kind: InterruptedRunRepairEvidenceKind,
+  val target: RuntimeServiceTarget,
+  val runId: String? = null,
+  val taskId: String? = null,
+  val detailId: String? = null,
+) {
+  init {
+    require(sessionId.isNotBlank()) { "InterruptedRunRepairEvidence sessionId must not be blank." }
+    require(runId == null || runId.isNotBlank()) {
+      "InterruptedRunRepairEvidence runId must not be blank."
+    }
+    require(taskId == null || taskId.isNotBlank()) {
+      "InterruptedRunRepairEvidence taskId must not be blank."
+    }
+    require(detailId == null || detailId.isNotBlank()) {
+      "InterruptedRunRepairEvidence detailId must not be blank."
+    }
+  }
+}
+
+internal enum class InterruptedRunRepairEvidenceKind {
+  QUEUE_TASK,
+  PROMPT_CHECKPOINT,
+  DETACHED_SUBAGENT_HANDLE,
+  RUN_RECORD,
+  JOURNAL_TAIL,
+}
+
 internal fun potentialInterruptedRunRepairTargets(
   context: Context,
-): Set<RuntimeServiceTarget> {
-  val appContext = context.applicationContext
-  return potentialInterruptedRunRepairTargets(
-    chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
-    snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
-    promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
-    subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
-    runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
-    runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext),
-  )
-}
+): Set<RuntimeServiceTarget> =
+  potentialInterruptedRunRepairEvidence(context)
+    .mapTo(linkedSetOf(), InterruptedRunRepairEvidence::target)
 
 internal fun potentialInterruptedRunRepairTargets(
   chatSessionStore: ChatSessionLocalStore,
@@ -287,7 +299,23 @@ internal fun potentialInterruptedRunRepairTargets(
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
-): Set<RuntimeServiceTarget> {
+): Set<RuntimeServiceTarget> = potentialInterruptedRunRepairEvidence(
+  chatSessionStore = chatSessionStore,
+  snapshotStoreFactory = snapshotStoreFactory,
+  promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+  subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+  runRecordStoreFactory = runRecordStoreFactory,
+  runEventJournalStoreFactory = runEventJournalStoreFactory,
+).mapTo(linkedSetOf(), InterruptedRunRepairEvidence::target)
+
+internal fun potentialInterruptedRunRepairEvidence(
+  chatSessionStore: ChatSessionLocalStore,
+  snapshotStoreFactory: AgentQueueSnapshotStoreFactory,
+  promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
+  subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
+  runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
+  runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
+): List<InterruptedRunRepairEvidence> {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
     snapshotStoreFactory = snapshotStoreFactory,
@@ -296,9 +324,9 @@ internal fun potentialInterruptedRunRepairTargets(
     runRecordStoreFactory = runRecordStoreFactory,
     runEventJournalStoreFactory = runEventJournalStoreFactory,
   )
-  val targets = linkedSetOf<RuntimeServiceTarget>()
+  val evidence = mutableListOf<InterruptedRunRepairEvidence>()
   knownSessionIds.forEach { sessionId ->
-    targets += potentialInterruptedRunRepairTargetsForSession(
+    evidence += potentialInterruptedRunRepairEvidenceForSession(
       sessionId = sessionId,
       snapshotStoreFactory = snapshotStoreFactory,
       promptCheckpointStoreFactory = promptCheckpointStoreFactory,
@@ -307,7 +335,7 @@ internal fun potentialInterruptedRunRepairTargets(
       runEventJournalStoreFactory = runEventJournalStoreFactory,
     )
   }
-  return targets
+  return evidence
 }
 
 internal fun hasPotentialInteractiveRunRepairWorkForSession(
@@ -317,7 +345,7 @@ internal fun hasPotentialInteractiveRunRepairWorkForSession(
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
-): Boolean = potentialInterruptedRunRepairTargetsForSession(
+): Boolean = potentialInterruptedRunRepairEvidenceForSession(
   sessionId = sessionId,
   snapshotStoreFactory = snapshotStoreFactory,
   promptCheckpointStoreFactory = promptCheckpointStoreFactory,
@@ -333,54 +361,118 @@ internal fun potentialInterruptedRunRepairTargetsForSession(
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
-): Set<RuntimeServiceTarget> {
+): Set<RuntimeServiceTarget> = potentialInterruptedRunRepairEvidenceForSession(
+  sessionId = sessionId,
+  snapshotStoreFactory = snapshotStoreFactory,
+  promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+  subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+  runRecordStoreFactory = runRecordStoreFactory,
+  runEventJournalStoreFactory = runEventJournalStoreFactory,
+).mapTo(linkedSetOf(), InterruptedRunRepairEvidence::target)
+
+internal fun potentialInterruptedRunRepairEvidenceForSession(
+  sessionId: String,
+  snapshotStoreFactory: AgentQueueSnapshotStoreFactory,
+  promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
+  subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
+  runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
+  runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
+): List<InterruptedRunRepairEvidence> {
   val taskSnapshots = snapshotStoreFactory.forChatSession(sessionId)
     .load()
     ?.tasks
     .orEmpty()
-  val targets = linkedSetOf<RuntimeServiceTarget>()
+  val evidence = mutableListOf<InterruptedRunRepairEvidence>()
   taskSnapshots
     .filter(::isPotentialRunRepairQueueTask)
     .forEach { taskSnapshot ->
-      targets += runtimeServiceTargetForTask(taskSnapshot.task)
+      evidence += InterruptedRunRepairEvidence(
+        sessionId = sessionId,
+        kind = InterruptedRunRepairEvidenceKind.QUEUE_TASK,
+        target = runtimeServiceTargetForTask(taskSnapshot.task),
+        runId = runIdForTask(taskSnapshot),
+        taskId = taskSnapshot.task.id,
+      )
     }
   promptCheckpointStoreFactory.forChatSession(sessionId)
     .list()
+    .filter(::isPotentialRunRepairCheckpoint)
     .forEach { checkpoint ->
-      targets += runtimeServiceTargetForCheckpoint(
-        checkpoint = checkpoint,
-        taskSnapshots = taskSnapshots,
-      ) ?: RuntimeServiceTarget.INTERACTIVE
+      evidence += InterruptedRunRepairEvidence(
+        sessionId = sessionId,
+        kind = InterruptedRunRepairEvidenceKind.PROMPT_CHECKPOINT,
+        target = runtimeServiceTargetForCheckpoint(
+          checkpoint = checkpoint,
+          taskSnapshots = taskSnapshots,
+        ) ?: RuntimeServiceTarget.INTERACTIVE,
+        runId = checkpoint.runId,
+        taskId = checkpoint.taskId,
+        detailId = checkpoint.checkpointId,
+      )
     }
-  if (
-    subAgentHandleStoreFactory.forChatSession(sessionId)
-      .list()
-      .any(::isPotentialDetachedSubAgentRepairHandle)
-  ) {
-    targets += RuntimeServiceTarget.DETACHED_BACKGROUND
-  }
+  subAgentHandleStoreFactory.forChatSession(sessionId)
+    .list()
+    .filter(::isPotentialDetachedSubAgentRepairHandle)
+    .forEach { handle ->
+      evidence += InterruptedRunRepairEvidence(
+        sessionId = sessionId,
+        kind = InterruptedRunRepairEvidenceKind.DETACHED_SUBAGENT_HANDLE,
+        target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+        runId = handle.parentRunId,
+        taskId = handle.parentTaskId,
+        detailId = handle.agentId,
+      )
+    }
   val runRecords = runRecordStoreFactory?.forChatSession(sessionId)
     ?.list()
     .orEmpty()
   runRecords
     .filter(::isPotentialRunRepairRecord)
     .forEach { record ->
-      targets += taskSnapshots
-        .firstOrNull { taskSnapshot -> runIdFor(taskSnapshot.task) == record.runId }
-        ?.let { taskSnapshot -> runtimeServiceTargetForTask(taskSnapshot.task) }
-        ?: RuntimeServiceTarget.INTERACTIVE
+      evidence += InterruptedRunRepairEvidence(
+        sessionId = sessionId,
+        kind = InterruptedRunRepairEvidenceKind.RUN_RECORD,
+        target = runtimeServiceTargetForRunId(
+          runId = record.runId,
+          taskSnapshots = taskSnapshots,
+        ) ?: RuntimeServiceTarget.INTERACTIVE,
+        runId = record.runId,
+        taskId = record.taskId,
+      )
     }
-  if (
-    hasPotentialRunRepairJournalEvidence(
-      journalEntries = runEventJournalStoreFactory?.forChatSession(sessionId)?.list().orEmpty(),
-      terminalRunIds = runRecords
-        .filter { record -> record.lastResult != null }
-        .mapTo(mutableSetOf(), PersistedAgentRunRecord::runId),
+  potentialRunRepairJournalTails(
+    journalEntries = runEventJournalStoreFactory?.forChatSession(sessionId)?.list().orEmpty(),
+    terminalRunIds = runRecords
+      .filter { record -> record.lastResult != null }
+      .mapTo(mutableSetOf(), PersistedAgentRunRecord::runId),
+  ).forEach { entry ->
+    evidence += InterruptedRunRepairEvidence(
+      sessionId = sessionId,
+      kind = InterruptedRunRepairEvidenceKind.JOURNAL_TAIL,
+      target = runtimeServiceTargetForRunId(
+        runId = entry.runId,
+        taskSnapshots = taskSnapshots,
+      ) ?: RuntimeServiceTarget.INTERACTIVE,
+      runId = entry.runId,
+      taskId = entry.taskId,
+      detailId = entry.eventId,
     )
-  ) {
-    targets += RuntimeServiceTarget.INTERACTIVE
   }
-  return targets
+  return evidence
+}
+
+internal fun potentialInterruptedRunRepairEvidence(
+  context: Context,
+): List<InterruptedRunRepairEvidence> {
+  val appContext = context.applicationContext
+  return potentialInterruptedRunRepairEvidence(
+    chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
+    snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
+    promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
+    subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
+    runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
+    runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext),
+  )
 }
 
 internal fun startInterruptedRunRepairTargets(
@@ -406,12 +498,16 @@ private fun isPotentialRunRepairRecord(record: PersistedAgentRunRecord): Boolean
   return record.lastEvent != null || record.managedProcessIds.isNotEmpty()
 }
 
-private fun hasPotentialRunRepairJournalEvidence(
+private fun isPotentialRunRepairCheckpoint(
+  checkpoint: PersistedPromptCheckpoint,
+): Boolean = checkpoint.checkpointKind != PromptCheckpointKind.FINALIZATION_COMPLETE
+
+private fun potentialRunRepairJournalTails(
   journalEntries: List<PersistedRunJournalEntry>,
   terminalRunIds: Set<String>,
-): Boolean {
+): List<PersistedRunJournalEntry> {
   if (journalEntries.isEmpty()) {
-    return false
+    return emptyList()
   }
   val latestEntriesByRunId = linkedMapOf<String, PersistedRunJournalEntry>()
   journalEntries
@@ -419,7 +515,7 @@ private fun hasPotentialRunRepairJournalEvidence(
     .forEach { entry ->
       latestEntriesByRunId[entry.runId] = entry
     }
-  return latestEntriesByRunId.values.any(::isPotentialRunRepairJournalTail)
+  return latestEntriesByRunId.values.filter(::isPotentialRunRepairJournalTail)
 }
 
 private fun isPotentialRunRepairJournalTail(entry: PersistedRunJournalEntry): Boolean =
@@ -451,6 +547,19 @@ private fun runtimeServiceTargetForCheckpoint(
 ): RuntimeServiceTarget? = taskSnapshots
   .firstOrNull { taskSnapshot -> taskSnapshot.task.id == checkpoint.taskId }
   ?.let { taskSnapshot -> runtimeServiceTargetForTask(taskSnapshot.task) }
+
+private fun runtimeServiceTargetForRunId(
+  runId: String,
+  taskSnapshots: List<SessionQueueTaskSnapshot>,
+): RuntimeServiceTarget? = taskSnapshots
+  .firstOrNull { taskSnapshot -> runIdForTask(taskSnapshot) == runId }
+  ?.let { taskSnapshot -> runtimeServiceTargetForTask(taskSnapshot.task) }
+
+private fun runIdForTask(
+  taskSnapshot: SessionQueueTaskSnapshot,
+): String = taskSnapshot.task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
+  ?.takeIf(String::isNotBlank)
+  ?: taskSnapshot.task.id
 
 private fun isPotentialDetachedSubAgentRepairHandle(handle: SubAgentHandleState): Boolean =
   handle.snapshot.state == SubAgentExecutionState.BACKGROUND_QUEUED ||

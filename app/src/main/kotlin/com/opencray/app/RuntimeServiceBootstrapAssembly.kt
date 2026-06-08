@@ -77,12 +77,14 @@ internal data class RuntimeServiceBootstrapResult(
   val scannedSessionIds: List<String>,
   val resumedSessionIds: List<String>,
   val repairedSessionIds: List<String>,
+  val repairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
 )
 
 internal data class RuntimeServiceInterruptedRunRepairResult(
   val scannedSessionIds: List<String>,
   val resumedSessionIds: List<String>,
   val repairedSessionIds: List<String>,
+  val repairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
 )
 
 internal fun RuntimeServiceBootstrapAssembly.toRuntimeServiceBootstrapState(
@@ -412,22 +414,27 @@ internal fun bootstrapRuntimeServiceSessions(
   )
   val resumedSessionIds = mutableListOf<String>()
   val repairedSessionIds = mutableListOf<String>()
+  val repairEvidenceBySession = linkedMapOf<String, List<InterruptedRunRepairEvidence>>()
 
   knownSessionIds.forEach { sessionId ->
     val session = runtimeSessionDirectoryAccess.session(sessionId)
+    val durableRepairEvidence = durableInteractiveRepairEvidenceForSession(
+      sessionId = sessionId,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runRecordStoreFactory = runRecordStoreFactory,
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+    )
     val shouldResume = session.hasPendingWork() ||
       session.hasLiveManagedProcesses() ||
       session.hasLiveSubAgentWork() ||
-      hasDurableInteractiveRepairWorkForSession(
-        sessionId = sessionId,
-        snapshotStoreFactory = snapshotStoreFactory,
-        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
-        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
-        runRecordStoreFactory = runRecordStoreFactory,
-        runEventJournalStoreFactory = runEventJournalStoreFactory,
-      )
+      durableRepairEvidence.isNotEmpty()
     if (!shouldResume) {
       return@forEach
+    }
+    if (durableRepairEvidence.isNotEmpty()) {
+      repairEvidenceBySession[sessionId] = durableRepairEvidence
     }
     session.resume()
     resumedSessionIds += sessionId
@@ -445,6 +452,7 @@ internal fun bootstrapRuntimeServiceSessions(
     scannedSessionIds = knownSessionIds,
     resumedSessionIds = resumedSessionIds,
     repairedSessionIds = repairedSessionIds,
+    repairEvidenceBySession = repairEvidenceBySession,
   )
 }
 
@@ -468,22 +476,27 @@ internal fun resumeInterruptedRuntimeServiceRuns(
   )
   val resumedSessionIds = mutableListOf<String>()
   val repairedSessionIds = mutableListOf<String>()
+  val repairEvidenceBySession = linkedMapOf<String, List<InterruptedRunRepairEvidence>>()
 
   knownSessionIds.forEach { sessionId ->
     val session = runtimeSessionDirectoryAccess.session(sessionId)
     val runs = session.listRuns()
+    val durableRepairEvidence = durableInteractiveRepairEvidenceForSession(
+      sessionId = sessionId,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runRecordStoreFactory = runRecordStoreFactory,
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+    )
     val shouldResume = runs.any(AgentRunSnapshot::isActive) ||
       session.hasLiveSubAgentWork() ||
-      hasDurableInteractiveRepairWorkForSession(
-        sessionId = sessionId,
-        snapshotStoreFactory = snapshotStoreFactory,
-        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
-        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
-        runRecordStoreFactory = runRecordStoreFactory,
-        runEventJournalStoreFactory = runEventJournalStoreFactory,
-      )
+      durableRepairEvidence.isNotEmpty()
     if (!shouldResume) {
       return@forEach
+    }
+    if (durableRepairEvidence.isNotEmpty()) {
+      repairEvidenceBySession[sessionId] = durableRepairEvidence
     }
     session.resume()
     resumedSessionIds += sessionId
@@ -501,25 +514,26 @@ internal fun resumeInterruptedRuntimeServiceRuns(
     scannedSessionIds = knownSessionIds,
     resumedSessionIds = resumedSessionIds,
     repairedSessionIds = repairedSessionIds,
+    repairEvidenceBySession = repairEvidenceBySession,
   )
 }
 
-private fun hasDurableInteractiveRepairWorkForSession(
+private fun durableInteractiveRepairEvidenceForSession(
   sessionId: String,
   snapshotStoreFactory: AgentQueueSnapshotStoreFactory?,
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory?,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory?,
   runRecordStoreFactory: AgentRunRecordStoreFactory?,
   runEventJournalStoreFactory: RunEventJournalStoreFactory?,
-): Boolean {
+): List<InterruptedRunRepairEvidence> {
   if (
     snapshotStoreFactory == null ||
     promptCheckpointStoreFactory == null ||
     subAgentHandleStoreFactory == null
   ) {
-    return false
+    return emptyList()
   }
-  return hasPotentialInteractiveRunRepairWorkForSession(
+  return potentialInterruptedRunRepairEvidenceForSession(
     sessionId = sessionId,
     snapshotStoreFactory = snapshotStoreFactory,
     promptCheckpointStoreFactory = promptCheckpointStoreFactory,

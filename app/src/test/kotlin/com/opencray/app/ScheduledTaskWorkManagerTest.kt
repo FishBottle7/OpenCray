@@ -146,6 +146,45 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun potentialInterruptedRunRepairEvidenceClassifiesScheduledQueueTask() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-evidence-scheduled")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = "task-scheduled-evidence",
+          runId = "run-scheduled-evidence",
+          lifecycleState = QueueTaskLifecycleState.QUEUED,
+          taskState = AgentTaskState.QUEUED,
+          metadata = mapOf(ScheduledTaskMetadataKeys.SCHEDULE_ID to "schedule-evidence"),
+        ),
+      ),
+    )
+
+    val evidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+    )
+
+    assertEquals(1, evidence.size)
+    val item = evidence.single()
+    assertEquals(sessionId, item.sessionId)
+    assertEquals(InterruptedRunRepairEvidenceKind.QUEUE_TASK, item.kind)
+    assertEquals(RuntimeServiceTarget.DETACHED_BACKGROUND, item.target)
+    assertEquals("run-scheduled-evidence", item.runId)
+    assertEquals("task-scheduled-evidence", item.taskId)
+  }
+
+  @Test
   fun potentialInterruptedRunRepairTargetsRoutesDetachedControlQueueTaskToDetachedBackground() {
     val root = temporaryFolder.newFolder("scheduled-task-repair-target-detached-control")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
@@ -295,6 +334,46 @@ class ScheduledTaskWorkManagerTest {
     assertEquals(
       setOf(RuntimeServiceTarget.INTERACTIVE),
       potentialInterruptedRunRepairTargets(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      ),
+    )
+  }
+
+  @Test
+  fun hasPotentialInteractiveRunRepairWorkIgnoresFinalizationCheckpointOnlySession() {
+    val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-final-checkpoint")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val finalizationSessionId = "session-finalization-checkpoint"
+
+    promptCheckpointStoreFactory.forChatSession(finalizationSessionId).upsert(
+      PersistedPromptCheckpoint(
+        sessionId = finalizationSessionId,
+        runId = "run-finalization-checkpoint",
+        taskId = "task-finalization-checkpoint",
+        checkpointId = "checkpoint-finalization",
+        checkpointKind = PromptCheckpointKind.FINALIZATION_COMPLETE,
+        createdAtEpochMs = 1_000L,
+        updatedAtEpochMs = 1_100L,
+      ),
+    )
+
+    assertFalse(
+      hasPotentialInteractiveRunRepairWork(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      ),
+    )
+    assertEquals(
+      emptyList<InterruptedRunRepairEvidence>(),
+      potentialInterruptedRunRepairEvidence(
         chatSessionStore = chatSessionStore,
         snapshotStoreFactory = snapshotStoreFactory,
         promptCheckpointStoreFactory = promptCheckpointStoreFactory,
@@ -462,6 +541,66 @@ class ScheduledTaskWorkManagerTest {
     )
     assertEquals(
       setOf(RuntimeServiceTarget.INTERACTIVE),
+      potentialInterruptedRunRepairTargets(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+        runEventJournalStoreFactory = runEventJournalStoreFactory,
+      ),
+    )
+  }
+
+  @Test
+  fun potentialInterruptedRunRepairEvidenceRoutesJournalTailThroughMatchingScheduledTask() {
+    val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-journal-target")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory()
+
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = "task-journal-scheduled",
+          runId = "run-journal-scheduled",
+          lifecycleState = QueueTaskLifecycleState.COMPLETED,
+          taskState = AgentTaskState.COMPLETED,
+          metadata = mapOf(ScheduledTaskMetadataKeys.SCHEDULE_ID to "schedule-journal"),
+        ),
+      ),
+    )
+    runEventJournalStoreFactory.forChatSession(sessionId).append(
+      OpenCrayAssistantEvent(
+        runId = "run-journal-scheduled",
+        taskId = "task-journal-scheduled",
+        turn = 0,
+        text = "Recovered scheduled journal progress.",
+        isFinal = false,
+        emittedAtEpochMs = 1_100L,
+      ),
+    )
+
+    val evidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+    )
+
+    assertEquals(1, evidence.size)
+    val item = evidence.single()
+    assertEquals(InterruptedRunRepairEvidenceKind.JOURNAL_TAIL, item.kind)
+    assertEquals(RuntimeServiceTarget.DETACHED_BACKGROUND, item.target)
+    assertEquals("run-journal-scheduled", item.runId)
+    assertEquals("task-journal-scheduled", item.taskId)
+    assertEquals(
+      setOf(RuntimeServiceTarget.DETACHED_BACKGROUND),
       potentialInterruptedRunRepairTargets(
         chatSessionStore = chatSessionStore,
         snapshotStoreFactory = snapshotStoreFactory,

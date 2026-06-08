@@ -331,6 +331,7 @@ Current state:
 - runtime-process controller lifecycle now has a target-scoped durable controller identity persisted under the runtime storage root; projection snapshots and task lifecycle metadata expose it separately as `durableControllerId` / `_host.durableRuntimeControllerId` while the existing per-instance `runtimeControllerId` remains unchanged for managed-process restore scope
 - execution is still ultimately backed by runtime-process singletons and executors
 - `AlarmManager` plus `WorkManager` trigger bridges now exist for scheduled wake-up and repair, and schedule notifications can retry/manual-run, snooze, or disable failed/skipped schedules through the runtime-service wake path, but interactive active runs still execute under that runtime-process owner
+- interrupted-run repair scans now preserve typed evidence by session across WorkManager preflight and runtime-service bootstrap/resume repair results, so host rebuild diagnostics can tell whether a repair wake came from queue state, a prompt checkpoint, a detached subagent handle, a durable run record, or the latest non-terminal journal tail; finalization checkpoints are treated as terminal evidence and do not independently trigger repair wake
 
 Conclusion:
 
@@ -364,6 +365,7 @@ What we can now distinguish better:
 - runtime-service shell placement in the dedicated `:runtime` process versus main-process or other secondary-process mismatch
 - per-controller-instance churn versus the same target-scoped durable runtime-controller identity
 - per-run recovery intent and restore reason when a recovery plan or restore diagnostic exists
+- per-session interrupted-run repair evidence kind for wake/rescan decisions, including queue-task, prompt-checkpoint, detached-subagent, run-record, and journal-tail-only recovery candidates
 
 What is now safer:
 
