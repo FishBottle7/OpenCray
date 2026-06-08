@@ -327,6 +327,7 @@ Current state:
 
 - app bootstrap no longer eagerly starts `OpenCrayAgentRuntimeService`; it only performs app-level bootstrap plus repair/schedule registration, including one-shot app-start repair and unique periodic repair registration. When the runtime service is later started by an explicit wake or binder-demanding path, that service bootstraps the local loopback server on `onCreate()`
 - execution now routes through a dedicated `:runtime` Android `Service` host boundary rather than directly through a UI-owned host facade
+- runtime-service lifecycle/projection diagnostics now include expected and observed service process identity, so a host rebuild report can distinguish a real `:runtime` service shell from a misplaced main-process or secondary-process shell
 - execution is still ultimately backed by runtime-process singletons and executors
 - `AlarmManager` plus `WorkManager` trigger bridges now exist for scheduled wake-up and repair, and schedule notifications can retry/manual-run, snooze, or disable failed/skipped schedules through the runtime-service wake path, but interactive active runs still execute under that runtime-process owner
 
@@ -359,6 +360,7 @@ What we can now distinguish better:
 
 - host-facade recreation versus runtime-owner continuity
 - binder transport churn versus loopback server churn
+- runtime-service shell placement in the dedicated `:runtime` process versus main-process or other secondary-process mismatch
 - per-run recovery intent and restore reason when a recovery plan or restore diagnostic exists
 
 What is now safer:

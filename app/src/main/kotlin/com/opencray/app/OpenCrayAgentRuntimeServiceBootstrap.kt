@@ -72,7 +72,9 @@ internal fun openCrayAgentRuntimeServiceBootstrap(
   target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
   bootstrapDependencies: RuntimeServiceBootstrapDependencies,
 ): OpenCrayAgentRuntimeServiceBootstrap {
-  val serviceLifecycle = RuntimeServiceLifecycleDescriptor()
+  val serviceLifecycle = RuntimeServiceLifecycleDescriptor(
+    serviceProcess = runtimeServiceProcessDescriptorForContext(appContext),
+  )
   val resolvedBootstrap = bootstrapDependencies.resolveRuntimeServiceBootstrap(
     context = appContext,
     target = target,

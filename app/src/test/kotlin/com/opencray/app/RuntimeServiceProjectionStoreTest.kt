@@ -42,6 +42,26 @@ class RuntimeServiceProjectionStoreTest {
     assertEquals(2, detachedStore.loadSnapshot()?.runtimeOwnerWorkSummary?.activeRunCount)
   }
 
+  @Test
+  fun fileBackedProjectionStorePreservesRuntimeServiceProcessDescriptor() {
+    val store = FileBackedRuntimeServiceProjectionStoreFactory(
+      runtimeRootDirectory = temporaryFolder.newFolder("runtime-projection-process"),
+    ).create()
+    val expected = projectionSnapshot(activeRunCount = 1).copy(
+      serviceLifecycle = RuntimeServiceLifecycleDescriptor(
+        serviceInstanceId = "runtime-service-with-process",
+        serviceProcess = runtimeServiceProcessDescriptor(
+          packageName = "org.opencray.app",
+          processName = "org.opencray.app:runtime",
+        ),
+      ),
+    )
+
+    store.saveSnapshot(expected)
+
+    assertEquals(expected, store.loadSnapshot())
+  }
+
   private fun projectionSnapshot(
     activeRunCount: Int,
   ): RuntimeServiceProjectionSnapshot = RuntimeServiceProjectionSnapshot(

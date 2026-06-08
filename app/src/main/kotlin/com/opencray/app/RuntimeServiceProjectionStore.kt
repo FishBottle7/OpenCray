@@ -168,6 +168,7 @@ private fun RuntimeServiceProjectionSnapshot.toPersistedRecord():
       processStartedAtEpochMs = serviceLifecycle.processStartedAtEpochMs,
       serviceInstanceId = serviceLifecycle.serviceInstanceId,
       serviceCreatedAtEpochMs = serviceLifecycle.serviceCreatedAtEpochMs,
+      serviceProcess = serviceLifecycle.serviceProcess?.toPersistedRecord(),
     ),
     serviceWorkState = PersistedRuntimeServiceWorkState(
       phase = serviceWorkState.phase,
@@ -228,6 +229,7 @@ private fun PersistedRuntimeServiceProjectionRecord.toSnapshot(): RuntimeService
       processStartedAtEpochMs = serviceLifecycle.processStartedAtEpochMs,
       serviceInstanceId = serviceLifecycle.serviceInstanceId,
       serviceCreatedAtEpochMs = serviceLifecycle.serviceCreatedAtEpochMs,
+      serviceProcess = serviceLifecycle.serviceProcess?.toSnapshot(),
     ),
     serviceWorkState = RuntimeServiceWorkState(
       phase = serviceWorkState.phase,
@@ -315,6 +317,17 @@ private data class PersistedRuntimeServiceLifecycleDescriptor(
   val processStartedAtEpochMs: Long,
   val serviceInstanceId: String,
   val serviceCreatedAtEpochMs: Long,
+  val serviceProcess: PersistedRuntimeServiceProcessDescriptor? = null,
+)
+
+@Serializable
+private data class PersistedRuntimeServiceProcessDescriptor(
+  val packageName: String? = null,
+  val processName: String? = null,
+  val expectedProcessName: String? = null,
+  val expectedProcessSuffix: String = RUNTIME_SERVICE_PROCESS_SUFFIX,
+  val isDedicatedRuntimeProcess: Boolean = false,
+  val mismatchReason: String? = null,
 )
 
 @Serializable
@@ -356,6 +369,26 @@ private fun LocalRuntimeServerState.toPersistedRecord(): PersistedLocalRuntimeSe
     lastStartedAtEpochMs = lastStartedAtEpochMs,
     failureReason = failureReason,
     changedAtEpochMs = changedAtEpochMs,
+  )
+
+private fun RuntimeServiceProcessDescriptor.toPersistedRecord():
+  PersistedRuntimeServiceProcessDescriptor = PersistedRuntimeServiceProcessDescriptor(
+    packageName = packageName,
+    processName = processName,
+    expectedProcessName = expectedProcessName,
+    expectedProcessSuffix = expectedProcessSuffix,
+    isDedicatedRuntimeProcess = isDedicatedRuntimeProcess,
+    mismatchReason = mismatchReason,
+  )
+
+private fun PersistedRuntimeServiceProcessDescriptor.toSnapshot():
+  RuntimeServiceProcessDescriptor = RuntimeServiceProcessDescriptor(
+    packageName = packageName,
+    processName = processName,
+    expectedProcessName = expectedProcessName,
+    expectedProcessSuffix = expectedProcessSuffix,
+    isDedicatedRuntimeProcess = isDedicatedRuntimeProcess,
+    mismatchReason = mismatchReason,
   )
 
 private fun PersistedLocalRuntimeServerState.toSnapshot(): LocalRuntimeServerState =

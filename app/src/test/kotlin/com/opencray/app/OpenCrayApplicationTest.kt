@@ -51,6 +51,43 @@ class OpenCrayApplicationTest {
   }
 
   @Test
+  fun runtimeServiceProcessDescriptorIdentifiesDedicatedRuntimeProcess() {
+    val descriptor = runtimeServiceProcessDescriptor(
+      packageName = "org.opencray.app",
+      processName = "org.opencray.app:runtime",
+    )
+
+    assertEquals("org.opencray.app", descriptor.packageName)
+    assertEquals("org.opencray.app:runtime", descriptor.processName)
+    assertEquals("org.opencray.app:runtime", descriptor.expectedProcessName)
+    assertEquals(":runtime", descriptor.expectedProcessSuffix)
+    assertEquals(true, descriptor.isDedicatedRuntimeProcess)
+    assertEquals(null, descriptor.mismatchReason)
+  }
+
+  @Test
+  fun runtimeServiceProcessDescriptorReportsMainProcessMismatch() {
+    val descriptor = runtimeServiceProcessDescriptor(
+      packageName = "org.opencray.app",
+      processName = "org.opencray.app",
+    )
+
+    assertEquals(false, descriptor.isDedicatedRuntimeProcess)
+    assertEquals("main_process", descriptor.mismatchReason)
+  }
+
+  @Test
+  fun runtimeServiceProcessDescriptorReportsSecondaryProcessMismatch() {
+    val descriptor = runtimeServiceProcessDescriptor(
+      packageName = "org.opencray.app",
+      processName = "org.opencray.app:service_opencraypython",
+    )
+
+    assertEquals(false, descriptor.isDedicatedRuntimeProcess)
+    assertEquals("secondary_process_mismatch", descriptor.mismatchReason)
+  }
+
+  @Test
   fun bootstrapOpenCrayApplicationResyncsSchedulesAndQueuesRepairWithoutStartingRuntime() {
     val application = Application()
     val steps = mutableListOf<String>()

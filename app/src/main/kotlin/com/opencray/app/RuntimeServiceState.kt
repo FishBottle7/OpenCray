@@ -19,13 +19,17 @@ internal data class RuntimeServiceLifecycleDescriptor(
   val processStartedAtEpochMs: Long = OpenCrayProcessLifecycle.processStartedAtEpochMs,
   val serviceInstanceId: String = lifecycleId(prefix = "runtime-service"),
   val serviceCreatedAtEpochMs: Long = System.currentTimeMillis(),
+  val serviceProcess: RuntimeServiceProcessDescriptor? = null,
 ) {
-  fun snapshotMap(): Map<String, Any?> = mapOf(
-    "processStartId" to processStartId,
-    "processStartedAtEpochMs" to processStartedAtEpochMs,
-    "serviceInstanceId" to serviceInstanceId,
-    "serviceCreatedAtEpochMs" to serviceCreatedAtEpochMs,
-  )
+  fun snapshotMap(): Map<String, Any?> = buildMap {
+    put("processStartId", processStartId)
+    put("processStartedAtEpochMs", processStartedAtEpochMs)
+    put("serviceInstanceId", serviceInstanceId)
+    put("serviceCreatedAtEpochMs", serviceCreatedAtEpochMs)
+    serviceProcess?.let { descriptor ->
+      put("serviceProcess", descriptor.snapshotMap())
+    }
+  }
 }
 
 internal data class RuntimeReplayExecutionContext(

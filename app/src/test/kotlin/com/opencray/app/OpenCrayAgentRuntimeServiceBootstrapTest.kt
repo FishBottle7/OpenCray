@@ -2925,6 +2925,14 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     )
     assertTrue(keepAliveListenerRegistered)
     assertTrue(capturedLifecycle?.serviceInstanceId?.isNotBlank() == true)
+    assertEquals(
+      "org.opencray.app:runtime",
+      capturedLifecycle?.serviceProcess?.expectedProcessName,
+    )
+    assertEquals(
+      RUNTIME_SERVICE_PROCESS_SUFFIX,
+      capturedLifecycle?.serviceProcess?.expectedProcessSuffix,
+    )
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
   }
