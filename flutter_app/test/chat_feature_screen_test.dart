@@ -12138,6 +12138,40 @@ void main() {
     expect(find.text('3'), findsOneWidget);
   });
 
+  testWidgets('session drawer opens from the left edge', (tester) async {
+    await tester.pumpWidget(
+      _buildChatHarness(
+        drawer: const ChatSessionsDrawerState(
+          eyebrow: 'Recent sessions',
+          title: 'Recent sessions',
+          ctaLabel: 'New session',
+          sessions: <ChatSessionListItemData>[
+            ChatSessionListItemData(
+              sessionId: 'session-motion',
+              title: 'Motion session',
+              preview: 'Drawer should enter from the left.',
+              meta: '1 message',
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Sessions'));
+    await tester.pump();
+
+    AnimatedSlide slide = tester.widget<AnimatedSlide>(
+      find.byType(AnimatedSlide),
+    );
+    expect(slide.offset, const Offset(-1, 0));
+
+    await tester.pumpAndSettle();
+    slide = tester.widget<AnimatedSlide>(find.byType(AnimatedSlide));
+    expect(slide.offset, Offset.zero);
+    expect(find.text('Motion session'), findsOneWidget);
+  });
+
   testWidgets('host-backed session drawer shows recent message time labels', (
     tester,
   ) async {

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../../app/opencray_tabs.dart';
 import '../copy/opencray_ui_copy.dart';
 import '../models/opencray_shell_snapshot.dart';
+import 'opencray_motion.dart';
 import 'opencray_tokens.dart';
 
 typedef OpenCrayPageContentBuilder =
@@ -271,6 +272,13 @@ class _BottomNavItem extends StatelessWidget {
     final color = selected
         ? OpenCrayColors.primary
         : OpenCrayColors.textSecondary;
+    final Color indicatorColor = selected
+        ? OpenCrayColors.surfaceAccent
+        : Colors.transparent;
+    final Duration duration = OpenCrayMotion.resolve(
+      context,
+      OpenCrayMotion.micro,
+    );
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -284,19 +292,48 @@ class _BottomNavItem extends StatelessWidget {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.start,
             children: [
-              Icon(
-                _iconFor(tab),
-                size: OpenCraySizes.bottomNavIconSize,
-                color: color,
+              AnimatedContainer(
+                duration: duration,
+                curve: OpenCrayMotion.enter,
+                width: 42,
+                height: 24,
+                decoration: BoxDecoration(
+                  color: indicatorColor,
+                  borderRadius: const BorderRadius.all(OpenCrayRadii.pill),
+                ),
+                alignment: Alignment.center,
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween<double>(begin: 1, end: selected ? 1.04 : 1),
+                  duration: duration,
+                  curve: OpenCrayMotion.enter,
+                  builder: (context, scale, child) {
+                    return Transform.scale(scale: scale, child: child);
+                  },
+                  child: Icon(
+                    _iconFor(tab),
+                    size: OpenCraySizes.bottomNavIconSize,
+                    color: color,
+                  ),
+                ),
               ),
               const SizedBox(height: OpenCraySizes.bottomNavItemGap),
-              Text(
-                copy.tabLabel(tab).toUpperCase(),
-                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+              AnimatedDefaultTextStyle(
+                duration: duration,
+                curve: OpenCrayMotion.enter,
+                style:
+                    Theme.of(context).textTheme.labelMedium?.copyWith(
                   color: color,
                   fontSize: 10,
                   fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                ),
+                    ) ??
+                    TextStyle(
+                      color: color,
+                      fontSize: 10,
+                      fontWeight: selected
+                          ? FontWeight.w600
+                          : FontWeight.w500,
+                    ),
+                child: Text(copy.tabLabel(tab).toUpperCase()),
               ),
             ],
           ),

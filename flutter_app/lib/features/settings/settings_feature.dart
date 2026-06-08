@@ -12,6 +12,7 @@ import '../../core/models/opencray_debug_snapshot.dart';
 import '../../core/models/opencray_image_reference.dart';
 import '../../core/models/opencray_shell_snapshot.dart';
 import '../../core/copy/opencray_ui_copy.dart';
+import '../../core/design/opencray_motion.dart';
 import '../../core/design/opencray_tokens.dart';
 import 'notification_settings_models.dart';
 import 'safety_settings_copy.dart';
@@ -71,7 +72,14 @@ bool _isPrivate172SubnetHost(String host) {
 }
 
 void _dismissActiveInput() {
-  FocusManager.instance.primaryFocus?.unfocus();
+  final FocusNode? primaryFocus = FocusManager.instance.primaryFocus;
+  if (primaryFocus == null) {
+    return;
+  }
+  primaryFocus.unfocus(disposition: UnfocusDisposition.previouslyFocusedChild);
+  if (FocusManager.instance.primaryFocus == primaryFocus) {
+    primaryFocus.unfocus(disposition: UnfocusDisposition.scope);
+  }
 }
 
 class SettingsFeatureScreen extends StatefulWidget {
@@ -95,6 +103,8 @@ class SettingsFeatureScreen extends StatefulWidget {
 class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
     with WidgetsBindingObserver {
   late SettingsPage _page = widget.initialPage;
+  int _pageTransitionDirection = 1;
+  bool _hasPageTransition = false;
   final Map<SettingsPage, SettingsDetailSnapshot> _detailCache =
       <SettingsPage, SettingsDetailSnapshot>{};
   SettingsOverviewSnapshot? _overview;
@@ -151,18 +161,20 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
           height: 20 / 14,
           color: OpenCrayColors.textSecondary,
         );
+    final Widget currentPage = _buildCurrentPage(context);
+    final Widget pageBody = _hasPageTransition
+        ? OpenCrayDirectionalSwitcher(
+            activeKey: ValueKey<String>('settings-page-${_page.routeId}'),
+            direction: _pageTransitionDirection,
+            child: currentPage,
+          )
+        : currentPage;
     final content = GestureDetector(
       behavior: HitTestBehavior.translucent,
       onTap: _dismissActiveInput,
       child: DefaultTextStyle(
         style: defaultTextStyle,
-        child: SafeArea(
-          bottom: false,
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 180),
-            child: _buildCurrentPage(context),
-          ),
-        ),
+        child: SafeArea(bottom: false, child: pageBody),
       ),
     );
     if (widget.standalone) {
@@ -180,6 +192,11 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
       if (nestedBackTarget != null) {
         _persistShellTarget(nestedBackTarget);
         setState(() {
+          _hasPageTransition = true;
+          _pageTransitionDirection = _directionForPageChange(
+            _page,
+            nestedBackTarget,
+          );
           _page = nestedBackTarget;
         });
         return;
@@ -189,7 +206,14 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
         return;
       }
       _persistShellTarget(SettingsPage.home);
-      setState(() => _page = SettingsPage.home);
+      setState(() {
+        _hasPageTransition = true;
+        _pageTransitionDirection = _directionForPageChange(
+          _page,
+          SettingsPage.home,
+        );
+        _page = SettingsPage.home;
+      });
     }
 
     final backLabel = _backLabelForPage(_page);
@@ -324,7 +348,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
     _persistShellTarget(page);
     if (!widget.standalone && page != SettingsPage.home) {
       Navigator.of(context).push(
-        MaterialPageRoute<void>(
+        openCrayHorizontalPageRoute<void>(
           builder: (context) => SettingsFeatureScreen(
             facade: widget.facade,
             initialPage: page,
@@ -336,6 +360,8 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
       return;
     }
     setState(() {
+      _hasPageTransition = true;
+      _pageTransitionDirection = _directionForPageChange(_page, page);
       _page = page;
     });
     if (!_usesDedicatedPage(page) && page != SettingsPage.home) {
@@ -396,6 +422,21 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
     }
   }
 
+  int _directionForPageChange(SettingsPage from, SettingsPage to) {
+    if (from == to) {
+      return _pageTransitionDirection;
+    }
+    if (to == SettingsPage.home || _nestedBackTargetForPage(from) == to) {
+      return -1;
+    }
+    if (from == SettingsPage.home || _nestedBackTargetForPage(to) == from) {
+      return 1;
+    }
+    return SettingsPage.values.indexOf(to) > SettingsPage.values.indexOf(from)
+        ? 1
+        : -1;
+  }
+
   String _backLabelForPage(SettingsPage page) {
     switch (page) {
       case SettingsPage.notificationChannels:
@@ -438,10 +479,12 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
       return;
     }
     unawaited(
-      bridge.saveShellDestination(
-        selectedTab: OpenCrayTab.settings.routeSegment,
-        settingsSubpage: page.routeId,
-      ).catchError((Object _) {}),
+      bridge
+          .saveShellDestination(
+            selectedTab: OpenCrayTab.settings.routeSegment,
+            settingsSubpage: page.routeId,
+          )
+          .catchError((Object _) {}),
     );
   }
 }
@@ -622,7 +665,7 @@ class _DetailSettingsPage extends StatelessWidget {
                       title: 'Open Debug Tools',
                       onTap: () {
                         Navigator.of(context).push(
-                          MaterialPageRoute<void>(
+                          openCrayHorizontalPageRoute<void>(
                             builder: (context) => _DebugToolsPage(
                               bridge: debugBridge!,
                               facade: facade!,
@@ -2641,6 +2684,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     final selected = await showModalBottomSheet<LlmProviderOption>(
       context: context,
       backgroundColor: Colors.transparent,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
       builder: (context) {
         return SafeArea(
           top: false,
@@ -2750,6 +2794,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     final selected = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
       builder: (context) {
         return SafeArea(
           top: false,
@@ -2822,6 +2867,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     final selected = await showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
       builder: (context) {
         return SafeArea(
           top: false,
@@ -2965,6 +3011,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     return showModalBottomSheet<String>(
       context: context,
       backgroundColor: Colors.transparent,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
       builder: (context) {
         return SafeArea(
           top: false,
@@ -3138,10 +3185,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     _contextBudgetPreset = _normalizedContextBudgetPreset(
       snapshot.contextBudgetPreset,
     );
-    _contextBudgetReservedOutputTokens =
-        _normalizedContextBudgetTokenOverride(
-          snapshot.contextBudgetReservedOutputTokens,
-        );
+    _contextBudgetReservedOutputTokens = _normalizedContextBudgetTokenOverride(
+      snapshot.contextBudgetReservedOutputTokens,
+    );
     _contextBudgetSafetyMarginTokens = _normalizedContextBudgetTokenOverride(
       snapshot.contextBudgetSafetyMarginTokens,
     );
@@ -3267,11 +3313,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         onDeviceThinkingEnabled: _onDeviceThinkingEnabled,
         onDeviceLiteModeEnabled: _onDeviceLiteModeEnabled,
         contextBudgetPreset: _contextBudgetPreset,
-        contextBudgetReservedOutputTokens:
-            _contextBudgetReservedOutputTokens,
+        contextBudgetReservedOutputTokens: _contextBudgetReservedOutputTokens,
         contextBudgetSafetyMarginTokens: _contextBudgetSafetyMarginTokens,
-        contextBudgetEffectiveInputPercent:
-            _contextBudgetEffectiveInputPercent,
+        contextBudgetEffectiveInputPercent: _contextBudgetEffectiveInputPercent,
       );
       if (!mounted) {
         return;
@@ -3868,8 +3912,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       return;
     }
     setState(() {
-      _contextBudgetSafetyMarginTokens =
-          _normalizedContextBudgetTokenOverride(parsed);
+      _contextBudgetSafetyMarginTokens = _normalizedContextBudgetTokenOverride(
+        parsed,
+      );
     });
   }
 
@@ -4357,6 +4402,7 @@ class _PersonalizationSettingsPageState
     final selected = await showModalBottomSheet<PersonalizationLanguageOption>(
       context: context,
       backgroundColor: Colors.transparent,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
       builder: (context) {
         return SafeArea(
           top: false,
@@ -5255,8 +5301,11 @@ class _InteractiveSegmentedSelector extends StatelessWidget {
                   borderRadius: BorderRadius.circular(999),
                   onTap: () => onSelected(label),
                   child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 160),
-                    curve: Curves.easeOutCubic,
+                    duration: OpenCrayMotion.resolve(
+                      context,
+                      OpenCrayMotion.micro,
+                    ),
+                    curve: OpenCrayMotion.enter,
                     decoration: BoxDecoration(
                       color: label == selectedId
                           ? Colors.white
@@ -5702,8 +5751,11 @@ class _SegmentedSelector extends StatelessWidget {
             for (int index = 0; index < labels.length; index++)
               Expanded(
                 child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 160),
-                  curve: Curves.easeOutCubic,
+                  duration: OpenCrayMotion.resolve(
+                    context,
+                    OpenCrayMotion.micro,
+                  ),
+                  curve: OpenCrayMotion.enter,
                   decoration: BoxDecoration(
                     color: index == selectedIndex
                         ? Colors.white
@@ -5803,9 +5855,7 @@ class _BudgetOverrideRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Expanded(
-          child: Text(label, style: _SettingsTextStyles.fieldValue),
-        ),
+        Expanded(child: Text(label, style: _SettingsTextStyles.fieldValue)),
         const SizedBox(width: 12),
         _CompactInlineValueField(
           fieldKey: fieldKey,

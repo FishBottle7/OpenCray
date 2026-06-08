@@ -913,17 +913,14 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
   }
 
   Future<void> _openNewAgent() async {
-    final _SavedAgent? savedAgent = await Navigator.of(context)
-        .push<_SavedAgent>(
-          MaterialPageRoute<_SavedAgent>(
-            builder: (BuildContext context) => _AgentCreatePage(
-              draft: _AgentDraft.prototype(),
-              backLabel: 'Agents',
-              debugBridge: widget.debugBridge,
-              persistToHost: _usesHostBackedAgents,
-            ),
-          ),
-        );
+    final _SavedAgent? savedAgent = await _pushAgentPage<_SavedAgent>(
+      (BuildContext context) => _AgentCreatePage(
+        draft: _AgentDraft.prototype(),
+        backLabel: 'Agents',
+        debugBridge: widget.debugBridge,
+        persistToHost: _usesHostBackedAgents,
+      ),
+    );
     if (!mounted || savedAgent == null) {
       return;
     }
@@ -945,23 +942,26 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
   }
 
   Future<void> _reuseAgent(_SavedAgent agent) async {
-    final _SavedAgent? savedAgent = await Navigator.of(context)
-        .push<_SavedAgent>(
-          MaterialPageRoute<_SavedAgent>(
-            builder: (BuildContext context) => _AgentCreatePage(
-              draft: agent.toDraft(),
-              backLabel: 'Agents',
-              debugBridge: widget.debugBridge,
-              persistToHost: false,
-            ),
-          ),
-        );
+    final _SavedAgent? savedAgent = await _pushAgentPage<_SavedAgent>(
+      (BuildContext context) => _AgentCreatePage(
+        draft: agent.toDraft(),
+        backLabel: 'Agents',
+        debugBridge: widget.debugBridge,
+        persistToHost: false,
+      ),
+    );
     if (!mounted || savedAgent == null) {
       return;
     }
     setState(() {
       _savedAgents.insert(0, savedAgent);
     });
+  }
+
+  Future<T?> _pushAgentPage<T>(WidgetBuilder builder) {
+    return Navigator.of(context).push<T>(
+      openCrayHorizontalPageRoute<T>(builder: builder),
+    );
   }
 
   Future<void> _selectAgent(_SavedAgent agent) async {
@@ -1297,11 +1297,9 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   }
 
   Future<void> _openAvatarPage() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (BuildContext context) =>
-            _AgentAvatarPage(draft: _syncedDraft(), bridge: widget.debugBridge),
-      ),
+    await _pushEditorPage(
+      (BuildContext context) =>
+          _AgentAvatarPage(draft: _syncedDraft(), bridge: widget.debugBridge),
     );
     if (mounted) {
       setState(() {});
@@ -1309,11 +1307,8 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   }
 
   Future<void> _openModePage() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (BuildContext context) =>
-            _AgentModePage(draft: _syncedDraft()),
-      ),
+    await _pushEditorPage(
+      (BuildContext context) => _AgentModePage(draft: _syncedDraft()),
     );
     if (mounted) {
       setState(() {});
@@ -1321,11 +1316,8 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   }
 
   Future<void> _openTwinImportPage() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (BuildContext context) =>
-            _AgentTwinImportPage(draft: _syncedDraft()),
-      ),
+    await _pushEditorPage(
+      (BuildContext context) => _AgentTwinImportPage(draft: _syncedDraft()),
     );
     if (mounted) {
       setState(() {});
@@ -1333,11 +1325,8 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   }
 
   Future<void> _openPlasticityPage() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (BuildContext context) =>
-            _AgentPlasticityPage(draft: _syncedDraft()),
-      ),
+    await _pushEditorPage(
+      (BuildContext context) => _AgentPlasticityPage(draft: _syncedDraft()),
     );
     if (mounted) {
       setState(() {});
@@ -1345,11 +1334,8 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   }
 
   Future<void> _openAddressStylePage() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (BuildContext context) =>
-            _AgentAddressStylePage(draft: _syncedDraft()),
-      ),
+    await _pushEditorPage(
+      (BuildContext context) => _AgentAddressStylePage(draft: _syncedDraft()),
     );
     if (mounted) {
       setState(() {});
@@ -1357,12 +1343,10 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   }
 
   Future<void> _openMediaPage() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (BuildContext context) => _AgentMediaSamplesPage(
-          draft: _syncedDraft(),
-          bridge: widget.debugBridge,
-        ),
+    await _pushEditorPage(
+      (BuildContext context) => _AgentMediaSamplesPage(
+        draft: _syncedDraft(),
+        bridge: widget.debugBridge,
       ),
     );
     if (mounted) {
@@ -1371,11 +1355,8 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   }
 
   Future<void> _openModelPage() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (BuildContext context) =>
-            _AgentModelPage(draft: _syncedDraft()),
-      ),
+    await _pushEditorPage(
+      (BuildContext context) => _AgentModelPage(draft: _syncedDraft()),
     );
     if (mounted) {
       setState(() {});
@@ -1383,15 +1364,19 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   }
 
   Future<void> _openAdvancedDefaultsPage() async {
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (BuildContext context) =>
-            _AgentAdvancedDefaultsPage(draft: _syncedDraft()),
-      ),
+    await _pushEditorPage(
+      (BuildContext context) =>
+          _AgentAdvancedDefaultsPage(draft: _syncedDraft()),
     );
     if (mounted) {
       setState(() {});
     }
+  }
+
+  Future<void> _pushEditorPage(WidgetBuilder builder) {
+    return Navigator.of(context).push<void>(
+      openCrayHorizontalPageRoute<void>(builder: builder),
+    );
   }
 }
 
@@ -2384,6 +2369,7 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.white,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
@@ -3668,6 +3654,7 @@ Future<T?> _showSelectionSheet<T>(
   return showModalBottomSheet<T>(
     context: context,
     backgroundColor: Colors.white,
+    sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
     ),

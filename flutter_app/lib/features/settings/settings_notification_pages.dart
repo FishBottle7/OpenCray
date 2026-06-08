@@ -368,6 +368,7 @@ class _NotificationsBackgroundSettingsPageState
     final selected = await showModalBottomSheet<NotificationDeliveryMode>(
       context: context,
       backgroundColor: Colors.transparent,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
       builder: (context) {
         return SafeArea(
           top: false,

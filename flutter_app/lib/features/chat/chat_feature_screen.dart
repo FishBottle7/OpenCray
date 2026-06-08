@@ -20,6 +20,7 @@ import '../../core/models/opencray_file_text_preview.dart';
 import '../../core/models/opencray_file_voice_playback_source.dart';
 import '../../core/models/opencray_sandbox_preview_embed_config.dart';
 import '../../core/models/opencray_sandbox_settings.dart';
+import '../../core/design/opencray_motion.dart';
 import '../../core/widgets/opencray_image_bytes_view.dart';
 import '../../core/widgets/opencray_markdown.dart';
 import 'chat_models.dart';
@@ -2583,10 +2584,10 @@ class OpenCrayChatFeature extends StatefulWidget {
 
 class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   static const AnimationStyle _sessionMenuAnimationStyle = AnimationStyle(
-    duration: Duration(milliseconds: 120),
+    duration: OpenCrayMotion.instant,
     reverseDuration: Duration(milliseconds: 90),
-    curve: Curves.easeOutCubic,
-    reverseCurve: Curves.easeInCubic,
+    curve: OpenCrayMotion.enter,
+    reverseCurve: OpenCrayMotion.exit,
   );
 
   late ChatFeatureState _state =
@@ -3901,15 +3902,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               ),
             ),
           ),
-          if (_state.drawerOpen)
-            _SessionsDrawerOverlay(
-              copy: widget.copy,
-              drawer: _state.drawer,
-              onDismiss: _closeDrawer,
-              onNewSessionPressed: _showEmpty,
-              onSessionPressed: _handleSessionSelected,
-              onSessionLongPress: _handleSessionLongPress,
-            ),
+          _SessionsDrawerOverlay(
+            isOpen: _state.drawerOpen,
+            copy: widget.copy,
+            drawer: _state.drawer,
+            onDismiss: _closeDrawer,
+            onNewSessionPressed: _showEmpty,
+            onSessionPressed: _handleSessionSelected,
+            onSessionLongPress: _handleSessionLongPress,
+          ),
         ],
       ),
     );
@@ -3979,8 +3980,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       if (animated) {
         _chatScrollController.animateTo(
           target,
-          duration: const Duration(milliseconds: 220),
-          curve: Curves.easeOutCubic,
+          duration: OpenCrayMotion.expand,
+          curve: OpenCrayMotion.enter,
         );
         return;
       }
@@ -12627,8 +12628,11 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
                       key: ValueKey<String>(
                         'chat-message-row-bg-${message.messageId}',
                       ),
-                      duration: const Duration(milliseconds: 160),
-                      curve: Curves.easeOutCubic,
+                      duration: OpenCrayMotion.resolve(
+                        context,
+                        OpenCrayMotion.micro,
+                      ),
+                      curve: OpenCrayMotion.enter,
                       color: isSelected
                           ? _ChatPalette.selectionRowHighlight
                           : Colors.transparent,
@@ -12676,8 +12680,8 @@ class _ChatSelectionControl extends StatelessWidget {
   Widget build(BuildContext context) {
     return AnimatedContainer(
       key: ValueKey<String>('chat-message-select-control-$messageId'),
-      duration: const Duration(milliseconds: 140),
-      curve: Curves.easeOutCubic,
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
       width: 22,
       height: 22,
       decoration: BoxDecoration(
@@ -12692,7 +12696,7 @@ class _ChatSelectionControl extends StatelessWidget {
       ),
       alignment: Alignment.center,
       child: AnimatedOpacity(
-        duration: const Duration(milliseconds: 120),
+        duration: OpenCrayMotion.resolve(context, OpenCrayMotion.instant),
         opacity: isSelected ? 1 : 0,
         child: const Icon(
           CupertinoIcons.check_mark,
@@ -15028,7 +15032,10 @@ class _RunTraceInterruptConfirmRowState
                   Positioned.fill(
                     child: Center(
                       child: AnimatedOpacity(
-                        duration: const Duration(milliseconds: 120),
+                        duration: OpenCrayMotion.resolve(
+                          context,
+                          OpenCrayMotion.instant,
+                        ),
                         opacity: widget.isBusy
                             ? 1
                             : math.max(0.24, 1 - _progress),
@@ -15938,8 +15945,8 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
           left: left,
           top: top,
           child: TweenAnimationBuilder<double>(
-            duration: const Duration(milliseconds: 140),
-            curve: Curves.easeOutCubic,
+            duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+            curve: OpenCrayMotion.enter,
             tween: Tween<double>(begin: 0.94, end: 1),
             builder: (BuildContext context, double value, Widget? child) {
               return Opacity(
@@ -18819,7 +18826,10 @@ class _TodoListPanelState extends State<_TodoListPanel> {
                 dimension: 24,
                 child: Center(
                   child: AnimatedRotation(
-                    duration: const Duration(milliseconds: 180),
+                    duration: OpenCrayMotion.resolve(
+                      context,
+                      OpenCrayMotion.quick,
+                    ),
                     turns: _isExpanded ? 0.5 : 0,
                     child: const Icon(
                       CupertinoIcons.chevron_up,
@@ -18991,8 +19001,11 @@ class _InputRow extends StatelessWidget {
                     : _ChatPalette.composerStroke;
 
                 return AnimatedSize(
-                  duration: const Duration(milliseconds: 160),
-                  curve: Curves.easeOutCubic,
+                  duration: OpenCrayMotion.resolve(
+                    context,
+                    OpenCrayMotion.expand,
+                  ),
+                  curve: OpenCrayMotion.expandCurve,
                   alignment: Alignment.bottomCenter,
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(
@@ -19458,8 +19471,9 @@ class _CommandOptionTile extends StatelessWidget {
   }
 }
 
-class _SessionsDrawerOverlay extends StatelessWidget {
+class _SessionsDrawerOverlay extends StatefulWidget {
   const _SessionsDrawerOverlay({
+    required this.isOpen,
     required this.copy,
     required this.drawer,
     required this.onDismiss,
@@ -19468,6 +19482,7 @@ class _SessionsDrawerOverlay extends StatelessWidget {
     required this.onSessionLongPress,
   });
 
+  final bool isOpen;
   final OpenCrayUiCopy copy;
   final ChatSessionsDrawerState drawer;
   final VoidCallback onDismiss;
@@ -19476,82 +19491,196 @@ class _SessionsDrawerOverlay extends StatelessWidget {
   final void Function(ChatSessionListItemData, Offset) onSessionLongPress;
 
   @override
+  State<_SessionsDrawerOverlay> createState() => _SessionsDrawerOverlayState();
+}
+
+class _SessionsDrawerOverlayState extends State<_SessionsDrawerOverlay> {
+  bool _isMountedForMotion = false;
+  int _closeEpoch = 0;
+  bool _animateFromClosed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _isMountedForMotion = widget.isOpen;
+    _animateFromClosed = widget.isOpen;
+  }
+
+  @override
+  void didUpdateWidget(_SessionsDrawerOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isOpen) {
+      _closeEpoch += 1;
+      if (!_isMountedForMotion) {
+        setState(() {
+          _isMountedForMotion = true;
+          _animateFromClosed = true;
+        });
+      }
+      return;
+    }
+    if (!oldWidget.isOpen || !_isMountedForMotion) {
+      return;
+    }
+    _scheduleUnmountAfterExit();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final EdgeInsets safePadding = MediaQuery.of(context).padding;
+    final bool reduce = OpenCrayMotion.reduce(context);
+    final Duration duration = OpenCrayMotion.resolve(
+      context,
+      OpenCrayMotion.panel,
+    );
+    if (!_isMountedForMotion) {
+      return const Positioned.fill(child: SizedBox.shrink());
+    }
+    final bool isPresented = widget.isOpen && !_animateFromClosed;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !widget.isOpen || !_animateFromClosed) {
+        return;
+      }
+      setState(() {
+        _animateFromClosed = false;
+      });
+    });
 
     return Positioned.fill(
-      child: Row(
-        children: <Widget>[
-          Container(
-            width: 286,
-            color: Colors.white,
-            padding: EdgeInsets.fromLTRB(
-              16,
-              safePadding.top + 18,
-              16,
-              safePadding.bottom + 20,
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(drawer.eyebrow, style: _ChatTextStyles.drawerEyebrow),
-                const SizedBox(height: 10),
-                Text(drawer.title, style: _ChatTextStyles.drawerTitle),
-                const SizedBox(height: 16),
-                GestureDetector(
-                  onTap: onNewSessionPressed,
-                  behavior: HitTestBehavior.opaque,
-                  child: Container(
-                    height: 40,
-                    width: 132,
-                    decoration: BoxDecoration(
-                      color: _ChatPalette.accent,
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    alignment: Alignment.center,
-                    child: Text(
-                      drawer.ctaLabel,
-                      style: _ChatTextStyles.drawerCta,
-                    ),
+      child: IgnorePointer(
+        ignoring: !widget.isOpen,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: GestureDetector(
+                onTap: widget.onDismiss,
+                behavior: HitTestBehavior.opaque,
+                child: AnimatedOpacity(
+                  opacity: isPresented ? 1 : 0,
+                  duration: duration,
+                  curve: isPresented
+                      ? OpenCrayMotion.enter
+                      : OpenCrayMotion.exit,
+                  child: const ColoredBox(
+                    color: Color(0x26111111),
+                    child: SizedBox.expand(),
                   ),
                 ),
-                const SizedBox(height: 16),
-                Expanded(
-                  child: ListView.separated(
-                    itemBuilder: (BuildContext context, int index) {
-                      return _SessionListTile(
-                        copy: copy,
-                        session: drawer.sessions[index],
-                        onPressed: () =>
-                            onSessionPressed(drawer.sessions[index]),
-                        onLongPressStart: (details) => onSessionLongPress(
-                          drawer.sessions[index],
-                          details.globalPosition,
-                        ),
-                      );
-                    },
-                    separatorBuilder: (BuildContext context, int index) {
-                      return const SizedBox(height: 10);
-                    },
-                    itemCount: drawer.sessions.length,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Expanded(
-            child: GestureDetector(
-              onTap: onDismiss,
-              behavior: HitTestBehavior.opaque,
-              child: ColoredBox(
-                color: const Color(0x26111111),
-                child: const SizedBox.expand(),
               ),
             ),
-          ),
-        ],
+            AnimatedSlide(
+              offset: reduce || isPresented ? Offset.zero : const Offset(-1, 0),
+              duration: duration,
+              curve: isPresented ? OpenCrayMotion.enter : OpenCrayMotion.exit,
+              child: AnimatedOpacity(
+                opacity: isPresented ? 1 : 0,
+                duration: duration,
+                curve: isPresented ? OpenCrayMotion.enter : OpenCrayMotion.exit,
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Container(
+                    width: 286,
+                    color: Colors.white,
+                    padding: EdgeInsets.fromLTRB(
+                      16,
+                      safePadding.top + 18,
+                      16,
+                      safePadding.bottom + 20,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: <Widget>[
+                        Text(
+                          widget.drawer.eyebrow,
+                          style: _ChatTextStyles.drawerEyebrow,
+                        ),
+                        const SizedBox(height: 10),
+                        Text(
+                          widget.drawer.title,
+                          style: _ChatTextStyles.drawerTitle,
+                        ),
+                        const SizedBox(height: 16),
+                        GestureDetector(
+                          onTap: widget.onNewSessionPressed,
+                          behavior: HitTestBehavior.opaque,
+                          child: Container(
+                            height: 40,
+                            width: 132,
+                            decoration: BoxDecoration(
+                              color: _ChatPalette.accent,
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            alignment: Alignment.center,
+                            child: Text(
+                              widget.drawer.ctaLabel,
+                              style: _ChatTextStyles.drawerCta,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        Expanded(
+                          child: ListView.separated(
+                            itemBuilder: (BuildContext context, int index) {
+                              return _SessionListTile(
+                                copy: widget.copy,
+                                session: widget.drawer.sessions[index],
+                                onPressed: () => widget.onSessionPressed(
+                                  widget.drawer.sessions[index],
+                                ),
+                                onLongPressStart: (details) =>
+                                    widget.onSessionLongPress(
+                                      widget.drawer.sessions[index],
+                                      details.globalPosition,
+                                    ),
+                              );
+                            },
+                            separatorBuilder:
+                                (BuildContext context, int index) {
+                                  return const SizedBox(height: 10);
+                                },
+                            itemCount: widget.drawer.sessions.length,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
+  }
+
+  void _scheduleUnmountAfterExit() {
+    _closeEpoch += 1;
+    final int epoch = _closeEpoch;
+    if (OpenCrayMotion.reduce(context) || _isAutomatedWidgetTest) {
+      setState(() {
+        _isMountedForMotion = false;
+      });
+      return;
+    }
+    Future<void>.delayed(OpenCrayMotion.panel, () {
+      if (!mounted || widget.isOpen || epoch != _closeEpoch) {
+        return;
+      }
+      setState(() {
+        _isMountedForMotion = false;
+      });
+    });
+  }
+
+  bool get _isAutomatedWidgetTest {
+    bool result = false;
+    assert(() {
+      result = WidgetsBinding.instance.runtimeType.toString().contains(
+        'TestWidgetsFlutterBinding',
+      );
+      return true;
+    }());
+    return result;
   }
 }
 

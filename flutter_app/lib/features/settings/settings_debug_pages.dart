@@ -68,7 +68,7 @@ class _DebugToolsPage extends StatelessWidget {
                       title: 'Run Python Script',
                       onTap: () {
                         Navigator.of(context).push(
-                          MaterialPageRoute<void>(
+                          openCrayHorizontalPageRoute<void>(
                             builder: (context) => _DebugPythonRunnerPage(
                               bridge: bridge,
                               backLabel: 'Debug tools',
@@ -82,7 +82,7 @@ class _DebugToolsPage extends StatelessWidget {
                       title: 'Runtime Diagnostics',
                       onTap: () {
                         Navigator.of(context).push(
-                          MaterialPageRoute<void>(
+                          openCrayHorizontalPageRoute<void>(
                             builder: (context) => _RuntimeDiagnosticsPage(
                               bridge: bridge,
                               backLabel: 'Debug tools',
@@ -96,7 +96,7 @@ class _DebugToolsPage extends StatelessWidget {
                       title: 'Context & Memory Trace',
                       onTap: () {
                         Navigator.of(context).push(
-                          MaterialPageRoute<void>(
+                          openCrayHorizontalPageRoute<void>(
                             builder: (context) => _ContextMemoryTracePage(
                               bridge: bridge,
                               facade: facade,
@@ -111,7 +111,7 @@ class _DebugToolsPage extends StatelessWidget {
                       title: 'Memory Inspector',
                       onTap: () {
                         Navigator.of(context).push(
-                          MaterialPageRoute<void>(
+                          openCrayHorizontalPageRoute<void>(
                             builder: (context) => _MemoryInspectorPage(
                               bridge: bridge,
                               backLabel: 'Debug tools',
@@ -125,7 +125,7 @@ class _DebugToolsPage extends StatelessWidget {
                       title: 'Soul Inspector',
                       onTap: () {
                         Navigator.of(context).push(
-                          MaterialPageRoute<void>(
+                          openCrayHorizontalPageRoute<void>(
                             builder: (context) => _SoulInspectorPage(
                               bridge: bridge,
                               backLabel: 'Debug tools',

@@ -12,6 +12,7 @@ import '../../core/models/opencray_file_image_preview.dart';
 import '../../core/models/opencray_file_text_preview.dart';
 import '../../core/models/opencray_files_snapshot.dart';
 import '../../core/models/opencray_workspace_text_document.dart';
+import '../../core/design/opencray_motion.dart';
 import '../../core/widgets/opencray_image_bytes_view.dart';
 import '../../core/widgets/opencray_markdown.dart';
 
@@ -961,7 +962,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
       barrierDismissible: true,
       barrierLabel: barrierLabel ?? widget.copy.filesPreviewCloseAction,
       barrierColor: Colors.transparent,
-      transitionDuration: const Duration(milliseconds: 180),
+      transitionDuration: OpenCrayMotion.quick,
       pageBuilder: (dialogContext, animation, secondaryAnimation) {
         final media = MediaQuery.of(dialogContext);
         return GestureDetector(
@@ -983,8 +984,11 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
                 SafeArea(
                   child: Center(
                     child: AnimatedPadding(
-                      duration: const Duration(milliseconds: 180),
-                      curve: Curves.easeOutCubic,
+                      duration: OpenCrayMotion.resolve(
+                        dialogContext,
+                        OpenCrayMotion.quick,
+                      ),
+                      curve: OpenCrayMotion.enter,
                       padding: EdgeInsets.fromLTRB(
                         20,
                         24,
@@ -1003,15 +1007,16 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
       transitionBuilder: (context, animation, secondaryAnimation, child) {
         final curved = CurvedAnimation(
           parent: animation,
-          curve: Curves.easeOutCubic,
-          reverseCurve: Curves.easeInCubic,
+          curve: OpenCrayMotion.enter,
+          reverseCurve: OpenCrayMotion.exit,
         );
-        return FadeTransition(
-          opacity: curved,
-          child: ScaleTransition(
-            scale: Tween<double>(begin: 0.96, end: 1).animate(curved),
-            child: child,
-          ),
+        final fade = FadeTransition(opacity: curved, child: child);
+        if (OpenCrayMotion.reduce(context)) {
+          return fade;
+        }
+        return ScaleTransition(
+          scale: Tween<double>(begin: 0.96, end: 1).animate(curved),
+          child: fade,
         );
       },
     );
@@ -1721,7 +1726,7 @@ class _DirectoryEntryTile extends StatelessWidget {
         : _formatBytes(entry.sizeBytes ?? 0);
 
     return AnimatedOpacity(
-      duration: const Duration(milliseconds: 160),
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
       opacity: isFaded ? 0.38 : 1,
       child: InkWell(
         key: ValueKey<String>('files-row-${entry.relativePath}'),
@@ -2415,7 +2420,10 @@ class _CreateEntryDialogState extends State<_CreateEntryDialog> {
                   ),
                   const SizedBox(width: 4),
                   AnimatedOpacity(
-                    duration: const Duration(milliseconds: 160),
+                    duration: OpenCrayMotion.resolve(
+                      context,
+                      OpenCrayMotion.micro,
+                    ),
                     opacity: canSubmit ? 1 : 0.42,
                     child: TextButton(
                       key: const ValueKey<String>('files-create-entry-submit'),

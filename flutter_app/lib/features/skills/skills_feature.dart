@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/copy/opencray_ui_copy.dart';
+import '../../core/design/opencray_motion.dart';
 import '../../core/models/opencray_skills_snapshot.dart';
 
 enum SkillsPage { manage, install }
@@ -1013,6 +1014,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
       builder: (context) {
         return SafeArea(
           top: false,
@@ -1358,8 +1360,8 @@ class _SegmentButton extends StatelessWidget {
       borderRadius: BorderRadius.circular(999),
       onTap: onTap,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutCubic,
+        duration: OpenCrayMotion.resolve(context, OpenCrayMotion.quick),
+        curve: OpenCrayMotion.enter,
         height: 28,
         alignment: Alignment.center,
         decoration: BoxDecoration(
@@ -1463,8 +1465,8 @@ class _SkillToggle extends StatelessWidget {
       onTap: () => onChanged(!value),
       behavior: HitTestBehavior.opaque,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 160),
-        curve: Curves.easeOutCubic,
+        duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+        curve: OpenCrayMotion.enter,
         width: 50,
         height: 30,
         decoration: BoxDecoration(
