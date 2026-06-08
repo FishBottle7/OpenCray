@@ -20,6 +20,8 @@ enum class SettingsSubpage(
   val routeKey: String,
 ) {
   HOME("home"),
+  NOTIFICATIONS_BACKGROUND("notifications_background"),
+  NOTIFICATION_CHANNELS("notification_channels"),
   WORKSPACE("workspace"),
   LLM("llm"),
   MCP("mcp"),

@@ -45,4 +45,29 @@ class AppShellLaunchStateResolverTest {
 
     assertEquals(AppShellDestination.default(), resolved)
   }
+
+  @Test
+  fun explicitStartSettingsPageCanOpenNotificationsBackground() {
+    val resolved = AppShellLaunchStateResolver.resolve(
+      restoredTabRaw = null,
+      restoredSettingsSubpageRaw = null,
+      hasRestoredState = false,
+      startTabRaw = AppShellTab.SETTINGS.routeKey,
+      startSettingsSubpageRaw = SettingsSubpage.NOTIFICATIONS_BACKGROUND.routeKey,
+      hasStartExtras = true,
+      persistedDestination = AppShellDestination.default(),
+    )
+
+    assertEquals(
+      AppShellDestination(
+        selectedTab = AppShellTab.SETTINGS,
+        settingsSubpage = SettingsSubpage.NOTIFICATIONS_BACKGROUND,
+      ),
+      resolved,
+    )
+    assertEquals(
+      OpenCrayFlutterActivity.Destination.SETTINGS_NOTIFICATIONS_BACKGROUND,
+      appShellFlutterDestination(resolved),
+    )
+  }
 }

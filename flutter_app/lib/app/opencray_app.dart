@@ -177,6 +177,16 @@ const List<_RouteEntry> _routeEntries = <_RouteEntry>[
   _RouteEntry(routeName: '/files', tab: OpenCrayTab.files),
   _RouteEntry(routeName: '/settings', tab: OpenCrayTab.settings),
   _RouteEntry(
+    routeName: '/settings/notifications-background',
+    tab: OpenCrayTab.settings,
+    settingsInitialPage: SettingsPage.notificationsBackground,
+  ),
+  _RouteEntry(
+    routeName: '/settings/notification-channels',
+    tab: OpenCrayTab.settings,
+    settingsInitialPage: SettingsPage.notificationChannels,
+  ),
+  _RouteEntry(
     routeName: '/settings/workspace',
     tab: OpenCrayTab.settings,
     settingsInitialPage: SettingsPage.workspaceAccess,

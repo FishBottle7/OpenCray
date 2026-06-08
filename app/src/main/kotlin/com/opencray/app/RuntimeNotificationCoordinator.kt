@@ -6,8 +6,10 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationCompat
+import com.opencray.app.shell.AppShellDestination
 import com.opencray.app.shell.AppShellNavigationExtras
 import com.opencray.app.shell.AppShellTab
+import com.opencray.app.shell.SettingsSubpage
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
@@ -685,7 +687,7 @@ internal class RuntimeNotificationCoordinator(
       .setContentTitle(model.title)
       .setContentText(model.body)
       .setSubText(model.scheduleTitle)
-      .setContentIntent(openChatPendingIntent(model.sessionId))
+      .setContentIntent(openScheduleDetailsPendingIntent(model))
       .setAutoCancel(true)
       .setOnlyAlertOnce(true)
       .setCategory(NotificationCompat.CATEGORY_STATUS)
@@ -883,6 +885,33 @@ internal class RuntimeNotificationCoordinator(
     )
   }
 
+  private fun openScheduleDetailsPendingIntent(
+    model: RuntimeScheduleNotificationModel,
+  ): PendingIntent {
+    val destination = scheduleNotificationOpenDestination()
+    val intent = Intent(appContext, AppShellActivity::class.java).apply {
+      flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+      putExtra(AppShellNavigationExtras.EXTRA_START_TAB, destination.selectedTab.routeKey)
+      putExtra(
+        AppShellNavigationExtras.EXTRA_START_SETTINGS_PAGE,
+        destination.settingsSubpage.routeKey,
+      )
+      putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SCHEDULE_ID, model.scheduleId)
+      model.sessionId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { resolvedSessionId ->
+          putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SESSION_ID, resolvedSessionId)
+        }
+    }
+    return PendingIntent.getActivity(
+      appContext,
+      stableRequestCode("open-schedule:${model.scheduleId}:${model.sessionId.orEmpty()}"),
+      intent,
+      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+  }
+
   private fun approvalActionPendingIntent(
     action: String,
     sessionId: String,
@@ -1041,3 +1070,9 @@ internal class RuntimeNotificationCoordinator(
 internal fun runtimeServiceTargetForNotificationTask(
   task: AgentTask,
 ): RuntimeServiceTarget = runtimeServiceTargetForTask(task)
+
+internal fun scheduleNotificationOpenDestination(): AppShellDestination =
+  AppShellDestination(
+    selectedTab = AppShellTab.SETTINGS,
+    settingsSubpage = SettingsSubpage.NOTIFICATIONS_BACKGROUND,
+  )

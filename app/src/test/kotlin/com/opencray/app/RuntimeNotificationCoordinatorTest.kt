@@ -1,5 +1,8 @@
 package com.opencray.app
 
+import com.opencray.app.shell.AppShellDestination
+import com.opencray.app.shell.AppShellTab
+import com.opencray.app.shell.SettingsSubpage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -83,6 +86,17 @@ class RuntimeNotificationCoordinatorTest {
         RuntimeNotificationIntentActions.ACTION_DISABLE_SCHEDULE,
       ),
       actions.map(RuntimeScheduleNotificationAction::action),
+    )
+  }
+
+  @Test
+  fun scheduleNotificationOpenDestinationUsesNotificationsBackgroundSettings() {
+    assertEquals(
+      AppShellDestination(
+        selectedTab = AppShellTab.SETTINGS,
+        settingsSubpage = SettingsSubpage.NOTIFICATIONS_BACKGROUND,
+      ),
+      scheduleNotificationOpenDestination(),
     )
   }
 

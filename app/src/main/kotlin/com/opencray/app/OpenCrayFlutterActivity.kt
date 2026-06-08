@@ -60,6 +60,8 @@ class OpenCrayFlutterActivity :
     SKILLS("/skills"),
     FILES("/files"),
     SETTINGS("/settings"),
+    SETTINGS_NOTIFICATIONS_BACKGROUND("/settings/notifications-background"),
+    SETTINGS_NOTIFICATION_CHANNELS("/settings/notification-channels"),
     SETTINGS_WORKSPACE("/settings/workspace"),
     SETTINGS_LLM("/settings/llm"),
     SETTINGS_MCP("/settings/mcp"),

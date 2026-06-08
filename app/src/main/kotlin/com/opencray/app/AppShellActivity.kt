@@ -6,7 +6,6 @@ import com.opencray.app.shell.AppShellDestination
 import com.opencray.app.shell.AppShellNavigationExtras
 import com.opencray.app.shell.AppShellStateStore
 import com.opencray.app.shell.AppShellTab
-import com.opencray.app.shell.SettingsSubpage
 
 class AppShellActivity : LocalizedActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -39,38 +38,22 @@ class AppShellActivity : LocalizedActivity() {
   }
 
   private fun forwardIntent(destination: AppShellDestination): Intent {
-    val flutterDestination = when (destination.selectedTab) {
-      AppShellTab.CHAT -> OpenCrayFlutterActivity.Destination.CHAT
-      AppShellTab.SKILLS -> OpenCrayFlutterActivity.Destination.SKILLS
-      AppShellTab.FILES -> OpenCrayFlutterActivity.Destination.FILES
-      AppShellTab.SETTINGS -> destination.settingsSubpage.toFlutterDestination()
-    }
     val notificationSessionId = intent.getStringExtra(
       RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SESSION_ID,
     )?.trim()?.takeIf(String::isNotBlank)
+    val flutterDestination = appShellFlutterDestination(destination)
+    val chatSessionId = notificationSessionId.takeIf {
+      destination.selectedTab == AppShellTab.CHAT
+    }
     return OpenCrayFlutterActivity.intent(
       this,
       flutterDestination,
-      chatSessionId = notificationSessionId,
+      chatSessionId = chatSessionId,
     ).apply {
       putExtras(intent)
       addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)
     }
   }
-
-  private fun SettingsSubpage.toFlutterDestination(): OpenCrayFlutterActivity.Destination =
-    when (this) {
-      SettingsSubpage.HOME -> OpenCrayFlutterActivity.Destination.SETTINGS
-      SettingsSubpage.WORKSPACE -> OpenCrayFlutterActivity.Destination.SETTINGS_WORKSPACE
-      SettingsSubpage.LLM -> OpenCrayFlutterActivity.Destination.SETTINGS_LLM
-      SettingsSubpage.MCP -> OpenCrayFlutterActivity.Destination.SETTINGS_MCP
-      SettingsSubpage.PRIVACY -> OpenCrayFlutterActivity.Destination.SETTINGS_PRIVACY
-      SettingsSubpage.SAFETY -> OpenCrayFlutterActivity.Destination.SETTINGS_SAFETY
-      SettingsSubpage.PERSONALIZATION ->
-        OpenCrayFlutterActivity.Destination.SETTINGS_PERSONALIZATION
-      SettingsSubpage.AGENTS -> OpenCrayFlutterActivity.Destination.SETTINGS_AGENTS
-      SettingsSubpage.ABOUT -> OpenCrayFlutterActivity.Destination.SETTINGS_ABOUT
-    }
 
   private companion object {
     const val STATE_SELECTED_TAB = "selected_tab"

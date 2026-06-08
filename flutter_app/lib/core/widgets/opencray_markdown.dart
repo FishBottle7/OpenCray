@@ -16,6 +16,8 @@ import 'opencray_image_bytes_view.dart';
 
 const Set<String> _openCrayMarkdownInternalRoutes = <String>{
   '/settings',
+  '/settings/notifications-background',
+  '/settings/notification-channels',
   '/settings/workspace',
   '/settings/llm',
   '/settings/mcp',

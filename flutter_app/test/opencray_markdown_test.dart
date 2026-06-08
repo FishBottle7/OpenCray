@@ -16,6 +16,12 @@ void main() {
       openCrayResolveMarkdownInternalRoute('/settings/network-search'),
       '/settings/network-search',
     );
+    expect(
+      openCrayResolveMarkdownInternalRoute(
+        '/settings/notifications-background?scheduleId=schedule-1',
+      ),
+      '/settings/notifications-background',
+    );
     expect(openCrayResolveMarkdownInternalRoute('docs/README.md'), isNull);
     expect(
       openCrayResolveMarkdownInternalRoute('https://opencray.dev/docs'),
