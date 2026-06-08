@@ -1119,6 +1119,13 @@ class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
             "contextDurableCompactionAutoCompactTokenLimit" to "115200",
             "contextDurableCompactionEstimatedReplayTokens" to "116000",
             "contextDurableCompactionTokenThresholdTriggered" to "true",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_REQUESTED to "true",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_SUPPORTED to "true",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_USED to "true",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_TRIGGER_STAGE to "pre_compaction",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_OUTPUT_ITEM_COUNT to "2",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_ITEM_COUNT to "1",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_ENCRYPTED_CONTENT_COUNT to "1",
             "contextVisibleSkillCount" to "1",
             "contextActiveSkillName" to "ui-ux-pro-max",
             "contextActiveSkillPinned" to "true",
@@ -1172,6 +1179,14 @@ class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
     assertEquals(115200, durableCompaction["autoCompactTokenLimit"])
     assertEquals(116000, durableCompaction["estimatedReplayTokens"])
     assertEquals(true, durableCompaction["tokenThresholdTriggered"])
+    val remoteCompaction = durableCompaction["remoteCompaction"] as Map<*, *>
+    assertEquals(true, remoteCompaction["requested"])
+    assertEquals(true, remoteCompaction["supported"])
+    assertEquals(true, remoteCompaction["used"])
+    assertEquals("pre_compaction", remoteCompaction["triggerStage"])
+    assertEquals(2, remoteCompaction["outputItemCount"])
+    assertEquals(1, remoteCompaction["compactionItemCount"])
+    assertEquals(1, remoteCompaction["encryptedContentCount"])
     assertEquals(1, skillInventory["visibleSkillCount"])
     assertEquals("ui-ux-pro-max", activeSkill["name"])
     assertEquals(true, activeSkill["pinned"])

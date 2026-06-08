@@ -480,6 +480,7 @@ internal fun runSnapshotDurableCompactionFromMetadata(
   val entries = parseDurableCompactionEntryTrace(
     metadata["contextDurableCompactionEntryTraceSummary"].orEmpty(),
   )
+  val remoteCompaction = runSnapshotRemoteCompactionFromMetadata(metadata)
   val totalSummaryCount = if (includedSummaryCount != null || omittedSummaryCount != null) {
     (includedSummaryCount ?: 0) + (omittedSummaryCount ?: 0)
   } else {
@@ -500,7 +501,8 @@ internal fun runSnapshotDurableCompactionFromMetadata(
     omittedSummaryCount == null &&
     totalCompactedMessageCount == null &&
     latestCompactedAtEpochMs == null &&
-    entries.isEmpty()
+    entries.isEmpty() &&
+    remoteCompaction == null
   ) {
     return null
   }
@@ -523,6 +525,40 @@ internal fun runSnapshotDurableCompactionFromMetadata(
     if (entries.isNotEmpty()) {
       put("entries", entries)
     }
+    remoteCompaction?.let { put("remoteCompaction", it) }
+  }
+}
+
+private fun runSnapshotRemoteCompactionFromMetadata(metadata: Map<String, String>): Map<String, Any?>? {
+  val requested = metadata["responsesRemoteCompactionRequested"]?.toBooleanStrictOrNull()
+  val supported = metadata["responsesRemoteCompactionSupported"]?.toBooleanStrictOrNull()
+  val used = metadata["responsesRemoteCompactionUsed"]?.toBooleanStrictOrNull()
+  val triggerStage = metadata["responsesRemoteCompactionTriggerStage"]?.takeIf(String::isNotBlank)
+  val fallbackReason = metadata["responsesRemoteCompactionFallbackReason"]?.takeIf(String::isNotBlank)
+  val outputItemCount = metadata["responsesRemoteCompactionOutputItemCount"]?.toIntOrNull()
+  val compactionItemCount = metadata["responsesRemoteCompactionItemCount"]?.toIntOrNull()
+  val encryptedContentCount = metadata["responsesRemoteCompactionEncryptedContentCount"]?.toIntOrNull()
+  if (
+    requested == null &&
+    supported == null &&
+    used == null &&
+    triggerStage == null &&
+    fallbackReason == null &&
+    outputItemCount == null &&
+    compactionItemCount == null &&
+    encryptedContentCount == null
+  ) {
+    return null
+  }
+  return buildMap {
+    requested?.let { put("requested", it) }
+    supported?.let { put("supported", it) }
+    used?.let { put("used", it) }
+    triggerStage?.let { put("triggerStage", it) }
+    fallbackReason?.let { put("fallbackReason", it) }
+    outputItemCount?.let { put("outputItemCount", it) }
+    compactionItemCount?.let { put("compactionItemCount", it) }
+    encryptedContentCount?.let { put("encryptedContentCount", it) }
   }
 }
 
