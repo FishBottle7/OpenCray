@@ -101,6 +101,167 @@ class OpenCrayConfigurableMediaProviderClientTest {
   }
 
   @Test
+  fun generateSupportsOpenAiCompatibleChatCompletionsImageResponses() {
+    val requestLine = AtomicReference<String>()
+    val authorization = AtomicReference<String>()
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val imageBytes = byteArrayOf(9, 8, 7, 6)
+    val dataUri = "data:image/png;base64,${Base64.getEncoder().encodeToString(imageBytes)}"
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readJsonHttpRequest(client, requestLine, authorization, requestBody)
+          writeJsonResponse(
+            client = client,
+            body = """
+              {
+                "id": "chatcmpl_img_1",
+                "choices": [
+                  {
+                    "message": {
+                      "role": "assistant",
+                      "content": "$dataUri"
+                    }
+                  }
+                ]
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenCrayConfigurableMediaProviderClient(
+        userAgent = "OpenCray/1.0.0-test",
+      )
+      val result = client.generate(
+        request = OpenCrayImageGenerationRequest(
+          prompt = "Draw a chat protocol poster",
+          count = 1,
+          size = "1024x1024",
+          format = "png",
+          settings = OpenCrayImageGenerationSettings(
+            provider = "OpenAI Compatible Chat Images",
+            baseUrl = "http://127.0.0.1:${server.localPort}",
+            endpoint = "/v1/chat/completions",
+            model = "chat-image-model",
+            authHeaders = mapOf("Authorization" to "Bearer media-key"),
+          ),
+        ),
+        cancellationRequested = { false },
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      assertEquals("POST /v1/chat/completions HTTP/1.1", requestLine.get())
+      assertEquals("Bearer media-key", authorization.get())
+      assertTrue(requestBody.get().contains("\"model\":\"chat-image-model\""))
+      assertTrue(requestBody.get().contains("\"messages\""))
+      assertTrue(requestBody.get().contains("\"role\":\"user\""))
+      assertTrue(requestBody.get().contains("Draw a chat protocol poster"))
+      assertFalse(requestBody.get().contains("\"prompt\":\"Draw a chat protocol poster\""))
+      assertEquals("chatcmpl_img_1", result.providerRequestId)
+      assertEquals("openai_chat_completions", result.metadata["protocol"])
+      assertEquals(1, result.images.size)
+      assertArrayEquals(imageBytes, result.images.single().bytes)
+      assertEquals("image/png", result.images.single().mimeType)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun generateSupportsOpenAiCompatibleChatCompletionsContentParts() {
+    val requestLine = AtomicReference<String>()
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val firstImageBytes = byteArrayOf(1, 3, 5, 7)
+    val secondImageBytes = byteArrayOf(2, 4, 6, 8)
+    val firstDataUri = "data:image/png;base64,${Base64.getEncoder().encodeToString(firstImageBytes)}"
+    val secondDataUri = "data:image/webp;base64,${Base64.getEncoder().encodeToString(secondImageBytes)}"
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readJsonHttpRequest(
+            client = client,
+            requestLine = requestLine,
+            authorization = AtomicReference(),
+            requestBody = requestBody,
+          )
+          writeJsonResponse(
+            client = client,
+            body = """
+              {
+                "id": "chatcmpl_img_parts",
+                "choices": [
+                  {
+                    "message": {
+                      "role": "assistant",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "first asset: $firstDataUri"
+                        },
+                        {
+                          "type": "image_url",
+                          "image_url": {
+                            "url": "$secondDataUri"
+                          }
+                        }
+                      ]
+                    }
+                  }
+                ]
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenCrayConfigurableMediaProviderClient(
+        userAgent = "OpenCray/1.0.0-test",
+      )
+      val result = client.generate(
+        request = OpenCrayImageGenerationRequest(
+          prompt = "Draw two chat protocol assets",
+          count = 2,
+          settings = OpenCrayImageGenerationSettings(
+            provider = "OpenAI Compatible Chat Images",
+            baseUrl = "http://127.0.0.1:${server.localPort}",
+            endpoint = "/v1/chat/completions",
+            model = "chat-image-model",
+          ),
+        ),
+        cancellationRequested = { false },
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      assertEquals("POST /v1/chat/completions HTTP/1.1", requestLine.get())
+      assertTrue(requestBody.get().contains("\"n\":2"))
+      assertEquals("chatcmpl_img_parts", result.providerRequestId)
+      assertEquals("openai_chat_completions", result.metadata["protocol"])
+      assertEquals(2, result.images.size)
+      assertArrayEquals(firstImageBytes, result.images[0].bytes)
+      assertEquals("image/png", result.images[0].mimeType)
+      assertArrayEquals(secondImageBytes, result.images[1].bytes)
+      assertEquals("image/webp", result.images[1].mimeType)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
   fun generateDownloadsUrlAssetsIntoTempFilesInsteadOfBufferingAllBytes() {
     val requestBody = AtomicReference<String>()
     val downloadServed = CountDownLatch(1)

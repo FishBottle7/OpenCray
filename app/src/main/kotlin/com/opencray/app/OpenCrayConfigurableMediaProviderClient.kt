@@ -45,9 +45,14 @@ internal class OpenCrayConfigurableMediaProviderClient(
       baseUrl = request.settings.baseUrl,
       endpoint = request.settings.endpoint,
     )
+    val usesChatCompletions = isOpenAiCompatibleChatCompletionsEndpoint(endpoint)
     val response = executeJsonPost(
       endpoint = endpoint,
-      body = buildImageRequestBody(request).toString(),
+      body = if (usesChatCompletions) {
+        buildOpenAiCompatibleChatImageRequestBody(request).toString()
+      } else {
+        buildImageRequestBody(request).toString()
+      },
       authHeaders = request.settings.authHeaders,
       trustedBaseUrl = request.settings.baseUrl,
       cancellationRequested = cancellationRequested,
@@ -78,14 +83,25 @@ internal class OpenCrayConfigurableMediaProviderClient(
         pendingJob = pendingJob,
       )
     }
-    val images = parseBinaryAssetList(
-      payload = payload,
-      providerBaseUrl = request.settings.baseUrl,
-      authHeaders = request.settings.authHeaders,
-      cancellationRequested = cancellationRequested,
-      arrayKeys = listOf("images", "data", "outputs", "artifacts", "files"),
-      singleKeys = listOf("image", "output", "file"),
-    )
+    val images = if (usesChatCompletions) {
+      parseChatCompletionImageAssetList(
+        payload = payload,
+        providerBaseUrl = request.settings.baseUrl,
+        authHeaders = request.settings.authHeaders,
+        cancellationRequested = cancellationRequested,
+      )
+    } else {
+      emptyList()
+    }.ifEmpty {
+      parseBinaryAssetList(
+        payload = payload,
+        providerBaseUrl = request.settings.baseUrl,
+        authHeaders = request.settings.authHeaders,
+        cancellationRequested = cancellationRequested,
+        arrayKeys = listOf("images", "data", "outputs", "artifacts", "files"),
+        singleKeys = listOf("image", "output", "file"),
+      )
+    }
     if (images.isEmpty()) {
       throw IllegalStateException("Image provider returned no images.")
     }
@@ -96,7 +112,12 @@ internal class OpenCrayConfigurableMediaProviderClient(
       }.ifBlank {
         response.providerRequestId().orEmpty()
       }.ifBlank { null },
-      metadata = mapOf("statusCode" to response.statusCode.toString()),
+      metadata = buildMap {
+        put("statusCode", response.statusCode.toString())
+        if (usesChatCompletions) {
+          put("protocol", "openai_chat_completions")
+        }
+      },
     )
   }
 
@@ -392,6 +413,39 @@ internal class OpenCrayConfigurableMediaProviderClient(
         request.format?.let { put("format", it) }
       }
 
+  private fun buildOpenAiCompatibleChatImageRequestBody(request: OpenCrayImageGenerationRequest): JSONObject =
+    JSONObject()
+      .put("model", request.modelOverride ?: request.settings.model)
+      .put(
+        "messages",
+        JSONArray()
+          .put(
+            JSONObject()
+              .put("role", "user")
+              .put("content", openAiCompatibleChatImagePrompt(request)),
+          ),
+      )
+      .put("stream", false)
+      .apply {
+        if (request.count > 1) {
+          put("n", request.count)
+        }
+      }
+
+  private fun openAiCompatibleChatImagePrompt(request: OpenCrayImageGenerationRequest): String =
+    buildString {
+      append(request.prompt)
+      val hints = buildList {
+        request.size?.trim()?.takeIf(String::isNotBlank)?.let { size -> add("size=$size") }
+        request.format?.trim()?.takeIf(String::isNotBlank)?.let { format -> add("format=$format") }
+      }
+      if (hints.isNotEmpty()) {
+        append("\n\nImage generation hints: ")
+        append(hints.joinToString(separator = ", "))
+        append('.')
+      }
+    }
+
   private fun buildVideoRequestBody(request: OpenCrayVideoGenerationRequest): JSONObject =
     JSONObject()
       .put("prompt", request.prompt)
@@ -626,6 +680,173 @@ internal class OpenCrayConfigurableMediaProviderClient(
     }
   }
 
+  private fun parseChatCompletionImageAssetList(
+    payload: JSONObject,
+    providerBaseUrl: String,
+    authHeaders: Map<String, String>,
+    cancellationRequested: () -> Boolean,
+  ): List<OpenCrayBinaryAsset> {
+    val choices = payload.optJSONArray("choices") ?: return emptyList()
+    return buildList {
+      for (choiceIndex in 0 until choices.length()) {
+        val choice = choices.optJSONObject(choiceIndex) ?: continue
+        val message = choice.optJSONObject("message") ?: choice.optJSONObject("delta") ?: continue
+        parseChatCompletionMessageContentAssets(
+          rawContent = message.opt("content"),
+          providerBaseUrl = providerBaseUrl,
+          authHeaders = authHeaders,
+          cancellationRequested = cancellationRequested,
+        ).forEach(::add)
+      }
+    }
+  }
+
+  private fun parseChatCompletionMessageContentAssets(
+    rawContent: Any?,
+    providerBaseUrl: String,
+    authHeaders: Map<String, String>,
+    cancellationRequested: () -> Boolean,
+  ): List<OpenCrayBinaryAsset> = when (rawContent) {
+    is JSONArray -> parseChatCompletionContentArrayAssets(
+      array = rawContent,
+      providerBaseUrl = providerBaseUrl,
+      authHeaders = authHeaders,
+      cancellationRequested = cancellationRequested,
+    )
+    is JSONObject -> parseChatCompletionContentObjectAssets(
+      payload = rawContent,
+      providerBaseUrl = providerBaseUrl,
+      authHeaders = authHeaders,
+      cancellationRequested = cancellationRequested,
+    )
+    is String -> parseChatCompletionTextAssets(
+      text = rawContent,
+      providerBaseUrl = providerBaseUrl,
+      authHeaders = authHeaders,
+      cancellationRequested = cancellationRequested,
+    )
+    else -> emptyList()
+  }
+
+  private fun parseChatCompletionContentArrayAssets(
+    array: JSONArray,
+    providerBaseUrl: String,
+    authHeaders: Map<String, String>,
+    cancellationRequested: () -> Boolean,
+  ): List<OpenCrayBinaryAsset> = buildList {
+    for (index in 0 until array.length()) {
+      val assets = when (val item = array.opt(index)) {
+        is JSONArray -> parseChatCompletionContentArrayAssets(
+          array = item,
+          providerBaseUrl = providerBaseUrl,
+          authHeaders = authHeaders,
+          cancellationRequested = cancellationRequested,
+        )
+        is JSONObject -> parseChatCompletionContentObjectAssets(
+          payload = item,
+          providerBaseUrl = providerBaseUrl,
+          authHeaders = authHeaders,
+          cancellationRequested = cancellationRequested,
+        )
+        is String -> parseChatCompletionTextAssets(
+          text = item,
+          providerBaseUrl = providerBaseUrl,
+          authHeaders = authHeaders,
+          cancellationRequested = cancellationRequested,
+        )
+        else -> emptyList()
+      }
+      assets.forEach(::add)
+    }
+  }
+
+  private fun parseChatCompletionContentObjectAssets(
+    payload: JSONObject,
+    providerBaseUrl: String,
+    authHeaders: Map<String, String>,
+    cancellationRequested: () -> Boolean,
+  ): List<OpenCrayBinaryAsset> {
+    parseBinaryAssetObject(
+      payload = payload,
+      providerBaseUrl = providerBaseUrl,
+      authHeaders = authHeaders,
+      cancellationRequested = cancellationRequested,
+    )?.let { return listOf(it) }
+    val textAssets = listOf("text", "content")
+      .flatMap { key ->
+        when (val nested = payload.opt(key)) {
+          is JSONArray -> parseChatCompletionContentArrayAssets(
+            array = nested,
+            providerBaseUrl = providerBaseUrl,
+            authHeaders = authHeaders,
+            cancellationRequested = cancellationRequested,
+          )
+          is JSONObject -> parseChatCompletionContentObjectAssets(
+            payload = nested,
+            providerBaseUrl = providerBaseUrl,
+            authHeaders = authHeaders,
+            cancellationRequested = cancellationRequested,
+          )
+          is String -> parseChatCompletionTextAssets(
+            text = nested,
+            providerBaseUrl = providerBaseUrl,
+            authHeaders = authHeaders,
+            cancellationRequested = cancellationRequested,
+          )
+          else -> emptyList()
+        }
+      }
+    return textAssets
+  }
+
+  private fun parseChatCompletionTextAssets(
+    text: String,
+    providerBaseUrl: String,
+    authHeaders: Map<String, String>,
+    cancellationRequested: () -> Boolean,
+  ): List<OpenCrayBinaryAsset> {
+    val normalized = text.trim()
+    if (normalized.isBlank()) {
+      return emptyList()
+    }
+    runCatching { JSONObject(normalized) }.getOrNull()?.let { payload ->
+      val parsed = parseBinaryAssetList(
+        payload = payload,
+        providerBaseUrl = providerBaseUrl,
+        authHeaders = authHeaders,
+        cancellationRequested = cancellationRequested,
+        arrayKeys = listOf("images", "data", "outputs", "artifacts", "files"),
+        singleKeys = listOf("image", "image_url", "url", "output", "file"),
+      )
+      if (parsed.isNotEmpty()) {
+        return parsed
+      }
+    }
+    runCatching { JSONArray(normalized) }.getOrNull()?.let { array ->
+      val parsed = parseBinaryAssetArray(
+        array = array,
+        providerBaseUrl = providerBaseUrl,
+        authHeaders = authHeaders,
+        cancellationRequested = cancellationRequested,
+      )
+      if (parsed.isNotEmpty()) {
+        return parsed
+      }
+    }
+    val candidates = buildList {
+      DATA_URI_REGEX.findAll(normalized).forEach { match -> add(match.value) }
+      URL_REGEX.findAll(normalized).forEach { match -> add(match.value.trimEnd('.', ',', ')', ']', '"', '\'')) }
+    }
+    return candidates.mapNotNull { candidate ->
+      parseBinaryAssetString(
+        rawValue = candidate,
+        providerBaseUrl = providerBaseUrl,
+        authHeaders = authHeaders,
+        cancellationRequested = cancellationRequested,
+      )
+    }
+  }
+
   private fun parseBinaryAssetCandidate(
     rawValue: Any?,
     providerBaseUrl: String,
@@ -669,6 +890,14 @@ internal class OpenCrayConfigurableMediaProviderClient(
       authHeaders = authHeaders,
       cancellationRequested = cancellationRequested,
     )?.let { return it }
+    payload.optJSONObject("image_url")?.let { imageUrl ->
+      parseBinaryAssetString(
+        rawValue = imageUrl.optString("url"),
+        providerBaseUrl = providerBaseUrl,
+        authHeaders = authHeaders,
+        cancellationRequested = cancellationRequested,
+      )?.let { return it }
+    }
     parseBinaryAssetString(
       rawValue = payload.optString("output_url"),
       providerBaseUrl = providerBaseUrl,
@@ -1180,6 +1409,14 @@ internal class OpenCrayConfigurableMediaProviderClient(
     }
   }
 
+  private fun isOpenAiCompatibleChatCompletionsEndpoint(endpoint: String): Boolean =
+    runCatching {
+      URL(endpoint).path
+    }.getOrDefault(endpoint)
+      .trimEnd('/')
+      .lowercase(Locale.US)
+      .endsWith("/chat/completions")
+
   private fun fileNameFromUrl(url: String): String? =
     url.substringBefore('?')
       .substringAfterLast('/')
@@ -1377,6 +1614,8 @@ internal class OpenCrayConfigurableMediaProviderClient(
     private const val TEMP_FILE_SUFFIX: String = ".bin"
     private const val DEFAULT_POLL_AFTER_MS: Long = 1_000L
     private const val MAX_REDIRECTS: Int = 5
+    private val DATA_URI_REGEX: Regex = Regex("""data:image/[^,\s]+;base64,[A-Za-z0-9+/=_-]+""")
+    private val URL_REGEX: Regex = Regex("""https?://[^\s<>\]]+""")
     private const val TOOL_NAME_GENERATE_IMAGE: String = "GenerateImage"
     private const val TOOL_NAME_GENERATE_VIDEO: String = "GenerateVideo"
     private const val TOOL_NAME_SYNTHESIZE_SPEECH: String = "SynthesizeSpeech"

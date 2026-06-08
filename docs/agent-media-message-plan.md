@@ -41,6 +41,7 @@
 - 已支持 final action 用 `attachments[].artifact_id` 引用当前 run 内刚生成的图片和语音
 - 已支持语音生成结果默认落到聊天里的 `voice` 语义；若 agent 明确用 `kind=file`，同一 artifact 也可作为音频文件发送
 - 已支持媒体 provider 复用当前 LLM 路由配置里的鉴权头
+- 已支持 `GenerateImage` 在媒体 provider endpoint 配置为 `/v1/chat/completions` 时使用 OpenAI-compatible chat-completions 兼容协议
 - 已支持按 `SHA-256` 做 session 内去重
 - 已支持单条消息最多 `9` 张图片
 - 已支持多张图片、语音卡片、文件卡片渲染在同一个聊天气泡里
