@@ -12,6 +12,7 @@ internal object RunLifecycleMetadataKeys {
   const val HOST_INSTANCE_ID: String = "_host.hostInstanceId"
   const val RUNTIME_OWNER_ID: String = "_host.runtimeOwnerId"
   const val RUNTIME_CONTROLLER_ID: String = "_host.runtimeControllerId"
+  const val DURABLE_RUNTIME_CONTROLLER_ID: String = "_host.durableRuntimeControllerId"
   const val RUN_ATTEMPT: String = "_host.runAttempt"
   const val RECOVERED_FROM_CHECKPOINT_ID: String = "_host.recoveredFromCheckpointId"
   const val RECOVERY_ACTION: String = "_host.recoveryAction"
@@ -44,6 +45,7 @@ internal data class HostRuntimeLifecycleDescriptor(
   val runtimeOwnerId: String = hostInstanceId,
   val runtimeControllerId: String = runtimeOwnerId,
   val hostCreatedAtEpochMs: Long = System.currentTimeMillis(),
+  val durableRuntimeControllerId: String = runtimeControllerId,
 ) {
   fun snapshotMap(): Map<String, Any?> = mapOf(
     "processStartId" to processStartId,
@@ -51,6 +53,7 @@ internal data class HostRuntimeLifecycleDescriptor(
     "hostInstanceId" to hostInstanceId,
     "runtimeOwnerId" to runtimeOwnerId,
     "runtimeControllerId" to runtimeControllerId,
+    "durableRuntimeControllerId" to durableRuntimeControllerId,
     "hostCreatedAtEpochMs" to hostCreatedAtEpochMs,
   )
 
@@ -61,6 +64,7 @@ internal data class HostRuntimeLifecycleDescriptor(
     put(RunLifecycleMetadataKeys.HOST_INSTANCE_ID, hostInstanceId)
     put(RunLifecycleMetadataKeys.RUNTIME_OWNER_ID, runtimeOwnerId)
     put(RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_ID, runtimeControllerId)
+    put(RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID, durableRuntimeControllerId)
     put(RunLifecycleMetadataKeys.RUN_ATTEMPT, INITIAL_RUN_ATTEMPT.toString())
     submissionSource
       ?.trim()
@@ -87,6 +91,7 @@ internal data class RunLifecycleDiagnostics(
   val hostInstanceId: String? = null,
   val runtimeOwnerId: String? = null,
   val runtimeControllerId: String? = null,
+  val durableRuntimeControllerId: String? = null,
   val runAttempt: Int? = null,
   val recoveredFromCheckpointId: String? = null,
   val submissionSource: String? = null,
@@ -100,6 +105,7 @@ internal data class RunLifecycleDiagnostics(
       hostInstanceId.isNullOrBlank() &&
       runtimeOwnerId.isNullOrBlank() &&
       runtimeControllerId.isNullOrBlank() &&
+      durableRuntimeControllerId.isNullOrBlank() &&
       runAttempt == null &&
       recoveredFromCheckpointId.isNullOrBlank() &&
       submissionSource.isNullOrBlank() &&
@@ -113,6 +119,9 @@ internal data class RunLifecycleDiagnostics(
     hostInstanceId?.takeIf(String::isNotBlank)?.let { put("hostInstanceId", it) }
     runtimeOwnerId?.takeIf(String::isNotBlank)?.let { put("runtimeOwnerId", it) }
     runtimeControllerId?.takeIf(String::isNotBlank)?.let { put("runtimeControllerId", it) }
+    durableRuntimeControllerId
+      ?.takeIf(String::isNotBlank)
+      ?.let { put("durableRuntimeControllerId", it) }
     runAttempt?.let { put("runAttempt", it) }
     recoveredFromCheckpointId?.takeIf(String::isNotBlank)?.let { put("recoveredFromCheckpointId", it) }
     submissionSource?.takeIf(String::isNotBlank)?.let { put("submissionSource", it) }
@@ -140,6 +149,7 @@ internal fun runLifecycleDiagnosticsFrom(
     hostInstanceId = taskMetadata[RunLifecycleMetadataKeys.HOST_INSTANCE_ID]?.trim(),
     runtimeOwnerId = taskMetadata[RunLifecycleMetadataKeys.RUNTIME_OWNER_ID]?.trim(),
     runtimeControllerId = taskMetadata[RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_ID]?.trim(),
+    durableRuntimeControllerId = taskMetadata[RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID]?.trim(),
     runAttempt = taskMetadata[RunLifecycleMetadataKeys.RUN_ATTEMPT]
       ?.trim()
       ?.toIntOrNull()

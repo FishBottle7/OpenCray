@@ -62,6 +62,28 @@ class RuntimeServiceProjectionStoreTest {
     assertEquals(expected, store.loadSnapshot())
   }
 
+  @Test
+  fun fileBackedProjectionStorePreservesDurableRuntimeControllerIds() {
+    val store = FileBackedRuntimeServiceProjectionStoreFactory(
+      runtimeRootDirectory = temporaryFolder.newFolder("runtime-projection-durable-controller"),
+    ).create()
+    val expected = projectionSnapshot(activeRunCount = 1).copy(
+      runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
+        controllerInstanceId = "runtime-controller-instance",
+        durableControllerId = "runtime-controller-durable",
+      ),
+      runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(
+        runtimeOwnerId = "runtime-owner",
+        runtimeControllerId = "runtime-controller-instance",
+        durableRuntimeControllerId = "runtime-controller-durable",
+      ),
+    )
+
+    store.saveSnapshot(expected)
+
+    assertEquals(expected, store.loadSnapshot())
+  }
+
   private fun projectionSnapshot(
     activeRunCount: Int,
   ): RuntimeServiceProjectionSnapshot = RuntimeServiceProjectionSnapshot(

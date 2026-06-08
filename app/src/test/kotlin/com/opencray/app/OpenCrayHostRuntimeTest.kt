@@ -5831,9 +5831,13 @@ class OpenCrayHostRuntimeTest {
       onResume = manager.resumedSessionIds::add,
     )
     manager.putHandle(handle)
-    val runtimeOwnerDescriptor = HostRuntimeLifecycleDescriptor(runtimeControllerId = "controller-a")
+    val runtimeOwnerDescriptor = HostRuntimeLifecycleDescriptor(
+      runtimeControllerId = "controller-a",
+      durableRuntimeControllerId = "controller-durable-a",
+    )
     val runtimeControllerDescriptor = RuntimeControllerLifecycleDescriptor(
       controllerInstanceId = "controller-a",
+      durableControllerId = "controller-durable-a",
     )
     val firstHost = hostRuntime(
       chatStore = chatStore,
@@ -5843,6 +5847,7 @@ class OpenCrayHostRuntimeTest {
         processStartedAtEpochMs = runtimeOwnerDescriptor.processStartedAtEpochMs,
         runtimeOwnerId = runtimeOwnerDescriptor.runtimeOwnerId,
         runtimeControllerId = runtimeOwnerDescriptor.runtimeControllerId,
+        durableRuntimeControllerId = runtimeOwnerDescriptor.durableRuntimeControllerId,
       ),
       runtimeOwnerDescriptor = runtimeOwnerDescriptor,
       runtimeControllerDescriptor = runtimeControllerDescriptor,
@@ -5855,6 +5860,7 @@ class OpenCrayHostRuntimeTest {
         processStartedAtEpochMs = runtimeOwnerDescriptor.processStartedAtEpochMs,
         runtimeOwnerId = runtimeOwnerDescriptor.runtimeOwnerId,
         runtimeControllerId = runtimeOwnerDescriptor.runtimeControllerId,
+        durableRuntimeControllerId = runtimeOwnerDescriptor.durableRuntimeControllerId,
       ),
       runtimeOwnerDescriptor = runtimeOwnerDescriptor,
       runtimeControllerDescriptor = runtimeControllerDescriptor,
@@ -5866,6 +5872,7 @@ class OpenCrayHostRuntimeTest {
     val secondControllerLifecycle = secondRuntimeSnapshot["runtimeControllerLifecycle"] as Map<*, *>
 
     assertEquals("controller-a", firstControllerLifecycle["controllerInstanceId"])
+    assertEquals("controller-durable-a", firstControllerLifecycle["durableControllerId"])
     assertEquals(firstControllerLifecycle, secondControllerLifecycle)
   }
 

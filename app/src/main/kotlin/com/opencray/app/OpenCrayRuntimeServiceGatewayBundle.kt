@@ -315,6 +315,8 @@ internal fun serviceShellHostLifecycleDescriptor(
   runtimeOwnerId = runtimeOwnerLifecycle.runtimeOwnerId,
   runtimeControllerId = runtimeControllerLifecycle?.controllerInstanceId
     ?: runtimeOwnerLifecycle.runtimeControllerId,
+  durableRuntimeControllerId = runtimeControllerLifecycle?.durableControllerId
+    ?: runtimeOwnerLifecycle.durableRuntimeControllerId,
   hostCreatedAtEpochMs = runtimeServiceLifecycle.serviceCreatedAtEpochMs,
 )
 

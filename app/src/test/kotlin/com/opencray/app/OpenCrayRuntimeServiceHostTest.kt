@@ -2865,6 +2865,10 @@ class OpenCrayRuntimeServiceHostTest {
         expected.runtimeControllerLifecycle?.controllerInstanceId,
         hostLifecycle["runtimeControllerId"],
       )
+      assertEquals(
+        expected.runtimeControllerLifecycle?.durableControllerId,
+        hostLifecycle["durableRuntimeControllerId"],
+      )
       assertEquals(LocalRuntimeServerState.PHASE_LISTENING, localRuntimeServerState["phase"])
       assertEquals(42_617, localRuntimeServerState["listeningPort"])
       assertEquals(listOf("en" to RuntimeServiceKeepAliveState.PHASE_CREATED), observedStates)
@@ -7838,6 +7842,7 @@ class OpenCrayRuntimeServiceHostTest {
     val runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor()
     val runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
       controllerInstanceId = "controller-bridge",
+      durableControllerId = "controller-bridge-durable",
     )
     return OpenCrayRuntimeServiceBridgeSnapshot(
       runtimeOwnerLifecycle = runtimeOwnerLifecycle,

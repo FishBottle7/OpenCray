@@ -71,10 +71,11 @@ Today OpenCray already has a service-host boundary:
 - the retained runtime-service bootstrap assembly and process-scoped execution-controller provider now also receive that local runtime-server state through an explicit provider seam instead of peeking the registry during assembly creation, which keeps the retained detached-runtime path transport-neutral and removes one more same-process singleton dependency from service recreate
 - client-side runtime-service start and base bind-intent lookup now route through the environment-owned `RuntimeServiceAccessGateway`, so caller-side transport wiring no longer holds a direct reference to the concrete Android service-intent builder
 - runtime-service bind/start/repair/approval intents now also resolve through a dedicated `RuntimeServiceIntentFactory` file with an injectable component provider, and caller-side access now only consumes endpoint-built intents instead of hand-encoding wake/start actions or extras in the access facade
+- the runtime-process execution controller now also resolves a target-scoped durable controller identity from file-backed runtime storage in production; `controllerInstanceId` remains a per-controller-instance value for managed-process restore scope, while `durableControllerId` and `_host.durableRuntimeControllerId` give diagnostics, projection fallback, and repair evidence a stable per-target ownership anchor across service/controller recreate
 
 But the background product surface is still incomplete:
 
-- execution is still driven by in-runtime-process executors rather than a deeper controller/process split, even though the service shell now reuses a process-singleton execution controller across service recreate and now exposes process-placement diagnostics
+- execution is still driven by in-runtime-process executors rather than a deeper controller/process split, even though the service shell now reuses a process-singleton execution controller across service recreate and now exposes process-placement plus durable controller-identity diagnostics
 - the runtime service now promotes itself to foreground while keepalive-required work exists, but execution ownership is still only isolated to the dedicated runtime service process and not yet a separate stronger controller tier; the process guard prevents silent owner creation in the wrong app process but does not provide stronger ownership by itself
 - the service shell now also treats app visibility plus the strong-background tier as first-class keepalive inputs: when the app goes invisible, idle-grace stop deadlines can stretch by tier and foreground notification retention can continue through idle grace for `active_background` or `strong_background`, which removes one of the remaining software-caused interruption paths during ordinary backgrounding
 - the service shell now also returns `START_STICKY` while keepalive or foreground-notification state remains active after a start command, and only falls back to `START_NOT_STICKY` for idle/no-work starts, which gives Android a restart path for live detached work without replaying already-consumed wake intents
@@ -611,12 +612,14 @@ To preserve that option:
 - the scheduled wake dispatcher must not depend on in-process singletons
 - notification actions must route through stable intents, not direct object references
 - journal and checkpoint stores must remain file-backed and process-safe
+- target-scoped durable runtime-controller identity must stay separate from per-instance controller ids so reconnect diagnostics can distinguish same-controller, same-process-new-controller, and cross-process cases
 
 The current rollout already uses:
 
 - `com.opencray.app:runtime`
 - an explicit runtime-service intent descriptor parser that derives wake dispatch, reset intent, and bootstrap-foreground requirements from one normalized command model instead of scattering those action checks across shell and wake paths
 - schedule notification retry/manual-run, snooze, and disable actions that route through that same command model and detached runtime target instead of holding direct object references from the notification
+- a file-backed, target-scoped runtime-controller identity store under the runtime storage root; the identity is projected through runtime-controller lifecycle snapshots, host lifecycle diagnostics, and task metadata without replacing the per-instance controller id used by managed-process restore scope
 
 as a dedicated process for stronger isolation from UI crashes and Flutter engine churn.
 

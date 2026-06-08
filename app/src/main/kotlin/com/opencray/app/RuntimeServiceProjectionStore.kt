@@ -144,6 +144,7 @@ private fun RuntimeServiceProjectionSnapshot.toPersistedRecord():
         processStartId = lifecycle.processStartId,
         processStartedAtEpochMs = lifecycle.processStartedAtEpochMs,
         controllerInstanceId = lifecycle.controllerInstanceId,
+        durableControllerId = lifecycle.durableControllerId,
         controllerCreatedAtEpochMs = lifecycle.controllerCreatedAtEpochMs,
       )
     },
@@ -153,6 +154,7 @@ private fun RuntimeServiceProjectionSnapshot.toPersistedRecord():
       hostInstanceId = runtimeOwnerLifecycle.hostInstanceId,
       runtimeOwnerId = runtimeOwnerLifecycle.runtimeOwnerId,
       runtimeControllerId = runtimeOwnerLifecycle.runtimeControllerId,
+      durableRuntimeControllerId = runtimeOwnerLifecycle.durableRuntimeControllerId,
       hostCreatedAtEpochMs = runtimeOwnerLifecycle.hostCreatedAtEpochMs,
     ),
     runtimeOwnerWorkSummary = PersistedRuntimeOwnerWorkSummary(
@@ -205,6 +207,7 @@ private fun PersistedRuntimeServiceProjectionRecord.toSnapshot(): RuntimeService
         processStartId = lifecycle.processStartId,
         processStartedAtEpochMs = lifecycle.processStartedAtEpochMs,
         controllerInstanceId = lifecycle.controllerInstanceId,
+        durableControllerId = lifecycle.durableControllerId ?: lifecycle.controllerInstanceId,
         controllerCreatedAtEpochMs = lifecycle.controllerCreatedAtEpochMs,
       )
     },
@@ -214,6 +217,9 @@ private fun PersistedRuntimeServiceProjectionRecord.toSnapshot(): RuntimeService
       hostInstanceId = runtimeOwnerLifecycle.hostInstanceId,
       runtimeOwnerId = runtimeOwnerLifecycle.runtimeOwnerId,
       runtimeControllerId = runtimeOwnerLifecycle.runtimeControllerId ?: runtimeOwnerLifecycle.runtimeOwnerId,
+      durableRuntimeControllerId = runtimeOwnerLifecycle.durableRuntimeControllerId
+        ?: runtimeOwnerLifecycle.runtimeControllerId
+        ?: runtimeOwnerLifecycle.runtimeOwnerId,
       hostCreatedAtEpochMs = runtimeOwnerLifecycle.hostCreatedAtEpochMs,
     ),
     runtimeOwnerWorkSummary = RuntimeOwnerWorkSummary(
@@ -290,6 +296,7 @@ private data class PersistedHostRuntimeLifecycleDescriptor(
   val hostInstanceId: String,
   val runtimeOwnerId: String,
   val runtimeControllerId: String? = null,
+  val durableRuntimeControllerId: String? = null,
   val hostCreatedAtEpochMs: Long,
 )
 
@@ -298,6 +305,7 @@ private data class PersistedRuntimeControllerLifecycleDescriptor(
   val processStartId: String,
   val processStartedAtEpochMs: Long,
   val controllerInstanceId: String,
+  val durableControllerId: String? = null,
   val controllerCreatedAtEpochMs: Long,
 )
 

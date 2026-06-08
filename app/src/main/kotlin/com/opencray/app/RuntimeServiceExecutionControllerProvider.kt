@@ -70,6 +70,8 @@ internal fun createRuntimeServiceExecutionController(
   localRuntimeServerStateProvider: (() -> LocalRuntimeServerState?)? = null,
   runtimeServiceRetainedShellControlFactory: (Context) -> RuntimeServiceRetainedShellControl =
     ::createRuntimeServiceRetainedShellControl,
+  runtimeControllerIdentityStore: RuntimeControllerIdentityStore =
+    inMemoryRuntimeControllerIdentityStore(),
   runtimeExecutionDependenciesLoader: RuntimeExecutionDependenciesLoader,
   runtimeOwnerBootstrapProvider: RuntimeOwnerBootstrapProvider,
   bootstrapFactory: RuntimeServiceBootstrapFactory =
@@ -81,7 +83,9 @@ internal fun createRuntimeServiceExecutionController(
   runtimeServiceProcessBootstrap(applicationContext)
   val executionDependencies = runtimeExecutionDependenciesLoader.load(applicationContext)
   val runtimeOwnerDependencies = executionDependencies.runtimeOwnerBootstrapDependencies
-  val runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor()
+  val runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
+    durableControllerId = runtimeControllerIdentityStore.controllerIdForTarget(runtimeTarget),
+  )
   val runtimeOwnerBootstrap = runtimeOwnerBootstrapProvider.resolve(
     runtimeOwnerDependencies,
     runtimeControllerLifecycle,
@@ -121,6 +125,8 @@ internal class ProcessScopedRuntimeServiceExecutionControllerProvider(
   private val localRuntimeServerStateProvider: (() -> LocalRuntimeServerState?)? = null,
   private val runtimeServiceRetainedShellControlFactory: (Context) -> RuntimeServiceRetainedShellControl =
     ::createRuntimeServiceRetainedShellControl,
+  private val runtimeControllerIdentityStoreProvider: (Context) -> RuntimeControllerIdentityStore =
+    defaultRuntimeControllerIdentityStoreProvider(),
   private val runtimeExecutionDependenciesLoader: RuntimeExecutionDependenciesLoader,
   private val runtimeOwnerBootstrapProvider: RuntimeOwnerBootstrapProvider,
   private val bootstrapFactory: RuntimeServiceBootstrapFactory =
@@ -138,6 +144,9 @@ internal class ProcessScopedRuntimeServiceExecutionControllerProvider(
         localRuntimeServerStateProvider = localRuntimeServerStateProvider
           ?: { defaultLocalRuntimeServerState(runtimeTarget) },
         runtimeServiceRetainedShellControlFactory = runtimeServiceRetainedShellControlFactory,
+        runtimeControllerIdentityStore = runtimeControllerIdentityStoreProvider(
+          context.applicationContext,
+        ),
         runtimeExecutionDependenciesLoader = runtimeExecutionDependenciesLoader,
         runtimeOwnerBootstrapProvider = runtimeOwnerBootstrapProvider,
         bootstrapFactory = bootstrapFactory,
@@ -168,13 +177,22 @@ internal class TargetScopedRuntimeServiceExecutionControllerResolver(
 internal fun defaultRuntimeServiceExecutionControllerResolver(
   runtimeExecutionDependenciesLoader: RuntimeExecutionDependenciesLoader,
   runtimeOwnerBootstrapProvider: RuntimeOwnerBootstrapProvider,
+  runtimeControllerIdentityStoreProvider: (Context) -> RuntimeControllerIdentityStore =
+    defaultRuntimeControllerIdentityStoreProvider(),
 ): RuntimeServiceExecutionControllerResolver =
   TargetScopedRuntimeServiceExecutionControllerResolver(
     providerFactory = { target ->
       ProcessScopedRuntimeServiceExecutionControllerProvider(
         runtimeTarget = target,
+        runtimeControllerIdentityStoreProvider = runtimeControllerIdentityStoreProvider,
         runtimeExecutionDependenciesLoader = runtimeExecutionDependenciesLoader,
         runtimeOwnerBootstrapProvider = runtimeOwnerBootstrapProvider,
       )
     },
   )
+
+private fun defaultRuntimeControllerIdentityStoreProvider():
+  (Context) -> RuntimeControllerIdentityStore {
+  val store = inMemoryRuntimeControllerIdentityStore()
+  return { store }
+}

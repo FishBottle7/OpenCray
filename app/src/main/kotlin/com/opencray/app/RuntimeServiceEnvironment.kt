@@ -24,6 +24,8 @@ internal class OpenCrayRuntimeServiceEnvironment(
   runtimeExecutionDependenciesLoader: RuntimeExecutionDependenciesLoader? = null,
   localHostGatewayDependenciesLoader: LocalHostGatewayDependenciesLoader? = null,
   runtimeOwnerBootstrapProvider: RuntimeOwnerBootstrapProvider? = null,
+  private val runtimeControllerIdentityStoreProvider:
+    ((Context) -> RuntimeControllerIdentityStore)? = null,
 ) {
   private val executionControllerResolverOverride = executionControllerResolver
   private val runtimeServiceBootstrapDependenciesProviderOverride =
@@ -89,6 +91,9 @@ internal class OpenCrayRuntimeServiceEnvironment(
       ?: defaultRuntimeServiceExecutionControllerResolver(
         runtimeExecutionDependenciesLoader = this.runtimeExecutionDependenciesLoader,
         runtimeOwnerBootstrapProvider = this.runtimeOwnerBootstrapProvider,
+        runtimeControllerIdentityStoreProvider =
+          runtimeControllerIdentityStoreProvider
+            ?: defaultEnvironmentRuntimeControllerIdentityStoreProvider(),
       )
   }
 
@@ -133,6 +138,12 @@ internal class OpenCrayRuntimeServiceEnvironment(
         }
     }
   }
+}
+
+private fun defaultEnvironmentRuntimeControllerIdentityStoreProvider():
+  (Context) -> RuntimeControllerIdentityStore {
+  val store = inMemoryRuntimeControllerIdentityStore()
+  return { store }
 }
 
 internal interface OpenCrayRuntimeServiceEnvironmentOwner {

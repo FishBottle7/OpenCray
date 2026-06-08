@@ -13,6 +13,9 @@ class OpenCrayApplication : Application() {
   ) {
     OpenCrayRuntimeServiceEnvironment(
       projectionHostLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      runtimeControllerIdentityStoreProvider = { context ->
+        FileBackedRuntimeControllerIdentityStore.fromContext(context)
+      },
     )
   }
 

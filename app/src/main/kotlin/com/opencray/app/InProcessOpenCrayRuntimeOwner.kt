@@ -123,6 +123,7 @@ private fun hostRuntimeLifecycleDescriptorFor(
   ?.let { controller ->
     HostRuntimeLifecycleDescriptor(
       runtimeControllerId = controller.controllerInstanceId,
+      durableRuntimeControllerId = controller.durableControllerId,
     )
   }
   ?: HostRuntimeLifecycleDescriptor()

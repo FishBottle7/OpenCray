@@ -328,6 +328,7 @@ Current state:
 - app bootstrap no longer eagerly starts `OpenCrayAgentRuntimeService`; it only performs app-level bootstrap plus repair/schedule registration, including one-shot app-start repair and unique periodic repair registration. When the runtime service is later started by an explicit wake or binder-demanding path, that service bootstraps the local loopback server on `onCreate()`
 - execution now routes through a dedicated `:runtime` Android `Service` host boundary rather than directly through a UI-owned host facade
 - runtime-service lifecycle/projection diagnostics now include expected and observed service process identity, and runtime-service bootstrap now rejects a misplaced main-process or secondary-process shell before it can create runtime ownership
+- runtime-process controller lifecycle now has a target-scoped durable controller identity persisted under the runtime storage root; projection snapshots and task lifecycle metadata expose it separately as `durableControllerId` / `_host.durableRuntimeControllerId` while the existing per-instance `runtimeControllerId` remains unchanged for managed-process restore scope
 - execution is still ultimately backed by runtime-process singletons and executors
 - `AlarmManager` plus `WorkManager` trigger bridges now exist for scheduled wake-up and repair, and schedule notifications can retry/manual-run, snooze, or disable failed/skipped schedules through the runtime-service wake path, but interactive active runs still execute under that runtime-process owner
 
@@ -361,6 +362,7 @@ What we can now distinguish better:
 - host-facade recreation versus runtime-owner continuity
 - binder transport churn versus loopback server churn
 - runtime-service shell placement in the dedicated `:runtime` process versus main-process or other secondary-process mismatch
+- per-controller-instance churn versus the same target-scoped durable runtime-controller identity
 - per-run recovery intent and restore reason when a recovery plan or restore diagnostic exists
 
 What is now safer:
@@ -373,7 +375,7 @@ What we still cannot distinguish with confidence:
 - every Dart-side observer glitch versus a real host rebuild
 - true controller-level live managed-process reattachment versus checkpoint-based recovery fallback
 
-The reason is now narrower: lifecycle diagnostics and managed-process restore scope now distinguish same-controller, same-process-new-controller, and cross-process interruption, and runtime-service bootstrap now refuses to create ownership outside the dedicated `:runtime` process, but there is still no single durable controller/process identity spanning every layer and surviving every restart cause end-to-end.
+The reason is now narrower: lifecycle diagnostics and managed-process restore scope now distinguish same-controller, same-process-new-controller, and cross-process interruption, runtime-service bootstrap now refuses to create ownership outside the dedicated `:runtime` process, and a target-scoped durable controller identity now survives service/controller recreate for diagnostics and projection fallback. That durable id is intentionally separate from the live controller instance id; it does not make in-memory execution survive runtime-process death or provide a stronger cross-process controller/runtime tier by itself.
 
 ## Root Problem Statement
 

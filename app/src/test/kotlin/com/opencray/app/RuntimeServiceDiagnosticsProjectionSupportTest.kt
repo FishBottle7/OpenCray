@@ -10,11 +10,18 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
   fun includesNullRuntimeServiceFieldsWhenRequested() {
     val snapshot = buildMap<String, Any?> {
       putRuntimeServiceDiagnosticsSnapshot(
-        hostLifecycle = HostRuntimeLifecycleDescriptor(hostInstanceId = "host-a"),
+        hostLifecycle = HostRuntimeLifecycleDescriptor(
+          hostInstanceId = "host-a",
+          durableRuntimeControllerId = "durable-controller-a",
+        ),
         runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
           controllerInstanceId = "controller-a",
+          durableControllerId = "durable-controller-a",
         ),
-        runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(hostInstanceId = "owner-a"),
+        runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(
+          hostInstanceId = "owner-a",
+          durableRuntimeControllerId = "durable-controller-a",
+        ),
         runtimeOwnerWorkSummary = RuntimeOwnerWorkSummary(activeRunCount = 2),
         includeNullRuntimeServiceFields = true,
       )
@@ -33,7 +40,15 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
       "controller-a",
       (snapshot["runtimeControllerLifecycle"] as Map<*, *>)["controllerInstanceId"],
     )
+    assertEquals(
+      "durable-controller-a",
+      (snapshot["runtimeControllerLifecycle"] as Map<*, *>)["durableControllerId"],
+    )
     assertEquals("owner-a", (snapshot["runtimeOwnerLifecycle"] as Map<*, *>)["hostInstanceId"])
+    assertEquals(
+      "durable-controller-a",
+      (snapshot["runtimeOwnerLifecycle"] as Map<*, *>)["durableRuntimeControllerId"],
+    )
   }
 
   @Test
@@ -56,5 +71,31 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertFalse(snapshot.containsKey("runtimeServiceWorkState"))
     assertFalse(snapshot.containsKey("runtimeServiceKeepAliveState"))
     assertEquals("host-b", (snapshot["hostLifecycle"] as Map<*, *>)["hostInstanceId"])
+  }
+
+  @Test
+  fun lifecycleMetadataCarriesDurableRuntimeControllerIdSeparately() {
+    val lifecycle = HostRuntimeLifecycleDescriptor(
+      processStartId = "process-a",
+      hostInstanceId = "host-a",
+      runtimeOwnerId = "owner-a",
+      runtimeControllerId = "controller-instance-a",
+      durableRuntimeControllerId = "controller-durable-a",
+    )
+
+    val metadata = lifecycle.taskMetadata(submissionSource = "test_submit")
+    val diagnostics = runLifecycleDiagnosticsFrom(metadata)
+
+    assertEquals(
+      "controller-instance-a",
+      metadata[RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_ID],
+    )
+    assertEquals(
+      "controller-durable-a",
+      metadata[RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID],
+    )
+    assertEquals("controller-instance-a", diagnostics.runtimeControllerId)
+    assertEquals("controller-durable-a", diagnostics.durableRuntimeControllerId)
+    assertEquals("controller-durable-a", diagnostics.toMap()["durableRuntimeControllerId"])
   }
 }

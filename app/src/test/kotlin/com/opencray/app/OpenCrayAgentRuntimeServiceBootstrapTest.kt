@@ -25,6 +25,7 @@ import java.nio.file.Path
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
@@ -1453,6 +1454,71 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(2, bootstrapFactoryCallCount)
     assertEquals(2, runtimeServiceProcessBootstrapCallCount)
     assertEquals(1, runtimeManager.observerCount)
+  }
+
+  @Test
+  fun processScopedRuntimeServiceExecutionControllerProviderKeepsDurableControllerIdAcrossRecreate() {
+    val context = MinimalContext()
+    val runtimeRoot = temporaryFolder.newFolder("execution-controller-durable-identity").toPath()
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat-session").toFile())
+    val runtimeDependencies = testRuntimeDependencies(
+      root = runtimeRoot,
+      chatStore = chatStore,
+    )
+    val identityStore = FileBackedRuntimeControllerIdentityStore.fromRootDirectory(
+      temporaryFolder.newFolder("execution-controller-durable-identity-store"),
+    )
+    val provider = ProcessScopedRuntimeServiceExecutionControllerProvider(
+      runtimeServiceProcessBootstrap = { },
+      runtimeServiceRetainedShellControlFactory = { testRuntimeServiceRetainedShellControl() },
+      runtimeControllerIdentityStoreProvider = { identityStore },
+      runtimeExecutionDependenciesLoader = RuntimeExecutionDependenciesLoader {
+        runtimeExecutionDependencies(runtimeDependencies)
+      },
+      runtimeOwnerBootstrapProvider = RuntimeOwnerBootstrapProvider { _, runtimeControllerLifecycle ->
+        runtimeOwnerBootstrapFor(
+          testRuntimeAccess(
+            lifecycleDescriptor = HostRuntimeLifecycleDescriptor(
+              runtimeControllerId = runtimeControllerLifecycle.controllerInstanceId,
+              durableRuntimeControllerId = runtimeControllerLifecycle.durableControllerId,
+            ),
+          ),
+        )
+      },
+      bootstrapFactory = testRuntimeServiceBootstrapFactory(),
+    )
+
+    val first = provider.resolve(context)
+    provider.reset()
+    val second = provider.resolve(context)
+    val interactive = ProcessScopedRuntimeServiceExecutionControllerProvider(
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      runtimeServiceProcessBootstrap = { },
+      runtimeServiceRetainedShellControlFactory = { testRuntimeServiceRetainedShellControl() },
+      runtimeControllerIdentityStoreProvider = { identityStore },
+      runtimeExecutionDependenciesLoader = RuntimeExecutionDependenciesLoader {
+        runtimeExecutionDependencies(runtimeDependencies)
+      },
+      runtimeOwnerBootstrapProvider = RuntimeOwnerBootstrapProvider { _, runtimeControllerLifecycle ->
+        runtimeOwnerBootstrapFor(
+          testRuntimeAccess(
+            lifecycleDescriptor = HostRuntimeLifecycleDescriptor(
+              runtimeControllerId = runtimeControllerLifecycle.controllerInstanceId,
+              durableRuntimeControllerId = runtimeControllerLifecycle.durableControllerId,
+            ),
+          ),
+        )
+      },
+      bootstrapFactory = testRuntimeServiceBootstrapFactory(),
+    ).resolve(context)
+
+    val firstLifecycle = requireNotNull(first.runtimeControllerLifecycle)
+    val secondLifecycle = requireNotNull(second.runtimeControllerLifecycle)
+    val interactiveLifecycle = requireNotNull(interactive.runtimeControllerLifecycle)
+
+    assertNotEquals(firstLifecycle.controllerInstanceId, secondLifecycle.controllerInstanceId)
+    assertEquals(firstLifecycle.durableControllerId, secondLifecycle.durableControllerId)
+    assertNotEquals(firstLifecycle.durableControllerId, interactiveLifecycle.durableControllerId)
   }
 
   @Test
@@ -6120,6 +6186,17 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     retainedHandle = retainedHandle,
     disposeHandler = disposeHandler,
   )
+
+  private fun testRuntimeServiceBootstrapFactory(): RuntimeServiceBootstrapFactory =
+    RuntimeServiceBootstrapFactory { _ ->
+      RuntimeServiceBootstrapParts(
+        scheduledTaskSpecStore = inMemoryScheduledTaskSpecStoreFactory().create(),
+        scheduledTaskRunRecordStore = inMemoryScheduledTaskRunRecordStoreFactory().create(),
+        scheduledTaskTriggerSyncStateStore = inMemoryScheduledTaskTriggerSyncStateStoreFactory()
+          .create(),
+        scheduledTriggerRegistrar = NoOpScheduledTriggerRegistrar,
+      )
+    }
 
   private class RecordingRuntimeServiceExecutionControllerHandle(
     val controller: RuntimeServiceExecutionController,

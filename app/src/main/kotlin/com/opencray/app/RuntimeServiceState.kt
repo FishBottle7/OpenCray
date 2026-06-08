@@ -4,12 +4,14 @@ internal data class RuntimeControllerLifecycleDescriptor(
   val processStartId: String = OpenCrayProcessLifecycle.processStartId,
   val processStartedAtEpochMs: Long = OpenCrayProcessLifecycle.processStartedAtEpochMs,
   val controllerInstanceId: String = lifecycleId(prefix = "runtime-controller"),
+  val durableControllerId: String = controllerInstanceId,
   val controllerCreatedAtEpochMs: Long = System.currentTimeMillis(),
 ) {
   fun snapshotMap(): Map<String, Any?> = mapOf(
     "processStartId" to processStartId,
     "processStartedAtEpochMs" to processStartedAtEpochMs,
     "controllerInstanceId" to controllerInstanceId,
+    "durableControllerId" to durableControllerId,
     "controllerCreatedAtEpochMs" to controllerCreatedAtEpochMs,
   )
 }
