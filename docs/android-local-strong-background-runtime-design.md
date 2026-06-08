@@ -97,7 +97,7 @@ But the background product surface is still incomplete:
 - checkpoint-backed observational managed-process restore is now also narrower and safer: interrupted `ProcessRead` or `ProcessWait` can auto-resume only when the durable pending action still matches the same live `process_id` and the reconnect state is already stable (`attached_live` or `completed`), while `connecting`, `retry_scheduled`, `failed_terminal`, or other ambiguous reconnect states remain explicit interruption instead of silent replay
 - recovery diagnostics now stamp run attempts and checkpoint ids on recovery-aware queue rewrites and append non-runtime recovery markers to the durable run journal, so strong-background reports can distinguish an initial submission from a checkpoint-backed restore without relying only on queue state
 - direct-file durable run journal append/list/clear now serializes through a session-level sidecar OS lock, allocates sequence numbers from disk while holding that lock, and persists entries via temp-file atomic moves, so concurrent detached owners or projection readers cannot overwrite each other's journal events during reconnect churn
-- startup plus boot/package-replaced repair paths now re-register scheduled work, enqueue one-shot repair, and keep a unique periodic `WorkManager` repair registered; the repair worker can also wake `OpenCrayAgentRuntimeService` with `ACTION_RESUME_INTERRUPTED_RUNS` when queue or checkpoint state suggests interrupted interactive work, but continuation still reuses the normal checkpoint-aware resume path rather than a separate long-lived repair controller
+- startup plus boot/package-replaced repair paths now re-register scheduled work, enqueue one-shot repair, and keep a unique periodic `WorkManager` repair registered; the repair worker can also wake `OpenCrayAgentRuntimeService` with `ACTION_RESUME_INTERRUPTED_RUNS` when queue, checkpoint, durable subagent, or run-record-only state suggests interrupted work, but continuation still reuses the normal checkpoint-aware resume path rather than a separate long-lived repair controller
 - notification/background settings now expose notification, exact-alarm, and battery-optimization system actions, including direct exemption request where Android allows it
 
 So the current system now has real strong-background primitives and a substantially narrowed detached-runtime composition path, but it is still not yet a full local strong-background product.
@@ -727,7 +727,7 @@ Exit criteria:
 
 Status:
 
-- substantially implemented for boot/package-replaced schedule repair, startup reconciliation, periodic repair registration, and a first interrupted-interactive-run repair wake path
+- substantially implemented for boot/package-replaced schedule repair, startup reconciliation, periodic repair registration, and interrupted-run repair wake paths that can preflight queue, checkpoint, subagent, and run-record-only evidence
 
 - add boot receiver
 - re-register schedules on boot and package replace

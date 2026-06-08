@@ -36,6 +36,8 @@ import kotlinx.serialization.json.JsonObject
 
 internal interface AgentRunRecordStoreFactory {
   fun forChatSession(sessionId: String): AgentRunRecordStore
+
+  fun knownSessionIds(): List<String> = emptyList()
 }
 
 internal interface AgentRunRecordStore {
@@ -70,6 +72,14 @@ internal class FileBackedAgentRunRecordStoreFactory(
 
   internal fun directoryForSession(sessionId: String): File =
     File(runtimeRootDirectory, FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(sessionId))
+
+  override fun knownSessionIds(): List<String> = runtimeRootDirectory.listFiles()
+    .orEmpty()
+    .asSequence()
+    .filter(File::isDirectory)
+    .mapNotNull { directory -> FileBackedAgentQueueSnapshotStoreFactory.decodeSessionId(directory.name) }
+    .distinct()
+    .toList()
 
   companion object {
     fun fromContext(context: Context): AgentRunRecordStoreFactory =

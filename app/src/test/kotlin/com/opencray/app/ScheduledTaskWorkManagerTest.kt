@@ -1,17 +1,20 @@
 package com.opencray.app
 
+import android.content.Intent
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.AgentTaskType
+import com.opencray.core.contracts.ExecutionResult
+import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
-import android.content.Intent
 import com.opencray.core.orchestrator.InMemorySessionQueueSnapshotStore
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
+import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
 import com.opencray.runtime.subagent.SubAgentExecutionState
@@ -381,6 +384,88 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun hasPotentialInteractiveRunRepairWorkFindsDurableRunRecordOnlySession() {
+    val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-run-record")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val runRecordStoreFactory = InMemoryAgentRunRecordStoreFactory()
+    val durableOnlySessionId = "session-run-record-only"
+
+    runRecordStoreFactory.forChatSession(durableOnlySessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = "run-record-only",
+        taskId = "task-record-only",
+        acceptedAtEpochMs = 1_000L,
+        lastEvent = OpenCrayAssistantEvent(
+          runId = "run-record-only",
+          taskId = "task-record-only",
+          turn = 0,
+          text = "Recovered partial progress.",
+          isFinal = false,
+          emittedAtEpochMs = 1_100L,
+        ).toPersistedRecord(),
+      ),
+    )
+
+    assertTrue(
+      hasPotentialInteractiveRunRepairWork(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+        runRecordStoreFactory = runRecordStoreFactory,
+      ),
+    )
+    assertEquals(
+      setOf(RuntimeServiceTarget.INTERACTIVE),
+      potentialInterruptedRunRepairTargets(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+        runRecordStoreFactory = runRecordStoreFactory,
+      ),
+    )
+  }
+
+  @Test
+  fun hasPotentialInteractiveRunRepairWorkIgnoresTerminalRunRecordOnlySession() {
+    val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-terminal-run-record")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val runRecordStoreFactory = InMemoryAgentRunRecordStoreFactory()
+
+    runRecordStoreFactory.forChatSession("session-terminal-record").upsert(
+      PersistedAgentRunRecord(
+        runId = "run-terminal-record",
+        taskId = "task-terminal-record",
+        acceptedAtEpochMs = 1_000L,
+        lastResult = ExecutionResult(
+          taskId = "task-terminal-record",
+          status = ExecutionStatus.SUCCESS,
+          stdout = "Done",
+          startedAtEpochMs = 1_000L,
+          finishedAtEpochMs = 1_100L,
+        ),
+      ),
+    )
+
+    assertFalse(
+      hasPotentialInteractiveRunRepairWork(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+        runRecordStoreFactory = runRecordStoreFactory,
+      ),
+    )
+  }
+
+  @Test
   fun hasPotentialInteractiveRunRepairWorkReturnsFalseWhenOnlyTerminalTasksAndTerminalSubAgentsExist() {
     val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-idle")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
@@ -542,5 +627,24 @@ class ScheduledTaskWorkManagerTest {
       stores.getOrPut(sessionId) { InMemorySessionQueueSnapshotStore() }
 
     override fun knownSessionIds(): List<String> = stores.keys.toList()
+  }
+
+  private class InMemoryAgentRunRecordStoreFactory : AgentRunRecordStoreFactory {
+    private val stores = linkedMapOf<String, InMemoryAgentRunRecordStore>()
+
+    override fun forChatSession(sessionId: String): AgentRunRecordStore =
+      stores.getOrPut(sessionId) { InMemoryAgentRunRecordStore() }
+
+    override fun knownSessionIds(): List<String> = stores.keys.toList()
+  }
+
+  private class InMemoryAgentRunRecordStore : AgentRunRecordStore {
+    private val recordsByRunId = linkedMapOf<String, PersistedAgentRunRecord>()
+
+    override fun list(): List<PersistedAgentRunRecord> = recordsByRunId.values.toList()
+
+    override fun upsert(record: PersistedAgentRunRecord) {
+      recordsByRunId[record.runId] = record
+    }
   }
 }

@@ -245,6 +245,7 @@ internal fun hasPotentialInteractiveRunRepairWork(
     snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
     promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
     subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
+    runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
   ).isNotEmpty()
 }
 
@@ -253,11 +254,13 @@ internal fun hasPotentialInteractiveRunRepairWork(
   snapshotStoreFactory: AgentQueueSnapshotStoreFactory,
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
+  runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
 ): Boolean = potentialInterruptedRunRepairTargets(
   chatSessionStore = chatSessionStore,
   snapshotStoreFactory = snapshotStoreFactory,
   promptCheckpointStoreFactory = promptCheckpointStoreFactory,
   subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+  runRecordStoreFactory = runRecordStoreFactory,
 ).isNotEmpty()
 
 internal fun potentialInterruptedRunRepairTargets(
@@ -269,6 +272,7 @@ internal fun potentialInterruptedRunRepairTargets(
     snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
     promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
     subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
+    runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
   )
 }
 
@@ -277,12 +281,14 @@ internal fun potentialInterruptedRunRepairTargets(
   snapshotStoreFactory: AgentQueueSnapshotStoreFactory,
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
+  runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
 ): Set<RuntimeServiceTarget> {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
     snapshotStoreFactory = snapshotStoreFactory,
     promptCheckpointStoreFactory = promptCheckpointStoreFactory,
     subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+    runRecordStoreFactory = runRecordStoreFactory,
   )
   val targets = linkedSetOf<RuntimeServiceTarget>()
   knownSessionIds.forEach { sessionId ->
@@ -291,6 +297,7 @@ internal fun potentialInterruptedRunRepairTargets(
       snapshotStoreFactory = snapshotStoreFactory,
       promptCheckpointStoreFactory = promptCheckpointStoreFactory,
       subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runRecordStoreFactory = runRecordStoreFactory,
     )
   }
   return targets
@@ -301,11 +308,13 @@ internal fun hasPotentialInteractiveRunRepairWorkForSession(
   snapshotStoreFactory: AgentQueueSnapshotStoreFactory,
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
+  runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
 ): Boolean = potentialInterruptedRunRepairTargetsForSession(
   sessionId = sessionId,
   snapshotStoreFactory = snapshotStoreFactory,
   promptCheckpointStoreFactory = promptCheckpointStoreFactory,
   subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+  runRecordStoreFactory = runRecordStoreFactory,
 ).isNotEmpty()
 
 internal fun potentialInterruptedRunRepairTargetsForSession(
@@ -313,6 +322,7 @@ internal fun potentialInterruptedRunRepairTargetsForSession(
   snapshotStoreFactory: AgentQueueSnapshotStoreFactory,
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
+  runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
 ): Set<RuntimeServiceTarget> {
   val taskSnapshots = snapshotStoreFactory.forChatSession(sessionId)
     .load()
@@ -339,6 +349,16 @@ internal fun potentialInterruptedRunRepairTargetsForSession(
   ) {
     targets += RuntimeServiceTarget.DETACHED_BACKGROUND
   }
+  runRecordStoreFactory?.forChatSession(sessionId)
+    ?.list()
+    .orEmpty()
+    .filter(::isPotentialRunRepairRecord)
+    .forEach { record ->
+      targets += taskSnapshots
+        .firstOrNull { taskSnapshot -> runIdFor(taskSnapshot.task) == record.runId }
+        ?.let { taskSnapshot -> runtimeServiceTargetForTask(taskSnapshot.task) }
+        ?: RuntimeServiceTarget.INTERACTIVE
+    }
   return targets
 }
 
@@ -357,6 +377,13 @@ internal fun startInterruptedRunRepairTargets(
 private fun isPotentialRunRepairQueueTask(
   taskSnapshot: SessionQueueTaskSnapshot,
 ): Boolean = taskSnapshot.lifecycleState !in TERMINAL_QUEUE_TASK_LIFECYCLES
+
+private fun isPotentialRunRepairRecord(record: PersistedAgentRunRecord): Boolean {
+  if (record.lastResult != null) {
+    return false
+  }
+  return record.lastEvent != null || record.managedProcessIds.isNotEmpty()
+}
 
 private fun runtimeServiceTargetForCheckpoint(
   checkpoint: PersistedPromptCheckpoint,
