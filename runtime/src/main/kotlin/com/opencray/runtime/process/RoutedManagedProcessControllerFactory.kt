@@ -16,11 +16,12 @@ class RoutedManagedProcessControllerFactory(
   private val pythonRuntime: PythonScriptRuntime,
   private val defaultFactory: ManagedProcessControllerFactory = LocalManagedProcessControllerFactory(),
   private val clock: () -> Long = { System.currentTimeMillis() },
-) : ManagedProcessControllerFactory {
+) : ReconnectableManagedProcessControllerFactory {
+  private val reconnectableDefaultFactory =
+    defaultFactory as? ReconnectableManagedProcessControllerFactory
+
   override fun start(request: ManagedProcessStartRequest): ManagedProcessController {
-    val managedByPythonRuntime = request.metadata["managedByPythonRuntime"]
-      ?.equals("true", ignoreCase = true)
-      ?: false
+    val managedByPythonRuntime = request.isManagedByPythonRuntime()
     val runtimeKind = request.metadata["runtimeKind"]?.trim()
     val scriptPath = request.metadata["scriptPath"]?.trim()?.takeIf(String::isNotBlank)
     if (!managedByPythonRuntime || runtimeKind != "python_exec" || scriptPath == null) {
@@ -34,6 +35,19 @@ class RoutedManagedProcessControllerFactory(
       clock = clock,
     )
   }
+
+  override fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController? {
+    if (snapshot.isManagedByPythonRuntime()) {
+      return null
+    }
+    return reconnectableDefaultFactory?.reconnect(snapshot)
+  }
+
+  private fun ManagedProcessStartRequest.isManagedByPythonRuntime(): Boolean =
+    metadata["managedByPythonRuntime"]?.equals("true", ignoreCase = true) ?: false
+
+  private fun ManagedProcessSnapshot.isManagedByPythonRuntime(): Boolean =
+    metadata["managedByPythonRuntime"]?.equals("true", ignoreCase = true) ?: false
 }
 
 private class PythonRuntimeManagedProcessController(

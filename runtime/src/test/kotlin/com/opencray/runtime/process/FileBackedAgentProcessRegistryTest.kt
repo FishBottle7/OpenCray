@@ -1,6 +1,10 @@
 package com.opencray.runtime.process
 
+import com.opencray.core.contracts.ExecutionResult
+import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.persistence.PersistenceSchemaVersion
+import com.opencray.runtime.PythonExecRequest
+import com.opencray.runtime.PythonScriptRuntime
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -416,6 +420,87 @@ class FileBackedAgentProcessRegistryTest {
   }
 
   @Test
+  fun restoredRunningSnapshotReconnectsThroughRoutedDefaultFactory() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-routed-reconnectable")
+    val delegateFactory = ReconnectableFakeManagedProcessControllerFactory()
+    val routedFactory = RoutedManagedProcessControllerFactory(
+      workspaceRoot = directory.toPath(),
+      pythonRuntime = CompletingPythonScriptRuntime(),
+      defaultFactory = delegateFactory,
+    )
+    val ownerIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-1",
+      runtimeControllerId = "controller-1",
+    )
+    val restoredRuntimeIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-2",
+      runtimeControllerId = "controller-2",
+    )
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = routedFactory,
+      runtimeIdentity = ownerIdentity,
+    )
+
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-routed-remote",
+        taskId = "task-routed-remote",
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        timeoutMs = 120_000L,
+        requestedAtEpochMs = 1_000L,
+        ownerIdentity = ownerIdentity,
+      ),
+    )
+
+    ManagedProcessControllerRegistry.clearForTest()
+
+    val restored = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = routedFactory,
+      runtimeIdentity = restoredRuntimeIdentity,
+    ).read("proc-routed-remote")
+
+    assertNotNull(restored)
+    assertEquals(ManagedProcessStatus.RUNNING, restored!!.status)
+    assertEquals("true", restored.metadata["reconnected"])
+    assertEquals(
+      ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+      restored.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY],
+    )
+    assertEquals(1, delegateFactory.reconnectCount)
+  }
+
+  @Test
+  fun routedManagedPythonRuntimeSnapshotDoesNotDelegateReconnect() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-routed-python-reconnect")
+    val delegateFactory = ReconnectableFakeManagedProcessControllerFactory()
+    val routedFactory = RoutedManagedProcessControllerFactory(
+      workspaceRoot = directory.toPath(),
+      pythonRuntime = CompletingPythonScriptRuntime(),
+      defaultFactory = delegateFactory,
+    )
+
+    val controller = routedFactory.reconnect(
+      runningSnapshot(
+        processId = "proc-python-runtime",
+        taskId = "task-python-runtime",
+      ).copy(
+        metadata = mapOf(
+          "managedByPythonRuntime" to "true",
+          "runtimeKind" to "python_exec",
+          "scriptPath" to "scripts/run.py",
+        ),
+      ),
+    )
+
+    assertNull(controller)
+    assertEquals(0, delegateFactory.reconnectCount)
+  }
+
+  @Test
   fun retryableReconnectControllerIsReplacedAfterBackoffOnNextRead() {
     val directory = temporaryFolder.newFolder("durable-process-registry-retryable-reconnect")
     var nowEpochMs = 1_000L
@@ -791,6 +876,18 @@ class FileBackedAgentProcessRegistryTest {
     }
 
     override fun terminate(): ManagedProcessSnapshot = currentSnapshot
+  }
+
+  private class CompletingPythonScriptRuntime : PythonScriptRuntime {
+    override fun exec(request: PythonExecRequest): ExecutionResult = ExecutionResult(
+      taskId = request.taskId,
+      status = ExecutionStatus.SUCCESS,
+      exitCode = 0,
+      stdout = "",
+      stderr = "",
+      startedAtEpochMs = 1_000L,
+      finishedAtEpochMs = 1_000L,
+    )
   }
 
   private inner class ReconnectableFakeManagedProcessControllerFactory : ReconnectableManagedProcessControllerFactory {
