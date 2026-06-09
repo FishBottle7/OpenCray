@@ -1029,7 +1029,28 @@ internal fun effectiveLlmCapabilityMetadata(
       mapOf("pdfInputSupported" to resolution.pdfInputSupported.toString())
     } ?: emptyMap()
   }
-  return resolvedContextWindowMetadata + resolvedVisionMetadata + resolvedPdfMetadata + persistedMetadata
+  val resolvedResponsesRemoteCompactionMetadata = if (
+    supportsResponsesRemoteCompactionByDefault(providerId = providerId, protocol = protocol)
+  ) {
+    mapOf("responsesRemoteCompactionSupported" to "true")
+  } else {
+    emptyMap()
+  }
+  return resolvedContextWindowMetadata +
+    resolvedVisionMetadata +
+    resolvedPdfMetadata +
+    persistedMetadata +
+    resolvedResponsesRemoteCompactionMetadata
+}
+
+private fun supportsResponsesRemoteCompactionByDefault(
+  providerId: String,
+  protocol: String,
+): Boolean {
+  if (LlmProviderProtocols.normalize(protocol) != LlmProviderProtocols.OPENAI_RESPONSES) {
+    return false
+  }
+  return providerId.trim().equals("openai", ignoreCase = true)
 }
 
 internal fun effectiveLlmRouteMetadata(
@@ -1037,6 +1058,7 @@ internal fun effectiveLlmRouteMetadata(
   protocol: String,
   model: String,
   reasoningEffort: String,
+  baseUrl: String? = null,
   streamingEnabled: Boolean = LlmSettingsState.DEFAULT_STREAMING_ENABLED,
   agentCapability: LlmAgentCapabilitySnapshot,
   openAiPromptCacheKeyStrategy: String = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY,
@@ -1049,6 +1071,7 @@ internal fun effectiveLlmRouteMetadata(
     protocol = protocol,
     model = model,
     reasoningEffort = reasoningEffort,
+    baseUrl = baseUrl,
     streamingEnabled = streamingEnabled,
     openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
     openAiPromptCacheRetention = openAiPromptCacheRetention,
@@ -1067,15 +1090,58 @@ internal fun effectiveLlmRouteMetadata(
 internal fun effectiveLlmRouteMetadata(
   settings: LlmSettingsState,
   reasoningEffort: String = settings.reasoningEffort,
-): Map<String, String> = effectiveLlmRouteMetadata(
-  providerId = settings.providerId,
-  protocol = settings.protocol,
-  model = settings.model,
-  reasoningEffort = reasoningEffort,
-  streamingEnabled = settings.streamingEnabled,
-  agentCapability = settings.agentCapability,
-  openAiPromptCacheKeyStrategy = settings.openAiPromptCacheKeyStrategy,
-  openAiPromptCacheRetention = settings.openAiPromptCacheRetention,
-  anthropicPromptCachingEnabled = settings.anthropicPromptCachingEnabled,
-  anthropicPromptCacheTtl = settings.anthropicPromptCacheTtl,
+): Map<String, String> = if (settings.isOnDeviceProviderMode()) {
+  buildMap {
+    put(LiteRtOnDeviceMetadataKeys.PROVIDER_MODE, LlmProviderModes.ON_DEVICE_MODEL)
+    put(LiteRtOnDeviceMetadataKeys.RUNTIME, OnDeviceLlmCatalog.RUNTIME_ID_LITERT_LM)
+    put(LiteRtOnDeviceMetadataKeys.MODEL_ID, settings.selectedOnDeviceModelId)
+    put(LiteRtOnDeviceMetadataKeys.BACKEND, settings.onDeviceAccelerator)
+    put("stream", settings.streamingEnabled.toString())
+    put(
+      LiteRtOnDeviceMetadataKeys.MAX_CONTEXT_WINDOW,
+      settings.onDeviceMaxContextWindow.toString(),
+    )
+    put(
+      LiteRtOnDeviceMetadataKeys.THINKING_ENABLED,
+      settings.onDeviceThinkingEnabled.toString(),
+    )
+    put(
+      LiteRtOnDeviceMetadataKeys.LITE_MODE_ENABLED,
+      settings.onDeviceLiteModeEnabled.toString(),
+    )
+    put("max_tokens", settings.onDeviceMaxTokens.toString())
+    put("top_k", settings.onDeviceTopK.toString())
+    put("top_p", settings.onDeviceTopP.toString())
+    put("temperature", settings.onDeviceTemperature.toString())
+    if (settings.onDeviceLiteModeEnabled) {
+      put("toolProtocolDetailMode", "minimal")
+      put(
+        "context_window_tokens",
+        onDeviceLitePromptContextWindowTokens(settings).toString(),
+      )
+    }
+  }
+} else {
+  effectiveLlmRouteMetadata(
+    providerId = settings.providerId,
+    protocol = settings.protocol,
+    model = settings.model,
+    reasoningEffort = reasoningEffort,
+    baseUrl = settings.baseUrl,
+    streamingEnabled = settings.streamingEnabled,
+    agentCapability = settings.agentCapability,
+    openAiPromptCacheKeyStrategy = settings.openAiPromptCacheKeyStrategy,
+    openAiPromptCacheRetention = settings.openAiPromptCacheRetention,
+    anthropicPromptCachingEnabled = settings.anthropicPromptCachingEnabled,
+    anthropicPromptCacheTtl = settings.anthropicPromptCacheTtl,
+  )
+}
+
+private fun onDeviceLitePromptContextWindowTokens(
+  settings: LlmSettingsState,
+): Int = minOf(
+  settings.onDeviceMaxContextWindow,
+  settings.onDeviceMaxTokens + ON_DEVICE_LITE_PROMPT_BUDGET_PADDING_TOKENS,
 )
+
+private const val ON_DEVICE_LITE_PROMPT_BUDGET_PADDING_TOKENS: Int = 3_072

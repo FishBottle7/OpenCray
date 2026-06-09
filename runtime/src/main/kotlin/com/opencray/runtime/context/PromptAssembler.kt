@@ -37,30 +37,35 @@ class PromptAssembler(
         name = "Identity",
         kind = PromptLayerKind.SYSTEM,
         content = input.baseSystemPrompt.trim(),
+        transportGroup = transportGroupFor(PromptLayerId.IDENTITY, PromptLayerKind.SYSTEM),
       )
       addLayer(
         id = PromptLayerId.RUNTIME_RULES,
         name = "Runtime Rules",
         kind = PromptLayerKind.SYSTEM,
         content = RUNTIME_RULES,
+        transportGroup = transportGroupFor(PromptLayerId.RUNTIME_RULES, PromptLayerKind.SYSTEM),
       )
       addLayer(
         id = PromptLayerId.SESSION_POLICY,
         name = "Session Policy",
         kind = PromptLayerKind.SYSTEM,
         content = input.sessionPolicyText,
+        transportGroup = transportGroupFor(PromptLayerId.SESSION_POLICY, PromptLayerKind.SYSTEM),
       )
       addLayer(
         id = PromptLayerId.PERSONALIZATION,
         name = "Personalization",
         kind = PromptLayerKind.SYSTEM,
         content = input.personalizationText,
+        transportGroup = transportGroupFor(PromptLayerId.PERSONALIZATION, PromptLayerKind.SYSTEM),
       )
       addLayer(
         id = PromptLayerId.TURN_RESPONSE_POLICY,
         name = "Turn Response Policy",
         kind = PromptLayerKind.SYSTEM,
         content = input.turnResponsePolicyText,
+        transportGroup = transportGroupFor(PromptLayerId.TURN_RESPONSE_POLICY, PromptLayerKind.SYSTEM),
       )
       input.bootstrapFiles.forEach { file ->
         val renderedBootstrap = bootstrapPromptLayer.render(file)
@@ -69,6 +74,7 @@ class PromptAssembler(
           name = renderedBootstrap.layerName,
           kind = PromptLayerKind.SYSTEM,
           content = renderedBootstrap.text,
+          transportGroup = transportGroupFor(PromptLayerId.BOOTSTRAP, PromptLayerKind.SYSTEM),
         )
       }
       addLayer(
@@ -76,66 +82,77 @@ class PromptAssembler(
         name = "Working State",
         kind = PromptLayerKind.CONTEXT,
         content = input.workingStateText,
+        transportGroup = transportGroupFor(PromptLayerId.WORKING_STATE, PromptLayerKind.CONTEXT),
+      )
+      addLayer(
+        id = PromptLayerId.STICKY_MEMORY,
+        name = "Sticky Memory",
+        kind = PromptLayerKind.CONTEXT,
+        content = input.stickyMemoryText,
+        transportGroup = transportGroupFor(PromptLayerId.STICKY_MEMORY, PromptLayerKind.CONTEXT),
       )
       addLayer(
         id = PromptLayerId.RETRIEVED_MEMORY,
         name = "Retrieved Memory",
         kind = PromptLayerKind.CONTEXT,
         content = input.memoryText,
+        transportGroup = transportGroupFor(PromptLayerId.RETRIEVED_MEMORY, PromptLayerKind.CONTEXT),
       )
       addLayer(
         id = PromptLayerId.DURABLE_COMPACTION,
         name = "Durable Compaction",
         kind = PromptLayerKind.CONTEXT,
         content = input.durableCompactionText,
+        transportGroup = transportGroupFor(PromptLayerId.DURABLE_COMPACTION, PromptLayerKind.CONTEXT),
       )
       addLayer(
         id = PromptLayerId.SKILL_INVENTORY,
         name = "Skill Inventory",
         kind = PromptLayerKind.CONTEXT,
         content = input.skillInventoryText,
+        transportGroup = transportGroupFor(PromptLayerId.SKILL_INVENTORY, PromptLayerKind.CONTEXT),
       )
       addLayer(
         id = PromptLayerId.ACTIVE_SKILL,
         name = "Active Skill",
         kind = PromptLayerKind.CONTEXT,
         content = input.activeSkillText,
+        transportGroup = transportGroupForActiveSkill(input.activeSkillCapsule?.pinned == true),
       )
       addLayer(
         id = PromptLayerId.RECENT_TOOL_OBSERVATIONS,
         name = "Recent Working Observations",
         kind = PromptLayerKind.CONTEXT,
         content = input.recentToolObservationsText,
+        transportGroup = transportGroupFor(PromptLayerId.RECENT_TOOL_OBSERVATIONS, PromptLayerKind.CONTEXT),
       )
       addLayer(
         id = PromptLayerId.PRUNING_SUMMARY,
         name = "Pruning Summary",
         kind = PromptLayerKind.CONTEXT,
         content = pruningSummaryPromptLayer.render(input.pruningSummary),
+        transportGroup = transportGroupFor(PromptLayerId.PRUNING_SUMMARY, PromptLayerKind.CONTEXT),
       )
       addLayer(
         id = PromptLayerId.COMPACTION_SUMMARY,
         name = "Compaction Summary",
         kind = PromptLayerKind.CONTEXT,
         content = compactionSummaryPromptLayer.render(input.compactionSummary),
+        transportGroup = transportGroupFor(PromptLayerId.COMPACTION_SUMMARY, PromptLayerKind.CONTEXT),
       )
       addLayer(
         id = PromptLayerId.TOOL_PROTOCOL,
         name = "Tool Protocol",
         kind = PromptLayerKind.PROTOCOL,
         content = toolProtocolLayer.text,
-      )
-      addLayer(
-        id = PromptLayerId.TASK_METADATA,
-        name = TASK_METADATA_LAYER_NAME,
-        kind = PromptLayerKind.CONTEXT,
-        content = renderTaskMetadataLayer(task = input.task),
+        transportGroup = transportGroupFor(PromptLayerId.TOOL_PROTOCOL, PromptLayerKind.PROTOCOL),
       )
       addLayer(
         id = PromptLayerId.CONVERSATION,
         name = CONVERSATION_LAYER_NAME,
         kind = PromptLayerKind.CONTEXT,
         content = renderConversationLayer(transcriptWindow = input.transcriptWindow),
+        transportGroup = transportGroupFor(PromptLayerId.CONVERSATION, PromptLayerKind.CONTEXT),
       )
     }
     val coordinated = budgetCoordinator.rebalance(
@@ -147,11 +164,23 @@ class PromptAssembler(
     val layers = coordinated.layers
     val systemLayers = layers.filter { layer -> layer.kind == PromptLayerKind.SYSTEM }
     val taskLayers = layers.filter { layer -> layer.kind != PromptLayerKind.SYSTEM }
-    val contextLayers = taskLayers.filterNot { layer -> layer.name == CONVERSATION_LAYER_NAME }
+    val durableContextLayers = layers.filter { layer ->
+      layer.transportGroup == PromptLayerTransportGroup.DURABLE_CONTEXT
+    }
+    val dynamicContextLayers = layers.filter { layer ->
+      layer.transportGroup == PromptLayerTransportGroup.DYNAMIC_CONTEXT
+    }
+    val replayLayers = layers.filter { layer ->
+      layer.transportGroup == PromptLayerTransportGroup.REPLAY_TRANSCRIPT
+    }
+    val contextLayers = durableContextLayers + dynamicContextLayers
 
     return AssembledPrompt(
       systemPrompt = renderLayers(systemLayers),
       contextPrompt = renderLayers(contextLayers),
+      durableContextPrompt = renderLayers(durableContextLayers),
+      dynamicContextPrompt = renderLayers(dynamicContextLayers),
+      replayTranscriptPrompt = renderLayers(replayLayers),
       taskPrompt = renderLayers(taskLayers),
       layers = layers,
       report = ContextAssemblyReport(
@@ -172,6 +201,7 @@ class PromptAssembler(
         injectedMemoryRecordCount = input.report.injectedMemoryRecordCount,
         omittedMemoryRecordCount = input.report.omittedMemoryRecordCount,
         memoryRecallTrace = input.report.memoryRecallTrace,
+        stickyMemoryTrace = input.report.stickyMemoryTrace,
         memoryFlushTrace = input.report.memoryFlushTrace,
         durableCompactionTrace = input.report.durableCompactionTrace,
         workingStateTrace = input.report.workingStateTrace,
@@ -197,6 +227,7 @@ class PromptAssembler(
     name: String,
     kind: PromptLayerKind,
     content: String,
+    transportGroup: PromptLayerTransportGroup,
   ) {
     val normalizedContent = content.trim()
     if (normalizedContent.isBlank()) {
@@ -208,9 +239,54 @@ class PromptAssembler(
         name = name,
         kind = kind,
         content = normalizedContent,
+        transportGroup = transportGroup,
       ),
     )
   }
+
+  private fun transportGroupFor(
+    id: PromptLayerId,
+    kind: PromptLayerKind,
+  ): PromptLayerTransportGroup {
+    if (kind == PromptLayerKind.SYSTEM) {
+      return PromptLayerTransportGroup.SYSTEM_PREFIX
+    }
+    return when (id) {
+      PromptLayerId.DURABLE_COMPACTION,
+      PromptLayerId.STICKY_MEMORY,
+      PromptLayerId.SKILL_INVENTORY,
+      PromptLayerId.TOOL_PROTOCOL,
+      -> PromptLayerTransportGroup.DURABLE_CONTEXT
+
+      PromptLayerId.CONVERSATION -> PromptLayerTransportGroup.REPLAY_TRANSCRIPT
+
+      PromptLayerId.RETRIEVED_MEMORY,
+      PromptLayerId.ACTIVE_SKILL,
+      PromptLayerId.WORKING_STATE,
+      PromptLayerId.RECENT_TOOL_OBSERVATIONS,
+      PromptLayerId.PRUNING_SUMMARY,
+      PromptLayerId.COMPACTION_SUMMARY,
+      PromptLayerId.TASK_METADATA,
+      -> PromptLayerTransportGroup.DYNAMIC_CONTEXT
+
+      PromptLayerId.IDENTITY,
+      PromptLayerId.RUNTIME_RULES,
+      PromptLayerId.SESSION_POLICY,
+      PromptLayerId.PERSONALIZATION,
+      PromptLayerId.TURN_RESPONSE_POLICY,
+      PromptLayerId.BOOTSTRAP,
+      -> PromptLayerTransportGroup.SYSTEM_PREFIX
+    }
+  }
+
+  private fun transportGroupForActiveSkill(
+    pinned: Boolean,
+  ): PromptLayerTransportGroup =
+    if (pinned) {
+      PromptLayerTransportGroup.DURABLE_CONTEXT
+    } else {
+      PromptLayerTransportGroup.DYNAMIC_CONTEXT
+    }
 
   @Suppress("UNUSED_PARAMETER")
   private fun renderToolProtocolLayer(
@@ -267,6 +343,19 @@ class PromptAssembler(
     val hasGlobTool = hasAnyTool(normalizedToolNames, "glob")
     val hasWriteTool = hasAnyTool(normalizedToolNames, "write", "workspace_write_file")
     val hasTodoWriteTool = hasAnyTool(normalizedToolNames, "todowrite")
+    val hasScheduledTaskTool = hasAnyTool(
+      normalizedToolNames,
+      "scheduledtaskcreate",
+      "scheduled_task_create",
+      "scheduledtasklist",
+      "scheduled_task_list",
+      "scheduledtaskget",
+      "scheduled_task_get",
+      "scheduledtaskupdate",
+      "scheduled_task_update",
+      "scheduledtaskdelete",
+      "scheduled_task_delete",
+    )
     val hasBashTool = hasAnyTool(normalizedToolNames, "bash")
     val hasPythonExecTool = hasAnyTool(normalizedToolNames, "python_exec")
     val hasWebSearchTool = hasAnyTool(normalizedToolNames, "websearch")
@@ -284,6 +373,11 @@ class PromptAssembler(
     val hasListSubAgentsTool = hasAnyTool(normalizedToolNames, "list_subagents")
     val hasMemorySearchTool = toolDefinitions.any { definition -> definition.name == "memory_search" }
     val hasMemoryGetTool = toolDefinitions.any { definition -> definition.name == "memory_get" }
+    val hasSessionSearchTool = toolDefinitions.any { definition -> definition.name == "session_search" }
+    val hasSessionGetTool = toolDefinitions.any { definition -> definition.name == "session_get" }
+    val hasPastSessionSearchTool = toolDefinitions.any { definition -> definition.name == "past_session_search" }
+    val hasPastSessionGetTool = toolDefinitions.any { definition -> definition.name == "past_session_get" }
+    val hasAnySessionHistorySearchTool = hasSessionSearchTool || hasPastSessionSearchTool
     val hasImportTool = toolDefinitions.any { definition ->
       definition.name == "ImportFile" || definition.name == "workspace_import_file"
     }
@@ -451,6 +545,12 @@ class PromptAssembler(
           appendToolGuidance("Keep TodoWrite aligned with reality. Allow at most one in_progress item, and only that item may set activeForm.")
         }
       }
+    }
+    if (hasScheduledTaskTool) {
+      appendToolGuidance("When the user wants an automatic future follow-up, reminder, delayed retry, or recurring check-in, prefer ScheduledTaskCreate.")
+      appendToolGuidance("For ScheduledTaskCreate, use trigger.at for one absolute time, trigger.after for one relative delay, or trigger.timezone plus trigger.start_at and trigger.rrule for recurrence. Do not calculate milliseconds manually.")
+      appendToolGuidance("When the user asks what schedules already exist or when they will run next, use ScheduledTaskList or ScheduledTaskGet before guessing.")
+      appendToolGuidance("When the user wants to change or remove an existing schedule, inspect it with ScheduledTaskGet first, then use ScheduledTaskUpdate or ScheduledTaskDelete.")
     }
     if (hasBashTool) {
       appendToolGuidance("Use Bash for one-off shell commands that do not require Python. Bash runs through the host shell, so use PowerShell syntax on Windows hosts.")
@@ -690,10 +790,29 @@ class PromptAssembler(
     if (!parallelToolCallsEnabled) {
       appendLine("Do not return multiple tool calls in one response.")
     }
+    if (hasMemorySearchTool && hasAnySessionHistorySearchTool) {
+      appendToolGuidance("Durable memory tools expose long-lived remembered records. Prior-session history tools expose bounded transcript snippets from earlier sessions.")
+    }
     if (hasMemorySearchTool) {
-      appendToolGuidance("When the user asks about prior work, earlier decisions, remembered preferences, dates, people, paths, or todos, search projected memory first instead of guessing from partial context.")
+      if (hasAnySessionHistorySearchTool) {
+        appendToolGuidance("Use memory_search for durable remembered facts, stored preferences, dates, people, paths, or todos that should survive across sessions.")
+      } else {
+        appendToolGuidance("When the user asks about prior work, earlier decisions, remembered preferences, dates, people, paths, or todos, search projected memory first instead of guessing from partial context.")
+      }
       if (hasMemoryGetTool) {
         appendToolGuidance("Use memory_search to locate the relevant memory path, then memory_get to read only the narrow line range you need.")
+      }
+    }
+    if (hasSessionSearchTool) {
+      appendToolGuidance("When the user asks what happened in an earlier chat or prior session, search projected session history instead of guessing from the current transcript.")
+      if (hasSessionGetTool) {
+        appendToolGuidance("Use session_search to locate the relevant prior-session path, then session_get to read only the narrow line range you need. session_search excludes the current session by default.")
+      }
+    }
+    if (hasPastSessionSearchTool) {
+      appendToolGuidance("When you need explicit continuity from other archived sessions, call past_session_search. This retrieval surface is tool-driven and not auto-injected.")
+      if (hasPastSessionGetTool) {
+        appendToolGuidance("Use past_session_search to get matched session summaries and key references, then call past_session_get only for the cited line range.")
       }
     }
     appendLine()
@@ -721,6 +840,9 @@ class PromptAssembler(
   private fun resolveToolProtocolDetailMode(
     llmMetadata: Map<String, String>,
   ): ToolProtocolDetailMode {
+    llmMetadata.explicitToolProtocolDetailMode()?.let { detailMode ->
+      return detailMode
+    }
     val envelope = toolProtocolBudgetPolicy.resolve(llmMetadata)
     return when {
       envelope.targetInputBudgetTokens <= TOOL_PROTOCOL_MINIMAL_TARGET_TOKENS -> ToolProtocolDetailMode.MINIMAL
@@ -729,23 +851,21 @@ class PromptAssembler(
     }
   }
 
+  private fun Map<String, String>.explicitToolProtocolDetailMode(): ToolProtocolDetailMode? =
+    sequenceOf("toolProtocolDetailMode", "tool_protocol_detail_mode")
+      .mapNotNull { key -> this[key] }
+      .map { value -> value.trim().lowercase() }
+      .firstNotNullOfOrNull { rawValue ->
+        when (rawValue) {
+          ToolProtocolDetailMode.FULL.wireValue -> ToolProtocolDetailMode.FULL
+          ToolProtocolDetailMode.COMPACT.wireValue -> ToolProtocolDetailMode.COMPACT
+          ToolProtocolDetailMode.MINIMAL.wireValue -> ToolProtocolDetailMode.MINIMAL
+          else -> null
+        }
+      }
+
   private fun hasAnyTool(toolNames: Set<String>, vararg candidates: String): Boolean =
     candidates.any { candidate -> candidate in toolNames }
-
-  private fun renderTaskMetadataLayer(
-    task: com.opencray.core.contracts.AgentTask,
-  ): String = buildString {
-    appendLine("Task metadata:")
-    appendLine("task_id=${task.id}")
-    appendLine("task_type=${task.type.name}")
-    val visibleMetadata = task.metadata
-      .filterKeys(::isLlmVisibleMetadataKey)
-    if (visibleMetadata.isNotEmpty()) {
-      visibleMetadata.toSortedMap().forEach { (key, value) ->
-        appendLine("$key=$value")
-      }
-    }
-  }.trim()
 
   private fun renderConversationLayer(
     transcriptWindow: TranscriptWindow,
@@ -778,6 +898,7 @@ class PromptAssembler(
       id = layer.id,
       name = layer.name,
       kind = layer.kind,
+      transportGroup = layer.transportGroup,
       characterCount = characterCount,
       estimatedTokenCount = estimateTokenCount(layer.content),
     )
@@ -788,12 +909,8 @@ class PromptAssembler(
   private companion object {
     const val TOOL_PROTOCOL_COMPACT_TARGET_TOKENS: Int = 1_100
     const val TOOL_PROTOCOL_MINIMAL_TARGET_TOKENS: Int = 700
-    const val TASK_METADATA_LAYER_NAME: String = "Task Metadata"
     const val CONVERSATION_LAYER_NAME: String = "Conversation"
-    const val HIDDEN_METADATA_PREFIX: String = "_host."
     const val RUNTIME_RULES: String =
       "Operate as a workspace-first coding agent. Prefer tools over guessing when the answer depends on files or local execution."
-
-    fun isLlmVisibleMetadataKey(key: String): Boolean = !key.startsWith(HIDDEN_METADATA_PREFIX)
   }
 }

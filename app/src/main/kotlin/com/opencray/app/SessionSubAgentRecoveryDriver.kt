@@ -25,6 +25,7 @@ internal data class SessionSubAgentRecoveryDriverCallbacks(
   val runStateByTaskId: (String) -> SessionSubAgentRecoveryRunState?,
   val runStateByRunId: (String) -> SessionSubAgentRecoveryRunState?,
   val replaceLastResult: (String, ExecutionResult?) -> Unit,
+  val replaceDetachedTask: (String, AgentTask?) -> Unit,
   val notifyTaskStarted: (AgentTask) -> Unit,
   val finalizeTaskResult: (AgentTask, ExecutionResult) -> ExecutionResult,
   val prepareExecutionTask: (AgentTask, String) -> AgentTask,
@@ -130,6 +131,7 @@ internal class SessionSubAgentRecoveryDriver(
       metadata = lastResult.metadata,
     )
     callbacks.replaceLastResult(runState.submission.runId, cancelledResult)
+    callbacks.replaceDetachedTask(runState.submission.runId, null)
     synchronized(lock) {
       if (tasksByTaskId[taskId]?.handleKey == state.handleKey) {
         taskIdsByHandleKey.remove(state.handleKey)
@@ -178,6 +180,57 @@ internal class SessionSubAgentRecoveryDriver(
     tasksByTaskId.values.map(RecoveryTaskState::task)
   }
 
+  fun restorePendingTask(
+    submission: AgentRunSubmission,
+    task: AgentTask,
+    lastResult: ExecutionResult,
+  ): Boolean {
+    if (!callbacks.isAwaitingManualResume(lastResult)) {
+      return false
+    }
+    val recoverySpec = detachedControlTaskSpec(task) as? DetachedSubAgentRecoveryWaitTaskSpec
+      ?: return false
+    val handleKey = SubAgentExecutionKey(
+      parentRunId = recoverySpec.parentRunId,
+      agentId = recoverySpec.agentId,
+    )
+    synchronized(lock) {
+      taskIdsByHandleKey[handleKey] = submission.taskId
+      tasksByTaskId[submission.taskId] = RecoveryTaskState(
+        handleKey = handleKey,
+        submission = submission,
+        task = task,
+        cancelRequested = AtomicBoolean(false),
+        future = null,
+      )
+    }
+    callbacks.replaceDetachedTask(submission.runId, task)
+    return true
+  }
+
+  fun restoreInFlightTask(
+    submission: AgentRunSubmission,
+    task: AgentTask,
+  ): Boolean {
+    val recoverySpec = detachedControlTaskSpec(task) as? DetachedSubAgentRecoveryWaitTaskSpec
+      ?: return false
+    val handleKey = SubAgentExecutionKey(
+      parentRunId = recoverySpec.parentRunId,
+      agentId = recoverySpec.agentId,
+    )
+    launchExecution(
+      handleKey = handleKey,
+      submission = submission,
+      task = task,
+      executionKind = task.metadata[METADATA_EXECUTION_KIND]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: EXECUTION_KIND_INITIAL,
+      clearPreviousResult = false,
+    )
+    return true
+  }
+
   private fun launchExecution(
     handleKey: SubAgentExecutionKey,
     submission: AgentRunSubmission,
@@ -186,6 +239,7 @@ internal class SessionSubAgentRecoveryDriver(
     clearPreviousResult: Boolean,
   ) {
     val executionTask = callbacks.prepareExecutionTask(task, executionKind)
+    callbacks.replaceDetachedTask(submission.runId, executionTask)
     val recoverySpec = detachedControlTaskSpec(executionTask) as? DetachedSubAgentRecoveryWaitTaskSpec
       ?: error("Subagent recovery execution requires a recovery task spec.")
     val cancelRequested = AtomicBoolean(false)
@@ -239,6 +293,7 @@ internal class SessionSubAgentRecoveryDriver(
       val latest = tasksByTaskId[submission.taskId] ?: return
       tasksByTaskId[submission.taskId] = latest.copy(future = null)
       if (!callbacks.isAwaitingManualResume(finalizedResult)) {
+        callbacks.replaceDetachedTask(submission.runId, null)
         if (taskIdsByHandleKey[latest.handleKey] == submission.taskId) {
           taskIdsByHandleKey.remove(latest.handleKey)
         }

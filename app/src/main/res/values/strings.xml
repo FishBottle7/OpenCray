@@ -32,6 +32,7 @@
     <string name="chat_default_session_title">New chat</string>
     <string name="chat_messages_badge">%1$d messages</string>
     <string name="chat_summary_reply_in_progress">Reply in progress</string>
+    <string name="chat_summary_on_device_preparing">Preparing the on-device model.</string>
     <string name="chat_summary_awaiting_direction">Waiting for your next instruction.</string>
     <string name="chat_summary_supplement_recorded">Recorded. This will be applied to the current run when it reaches the next safe checkpoint.</string>
     <string name="chat_summary_approval_follow_up_recorded">Recorded. The current run is waiting for approval, so this message will be handled after that decision.</string>
@@ -182,6 +183,7 @@
     <string name="llm_error_base_url_scheme">Base URL must start with http:// or https://.</string>
     <string name="chat_agent_thinking">Thinking…</string>
     <string name="chat_message_opencray">Message OpenCray</string>
+    <string name="chat_message_on_device_preparing">Preparing on-device model</string>
     <string name="chat_message_opencray_do_differently">Tell OpenCray differently</string>
     <string name="chat_trace_thinking_active">Analyzing the request and deciding the next step.</string>
     <string name="chat_trace_thinking_collapsed">One round of reasoning completed.</string>
@@ -190,6 +192,7 @@
     <string name="chat_trace_tool_follow_up">Received %1$s and evaluating the next step.</string>
     <string name="chat_agent_missing_llm">Remote LLM is not ready. Open [Settings -&gt; LLM](/settings/llm) and configure Base URL and API key first.</string>
     <string name="chat_agent_failed">Agent request failed: %1$s</string>
+    <string name="chat_agent_attachment_save_failed">Attachment could not be saved: %1$s</string>
     <string name="chat_agent_cancelled">Agent request was interrupted.</string>
     <string name="chat_approval_required_title">Approval required</string>
     <string name="chat_high_risk_approval_required_title">High-risk approval required</string>
@@ -339,6 +342,11 @@
     <string name="files_open_error_outside_workspace">Only items inside the current workspace can be opened.</string>
     <string name="files_open_error_prepare_failed">Could not prepare the selected item for opening.</string>
     <string name="files_open_error_launch_failed">Could not open the selected item.</string>
+    <string name="media_save_error_missing_entry">The selected media file is no longer available.</string>
+    <string name="media_save_error_not_file">Only files can be saved to the device media library.</string>
+    <string name="media_save_error_storage_unavailable">Device media storage is unavailable.</string>
+    <string name="media_save_error_prepare_failed">Could not save the selected media file.</string>
+    <string name="media_save_error_outside_workspace">Only media files inside the current workspace can be saved.</string>
     <string name="runtime_notification_active_channel_name">Active runtime tasks</string>
     <string name="runtime_notification_active_channel_description">Shows when OpenCray keeps agent work running in the background.</string>
     <string name="runtime_notification_active_title">OpenCray is running in the background</string>
@@ -352,6 +360,11 @@
     <string name="runtime_notification_completion_channel_description">Shows when background runs finish or become interrupted.</string>
     <string name="runtime_notification_schedule_channel_name">Scheduled tasks</string>
     <string name="runtime_notification_schedule_channel_description">Shows when scheduled tasks start, skip, or fail.</string>
+    <string name="model_download_notification_channel_name">Model downloads</string>
+    <string name="model_download_notification_channel_description">Shows progress while OpenCray downloads on-device models.</string>
+    <string name="model_download_notification_title">Downloading %1$s</string>
+    <string name="model_download_notification_progress_text">%1$s of %2$s downloaded</string>
+    <string name="model_download_notification_verifying_text">Verifying model file</string>
     <string name="runtime_notification_action_open">Open</string>
     <string name="runtime_notification_action_approve">Approve</string>
     <string name="runtime_notification_action_reject">Reject</string>
@@ -384,4 +397,6 @@
     <string name="runtime_notification_interruption_title">Background task interrupted</string>
     <string name="runtime_notification_interruption_text">%1$s was interrupted: %2$s</string>
     <string name="runtime_notification_interruption_body">The background run was interrupted and now needs attention.</string>
+    <string name="runtime_notification_service_recovered_title">Background runtime recovered</string>
+    <string name="runtime_notification_service_recovered_body">Recovered %1$d session(s) and repaired %2$d restored run set(s).</string>
 </resources>

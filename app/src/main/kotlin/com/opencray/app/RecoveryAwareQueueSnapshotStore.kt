@@ -75,11 +75,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       val runId = runIdFor(entry.task)
       var runRecord = runRecordsByRunId[runId]
       val journalEntries = runEventJournalStore.listForRun(runId)
-      val lastJournalEvent = journalEntries
-        .asReversed()
-        .asSequence()
-        .mapNotNull { journalEntry -> journalEntry.payload.toRuntimeEventOrNull() }
-        .firstOrNull()
+      val lastJournalEvent = journalEntries.latestRuntimeEventOrNull()
         ?: runRecord?.lastEvent?.toRuntimeEventOrNull()
       val repairedRunRecord = repairTerminalResultIfNeeded(
         entry = entry,
@@ -443,7 +439,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       }
 
     RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED ->
-      if (canInterruptRecovery(entry, recoveryPlan)) {
+      if (canInterruptRecovery(entry)) {
         entry.copy(
           lifecycleState = QueueTaskLifecycleState.FAILED,
           task = entry.task.copy(
@@ -560,6 +556,7 @@ internal class RecoveryAwareQueueSnapshotStore(
   }
 
   private fun canRestoreWaitingApproval(entry: SessionQueueTaskSnapshot): Boolean = when {
+    entry.lifecycleState == QueueTaskLifecycleState.QUEUED -> true
     entry.lifecycleState == QueueTaskLifecycleState.SUSPENDED -> true
     isRestoreInterruptedLifecycle(entry.lifecycleState) -> true
     isRestartRestoreFailure(entry) -> true
@@ -591,13 +588,9 @@ internal class RecoveryAwareQueueSnapshotStore(
 
   private fun canInterruptRecovery(
     entry: SessionQueueTaskSnapshot,
-    recoveryPlan: RunRecoveryPlan?,
-  ): Boolean = when {
-    entry.lifecycleState == QueueTaskLifecycleState.QUEUED -> true
-    isRestoreInterruptedLifecycle(entry.lifecycleState) -> true
-    isRestartRestoreFailure(entry) -> true
-    else -> false
-  }
+  ): Boolean = entry.lifecycleState == QueueTaskLifecycleState.QUEUED ||
+    isRestoreInterruptedLifecycle(entry.lifecycleState) ||
+    isRestartRestoreFailure(entry)
 
   private fun plannerProjection(
     entry: SessionQueueTaskSnapshot,
@@ -681,6 +674,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       pendingMessageId = entry.task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
         ?: runRecord?.pendingMessageId,
       managedProcessIds = managedProcesses.map(ManagedProcessSnapshot::processId).distinct(),
+      managedProcesses = managedProcesses,
       runningManagedProcessCount = runningManagedProcessCount,
       hasLiveManagedProcesses = runningManagedProcessCount > 0,
       hasAutoResumeEligibleManagedProcesses = autoResumeEligibleManagedProcessCount > 0,

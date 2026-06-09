@@ -1,6 +1,8 @@
 package com.opencray.runtime
 
 import com.opencray.core.contracts.ExecutionStatus
+import com.opencray.runtime.memory.MemoryStewardshipPlanGraph
+import com.opencray.runtime.memory.MemoryStewardshipPlanStep
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentLiveContextSnapshot
@@ -181,8 +183,11 @@ data class OpenCrayMemoryWriteEvent(
   val writtenKinds: List<String> = emptyList(),
   val resolvedRecordIds: List<String> = emptyList(),
   val suppressedRecordIds: List<String> = emptyList(),
+  val reopenedRecordIds: List<String> = emptyList(),
   val reaffirmedRecordIds: List<String> = emptyList(),
   val expiredRecordIds: List<String> = emptyList(),
+  val stewardshipPlanSteps: List<MemoryStewardshipPlanStep> = emptyList(),
+  val stewardshipPlanGraph: MemoryStewardshipPlanGraph = MemoryStewardshipPlanGraph(),
   override val turn: Int? = null,
   override val emittedAtEpochMs: Long,
 ) : OpenCrayAgentRunEvent
@@ -209,6 +214,7 @@ data class OpenCrayMemoryRetrievalEvent(
   override val turn: Int,
   val toolName: String,
   val operation: String,
+  val surface: String? = null,
   val query: String? = null,
   val queryTerms: List<String> = emptyList(),
   val resultCount: Int? = null,

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show SelectedContentRange;
@@ -25,6 +26,40 @@ import 'chat_models.dart';
 import 'chat_seed_data.dart';
 import 'chat_voice_playback.dart';
 
+class _TimedChatRunTraceHistoryEntry {
+  const _TimedChatRunTraceHistoryEntry({
+    required this.sortEpochMs,
+    required this.sourceOrder,
+    required this.entry,
+  });
+
+  final int sortEpochMs;
+  final int sourceOrder;
+  final ChatRunTraceHistoryEntry entry;
+}
+
+class _RuntimeProjectionPatch {
+  const _RuntimeProjectionPatch({
+    required this.messages,
+    required this.runTraces,
+  });
+
+  final List<ChatMessageData> messages;
+  final List<ChatRunTraceData> runTraces;
+}
+
+class _RuntimeProjectedMessagePatch {
+  const _RuntimeProjectedMessagePatch({
+    required this.anchorMessageId,
+    required this.text,
+    required this.isStreaming,
+  });
+
+  final String anchorMessageId;
+  final String text;
+  final bool isStreaming;
+}
+
 @visibleForTesting
 OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshot(
   OpenCrayChatRuntimeSnapshot? embedded,
@@ -36,104 +71,2477 @@ OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshot(
   if (streamed == null) {
     return embedded;
   }
-  final int embeddedVersion = runtimeSnapshotVersion(embedded);
-  final int streamedVersion = runtimeSnapshotVersion(streamed);
-  if (streamedVersion > embeddedVersion) {
+  if (!_runtimeSnapshotsShareSession(embedded, streamed)) {
+    return _preferRuntimeSnapshot(embedded, streamed);
+  }
+  if (_runtimeSnapshotIsAuthoritativeClear(streamed, embedded)) {
     return streamed;
   }
-  if (embeddedVersion > streamedVersion) {
-    return embedded;
-  }
-  if (_visibleRunCount(embedded) != _visibleRunCount(streamed)) {
-    return _visibleRunCount(embedded) < _visibleRunCount(streamed)
-        ? embedded
-        : streamed;
-  }
-  if (_visibleSubAgentCount(embedded) != _visibleSubAgentCount(streamed)) {
-    return _visibleSubAgentCount(embedded) > _visibleSubAgentCount(streamed)
-        ? embedded
-        : streamed;
-  }
-  final String embeddedHostInstanceId = _hostInstanceId(embedded);
-  final String streamedHostInstanceId = _hostInstanceId(streamed);
-  if (embeddedHostInstanceId != streamedHostInstanceId &&
-      streamedHostInstanceId.isNotEmpty) {
-    return streamed;
-  }
-  return streamed;
+  return _mergeRuntimeSnapshots(embedded, streamed);
 }
 
 @visibleForTesting
-int runtimeSnapshotVersion(OpenCrayChatRuntimeSnapshot snapshot) {
-  final int latestEventEpochMs = snapshot.events.fold<int>(
-    0,
-    (latest, event) =>
-        latest > event.emittedAtEpochMs ? latest : event.emittedAtEpochMs,
-  );
-  final int latestRunEpochMs = _visibleRuns(snapshot).fold<int>(
-    0,
-    (latest, run) =>
-        latest > run.updatedAtEpochMs ? latest : run.updatedAtEpochMs,
-  );
-  final int latestSubAgentEpochMs = snapshot.subAgents.fold<int>(
-    0,
-    (latest, subAgent) =>
-        latest > subAgent.updatedAtEpochMs ? latest : subAgent.updatedAtEpochMs,
-  );
-  final int latestDraftEpochMs = snapshot.liveAssistantDrafts.fold<int>(
-    0,
-    (latest, draft) =>
-        latest > draft.updatedAtEpochMs ? latest : draft.updatedAtEpochMs,
-  );
-  final int latestHostEpochMs =
-      snapshot.hostLifecycle?.hostCreatedAtEpochMs ?? 0;
-  return math.max(
-    latestHostEpochMs,
-    math.max(
-      math.max(latestSubAgentEpochMs, latestDraftEpochMs),
-      latestEventEpochMs > latestRunEpochMs
-          ? latestEventEpochMs
-          : latestRunEpochMs,
+OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshotForSession({
+  required String expectedSessionId,
+  OpenCrayChatRuntimeSnapshot? embedded,
+  OpenCrayChatRuntimeSnapshot? streamed,
+}) {
+  final String normalizedExpectedSessionId = expectedSessionId.trim();
+  return resolveChatRuntimeSnapshot(
+    _runtimeSnapshotForExpectedSession(
+      snapshot: embedded,
+      expectedSessionId: normalizedExpectedSessionId,
+    ),
+    _runtimeSnapshotForExpectedSession(
+      snapshot: streamed,
+      expectedSessionId: normalizedExpectedSessionId,
     ),
   );
 }
 
+bool _runtimeSnapshotsShareSession(
+  OpenCrayChatRuntimeSnapshot left,
+  OpenCrayChatRuntimeSnapshot right,
+) {
+  final String leftSessionId = left.sessionId.trim();
+  final String rightSessionId = right.sessionId.trim();
+  return leftSessionId.isEmpty ||
+      rightSessionId.isEmpty ||
+      leftSessionId == rightSessionId;
+}
+
+bool _runtimeSnapshotIsAuthoritativeClear(
+  OpenCrayChatRuntimeSnapshot incoming,
+  OpenCrayChatRuntimeSnapshot current,
+) {
+  if (_runtimeSnapshotHasVisibleActivity(incoming) ||
+      !_runtimeSnapshotHasVisibleActivity(current)) {
+    return false;
+  }
+  return incoming.updatedAtEpochMs >= current.updatedAtEpochMs;
+}
+
+bool _runtimeSnapshotHasVisibleActivity(OpenCrayChatRuntimeSnapshot snapshot) {
+  return snapshot.activeRuns.isNotEmpty ||
+      snapshot.retainedRuns.isNotEmpty ||
+      snapshot.subAgents.isNotEmpty ||
+      snapshot.liveAssistantDrafts.isNotEmpty ||
+      snapshot.events.isNotEmpty;
+}
+
+OpenCrayChatRuntimeSnapshot? _runtimeSnapshotForExpectedSession({
+  required OpenCrayChatRuntimeSnapshot? snapshot,
+  required String expectedSessionId,
+}) {
+  if (snapshot == null || expectedSessionId.isEmpty) {
+    return snapshot;
+  }
+  final String sessionId = snapshot.sessionId.trim();
+  if (sessionId.isEmpty || sessionId == expectedSessionId) {
+    return snapshot;
+  }
+  return null;
+}
+
+OpenCrayChatRuntimeSnapshot _preferRuntimeSnapshot(
+  OpenCrayChatRuntimeSnapshot left,
+  OpenCrayChatRuntimeSnapshot right,
+) {
+  final String leftHostInstanceId = _hostInstanceId(left);
+  final String rightHostInstanceId = _hostInstanceId(right);
+  if (leftHostInstanceId != rightHostInstanceId &&
+      rightHostInstanceId.isNotEmpty) {
+    return right;
+  }
+  final int leftOperationalVersion = _runtimeOperationalVersion(left);
+  final int rightOperationalVersion = _runtimeOperationalVersion(right);
+  if (rightOperationalVersion != leftOperationalVersion) {
+    return rightOperationalVersion > leftOperationalVersion ? right : left;
+  }
+  final int leftVersion = runtimeSnapshotVersion(left);
+  final int rightVersion = runtimeSnapshotVersion(right);
+  if (rightVersion != leftVersion) {
+    return rightVersion > leftVersion ? right : left;
+  }
+  final int leftDetailWeight = _runtimeDetailWeight(left);
+  final int rightDetailWeight = _runtimeDetailWeight(right);
+  if (rightDetailWeight != leftDetailWeight) {
+    return rightDetailWeight > leftDetailWeight ? right : left;
+  }
+  return right;
+}
+
+OpenCrayChatRuntimeSnapshot _mergeRuntimeSnapshots(
+  OpenCrayChatRuntimeSnapshot left,
+  OpenCrayChatRuntimeSnapshot right,
+) {
+  final List<OpenCrayChatRunSnapshot> runs = _mergeRuntimeRuns(
+    _visibleRuns(left),
+    _visibleRuns(right),
+  );
+  final List<OpenCrayChatRunSnapshot> activeRuns = runs
+      .where(_isRuntimeRunActiveForProjection)
+      .toList(growable: false);
+  final List<OpenCrayChatRunSnapshot> retainedRuns = runs
+      .where((run) => !_isRuntimeRunActiveForProjection(run))
+      .toList(growable: false);
+  final List<OpenCrayChatRuntimeEventSnapshot> events = _mergeRuntimeEvents(
+    left.events,
+    right.events,
+  );
+  final List<OpenCrayChatSubAgentSnapshot> subAgents = _mergeRuntimeSubAgents(
+    left.subAgents,
+    right.subAgents,
+  );
+  final List<OpenCrayChatLiveAssistantDraftSnapshot> drafts =
+      _mergeRuntimeDrafts(left.liveAssistantDrafts, right.liveAssistantDrafts);
+  final OpenCrayHostLifecycleSnapshot? hostLifecycle = _preferHostLifecycle(
+    left.hostLifecycle,
+    right.hostLifecycle,
+  );
+  return OpenCrayChatRuntimeSnapshot(
+    sessionId: right.sessionId.trim().isNotEmpty
+        ? right.sessionId
+        : left.sessionId,
+    activeRuns: activeRuns,
+    retainedRuns: retainedRuns,
+    subAgents: subAgents,
+    events: events,
+    liveAssistantDrafts: drafts,
+    hostLifecycle: hostLifecycle,
+    updatedAtEpochMs: math.max(left.updatedAtEpochMs, right.updatedAtEpochMs),
+  );
+}
+
+OpenCrayChatRuntimeSnapshot _mergeRuntimeDeltaSnapshot(
+  OpenCrayChatRuntimeSnapshot current,
+  OpenCrayChatRuntimeSnapshot delta, {
+  required bool hasActiveRunsPatch,
+  required bool hasRetainedRunsPatch,
+  required bool hasSubAgentsPatch,
+  required bool hasLiveAssistantDraftsPatch,
+}) {
+  final OpenCrayChatRuntimeSnapshot merged = _mergeRuntimeSnapshots(
+    current,
+    delta,
+  );
+  return OpenCrayChatRuntimeSnapshot(
+    sessionId: merged.sessionId,
+    activeRuns: hasActiveRunsPatch ? delta.activeRuns : merged.activeRuns,
+    retainedRuns: hasRetainedRunsPatch
+        ? delta.retainedRuns
+        : merged.retainedRuns,
+    subAgents: hasSubAgentsPatch ? delta.subAgents : merged.subAgents,
+    events: merged.events,
+    liveAssistantDrafts: hasLiveAssistantDraftsPatch
+        ? delta.liveAssistantDrafts
+        : merged.liveAssistantDrafts,
+    hostLifecycle: merged.hostLifecycle,
+    updatedAtEpochMs: merged.updatedAtEpochMs,
+  );
+}
+
+bool _runtimeRunListPatchCanReplace(
+  List<OpenCrayChatRunSnapshot> currentRuns,
+  List<OpenCrayChatRunSnapshot> patchRuns,
+) {
+  for (final currentRun in currentRuns) {
+    if (!_isRuntimeRunActiveForProjection(currentRun)) {
+      continue;
+    }
+    if (_findRuntimeRun(patchRuns, currentRun) == null) {
+      return false;
+    }
+  }
+  for (final patchRun in patchRuns) {
+    final OpenCrayChatRunSnapshot? currentRun = _findRuntimeRun(
+      currentRuns,
+      patchRun,
+    );
+    if (currentRun == null) {
+      continue;
+    }
+    final OpenCrayChatRunSnapshot preferred = _preferRuntimeRunSnapshot(
+      currentRun,
+      patchRun,
+    );
+    if (identical(preferred, currentRun) &&
+        _runtimeRunStateSignature(currentRun) !=
+            _runtimeRunStateSignature(patchRun)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+String _runtimeRunStateSignature(OpenCrayChatRunSnapshot run) =>
+    jsonEncode(_runtimeRunDisplaySignature(run));
+
+List<OpenCrayChatRunSnapshot> _mergeRuntimeRuns(
+  List<OpenCrayChatRunSnapshot> left,
+  List<OpenCrayChatRunSnapshot> right,
+) {
+  final List<OpenCrayChatRunSnapshot> merged = <OpenCrayChatRunSnapshot>[];
+  void addRun(OpenCrayChatRunSnapshot run) {
+    final int existingIndex = merged.indexWhere(
+      (existing) => _runtimeRunsReferToSameRun(existing, run),
+    );
+    if (existingIndex < 0) {
+      merged.add(run);
+      return;
+    }
+    merged[existingIndex] = _mergeRuntimeRunSnapshots(
+      merged[existingIndex],
+      run,
+    );
+  }
+
+  left.forEach(addRun);
+  right.forEach(addRun);
+  merged.sort((leftRun, rightRun) {
+    if (leftRun.acceptedAtEpochMs != rightRun.acceptedAtEpochMs) {
+      return leftRun.acceptedAtEpochMs.compareTo(rightRun.acceptedAtEpochMs);
+    }
+    return _runtimeRunKey(leftRun).compareTo(_runtimeRunKey(rightRun));
+  });
+  return merged;
+}
+
+bool _runtimeRunsReferToSameRun(
+  OpenCrayChatRunSnapshot left,
+  OpenCrayChatRunSnapshot right,
+) {
+  final String leftTaskId = left.taskId.trim();
+  final String rightTaskId = right.taskId.trim();
+  if (leftTaskId.isNotEmpty && rightTaskId.isNotEmpty) {
+    return leftTaskId == rightTaskId;
+  }
+  final String leftRunId = left.runId.trim();
+  final String rightRunId = right.runId.trim();
+  return leftRunId.isNotEmpty &&
+      rightRunId.isNotEmpty &&
+      leftRunId == rightRunId;
+}
+
+String _runtimeRunKey(OpenCrayChatRunSnapshot run) {
+  final String runId = run.runId.trim();
+  if (runId.isNotEmpty) {
+    return 'run:$runId';
+  }
+  final String taskId = run.taskId.trim();
+  if (taskId.isNotEmpty) {
+    return 'task:$taskId';
+  }
+  return 'accepted:${run.acceptedAtEpochMs}';
+}
+
+bool _runtimeRunHasContinuationIntent(OpenCrayChatRunSnapshot run) =>
+    _runtimeExecutionKindIsContinuation(run.pendingExecutionKind) ||
+    _runtimeExecutionKindIsContinuation(run.executionKind) ||
+    _normalizedRuntimeRunValue(run.lifecycleState) == 'retry_pending';
+
+bool _runtimeRunIsNonTerminalContinuation(OpenCrayChatRunSnapshot run) =>
+    !run.isTerminal && _runtimeRunHasContinuationIntent(run);
+
+bool _runtimeExecutionKindIsContinuation(String? value) {
+  switch (_normalizedRuntimeRunValue(value)) {
+    case 'retry':
+    case 'approval_resume':
+    case 'checkpoint_resume':
+      return true;
+    default:
+      return false;
+  }
+}
+
+String? _normalizedRuntimeRunValue(String? value) {
+  final String normalized = value?.trim().toLowerCase() ?? '';
+  return normalized.isEmpty ? null : normalized;
+}
+
+OpenCrayChatRunSnapshot _preferRuntimeRunSnapshot(
+  OpenCrayChatRunSnapshot left,
+  OpenCrayChatRunSnapshot right,
+) {
+  if (right.isTerminal &&
+      !left.isTerminal &&
+      right.updatedAtEpochMs >= left.updatedAtEpochMs) {
+    if (_runtimeRunIsNonTerminalContinuation(left) &&
+        !_runtimeRunHasContinuationIntent(right)) {
+      return left;
+    }
+    return right;
+  }
+  if (left.isTerminal &&
+      !right.isTerminal &&
+      left.updatedAtEpochMs >= right.updatedAtEpochMs) {
+    if (_runtimeRunIsNonTerminalContinuation(right) &&
+        !_runtimeRunHasContinuationIntent(left)) {
+      return right;
+    }
+    return left;
+  }
+  final int leftVersion = _runtimeRunDetailEpochMs(left);
+  final int rightVersion = _runtimeRunDetailEpochMs(right);
+  if (rightVersion != leftVersion) {
+    return rightVersion > leftVersion ? right : left;
+  }
+  final int leftWeight = _runtimeRunDetailWeight(left);
+  final int rightWeight = _runtimeRunDetailWeight(right);
+  if (rightWeight != leftWeight) {
+    return rightWeight > leftWeight ? right : left;
+  }
+  return right.updatedAtEpochMs >= left.updatedAtEpochMs ? right : left;
+}
+
+OpenCrayChatRunSnapshot _mergeRuntimeRunSnapshots(
+  OpenCrayChatRunSnapshot left,
+  OpenCrayChatRunSnapshot right,
+) {
+  final OpenCrayChatRunSnapshot preferred = _preferRuntimeRunSnapshot(
+    left,
+    right,
+  );
+  final OpenCrayChatRunSnapshot supplement = identical(preferred, left)
+      ? right
+      : left;
+  if (!_runtimeRunsReferToSameRun(preferred, supplement)) {
+    return preferred;
+  }
+  final bool clearsTerminalState =
+      _runtimeRunIsNonTerminalContinuation(preferred) && supplement.isTerminal;
+  final List<OpenCrayChatManagedProcessSnapshot> managedProcesses =
+      clearsTerminalState
+      ? preferred.managedProcesses
+      : _mergeRuntimeManagedProcesses(
+          preferred.managedProcesses,
+          supplement.managedProcesses,
+        );
+  final List<String> managedProcessIds = clearsTerminalState
+      ? _mergeRuntimeStringList(<String>[
+          ...preferred.managedProcessIds,
+          for (final process in preferred.managedProcesses) process.processId,
+        ], const <String>[])
+      : _mergeRuntimeStringList(
+          <String>[
+            ...preferred.managedProcessIds,
+            for (final process in preferred.managedProcesses) process.processId,
+          ],
+          <String>[
+            ...supplement.managedProcessIds,
+            for (final process in supplement.managedProcesses)
+              process.processId,
+          ],
+        );
+  final bool preferSupplementDetail =
+      identical(supplement, right) &&
+      right.updatedAtEpochMs >= left.updatedAtEpochMs;
+  return OpenCrayChatRunSnapshot(
+    sessionId: _preferNonEmpty(preferred.sessionId, supplement.sessionId),
+    runId: _preferNonEmpty(preferred.runId, supplement.runId),
+    taskId: _preferNonEmpty(preferred.taskId, supplement.taskId),
+    acceptedAtEpochMs: preferred.acceptedAtEpochMs != 0
+        ? preferred.acceptedAtEpochMs
+        : supplement.acceptedAtEpochMs,
+    updatedAtEpochMs: math.max(
+      preferred.updatedAtEpochMs,
+      supplement.updatedAtEpochMs,
+    ),
+    attempt: preferred.attempt != 0 ? preferred.attempt : supplement.attempt,
+    isTerminal: preferred.isTerminal,
+    executionOrdinal: clearsTerminalState
+        ? preferred.executionOrdinal
+        : preferred.executionOrdinal != 0
+        ? preferred.executionOrdinal
+        : supplement.executionOrdinal,
+    executionId: clearsTerminalState
+        ? preferred.executionId
+        : _preferNonEmptyNullable(
+            preferred.executionId,
+            supplement.executionId,
+          ),
+    executionKind: clearsTerminalState
+        ? preferred.executionKind
+        : _preferNonEmptyNullable(
+            preferred.executionKind,
+            supplement.executionKind,
+          ),
+    pendingExecutionKind: _preferNonEmptyNullable(
+      preferred.pendingExecutionKind,
+      supplement.pendingExecutionKind,
+    ),
+    lifecycleState: _preferNonEmptyNullable(
+      preferred.lifecycleState,
+      supplement.lifecycleState,
+    ),
+    taskState: _preferNonEmptyNullable(
+      preferred.taskState,
+      supplement.taskState,
+    ),
+    executionStatus: clearsTerminalState
+        ? preferred.executionStatus
+        : _preferNonEmptyNullable(
+            preferred.executionStatus,
+            supplement.executionStatus,
+          ),
+    errorCode: clearsTerminalState
+        ? preferred.errorCode
+        : _preferNonEmptyNullable(preferred.errorCode, supplement.errorCode),
+    errorMessage: clearsTerminalState
+        ? preferred.errorMessage
+        : _preferNonEmptyNullable(
+            preferred.errorMessage,
+            supplement.errorMessage,
+          ),
+    responseFormat: clearsTerminalState
+        ? preferred.responseFormat
+        : _preferNonEmptyNullable(
+            preferred.responseFormat,
+            supplement.responseFormat,
+          ),
+    pendingMessageId: _preferNonEmptyNullable(
+      preferred.pendingMessageId,
+      supplement.pendingMessageId,
+    ),
+    finalAttachments: clearsTerminalState
+        ? preferred.finalAttachments
+        : _mergeRuntimeAttachments(
+            preferred.finalAttachments,
+            supplement.finalAttachments,
+          ),
+    managedProcessIds: managedProcessIds,
+    managedProcesses: managedProcesses,
+    runningManagedProcessCount: preferred.runningManagedProcessCount,
+    hasLiveManagedProcesses: preferred.hasLiveManagedProcesses,
+    lastEvent: clearsTerminalState
+        ? preferred.lastEvent
+        : _preferRuntimeRunLastEvent(preferred.lastEvent, supplement.lastEvent),
+    llmDiagnostics: clearsTerminalState
+        ? preferred.llmDiagnostics
+        : _preferRuntimeRunDetail(
+            preferred.llmDiagnostics,
+            supplement.llmDiagnostics,
+            _runtimeLlmDiagnosticsDisplaySignature,
+            preferSupplementWhenDifferent: preferSupplementDetail,
+          ),
+    liveContext: clearsTerminalState
+        ? preferred.liveContext
+        : _preferRuntimeRunDetail(
+            preferred.liveContext,
+            supplement.liveContext,
+            _runtimeLiveContextDisplaySignature,
+            preferSupplementWhenDifferent: preferSupplementDetail,
+          ),
+    contextBudget: clearsTerminalState
+        ? preferred.contextBudget
+        : _preferRuntimeRunDetail(
+            preferred.contextBudget,
+            supplement.contextBudget,
+            _runtimeContextBudgetDisplaySignature,
+            preferSupplementWhenDifferent: preferSupplementDetail,
+          ),
+    memoryTrace: clearsTerminalState
+        ? preferred.memoryTrace
+        : _preferRuntimeRunDetail(
+            preferred.memoryTrace,
+            supplement.memoryTrace,
+            _runtimeMemoryTraceDisplaySignature,
+            preferSupplementWhenDifferent: preferSupplementDetail,
+          ),
+    stickyMemory: clearsTerminalState
+        ? preferred.stickyMemory
+        : _preferRuntimeRunDetail(
+            preferred.stickyMemory,
+            supplement.stickyMemory,
+            _runtimeStickyMemoryDisplaySignature,
+            preferSupplementWhenDifferent: preferSupplementDetail,
+          ),
+    memoryFlush: clearsTerminalState
+        ? preferred.memoryFlush
+        : _preferRuntimeRunDetail(
+            preferred.memoryFlush,
+            supplement.memoryFlush,
+            _runtimeMemoryFlushDisplaySignature,
+            preferSupplementWhenDifferent: preferSupplementDetail,
+          ),
+    bootstrap: clearsTerminalState
+        ? preferred.bootstrap
+        : _preferRuntimeRunDetail(
+            preferred.bootstrap,
+            supplement.bootstrap,
+            _runtimeBootstrapDisplaySignature,
+            preferSupplementWhenDifferent: preferSupplementDetail,
+          ),
+    durableCompaction: clearsTerminalState
+        ? preferred.durableCompaction
+        : _preferRuntimeRunDetail(
+            preferred.durableCompaction,
+            supplement.durableCompaction,
+            _runtimeDurableCompactionDisplaySignature,
+            preferSupplementWhenDifferent: preferSupplementDetail,
+          ),
+    skillInventory: clearsTerminalState
+        ? preferred.skillInventory
+        : _preferRuntimeRunDetail(
+            preferred.skillInventory,
+            supplement.skillInventory,
+            _runtimeSkillInventoryDisplaySignature,
+            preferSupplementWhenDifferent: preferSupplementDetail,
+          ),
+    activeSkill: clearsTerminalState
+        ? preferred.activeSkill
+        : _preferRuntimeRunDetail(
+            preferred.activeSkill,
+            supplement.activeSkill,
+            _runtimeActiveSkillDisplaySignature,
+            preferSupplementWhenDifferent: preferSupplementDetail,
+          ),
+    diagnostics: clearsTerminalState
+        ? preferred.diagnostics
+        : _preferRuntimeRunDetail(
+            preferred.diagnostics,
+            supplement.diagnostics,
+            _runtimeDiagnosticsDisplaySignature,
+            preferSupplementWhenDifferent: preferSupplementDetail,
+          ),
+    recoveryPlan: clearsTerminalState
+        ? preferred.recoveryPlan
+        : _preferRuntimeRunDetail(
+            preferred.recoveryPlan,
+            supplement.recoveryPlan,
+            _runtimeRecoveryPlanDisplaySignature,
+            preferSupplementWhenDifferent: preferSupplementDetail,
+          ),
+  );
+}
+
+String _preferNonEmpty(String preferred, String fallback) =>
+    preferred.trim().isNotEmpty ? preferred : fallback;
+
+String? _preferNonEmptyNullable(String? preferred, String? fallback) =>
+    preferred?.trim().isNotEmpty == true ? preferred : fallback;
+
+T? _preferRuntimeRunDetail<T>(
+  T? preferred,
+  T? supplement,
+  Object? Function(T detail) displaySignature, {
+  required bool preferSupplementWhenDifferent,
+}) {
+  if (preferred == null || supplement == null) {
+    return preferred ?? supplement;
+  }
+  if (jsonEncode(displaySignature(preferred)) ==
+      jsonEncode(displaySignature(supplement))) {
+    return preferred;
+  }
+  return preferSupplementWhenDifferent ? supplement : preferred;
+}
+
+List<String> _mergeRuntimeStringList(
+  List<String> preferred,
+  List<String> supplement,
+) {
+  final Set<String> seen = <String>{};
+  final List<String> merged = <String>[];
+  for (final value in <String>[...preferred, ...supplement]) {
+    final String trimmed = value.trim();
+    if (trimmed.isEmpty || !seen.add(trimmed)) {
+      continue;
+    }
+    merged.add(value);
+  }
+  return merged;
+}
+
+OpenCrayChatRuntimeEventSnapshot? _preferRuntimeRunLastEvent(
+  OpenCrayChatRuntimeEventSnapshot? preferred,
+  OpenCrayChatRuntimeEventSnapshot? supplement,
+) {
+  if (preferred == null || supplement == null) {
+    return preferred ?? supplement;
+  }
+  return preferred.emittedAtEpochMs >= supplement.emittedAtEpochMs
+      ? preferred
+      : supplement;
+}
+
+List<OpenCrayChatManagedProcessSnapshot> _mergeRuntimeManagedProcesses(
+  List<OpenCrayChatManagedProcessSnapshot> preferred,
+  List<OpenCrayChatManagedProcessSnapshot> supplement,
+) {
+  final Map<String, OpenCrayChatManagedProcessSnapshot> byKey =
+      <String, OpenCrayChatManagedProcessSnapshot>{};
+  for (final process in <OpenCrayChatManagedProcessSnapshot>[
+    ...supplement,
+    ...preferred,
+  ]) {
+    final String key = _runtimeManagedProcessMergeKey(process);
+    final OpenCrayChatManagedProcessSnapshot? existing = byKey[key];
+    if (existing == null) {
+      byKey[key] = process;
+      continue;
+    }
+    byKey[key] = _preferRuntimeManagedProcessSnapshot(existing, process);
+  }
+  return byKey.values.toList(growable: false)..sort((left, right) {
+    final int leftEpoch = math.max(
+      left.startedAtEpochMs,
+      left.updatedAtEpochMs,
+    );
+    final int rightEpoch = math.max(
+      right.startedAtEpochMs,
+      right.updatedAtEpochMs,
+    );
+    if (leftEpoch != rightEpoch) {
+      return leftEpoch.compareTo(rightEpoch);
+    }
+    return left.processId.compareTo(right.processId);
+  });
+}
+
+String _runtimeManagedProcessMergeKey(
+  OpenCrayChatManagedProcessSnapshot process,
+) {
+  final String processId = process.processId.trim();
+  if (processId.isNotEmpty) {
+    return 'process:$processId';
+  }
+  return <String>[
+    process.command,
+    process.args.join('\u0001'),
+    process.workingDirectory?.trim() ?? '',
+    process.startedAtEpochMs.toString(),
+  ].join('\u0001');
+}
+
+OpenCrayChatManagedProcessSnapshot _preferRuntimeManagedProcessSnapshot(
+  OpenCrayChatManagedProcessSnapshot left,
+  OpenCrayChatManagedProcessSnapshot right,
+) {
+  final int leftEpoch = _runtimeManagedProcessDetailEpochMs(left);
+  final int rightEpoch = _runtimeManagedProcessDetailEpochMs(right);
+  if (rightEpoch != leftEpoch) {
+    return rightEpoch > leftEpoch ? right : left;
+  }
+  final int leftWeight = _runtimeManagedProcessDetailWeight(left);
+  final int rightWeight = _runtimeManagedProcessDetailWeight(right);
+  if (rightWeight != leftWeight) {
+    return rightWeight > leftWeight ? right : left;
+  }
+  return right;
+}
+
+int _runtimeManagedProcessDetailEpochMs(
+  OpenCrayChatManagedProcessSnapshot process,
+) => math.max(
+  process.updatedAtEpochMs,
+  math.max(process.startedAtEpochMs, process.finishedAtEpochMs ?? 0),
+);
+
+List<OpenCrayChatAttachmentSnapshot> _mergeRuntimeAttachments(
+  List<OpenCrayChatAttachmentSnapshot> preferred,
+  List<OpenCrayChatAttachmentSnapshot> supplement,
+) {
+  final Map<String, OpenCrayChatAttachmentSnapshot> byKey =
+      <String, OpenCrayChatAttachmentSnapshot>{};
+  for (final attachment in <OpenCrayChatAttachmentSnapshot>[
+    ...preferred,
+    ...supplement,
+  ]) {
+    final String key = _runtimeAttachmentMergeKey(attachment);
+    final OpenCrayChatAttachmentSnapshot? existing = byKey[key];
+    if (existing == null ||
+        _runtimeAttachmentDetailWeight(attachment) >
+            _runtimeAttachmentDetailWeight(existing)) {
+      byKey[key] = attachment;
+    }
+  }
+  return byKey.values.toList(growable: false);
+}
+
+String _runtimeAttachmentMergeKey(OpenCrayChatAttachmentSnapshot attachment) {
+  final String attachmentId = attachment.attachmentId.trim();
+  if (attachmentId.isNotEmpty) {
+    return 'attachment:$attachmentId';
+  }
+  final String localPath = attachment.localPath.trim();
+  if (localPath.isNotEmpty) {
+    return 'path:$localPath';
+  }
+  return <String>[attachment.kind, attachment.displayName].join('\u0001');
+}
+
+int _runtimeAttachmentDetailWeight(OpenCrayChatAttachmentSnapshot attachment) =>
+    attachment.displayName.length +
+    attachment.localPath.length +
+    (attachment.mimeType?.length ?? 0) +
+    (attachment.sizeBytes == null ? 0 : 4) +
+    (attachment.widthPx == null ? 0 : 4) +
+    (attachment.heightPx == null ? 0 : 4) +
+    (attachment.durationMs == null ? 0 : 4) +
+    attachment.waveformBars.length +
+    (attachment.transcriptText?.length ?? 0) +
+    (attachment.contentSha256?.length ?? 0);
+
+bool _isRuntimeRunActiveForProjection(OpenCrayChatRunSnapshot run) =>
+    !run.isTerminal ||
+    run.hasLiveManagedProcesses ||
+    run.runningManagedProcessCount > 0;
+
+List<OpenCrayChatRuntimeEventSnapshot> _mergeRuntimeEvents(
+  List<OpenCrayChatRuntimeEventSnapshot> left,
+  List<OpenCrayChatRuntimeEventSnapshot> right,
+) {
+  final Map<String, OpenCrayChatRuntimeEventSnapshot> byKey =
+      <String, OpenCrayChatRuntimeEventSnapshot>{};
+  for (final event in <OpenCrayChatRuntimeEventSnapshot>[...left, ...right]) {
+    final String key = _runtimeEventMergeKey(event);
+    final OpenCrayChatRuntimeEventSnapshot? existing = byKey[key];
+    if (existing == null) {
+      byKey[key] = event;
+      continue;
+    }
+    byKey[key] = _preferRuntimeEventSnapshot(existing, event);
+  }
+  return byKey.values.toList(growable: false)..sort(
+    (leftEvent, rightEvent) =>
+        leftEvent.emittedAtEpochMs.compareTo(rightEvent.emittedAtEpochMs),
+  );
+}
+
+OpenCrayChatRuntimeEventSnapshot _preferRuntimeEventSnapshot(
+  OpenCrayChatRuntimeEventSnapshot left,
+  OpenCrayChatRuntimeEventSnapshot right,
+) {
+  if (right.emittedAtEpochMs != left.emittedAtEpochMs) {
+    return right.emittedAtEpochMs > left.emittedAtEpochMs ? right : left;
+  }
+  final int leftWeight = _runtimeEventDetailWeight(left);
+  final int rightWeight = _runtimeEventDetailWeight(right);
+  if (rightWeight != leftWeight) {
+    return rightWeight > leftWeight ? right : left;
+  }
+  return right;
+}
+
+int _runtimeEventDetailWeight(OpenCrayChatRuntimeEventSnapshot event) =>
+    (event.executionId?.length ?? 0) +
+    (event.executionOrdinal == null ? 0 : 4) +
+    (event.executionKind?.length ?? 0) +
+    (event.entryId?.length ?? 0) +
+    (event.checkpoint?.length ?? 0) +
+    (event.turn == null ? 0 : 4) +
+    (event.phase?.length ?? 0) +
+    (event.status?.length ?? 0) +
+    (event.errorCode?.length ?? 0) +
+    (event.errorMessage?.length ?? 0) +
+    (event.responseFormat?.length ?? 0) +
+    (event.isFinal == null ? 0 : 1) +
+    (event.text?.length ?? 0) +
+    (event.stage?.length ?? 0) +
+    (event.toolName?.length ?? 0) +
+    (event.isHighRisk ? 1 : 0) +
+    (event.label?.length ?? 0) +
+    (event.childRunId?.length ?? 0) +
+    (event.childTaskId?.length ?? 0) +
+    (event.subagentType?.length ?? 0) +
+    (event.contextMode?.length ?? 0) +
+    (event.depth == null ? 0 : 4) +
+    (event.executionState?.length ?? 0) +
+    (event.continuationKind?.length ?? 0) +
+    (event.toolReason?.length ?? 0) +
+    (event.argumentsJson?.length ?? 0) +
+    (event.toolStatus?.length ?? 0) +
+    (event.content?.length ?? 0) +
+    (event.contentPreview?.length ?? 0) +
+    event.resultMetadata.entries.fold<int>(
+      0,
+      (total, entry) => total + entry.key.length + entry.value.length,
+    ) +
+    (event.operation?.length ?? 0) +
+    (event.query?.length ?? 0) +
+    event.queryTerms.fold<int>(0, (total, value) => total + value.length) +
+    (event.resultCount == null ? 0 : 4) +
+    (event.corpusFileCount == null ? 0 : 4) +
+    event.recordIds.fold<int>(0, (total, value) => total + value.length) +
+    event.writtenRecordIds.fold<int>(
+      0,
+      (total, value) => total + value.length,
+    ) +
+    event.writtenKinds.fold<int>(0, (total, value) => total + value.length) +
+    event.resolvedRecordIds.fold<int>(
+      0,
+      (total, value) => total + value.length,
+    ) +
+    event.suppressedRecordIds.fold<int>(
+      0,
+      (total, value) => total + value.length,
+    ) +
+    event.reaffirmedRecordIds.fold<int>(
+      0,
+      (total, value) => total + value.length,
+    ) +
+    event.expiredRecordIds.fold<int>(
+      0,
+      (total, value) => total + value.length,
+    ) +
+    event.paths.fold<int>(0, (total, value) => total + value.length) +
+    event.lineRanges.fold<int>(0, (total, value) => total + value.length) +
+    (event.path?.length ?? 0) +
+    (event.fromLine == null ? 0 : 4) +
+    (event.returnedLineCount == null ? 0 : 4) +
+    (event.totalLineCount == null ? 0 : 4);
+
+String _runtimeEventMergeKey(OpenCrayChatRuntimeEventSnapshot event) {
+  return <String>[
+    event.kind,
+    event.runId,
+    event.taskId,
+    event.executionId ?? '',
+    event.executionOrdinal?.toString() ?? '',
+    event.executionKind ?? '',
+    event.turn?.toString() ?? '',
+    event.phase ?? '',
+    event.stage ?? '',
+    event.toolName ?? '',
+    event.entryId ?? '',
+    event.childRunId ?? '',
+    event.childTaskId ?? '',
+    event.emittedAtEpochMs.toString(),
+  ].join('\u0001');
+}
+
+List<OpenCrayChatSubAgentSnapshot> _mergeRuntimeSubAgents(
+  List<OpenCrayChatSubAgentSnapshot> left,
+  List<OpenCrayChatSubAgentSnapshot> right,
+) {
+  final Map<String, OpenCrayChatSubAgentSnapshot> byKey =
+      <String, OpenCrayChatSubAgentSnapshot>{};
+  for (final subAgent in <OpenCrayChatSubAgentSnapshot>[...left, ...right]) {
+    final String key = _runtimeSubAgentMergeKey(subAgent);
+    final OpenCrayChatSubAgentSnapshot? existing = byKey[key];
+    if (existing == null ||
+        subAgent.updatedAtEpochMs >= existing.updatedAtEpochMs) {
+      byKey[key] = subAgent;
+    }
+  }
+  return byKey.values.toList(growable: false)..sort(
+    (leftSubAgent, rightSubAgent) =>
+        leftSubAgent.updatedAtEpochMs.compareTo(rightSubAgent.updatedAtEpochMs),
+  );
+}
+
+String _runtimeSubAgentMergeKey(OpenCrayChatSubAgentSnapshot subAgent) {
+  final String childRunId = subAgent.childRunId.trim();
+  if (childRunId.isNotEmpty) {
+    return 'run:$childRunId';
+  }
+  final String childTaskId = subAgent.childTaskId.trim();
+  if (childTaskId.isNotEmpty) {
+    return 'task:$childTaskId';
+  }
+  return <String>[
+    subAgent.parentRunId,
+    subAgent.parentTaskId,
+    subAgent.label,
+    subAgent.subagentType,
+    subAgent.depth.toString(),
+  ].join('\u0001');
+}
+
+List<OpenCrayChatLiveAssistantDraftSnapshot> _mergeRuntimeDrafts(
+  List<OpenCrayChatLiveAssistantDraftSnapshot> left,
+  List<OpenCrayChatLiveAssistantDraftSnapshot> right,
+) {
+  final Map<String, OpenCrayChatLiveAssistantDraftSnapshot> byMessageId =
+      <String, OpenCrayChatLiveAssistantDraftSnapshot>{};
+  for (final draft in <OpenCrayChatLiveAssistantDraftSnapshot>[
+    ...left,
+    ...right,
+  ]) {
+    final String pendingMessageId = draft.pendingMessageId.trim();
+    if (pendingMessageId.isEmpty) {
+      continue;
+    }
+    final OpenCrayChatLiveAssistantDraftSnapshot? existing =
+        byMessageId[pendingMessageId];
+    if (existing == null ||
+        draft.updatedAtEpochMs >= existing.updatedAtEpochMs) {
+      byMessageId[pendingMessageId] = draft;
+    }
+  }
+  return byMessageId.values.toList(growable: false)..sort(
+    (leftDraft, rightDraft) =>
+        leftDraft.updatedAtEpochMs.compareTo(rightDraft.updatedAtEpochMs),
+  );
+}
+
+OpenCrayHostLifecycleSnapshot? _preferHostLifecycle(
+  OpenCrayHostLifecycleSnapshot? left,
+  OpenCrayHostLifecycleSnapshot? right,
+) {
+  if (left == null || right == null) {
+    return right ?? left;
+  }
+  final int leftEpoch = left.hostCreatedAtEpochMs ?? 0;
+  final int rightEpoch = right.hostCreatedAtEpochMs ?? 0;
+  if (rightEpoch != leftEpoch) {
+    return rightEpoch > leftEpoch ? right : left;
+  }
+  final String rightHostInstanceId = right.hostInstanceId?.trim() ?? '';
+  if (rightHostInstanceId.isNotEmpty &&
+      rightHostInstanceId != (left.hostInstanceId?.trim() ?? '')) {
+    return right;
+  }
+  return right;
+}
+
+@visibleForTesting
+int runtimeSnapshotVersion(OpenCrayChatRuntimeSnapshot snapshot) {
+  final int latestHostEpochMs =
+      snapshot.hostLifecycle?.hostCreatedAtEpochMs ?? 0;
+  return math.max(
+    snapshot.updatedAtEpochMs,
+    math.max(
+      latestHostEpochMs,
+      math.max(
+        _runtimeOperationalVersion(snapshot),
+        _latestRuntimeDraftEpochMs(snapshot),
+      ),
+    ),
+  );
+}
+
+int _runtimeOperationalVersion(OpenCrayChatRuntimeSnapshot snapshot) {
+  return math.max(
+    _latestRuntimeEventEpochMs(snapshot),
+    math.max(
+      _latestRuntimeRunEpochMs(snapshot),
+      _latestRuntimeSubAgentEpochMs(snapshot),
+    ),
+  );
+}
+
+int _latestRuntimeEventEpochMs(OpenCrayChatRuntimeSnapshot snapshot) =>
+    snapshot.events.fold<int>(
+      0,
+      (latest, event) =>
+          latest > event.emittedAtEpochMs ? latest : event.emittedAtEpochMs,
+    );
+
+int _latestRuntimeRunEpochMs(OpenCrayChatRuntimeSnapshot snapshot) =>
+    _visibleRuns(snapshot).fold<int>(0, (latest, run) {
+      final int runEpochMs = _runtimeRunDetailEpochMs(run);
+      return latest > runEpochMs ? latest : runEpochMs;
+    });
+
+int _latestRuntimeSubAgentEpochMs(OpenCrayChatRuntimeSnapshot snapshot) =>
+    snapshot.subAgents.fold<int>(
+      0,
+      (latest, subAgent) => latest > subAgent.updatedAtEpochMs
+          ? latest
+          : subAgent.updatedAtEpochMs,
+    );
+
+int _latestRuntimeDraftEpochMs(OpenCrayChatRuntimeSnapshot snapshot) =>
+    snapshot.liveAssistantDrafts.fold<int>(
+      0,
+      (latest, draft) =>
+          latest > draft.updatedAtEpochMs ? latest : draft.updatedAtEpochMs,
+    );
+
+int _runtimeRunDetailEpochMs(OpenCrayChatRunSnapshot run) {
+  final int latestManagedProcessEpochMs = run.managedProcesses.fold<int>(0, (
+    latest,
+    process,
+  ) {
+    final int processEpochMs = math.max(
+      process.updatedAtEpochMs,
+      process.startedAtEpochMs,
+    );
+    return latest > processEpochMs ? latest : processEpochMs;
+  });
+  return math.max(
+    run.updatedAtEpochMs,
+    math.max(run.lastEvent?.emittedAtEpochMs ?? 0, latestManagedProcessEpochMs),
+  );
+}
+
+int _runtimeDetailWeight(OpenCrayChatRuntimeSnapshot snapshot) =>
+    snapshot.events.length * 100000 +
+    snapshot.subAgents.length * 10000 +
+    _visibleRuns(
+      snapshot,
+    ).fold<int>(0, (total, run) => total + _runtimeRunDetailWeight(run)) +
+    snapshot.liveAssistantDrafts.length;
+
+int _runtimeRunDetailWeight(OpenCrayChatRunSnapshot run) =>
+    1 +
+    (run.isTerminal ? 20000 : 0) +
+    (run.lastEvent == null ? 0 : 500) +
+    run.finalAttachments.length * 250 +
+    run.managedProcessIds.length * 100 +
+    run.managedProcesses.fold<int>(
+      0,
+      (total, process) => total + _runtimeManagedProcessDetailWeight(process),
+    );
+
+int _runtimeManagedProcessDetailWeight(
+  OpenCrayChatManagedProcessSnapshot process,
+) {
+  final bool terminal = process.status.trim().toLowerCase() != 'running';
+  return 1000 +
+      (process.processStarted ? 100 : 0) +
+      (terminal ? 200 : 0) +
+      process.stdout.length +
+      process.stderr.length +
+      process.stdoutPreview.length +
+      process.stderrPreview.length +
+      (process.errorMessage?.length ?? 0);
+}
+
+@visibleForTesting
+int chatSnapshotVersion(OpenCrayChatSnapshot snapshot) {
+  final int contentVersion = chatContentSnapshotVersion(snapshot);
+  final int runtimeVersion = snapshot.runtimeActivity == null
+      ? 0
+      : runtimeSnapshotVersion(snapshot.runtimeActivity!);
+  return math.max(contentVersion, runtimeVersion);
+}
+
+@visibleForTesting
+int chatContentSnapshotVersion(OpenCrayChatSnapshot snapshot) {
+  final int latestMessageEpochMs = snapshot.messages.fold<int>(0, (
+    latest,
+    message,
+  ) {
+    final int messageEpochMs = message.createdAtEpochMs ?? 0;
+    return latest > messageEpochMs ? latest : messageEpochMs;
+  });
+  return math.max(snapshot.updatedAtEpochMs, latestMessageEpochMs);
+}
+
+@visibleForTesting
+bool shouldReplaceObservedChatSnapshot(
+  OpenCrayChatSnapshot? current,
+  OpenCrayChatSnapshot incoming,
+) {
+  if (current == null) {
+    return true;
+  }
+  final bool incomingIsChatOnly = incoming.runtimeActivity == null;
+  final int currentVersion = incomingIsChatOnly
+      ? chatContentSnapshotVersion(current)
+      : chatSnapshotVersion(current);
+  final int incomingVersion = incomingIsChatOnly
+      ? chatContentSnapshotVersion(incoming)
+      : chatSnapshotVersion(incoming);
+  if (incomingVersion != currentVersion) {
+    return incomingVersion > currentVersion;
+  }
+  final int currentRuntimeVersion = current.runtimeActivity == null
+      ? 0
+      : runtimeSnapshotVersion(current.runtimeActivity!);
+  final int incomingRuntimeVersion = incoming.runtimeActivity == null
+      ? 0
+      : runtimeSnapshotVersion(incoming.runtimeActivity!);
+  if (incomingRuntimeVersion != currentRuntimeVersion) {
+    return incomingRuntimeVersion > currentRuntimeVersion;
+  }
+  if (incoming.runtimeActivity != null &&
+      shouldReplaceObservedRuntimeSnapshot(
+        current.runtimeActivity,
+        incoming.runtimeActivity!,
+      )) {
+    return true;
+  }
+  if (incoming.messages.length != current.messages.length) {
+    if (incoming.messages.length > current.messages.length) {
+      return true;
+    }
+    if (incoming.updatedAtEpochMs > current.updatedAtEpochMs) {
+      return true;
+    }
+    if (_chatSnapshotDropsOnlyEphemeralMessageTail(current, incoming) &&
+        _chatSnapshotsHostContentEquivalentExceptMessages(current, incoming)) {
+      return false;
+    }
+    return !_chatSnapshotsHostContentEquivalent(current, incoming);
+  }
+  return !_chatSnapshotsHostContentEquivalent(current, incoming);
+}
+
+@visibleForTesting
+bool shouldReplaceObservedRuntimeSnapshot(
+  OpenCrayChatRuntimeSnapshot? current,
+  OpenCrayChatRuntimeSnapshot incoming,
+) {
+  if (current == null) {
+    return true;
+  }
+  final String currentSessionId = current.sessionId.trim();
+  final String incomingSessionId = incoming.sessionId.trim();
+  if (currentSessionId.isNotEmpty &&
+      incomingSessionId.isNotEmpty &&
+      currentSessionId != incomingSessionId) {
+    return true;
+  }
+  final OpenCrayChatRuntimeSnapshot candidate = incoming;
+  final int currentVersion = runtimeSnapshotVersion(current);
+  final int candidateVersion = runtimeSnapshotVersion(candidate);
+  if (candidateVersion != currentVersion) {
+    return candidateVersion > currentVersion;
+  }
+  if (_runtimeSnapshotIsAuthoritativeClear(candidate, current)) {
+    return true;
+  }
+  if (_runtimeSnapshotContinuesTerminalRun(candidate, current)) {
+    return true;
+  }
+  final int currentOperationalVersion = _runtimeOperationalVersion(current);
+  final int candidateOperationalVersion = _runtimeOperationalVersion(candidate);
+  if (candidateOperationalVersion != currentOperationalVersion) {
+    return candidateOperationalVersion > currentOperationalVersion;
+  }
+  if (_runtimeSnapshotTerminalizesRun(candidate, current)) {
+    return true;
+  }
+  if (_runtimeSnapshotTerminalizesRun(current, candidate)) {
+    return false;
+  }
+  final int currentDetailWeight = _runtimeDetailWeight(current);
+  final int candidateDetailWeight = _runtimeDetailWeight(candidate);
+  if (candidateDetailWeight != currentDetailWeight) {
+    return candidateDetailWeight > currentDetailWeight;
+  }
+  final int currentDraftVersion = _latestRuntimeDraftEpochMs(current);
+  final int candidateDraftVersion = _latestRuntimeDraftEpochMs(candidate);
+  if (candidateDraftVersion != currentDraftVersion) {
+    return candidateDraftVersion > currentDraftVersion;
+  }
+  final int currentVisibleRuns = _visibleRunCount(current);
+  final int candidateVisibleRuns = _visibleRunCount(candidate);
+  if (candidateVisibleRuns != currentVisibleRuns) {
+    return candidateVisibleRuns > currentVisibleRuns;
+  }
+  final String currentHostInstanceId = _hostInstanceId(current);
+  final String candidateHostInstanceId = _hostInstanceId(candidate);
+  if (currentHostInstanceId != candidateHostInstanceId &&
+      candidateHostInstanceId.isNotEmpty) {
+    return true;
+  }
+  return _runtimeSnapshotDisplaySignature(candidate) !=
+      _runtimeSnapshotDisplaySignature(current);
+}
+
+bool _runtimeSnapshotContinuesTerminalRun(
+  OpenCrayChatRuntimeSnapshot candidate,
+  OpenCrayChatRuntimeSnapshot current,
+) {
+  for (final candidateRun in _visibleRuns(candidate)) {
+    if (!_runtimeRunIsNonTerminalContinuation(candidateRun)) {
+      continue;
+    }
+    final OpenCrayChatRunSnapshot? currentRun = _findRuntimeRun(
+      _visibleRuns(current),
+      candidateRun,
+    );
+    if (currentRun != null &&
+        currentRun.isTerminal &&
+        !_runtimeRunHasContinuationIntent(currentRun)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool _runtimeSnapshotTerminalizesRun(
+  OpenCrayChatRuntimeSnapshot candidate,
+  OpenCrayChatRuntimeSnapshot current,
+) {
+  for (final candidateRun in _visibleRuns(candidate)) {
+    if (!candidateRun.isTerminal) {
+      continue;
+    }
+    final OpenCrayChatRunSnapshot? currentRun = _findRuntimeRun(
+      _visibleRuns(current),
+      candidateRun,
+    );
+    if (currentRun != null &&
+        !currentRun.isTerminal &&
+        candidateRun.updatedAtEpochMs >= currentRun.updatedAtEpochMs) {
+      return true;
+    }
+  }
+  return false;
+}
+
+OpenCrayChatRunSnapshot? _findRuntimeRun(
+  List<OpenCrayChatRunSnapshot> runs,
+  OpenCrayChatRunSnapshot target,
+) {
+  for (final run in runs) {
+    if (_runtimeRunsReferToSameRun(run, target)) {
+      return run;
+    }
+  }
+  return null;
+}
+
 List<OpenCrayChatRunSnapshot> _visibleRuns(
   OpenCrayChatRuntimeSnapshot snapshot,
-) => <OpenCrayChatRunSnapshot>[
-  ...snapshot.activeRuns,
-  ...snapshot.retainedRuns,
-];
+) => _mergeRuntimeRuns(snapshot.activeRuns, snapshot.retainedRuns);
 
 int _visibleRunCount(OpenCrayChatRuntimeSnapshot snapshot) =>
-    snapshot.activeRuns.length + snapshot.retainedRuns.length;
-
-int _visibleSubAgentCount(OpenCrayChatRuntimeSnapshot snapshot) =>
-    snapshot.subAgents.length;
+    _visibleRuns(snapshot).length;
 
 String _hostInstanceId(OpenCrayChatRuntimeSnapshot snapshot) =>
     snapshot.hostLifecycle?.hostInstanceId?.trim() ?? '';
 
-String? _visibleAssistantDraftText(String rawText) {
-  final String normalized = rawText.trim();
-  if (normalized.isEmpty || _looksLikeToolCallPayload(normalized)) {
-    return null;
-  }
-  return normalized;
+String _runtimeSnapshotDisplaySignature(OpenCrayChatRuntimeSnapshot snapshot) {
+  return jsonEncode(<String, Object?>{
+    'sessionId': snapshot.sessionId,
+    'activeRuns': snapshot.activeRuns
+        .map(_runtimeRunDisplaySignature)
+        .toList(growable: false),
+    'retainedRuns': snapshot.retainedRuns
+        .map(_runtimeRunDisplaySignature)
+        .toList(growable: false),
+    'subAgents': snapshot.subAgents
+        .map(_runtimeSubAgentDisplaySignature)
+        .toList(growable: false),
+    'events': snapshot.events
+        .map(_runtimeEventDisplaySignature)
+        .toList(growable: false),
+    'liveAssistantDrafts': snapshot.liveAssistantDrafts
+        .map(_runtimeDraftDisplaySignature)
+        .toList(growable: false),
+    'hostLifecycle': _runtimeHostLifecycleDisplaySignature(
+      snapshot.hostLifecycle,
+    ),
+  });
 }
 
-bool _looksLikeToolCallPayload(String text) {
-  final String normalized = text.trimLeft();
-  if (!(normalized.startsWith('{') || normalized.startsWith('['))) {
+Map<String, Object?> _runtimeRunDisplaySignature(OpenCrayChatRunSnapshot run) {
+  return <String, Object?>{
+    'sessionId': run.sessionId,
+    'runId': run.runId,
+    'taskId': run.taskId,
+    'acceptedAtEpochMs': run.acceptedAtEpochMs,
+    'updatedAtEpochMs': run.updatedAtEpochMs,
+    'lifecycleState': run.lifecycleState,
+    'taskState': run.taskState,
+    'attempt': run.attempt,
+    'executionOrdinal': run.executionOrdinal,
+    'executionId': run.executionId,
+    'executionKind': run.executionKind,
+    'pendingExecutionKind': run.pendingExecutionKind,
+    'executionStatus': run.executionStatus,
+    'errorCode': run.errorCode,
+    'errorMessage': run.errorMessage,
+    'responseFormat': run.responseFormat,
+    'pendingMessageId': run.pendingMessageId,
+    'finalAttachments': run.finalAttachments
+        .map(_runtimeAttachmentDisplaySignature)
+        .toList(growable: false),
+    'managedProcessIds': run.managedProcessIds,
+    'managedProcesses': run.managedProcesses
+        .map(_runtimeManagedProcessDisplaySignature)
+        .toList(growable: false),
+    'runningManagedProcessCount': run.runningManagedProcessCount,
+    'hasLiveManagedProcesses': run.hasLiveManagedProcesses,
+    'isTerminal': run.isTerminal,
+    'lastEvent': run.lastEvent == null
+        ? null
+        : _runtimeEventDisplaySignature(run.lastEvent!),
+    'llmDiagnostics': _runtimeLlmDiagnosticsDisplaySignature(
+      run.llmDiagnostics,
+    ),
+    'liveContext': _runtimeLiveContextDisplaySignature(run.liveContext),
+    'contextBudget': _runtimeContextBudgetDisplaySignature(run.contextBudget),
+    'memoryTrace': _runtimeMemoryTraceDisplaySignature(run.memoryTrace),
+    'stickyMemory': _runtimeStickyMemoryDisplaySignature(run.stickyMemory),
+    'memoryFlush': _runtimeMemoryFlushDisplaySignature(run.memoryFlush),
+    'bootstrap': _runtimeBootstrapDisplaySignature(run.bootstrap),
+    'durableCompaction': _runtimeDurableCompactionDisplaySignature(
+      run.durableCompaction,
+    ),
+    'skillInventory': _runtimeSkillInventoryDisplaySignature(
+      run.skillInventory,
+    ),
+    'activeSkill': _runtimeActiveSkillDisplaySignature(run.activeSkill),
+    'diagnostics': _runtimeDiagnosticsDisplaySignature(run.diagnostics),
+    'recoveryPlan': _runtimeRecoveryPlanDisplaySignature(run.recoveryPlan),
+  };
+}
+
+Map<String, Object?>? _runtimeLlmDiagnosticsDisplaySignature(
+  OpenCrayChatRunLlmDiagnosticsSnapshot? diagnostics,
+) {
+  if (diagnostics == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'nativeToolCallRequested': diagnostics.nativeToolCallRequested,
+    'providerResponseShape': diagnostics.providerResponseShape,
+    'nativeToolCallObserved': diagnostics.nativeToolCallObserved,
+    'parsedToolCallObserved': diagnostics.parsedToolCallObserved,
+    'fallbackParserAttempted': diagnostics.fallbackParserAttempted,
+    'fallbackParserSucceeded': diagnostics.fallbackParserSucceeded,
+    'responsesContinuationRecoveryCount':
+        diagnostics.responsesContinuationRecoveryCount,
+    'responsesContinuationRecoveryLastReason':
+        diagnostics.responsesContinuationRecoveryLastReason,
+    'localContinuationUsedCount': diagnostics.localContinuationUsedCount,
+    'localContinuationFallbackCount':
+        diagnostics.localContinuationFallbackCount,
+    'localContinuationLastMode': diagnostics.localContinuationLastMode,
+    'localContinuationLastReason': diagnostics.localContinuationLastReason,
+    'responsesPendingContextUpdateCount':
+        diagnostics.responsesPendingContextUpdateCount,
+    'responsesPendingContextUpdateHash':
+        diagnostics.responsesPendingContextUpdateHash,
+    'toolCallEventEmitted': diagnostics.toolCallEventEmitted,
+    'toolResultEventEmitted': diagnostics.toolResultEventEmitted,
+    'contextCacheBreakReason': diagnostics.contextCacheBreakReason,
+    'lastSuccessfulToolName': diagnostics.lastSuccessfulToolName,
+  };
+}
+
+Map<String, Object?>? _runtimeLiveContextDisplaySignature(
+  OpenCrayChatRunLiveContextSnapshot? context,
+) {
+  if (context == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'mode': context.mode,
+    'soulEnabled': context.soulEnabled,
+    'memoryRecallEnabled': context.memoryRecallEnabled,
+  };
+}
+
+Map<String, Object?>? _runtimeContextBudgetDisplaySignature(
+  OpenCrayChatRunContextBudgetSnapshot? budget,
+) {
+  if (budget == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'applied': budget.applied,
+    'pressureMode': budget.pressureMode,
+    'selectedPreset': budget.selectedPreset,
+    'effectivePreset': budget.effectivePreset,
+    'presetSource': budget.presetSource,
+    'presetDiverged': budget.presetDiverged,
+    'sourcePreset': budget.sourcePreset,
+    'sourceTranscriptMaxMessages': budget.sourceTranscriptMaxMessages,
+    'sourceInjectedMemoryMaxRecords': budget.sourceInjectedMemoryMaxRecords,
+    'sourceMemoryRecallMaxRecords': budget.sourceMemoryRecallMaxRecords,
+    'sourceBootstrapMaxChars': budget.sourceBootstrapMaxChars,
+    'sourceSkillInventoryMaxSkills': budget.sourceSkillInventoryMaxSkills,
+    'sourceActiveSkillMaxChars': budget.sourceActiveSkillMaxChars,
+    'sourceRecentObservationMaxEntries':
+        budget.sourceRecentObservationMaxEntries,
+    'sourceMemoryFlushMaxToolObservations':
+        budget.sourceMemoryFlushMaxToolObservations,
+    'contextWindowTokens': budget.contextWindowTokens,
+    'reservedOutputTokens': budget.reservedOutputTokens,
+    'safetyMarginTokens': budget.safetyMarginTokens,
+    'hardInputTokens': budget.hardInputTokens,
+    'targetInputTokens': budget.targetInputTokens,
+    'emergencyInputTokens': budget.emergencyInputTokens,
+    'unresolvedOverflow': budget.unresolvedOverflow,
+    'fullLayerCount': budget.fullLayerCount,
+    'compactLayerCount': budget.compactLayerCount,
+    'minimalLayerCount': budget.minimalLayerCount,
+    'omittedLayerCount': budget.omittedLayerCount,
+    'reducedLayerNames': budget.reducedLayerNames,
+    'omittedLayerNames': budget.omittedLayerNames,
+    'layers': budget.layers
+        .map(_runtimeContextBudgetLayerDisplaySignature)
+        .toList(growable: false),
+    'layerSummary': budget.layerSummary,
+  };
+}
+
+Map<String, Object?> _runtimeContextBudgetLayerDisplaySignature(
+  OpenCrayChatRunContextBudgetLayerSnapshot layer,
+) => <String, Object?>{
+  'id': layer.id,
+  'name': layer.name,
+  'priorityClass': layer.priorityClass,
+  'retentionPriority': layer.retentionPriority,
+  'estimatedTokensBefore': layer.estimatedTokensBefore,
+  'estimatedTokensAfter': layer.estimatedTokensAfter,
+  'finalState': layer.finalState,
+  'omitted': layer.omitted,
+  'reduced': layer.reduced,
+  'appliedOperators': layer.appliedOperators,
+};
+
+Map<String, Object?>? _runtimeMemoryTraceDisplaySignature(
+  OpenCrayChatRunMemoryTraceSnapshot? trace,
+) {
+  if (trace == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'matchedRecordCount': trace.matchedRecordCount,
+    'injectedRecordCount': trace.injectedRecordCount,
+    'omittedRecordCount': trace.omittedRecordCount,
+    'queryTerms': trace.queryTerms,
+    'selected': trace.selected
+        .map(
+          (record) => <String, Object?>{
+            'id': record.id,
+            'score': record.score,
+            'matchedTerms': record.matchedTerms,
+          },
+        )
+        .toList(growable: false),
+    'omitted': trace.omitted
+        .map(
+          (record) => <String, Object?>{
+            'id': record.id,
+            'reason': record.reason,
+          },
+        )
+        .toList(growable: false),
+    'filteredCounts': trace.filteredCounts,
+  };
+}
+
+Map<String, Object?>? _runtimeMemoryFlushDisplaySignature(
+  OpenCrayChatRunMemoryFlushSnapshot? flush,
+) {
+  if (flush == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'outcome': flush.outcome,
+    'triggerStage': flush.triggerStage,
+    'executionMode': flush.executionMode,
+    'contextWindowTokens': flush.contextWindowTokens,
+    'autoCompactTokenLimit': flush.autoCompactTokenLimit,
+    'estimatedReplayTokens': flush.estimatedReplayTokens,
+    'tokenThresholdTriggered': flush.tokenThresholdTriggered,
+    'omittedMessageCount': flush.omittedMessageCount,
+    'omittedCharCount': flush.omittedCharCount,
+    'signature': flush.signature,
+    'candidateCount': flush.candidateCount,
+    'writtenRecordCount': flush.writtenRecordCount,
+    'writtenKinds': flush.writtenKinds,
+    'writtenRecordIds': flush.writtenRecordIds,
+  };
+}
+
+Map<String, Object?>? _runtimeStickyMemoryDisplaySignature(
+  OpenCrayChatRunStickyMemorySnapshot? stickyMemory,
+) {
+  if (stickyMemory == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'injectedRecordCount': stickyMemory.injectedRecordCount,
+    'omittedRecordCount': stickyMemory.omittedRecordCount,
+    'recordIds': stickyMemory.recordIds,
+  };
+}
+
+Map<String, Object?>? _runtimeBootstrapDisplaySignature(
+  OpenCrayChatRunBootstrapSnapshot? bootstrap,
+) {
+  if (bootstrap == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'mode': bootstrap.mode,
+    'visibleFileCount': bootstrap.visibleFileCount,
+    'injectedFileCount': bootstrap.injectedFileCount,
+    'omittedFileCount': bootstrap.omittedFileCount,
+    'truncatedFileCount': bootstrap.truncatedFileCount,
+    'files': bootstrap.files
+        .map(
+          (file) => <String, Object?>{
+            'name': file.name,
+            'relativePath': file.relativePath,
+            'sourceCharCount': file.sourceCharCount,
+            'injectedCharCount': file.injectedCharCount,
+            'truncated': file.truncated,
+          },
+        )
+        .toList(growable: false),
+  };
+}
+
+Map<String, Object?>? _runtimeDurableCompactionDisplaySignature(
+  OpenCrayChatRunDurableCompactionSnapshot? compaction,
+) {
+  if (compaction == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'compactedThisRun': compaction.compactedThisRun,
+    'triggerStage': compaction.triggerStage,
+    'executionMode': compaction.executionMode,
+    'contextWindowTokens': compaction.contextWindowTokens,
+    'autoCompactTokenLimit': compaction.autoCompactTokenLimit,
+    'estimatedReplayTokens': compaction.estimatedReplayTokens,
+    'tokenThresholdTriggered': compaction.tokenThresholdTriggered,
+    'sourceTranscriptMessageCount': compaction.sourceTranscriptMessageCount,
+    'retainedTranscriptMessageCount': compaction.retainedTranscriptMessageCount,
+    'latestCompactedMessageCount': compaction.latestCompactedMessageCount,
+    'includedSummaryCount': compaction.includedSummaryCount,
+    'omittedSummaryCount': compaction.omittedSummaryCount,
+    'totalSummaryCount': compaction.totalSummaryCount,
+    'totalCompactedMessageCount': compaction.totalCompactedMessageCount,
+    'latestCompactedAtEpochMs': compaction.latestCompactedAtEpochMs,
+    'remoteCompaction': compaction.remoteCompaction == null
+        ? null
+        : <String, Object?>{
+            'requested': compaction.remoteCompaction!.requested,
+            'supported': compaction.remoteCompaction!.supported,
+            'used': compaction.remoteCompaction!.used,
+            'triggerStage': compaction.remoteCompaction!.triggerStage,
+            'fallbackReason': compaction.remoteCompaction!.fallbackReason,
+            'outputItemCount': compaction.remoteCompaction!.outputItemCount,
+            'compactionItemCount':
+                compaction.remoteCompaction!.compactionItemCount,
+            'encryptedContentCount':
+                compaction.remoteCompaction!.encryptedContentCount,
+          },
+  };
+}
+
+Map<String, Object?>? _runtimeSkillInventoryDisplaySignature(
+  OpenCrayChatRunSkillInventorySnapshot? inventory,
+) {
+  if (inventory == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'visibleSkillCount': inventory.visibleSkillCount,
+    'injectedSkillCount': inventory.injectedSkillCount,
+    'omittedSkillCount': inventory.omittedSkillCount,
+    'implicitSkillCount': inventory.implicitSkillCount,
+    'invalidSkillCount': inventory.invalidSkillCount,
+    'omittedTraceSkillCount': inventory.omittedTraceSkillCount,
+    'skills': inventory.skills
+        .map(
+          (skill) => <String, Object?>{
+            'name': skill.name,
+            'relativePath': skill.relativePath,
+            'invocationControl': skill.invocationControl,
+            'userInvocable': skill.userInvocable,
+            'executionContext': skill.executionContext,
+          },
+        )
+        .toList(growable: false),
+  };
+}
+
+Map<String, Object?>? _runtimeActiveSkillDisplaySignature(
+  OpenCrayChatRunActiveSkillSnapshot? skill,
+) {
+  if (skill == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'name': skill.name,
+    'relativePath': skill.relativePath,
+    'invocationControl': skill.invocationControl,
+    'executionContext': skill.executionContext,
+    'activationSource': skill.activationSource,
+    'pinned': skill.pinned,
+    'toolRestrictionEnabled': skill.toolRestrictionEnabled,
+    'truncated': skill.truncated,
+    'allowedToolKeys': skill.allowedToolKeys,
+  };
+}
+
+Map<String, Object?>? _runtimeDiagnosticsDisplaySignature(
+  OpenCrayChatRunDiagnosticsSnapshot? diagnostics,
+) {
+  if (diagnostics == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'processStartId': diagnostics.processStartId,
+    'hostInstanceId': diagnostics.hostInstanceId,
+    'runtimeOwnerId': diagnostics.runtimeOwnerId,
+    'submissionSource': diagnostics.submissionSource,
+    'recoveryReason': diagnostics.recoveryReason,
+    'queueRestoreEpochMs': diagnostics.queueRestoreEpochMs,
+    'previousLifecycleState': diagnostics.previousLifecycleState,
+    'restoredFromDurableStore': diagnostics.restoredFromDurableStore,
+  };
+}
+
+Map<String, Object?>? _runtimeRecoveryPlanDisplaySignature(
+  OpenCrayChatRunRecoveryPlanSnapshot? plan,
+) {
+  if (plan == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'action': plan.action,
+    'reasonCode': plan.reasonCode,
+    'summary': plan.summary,
+    'safeToAutoResume': plan.safeToAutoResume,
+    'requiresUserAction': plan.requiresUserAction,
+    'checkpointKind': plan.checkpointKind,
+    'approvalState': plan.approvalState,
+    'journalTailKind': plan.journalTailKind,
+  };
+}
+
+Map<String, Object?> _runtimeManagedProcessDisplaySignature(
+  OpenCrayChatManagedProcessSnapshot process,
+) {
+  return <String, Object?>{
+    'processId': process.processId,
+    'status': process.status,
+    'command': process.command,
+    'args': process.args,
+    'workingDirectory': process.workingDirectory,
+    'processStarted': process.processStarted,
+    'timeoutMs': process.timeoutMs,
+    'startedAtEpochMs': process.startedAtEpochMs,
+    'updatedAtEpochMs': process.updatedAtEpochMs,
+    'finishedAtEpochMs': process.finishedAtEpochMs,
+    'exitCode': process.exitCode,
+    'errorCode': process.errorCode,
+    'errorMessage': process.errorMessage,
+    'timedOut': process.timedOut,
+    'cancelled': process.cancelled,
+    'outputLimitExceeded': process.outputLimitExceeded,
+    'stdout': process.stdout,
+    'stderr': process.stderr,
+    'stdoutPreview': process.stdoutPreview,
+    'stderrPreview': process.stderrPreview,
+    'stdoutTruncated': process.stdoutTruncated,
+    'stderrTruncated': process.stderrTruncated,
+  };
+}
+
+Map<String, Object?> _runtimeEventDisplaySignature(
+  OpenCrayChatRuntimeEventSnapshot event,
+) {
+  return <String, Object?>{
+    'kind': event.kind,
+    'runId': event.runId,
+    'taskId': event.taskId,
+    'emittedAtEpochMs': event.emittedAtEpochMs,
+    'executionId': event.executionId,
+    'executionOrdinal': event.executionOrdinal,
+    'executionKind': event.executionKind,
+    'entryId': event.entryId,
+    'checkpoint': event.checkpoint,
+    'turn': event.turn,
+    'phase': event.phase,
+    'status': event.status,
+    'errorCode': event.errorCode,
+    'errorMessage': event.errorMessage,
+    'responseFormat': event.responseFormat,
+    'isFinal': event.isFinal,
+    'text': event.text,
+    'stage': event.stage,
+    'toolName': event.toolName,
+    'isHighRisk': event.isHighRisk,
+    'label': event.label,
+    'childRunId': event.childRunId,
+    'childTaskId': event.childTaskId,
+    'subagentType': event.subagentType,
+    'contextMode': event.contextMode,
+    'depth': event.depth,
+    'executionState': event.executionState,
+    'continuationKind': event.continuationKind,
+    'toolReason': event.toolReason,
+    'argumentsJson': event.argumentsJson,
+    'toolStatus': event.toolStatus,
+    'content': event.content,
+    'contentPreview': event.contentPreview,
+    'resultMetadata': event.resultMetadata,
+    'operation': event.operation,
+    'query': event.query,
+    'queryTerms': event.queryTerms,
+    'resultCount': event.resultCount,
+    'corpusFileCount': event.corpusFileCount,
+    'recordIds': event.recordIds,
+    'writtenRecordIds': event.writtenRecordIds,
+    'writtenKinds': event.writtenKinds,
+    'resolvedRecordIds': event.resolvedRecordIds,
+    'suppressedRecordIds': event.suppressedRecordIds,
+    'reaffirmedRecordIds': event.reaffirmedRecordIds,
+    'expiredRecordIds': event.expiredRecordIds,
+    'paths': event.paths,
+    'lineRanges': event.lineRanges,
+    'path': event.path,
+    'fromLine': event.fromLine,
+    'returnedLineCount': event.returnedLineCount,
+    'totalLineCount': event.totalLineCount,
+  };
+}
+
+Map<String, Object?> _runtimeAttachmentDisplaySignature(
+  OpenCrayChatAttachmentSnapshot attachment,
+) {
+  return <String, Object?>{
+    'attachmentId': attachment.attachmentId,
+    'kind': attachment.kind,
+    'displayName': attachment.displayName,
+    'localPath': attachment.localPath,
+    'mimeType': attachment.mimeType,
+    'sizeBytes': attachment.sizeBytes,
+    'widthPx': attachment.widthPx,
+    'heightPx': attachment.heightPx,
+    'durationMs': attachment.durationMs,
+    'waveformBars': attachment.waveformBars,
+    'transcriptText': attachment.transcriptText,
+    'contentSha256': attachment.contentSha256,
+  };
+}
+
+Map<String, Object?> _runtimeSubAgentDisplaySignature(
+  OpenCrayChatSubAgentSnapshot subAgent,
+) {
+  return <String, Object?>{
+    'parentRunId': subAgent.parentRunId,
+    'parentTaskId': subAgent.parentTaskId,
+    'childRunId': subAgent.childRunId,
+    'childTaskId': subAgent.childTaskId,
+    'label': subAgent.label,
+    'subagentType': subAgent.subagentType,
+    'contextMode': subAgent.contextMode,
+    'depth': subAgent.depth,
+    'phase': subAgent.phase,
+    'status': subAgent.status,
+    'executionState': subAgent.executionState,
+    'continuationKind': subAgent.continuationKind,
+    'resumable': subAgent.resumable,
+    'requiresUserAction': subAgent.requiresUserAction,
+    'isHighRisk': subAgent.isHighRisk,
+    'summary': subAgent.summary,
+    'startedAtEpochMs': subAgent.startedAtEpochMs,
+    'updatedAtEpochMs': subAgent.updatedAtEpochMs,
+    'eventCount': subAgent.eventCount,
+    'mailboxMessageCount': subAgent.mailboxMessageCount,
+    'mailboxPendingMessageCount': subAgent.mailboxPendingMessageCount,
+    'mailboxLastDeliveredMessageId': subAgent.mailboxLastDeliveredMessageId,
+  };
+}
+
+Map<String, Object?> _runtimeDraftDisplaySignature(
+  OpenCrayChatLiveAssistantDraftSnapshot draft,
+) {
+  return <String, Object?>{
+    'runId': draft.runId,
+    'taskId': draft.taskId,
+    'pendingMessageId': draft.pendingMessageId,
+    'text': draft.text,
+    'updatedAtEpochMs': draft.updatedAtEpochMs,
+  };
+}
+
+Map<String, Object?>? _runtimeHostLifecycleDisplaySignature(
+  OpenCrayHostLifecycleSnapshot? hostLifecycle,
+) {
+  if (hostLifecycle == null) {
+    return null;
+  }
+  return <String, Object?>{
+    'processStartId': hostLifecycle.processStartId,
+    'processStartedAtEpochMs': hostLifecycle.processStartedAtEpochMs,
+    'hostInstanceId': hostLifecycle.hostInstanceId,
+    'runtimeOwnerId': hostLifecycle.runtimeOwnerId,
+    'hostCreatedAtEpochMs': hostLifecycle.hostCreatedAtEpochMs,
+  };
+}
+
+void _runTraceDebug(String message) {
+  if (!kDebugMode) {
+    return;
+  }
+  debugPrint('[OpenCrayDiagFlutter] $message');
+}
+
+@visibleForTesting
+int javaStringHashCode(String value) {
+  int hash = 0;
+  for (final int codeUnit in value.codeUnits) {
+    hash = (hash * 31 + codeUnit) & 0xffffffff;
+  }
+  if ((hash & 0x80000000) != 0) {
+    hash -= 0x100000000;
+  }
+  return hash;
+}
+
+String javaStringHashHex(String value) =>
+    (javaStringHashCode(value) & 0xffffffff).toRadixString(16);
+
+@visibleForTesting
+bool chatFeatureStatesEquivalent(
+  ChatFeatureState left,
+  ChatFeatureState right,
+) {
+  if (identical(left, right)) {
+    return true;
+  }
+  return left.variant == right.variant &&
+      left.screenTitle == right.screenTitle &&
+      _chatSessionSummariesEquivalent(left.summary, right.summary) &&
+      chatMessagesEquivalent(left.messages, right.messages) &&
+      _chatRunTracesEquivalent(left.runTraces, right.runTraces) &&
+      _chatComposerStatesEquivalent(left.composer, right.composer) &&
+      _chatDrawerStatesEquivalent(left.drawer, right.drawer) &&
+      _chatPendingApprovalsEquivalent(
+        left.pendingApprovals,
+        right.pendingApprovals,
+      ) &&
+      left.modeLabel == right.modeLabel &&
+      left.drawerOpen == right.drawerOpen &&
+      left.sessionButtonLabel == right.sessionButtonLabel &&
+      left.emptyThreadHeight == right.emptyThreadHeight &&
+      left.isInputEnabled == right.isInputEnabled;
+}
+
+@visibleForTesting
+bool chatMessagesEquivalent(
+  List<ChatMessageData> left,
+  List<ChatMessageData> right,
+) {
+  return _listsEquivalent(
+    left,
+    right,
+    (leftMessage, rightMessage) =>
+        leftMessage.messageId == rightMessage.messageId &&
+        leftMessage.kind == rightMessage.kind &&
+        leftMessage.text == rightMessage.text &&
+        leftMessage.meta == rightMessage.meta &&
+        leftMessage.runtimeAnchorMessageId ==
+            rightMessage.runtimeAnchorMessageId &&
+        leftMessage.createdAtEpochMs == rightMessage.createdAtEpochMs &&
+        leftMessage.isEphemeral == rightMessage.isEphemeral &&
+        leftMessage.isStreaming == rightMessage.isStreaming &&
+        _listsEquivalent(
+          leftMessage.attachments,
+          rightMessage.attachments,
+          _chatMessageAttachmentsEquivalent,
+        ),
+  );
+}
+
+bool _runtimeProjectionVisibleStateEquivalent(
+  ChatFeatureState left,
+  ChatFeatureState right,
+) {
+  return left.variant == right.variant &&
+      left.emptyThreadHeight == right.emptyThreadHeight &&
+      chatMessagesEquivalent(left.messages, right.messages) &&
+      _chatRunTracesEquivalent(left.runTraces, right.runTraces);
+}
+
+bool _chatSessionSummariesEquivalent(
+  ChatSessionSummary left,
+  ChatSessionSummary right,
+) {
+  return left.title == right.title &&
+      left.badge == right.badge &&
+      left.body == right.body;
+}
+
+bool _chatRunTracesEquivalent(
+  List<ChatRunTraceData> left,
+  List<ChatRunTraceData> right,
+) {
+  return _listsEquivalent(
+    left,
+    right,
+    (leftTrace, rightTrace) =>
+        leftTrace.runId == rightTrace.runId &&
+        leftTrace.taskId == rightTrace.taskId &&
+        leftTrace.anchorMessageId == rightTrace.anchorMessageId &&
+        leftTrace.label == rightTrace.label &&
+        leftTrace.body == rightTrace.body &&
+        leftTrace.isHighRisk == rightTrace.isHighRisk &&
+        leftTrace.isTerminal == rightTrace.isTerminal &&
+        leftTrace.canInterrupt == rightTrace.canInterrupt &&
+        leftTrace.isWritingAssistantDraft ==
+            rightTrace.isWritingAssistantDraft &&
+        leftTrace.retryLabel == rightTrace.retryLabel &&
+        _chatRunTracePreviewCardsEquivalent(
+          leftTrace.previewCard,
+          rightTrace.previewCard,
+        ) &&
+        _chatRunTraceSessionCardsEquivalent(
+          leftTrace.sessionCard,
+          rightTrace.sessionCard,
+        ) &&
+        _listsEquivalent(
+          leftTrace.history,
+          rightTrace.history,
+          _chatRunTraceHistoryEntriesEquivalent,
+        ),
+  );
+}
+
+bool _chatRunTracePreviewCardsEquivalent(
+  ChatRunTracePreviewCardData? left,
+  ChatRunTracePreviewCardData? right,
+) {
+  if (left == null || right == null) {
+    return left == right;
+  }
+  return left.url == right.url &&
+      left.status == right.status &&
+      left.port == right.port &&
+      left.path == right.path &&
+      left.provider == right.provider &&
+      left.httpStatusCode == right.httpStatusCode &&
+      left.message == right.message;
+}
+
+bool _chatRunTraceSessionCardsEquivalent(
+  ChatRunTraceSandboxSessionCardData? left,
+  ChatRunTraceSandboxSessionCardData? right,
+) {
+  if (left == null || right == null) {
+    return left == right;
+  }
+  return left.sessionPresent == right.sessionPresent &&
+      left.source == right.source &&
+      left.lifecycleStatus == right.lifecycleStatus &&
+      left.provider == right.provider &&
+      left.sandboxId == right.sandboxId &&
+      left.sandboxDomain == right.sandboxDomain &&
+      left.templateId == right.templateId &&
+      left.updatedAtEpochMs == right.updatedAtEpochMs &&
+      left.sessionLastActivityAtEpochMs == right.sessionLastActivityAtEpochMs &&
+      left.sessionStaleAfterEpochMs == right.sessionStaleAfterEpochMs &&
+      left.lastPreviewUrl == right.lastPreviewUrl &&
+      left.lastPreviewProbeStatus == right.lastPreviewProbeStatus &&
+      left.lastPreviewProbeObservedAtEpochMs ==
+          right.lastPreviewProbeObservedAtEpochMs &&
+      left.lastPreviewProbeSource == right.lastPreviewProbeSource &&
+      left.autoRefreshAfterMs == right.autoRefreshAfterMs &&
+      _listsEquivalent(
+        left.previewCandidatePorts,
+        right.previewCandidatePorts,
+        _itemsEquivalent,
+      ) &&
+      _listsEquivalent(
+        left.runningRequestIds,
+        right.runningRequestIds,
+        _itemsEquivalent,
+      );
+}
+
+bool _chatRunTraceHistoryEntriesEquivalent(
+  ChatRunTraceHistoryEntry left,
+  ChatRunTraceHistoryEntry right,
+) {
+  return left.label == right.label &&
+      left.body == right.body &&
+      left.compactBody == right.compactBody &&
+      left.isHighRisk == right.isHighRisk &&
+      left.inspectorActorId == right.inspectorActorId &&
+      left.inspectorActorLabel == right.inspectorActorLabel &&
+      left.inspectorCallDetail == right.inspectorCallDetail &&
+      left.inspectorResultBody == right.inspectorResultBody &&
+      _listsEquivalent(
+        left.inspectorCallParts,
+        right.inspectorCallParts,
+        _chatRunTraceInspectorTextPartsEquivalent,
+      );
+}
+
+bool _chatRunTraceInspectorTextPartsEquivalent(
+  ChatRunTraceInspectorTextPart left,
+  ChatRunTraceInspectorTextPart right,
+) {
+  return left.text == right.text && left.semantic == right.semantic;
+}
+
+bool _chatComposerStatesEquivalent(
+  ChatComposerState left,
+  ChatComposerState right,
+) {
+  return left.placeholder == right.placeholder &&
+      left.selectedCommand == right.selectedCommand &&
+      left.showAddMenu == right.showAddMenu &&
+      _listsEquivalent(left.todos, right.todos, _chatTodoItemsEquivalent) &&
+      _listsEquivalent(
+        left.attachments,
+        right.attachments,
+        _chatComposerAttachmentsEquivalent,
+      ) &&
+      _listsEquivalent(
+        left.commandOptions,
+        right.commandOptions,
+        _chatCommandOptionsEquivalent,
+      ) &&
+      _listsEquivalent(left.addActions, right.addActions, _chatAddActionsEqual);
+}
+
+bool _chatTodoItemsEquivalent(ChatTodoItemData left, ChatTodoItemData right) {
+  return left.content == right.content &&
+      left.status == right.status &&
+      left.activeForm == right.activeForm;
+}
+
+bool _chatComposerAttachmentsEquivalent(
+  ChatAttachmentData left,
+  ChatAttachmentData right,
+) {
+  return left.id == right.id &&
+      left.kind == right.kind &&
+      left.label == right.label &&
+      left.detail == right.detail &&
+      left.accentColor == right.accentColor &&
+      _draftAttachmentsEquivalent(left.draftAttachment, right.draftAttachment);
+}
+
+bool _draftAttachmentsEquivalent(
+  OpenCrayChatDraftAttachment? left,
+  OpenCrayChatDraftAttachment? right,
+) {
+  if (left == null || right == null) {
+    return left == right;
+  }
+  return left.kind == right.kind &&
+      left.displayName == right.displayName &&
+      left.relativePath == right.relativePath &&
+      left.artifactId == right.artifactId &&
+      left.chatAttachmentId == right.chatAttachmentId &&
+      left.mimeType == right.mimeType &&
+      left.sizeBytes == right.sizeBytes;
+}
+
+bool _chatCommandOptionsEquivalent(
+  ChatCommandOptionData left,
+  ChatCommandOptionData right,
+) {
+  return left.label == right.label && left.description == right.description;
+}
+
+bool _chatAddActionsEqual(ChatAddActionData left, ChatAddActionData right) {
+  return left.label == right.label && left.icon == right.icon;
+}
+
+bool _chatDrawerStatesEquivalent(
+  ChatSessionsDrawerState left,
+  ChatSessionsDrawerState right,
+) {
+  return left.eyebrow == right.eyebrow &&
+      left.title == right.title &&
+      left.ctaLabel == right.ctaLabel &&
+      _listsEquivalent(
+        left.sessions,
+        right.sessions,
+        _chatSessionListItemsEquivalent,
+      );
+}
+
+bool _chatSessionListItemsEquivalent(
+  ChatSessionListItemData left,
+  ChatSessionListItemData right,
+) {
+  return left.sessionId == right.sessionId &&
+      left.title == right.title &&
+      left.preview == right.preview &&
+      left.meta == right.meta &&
+      left.isSelected == right.isSelected &&
+      left.lastMessageAtEpochMs == right.lastMessageAtEpochMs &&
+      left.unreadCount == right.unreadCount;
+}
+
+bool _chatPendingApprovalsEquivalent(
+  List<ChatPendingApprovalData> left,
+  List<ChatPendingApprovalData> right,
+) {
+  return _listsEquivalent(
+    left,
+    right,
+    (leftApproval, rightApproval) =>
+        leftApproval.runId == rightApproval.runId &&
+        leftApproval.taskId == rightApproval.taskId &&
+        leftApproval.title == rightApproval.title &&
+        leftApproval.body == rightApproval.body &&
+        leftApproval.approveLabel == rightApproval.approveLabel &&
+        leftApproval.rejectLabel == rightApproval.rejectLabel &&
+        leftApproval.isHighRisk == rightApproval.isHighRisk &&
+        leftApproval.supportsSessionApproval ==
+            rightApproval.supportsSessionApproval &&
+        leftApproval.approveForSessionLabel ==
+            rightApproval.approveForSessionLabel &&
+        leftApproval.toolName == rightApproval.toolName &&
+        leftApproval.requestSummary == rightApproval.requestSummary &&
+        leftApproval.primaryDetail == rightApproval.primaryDetail &&
+        leftApproval.workingDirectory == rightApproval.workingDirectory &&
+        leftApproval.reason == rightApproval.reason &&
+        leftApproval.message == rightApproval.message &&
+        _listsEquivalent(
+          leftApproval.pathDetails,
+          rightApproval.pathDetails,
+          _itemsEquivalent,
+        ),
+  );
+}
+
+bool _chatSnapshotsHostContentEquivalent(
+  OpenCrayChatSnapshot left,
+  OpenCrayChatSnapshot right,
+) {
+  return _chatSnapshotsHostContentEquivalentExceptMessages(left, right) &&
+      _chatMessageSnapshotsEquivalent(left.messages, right.messages);
+}
+
+bool _chatSnapshotsHostContentEquivalentExceptMessages(
+  OpenCrayChatSnapshot left,
+  OpenCrayChatSnapshot right,
+) {
+  return left.screenTitle == right.screenTitle &&
+      left.modeLabel == right.modeLabel &&
+      left.sessionButtonLabel == right.sessionButtonLabel &&
+      left.composerPlaceholder == right.composerPlaceholder &&
+      left.isInputEnabled == right.isInputEnabled &&
+      left.todoState == right.todoState &&
+      left.todoHideDelayMs == right.todoHideDelayMs &&
+      left.todoCompletedAtEpochMs == right.todoCompletedAtEpochMs &&
+      _chatSummarySnapshotsEquivalent(left.summary, right.summary) &&
+      _chatDrawerSnapshotsEquivalent(left.drawer, right.drawer) &&
+      _chatTodoSnapshotsEquivalent(left.todos, right.todos) &&
+      _chatPendingApprovalSnapshotsEquivalent(
+        left.pendingApprovals,
+        right.pendingApprovals,
+      );
+}
+
+bool _chatSnapshotDropsOnlyEphemeralMessageTail(
+  OpenCrayChatSnapshot current,
+  OpenCrayChatSnapshot incoming,
+) {
+  if (incoming.messages.length >= current.messages.length) {
     return false;
   }
-  final String lower = normalized.toLowerCase();
-  return lower.contains('"tool_name"') ||
-      lower.contains('"tool_calls"') ||
-      lower.contains('"function_call"') ||
-      lower.contains('"call_id"') ||
-      lower.contains('"type":"tool_call"') ||
-      lower.contains('"type": "tool_call"');
+  for (int index = 0; index < incoming.messages.length; index += 1) {
+    if (!_chatMessageSnapshotEquivalent(
+      current.messages[index],
+      incoming.messages[index],
+    )) {
+      return false;
+    }
+  }
+  return current.messages
+      .skip(incoming.messages.length)
+      .every((message) => message.isEphemeral);
+}
+
+bool _chatSummarySnapshotsEquivalent(
+  OpenCrayChatSummarySnapshot left,
+  OpenCrayChatSummarySnapshot right,
+) {
+  return left.title == right.title &&
+      left.badge == right.badge &&
+      left.body == right.body;
+}
+
+bool _chatMessageSnapshotsEquivalent(
+  List<OpenCrayChatMessageSnapshot> left,
+  List<OpenCrayChatMessageSnapshot> right,
+) {
+  return _listsEquivalent(left, right, _chatMessageSnapshotEquivalent);
+}
+
+bool _chatMessageSnapshotEquivalent(
+  OpenCrayChatMessageSnapshot leftMessage,
+  OpenCrayChatMessageSnapshot rightMessage,
+) {
+  return leftMessage.messageId == rightMessage.messageId &&
+      leftMessage.kind == rightMessage.kind &&
+      leftMessage.text == rightMessage.text &&
+      leftMessage.meta == rightMessage.meta &&
+      leftMessage.createdAtEpochMs == rightMessage.createdAtEpochMs &&
+      leftMessage.isEphemeral == rightMessage.isEphemeral &&
+      _chatAttachmentSnapshotsEquivalent(
+        leftMessage.attachments,
+        rightMessage.attachments,
+      );
+}
+
+bool _chatAttachmentSnapshotsEquivalent(
+  List<OpenCrayChatAttachmentSnapshot> left,
+  List<OpenCrayChatAttachmentSnapshot> right,
+) {
+  return _listsEquivalent(
+    left,
+    right,
+    (leftAttachment, rightAttachment) =>
+        leftAttachment.attachmentId == rightAttachment.attachmentId &&
+        leftAttachment.kind == rightAttachment.kind &&
+        leftAttachment.displayName == rightAttachment.displayName &&
+        leftAttachment.localPath == rightAttachment.localPath &&
+        leftAttachment.mimeType == rightAttachment.mimeType &&
+        leftAttachment.sizeBytes == rightAttachment.sizeBytes &&
+        leftAttachment.widthPx == rightAttachment.widthPx &&
+        leftAttachment.heightPx == rightAttachment.heightPx &&
+        leftAttachment.durationMs == rightAttachment.durationMs &&
+        leftAttachment.transcriptText == rightAttachment.transcriptText &&
+        leftAttachment.contentSha256 == rightAttachment.contentSha256 &&
+        _listsEquivalent(
+          leftAttachment.waveformBars,
+          rightAttachment.waveformBars,
+          _itemsEquivalent,
+        ),
+  );
+}
+
+bool _chatDrawerSnapshotsEquivalent(
+  OpenCrayChatDrawerSnapshot left,
+  OpenCrayChatDrawerSnapshot right,
+) {
+  return left.eyebrow == right.eyebrow &&
+      left.title == right.title &&
+      left.ctaLabel == right.ctaLabel &&
+      _listsEquivalent(
+        left.sessions,
+        right.sessions,
+        _chatSessionItemSnapshotsEquivalent,
+      );
+}
+
+bool _chatSessionItemSnapshotsEquivalent(
+  OpenCrayChatSessionItemSnapshot left,
+  OpenCrayChatSessionItemSnapshot right,
+) {
+  return left.sessionId == right.sessionId &&
+      left.title == right.title &&
+      left.preview == right.preview &&
+      left.meta == right.meta &&
+      left.isSelected == right.isSelected &&
+      left.lastMessageAtEpochMs == right.lastMessageAtEpochMs &&
+      left.unreadCount == right.unreadCount;
+}
+
+bool _chatTodoSnapshotsEquivalent(
+  List<OpenCrayChatTodoSnapshot> left,
+  List<OpenCrayChatTodoSnapshot> right,
+) {
+  return _listsEquivalent(
+    left,
+    right,
+    (leftTodo, rightTodo) =>
+        leftTodo.content == rightTodo.content &&
+        leftTodo.status == rightTodo.status &&
+        leftTodo.activeForm == rightTodo.activeForm,
+  );
+}
+
+bool _chatPendingApprovalSnapshotsEquivalent(
+  List<OpenCrayChatPendingApprovalSnapshot> left,
+  List<OpenCrayChatPendingApprovalSnapshot> right,
+) {
+  return _listsEquivalent(
+    left,
+    right,
+    (leftApproval, rightApproval) =>
+        leftApproval.runId == rightApproval.runId &&
+        leftApproval.taskId == rightApproval.taskId &&
+        leftApproval.title == rightApproval.title &&
+        leftApproval.body == rightApproval.body &&
+        leftApproval.approveLabel == rightApproval.approveLabel &&
+        leftApproval.rejectLabel == rightApproval.rejectLabel &&
+        leftApproval.isHighRisk == rightApproval.isHighRisk &&
+        leftApproval.supportsSessionApproval ==
+            rightApproval.supportsSessionApproval &&
+        leftApproval.approveForSessionLabel ==
+            rightApproval.approveForSessionLabel &&
+        leftApproval.toolName == rightApproval.toolName &&
+        leftApproval.requestSummary == rightApproval.requestSummary &&
+        leftApproval.primaryDetail == rightApproval.primaryDetail &&
+        leftApproval.workingDirectory == rightApproval.workingDirectory &&
+        leftApproval.reason == rightApproval.reason &&
+        leftApproval.message == rightApproval.message &&
+        _listsEquivalent(
+          leftApproval.pathDetails,
+          rightApproval.pathDetails,
+          _itemsEquivalent,
+        ),
+  );
+}
+
+bool _chatMessageAttachmentsEquivalent(
+  ChatMessageAttachmentData left,
+  ChatMessageAttachmentData right,
+) {
+  return left.attachmentId == right.attachmentId &&
+      left.kind == right.kind &&
+      left.displayName == right.displayName &&
+      left.localPath == right.localPath &&
+      left.mimeType == right.mimeType &&
+      left.sizeBytes == right.sizeBytes &&
+      left.widthPx == right.widthPx &&
+      left.heightPx == right.heightPx &&
+      left.durationMs == right.durationMs &&
+      left.transcriptText == right.transcriptText &&
+      left.contentSha256 == right.contentSha256 &&
+      _listsEquivalent(left.waveformBars, right.waveformBars, _itemsEquivalent);
+}
+
+bool _itemsEquivalent<T>(T left, T right) => left == right;
+
+bool _listsEquivalent<T>(
+  List<T> left,
+  List<T> right,
+  bool Function(T left, T right) itemEquivalent,
+) {
+  if (identical(left, right)) {
+    return true;
+  }
+  if (left.length != right.length) {
+    return false;
+  }
+  for (int index = 0; index < left.length; index += 1) {
+    if (!itemEquivalent(left[index], right[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+String? _visibleAssistantDraftText(String rawText) {
+  final String normalized = rawText.trim();
+  if (normalized.isEmpty) {
+    return null;
+  }
+  final bool startsLikeJson =
+      normalized.startsWith('{') || normalized.startsWith('[');
+  if (!startsLikeJson) {
+    return normalized;
+  }
+  final String lowercase = normalized.toLowerCase();
+  final bool hasExplicitTypeField =
+      lowercase.contains('"type"') || lowercase.contains('"decision"');
+  final bool looksLikeStructuredProtocol =
+      hasExplicitTypeField ||
+      lowercase.contains('"actions"') ||
+      lowercase.contains('"tool_name"') ||
+      lowercase.contains('"tool_calls"') ||
+      lowercase.contains('"function_call"') ||
+      lowercase.contains('"call_id"') ||
+      lowercase.contains('"arguments"');
+  final bool looksLikeInternalSignal =
+      lowercase.contains('"is_task_bearing_request"') ||
+      lowercase.contains('"user_affect"') ||
+      lowercase.contains('"user_invites_playfulness"') ||
+      lowercase.contains('"user_requests_relational_support"') ||
+      lowercase.contains('"clarification_needed"');
+  if (!looksLikeStructuredProtocol && !looksLikeInternalSignal) {
+    return normalized;
+  }
+  if (looksLikeInternalSignal ||
+      lowercase.contains('"tool_name"') ||
+      lowercase.contains('"tool_calls"') ||
+      lowercase.contains('"function_call"') ||
+      lowercase.contains('"call_id"') ||
+      lowercase.contains('"arguments"')) {
+    return null;
+  }
+  final String? actionType = _firstNonBlankDraftField(<String?>[
+    _partialJsonStringFieldValue(normalized, 'type')?.trim().toLowerCase(),
+    _partialJsonStringFieldValue(normalized, 'decision')?.trim().toLowerCase(),
+  ]);
+  switch (actionType) {
+    case 'final':
+    case 'answer':
+      return _firstNonBlankDraftField(<String?>[
+        _partialJsonStringFieldValue(normalized, 'answer'),
+        _partialJsonStringFieldValue(normalized, 'text'),
+        _partialJsonStringFieldValue(normalized, 'message'),
+        _partialJsonStringFieldValue(normalized, 'summary'),
+      ])?.trim();
+    case null:
+    case '':
+      return hasExplicitTypeField
+          ? _partialJsonStringFieldValue(normalized, 'answer')?.trim()
+          : null;
+    default:
+      return null;
+  }
+}
+
+String? _firstNonBlankDraftField(List<String?> values) {
+  for (final String? value in values) {
+    final String trimmed = value?.trim() ?? '';
+    if (trimmed.isNotEmpty) {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
+String? _partialJsonStringFieldValue(String rawText, String fieldName) {
+  final String fieldPattern = '"$fieldName"';
+  int searchStart = 0;
+  while (true) {
+    final int keyIndex = rawText.indexOf(fieldPattern, searchStart);
+    if (keyIndex < 0) {
+      return null;
+    }
+    int index = keyIndex + fieldPattern.length;
+    while (index < rawText.length && rawText[index].trim().isEmpty) {
+      index += 1;
+    }
+    if (index >= rawText.length || rawText[index] != ':') {
+      searchStart = keyIndex + fieldPattern.length;
+      continue;
+    }
+    index += 1;
+    while (index < rawText.length && rawText[index].trim().isEmpty) {
+      index += 1;
+    }
+    if (index >= rawText.length || rawText[index] != '"') {
+      return null;
+    }
+    index += 1;
+    final StringBuffer buffer = StringBuffer();
+    bool escaped = false;
+    while (index < rawText.length) {
+      final String character = rawText[index];
+      if (escaped) {
+        switch (character) {
+          case 'n':
+            buffer.write('\n');
+            break;
+          case 'r':
+            buffer.write('\r');
+            break;
+          case 't':
+            buffer.write('\t');
+            break;
+          default:
+            buffer.write(character);
+            break;
+        }
+        escaped = false;
+        index += 1;
+        continue;
+      }
+      if (character == '\\') {
+        escaped = true;
+        index += 1;
+        continue;
+      }
+      if (character == '"') {
+        return buffer.toString();
+      }
+      buffer.write(character);
+      index += 1;
+    }
+    return buffer.toString();
+  }
 }
 
 @visibleForTesting
@@ -295,8 +2703,23 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   final GlobalKey _composerKey = GlobalKey();
   StreamSubscription<OpenCrayChatSnapshot>? _chatSubscription;
   StreamSubscription<OpenCrayChatRuntimeSnapshot>? _chatRuntimeSubscription;
+  StreamSubscription<OpenCrayChatLiveAssistantDraftEvent>?
+  _liveAssistantDraftSubscription;
+  StreamSubscription<OpenCrayChatRuntimeEventDelta>?
+  _runtimeEventDeltaSubscription;
   OpenCrayChatSnapshot? _latestChatSnapshot;
   OpenCrayChatRuntimeSnapshot? _latestChatRuntimeSnapshot;
+  Timer? _runtimeProjectionFlushTimer;
+  OpenCrayChatRuntimeSnapshot? _pendingRuntimeProjectionSnapshot;
+  final Map<String, Map<String, OpenCrayChatLiveAssistantDraftSnapshot>>
+  _liveAssistantDraftOverridesBySession =
+      <String, Map<String, OpenCrayChatLiveAssistantDraftSnapshot>>{};
+  final Map<String, Map<String, int>>
+  _liveAssistantDraftEventEpochBySessionAndMessage =
+      <String, Map<String, int>>{};
+  final Map<String, int> _runtimeEventDeltaSequenceBySession = <String, int>{};
+  bool _runtimeEventDeltaResyncInFlight = false;
+  OpenCrayChatRuntimeEventDelta? _queuedRuntimeEventDeltaAfterResync;
   final Set<String> _approvalTaskIdsInFlight = <String>{};
   final Set<String> _interruptRunIdsInFlight = <String>{};
   final Set<String> _retryRunIdsInFlight = <String>{};
@@ -304,6 +2727,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   final Map<String, String> _selectedTextByMessageId = <String, String>{};
   final Map<String, SelectedContentRange> _selectedTextRangeByMessageId =
       <String, SelectedContentRange>{};
+  final Map<String, Set<String>> _locallyDeletedMessageIdsBySession =
+      <String, Set<String>>{};
+  final Set<String> _locallyDeletedSessionIds = <String>{};
   _ActiveChatMessageMenu? _activeMessageMenu;
   bool _suppressNextTransientUiDismiss = false;
   Timer? _todoArchiveHideTimer;
@@ -312,12 +2738,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   String? _hiddenArchivedTodoFingerprint;
   String? _scheduledTodoArchiveFingerprint;
   String? _scheduledSandboxSessionRefreshAnchor;
-  String? _queuedSandboxSessionRefreshAnchor;
+  final List<String> _queuedSandboxSessionRefreshAnchors = <String>[];
   String? _lastSandboxSessionRefreshAnchor;
   String? _scheduledSandboxSessionLifecycleRefreshKey;
   bool _queuedSandboxSessionLifecycleRefresh = false;
   String? _interruptConfirmRunId;
   double _composerHeight = 0;
+  bool _scrollToBottomScheduled = false;
+  bool _scheduledScrollToBottomAnimated = true;
   OpenCraySandboxSettingsSnapshot _sandboxSettings =
       _defaultSandboxSettingsSnapshot;
   bool _sandboxSessionRefreshInFlight = false;
@@ -329,6 +2757,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       ? _ChatRuntimeEnvironment.cloud
       : _ChatRuntimeEnvironment.local;
 
+  ChatRunTraceData? get _composerInterruptTrace {
+    for (final trace in _state.runTraces.reversed) {
+      if (trace.canInterrupt && trace.interruptId.trim().isNotEmpty) {
+        return trace;
+      }
+    }
+    return null;
+  }
+
   String get _activeSessionId {
     for (final session in _state.drawer.sessions) {
       if (session.isSelected) {
@@ -337,6 +2774,13 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     if (_state.drawer.sessions.isNotEmpty) {
       return _state.drawer.sessions.first.sessionId;
+    }
+    final String runtimeSessionId =
+        _latestChatRuntimeSnapshot?.sessionId.trim() ??
+        _latestChatSnapshot?.runtimeActivity?.sessionId.trim() ??
+        '';
+    if (runtimeSessionId.isNotEmpty) {
+      return runtimeSessionId;
     }
     return 'chat-session';
   }
@@ -350,7 +2794,209 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (state.drawer.sessions.isNotEmpty) {
       return state.drawer.sessions.first.sessionId;
     }
+    final String runtimeSessionId =
+        _latestChatRuntimeSnapshot?.sessionId.trim() ??
+        _latestChatSnapshot?.runtimeActivity?.sessionId.trim() ??
+        '';
+    if (runtimeSessionId.isNotEmpty) {
+      return runtimeSessionId;
+    }
     return 'chat-session';
+  }
+
+  bool _runtimeDeltaTargetsActiveSession(String sessionId) {
+    final String normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty) {
+      return false;
+    }
+    if (normalizedSessionId == _activeSessionId) {
+      return true;
+    }
+    if (_latestChatSnapshot == null) {
+      return true;
+    }
+    final String runtimeSessionId =
+        _latestChatRuntimeSnapshot?.sessionId.trim() ?? '';
+    if (runtimeSessionId.isNotEmpty) {
+      return normalizedSessionId == runtimeSessionId;
+    }
+    final String snapshotSessionId = _latestChatSnapshot == null
+        ? ''
+        : _snapshotActiveSessionId(_latestChatSnapshot!).trim();
+    if (snapshotSessionId.isNotEmpty) {
+      return normalizedSessionId == snapshotSessionId;
+    }
+    return false;
+  }
+
+  void _rememberLocallyDeletedMessages(
+    String sessionId,
+    Set<String> messageIds,
+  ) {
+    final String normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty || messageIds.isEmpty) {
+      return;
+    }
+    _locallyDeletedMessageIdsBySession
+        .putIfAbsent(normalizedSessionId, () => <String>{})
+        .addAll(messageIds);
+  }
+
+  void _forgetLocallyDeletedMessages(
+    String sessionId,
+    Iterable<String> messageIds,
+  ) {
+    final String normalizedSessionId = sessionId.trim();
+    final Set<String>? deletedIds =
+        _locallyDeletedMessageIdsBySession[normalizedSessionId];
+    if (deletedIds == null) {
+      return;
+    }
+    for (final String messageId in messageIds) {
+      deletedIds.remove(messageId.trim());
+    }
+    if (deletedIds.isEmpty) {
+      _locallyDeletedMessageIdsBySession.remove(normalizedSessionId);
+    }
+  }
+
+  void _removeSelectionForMessages(Iterable<String> messageIds) {
+    for (final String messageId in messageIds) {
+      final String normalizedMessageId = messageId.trim();
+      if (normalizedMessageId.isEmpty) {
+        continue;
+      }
+      _selectedMessageIds.remove(normalizedMessageId);
+      _selectedTextByMessageId.remove(normalizedMessageId);
+      _selectedTextRangeByMessageId.remove(normalizedMessageId);
+    }
+  }
+
+  ChatFeatureState _applyLocalDeletionTombstones(ChatFeatureState state) {
+    final String sessionId = _sessionIdForState(state).trim();
+    final bool selectedSessionDeleted =
+        sessionId.isNotEmpty && _locallyDeletedSessionIds.contains(sessionId);
+    final Set<String> locallyDeletedMessageIds = sessionId.isEmpty
+        ? const <String>{}
+        : _locallyDeletedMessageIdsBySession[sessionId] ?? const <String>{};
+    List<ChatMessageData> messages = state.messages;
+    List<ChatRunTraceData> runTraces = state.runTraces;
+    List<ChatPendingApprovalData> pendingApprovals = state.pendingApprovals;
+    ChatComposerState composer = state.composer;
+    if (selectedSessionDeleted) {
+      messages = const <ChatMessageData>[];
+      runTraces = const <ChatRunTraceData>[];
+      pendingApprovals = const <ChatPendingApprovalData>[];
+      composer = composer.copyWith(todos: const <ChatTodoItemData>[]);
+    }
+    if (locallyDeletedMessageIds.isNotEmpty) {
+      messages = messages
+          .where(
+            (message) =>
+                !locallyDeletedMessageIds.contains(message.messageId.trim()) &&
+                !locallyDeletedMessageIds.contains(
+                  message.runtimeAnchorMessageId.trim(),
+                ),
+          )
+          .toList(growable: false);
+      runTraces = runTraces
+          .where(
+            (trace) => !locallyDeletedMessageIds.contains(
+              trace.anchorMessageId.trim(),
+            ),
+          )
+          .toList(growable: false);
+    }
+
+    ChatSessionsDrawerState drawer = state.drawer;
+    if (_locallyDeletedSessionIds.isNotEmpty && drawer.sessions.isNotEmpty) {
+      final List<ChatSessionListItemData> remainingSessions = drawer.sessions
+          .where(
+            (session) =>
+                !_locallyDeletedSessionIds.contains(session.sessionId.trim()),
+          )
+          .toList(growable: false);
+      if (remainingSessions.length != drawer.sessions.length) {
+        String selectedSessionId = '';
+        for (final ChatSessionListItemData session in remainingSessions) {
+          if (session.isSelected) {
+            selectedSessionId = session.sessionId;
+            break;
+          }
+        }
+        if (selectedSessionId.isEmpty && remainingSessions.isNotEmpty) {
+          selectedSessionId = remainingSessions.first.sessionId;
+        }
+        drawer = ChatSessionsDrawerState(
+          eyebrow: drawer.eyebrow,
+          title: drawer.title,
+          ctaLabel: drawer.ctaLabel,
+          sessions: remainingSessions
+              .map(
+                (session) => ChatSessionListItemData(
+                  sessionId: session.sessionId,
+                  title: session.title,
+                  preview: session.preview,
+                  meta: session.meta,
+                  isSelected: session.sessionId == selectedSessionId,
+                  lastMessageAtEpochMs: session.lastMessageAtEpochMs,
+                  unreadCount: session.sessionId == selectedSessionId
+                      ? 0
+                      : session.unreadCount,
+                ),
+              )
+              .toList(growable: false),
+        );
+      }
+    }
+
+    final bool threadEmpty = messages.isEmpty && runTraces.isEmpty;
+    return state.copyWith(
+      variant: threadEmpty && composer.todos.isEmpty && pendingApprovals.isEmpty
+          ? ChatPrototypeVariant.empty
+          : ChatPrototypeVariant.main,
+      messages: messages,
+      runTraces: runTraces,
+      pendingApprovals: pendingApprovals,
+      composer: composer,
+      drawer: drawer,
+      emptyThreadHeight: threadEmpty ? 260 : 0,
+    );
+  }
+
+  void _pruneLocalDeletionTombstones(OpenCrayChatSnapshot snapshot) {
+    if (_locallyDeletedSessionIds.isNotEmpty) {
+      final Set<String> snapshotSessionIds = snapshot.drawer.sessions
+          .map((session) => session.sessionId.trim())
+          .where((sessionId) => sessionId.isNotEmpty)
+          .toSet();
+      _locallyDeletedSessionIds.removeWhere(
+        (sessionId) => !snapshotSessionIds.contains(sessionId),
+      );
+    }
+
+    final String sessionId = _snapshotActiveSessionId(snapshot).trim();
+    final Set<String>? deletedMessageIds =
+        _locallyDeletedMessageIdsBySession[sessionId];
+    if (sessionId.isEmpty || deletedMessageIds == null) {
+      return;
+    }
+    final Set<String> snapshotMessageIds = snapshot.messages
+        .asMap()
+        .entries
+        .map((entry) {
+          final String messageId = entry.value.messageId.trim();
+          return messageId.isNotEmpty
+              ? messageId
+              : 'message-${entry.key}-${entry.value.kind}';
+        })
+        .toSet();
+    deletedMessageIds.removeWhere(
+      (messageId) => !snapshotMessageIds.contains(messageId),
+    );
+    if (deletedMessageIds.isEmpty) {
+      _locallyDeletedMessageIdsBySession.remove(sessionId);
+    }
   }
 
   ChatComposerState _composerStateForHostSnapshot(ChatFeatureState nextState) {
@@ -388,6 +3034,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       _chatRuntimeSubscription = bridge.watchChatRuntimeSnapshot().listen(
         _handleChatRuntimeSnapshot,
       );
+      _liveAssistantDraftSubscription = bridge
+          .watchLiveAssistantDraftEvents()
+          .listen(_handleLiveAssistantDraftEvent);
+      _runtimeEventDeltaSubscription = bridge.watchRuntimeEventDeltas().listen(
+        _handleRuntimeEventDelta,
+      );
     }
   }
 
@@ -420,6 +3072,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _chatScrollController.removeListener(_handleChatScrollChanged);
     _chatSubscription?.cancel();
     _chatRuntimeSubscription?.cancel();
+    _liveAssistantDraftSubscription?.cancel();
+    _runtimeEventDeltaSubscription?.cancel();
+    _runtimeProjectionFlushTimer?.cancel();
     _todoArchiveHideTimer?.cancel();
     _sandboxSessionAutoRefreshTimer?.cancel();
     _sandboxSessionLifecycleRefreshTimer?.cancel();
@@ -717,31 +3372,44 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   Future<void> _deleteSelectedMessages() async {
-    final List<String> selectedIds = _selectedMessageIds.toList(
-      growable: false,
-    );
+    final List<String> selectedIds = _selectedMessageIds
+        .map((messageId) => messageId.trim())
+        .where((messageId) => messageId.isNotEmpty)
+        .toList(growable: false);
     if (selectedIds.isEmpty) {
       return;
     }
     final bridge = widget.bridge;
     if (bridge != null) {
-      try {
-        for (final messageId in selectedIds) {
+      final String sessionId = _activeSessionId;
+      final Set<String> deletedIds = selectedIds.toSet();
+      setState(() {
+        _rememberLocallyDeletedMessages(sessionId, deletedIds);
+        _removeSelectionForMessages(deletedIds);
+        _state = _applyLocalDeletionTombstones(_state);
+      });
+      final Set<String> pendingIds = <String>{...deletedIds};
+      final Set<String> failedOrUnsentIds = <String>{};
+      for (final String messageId in selectedIds) {
+        try {
           await bridge.deleteChatMessage(
-            sessionId: _activeSessionId,
+            sessionId: sessionId,
             messageId: messageId,
           );
+          pendingIds.remove(messageId);
+        } catch (_) {
+          failedOrUnsentIds
+            ..add(messageId)
+            ..addAll(pendingIds);
+          break;
         }
+      }
+      if (failedOrUnsentIds.isNotEmpty) {
         if (!mounted) {
           return;
         }
-        setState(() {
-          _selectedMessageIds.clear();
-        });
-      } catch (_) {
-        if (!mounted) {
-          return;
-        }
+        _forgetLocallyDeletedMessages(sessionId, failedOrUnsentIds);
+        _applyHostState();
         _showMessageFeedback(widget.copy.chatMessageActionFailed);
       }
       return;
@@ -749,12 +3417,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     setState(() {
       _state = _state.copyWith(
         messages: _state.messages
-            .where(
-              (message) => !_selectedMessageIds.contains(message.messageId),
-            )
+            .where((message) => !selectedIds.contains(message.messageId))
             .toList(growable: false),
       );
-      _selectedMessageIds.clear();
+      _removeSelectionForMessages(selectedIds);
     });
   }
 
@@ -847,17 +3513,29 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   Future<void> _deleteChatMessage(ChatMessageData message) async {
+    final String messageId = message.messageId.trim();
+    if (messageId.isEmpty) {
+      return;
+    }
     final bridge = widget.bridge;
     if (bridge != null) {
+      final String sessionId = _activeSessionId;
+      setState(() {
+        _rememberLocallyDeletedMessages(sessionId, <String>{messageId});
+        _removeSelectionForMessages(<String>{messageId});
+        _state = _applyLocalDeletionTombstones(_state);
+      });
       try {
         await bridge.deleteChatMessage(
-          sessionId: _activeSessionId,
-          messageId: message.messageId,
+          sessionId: sessionId,
+          messageId: messageId,
         );
       } catch (_) {
         if (!mounted) {
           return;
         }
+        _forgetLocallyDeletedMessages(sessionId, <String>{messageId});
+        _applyHostState();
         _showMessageFeedback(widget.copy.chatMessageActionFailed);
       }
       return;
@@ -865,9 +3543,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     setState(() {
       _state = _state.copyWith(
         messages: _state.messages
-            .where((candidate) => candidate.messageId != message.messageId)
+            .where((candidate) => candidate.messageId != messageId)
             .toList(growable: false),
       );
+      _removeSelectionForMessages(<String>{messageId});
     });
   }
 
@@ -1026,7 +3705,6 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       text: draft,
       selection: TextSelection.collapsed(offset: draft.length),
     );
-    _composerFocusNode.requestFocus();
   }
 
   Future<void> _branchChatMessage(ChatMessageData message) async {
@@ -1190,6 +3868,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             onSendPressed: () {
               _sendCurrentState();
             },
+            interruptTrace: _composerInterruptTrace,
+            interruptConfirmRunId: _interruptConfirmRunId,
+            busyInterruptRunIds: _interruptRunIdsInFlight,
+            onArmInterruptRunTrace: _armRunInterruptTrace,
+            onDismissInterruptRunTrace: _dismissRunInterruptTrace,
+            onInterruptRunTrace: _interruptRunTrace,
             onAddActionSelected: _handleAddAction,
             onCommandSelected: _showCommandMenu,
             onAttachmentRemoved: _removeAttachment,
@@ -1388,8 +4072,35 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     });
   }
 
-  void _scheduleScrollToBottom({bool animated = true}) {
+  bool _isChatScrollPinnedToBottom({double tolerance = 48}) {
+    if (!_chatScrollController.hasClients) {
+      return true;
+    }
+    final ScrollPosition position = _chatScrollController.position;
+    return position.maxScrollExtent - position.pixels <= tolerance;
+  }
+
+  void _scheduleScrollToBottom({
+    bool animated = true,
+    bool onlyIfPinned = false,
+    bool? wasPinnedToBottom,
+  }) {
+    final bool pinnedBeforeUpdate =
+        wasPinnedToBottom ?? _isChatScrollPinnedToBottom();
+    if (onlyIfPinned && !pinnedBeforeUpdate) {
+      return;
+    }
+    if (_scrollToBottomScheduled) {
+      _scheduledScrollToBottomAnimated =
+          _scheduledScrollToBottomAnimated && animated;
+      return;
+    }
+    _scrollToBottomScheduled = true;
+    _scheduledScrollToBottomAnimated = animated;
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      final bool shouldAnimate = _scheduledScrollToBottomAnimated;
+      _scrollToBottomScheduled = false;
+      _scheduledScrollToBottomAnimated = true;
       if (!mounted || !_chatScrollController.hasClients) {
         return;
       }
@@ -1398,7 +4109,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       if ((target - position.pixels).abs() < 1) {
         return;
       }
-      if (animated) {
+      if (shouldAnimate) {
         _chatScrollController.animateTo(
           target,
           duration: const Duration(milliseconds: 220),
@@ -1576,14 +4287,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       if (mounted && notices.isNotEmpty) {
         _showComposerNotice(notices.join(' '));
       }
-    } catch (_) {
+    } catch (error) {
       if (!mounted) {
         return;
       }
-      final failedText = widget.copy.isChinese
-          ? '无法添加附件。'
-          : 'Unable to add attachment.';
-      _showComposerNotice(failedText);
+      _showComposerNotice(_attachmentPickerFailureMessage(error));
     }
   }
 
@@ -1655,13 +4363,367 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   void _handleChatSnapshot(OpenCrayChatSnapshot snapshot) {
+    if (!shouldReplaceObservedChatSnapshot(_latestChatSnapshot, snapshot)) {
+      return;
+    }
+    final OpenCrayChatRuntimeSnapshot? embeddedRuntime =
+        snapshot.runtimeActivity;
+    if (embeddedRuntime != null) {
+      final OpenCrayChatRuntimeSnapshot resolvedRuntime =
+          _latestChatRuntimeSnapshot != null &&
+              !_runtimeSnapshotsShareSession(
+                _latestChatRuntimeSnapshot!,
+                embeddedRuntime,
+              ) &&
+              embeddedRuntime.sessionId.trim().isNotEmpty
+          ? embeddedRuntime
+          : resolveChatRuntimeSnapshot(
+                  _latestChatRuntimeSnapshot,
+                  embeddedRuntime,
+                ) ??
+                embeddedRuntime;
+      _reconcileLiveAssistantDraftOverrides(resolvedRuntime);
+      if (shouldReplaceObservedRuntimeSnapshot(
+        _latestChatRuntimeSnapshot,
+        resolvedRuntime,
+      )) {
+        _latestChatRuntimeSnapshot = resolvedRuntime;
+        final String resolvedSessionId = resolvedRuntime.sessionId.trim();
+        if (resolvedSessionId.isNotEmpty) {
+          _runtimeEventDeltaSequenceBySession.remove(resolvedSessionId);
+        }
+      }
+    }
     _latestChatSnapshot = snapshot;
     _applyHostState();
   }
 
   void _handleChatRuntimeSnapshot(OpenCrayChatRuntimeSnapshot snapshot) {
-    _latestChatRuntimeSnapshot = snapshot;
-    _applyHostState();
+    final OpenCrayChatRuntimeSnapshot resolvedSnapshot =
+        _latestChatRuntimeSnapshot != null &&
+            !_runtimeSnapshotsShareSession(
+              _latestChatRuntimeSnapshot!,
+              snapshot,
+            ) &&
+            snapshot.sessionId.trim().isNotEmpty
+        ? snapshot
+        : resolveChatRuntimeSnapshot(_latestChatRuntimeSnapshot, snapshot) ??
+              snapshot;
+    if (!shouldReplaceObservedRuntimeSnapshot(
+      _latestChatRuntimeSnapshot,
+      resolvedSnapshot,
+    )) {
+      return;
+    }
+    final List<String> activeRunSummaries = resolvedSnapshot.activeRuns
+        .map(
+          (run) =>
+              '${run.runId}:${run.managedProcesses.length}/${run.runningManagedProcessCount}/${run.hasLiveManagedProcesses}',
+        )
+        .toList(growable: false);
+    _runTraceDebug(
+      'feature.runtime session=${resolvedSnapshot.sessionId} activeRuns=${resolvedSnapshot.activeRuns.length} retainedRuns=${resolvedSnapshot.retainedRuns.length} events=${resolvedSnapshot.events.length} runs=${activeRunSummaries.join(';')}',
+    );
+    _reconcileLiveAssistantDraftOverrides(resolvedSnapshot);
+    _latestChatRuntimeSnapshot = resolvedSnapshot;
+    final String resolvedSessionId = resolvedSnapshot.sessionId.trim();
+    if (resolvedSessionId.isNotEmpty) {
+      _runtimeEventDeltaSequenceBySession.remove(resolvedSessionId);
+    }
+    _queueRuntimeActivityPatch(resolvedSnapshot);
+  }
+
+  void _handleRuntimeEventDelta(OpenCrayChatRuntimeEventDelta delta) {
+    if (!mounted || !delta.hasRuntimeActivityPatch) {
+      return;
+    }
+    final String sessionId = delta.sessionId.trim();
+    if (!_runtimeDeltaTargetsActiveSession(sessionId)) {
+      return;
+    }
+    if (_runtimeEventDeltaResyncInFlight) {
+      _queuedRuntimeEventDeltaAfterResync = delta;
+      return;
+    }
+    final int previousSequence =
+        _runtimeEventDeltaSequenceBySession[sessionId] ?? 0;
+    if (previousSequence > 0 &&
+        delta.sequence > 0 &&
+        delta.sequence != previousSequence + 1) {
+      _resyncRuntimeSnapshotAfterDeltaMiss();
+      return;
+    }
+    final OpenCrayChatRuntimeSnapshot? currentSnapshot =
+        _latestChatRuntimeSnapshot?.sessionId.trim() == sessionId
+        ? _latestChatRuntimeSnapshot
+        : _latestChatSnapshot?.runtimeActivity?.sessionId.trim() == sessionId
+        ? _latestChatSnapshot?.runtimeActivity
+        : null;
+    if (currentSnapshot == null &&
+        delta.activeRuns.isEmpty &&
+        delta.retainedRuns.isEmpty &&
+        delta.events.isEmpty &&
+        delta.subAgents.isEmpty &&
+        delta.liveAssistantDrafts.isEmpty &&
+        delta.hostLifecycle == null &&
+        delta.updatedAtEpochMs <= 0) {
+      _resyncRuntimeSnapshotAfterDeltaMiss();
+      return;
+    }
+    final int latestDeltaEpochMs = delta.events.fold<int>(
+      0,
+      (latest, event) => math.max(latest, event.emittedAtEpochMs),
+    );
+    final OpenCrayChatRuntimeSnapshot deltaSnapshot =
+        OpenCrayChatRuntimeSnapshot(
+          sessionId: sessionId,
+          activeRuns: delta.activeRuns,
+          retainedRuns: delta.retainedRuns,
+          subAgents: delta.subAgents,
+          events: delta.events,
+          liveAssistantDrafts: delta.liveAssistantDrafts,
+          hostLifecycle: delta.hostLifecycle,
+          updatedAtEpochMs: math.max(
+            delta.updatedAtEpochMs,
+            latestDeltaEpochMs,
+          ),
+        );
+    final OpenCrayChatRuntimeSnapshot patchedSnapshot = currentSnapshot == null
+        ? deltaSnapshot
+        : _mergeRuntimeDeltaSnapshot(
+            currentSnapshot,
+            deltaSnapshot,
+            hasActiveRunsPatch:
+                delta.runPatchMode.trim().toLowerCase() == 'replace' &&
+                delta.hasActiveRunsPatch &&
+                _runtimeRunListPatchCanReplace(
+                  currentSnapshot.activeRuns,
+                  deltaSnapshot.activeRuns,
+                ),
+            hasRetainedRunsPatch:
+                delta.runPatchMode.trim().toLowerCase() == 'replace' &&
+                delta.hasRetainedRunsPatch &&
+                _runtimeRunListPatchCanReplace(
+                  currentSnapshot.retainedRuns,
+                  deltaSnapshot.retainedRuns,
+                ),
+            hasSubAgentsPatch: delta.hasSubAgentsPatch,
+            hasLiveAssistantDraftsPatch: delta.hasLiveAssistantDraftsPatch,
+          );
+    if (!shouldReplaceObservedRuntimeSnapshot(
+      currentSnapshot,
+      patchedSnapshot,
+    )) {
+      if (delta.hasLiveAssistantDraftsPatch) {
+        final OpenCrayChatRuntimeSnapshot draftPatchedSnapshot =
+            _runtimeSnapshotWithLiveDraftPatch(currentSnapshot, deltaSnapshot);
+        _reconcileLiveAssistantDraftOverrides(
+          draftPatchedSnapshot,
+          liveAssistantDraftsAuthoritative: true,
+        );
+        if (_latestChatSnapshot != null) {
+          _queueRuntimeActivityPatch(draftPatchedSnapshot);
+        }
+      }
+      if (delta.sequence > 0) {
+        _runtimeEventDeltaSequenceBySession[sessionId] = delta.sequence;
+      }
+      return;
+    }
+    if (delta.hasLiveAssistantDraftsPatch) {
+      _reconcileLiveAssistantDraftOverrides(
+        patchedSnapshot,
+        liveAssistantDraftsAuthoritative: true,
+      );
+    }
+    _latestChatRuntimeSnapshot = patchedSnapshot;
+    if (delta.sequence > 0) {
+      _runtimeEventDeltaSequenceBySession[sessionId] = delta.sequence;
+    }
+    if (_latestChatSnapshot == null) {
+      return;
+    }
+    _queueRuntimeActivityPatch(patchedSnapshot);
+  }
+
+  OpenCrayChatRuntimeSnapshot _runtimeSnapshotWithLiveDraftPatch(
+    OpenCrayChatRuntimeSnapshot? currentSnapshot,
+    OpenCrayChatRuntimeSnapshot deltaSnapshot,
+  ) {
+    final OpenCrayChatRuntimeSnapshot base = currentSnapshot ?? deltaSnapshot;
+    return OpenCrayChatRuntimeSnapshot(
+      sessionId: deltaSnapshot.sessionId.trim().isNotEmpty
+          ? deltaSnapshot.sessionId
+          : base.sessionId,
+      activeRuns: base.activeRuns,
+      retainedRuns: base.retainedRuns,
+      subAgents: base.subAgents,
+      events: base.events,
+      liveAssistantDrafts: deltaSnapshot.liveAssistantDrafts,
+      hostLifecycle: base.hostLifecycle,
+      updatedAtEpochMs: math.max(
+        base.updatedAtEpochMs,
+        deltaSnapshot.updatedAtEpochMs,
+      ),
+    );
+  }
+
+  Future<void> _resyncRuntimeSnapshotAfterDeltaMiss() async {
+    if (_runtimeEventDeltaResyncInFlight) {
+      return;
+    }
+    final OpenCrayHostBridge? bridge = widget.bridge;
+    if (bridge == null) {
+      return;
+    }
+    _runtimeEventDeltaResyncInFlight = true;
+    bool resynced = false;
+    try {
+      final OpenCrayChatRuntimeSnapshot snapshot = await bridge
+          .loadChatRuntimeSnapshot();
+      if (!mounted) {
+        return;
+      }
+      _handleChatRuntimeSnapshot(snapshot);
+      final String resyncedSessionId = snapshot.sessionId.trim();
+      if (resyncedSessionId.isNotEmpty) {
+        _runtimeEventDeltaSequenceBySession.remove(resyncedSessionId);
+      }
+      resynced = true;
+    } finally {
+      _runtimeEventDeltaResyncInFlight = false;
+    }
+    final OpenCrayChatRuntimeEventDelta? queuedDelta =
+        _queuedRuntimeEventDeltaAfterResync;
+    _queuedRuntimeEventDeltaAfterResync = null;
+    if (mounted && resynced && queuedDelta != null) {
+      _handleRuntimeEventDelta(queuedDelta);
+    }
+  }
+
+  void _handleLiveAssistantDraftEvent(
+    OpenCrayChatLiveAssistantDraftEvent event,
+  ) {
+    _storeLiveAssistantDraftOverride(event);
+    if (!mounted || _latestChatSnapshot == null) {
+      return;
+    }
+    final String sessionId = event.sessionId.trim();
+    if (sessionId.isEmpty || sessionId != _activeSessionId) {
+      return;
+    }
+    final OpenCrayChatRuntimeSnapshot? runtimeSnapshot =
+        _latestChatRuntimeSnapshot ?? _latestChatSnapshot?.runtimeActivity;
+    final OpenCrayChatRuntimeSnapshot
+    effectiveRuntime = OpenCrayChatRuntimeSnapshot(
+      sessionId: sessionId,
+      activeRuns:
+          runtimeSnapshot?.activeRuns ?? const <OpenCrayChatRunSnapshot>[],
+      retainedRuns:
+          runtimeSnapshot?.retainedRuns ?? const <OpenCrayChatRunSnapshot>[],
+      subAgents:
+          runtimeSnapshot?.subAgents ?? const <OpenCrayChatSubAgentSnapshot>[],
+      events:
+          runtimeSnapshot?.events ?? const <OpenCrayChatRuntimeEventSnapshot>[],
+      liveAssistantDrafts:
+          runtimeSnapshot?.liveAssistantDrafts ??
+          const <OpenCrayChatLiveAssistantDraftSnapshot>[],
+      hostLifecycle: runtimeSnapshot?.hostLifecycle,
+      updatedAtEpochMs: math.max(
+        runtimeSnapshot?.updatedAtEpochMs ?? 0,
+        event.updatedAtEpochMs,
+      ),
+    );
+    _queueRuntimeActivityPatch(effectiveRuntime);
+  }
+
+  void _storeLiveAssistantDraftOverride(
+    OpenCrayChatLiveAssistantDraftEvent event,
+  ) {
+    final String sessionId = event.sessionId.trim();
+    final String pendingMessageId = event.pendingMessageId.trim();
+    if (sessionId.isEmpty || pendingMessageId.isEmpty) {
+      return;
+    }
+    final Map<String, int> sessionEventEpochs =
+        _liveAssistantDraftEventEpochBySessionAndMessage.putIfAbsent(
+          sessionId,
+          () => <String, int>{},
+        );
+    final int eventEpochMs = event.updatedAtEpochMs;
+    final int previousEventEpochMs = sessionEventEpochs[pendingMessageId] ?? 0;
+    if (eventEpochMs > 0 && previousEventEpochMs > eventEpochMs) {
+      return;
+    }
+    if (eventEpochMs > 0) {
+      sessionEventEpochs[pendingMessageId] = eventEpochMs;
+    }
+    final Map<String, OpenCrayChatLiveAssistantDraftSnapshot> sessionDrafts =
+        _liveAssistantDraftOverridesBySession.putIfAbsent(
+          sessionId,
+          () => <String, OpenCrayChatLiveAssistantDraftSnapshot>{},
+        );
+    if (event.cleared) {
+      sessionDrafts.remove(pendingMessageId);
+      if (sessionDrafts.isEmpty) {
+        _liveAssistantDraftOverridesBySession.remove(sessionId);
+      }
+      return;
+    }
+    sessionDrafts[pendingMessageId] = OpenCrayChatLiveAssistantDraftSnapshot(
+      runId: event.runId,
+      taskId: event.taskId,
+      pendingMessageId: pendingMessageId,
+      text: event.text,
+      updatedAtEpochMs: event.updatedAtEpochMs,
+    );
+  }
+
+  void _reconcileLiveAssistantDraftOverrides(
+    OpenCrayChatRuntimeSnapshot? authoritativeSnapshot, {
+    bool liveAssistantDraftsAuthoritative = false,
+  }) {
+    final String sessionId = authoritativeSnapshot?.sessionId.trim() ?? '';
+    if (sessionId.isEmpty) {
+      return;
+    }
+    final Map<String, OpenCrayChatLiveAssistantDraftSnapshot>? sessionDrafts =
+        _liveAssistantDraftOverridesBySession[sessionId];
+    if (sessionDrafts == null || sessionDrafts.isEmpty) {
+      return;
+    }
+    final Map<String, OpenCrayChatLiveAssistantDraftSnapshot>
+    authoritativeDraftsByMessageId =
+        <String, OpenCrayChatLiveAssistantDraftSnapshot>{
+          for (final draft in authoritativeSnapshot!.liveAssistantDrafts)
+            if (draft.pendingMessageId.trim().isNotEmpty)
+              draft.pendingMessageId.trim(): draft,
+        };
+    final int authoritativeVersion = runtimeSnapshotVersion(
+      authoritativeSnapshot,
+    );
+    final List<String> keysToRemove = <String>[];
+    sessionDrafts.forEach((pendingMessageId, overrideDraft) {
+      final OpenCrayChatLiveAssistantDraftSnapshot? authoritativeDraft =
+          authoritativeDraftsByMessageId[pendingMessageId];
+      if (authoritativeDraft != null &&
+          authoritativeDraft.updatedAtEpochMs >=
+              overrideDraft.updatedAtEpochMs) {
+        keysToRemove.add(pendingMessageId);
+        return;
+      }
+      if (authoritativeDraft == null &&
+          (liveAssistantDraftsAuthoritative ||
+              authoritativeVersion >= overrideDraft.updatedAtEpochMs)) {
+        keysToRemove.add(pendingMessageId);
+      }
+    });
+    for (final String key in keysToRemove) {
+      sessionDrafts.remove(key);
+    }
+    if (sessionDrafts.isEmpty) {
+      _liveAssistantDraftOverridesBySession.remove(sessionId);
+    }
   }
 
   String? _archivedTodoFingerprint(OpenCrayChatSnapshot snapshot) {
@@ -1750,18 +4812,32 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (snapshot == null) {
       return;
     }
+    _pruneLocalDeletionTombstones(snapshot);
     _syncTodoArchiveVisibility(snapshot);
     final ChatFeatureState nextState = _mapSnapshot(
       snapshot,
       _latestChatRuntimeSnapshot,
     );
+    final ChatFeatureState resolvedNextState = _applyLocalDeletionTombstones(
+      nextState.copyWith(
+        drawerOpen: _state.drawerOpen,
+        composer: _composerStateForHostSnapshot(nextState),
+      ),
+    );
+    if (chatFeatureStatesEquivalent(_state, resolvedNextState)) {
+      _syncSandboxSessionAutoRefresh();
+      _syncSandboxSessionLifecycleAutoRefresh();
+      return;
+    }
+    final bool wasPinnedToBottom = _isChatScrollPinnedToBottom();
     final bool shouldScrollToBottom =
-        nextState.messages.length > _state.messages.length ||
-        nextState.runTraces.length > _state.runTraces.length ||
-        nextState.pendingApprovals.length > _state.pendingApprovals.length;
+        resolvedNextState.messages.length > _state.messages.length ||
+        resolvedNextState.runTraces.length > _state.runTraces.length ||
+        resolvedNextState.pendingApprovals.length >
+            _state.pendingApprovals.length;
     final Set<String> retainedSelection = _selectedMessageIds
         .where(
-          (messageId) => nextState.messages.any(
+          (messageId) => resolvedNextState.messages.any(
             (message) => message.messageId == messageId,
           ),
         )
@@ -1769,16 +4845,129 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     setState(() {
       _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
-      _state = nextState.copyWith(
-        drawerOpen: _state.drawerOpen,
-        composer: _composerStateForHostSnapshot(nextState),
-      );
+      _state = resolvedNextState;
       _selectedMessageIds
         ..clear()
         ..addAll(retainedSelection);
     });
     if (shouldScrollToBottom) {
-      _scheduleScrollToBottom();
+      _scheduleScrollToBottom(
+        onlyIfPinned: true,
+        wasPinnedToBottom: wasPinnedToBottom,
+      );
+    }
+    _syncSandboxSessionAutoRefresh();
+    _syncSandboxSessionLifecycleAutoRefresh();
+  }
+
+  void _queueRuntimeActivityPatch(OpenCrayChatRuntimeSnapshot runtimeSnapshot) {
+    _pendingRuntimeProjectionSnapshot = runtimeSnapshot;
+    if (_runtimeProjectionFlushTimer != null) {
+      return;
+    }
+    _runtimeProjectionFlushTimer = Timer(
+      const Duration(milliseconds: 16),
+      _flushQueuedRuntimeActivityPatch,
+    );
+  }
+
+  void _flushQueuedRuntimeActivityPatch() {
+    _runtimeProjectionFlushTimer = null;
+    if (!mounted) {
+      _pendingRuntimeProjectionSnapshot = null;
+      return;
+    }
+    final OpenCrayChatRuntimeSnapshot? runtimeSnapshot =
+        _pendingRuntimeProjectionSnapshot ??
+        _latestChatRuntimeSnapshot ??
+        _latestChatSnapshot?.runtimeActivity;
+    _pendingRuntimeProjectionSnapshot = null;
+    if (runtimeSnapshot == null) {
+      return;
+    }
+    _applyRuntimeActivityPatch(runtimeSnapshot);
+  }
+
+  void _applyRuntimeActivityPatch(OpenCrayChatRuntimeSnapshot runtimeSnapshot) {
+    if (!mounted) {
+      return;
+    }
+    final OpenCrayChatSnapshot? snapshot = _latestChatSnapshot;
+    if (snapshot == null) {
+      return;
+    }
+    final String expectedSessionId = _runtimeProjectionExpectedSessionId(
+      snapshot,
+    );
+    final OpenCrayChatRuntimeSnapshot? effectiveRuntime =
+        _resolveRuntimeSnapshot(
+          expectedSessionId: expectedSessionId,
+          embedded: snapshot.runtimeActivity,
+          streamed: runtimeSnapshot,
+        );
+    final OpenCrayChatSnapshot projectionSnapshot =
+        expectedSessionId.isNotEmpty &&
+            expectedSessionId != _snapshotActiveSessionId(snapshot)
+        ? _projectionSnapshotForLocalSession(
+            source: snapshot,
+            runtimeSnapshot: effectiveRuntime,
+          )
+        : snapshot;
+    final _RuntimeProjectionPatch runtimeProjection = _mapRuntimeProjection(
+      projectionSnapshot,
+      effectiveRuntime,
+    );
+    final ChatFeatureState nextState = _applyLocalDeletionTombstones(
+      _state.copyWith(
+        variant:
+            runtimeProjection.messages.isEmpty &&
+                runtimeProjection.runTraces.isEmpty &&
+                _state.composer.todos.isEmpty &&
+                _state.pendingApprovals.isEmpty
+            ? ChatPrototypeVariant.empty
+            : ChatPrototypeVariant.main,
+        messages: runtimeProjection.messages,
+        runTraces: runtimeProjection.runTraces,
+        emptyThreadHeight:
+            runtimeProjection.messages.isEmpty &&
+                runtimeProjection.runTraces.isEmpty
+            ? 260
+            : 0,
+      ),
+    );
+    final bool wasPinnedToBottom = _isChatScrollPinnedToBottom();
+    final bool shouldScrollToBottom =
+        nextState.messages.length > _state.messages.length ||
+        nextState.runTraces.length > _state.runTraces.length;
+    final bool hasOpenInspector =
+        _RunTraceBubbleState.hasOpenInspectorForTraces(nextState.runTraces);
+    if (!hasOpenInspector &&
+        _runtimeProjectionVisibleStateEquivalent(_state, nextState)) {
+      _syncSandboxSessionAutoRefresh();
+      _syncSandboxSessionLifecycleAutoRefresh();
+      return;
+    }
+    final Set<String> retainedSelection = _selectedMessageIds
+        .where(
+          (messageId) => nextState.messages.any(
+            (message) => message.messageId == messageId,
+          ),
+        )
+        .toSet();
+    // Runtime deltas must propagate fresh trace objects to any open inspector,
+    // even when the visible projection is structurally equivalent.
+    setState(() {
+      _state = nextState;
+      _selectedMessageIds
+        ..clear()
+        ..addAll(retainedSelection);
+    });
+    if (shouldScrollToBottom) {
+      _scheduleScrollToBottom(
+        animated: false,
+        onlyIfPinned: true,
+        wasPinnedToBottom: wasPinnedToBottom,
+      );
     }
     _syncSandboxSessionAutoRefresh();
     _syncSandboxSessionLifecycleAutoRefresh();
@@ -1788,7 +4977,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _sandboxSessionAutoRefreshTimer?.cancel();
     _sandboxSessionAutoRefreshTimer = null;
     _scheduledSandboxSessionRefreshAnchor = null;
-    _queuedSandboxSessionRefreshAnchor = null;
+    _queuedSandboxSessionRefreshAnchors.clear();
   }
 
   void _cancelScheduledSandboxSessionLifecycleRefresh() {
@@ -1827,7 +5016,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return;
     }
     if (_sandboxSessionRefreshInFlight) {
-      _queuedSandboxSessionRefreshAnchor = anchor;
+      _enqueueSandboxSessionRefreshAnchor(anchor);
       return;
     }
     _scheduleSandboxSessionAutoRefresh(anchor);
@@ -1902,13 +5091,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       _lastSandboxSessionRefreshAnchor = anchor;
     } catch (_) {
       _lastSandboxSessionRefreshAnchor = anchor;
-      if (_queuedSandboxSessionRefreshAnchor == anchor) {
-        _queuedSandboxSessionRefreshAnchor = null;
-      }
     } finally {
       _sandboxSessionRefreshInFlight = false;
-      final String? queuedAnchor = _queuedSandboxSessionRefreshAnchor;
-      _queuedSandboxSessionRefreshAnchor = null;
+      final String? queuedAnchor = _dequeueSandboxSessionRefreshAnchor();
       final bool canContinue = mounted;
       final bool shouldScheduleQueuedAnchor =
           canContinue &&
@@ -1925,6 +5110,28 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         _syncSandboxSessionLifecycleAutoRefresh();
       }
     }
+  }
+
+  void _enqueueSandboxSessionRefreshAnchor(String anchor) {
+    final String normalizedAnchor = anchor.trim();
+    if (normalizedAnchor.isEmpty ||
+        normalizedAnchor == _scheduledSandboxSessionRefreshAnchor ||
+        normalizedAnchor == _lastSandboxSessionRefreshAnchor ||
+        _queuedSandboxSessionRefreshAnchors.contains(normalizedAnchor)) {
+      return;
+    }
+    _queuedSandboxSessionRefreshAnchors.add(normalizedAnchor);
+  }
+
+  String? _dequeueSandboxSessionRefreshAnchor() {
+    while (_queuedSandboxSessionRefreshAnchors.isNotEmpty) {
+      final String anchor = _queuedSandboxSessionRefreshAnchors.removeAt(0);
+      if (anchor == _lastSandboxSessionRefreshAnchor) {
+        continue;
+      }
+      return anchor;
+    }
+    return null;
   }
 
   Future<void> _runSandboxSessionLifecycleRefresh() async {
@@ -2227,18 +5434,28 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   ) {
     final bool isImage =
         attachment.kind == OpenCrayChatDraftAttachmentKind.image;
+    final bool isVoice =
+        attachment.kind == OpenCrayChatDraftAttachmentKind.voice;
     final String detail =
         attachment.sizeBytes != null && attachment.sizeBytes! >= 0
         ? _formatAttachmentBytes(attachment.sizeBytes!)
+        : attachment.durationMs != null && attachment.durationMs! > 0
+        ? _formatAttachmentDuration(attachment.durationMs!)
         : (widget.copy.isChinese
-              ? (isImage ? '图片附件' : '文件附件')
-              : (isImage ? 'Image attachment' : 'File attachment'));
+              ? (isImage ? '图片附件' : (isVoice ? '语音附件' : '文件附件'))
+              : (isImage
+                    ? 'Image attachment'
+                    : (isVoice ? 'Voice attachment' : 'File attachment')));
     return ChatAttachmentData(
       id: attachment.id,
-      kind: isImage ? ChatAttachmentKind.image : ChatAttachmentKind.file,
+      kind: isImage
+          ? ChatAttachmentKind.image
+          : (isVoice ? ChatAttachmentKind.voice : ChatAttachmentKind.file),
       label: attachment.displayName,
       detail: detail,
-      accentColor: isImage ? const Color(0xFFE6F0FF) : const Color(0xFFF2F3F7),
+      accentColor: isImage
+          ? const Color(0xFFE6F0FF)
+          : (isVoice ? const Color(0xFFEAF7F4) : const Color(0xFFF2F3F7)),
       draftAttachment: attachment,
     );
   }
@@ -2246,18 +5463,25 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   OpenCrayChatDraftAttachment? _draftAttachmentForMessageAttachment(
     ChatMessageAttachmentData attachment,
   ) {
+    final String chatAttachmentId = attachment.attachmentId.trim();
     final String relativePath = attachment.localPath.trim();
-    if (relativePath.isEmpty) {
+    if (chatAttachmentId.isEmpty && relativePath.isEmpty) {
       return null;
     }
     return OpenCrayChatDraftAttachment(
-      kind: attachment.kind == ChatAttachmentKind.image
-          ? OpenCrayChatDraftAttachmentKind.image
-          : OpenCrayChatDraftAttachmentKind.file,
+      kind: switch (attachment.kind) {
+        ChatAttachmentKind.image => OpenCrayChatDraftAttachmentKind.image,
+        ChatAttachmentKind.voice => OpenCrayChatDraftAttachmentKind.voice,
+        ChatAttachmentKind.file => OpenCrayChatDraftAttachmentKind.file,
+      },
       displayName: attachment.displayName,
       relativePath: relativePath,
+      chatAttachmentId: chatAttachmentId.isEmpty ? null : chatAttachmentId,
       mimeType: attachment.mimeType,
       sizeBytes: attachment.sizeBytes,
+      durationMs: attachment.durationMs,
+      waveformBars: attachment.waveformBars,
+      transcriptText: attachment.transcriptText,
     );
   }
 
@@ -2303,6 +5527,63 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         : 'Each message supports up to $_chatComposerMaxImageAttachments images.';
   }
 
+  String _attachmentPickerFailureMessage(Object error) {
+    final explicitMessage = switch (error) {
+      PlatformException(:final message?) => _normalizeAttachmentErrorMessage(
+        message,
+      ),
+      UnsupportedError(:final message?) => _normalizeAttachmentErrorMessage(
+        message,
+      ),
+      _ => _normalizeAttachmentErrorMessage(error.toString()),
+    };
+    if (explicitMessage != null) {
+      return explicitMessage;
+    }
+    return widget.copy.isChinese ? '无法添加附件。' : 'Unable to add attachment.';
+  }
+
+  String? _normalizeAttachmentErrorMessage(String rawMessage) {
+    var message = rawMessage.trim();
+    if (message.isEmpty) {
+      return null;
+    }
+    if (message.startsWith('Bad state: ')) {
+      return null;
+    }
+    if (message.startsWith('Unsupported operation: ')) {
+      message = message.substring('Unsupported operation: '.length).trim();
+    }
+    if (message.startsWith('HttpException: ')) {
+      message = message.substring('HttpException: '.length).trim();
+    }
+    message = message.replaceFirst(RegExp(r', uri = .*$'), '').trim();
+    final localRuntimeMatch = RegExp(
+      r'^Local runtime returned HTTP \d+: (.+)$',
+    ).firstMatch(message);
+    if (localRuntimeMatch != null) {
+      message = localRuntimeMatch.group(1)?.trim() ?? '';
+    }
+    if (message.startsWith('{') && message.endsWith('}')) {
+      final decoded = _tryDecodeAttachmentErrorMessage(message);
+      if (decoded != null) {
+        message = decoded;
+      }
+    }
+    return message.isEmpty ? null : message;
+  }
+
+  String? _tryDecodeAttachmentErrorMessage(String payload) {
+    try {
+      final decoded = jsonDecode(payload);
+      if (decoded is Map<Object?, Object?>) {
+        final error = decoded['error'] as String?;
+        return error?.trim().isNotEmpty == true ? error!.trim() : null;
+      }
+    } catch (_) {}
+    return null;
+  }
+
   void _showComposerNotice(String message) {
     final bridge = widget.bridge;
     if (bridge != null) {
@@ -2318,8 +5599,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _dismissMessageMenu();
     final bridge = widget.bridge;
     if (bridge != null) {
-      bridge.selectChatSession(session.sessionId);
-      _closeDrawer();
+      setState(() {
+        _state = _stateForLocallySelectedSession(session.sessionId);
+      });
+      unawaited(_selectSessionFromBridge(bridge, session.sessionId));
       return;
     }
     setState(() {
@@ -2348,6 +5631,60 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         drawerOpen: false,
       );
     });
+  }
+
+  Future<void> _selectSessionFromBridge(
+    OpenCrayHostBridge bridge,
+    String sessionId,
+  ) async {
+    try {
+      await bridge.selectChatSession(sessionId);
+    } catch (_) {
+      if (!mounted) {
+        return;
+      }
+      _applyHostState();
+      _showSessionActionFailed();
+    }
+  }
+
+  ChatFeatureState _stateForLocallySelectedSession(String sessionId) {
+    final String selectedSessionId = sessionId.trim();
+    final List<ChatSessionListItemData> sessions = _state.drawer.sessions
+        .map(
+          (item) => ChatSessionListItemData(
+            sessionId: item.sessionId,
+            title: item.title,
+            preview: item.preview,
+            meta: item.meta,
+            isSelected: item.sessionId == selectedSessionId,
+            lastMessageAtEpochMs: item.lastMessageAtEpochMs,
+            unreadCount: item.sessionId == selectedSessionId
+                ? 0
+                : item.unreadCount,
+          ),
+        )
+        .toList(growable: false);
+    final bool threadEmpty = selectedSessionId != _activeSessionId;
+    return _state.copyWith(
+      variant: threadEmpty ? ChatPrototypeVariant.empty : _state.variant,
+      messages: threadEmpty ? const <ChatMessageData>[] : _state.messages,
+      runTraces: threadEmpty ? const <ChatRunTraceData>[] : _state.runTraces,
+      pendingApprovals: threadEmpty
+          ? const <ChatPendingApprovalData>[]
+          : _state.pendingApprovals,
+      composer: threadEmpty
+          ? _state.composer.copyWith(todos: const <ChatTodoItemData>[])
+          : _state.composer,
+      drawer: ChatSessionsDrawerState(
+        eyebrow: _state.drawer.eyebrow,
+        title: _state.drawer.title,
+        ctaLabel: _state.drawer.ctaLabel,
+        sessions: sessions,
+      ),
+      drawerOpen: false,
+      emptyThreadHeight: threadEmpty ? 260 : _state.emptyThreadHeight,
+    );
   }
 
   Future<void> _handleSessionLongPress(
@@ -2453,21 +5790,31 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   Future<void> _deleteSession(ChatSessionListItemData session) async {
+    final String sessionId = session.sessionId.trim();
+    if (sessionId.isEmpty) {
+      return;
+    }
     final bridge = widget.bridge;
     if (bridge != null) {
+      setState(() {
+        _locallyDeletedSessionIds.add(sessionId);
+        _state = _applyLocalDeletionTombstones(_state);
+      });
       try {
-        await bridge.deleteChatSession(session.sessionId);
+        await bridge.deleteChatSession(sessionId);
       } catch (_) {
         if (!mounted) {
           return;
         }
+        _locallyDeletedSessionIds.remove(sessionId);
+        _applyHostState();
         _showSessionActionFailed();
       }
       return;
     }
     setState(() {
       final remainingSessions = _state.drawer.sessions
-          .where((item) => item.sessionId != session.sessionId)
+          .where((item) => item.sessionId != sessionId)
           .toList(growable: false);
       if (remainingSessions.isEmpty) {
         _state = OpenCrayChatSeedData.empty(widget.copy);
@@ -2547,10 +5894,26 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (!mounted) {
       return;
     }
+    final OpenCrayChatRuntimeSnapshot resolvedRuntimeSnapshot =
+        _latestChatRuntimeSnapshot != null &&
+            !_runtimeSnapshotsShareSession(
+              _latestChatRuntimeSnapshot!,
+              runtimeSnapshot,
+            ) &&
+            runtimeSnapshot.sessionId.trim().isNotEmpty
+        ? runtimeSnapshot
+        : resolveChatRuntimeSnapshot(
+                _latestChatRuntimeSnapshot,
+                runtimeSnapshot,
+              ) ??
+              runtimeSnapshot;
     _latestChatSnapshot = snapshot;
-    _latestChatRuntimeSnapshot = runtimeSnapshot;
+    _latestChatRuntimeSnapshot = resolvedRuntimeSnapshot;
+    _pruneLocalDeletionTombstones(snapshot);
     _syncTodoArchiveVisibility(snapshot);
-    final ChatFeatureState nextState = _mapSnapshot(snapshot, runtimeSnapshot);
+    final ChatFeatureState nextState = _applyLocalDeletionTombstones(
+      _mapSnapshot(snapshot, resolvedRuntimeSnapshot),
+    );
     final Set<String> retainedSelection = _selectedMessageIds
         .where(
           (messageId) => nextState.messages.any(
@@ -2580,53 +5943,20 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
   ) {
     final OpenCrayChatRuntimeSnapshot? effectiveRuntime =
-        _resolveRuntimeSnapshot(snapshot.runtimeActivity, runtimeSnapshot);
-    final List<ChatRunTraceData> runTraces = _mapRunTraces(
-      effectiveRuntime,
-      snapshot.pendingApprovals,
-    );
-    final Map<String, String> liveDraftTextByMessageId =
-        effectiveRuntime == null
-        ? const <String, String>{}
-        : <String, String>{
-            for (final draft in effectiveRuntime.liveAssistantDrafts)
-              if (draft.pendingMessageId.trim().isNotEmpty &&
-                  _visibleAssistantDraftText(draft.text) != null)
-                draft.pendingMessageId.trim(): _visibleAssistantDraftText(
-                  draft.text,
-                )!,
-          };
-    final List<ChatMessageData> mappedMessages = _mapMessages(
-      snapshot.messages,
-      hideThinkingPlaceholder: runTraces.isNotEmpty,
-      draftTextByMessageId: liveDraftTextByMessageId,
-    );
-    final Set<String> existingMessageIds = mappedMessages
-        .map((message) => message.messageId.trim())
-        .where((messageId) => messageId.isNotEmpty)
-        .toSet();
-    final List<ChatMessageData> projectedLiveDraftMessages =
-        _mapUnanchoredLiveDraftMessages(
-          effectiveRuntime,
-          existingMessageIds,
+        _resolveRuntimeSnapshot(
+          expectedSessionId: _snapshotActiveSessionId(snapshot),
+          embedded: snapshot.runtimeActivity,
+          streamed: runtimeSnapshot,
         );
-    final Set<String> projectedLiveDraftMessageIds = projectedLiveDraftMessages
-        .map((message) => message.messageId.trim())
-        .where((messageId) => messageId.isNotEmpty)
-        .toSet();
+    final _RuntimeProjectionPatch runtimeProjection = _mapRuntimeProjection(
+      snapshot,
+      effectiveRuntime,
+    );
     final List<ChatTodoItemData> visibleTodos = _mapVisibleTodos(snapshot);
-    final List<ChatMessageData> messages = <ChatMessageData>[
-      ...mappedMessages,
-      ...projectedLiveDraftMessages,
-      ..._mapProjectedAssistantPhaseMessages(
-        effectiveRuntime,
-        <String>{...existingMessageIds, ...projectedLiveDraftMessageIds},
-      ),
-    ];
     return ChatFeatureState(
       variant:
-          messages.isEmpty &&
-              runTraces.isEmpty &&
+          runtimeProjection.messages.isEmpty &&
+              runtimeProjection.runTraces.isEmpty &&
               visibleTodos.isEmpty &&
               snapshot.pendingApprovals.isEmpty
           ? ChatPrototypeVariant.empty
@@ -2637,8 +5967,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         badge: snapshot.summary.badge,
         body: snapshot.summary.body,
       ),
-      messages: messages,
-      runTraces: runTraces,
+      messages: runtimeProjection.messages,
+      runTraces: runtimeProjection.runTraces,
       composer: ChatComposerState(
         placeholder: snapshot.composerPlaceholder,
         todos: visibleTodos,
@@ -2690,35 +6020,193 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           .toList(growable: false),
       modeLabel: snapshot.modeLabel,
       sessionButtonLabel: snapshot.sessionButtonLabel,
-      emptyThreadHeight: messages.isEmpty && runTraces.isEmpty ? 260 : 0,
+      emptyThreadHeight:
+          runtimeProjection.messages.isEmpty &&
+              runtimeProjection.runTraces.isEmpty
+          ? 260
+          : 0,
       isInputEnabled: snapshot.isInputEnabled,
     );
+  }
+
+  _RuntimeProjectionPatch _mapRuntimeProjection(
+    OpenCrayChatSnapshot snapshot,
+    OpenCrayChatRuntimeSnapshot? effectiveRuntime,
+  ) {
+    final List<ChatRunTraceData> runTraces = _mapRunTraces(
+      effectiveRuntime,
+      snapshot.pendingApprovals,
+    );
+    final Map<String, String> liveDraftTextByMessageId =
+        _liveDraftTextByMessageId(effectiveRuntime);
+    final Map<String, _RuntimeProjectedMessagePatch>
+    runtimeProjectedMessagePatches = _runtimeProjectedMessagePatchesByMessageId(
+      effectiveRuntime,
+    );
+    final List<ChatMessageData> anchoredMessages = _mapMessages(
+      snapshot.messages,
+      hideThinkingPlaceholder: false,
+      draftTextByMessageId: liveDraftTextByMessageId,
+      runtimeProjectedMessagePatches: runtimeProjectedMessagePatches,
+    );
+    final Set<String> existingMessageIds = anchoredMessages
+        .map((message) => message.messageId.trim())
+        .where((messageId) => messageId.isNotEmpty)
+        .toSet();
+    final List<ChatMessageData> projectedLiveDraftMessages =
+        _mapUnanchoredLiveDraftMessages(effectiveRuntime, existingMessageIds);
+    final List<ChatMessageData> anchoredVisibleMessages = <ChatMessageData>[
+      ...anchoredMessages,
+      ...projectedLiveDraftMessages,
+    ];
+    final List<ChatMessageData> messages = _trimHiddenThinkingPlaceholder(
+      _mergeProjectedAssistantPhaseMessages(
+        messages: anchoredVisibleMessages,
+        runtimeSnapshot: effectiveRuntime,
+      ),
+      hideThinkingPlaceholder: runTraces.isNotEmpty,
+    );
+    return _RuntimeProjectionPatch(messages: messages, runTraces: runTraces);
+  }
+
+  Map<String, String> _liveDraftTextByMessageId(
+    OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
+  ) {
+    if (runtimeSnapshot == null) {
+      return const <String, String>{};
+    }
+    final Map<String, String> visibleDrafts = <String, String>{};
+    for (final draft in runtimeSnapshot.liveAssistantDrafts) {
+      final String pendingMessageId = draft.pendingMessageId.trim();
+      final String? visibleDraftText = _visibleAssistantDraftText(draft.text);
+      if (pendingMessageId.isEmpty ||
+          visibleDraftText == null ||
+          !_shouldDisplayLiveAssistantDraft(
+            runId: draft.runId,
+            taskId: draft.taskId,
+            runtimeSnapshot: runtimeSnapshot,
+          )) {
+        continue;
+      }
+      visibleDrafts[pendingMessageId] = visibleDraftText;
+    }
+    return visibleDrafts;
+  }
+
+  Map<String, _RuntimeProjectedMessagePatch>
+  _runtimeProjectedMessagePatchesByMessageId(
+    OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
+  ) {
+    if (runtimeSnapshot == null) {
+      return const <String, _RuntimeProjectedMessagePatch>{};
+    }
+    final Map<String, _RuntimeProjectedMessagePatch> patchesByMessageId =
+        <String, _RuntimeProjectedMessagePatch>{};
+    final List<OpenCrayChatRunSnapshot> visibleRuns = _visibleRuns(
+      runtimeSnapshot,
+    );
+    final Map<String, OpenCrayChatRunSnapshot> visibleRunsByRunId =
+        <String, OpenCrayChatRunSnapshot>{
+          for (final run in visibleRuns)
+            if (run.runId.trim().isNotEmpty) run.runId.trim(): run,
+        };
+    final Map<String, OpenCrayChatRunSnapshot> visibleRunsByTaskId =
+        <String, OpenCrayChatRunSnapshot>{
+          for (final run in visibleRuns)
+            if (run.taskId.trim().isNotEmpty) run.taskId.trim(): run,
+        };
+    for (final event in runtimeSnapshot.events) {
+      if (event.kind != 'assistant_phase' ||
+          event.isFinal == true ||
+          _hideAssistantPhaseBubble(event)) {
+        continue;
+      }
+      final OpenCrayChatRunSnapshot? run =
+          visibleRunsByRunId[event.runId.trim()] ??
+          visibleRunsByTaskId[event.taskId.trim()];
+      final String anchorMessageId = run?.pendingMessageId?.trim() ?? '';
+      if (run == null ||
+          anchorMessageId.isEmpty ||
+          !run.matchesRuntimeEvent(event)) {
+        continue;
+      }
+      final String text = _projectedAssistantPhaseMessageText(event);
+      if (text.trim().isEmpty) {
+        continue;
+      }
+      for (final messageId in _assistantPhaseMessageIds(event)) {
+        patchesByMessageId[messageId] = _RuntimeProjectedMessagePatch(
+          anchorMessageId: anchorMessageId,
+          text: text,
+          isStreaming: true,
+        );
+      }
+    }
+    for (final run in visibleRuns) {
+      final String anchorMessageId = run.pendingMessageId?.trim() ?? '';
+      if (anchorMessageId.isEmpty) {
+        continue;
+      }
+      for (final process in run.managedProcesses) {
+        final String text = _projectedManagedProcessMessageText(process);
+        if (text.trim().isEmpty) {
+          continue;
+        }
+        for (final messageId in _projectedManagedProcessMessageIds(
+          run: run,
+          process: process,
+        )) {
+          patchesByMessageId[messageId] = _RuntimeProjectedMessagePatch(
+            anchorMessageId: anchorMessageId,
+            text: text,
+            isStreaming: !run.isTerminal && _managedProcessIsStreaming(process),
+          );
+        }
+      }
+    }
+    return patchesByMessageId;
   }
 
   List<ChatMessageData> _mapMessages(
     List<OpenCrayChatMessageSnapshot> messages, {
     required bool hideThinkingPlaceholder,
     required Map<String, String> draftTextByMessageId,
+    Map<String, _RuntimeProjectedMessagePatch> runtimeProjectedMessagePatches =
+        const <String, _RuntimeProjectedMessagePatch>{},
   }) {
     final mapped = messages
         .asMap()
         .entries
-        .map(
-          (entry) => ChatMessageData(
-            messageId: entry.value.messageId.trim().isNotEmpty
-                ? entry.value.messageId
-                : 'message-${entry.key}-${entry.value.kind}',
+        .map((entry) {
+          final String messageId = entry.value.messageId.trim().isNotEmpty
+              ? entry.value.messageId
+              : 'message-${entry.key}-${entry.value.kind}';
+          final _RuntimeProjectedMessagePatch? runtimePatch =
+              runtimeProjectedMessagePatches[messageId];
+          final bool hasLiveDraftText =
+              draftTextByMessageId.containsKey(messageId) &&
+              _shouldReplacePendingThinkingBubble(
+                messageKind: entry.value.kind,
+                text: entry.value.text,
+              );
+          return ChatMessageData(
+            messageId: messageId,
             kind: switch (entry.value.kind) {
               'timeline' => ChatMessageKind.timeline,
               'outbound' => ChatMessageKind.outbound,
               _ => ChatMessageKind.inbound,
             },
             text:
-                draftTextByMessageId[entry.value.messageId.trim()] ??
-                entry.value.text,
+                runtimePatch?.text ??
+                _resolvedChatMessageText(
+                  message: entry.value,
+                  draftTextByMessageId: draftTextByMessageId,
+                ),
             meta: entry.value.meta,
+            runtimeAnchorMessageId: runtimePatch?.anchorMessageId ?? '',
             createdAtEpochMs: entry.value.createdAtEpochMs,
             isEphemeral: entry.value.isEphemeral,
+            isStreaming: runtimePatch?.isStreaming ?? hasLiveDraftText,
             attachments: entry.value.attachments
                 .map(
                   (attachment) => ChatMessageAttachmentData(
@@ -2743,17 +6231,58 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                   ),
                 )
                 .toList(growable: false),
-          ),
-        )
+          );
+        })
         .toList(growable: true);
     if (hideThinkingPlaceholder && mapped.isNotEmpty) {
-      final lastMessage = mapped.last;
-      if (lastMessage.kind == ChatMessageKind.inbound &&
-          _thinkingPlaceholders.contains(lastMessage.text.trim())) {
-        mapped.removeLast();
-      }
+      return _trimHiddenThinkingPlaceholder(
+        mapped,
+        hideThinkingPlaceholder: true,
+      );
     }
     return mapped;
+  }
+
+  List<ChatMessageData> _trimHiddenThinkingPlaceholder(
+    List<ChatMessageData> messages, {
+    required bool hideThinkingPlaceholder,
+  }) {
+    if (!hideThinkingPlaceholder || messages.isEmpty) {
+      return messages;
+    }
+    final ChatMessageData lastMessage = messages.last;
+    if (lastMessage.kind != ChatMessageKind.inbound ||
+        !_thinkingPlaceholders.contains(lastMessage.text.trim())) {
+      return messages;
+    }
+    return messages.take(messages.length - 1).toList(growable: false);
+  }
+
+  String _resolvedChatMessageText({
+    required OpenCrayChatMessageSnapshot message,
+    required Map<String, String> draftTextByMessageId,
+  }) {
+    final String baseText = message.text;
+    final String messageId = message.messageId.trim();
+    final String? liveDraftText = draftTextByMessageId[messageId];
+    if (liveDraftText == null ||
+        !_shouldReplacePendingThinkingBubble(
+          messageKind: message.kind,
+          text: baseText,
+        )) {
+      return baseText;
+    }
+    return liveDraftText;
+  }
+
+  bool _shouldReplacePendingThinkingBubble({
+    required String messageKind,
+    required String text,
+  }) {
+    if (messageKind == 'outbound' || messageKind == 'timeline') {
+      return false;
+    }
+    return _thinkingPlaceholders.contains(text.trim());
   }
 
   List<ChatRunTraceData> _mapRunTraces(
@@ -2961,10 +6490,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final String childRunId = event.childRunId?.trim() ?? '';
     final String childTaskId = event.childTaskId?.trim() ?? '';
     final String label = event.label?.trim() ?? '';
-    final String childKey = childRunId.isNotEmpty
-        ? childRunId
-        : (childTaskId.isNotEmpty ? childTaskId : label);
-    return '${event.runId.trim()}|$childKey';
+    final String childKey = childTaskId.isNotEmpty
+        ? childTaskId
+        : (childRunId.isNotEmpty ? childRunId : label);
+    final String parentTaskId = event.taskId.trim();
+    final String parentRunId = event.runId.trim();
+    final String parentKey = parentTaskId.isNotEmpty
+        ? parentTaskId
+        : parentRunId;
+    return '$parentKey|$childKey';
   }
 
   String _subAgentStateSignature(OpenCrayChatRuntimeEventSnapshot event) =>
@@ -2997,79 +6531,183 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return 'subagent-$parentKey-$label';
   }
 
-  List<ChatMessageData> _mapProjectedAssistantPhaseMessages(
-    OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
-    Set<String> existingMessageIds,
-  ) {
-    if (runtimeSnapshot == null || runtimeSnapshot.activeRuns.isEmpty) {
-      return const <ChatMessageData>[];
+  List<ChatMessageData> _mergeProjectedAssistantPhaseMessages({
+    required List<ChatMessageData> messages,
+    required OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
+  }) {
+    if (runtimeSnapshot == null) {
+      return messages;
     }
-    final Set<String> seenMessageIds = <String>{};
-    final List<ChatMessageData> projected = <ChatMessageData>[];
-    final Map<String, OpenCrayChatRunSnapshot> activeRunsById =
+    final List<OpenCrayChatRunSnapshot> visibleRuns = _visibleRuns(
+      runtimeSnapshot,
+    );
+    if (visibleRuns.isEmpty) {
+      return messages;
+    }
+    final Map<String, OpenCrayChatRunSnapshot> visibleRunsByRunId =
         <String, OpenCrayChatRunSnapshot>{
-          for (final run in runtimeSnapshot.activeRuns)
+          for (final run in visibleRuns)
             if (run.runId.trim().isNotEmpty) run.runId.trim(): run,
         };
-    if (activeRunsById.isEmpty) {
-      return const <ChatMessageData>[];
+    final Map<String, OpenCrayChatRunSnapshot> visibleRunsByTaskId =
+        <String, OpenCrayChatRunSnapshot>{
+          for (final run in visibleRuns)
+            if (run.taskId.trim().isNotEmpty) run.taskId.trim(): run,
+        };
+    if (visibleRunsByRunId.isEmpty && visibleRunsByTaskId.isEmpty) {
+      return messages;
     }
+    final Set<String> visibleMessageIds = messages
+        .map((message) => message.messageId.trim())
+        .where((messageId) => messageId.isNotEmpty)
+        .toSet();
     final List<OpenCrayChatRuntimeEventSnapshot> sortedEvents =
         runtimeSnapshot.events.toList(growable: false)..sort(
           (left, right) =>
               left.emittedAtEpochMs.compareTo(right.emittedAtEpochMs),
         );
+    final Map<String, List<ChatMessageData>> projectedByAnchorMessageId =
+        <String, List<ChatMessageData>>{};
+    final Set<String> seenMessageIds = <String>{...visibleMessageIds};
     for (final event in sortedEvents) {
       final String runId = event.runId.trim();
-      final OpenCrayChatRunSnapshot? run = activeRunsById[runId];
+      final String taskId = event.taskId.trim();
+      final OpenCrayChatRunSnapshot? run =
+          visibleRunsByRunId[runId] ?? visibleRunsByTaskId[taskId];
+      final String anchorMessageId = run?.pendingMessageId?.trim() ?? '';
       if (run == null ||
+          anchorMessageId.isEmpty ||
+          !visibleMessageIds.contains(anchorMessageId) ||
           !run.matchesRuntimeEvent(event) ||
           event.kind != 'assistant_phase' ||
           event.isFinal == true ||
           _hideAssistantPhaseBubble(event)) {
         continue;
       }
-      final String messageId =
-          'runtime-assistant-${_assistantPhaseTag(event)}-$runId-${event.emittedAtEpochMs}';
-      if (!seenMessageIds.add(messageId) ||
-          existingMessageIds.contains(messageId)) {
+      final List<String> aliases = _assistantPhaseMessageIds(event);
+      final String messageId = aliases.first;
+      if (aliases.any(seenMessageIds.contains) ||
+          !seenMessageIds.add(messageId)) {
         continue;
       }
+      seenMessageIds.addAll(aliases);
       final String text = _projectedAssistantPhaseMessageText(event);
       if (text.trim().isEmpty) {
         continue;
       }
-      projected.add(
-        ChatMessageData(
-          messageId: messageId,
-          kind: ChatMessageKind.inbound,
-          text: text,
-          isEphemeral: true,
-        ),
-      );
+      projectedByAnchorMessageId
+          .putIfAbsent(anchorMessageId, () => <ChatMessageData>[])
+          .add(
+            ChatMessageData(
+              messageId: messageId,
+              kind: ChatMessageKind.inbound,
+              text: text,
+              runtimeAnchorMessageId: anchorMessageId,
+              createdAtEpochMs: event.emittedAtEpochMs,
+              isEphemeral: true,
+              isStreaming: true,
+            ),
+          );
     }
-    return projected;
+    for (final run in visibleRuns) {
+      final String anchorMessageId = run.pendingMessageId?.trim() ?? '';
+      if (anchorMessageId.isEmpty ||
+          !visibleMessageIds.contains(anchorMessageId)) {
+        continue;
+      }
+      final List<OpenCrayChatManagedProcessSnapshot> processes =
+          run.managedProcesses.toList(growable: false)..sort((left, right) {
+            final int leftSortEpochMs = _managedProcessSortEpochMs(left);
+            final int rightSortEpochMs = _managedProcessSortEpochMs(right);
+            if (leftSortEpochMs != rightSortEpochMs) {
+              return leftSortEpochMs.compareTo(rightSortEpochMs);
+            }
+            return left.processId.compareTo(right.processId);
+          });
+      for (final process in processes) {
+        final String messageId = _projectedManagedProcessMessageId(
+          run: run,
+          process: process,
+        );
+        final List<String> aliases = _projectedManagedProcessMessageIds(
+          run: run,
+          process: process,
+        );
+        if (aliases.any(seenMessageIds.contains) ||
+            !seenMessageIds.add(messageId)) {
+          continue;
+        }
+        seenMessageIds.addAll(aliases);
+        final String text = _projectedManagedProcessMessageText(process);
+        if (text.trim().isEmpty) {
+          continue;
+        }
+        projectedByAnchorMessageId
+            .putIfAbsent(anchorMessageId, () => <ChatMessageData>[])
+            .add(
+              ChatMessageData(
+                messageId: messageId,
+                kind: ChatMessageKind.inbound,
+                text: text,
+                runtimeAnchorMessageId: anchorMessageId,
+                createdAtEpochMs: _managedProcessSortEpochMs(process),
+                isEphemeral: true,
+                isStreaming:
+                    !run.isTerminal && _managedProcessIsStreaming(process),
+              ),
+            );
+      }
+    }
+    if (projectedByAnchorMessageId.isEmpty) {
+      return messages;
+    }
+    final List<ChatMessageData> mergedMessages = <ChatMessageData>[];
+    for (final message in messages) {
+      final List<ChatMessageData>? projections =
+          projectedByAnchorMessageId[message.messageId];
+      if (projections != null) {
+        mergedMessages.addAll(
+          projections.toList(growable: false)..sort((left, right) {
+            final int leftEpochMs = left.createdAtEpochMs ?? 0;
+            final int rightEpochMs = right.createdAtEpochMs ?? 0;
+            if (leftEpochMs != rightEpochMs) {
+              return leftEpochMs.compareTo(rightEpochMs);
+            }
+            return left.messageId.compareTo(right.messageId);
+          }),
+        );
+      }
+      mergedMessages.add(message);
+    }
+    return mergedMessages;
   }
 
   List<ChatMessageData> _mapUnanchoredLiveDraftMessages(
     OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
     Set<String> existingMessageIds,
   ) {
-    if (runtimeSnapshot == null || runtimeSnapshot.liveAssistantDrafts.isEmpty) {
+    if (runtimeSnapshot == null ||
+        runtimeSnapshot.liveAssistantDrafts.isEmpty) {
       return const <ChatMessageData>[];
     }
     final List<ChatMessageData> projected = <ChatMessageData>[];
     final Set<String> seenMessageIds = <String>{...existingMessageIds};
     final List<OpenCrayChatLiveAssistantDraftSnapshot> sortedDrafts =
-        runtimeSnapshot.liveAssistantDrafts.toList(growable: false)
-          ..sort(
-            (left, right) =>
-                left.updatedAtEpochMs.compareTo(right.updatedAtEpochMs),
-          );
+        runtimeSnapshot.liveAssistantDrafts.toList(growable: false)..sort(
+          (left, right) =>
+              left.updatedAtEpochMs.compareTo(right.updatedAtEpochMs),
+        );
     for (final draft in sortedDrafts) {
       final String messageId = draft.pendingMessageId.trim();
       final String text = _visibleAssistantDraftText(draft.text) ?? '';
-      if (messageId.isEmpty || text.isEmpty || !seenMessageIds.add(messageId)) {
+      if (messageId.isEmpty ||
+          text.isEmpty ||
+          !_shouldDisplayLiveAssistantDraft(
+            runId: draft.runId,
+            taskId: draft.taskId,
+            runtimeSnapshot: runtimeSnapshot,
+          ) ||
+          !seenMessageIds.add(messageId)) {
         continue;
       }
       projected.add(
@@ -3078,15 +6716,181 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           kind: ChatMessageKind.inbound,
           text: text,
           isEphemeral: true,
+          isStreaming: true,
         ),
       );
     }
     return projected;
   }
 
+  bool _shouldDisplayLiveAssistantDraft({
+    required String runId,
+    required String taskId,
+    required OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
+  }) {
+    if (runtimeSnapshot == null) {
+      return true;
+    }
+    final String normalizedRunId = runId.trim();
+    final String normalizedTaskId = taskId.trim();
+    if (normalizedRunId.isEmpty && normalizedTaskId.isEmpty) {
+      return true;
+    }
+    OpenCrayChatRunSnapshot? matchedRun;
+    for (final run in _visibleRuns(runtimeSnapshot)) {
+      if (normalizedRunId.isNotEmpty && run.runId.trim() == normalizedRunId) {
+        matchedRun = run;
+        break;
+      }
+      if (normalizedTaskId.isNotEmpty &&
+          run.taskId.trim() == normalizedTaskId) {
+        matchedRun = run;
+        break;
+      }
+    }
+    if (matchedRun == null) {
+      return true;
+    }
+    final OpenCrayChatRuntimeEventSnapshot? latestEvent = _latestRunTraceEvent(
+      _runEventsFor(run: matchedRun, runtimeSnapshot: runtimeSnapshot),
+    );
+    if (latestEvent == null) {
+      return true;
+    }
+    if (latestEvent.kind == 'interrupted') {
+      return false;
+    }
+    return latestEvent.kind != 'assistant_phase' ||
+        latestEvent.isFinal == true ||
+        _hideAssistantPhaseBubble(latestEvent);
+  }
+
+  bool _runHasVisibleLiveAssistantDraft({
+    required OpenCrayChatRunSnapshot run,
+    required OpenCrayChatRuntimeSnapshot runtimeSnapshot,
+  }) {
+    if (run.isTerminal) {
+      return false;
+    }
+    final String pendingMessageId = run.pendingMessageId?.trim() ?? '';
+    if (pendingMessageId.isEmpty) {
+      return false;
+    }
+    for (final draft in runtimeSnapshot.liveAssistantDrafts) {
+      if (draft.pendingMessageId.trim() != pendingMessageId ||
+          _visibleAssistantDraftText(draft.text)?.isNotEmpty != true ||
+          !_shouldDisplayLiveAssistantDraft(
+            runId: draft.runId,
+            taskId: draft.taskId,
+            runtimeSnapshot: runtimeSnapshot,
+          )) {
+        continue;
+      }
+      final String draftRunId = draft.runId.trim();
+      final String draftTaskId = draft.taskId.trim();
+      if ((draftRunId.isNotEmpty && draftRunId == run.runId.trim()) ||
+          (draftTaskId.isNotEmpty && draftTaskId == run.taskId.trim()) ||
+          (draftRunId.isEmpty && draftTaskId.isEmpty)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   bool _hideAssistantPhaseBubble(OpenCrayChatRuntimeEventSnapshot event) {
     final String stage = event.stage?.trim().toLowerCase() ?? '';
     return stage == 'llm_retry' || stage == 'responses_recovery';
+  }
+
+  String _projectedManagedProcessMessageId({
+    required OpenCrayChatRunSnapshot run,
+    required OpenCrayChatManagedProcessSnapshot process,
+  }) {
+    final String runId = _projectedRuntimeOwnerKey(run);
+    final String processId = process.processId.trim();
+    if (processId.isNotEmpty) {
+      return 'runtime-process-$runId-$processId';
+    }
+    final String fingerprint = <String>[
+      process.command.trim(),
+      process.args.join('\u0001'),
+      process.workingDirectory?.trim() ?? '',
+      process.startedAtEpochMs.toString(),
+    ].join('\u0002');
+    return 'runtime-process-$runId-fp-${javaStringHashHex(fingerprint)}';
+  }
+
+  List<String> _projectedManagedProcessMessageIds({
+    required OpenCrayChatRunSnapshot run,
+    required OpenCrayChatManagedProcessSnapshot process,
+  }) {
+    final List<String> ownerKeys = _projectedRuntimeOwnerKeys(run);
+    if (ownerKeys.isEmpty) {
+      return <String>[
+        _projectedManagedProcessMessageId(run: run, process: process),
+      ];
+    }
+    final String processId = process.processId.trim();
+    final String processKey = processId.isNotEmpty
+        ? processId
+        : 'fp-${javaStringHashHex(_managedProcessFingerprint(process))}';
+    return ownerKeys
+        .map((ownerKey) => 'runtime-process-$ownerKey-$processKey')
+        .toList(growable: false);
+  }
+
+  List<String> _projectedRuntimeOwnerKeys(OpenCrayChatRunSnapshot run) {
+    final List<String> keys = <String>[];
+    final String taskId = run.taskId.trim();
+    final String runId = run.runId.trim();
+    if (taskId.isNotEmpty) {
+      keys.add(taskId);
+    }
+    if (runId.isNotEmpty && runId != taskId) {
+      keys.add(runId);
+    }
+    return keys;
+  }
+
+  String _projectedRuntimeOwnerKey(OpenCrayChatRunSnapshot run) {
+    final List<String> keys = _projectedRuntimeOwnerKeys(run);
+    if (keys.isNotEmpty) {
+      return keys.first;
+    }
+    return run.acceptedAtEpochMs.toString();
+  }
+
+  String _managedProcessFingerprint(
+    OpenCrayChatManagedProcessSnapshot process,
+  ) {
+    return <String>[
+      process.command.trim(),
+      process.args.join('\u0001'),
+      process.workingDirectory?.trim() ?? '',
+      process.startedAtEpochMs.toString(),
+    ].join('\u0002');
+  }
+
+  String _projectedManagedProcessMessageText(
+    OpenCrayChatManagedProcessSnapshot process,
+  ) {
+    final String command = <String>[
+      process.command,
+      ...process.args,
+    ].map((part) => part.trim()).where((part) => part.isNotEmpty).join(' ');
+    final String output =
+        (process.stdout.isNotEmpty ? process.stdout : process.stdoutPreview)
+            .trim();
+    return _joinTraceSections(<String?>[
+      'Process ${process.processId}',
+      '${_managedProcessStatusSummary(process)}: $command',
+      output.isEmpty ? null : output,
+    ]);
+  }
+
+  bool _managedProcessIsStreaming(OpenCrayChatManagedProcessSnapshot process) {
+    final String status = process.status.trim().toLowerCase();
+    return status.isEmpty || status == 'running';
   }
 
   ChatRunTraceData _mapRunTrace({
@@ -3105,7 +6909,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           runEvents: runEvents,
         );
     final OpenCrayChatRuntimeEventSnapshot? event = _effectiveRunTraceEvent(
-      lastEvent: run.lastEvent,
+      lastEvent: _latestRunTraceEvent(runEvents) ?? run.lastEvent,
       durableSubAgentEvents: durableSubAgentEvents,
     );
     final OpenCrayChatPendingApprovalSnapshot? pendingApproval =
@@ -3132,6 +6936,13 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       pendingApproval: pendingApproval,
       durableSubAgentEvents: durableSubAgentEvents,
     );
+    final bool isWritingAssistantDraft = _runHasVisibleLiveAssistantDraft(
+      run: run,
+      runtimeSnapshot: runtimeSnapshot,
+    );
+    _runTraceDebug(
+      'feature.mapRunTrace run=${run.runId} task=${run.taskId} events=${runEvents.length} history=${history.length} managedProcesses=${run.managedProcesses.length} runningManagedProcesses=${run.runningManagedProcessCount} liveManagedProcesses=${run.hasLiveManagedProcesses}',
+    );
     ChatRunTraceData buildTrace({
       required String label,
       required String body,
@@ -3142,11 +6953,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }) => ChatRunTraceData(
       runId: run.runId,
       taskId: run.taskId,
+      anchorMessageId: run.pendingMessageId?.trim() ?? '',
       label: label,
       body: body,
       history: historyOverride ?? history,
       isHighRisk: isHighRisk,
+      isTerminal: run.isTerminal,
       canInterrupt: canInterruptOverride ?? canInterrupt,
+      isWritingAssistantDraft: isWritingAssistantDraft,
       retryLabel: retryLabel,
       previewCard: previewCard,
       sessionCard: sessionCard,
@@ -3392,10 +7206,20 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     List<OpenCrayChatRuntimeEventSnapshot> durableSubAgentEvents =
         const <OpenCrayChatRuntimeEventSnapshot>[],
   }) {
-    final history = <ChatRunTraceHistoryEntry>[];
+    final timedHistory = <_TimedChatRunTraceHistoryEntry>[];
     final consumedIndexes = <int>{};
+    int nextSourceOrder = 0;
+    final Set<String> durableSubAgentKeys = durableSubAgentEvents
+        .map(_subAgentRegistryKeyForEvent)
+        .toSet();
     for (int index = 0; index < runEvents.length; index += 1) {
       if (consumedIndexes.contains(index)) {
+        continue;
+      }
+      if (runEvents[index].kind == 'subagent' &&
+          durableSubAgentKeys.contains(
+            _subAgentRegistryKeyForEvent(runEvents[index]),
+          )) {
         continue;
       }
       final mapped = _mapRunTraceHistoryEntry(
@@ -3405,19 +7229,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         consumedIndexes: consumedIndexes,
       );
       if (mapped != null) {
-        history.add(mapped);
+        timedHistory.add(
+          _TimedChatRunTraceHistoryEntry(
+            sortEpochMs: runEvents[index].emittedAtEpochMs,
+            sourceOrder: nextSourceOrder++,
+            entry: mapped,
+          ),
+        );
       }
-    }
-    final List<ChatRunTraceHistoryEntry> contextHistory =
-        _buildRunContextHistory(run);
-    if (contextHistory.isNotEmpty) {
-      final int insertionIndex =
-          history.isNotEmpty &&
-              history.first.label == widget.copy.chatRunWorkingLabel &&
-              history.first.body == widget.copy.chatRunThinkingActive
-          ? 1
-          : 0;
-      history.insertAll(insertionIndex, contextHistory);
     }
     final Set<String> appendedSubAgentStates = runEvents
         .where((event) => event.kind == 'subagent')
@@ -3428,14 +7247,61 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       if (!appendedSubAgentStates.add(signature)) {
         continue;
       }
-      history.add(
-        _subagentHistoryEntry(
-          event: event,
-          label: _subagentTraceLabel(event),
-          body: _buildSubagentHistoryBody(event),
-          isHighRisk: event.isHighRisk,
+      timedHistory.add(
+        _TimedChatRunTraceHistoryEntry(
+          sortEpochMs: event.emittedAtEpochMs,
+          sourceOrder: nextSourceOrder++,
+          entry: _subagentHistoryEntry(
+            event: event,
+            label: _subagentTraceLabel(event),
+            body: _buildSubagentHistoryBody(event),
+            isHighRisk: event.isHighRisk,
+          ),
         ),
       );
+    }
+    for (final process in _orderedManagedProcesses(run)) {
+      timedHistory.add(
+        _TimedChatRunTraceHistoryEntry(
+          sortEpochMs: _managedProcessSortEpochMs(process),
+          sourceOrder: nextSourceOrder++,
+          entry: _managedProcessHistoryEntry(process),
+        ),
+      );
+    }
+    final ChatRunTraceHistoryEntry? finalAttachmentHistory =
+        _buildRunFinalAttachmentHistoryEntry(run);
+    if (finalAttachmentHistory != null) {
+      timedHistory.add(
+        _TimedChatRunTraceHistoryEntry(
+          sortEpochMs: run.updatedAtEpochMs,
+          sourceOrder: nextSourceOrder++,
+          entry: finalAttachmentHistory,
+        ),
+      );
+    }
+    timedHistory.sort((
+      _TimedChatRunTraceHistoryEntry left,
+      _TimedChatRunTraceHistoryEntry right,
+    ) {
+      if (left.sortEpochMs != right.sortEpochMs) {
+        return left.sortEpochMs.compareTo(right.sortEpochMs);
+      }
+      return left.sourceOrder.compareTo(right.sourceOrder);
+    });
+    final history = timedHistory
+        .map((_TimedChatRunTraceHistoryEntry timedEntry) => timedEntry.entry)
+        .toList(growable: true);
+    final List<ChatRunTraceHistoryEntry> contextHistory =
+        _buildRunContextHistory(run);
+    if (contextHistory.isNotEmpty) {
+      final int insertionIndex =
+          history.isNotEmpty &&
+              history.first.label == widget.copy.chatRunWorkingLabel &&
+              history.first.body == widget.copy.chatRunThinkingActive
+          ? 1
+          : 0;
+      history.insertAll(insertionIndex, contextHistory);
     }
     final bool hasApprovalWaitEvent = runEvents.any(
       (event) => event.kind == 'approval_wait',
@@ -3528,13 +7394,266 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     );
   }
 
+  List<OpenCrayChatManagedProcessSnapshot> _orderedManagedProcesses(
+    OpenCrayChatRunSnapshot run,
+  ) => run.managedProcesses.toList(growable: false)
+    ..sort((left, right) {
+      final int leftSortEpochMs = _managedProcessSortEpochMs(left);
+      final int rightSortEpochMs = _managedProcessSortEpochMs(right);
+      if (leftSortEpochMs != rightSortEpochMs) {
+        return leftSortEpochMs.compareTo(rightSortEpochMs);
+      }
+      if (left.updatedAtEpochMs != right.updatedAtEpochMs) {
+        return left.updatedAtEpochMs.compareTo(right.updatedAtEpochMs);
+      }
+      return left.processId.compareTo(right.processId);
+    });
+
+  int _managedProcessSortEpochMs(OpenCrayChatManagedProcessSnapshot process) {
+    return process.startedAtEpochMs > 0
+        ? process.startedAtEpochMs
+        : process.updatedAtEpochMs;
+  }
+
+  ChatRunTraceHistoryEntry? _buildRunFinalAttachmentHistoryEntry(
+    OpenCrayChatRunSnapshot run,
+  ) {
+    if (run.finalAttachments.isEmpty) {
+      return null;
+    }
+    final String label = widget.copy.isChinese ? '最终附件' : 'Final attachments';
+    final String compactBody = run.finalAttachments
+        .map(_finalAttachmentTitle)
+        .where((title) => title.trim().isNotEmpty)
+        .join(', ');
+    final String inspectorResultBody = run.finalAttachments
+        .map(_finalAttachmentInspectorSection)
+        .where((section) => section.trim().isNotEmpty)
+        .join('\n\n');
+    return _mainHistoryEntry(
+      label: label,
+      body: compactBody.isNotEmpty ? compactBody : label,
+      compactBody: compactBody.isNotEmpty ? compactBody : null,
+      inspectorCallParts: <ChatRunTraceInspectorTextPart>[
+        _inspectorAction(label),
+      ],
+      inspectorResultBody: inspectorResultBody,
+    );
+  }
+
+  String _finalAttachmentTitle(OpenCrayChatAttachmentSnapshot attachment) {
+    final String displayName = attachment.displayName.trim();
+    if (displayName.isNotEmpty) {
+      return displayName;
+    }
+    final String localPath = attachment.localPath.trim();
+    if (localPath.isNotEmpty) {
+      return localPath.split('/').last;
+    }
+    final String attachmentId = attachment.attachmentId.trim();
+    if (attachmentId.isNotEmpty) {
+      return attachmentId;
+    }
+    return widget.copy.isChinese ? '未命名附件' : 'Unnamed attachment';
+  }
+
+  String _finalAttachmentInspectorSection(
+    OpenCrayChatAttachmentSnapshot attachment,
+  ) {
+    final List<String> sections = <String>[
+      _joinTraceSections(<String?>[
+        widget.copy.isChinese
+            ? '名称：${_finalAttachmentTitle(attachment)}'
+            : 'Name: ${_finalAttachmentTitle(attachment)}',
+        widget.copy.isChinese
+            ? '类型：${attachment.kind}'
+            : 'Kind: ${attachment.kind}',
+        _nonEmpty(attachment.mimeType) != null
+            ? (widget.copy.isChinese
+                  ? 'MIME：${attachment.mimeType!}'
+                  : 'MIME: ${attachment.mimeType!}')
+            : null,
+        _nonEmpty(attachment.localPath) != null
+            ? (widget.copy.isChinese
+                  ? '路径：${attachment.localPath}'
+                  : 'Path: ${attachment.localPath}')
+            : null,
+        attachment.sizeBytes != null
+            ? (widget.copy.isChinese
+                  ? '大小：${attachment.sizeBytes} bytes'
+                  : 'Size: ${attachment.sizeBytes} bytes')
+            : null,
+        attachment.widthPx != null && attachment.heightPx != null
+            ? (widget.copy.isChinese
+                  ? '尺寸：${attachment.widthPx} x ${attachment.heightPx}'
+                  : 'Dimensions: ${attachment.widthPx} x ${attachment.heightPx}')
+            : null,
+        attachment.durationMs != null
+            ? (widget.copy.isChinese
+                  ? '时长：${attachment.durationMs} ms'
+                  : 'Duration: ${attachment.durationMs} ms')
+            : null,
+        attachment.waveformBars.isNotEmpty
+            ? (widget.copy.isChinese
+                  ? '波形：${attachment.waveformBars.join(', ')}'
+                  : 'Waveform: ${attachment.waveformBars.join(', ')}')
+            : null,
+        _nonEmpty(attachment.transcriptText) != null
+            ? (widget.copy.isChinese
+                  ? '转写：${attachment.transcriptText!}'
+                  : 'Transcript: ${attachment.transcriptText!}')
+            : null,
+        _nonEmpty(attachment.contentSha256) != null
+            ? (widget.copy.isChinese
+                  ? 'SHA256：${attachment.contentSha256!}'
+                  : 'SHA256: ${attachment.contentSha256!}')
+            : null,
+      ]),
+    ];
+    return sections.where((section) => section.trim().isNotEmpty).join('\n\n');
+  }
+
+  ChatRunTraceHistoryEntry _managedProcessHistoryEntry(
+    OpenCrayChatManagedProcessSnapshot process,
+  ) {
+    final String label = _managedProcessHistoryLabel(process);
+    final String commandSummary = _managedProcessCommandSummary(process);
+    final String compactBody =
+        '${_managedProcessStatusSummary(process)}: $commandSummary';
+    final String inspectorDetail = _joinTraceSections(<String?>[
+      commandSummary,
+      process.workingDirectory?.trim().isNotEmpty == true
+          ? (widget.copy.isChinese
+                ? '目录：${process.workingDirectory!}'
+                : 'cwd: ${process.workingDirectory!}')
+          : null,
+    ]);
+    final String inspectorResultBody = _managedProcessInspectorResultBody(
+      process,
+    );
+    return _mainHistoryEntry(
+      label: label,
+      body: inspectorResultBody.isNotEmpty ? inspectorResultBody : compactBody,
+      compactBody: compactBody,
+      inspectorCallParts: <ChatRunTraceInspectorTextPart>[
+        _inspectorAction(widget.copy.isChinese ? '进程 ' : 'Process '),
+        _inspectorTarget(process.processId),
+      ],
+      inspectorCallDetail: inspectorDetail,
+      inspectorResultBody: inspectorResultBody,
+    );
+  }
+
+  String _managedProcessHistoryLabel(
+    OpenCrayChatManagedProcessSnapshot process,
+  ) {
+    return widget.copy.isChinese
+        ? '进程 ${process.processId}'
+        : 'Process ${process.processId}';
+  }
+
+  String _managedProcessCommandSummary(
+    OpenCrayChatManagedProcessSnapshot process,
+  ) {
+    final List<String> parts = <String>[process.command, ...process.args];
+    return parts
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .join(' ');
+  }
+
+  String _managedProcessStatusSummary(
+    OpenCrayChatManagedProcessSnapshot process,
+  ) {
+    final String status = process.status.trim().toLowerCase();
+    switch (status) {
+      case 'running':
+        return widget.copy.isChinese ? '运行中' : 'running';
+      case 'success':
+        return widget.copy.isChinese ? '已完成' : 'finished';
+      case 'failed':
+      case 'spawn_error':
+        return widget.copy.isChinese ? '失败' : 'failed';
+      case 'cancelled':
+        return widget.copy.isChinese ? '已取消' : 'cancelled';
+      case 'timeout':
+        return widget.copy.isChinese ? '已超时' : 'timed out';
+      default:
+        return status.isEmpty
+            ? (widget.copy.isChinese ? '未知' : 'unknown')
+            : status;
+    }
+  }
+
+  String _managedProcessInspectorResultBody(
+    OpenCrayChatManagedProcessSnapshot process,
+  ) {
+    final String statusLine = _managedProcessInspectorStatusLine(process);
+    final String stdoutContent = process.stdout.isNotEmpty
+        ? process.stdout
+        : process.stdoutPreview;
+    final String stderrContent = process.stderr.isNotEmpty
+        ? process.stderr
+        : process.stderrPreview;
+    final bool stdoutUsesPreviewFallback =
+        stdoutContent == process.stdoutPreview;
+    final bool stderrUsesPreviewFallback =
+        stderrContent == process.stderrPreview;
+    final String stdoutSection = _managedProcessOutputSection(
+      label: 'stdout',
+      content: stdoutContent,
+      truncated:
+          process.outputLimitExceeded ||
+          (stdoutUsesPreviewFallback && process.stdoutTruncated),
+    );
+    final String stderrSection = _managedProcessOutputSection(
+      label: 'stderr',
+      content: stderrContent,
+      truncated: stderrUsesPreviewFallback && process.stderrTruncated,
+    );
+    return _joinTraceSections(<String?>[
+      statusLine,
+      stdoutSection,
+      stderrSection,
+      _nonEmpty(process.errorMessage),
+    ]);
+  }
+
+  String _managedProcessInspectorStatusLine(
+    OpenCrayChatManagedProcessSnapshot process,
+  ) {
+    final List<String> suffixes = <String>[
+      if (process.exitCode != null) 'exit ${process.exitCode}',
+      if (_nonEmpty(process.errorCode) != null) process.errorCode!,
+    ];
+    final String suffix = suffixes.isEmpty ? '' : ' (${suffixes.join(', ')})';
+    return widget.copy.isChinese
+        ? '状态：${_managedProcessStatusSummary(process)}$suffix'
+        : 'status: ${_managedProcessStatusSummary(process)}$suffix';
+  }
+
+  String _managedProcessOutputSection({
+    required String label,
+    required String content,
+    required bool truncated,
+  }) {
+    final String normalized = content.trim();
+    if (normalized.isEmpty) {
+      return '';
+    }
+    final String suffix = truncated
+        ? (widget.copy.isChinese ? '\n[输出已截断]' : '\n[output truncated]')
+        : '';
+    return '$label\n$normalized$suffix';
+  }
+
   ChatRunTraceHistoryEntry? _mapRunTraceHistoryEntry({
     required OpenCrayChatRuntimeEventSnapshot event,
     required List<OpenCrayChatRuntimeEventSnapshot> runEvents,
     required int index,
     required Set<int> consumedIndexes,
   }) {
-    final toolName = event.toolName?.trim();
+    final toolName = _canonicalToolName(event.toolName);
     switch (event.kind) {
       case 'lifecycle':
         if (event.phase?.toLowerCase() == 'start') {
@@ -3645,6 +7764,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final String? memoryTraceBody = _buildRunMemoryTraceHistoryBody(
       run.memoryTrace,
     );
+    final String? stickyMemoryBody = _buildRunStickyMemoryHistoryBody(
+      run.stickyMemory,
+    );
     final String? memoryFlushBody = _buildRunMemoryFlushHistoryBody(
       run.memoryFlush,
     );
@@ -3682,6 +7804,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             chinese: '记忆召回',
           ),
           body: memoryTraceBody,
+        ),
+      );
+    }
+    if (stickyMemoryBody != null) {
+      history.add(
+        _mainHistoryEntry(
+          label: _traceSectionLabel(english: 'Sticky Memory', chinese: '固定记忆'),
+          body: stickyMemoryBody,
         ),
       );
     }
@@ -3842,6 +7972,35 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         : '${omitted.id}, reason ${omitted.reason}';
   }
 
+  String? _buildRunStickyMemoryHistoryBody(
+    OpenCrayChatRunStickyMemorySnapshot? stickyMemory,
+  ) {
+    if (stickyMemory == null) {
+      return null;
+    }
+    final List<String> summary = <String>[
+      if (stickyMemory.injectedRecordCount != null)
+        widget.copy.isChinese
+            ? '注入 ${stickyMemory.injectedRecordCount} 条'
+            : '${stickyMemory.injectedRecordCount} injected',
+      if (stickyMemory.omittedRecordCount != null)
+        widget.copy.isChinese
+            ? '省略 ${stickyMemory.omittedRecordCount} 条'
+            : '${stickyMemory.omittedRecordCount} omitted',
+    ];
+    final String? recordIds = stickyMemory.recordIds.isEmpty
+        ? null
+        : _labeledMultilineSection(
+            englishLabel: 'Pinned record ids',
+            chineseLabel: '固定记录',
+            values: stickyMemory.recordIds,
+          );
+    return _joinTraceSections(<String?>[
+      summary.isEmpty ? null : summary.join(widget.copy.isChinese ? '，' : ', '),
+      recordIds,
+    ]);
+  }
+
   String? _buildRunMemoryFlushHistoryBody(
     OpenCrayChatRunMemoryFlushSnapshot? flush,
   ) {
@@ -3872,9 +8031,40 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             ? '省略字符 ${flush.omittedCharCount}'
             : '${flush.omittedCharCount} omitted char(s)',
     ];
+    final List<String> pressure = <String>[
+      if (_nonEmpty(flush.triggerStage) != null)
+        widget.copy.isChinese
+            ? '触发 ${flush.triggerStage}'
+            : 'Trigger: ${flush.triggerStage}',
+      if (_nonEmpty(flush.executionMode) != null)
+        widget.copy.isChinese
+            ? '模式 ${flush.executionMode}'
+            : 'Mode: ${flush.executionMode}',
+      if (flush.contextWindowTokens != null)
+        widget.copy.isChinese
+            ? '窗口 ${flush.contextWindowTokens}'
+            : 'Window ${flush.contextWindowTokens}',
+      if (flush.autoCompactTokenLimit != null)
+        widget.copy.isChinese
+            ? '阈值 ${flush.autoCompactTokenLimit}'
+            : 'Threshold ${flush.autoCompactTokenLimit}',
+      if (flush.estimatedReplayTokens != null)
+        widget.copy.isChinese
+            ? '估算 ${flush.estimatedReplayTokens}'
+            : 'Estimated ${flush.estimatedReplayTokens}',
+      if (flush.tokenThresholdTriggered != null)
+        widget.copy.isChinese
+            ? (flush.tokenThresholdTriggered! ? '已达阈值' : '未达阈值')
+            : (flush.tokenThresholdTriggered!
+                  ? 'Threshold triggered'
+                  : 'Threshold not triggered'),
+    ];
     return _joinTraceSections(<String?>[
       summary.isEmpty ? null : summary.join(widget.copy.isChinese ? '，' : ', '),
       omitted.isEmpty ? null : omitted.join(widget.copy.isChinese ? '，' : ', '),
+      pressure.isEmpty
+          ? null
+          : pressure.join(widget.copy.isChinese ? '，' : ', '),
       flush.signature == null
           ? null
           : widget.copy.isChinese
@@ -3990,11 +8180,115 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             ? '累计压缩 ${durableCompaction.totalCompactedMessageCount} 条'
             : '${durableCompaction.totalCompactedMessageCount} total compacted message(s)',
     ];
+    final List<String> pressure = <String>[
+      if (_nonEmpty(durableCompaction.triggerStage) != null)
+        widget.copy.isChinese
+            ? '触发 ${durableCompaction.triggerStage}'
+            : 'Trigger: ${durableCompaction.triggerStage}',
+      if (_nonEmpty(durableCompaction.executionMode) != null)
+        widget.copy.isChinese
+            ? '模式 ${durableCompaction.executionMode}'
+            : 'Mode: ${durableCompaction.executionMode}',
+      if (durableCompaction.contextWindowTokens != null)
+        widget.copy.isChinese
+            ? '窗口 ${durableCompaction.contextWindowTokens}'
+            : 'Window ${durableCompaction.contextWindowTokens}',
+      if (durableCompaction.autoCompactTokenLimit != null)
+        widget.copy.isChinese
+            ? '阈值 ${durableCompaction.autoCompactTokenLimit}'
+            : 'Threshold ${durableCompaction.autoCompactTokenLimit}',
+      if (durableCompaction.estimatedReplayTokens != null)
+        widget.copy.isChinese
+            ? '估算 ${durableCompaction.estimatedReplayTokens}'
+            : 'Estimated ${durableCompaction.estimatedReplayTokens}',
+      if (durableCompaction.tokenThresholdTriggered != null)
+        widget.copy.isChinese
+            ? (durableCompaction.tokenThresholdTriggered! ? '已达阈值' : '未达阈值')
+            : (durableCompaction.tokenThresholdTriggered!
+                  ? 'Threshold triggered'
+                  : 'Threshold not triggered'),
+    ];
+    final remote = durableCompaction.remoteCompaction;
+    final List<String> remoteState = <String>[];
+    final List<String> remoteCounts = <String>[];
+    if (remote != null) {
+      if (remote.used != null) {
+        remoteState.add(
+          widget.copy.isChinese
+              ? (remote.used! ? '已使用远端压缩' : '未使用远端压缩')
+              : (remote.used! ? 'used' : 'not used'),
+        );
+      }
+      if (remote.supported != null) {
+        remoteState.add(
+          widget.copy.isChinese
+              ? (remote.supported! ? '支持' : '不支持')
+              : (remote.supported! ? 'supported' : 'unsupported'),
+        );
+      }
+      if (remote.requested != null) {
+        remoteState.add(
+          widget.copy.isChinese
+              ? (remote.requested! ? '已请求' : '未请求')
+              : (remote.requested! ? 'requested' : 'not requested'),
+        );
+      }
+      final remoteTriggerStage = _nonEmpty(remote.triggerStage);
+      if (remoteTriggerStage != null) {
+        remoteState.add(
+          widget.copy.isChinese
+              ? '触发 $remoteTriggerStage'
+              : 'trigger $remoteTriggerStage',
+        );
+      }
+      if (remote.outputItemCount != null) {
+        remoteCounts.add(
+          widget.copy.isChinese
+              ? '输出 ${remote.outputItemCount}'
+              : 'output ${remote.outputItemCount}',
+        );
+      }
+      if (remote.compactionItemCount != null) {
+        remoteCounts.add(
+          widget.copy.isChinese
+              ? '压缩项 ${remote.compactionItemCount}'
+              : 'compaction ${remote.compactionItemCount}',
+        );
+      }
+      if (remote.encryptedContentCount != null) {
+        remoteCounts.add(
+          widget.copy.isChinese
+              ? '加密内容 ${remote.encryptedContentCount}'
+              : 'encrypted ${remote.encryptedContentCount}',
+        );
+      }
+      final fallbackReason = _nonEmpty(remote.fallbackReason);
+      if (fallbackReason != null) {
+        remoteCounts.add(
+          widget.copy.isChinese
+              ? '回退 $fallbackReason'
+              : 'fallback $fallbackReason',
+        );
+      }
+    }
     return _joinTraceSections(<String?>[
       summary.isEmpty ? null : summary.join(widget.copy.isChinese ? '，' : ', '),
       summaryCounts.isEmpty
           ? null
           : summaryCounts.join(widget.copy.isChinese ? '，' : ', '),
+      pressure.isEmpty
+          ? null
+          : pressure.join(widget.copy.isChinese ? '，' : ', '),
+      remoteState.isEmpty
+          ? null
+          : widget.copy.isChinese
+          ? '远端压缩：${remoteState.join('，')}'
+          : 'Remote compaction: ${remoteState.join(', ')}',
+      remoteCounts.isEmpty
+          ? null
+          : widget.copy.isChinese
+          ? '远端压缩明细：${remoteCounts.join('，')}'
+          : 'Remote compaction details: ${remoteCounts.join(', ')}',
       durableCompaction.latestCompactedAtEpochMs == null
           ? null
           : widget.copy.isChinese
@@ -4094,6 +8388,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             : (activeSkill.toolRestrictionEnabled!
                   ? 'Tool restriction enabled'
                   : 'Tool restriction disabled'),
+      if (activeSkill.pinned != null)
+        widget.copy.isChinese
+            ? (activeSkill.pinned! ? '已固定' : '未固定')
+            : (activeSkill.pinned! ? 'Pinned' : 'Not pinned'),
       if (activeSkill.truncated != null)
         widget.copy.isChinese
             ? (activeSkill.truncated! ? '胶囊已截断' : '胶囊未截断')
@@ -4325,6 +8623,19 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       (left, right) => left.emittedAtEpochMs.compareTo(right.emittedAtEpochMs),
     );
 
+  OpenCrayChatRuntimeEventSnapshot? _latestRunTraceEvent(
+    List<OpenCrayChatRuntimeEventSnapshot> runEvents,
+  ) {
+    for (int index = runEvents.length - 1; index >= 0; index -= 1) {
+      final OpenCrayChatRuntimeEventSnapshot event = runEvents[index];
+      if (event.kind == 'assistant_phase' && _hideAssistantPhaseBubble(event)) {
+        continue;
+      }
+      return event;
+    }
+    return null;
+  }
+
   ChatRunTracePreviewCardData? _latestRunTracePreviewCard(
     List<OpenCrayChatRuntimeEventSnapshot> runEvents,
   ) {
@@ -4472,18 +8783,82 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
   }
 
+  static const Map<String, String> _displayToolAliases = <String, String>{
+    'workspace_read_file': 'Read',
+    'workspace_list_files': 'LS',
+    'workspace_write_file': 'Write',
+    'workspace_import_file': 'ImportFile',
+    'bash': 'Bash',
+    'list': 'LS',
+    'ls': 'LS',
+    'read': 'Read',
+    'write': 'Write',
+    'grep': 'Grep',
+    'glob': 'Glob',
+    'websearch': 'WebSearch',
+    'webfetch': 'WebFetch',
+    'generateimage': 'GenerateImage',
+    'imagegenerate': 'GenerateImage',
+    'synthesizespeech': 'SynthesizeSpeech',
+    'texttospeech': 'SynthesizeSpeech',
+    'tts': 'SynthesizeSpeech',
+    'edit': 'Edit',
+    'multiedit': 'MultiEdit',
+    'importfile': 'ImportFile',
+    'import': 'ImportFile',
+    'importchatattachment': 'import_chat_attachment',
+    'searchworkspacedocument': 'search_workspace_document',
+    'inspectworkspacepackage': 'inspect_workspace_package',
+    'extractworkspacepackage': 'extract_workspace_package',
+    'viewworkspacedocument': 'view_workspace_document',
+    'viewworkspaceimage': 'view_workspace_image',
+    'viewworkspacepdf': 'view_workspace_pdf',
+    'todowrite': 'TodoWrite',
+    'scheduledtaskcreate': 'ScheduledTaskCreate',
+    'scheduled_task_create': 'ScheduledTaskCreate',
+    'scheduledtasklist': 'ScheduledTaskList',
+    'scheduled_task_list': 'ScheduledTaskList',
+    'scheduledtaskget': 'ScheduledTaskGet',
+    'scheduled_task_get': 'ScheduledTaskGet',
+    'scheduledtaskupdate': 'ScheduledTaskUpdate',
+    'scheduled_task_update': 'ScheduledTaskUpdate',
+    'scheduledtaskdelete': 'ScheduledTaskDelete',
+    'scheduled_task_delete': 'ScheduledTaskDelete',
+    'task': 'Task',
+    'spawnagent': 'spawn_agent',
+    'waitagent': 'wait_agent',
+    'sendinput': 'send_input',
+    'closeagent': 'close_agent',
+    'listsubagents': 'list_subagents',
+    'list_handles': 'list_subagents',
+    'listhandles': 'list_subagents',
+    'processstart': 'ProcessStart',
+    'processlist': 'ProcessList',
+    'processread': 'ProcessRead',
+    'processwait': 'ProcessWait',
+    'processterminate': 'ProcessTerminate',
+  };
+
+  String? _canonicalToolName(String? toolName) {
+    final String? normalizedToolName = toolName?.trim();
+    if (normalizedToolName == null || normalizedToolName.isEmpty) {
+      return normalizedToolName;
+    }
+    return _displayToolAliases[normalizedToolName] ?? normalizedToolName;
+  }
+
   OpenCrayChatRuntimeEventSnapshot? _findPreviousToolCall(
     List<OpenCrayChatRuntimeEventSnapshot> runEvents, {
     required int beforeIndex,
     String? toolName,
   }) {
-    final String? normalizedToolName = toolName?.trim();
+    final String? normalizedToolName = _canonicalToolName(toolName);
     for (int index = beforeIndex - 1; index >= 0; index -= 1) {
       final candidate = runEvents[index];
       if (candidate.kind != 'tool_call') {
         continue;
       }
-      final String? candidateToolName = candidate.toolName?.trim();
+      final String? candidateToolName = _canonicalToolName(candidate.toolName);
       if (normalizedToolName == null ||
           normalizedToolName.isEmpty ||
           candidateToolName == normalizedToolName) {
@@ -4498,16 +8873,19 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     required int afterIndex,
     String? toolName,
   }) {
-    final String? normalizedToolName = toolName?.trim();
+    final String? normalizedToolName = _canonicalToolName(toolName);
     for (int index = afterIndex + 1; index < runEvents.length; index += 1) {
       final candidate = runEvents[index];
       if (candidate.kind == 'tool_call') {
         return null;
       }
       if (candidate.kind != 'tool_result') {
+        if (!_isSkippableToolGroupingInterveningEvent(candidate)) {
+          return null;
+        }
         continue;
       }
-      final String? candidateToolName = candidate.toolName?.trim();
+      final String? candidateToolName = _canonicalToolName(candidate.toolName);
       if (normalizedToolName == null || normalizedToolName.isEmpty) {
         return index;
       }
@@ -4516,6 +8894,16 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       }
     }
     return null;
+  }
+
+  bool _isSkippableToolGroupingInterveningEvent(
+    OpenCrayChatRuntimeEventSnapshot event,
+  ) {
+    if (event.kind == 'lifecycle') {
+      final String phase = event.phase?.trim().toLowerCase() ?? '';
+      return phase.isNotEmpty;
+    }
+    return event.kind == 'subagent';
   }
 
   ChatRunTraceHistoryEntry _buildGroupedToolHistoryEntry({
@@ -4631,7 +9019,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     required String toolName,
     required Map<String, dynamic>? arguments,
   }) {
-    switch (toolName) {
+    final String canonicalToolName = _canonicalToolName(toolName) ?? toolName;
+    switch (canonicalToolName) {
       case 'Read':
         final String? path = _argumentString(
           arguments,
@@ -4709,6 +9098,22 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           _inspectorAction(widget.copy.isChinese ? '写入' : 'Write'),
           _inspectorNeutral(' '),
           _inspectorTarget(path),
+        ];
+      case 'ImportFile':
+        final String? sourcePath = _argumentString(arguments, 'source_path');
+        final String? destinationPath = _argumentString(
+          arguments,
+          'destination_path',
+        );
+        if (sourcePath == null || destinationPath == null) {
+          return null;
+        }
+        return <ChatRunTraceInspectorTextPart>[
+          _inspectorAction(widget.copy.isChinese ? '导入' : 'Import'),
+          _inspectorNeutral(' '),
+          _inspectorTarget(sourcePath),
+          _inspectorNeutral(widget.copy.isChinese ? ' 到 ' : ' to '),
+          _inspectorTarget(destinationPath),
         ];
       case 'Edit':
         final String? path = _argumentString(
@@ -4833,7 +9238,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 
   String _buildToolCallPreviewBody(OpenCrayChatRuntimeEventSnapshot event) {
     final String resolvedToolName =
-        _nonEmpty(event.toolName) ?? widget.copy.chatRunWorkingLabel;
+        _canonicalToolName(_nonEmpty(event.toolName)) ??
+        widget.copy.chatRunWorkingLabel;
     final String summary = _toolActionSummary(
       toolName: resolvedToolName,
       argumentsJson: event.argumentsJson,
@@ -4853,7 +9259,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     required String? runErrorMessage,
   }) {
     final String resolvedToolName =
-        _nonEmpty(event.toolName) ?? widget.copy.chatRunWorkingLabel;
+        _canonicalToolName(_nonEmpty(event.toolName)) ??
+        widget.copy.chatRunWorkingLabel;
     final String summary = _toolResultActionSummary(
       toolName: resolvedToolName,
       event: event,
@@ -4947,6 +9354,75 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   String _assistantPhaseTag(OpenCrayChatRuntimeEventSnapshot event) {
     final String phase = event.phase?.trim().toLowerCase() ?? '';
     return phase.isEmpty ? 'commentary' : phase;
+  }
+
+  List<String> _assistantPhaseMessageIds(
+    OpenCrayChatRuntimeEventSnapshot event,
+  ) {
+    final List<String> ids = <String>[];
+    void addId(String id) {
+      if (id.trim().isEmpty || ids.contains(id)) {
+        return;
+      }
+      ids.add(id);
+    }
+
+    final List<String> ownerIds = _assistantPhaseOwnerIds(event);
+    if (ownerIds.isEmpty) {
+      addId(_assistantPhaseMessageIdForOwner(event, ''));
+      addId(_assistantPhaseBaseMessageIdForOwner(event, ''));
+      return ids;
+    }
+    for (final String ownerId in ownerIds) {
+      addId(_assistantPhaseMessageIdForOwner(event, ownerId));
+    }
+    for (final String ownerId in ownerIds) {
+      addId(_assistantPhaseBaseMessageIdForOwner(event, ownerId));
+    }
+    for (final String ownerId in ownerIds) {
+      addId(
+        'runtime-assistant-${_assistantPhaseTag(event)}-$ownerId-${event.emittedAtEpochMs}',
+      );
+    }
+    return ids;
+  }
+
+  List<String> _assistantPhaseOwnerIds(OpenCrayChatRuntimeEventSnapshot event) {
+    final List<String> ownerIds = <String>[];
+    final String taskId = event.taskId.trim();
+    final String runId = event.runId.trim();
+    if (taskId.isNotEmpty) {
+      ownerIds.add(taskId);
+    }
+    if (runId.isNotEmpty && runId != taskId) {
+      ownerIds.add(runId);
+    }
+    return ownerIds;
+  }
+
+  String _assistantPhaseMessageIdForOwner(
+    OpenCrayChatRuntimeEventSnapshot event,
+    String ownerId,
+  ) {
+    final String base = _assistantPhaseBaseMessageIdForOwner(event, ownerId);
+    if (event.turn != null) {
+      return base;
+    }
+    final String textFingerprint = event.text?.trim().isNotEmpty == true
+        ? event.text!.trim()
+        : _projectedAssistantPhaseMessageText(event);
+    return '$base-${javaStringHashCode(textFingerprint)}';
+  }
+
+  String _assistantPhaseBaseMessageIdForOwner(
+    OpenCrayChatRuntimeEventSnapshot event,
+    String ownerId,
+  ) {
+    final String stage = event.stage?.trim().isNotEmpty == true
+        ? event.stage!.trim()
+        : '-';
+    final int turn = event.turn ?? -1;
+    return 'runtime-assistant-${_assistantPhaseTag(event)}-$ownerId-$turn-$stage-${event.emittedAtEpochMs}';
   }
 
   String _buildSupplementPreviewBody(OpenCrayChatRuntimeEventSnapshot event) {
@@ -5135,6 +9611,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     required String? argumentsJson,
     required OpenCrayChatRuntimeEventSnapshot? toolResultEvent,
   }) {
+    final String canonicalToolName = _canonicalToolName(toolName) ?? toolName;
     final Map<String, dynamic>? arguments =
         _decodeJsonObject(argumentsJson) ??
         (toolResultEvent == null
@@ -5146,7 +9623,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (arguments == null || arguments.isEmpty) {
       return null;
     }
-    switch (toolName) {
+    switch (canonicalToolName) {
       case 'TodoWrite':
         return _todoWriteDetailBody(arguments);
       case 'Edit':
@@ -5239,7 +9716,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (_nonEmpty(event.status)?.toLowerCase() == 'rejected') {
       return widget.copy.chatRunAwaitingDirectionLabel;
     }
-    return _nonEmpty(event.toolName) ?? widget.copy.chatRunWorkingLabel;
+    return _canonicalToolName(_nonEmpty(event.toolName)) ??
+        widget.copy.chatRunWorkingLabel;
   }
 
   String _buildCancellationPreviewBody(OpenCrayChatRuntimeEventSnapshot event) {
@@ -5606,8 +10084,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     required String toolName,
     required Map<String, dynamic>? arguments,
   }) {
-    final String fallback = widget.copy.chatRunCallingTool(toolName);
-    switch (toolName) {
+    final String canonicalToolName = _canonicalToolName(toolName) ?? toolName;
+    final String fallback = widget.copy.chatRunCallingTool(canonicalToolName);
+    switch (canonicalToolName) {
       case 'Read':
         final String? path = _argumentString(
           arguments,
@@ -5664,6 +10143,18 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             : widget.copy.isChinese
             ? '写入 $path'
             : 'Write $path';
+      case 'ImportFile':
+        final String? sourcePath = _argumentString(arguments, 'source_path');
+        final String? destinationPath = _argumentString(
+          arguments,
+          'destination_path',
+        );
+        if (sourcePath == null || destinationPath == null) {
+          return fallback;
+        }
+        return widget.copy.isChinese
+            ? '导入 $sourcePath 到 $destinationPath'
+            : 'Import $sourcePath to $destinationPath';
       case 'Edit':
         final String? path = _argumentString(
           arguments,
@@ -5806,11 +10297,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     required String toolName,
     required String? argumentsJson,
   }) {
+    final String canonicalToolName = _canonicalToolName(toolName) ?? toolName;
     final Map<String, dynamic>? arguments = _decodeJsonObject(argumentsJson);
     if (arguments == null || arguments.isEmpty) {
       return _nonEmpty(argumentsJson);
     }
-    switch (toolName) {
+    switch (canonicalToolName) {
       case 'TodoWrite':
         return _todoWriteDetailBody(arguments);
       case 'Edit':
@@ -6144,7 +10636,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     required String toolName,
     required OpenCrayChatRuntimeEventSnapshot event,
   }) {
-    switch (toolName) {
+    final String canonicalToolName = _canonicalToolName(toolName) ?? toolName;
+    switch (canonicalToolName) {
       case 'Read':
         final String? filePath = _resultMetadataValue(event, 'filePath');
         if (filePath == null) {
@@ -6217,6 +10710,19 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           return null;
         }
         return <String, dynamic>{'file_path': filePath};
+      case 'ImportFile':
+        final String? sourcePath = _resultMetadataValue(event, 'sourcePath');
+        final String? destinationPath = _resultMetadataValue(
+          event,
+          'destinationPath',
+        );
+        if (sourcePath == null || destinationPath == null) {
+          return null;
+        }
+        return <String, dynamic>{
+          'source_path': sourcePath,
+          'destination_path': destinationPath,
+        };
       case 'Task':
         final String? description = _resultMetadataValue(
           event,
@@ -6305,7 +10811,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     required String toolName,
     required OpenCrayChatRuntimeEventSnapshot event,
   }) {
-    switch (toolName) {
+    final String canonicalToolName = _canonicalToolName(toolName) ?? toolName;
+    switch (canonicalToolName) {
       case 'LS':
         final int? entryCount = _resultMetadataInt(event, 'entryCount');
         final String? path = _resultMetadataValue(event, 'path');
@@ -6508,6 +11015,18 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           if (filePath != null) 'in $filePath',
         ];
         return parts.isEmpty ? null : 'Applied ${parts.join(' ')}';
+      case 'ImportFile':
+        final String? sourcePath = _resultMetadataValue(event, 'sourcePath');
+        final String? destinationPath = _resultMetadataValue(
+          event,
+          'destinationPath',
+        );
+        if (sourcePath == null || destinationPath == null) {
+          return null;
+        }
+        return widget.copy.isChinese
+            ? '导入 $sourcePath 到 $destinationPath'
+            : 'Imported $sourcePath to $destinationPath';
       case 'TodoWrite':
         return _todoWriteResultSummary(event);
       case 'Task':
@@ -7064,15 +11583,122 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     'Thinking',
     'Thinking…',
     'Thinking...',
+    'OpenCray is thinking...',
     '思考中',
     '思考中…',
     '思考中...',
   };
 
-  OpenCrayChatRuntimeSnapshot? _resolveRuntimeSnapshot(
+  String _snapshotActiveSessionId(OpenCrayChatSnapshot snapshot) {
+    for (final session in snapshot.drawer.sessions) {
+      final String sessionId = session.sessionId.trim();
+      if (session.isSelected && sessionId.isNotEmpty) {
+        return sessionId;
+      }
+    }
+    final String runtimeSessionId =
+        snapshot.runtimeActivity?.sessionId.trim() ?? '';
+    if (runtimeSessionId.isNotEmpty) {
+      return runtimeSessionId;
+    }
+    for (final session in snapshot.drawer.sessions) {
+      final String sessionId = session.sessionId.trim();
+      if (sessionId.isNotEmpty) {
+        return sessionId;
+      }
+    }
+    return '';
+  }
+
+  String _runtimeProjectionExpectedSessionId(OpenCrayChatSnapshot snapshot) {
+    for (final session in _state.drawer.sessions) {
+      final String sessionId = session.sessionId.trim();
+      if (session.isSelected && sessionId.isNotEmpty) {
+        return sessionId;
+      }
+    }
+    return _snapshotActiveSessionId(snapshot);
+  }
+
+  OpenCrayChatSnapshot _projectionSnapshotForLocalSession({
+    required OpenCrayChatSnapshot source,
+    required OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
+  }) {
+    return OpenCrayChatSnapshot(
+      screenTitle: source.screenTitle,
+      modeLabel: source.modeLabel,
+      sessionButtonLabel: source.sessionButtonLabel,
+      composerPlaceholder: source.composerPlaceholder,
+      summary: source.summary,
+      messages: const <OpenCrayChatMessageSnapshot>[],
+      drawer: source.drawer,
+      isInputEnabled: source.isInputEnabled,
+      todos: const <OpenCrayChatTodoSnapshot>[],
+      todoState: 'empty',
+      pendingApprovals: const <OpenCrayChatPendingApprovalSnapshot>[],
+      runtimeActivity: runtimeSnapshot,
+      updatedAtEpochMs: source.updatedAtEpochMs,
+    );
+  }
+
+  OpenCrayChatRuntimeSnapshot? _resolveRuntimeSnapshot({
+    required String expectedSessionId,
     OpenCrayChatRuntimeSnapshot? embedded,
     OpenCrayChatRuntimeSnapshot? streamed,
-  ) => resolveChatRuntimeSnapshot(embedded, streamed);
+  }) {
+    final String normalizedExpectedSessionId = expectedSessionId.trim();
+    final OpenCrayChatRuntimeSnapshot? resolved =
+        normalizedExpectedSessionId.isEmpty
+        ? resolveChatRuntimeSnapshot(embedded, streamed)
+        : resolveChatRuntimeSnapshotForSession(
+            expectedSessionId: normalizedExpectedSessionId,
+            embedded: embedded,
+            streamed: streamed,
+          );
+    final String sessionId = normalizedExpectedSessionId.isNotEmpty
+        ? normalizedExpectedSessionId
+        : resolved?.sessionId.trim() ?? _activeSessionId;
+    final List<OpenCrayChatLiveAssistantDraftSnapshot> overrideDrafts =
+        _liveAssistantDraftOverridesBySession[sessionId]?.values.toList(
+          growable: false,
+        ) ??
+        const <OpenCrayChatLiveAssistantDraftSnapshot>[];
+    if (overrideDrafts.isEmpty) {
+      return resolved;
+    }
+    final Map<String, OpenCrayChatLiveAssistantDraftSnapshot> mergedDrafts =
+        <String, OpenCrayChatLiveAssistantDraftSnapshot>{
+          for (final draft
+              in resolved?.liveAssistantDrafts ??
+                  const <OpenCrayChatLiveAssistantDraftSnapshot>[])
+            if (draft.pendingMessageId.trim().isNotEmpty)
+              draft.pendingMessageId.trim(): draft,
+        };
+    for (final draft in overrideDrafts) {
+      final String pendingMessageId = draft.pendingMessageId.trim();
+      final OpenCrayChatLiveAssistantDraftSnapshot? existing =
+          mergedDrafts[pendingMessageId];
+      if (existing == null ||
+          draft.updatedAtEpochMs >= existing.updatedAtEpochMs) {
+        mergedDrafts[pendingMessageId] = draft;
+      }
+    }
+    final List<OpenCrayChatLiveAssistantDraftSnapshot> sortedDrafts =
+        mergedDrafts.values.toList(growable: false)..sort(
+          (left, right) =>
+              left.updatedAtEpochMs.compareTo(right.updatedAtEpochMs),
+        );
+    return OpenCrayChatRuntimeSnapshot(
+      sessionId: sessionId,
+      activeRuns: resolved?.activeRuns ?? const <OpenCrayChatRunSnapshot>[],
+      retainedRuns: resolved?.retainedRuns ?? const <OpenCrayChatRunSnapshot>[],
+      subAgents: resolved?.subAgents ?? const <OpenCrayChatSubAgentSnapshot>[],
+      events: resolved?.events ?? const <OpenCrayChatRuntimeEventSnapshot>[],
+      liveAssistantDrafts: sortedDrafts,
+      hostLifecycle: resolved?.hostLifecycle,
+      updatedAtEpochMs: resolved?.updatedAtEpochMs ?? 0,
+    );
+  }
 }
 
 class _ChatScrollContent extends StatelessWidget {
@@ -7120,7 +11746,7 @@ class _ChatScrollContent extends StatelessWidget {
       children: <Widget>[
         Text(state.screenTitle, style: _ChatTextStyles.pageTitle),
         const SizedBox(height: 20),
-        _SummaryCard(summary: state.summary),
+        _SummaryCard(copy: copy, summary: state.summary, bridge: bridge),
         const SizedBox(height: 20),
         if (state.messages.isEmpty &&
             state.runTraces.isEmpty &&
@@ -7556,9 +12182,11 @@ class _ChatSelectionActionButton extends StatelessWidget {
 }
 
 class _SummaryCard extends StatelessWidget {
-  const _SummaryCard({required this.summary});
+  const _SummaryCard({required this.copy, required this.summary, this.bridge});
 
+  final OpenCrayUiCopy copy;
   final ChatSessionSummary summary;
+  final OpenCrayHostBridge? bridge;
 
   @override
   Widget build(BuildContext context) {
@@ -7582,7 +12210,13 @@ class _SummaryCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 8),
-            Text(summary.body, style: _ChatTextStyles.bodyMuted),
+            _OpenCrayMarkdownTextBlock(
+              copy: copy,
+              data: summary.body,
+              bodyStyle: _ChatTextStyles.bodyMuted,
+              surfaceColor: Colors.white,
+              bridge: bridge,
+            ),
           ],
         ),
       ),
@@ -8197,6 +12831,7 @@ class _ChatTimestampDivider extends StatelessWidget {
 
 class _ChatMessageWithTimestamp extends StatelessWidget {
   const _ChatMessageWithTimestamp({
+    super.key,
     required this.bridge,
     required this.copy,
     required this.message,
@@ -8210,6 +12845,14 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
     required this.onLongPress,
     required this.onSelectionToggle,
     required this.onTextSelectionChanged,
+    this.attachedRunTraces = const <ChatRunTraceData>[],
+    this.interruptConfirmRunId,
+    this.busyInterruptRunIds = const <String>{},
+    this.busyRetryRunIds = const <String>{},
+    this.onArmInterruptRunTrace,
+    this.onDismissInterruptRunTrace,
+    this.onInterruptRunTrace,
+    this.onRetryRunTrace,
   });
 
   final OpenCrayHostBridge? bridge;
@@ -8225,6 +12868,14 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
   final void Function(ChatMessageData, Rect, String?) onLongPress;
   final VoidCallback onSelectionToggle;
   final ValueChanged<OpenCrayMarkdownSelectionSnapshot?> onTextSelectionChanged;
+  final List<ChatRunTraceData> attachedRunTraces;
+  final String? interruptConfirmRunId;
+  final Set<String> busyInterruptRunIds;
+  final Set<String> busyRetryRunIds;
+  final ValueChanged<ChatRunTraceData>? onArmInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onDismissInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onRetryRunTrace;
 
   static const double _threadHorizontalInset = 20;
   static const double _selectionControlGutter = 42;
@@ -8242,6 +12893,14 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
       selectionMode: selectionMode,
       onLongPress: onLongPress,
       onTextSelectionChanged: onTextSelectionChanged,
+      attachedRunTraces: attachedRunTraces,
+      interruptConfirmRunId: interruptConfirmRunId,
+      busyInterruptRunIds: busyInterruptRunIds,
+      busyRetryRunIds: busyRetryRunIds,
+      onArmInterruptRunTrace: onArmInterruptRunTrace,
+      onDismissInterruptRunTrace: onDismissInterruptRunTrace,
+      onInterruptRunTrace: onInterruptRunTrace,
+      onRetryRunTrace: onRetryRunTrace,
     );
     if (!selectionMode) {
       return Padding(
@@ -8253,57 +12912,51 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 12),
       child: LayoutBuilder(
         builder: (BuildContext context, BoxConstraints constraints) {
-          final double fullWidth =
-              constraints.maxWidth +
-              (_threadHorizontalInset * 2) +
-              _selectionControlGutter;
-          return Transform.translate(
-            offset: const Offset(
-              -(_threadHorizontalInset + _selectionControlGutter),
-              0,
-            ),
-            child: SizedBox(
-              width: fullWidth,
-              child: GestureDetector(
-                key: ValueKey<String>('chat-message-row-${message.messageId}'),
-                onTap: onSelectionToggle,
-                behavior: HitTestBehavior.opaque,
-                child: Stack(
-                  children: <Widget>[
-                    Positioned.fill(
-                      child: AnimatedContainer(
-                        key: ValueKey<String>(
-                          'chat-message-row-bg-${message.messageId}',
+          return SizedBox(
+            width: constraints.maxWidth,
+            child: GestureDetector(
+              key: ValueKey<String>('chat-message-row-${message.messageId}'),
+              onTap: onSelectionToggle,
+              behavior: HitTestBehavior.opaque,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: <Widget>[
+                  Positioned(
+                    left: -_threadHorizontalInset,
+                    right: -_threadHorizontalInset,
+                    top: 0,
+                    bottom: 0,
+                    child: AnimatedContainer(
+                      key: ValueKey<String>(
+                        'chat-message-row-bg-${message.messageId}',
+                      ),
+                      duration: const Duration(milliseconds: 160),
+                      curve: Curves.easeOutCubic,
+                      color: isSelected
+                          ? _ChatPalette.selectionRowHighlight
+                          : Colors.transparent,
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 6),
+                    child: Row(
+                      children: <Widget>[
+                        SizedBox(
+                          width: _selectionControlGutter,
+                          child: Center(
+                            child: _ChatSelectionControl(
+                              messageId: message.messageId,
+                              isSelected: isSelected,
+                            ),
+                          ),
                         ),
-                        duration: const Duration(milliseconds: 160),
-                        curve: Curves.easeOutCubic,
-                        color: isSelected
-                            ? _ChatPalette.selectionRowHighlight
-                            : Colors.transparent,
-                      ),
-                    ),
-                    Padding(
-                      padding: EdgeInsets.fromLTRB(
-                        _selectionControlGutter + _threadHorizontalInset,
-                        6,
-                        _threadHorizontalInset,
-                        6,
-                      ),
-                      child: Align(alignment: alignment, child: bubble),
-                    ),
-                    Positioned(
-                      left: _selectionControlGutter + 8,
-                      top: 0,
-                      bottom: 0,
-                      child: Center(
-                        child: _ChatSelectionControl(
-                          messageId: message.messageId,
-                          isSelected: isSelected,
+                        Expanded(
+                          child: Align(alignment: alignment, child: bubble),
                         ),
-                      ),
+                      ],
                     ),
-                  ],
-                ),
+                  ),
+                ],
               ),
             ),
           );
@@ -8398,8 +13051,94 @@ class _MessageList extends StatelessWidget {
   Widget build(BuildContext context) {
     final children = <Widget>[];
     int? previousTimestampEpochMs;
+    final Map<String, List<ChatRunTraceData>> anchoredRunTracesByMessageId =
+        <String, List<ChatRunTraceData>>{};
+    final List<ChatRunTraceData> anchoredRunTraces = <ChatRunTraceData>[];
+    final Set<ChatRunTraceData> renderedRunTraces = <ChatRunTraceData>{};
+    final Set<String> visibleMessageIds = messages
+        .map((message) => message.messageId.trim())
+        .where((messageId) => messageId.isNotEmpty)
+        .toSet();
+
+    for (final trace in runTraces) {
+      final String anchorMessageId = trace.anchorMessageId.trim();
+      if (anchorMessageId.isEmpty) {
+        continue;
+      }
+      anchoredRunTraces.add(trace);
+      anchoredRunTracesByMessageId
+          .putIfAbsent(anchorMessageId, () => <ChatRunTraceData>[])
+          .add(trace);
+    }
+
+    void addRunTrace(
+      ChatRunTraceData trace, {
+      required bool showRetryAction,
+      required bool showInterruptAction,
+    }) {
+      if (!renderedRunTraces.add(trace)) {
+        return;
+      }
+      final bool canShowInterrupt = showInterruptAction && trace.canInterrupt;
+      final bool canShowRetry = showRetryAction && trace.isRetryable;
+      children.add(
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: _RunTraceBubble(
+              key: ValueKey<String>(
+                'chat-run-trace-${_stableRunTraceKey(trace)}',
+              ),
+              bridge: bridge,
+              copy: copy,
+              trace: trace,
+              showSandboxPreviewCard: showSandboxPreviewCards,
+              showRetryAction: canShowRetry,
+              showInterruptAction: canShowInterrupt,
+              showInterruptConfirm:
+                  canShowInterrupt &&
+                  interruptConfirmRunId == trace.interruptId,
+              isInterruptBusy:
+                  canShowInterrupt &&
+                  busyInterruptRunIds.contains(trace.interruptId),
+              onInterruptRequest: canShowInterrupt
+                  ? () => onArmInterruptRunTrace(trace)
+                  : null,
+              onInterruptDismiss:
+                  canShowInterrupt && interruptConfirmRunId == trace.interruptId
+                  ? () => onDismissInterruptRunTrace(trace)
+                  : null,
+              onInterruptConfirm: canShowInterrupt
+                  ? () => onInterruptRunTrace(trace)
+                  : null,
+              isRetryBusy:
+                  canShowRetry && busyRetryRunIds.contains(trace.retryId),
+              onRetry: canShowRetry ? () => onRetryRunTrace(trace) : null,
+            ),
+          ),
+        ),
+      );
+    }
 
     for (final message in messages) {
+      final String leadingTraceAnchorMessageId =
+          _leadingTraceAnchorMessageIdForMessage(
+            message,
+            anchoredRunTracesByMessageId,
+            anchoredRunTraces,
+          );
+      final List<ChatRunTraceData> leadingTraces =
+          leadingTraceAnchorMessageId.isEmpty
+          ? const <ChatRunTraceData>[]
+          : anchoredRunTracesByMessageId[leadingTraceAnchorMessageId] ??
+                const <ChatRunTraceData>[];
+      for (final trace in leadingTraces) {
+        addRunTrace(trace, showRetryAction: false, showInterruptAction: false);
+      }
+      final List<ChatRunTraceData> anchoredTraces =
+          anchoredRunTracesByMessageId[message.messageId.trim()] ??
+          const <ChatRunTraceData>[];
       final int? currentTimestampEpochMs = message.createdAtEpochMs;
       if (currentTimestampEpochMs != null &&
           currentTimestampEpochMs > 0 &&
@@ -8445,6 +13184,7 @@ class _MessageList extends StatelessWidget {
         case ChatMessageKind.inbound:
           children.add(
             _ChatMessageWithTimestamp(
+              key: ValueKey<String>(_chatMessageListItemKey(message)),
               bridge: bridge,
               copy: copy,
               message: message,
@@ -8459,11 +13199,20 @@ class _MessageList extends StatelessWidget {
               onSelectionToggle: () => onMessageSelectionToggle(message),
               onTextSelectionChanged: (selectedText) =>
                   onMessageTextSelectionChanged(message, selectedText),
+              attachedRunTraces: anchoredTraces,
+              interruptConfirmRunId: interruptConfirmRunId,
+              busyInterruptRunIds: busyInterruptRunIds,
+              busyRetryRunIds: busyRetryRunIds,
+              onArmInterruptRunTrace: onArmInterruptRunTrace,
+              onDismissInterruptRunTrace: onDismissInterruptRunTrace,
+              onInterruptRunTrace: onInterruptRunTrace,
+              onRetryRunTrace: onRetryRunTrace,
             ),
           );
         case ChatMessageKind.outbound:
           children.add(
             _ChatMessageWithTimestamp(
+              key: ValueKey<String>(_chatMessageListItemKey(message)),
               bridge: bridge,
               copy: copy,
               message: message,
@@ -8478,6 +13227,14 @@ class _MessageList extends StatelessWidget {
               onSelectionToggle: () => onMessageSelectionToggle(message),
               onTextSelectionChanged: (selectedText) =>
                   onMessageTextSelectionChanged(message, selectedText),
+              attachedRunTraces: anchoredTraces,
+              interruptConfirmRunId: interruptConfirmRunId,
+              busyInterruptRunIds: busyInterruptRunIds,
+              busyRetryRunIds: busyRetryRunIds,
+              onArmInterruptRunTrace: onArmInterruptRunTrace,
+              onDismissInterruptRunTrace: onDismissInterruptRunTrace,
+              onInterruptRunTrace: onInterruptRunTrace,
+              onRetryRunTrace: onRetryRunTrace,
             ),
           );
       }
@@ -8487,38 +13244,102 @@ class _MessageList extends StatelessWidget {
     }
 
     for (final trace in runTraces) {
-      children.add(
-        Padding(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: _RunTraceBubble(
-              key: ValueKey<String>('chat-run-trace-${trace.runId}'),
-              bridge: bridge,
-              copy: copy,
-              trace: trace,
-              showSandboxPreviewCard: showSandboxPreviewCards,
-              showInterruptConfirm: interruptConfirmRunId == trace.interruptId,
-              isInterruptBusy: busyInterruptRunIds.contains(trace.interruptId),
-              onInterruptRequest: trace.canInterrupt
-                  ? () => onArmInterruptRunTrace(trace)
-                  : null,
-              onInterruptDismiss: interruptConfirmRunId == trace.interruptId
-                  ? () => onDismissInterruptRunTrace(trace)
-                  : null,
-              onInterruptConfirm: trace.canInterrupt
-                  ? () => onInterruptRunTrace(trace)
-                  : null,
-              isRetryBusy: busyRetryRunIds.contains(trace.retryId),
-              onRetry: trace.isRetryable ? () => onRetryRunTrace(trace) : null,
-            ),
-          ),
-        ),
+      final String anchorMessageId = trace.anchorMessageId.trim();
+      final bool showActions =
+          anchorMessageId.isEmpty ||
+          !visibleMessageIds.contains(anchorMessageId);
+      addRunTrace(
+        trace,
+        showRetryAction: showActions,
+        showInterruptAction: false,
       );
     }
 
     return Column(children: children);
   }
+}
+
+String _leadingTraceAnchorMessageIdForMessage(
+  ChatMessageData message,
+  Map<String, List<ChatRunTraceData>> anchoredRunTracesByMessageId,
+  Iterable<ChatRunTraceData> anchoredRunTraces,
+) {
+  final String messageId = message.messageId.trim();
+  if (messageId.isNotEmpty &&
+      anchoredRunTracesByMessageId.containsKey(messageId)) {
+    return messageId;
+  }
+  final String runtimeAnchorMessageId = message.runtimeAnchorMessageId.trim();
+  if (runtimeAnchorMessageId.isNotEmpty &&
+      anchoredRunTracesByMessageId.containsKey(runtimeAnchorMessageId)) {
+    return runtimeAnchorMessageId;
+  }
+  final String runtimeProjectedAnchorMessageId =
+      _runtimeProjectedTraceAnchorMessageIdForMessage(
+        messageId,
+        anchoredRunTraces,
+      );
+  if (runtimeProjectedAnchorMessageId.isNotEmpty &&
+      anchoredRunTracesByMessageId.containsKey(
+        runtimeProjectedAnchorMessageId,
+      )) {
+    return runtimeProjectedAnchorMessageId;
+  }
+  return '';
+}
+
+String _runtimeProjectedTraceAnchorMessageIdForMessage(
+  String messageId,
+  Iterable<ChatRunTraceData> anchoredRunTraces,
+) {
+  if (messageId.isEmpty ||
+      (!messageId.startsWith('runtime-process-') &&
+          !messageId.startsWith('runtime-assistant-'))) {
+    return '';
+  }
+  String bestAnchorMessageId = '';
+  int bestKeyLength = 0;
+  void considerKey(String key, String anchorMessageId) {
+    if (key.isEmpty || anchorMessageId.isEmpty || key.length <= bestKeyLength) {
+      return;
+    }
+    final bool matchesProcessId = messageId.startsWith('runtime-process-$key-');
+    final bool matchesAssistantId =
+        messageId.startsWith('runtime-assistant-') &&
+        messageId.contains('-$key-');
+    if (!matchesProcessId && !matchesAssistantId) {
+      return;
+    }
+    bestKeyLength = key.length;
+    bestAnchorMessageId = anchorMessageId;
+  }
+
+  for (final trace in anchoredRunTraces) {
+    final String anchorMessageId = trace.anchorMessageId.trim();
+    considerKey(trace.runId.trim(), anchorMessageId);
+    considerKey(trace.taskId.trim(), anchorMessageId);
+  }
+  return bestAnchorMessageId;
+}
+
+String _stableRunTraceKey(ChatRunTraceData trace) {
+  final String runId = trace.runId.trim();
+  if (runId.isNotEmpty) {
+    return runId;
+  }
+  final String taskId = trace.taskId.trim();
+  if (taskId.isNotEmpty) {
+    return taskId;
+  }
+  return trace.label.trim();
+}
+
+String _chatMessageListItemKey(ChatMessageData message) {
+  final String messageId = message.messageId.trim();
+  if (messageId.isNotEmpty) {
+    return 'chat-message-item-$messageId';
+  }
+  return 'chat-message-item-${message.kind.name}-${message.createdAtEpochMs ?? 0}-${javaStringHashCode(message.text)}';
 }
 
 class _RunTraceBubble extends StatefulWidget {
@@ -8528,6 +13349,8 @@ class _RunTraceBubble extends StatefulWidget {
     required this.copy,
     required this.trace,
     this.showSandboxPreviewCard = false,
+    this.showRetryAction = false,
+    this.showInterruptAction = false,
     this.showInterruptConfirm = false,
     this.onInterruptRequest,
     this.onInterruptDismiss,
@@ -8541,6 +13364,8 @@ class _RunTraceBubble extends StatefulWidget {
   final OpenCrayUiCopy copy;
   final ChatRunTraceData trace;
   final bool showSandboxPreviewCard;
+  final bool showRetryAction;
+  final bool showInterruptAction;
   final bool showInterruptConfirm;
   final VoidCallback? onInterruptRequest;
   final VoidCallback? onInterruptDismiss;
@@ -8554,57 +13379,107 @@ class _RunTraceBubble extends StatefulWidget {
 }
 
 class _RunTraceBubbleState extends State<_RunTraceBubble> {
-  bool _interruptOutsideDismissReady = false;
-  late final ScrollController _bodyScrollController = ScrollController();
+  static final Map<String, Set<ValueNotifier<ChatRunTraceData>>>
+  _openTraceNotifiersByRunKey =
+      <String, Set<ValueNotifier<ChatRunTraceData>>>{};
 
   @override
-  void dispose() {
-    _bodyScrollController.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    _publishTraceUpdate();
   }
 
   @override
   void didUpdateWidget(covariant _RunTraceBubble oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!oldWidget.showInterruptConfirm && widget.showInterruptConfirm) {
-      _interruptOutsideDismissReady = false;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || !widget.showInterruptConfirm) {
-          return;
-        }
-        setState(() {
-          _interruptOutsideDismissReady = true;
-        });
-      });
-    } else if (oldWidget.showInterruptConfirm && !widget.showInterruptConfirm) {
-      _interruptOutsideDismissReady = false;
+    if (!identical(oldWidget.trace, widget.trace)) {
+      _runTraceDebug(
+        'bubble.traceUpdate run=${widget.trace.runId} openInspectors=${_openNotifierCount(widget.trace)} history=${widget.trace.history.length}',
+      );
+    }
+    _publishTraceUpdate();
+  }
+
+  static List<String> _traceNotifierKeys(ChatRunTraceData trace) {
+    final List<String> keys = <String>[];
+    final String taskId = trace.taskId.trim();
+    final String runId = trace.runId.trim();
+    if (taskId.isNotEmpty) {
+      keys.add('task:$taskId');
+    }
+    if (runId.isNotEmpty) {
+      keys.add('run:$runId');
+    }
+    final String label = trace.label.trim();
+    if (label.isNotEmpty) {
+      keys.add('label:$label');
+    }
+    if (keys.isEmpty) {
+      keys.add('label:${trace.label.trim()}');
+    }
+    return keys;
+  }
+
+  static int _openNotifierCount(ChatRunTraceData trace) =>
+      _traceNotifierKeys(trace).fold<int>(
+        0,
+        (total, key) => total + (_openTraceNotifiersByRunKey[key]?.length ?? 0),
+      );
+
+  static bool hasOpenInspectorForTraces(Iterable<ChatRunTraceData> traces) {
+    for (final trace in traces) {
+      if (_openNotifierCount(trace) > 0) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  void _publishTraceUpdate() {
+    final Set<ValueNotifier<ChatRunTraceData>> notifiers =
+        <ValueNotifier<ChatRunTraceData>>{};
+    for (final key in _traceNotifierKeys(widget.trace)) {
+      notifiers.addAll(
+        _openTraceNotifiersByRunKey[key] ??
+            const <ValueNotifier<ChatRunTraceData>>{},
+      );
+    }
+    for (final notifier in notifiers) {
+      notifier.value = widget.trace;
     }
   }
 
   Future<void> _openFullscreen() {
-    final ChatRunTraceSandboxSessionCardData? sessionCard =
-        widget.showSandboxPreviewCard ? widget.trace.sessionCard : null;
-    final ChatRunTracePreviewCardData? previewCard =
-        widget.showSandboxPreviewCard ? widget.trace.previewCard : null;
+    final ValueNotifier<ChatRunTraceData> traceNotifier =
+        ValueNotifier<ChatRunTraceData>(widget.trace);
+    final List<String> traceKeys = _traceNotifierKeys(widget.trace);
+    for (final traceKey in traceKeys) {
+      _openTraceNotifiersByRunKey
+          .putIfAbsent(traceKey, () => <ValueNotifier<ChatRunTraceData>>{})
+          .add(traceNotifier);
+    }
     return showDialog<void>(
       context: context,
       barrierColor: const Color(0x8A0B0E14),
       builder: (dialogContext) => _RunTraceFullscreenSheet(
         copy: widget.copy,
-        trace: widget.trace,
+        traceListenable: traceNotifier,
+        showSandboxPreviewCard: widget.showSandboxPreviewCard,
         bridge: widget.bridge,
-        session: sessionCard,
-        preview: previewCard,
-        onOpenPreview: previewCard == null || widget.bridge == null
-            ? null
-            : () => _openPreviewCard(previewCard),
-        onCopyPreview: previewCard == null
-            ? null
-            : () => _copyPreviewUrl(previewCard),
         onRetry: widget.onRetry,
         isRetryBusy: widget.isRetryBusy,
       ),
-    );
+    ).whenComplete(() {
+      for (final traceKey in traceKeys) {
+        final Set<ValueNotifier<ChatRunTraceData>>? notifiers =
+            _openTraceNotifiersByRunKey[traceKey];
+        notifiers?.remove(traceNotifier);
+        if (notifiers != null && notifiers.isEmpty) {
+          _openTraceNotifiersByRunKey.remove(traceKey);
+        }
+      }
+      traceNotifier.dispose();
+    });
   }
 
   Future<void> _openPreviewCard(ChatRunTracePreviewCardData preview) async {
@@ -8636,285 +13511,330 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
         widget.showSandboxPreviewCard ? trace.previewCard : null;
     final _RunTraceCompactPresentation presentation =
         _buildRunTraceCompactPresentation(trace: trace, copy: widget.copy);
-    final String? supplementalBody = _supplementalRunTraceBody(
-      trace: trace,
-      history: trace.history,
-    );
+    final bool showInlineActions =
+        widget.showRetryAction || widget.showInterruptAction;
     final double bubbleWidth = math.min(
       MediaQuery.sizeOf(context).width - 76,
       314,
     );
-    final Color surfaceColor = trace.isHighRisk
-        ? _ChatPalette.highRiskSurface
-        : Colors.white;
-    final Color borderColor = trace.isHighRisk
-        ? _ChatPalette.highRiskBorder
-        : _ChatPalette.runTraceBorder;
-    final bool showInterruptAction =
-        widget.onInterruptRequest != null ||
-        widget.showInterruptConfirm ||
-        widget.isInterruptBusy;
-    return TapRegion(
-      onTapOutside: widget.showInterruptConfirm && _interruptOutsideDismissReady
-          ? (_) => widget.onInterruptDismiss?.call()
-          : null,
-      child: GestureDetector(
-        onDoubleTap: _openFullscreen,
-        behavior: HitTestBehavior.deferToChild,
-        child: SizedBox(
-          width: bubbleWidth,
-          child: DecoratedBox(
-            decoration: ShapeDecoration(
-              color: surfaceColor,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(22),
-                side: BorderSide(color: borderColor),
-              ),
+    return GestureDetector(
+      onDoubleTap: _openFullscreen,
+      behavior: HitTestBehavior.opaque,
+      child: SizedBox(
+        width: bubbleWidth,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            _RunTraceStatusLine(
+              trace: trace,
+              presentation: presentation,
+              copy: widget.copy,
+              onTap: _openFullscreen,
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: <Widget>[
-                  AnimatedSwitcher(
-                    duration: const Duration(milliseconds: 180),
-                    reverseDuration: const Duration(milliseconds: 140),
-                    switchInCurve: Curves.easeOutCubic,
-                    switchOutCurve: Curves.easeInCubic,
-                    transitionBuilder: (child, animation) {
-                      final curved = CurvedAnimation(
-                        parent: animation,
-                        curve: Curves.easeOutCubic,
-                        reverseCurve: Curves.easeInCubic,
-                      );
-                      return ClipRect(
-                        child: FadeTransition(
-                          opacity: curved,
-                          child: SlideTransition(
-                            position: Tween<Offset>(
-                              begin: const Offset(0.14, 0),
-                              end: Offset.zero,
-                            ).animate(curved),
-                            child: child,
-                          ),
-                        ),
-                      );
-                    },
-                    child: widget.showInterruptConfirm
-                        ? _RunTraceInterruptConfirmRow(
-                            key: ValueKey<String>(
-                              'chat-run-trace-interrupt-confirm-${trace.runId}',
-                            ),
-                            copy: widget.copy,
-                            runId: trace.runId,
-                            isBusy: widget.isInterruptBusy,
-                            onConfirmed: widget.onInterruptConfirm,
-                          )
-                        : Row(
-                            key: ValueKey<String>(
-                              'chat-run-trace-header-${trace.runId}',
-                            ),
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: <Widget>[
-                              Expanded(
-                                child: Wrap(
-                                  spacing: 8,
-                                  runSpacing: 8,
-                                  children: <Widget>[
-                                    _RunTracePill(
-                                      label: presentation.statusLabel,
-                                      foregroundColor: trace.isHighRisk
-                                          ? _ChatPalette.highRiskAccent
-                                          : _ChatPalette.runTraceStatusText,
-                                      backgroundColor: trace.isHighRisk
-                                          ? _ChatPalette.highRiskBadgeSurface
-                                          : _ChatPalette.runTraceStatusSurface,
-                                    ),
-                                    if (presentation.activityLabel != null)
-                                      _RunTracePill(
-                                        label: presentation.activityLabel!,
-                                        foregroundColor:
-                                            _ChatPalette.runTraceActivityText,
-                                        backgroundColor: _ChatPalette
-                                            .runTraceActivitySurface,
-                                      ),
-                                  ],
-                                ),
-                              ),
-                              if (showInterruptAction) ...<Widget>[
-                                const SizedBox(width: 12),
-                                _RunTraceInlineInterruptAction(
-                                  key: ValueKey<String>(
-                                    'chat-run-trace-interrupt-${trace.runId}',
-                                  ),
-                                  label: widget.isInterruptBusy
-                                      ? widget.copy.chatRunInterruptBusy
-                                      : widget.copy.chatRunInterruptAction,
-                                  enabled: !widget.isInterruptBusy,
-                                  onTap: widget.isInterruptBusy
-                                      ? null
-                                      : widget.onInterruptRequest,
-                                ),
-                              ],
-                            ],
-                          ),
-                  ),
-                  const SizedBox(height: 12),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 220),
-                    child: SingleChildScrollView(
-                      key: ValueKey<String>(
-                        'chat-run-trace-scroll-${trace.runId}',
-                      ),
-                      controller: _bodyScrollController,
-                      primary: false,
-                      physics: const ClampingScrollPhysics(),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Text(
-                            presentation.headline,
-                            maxLines: 3,
-                            overflow: TextOverflow.ellipsis,
-                            style: _ChatTextStyles.runTraceHeadline,
-                          ),
-                          if (presentation.description != null) ...<Widget>[
-                            const SizedBox(height: 8),
-                            Text(
-                              presentation.description!,
-                              maxLines: 3,
-                              overflow: TextOverflow.ellipsis,
-                              style: _ChatTextStyles.bodyMuted,
-                            ),
-                          ],
-                          if (presentation.detailLines.isNotEmpty) ...<Widget>[
-                            const SizedBox(height: 12),
-                            DecoratedBox(
-                              decoration: BoxDecoration(
-                                color: _ChatPalette.runTraceDetailSurface,
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: presentation.detailLines
-                                      .asMap()
-                                      .entries
-                                      .map(
-                                        (entry) => Padding(
-                                          padding: EdgeInsets.only(
-                                            bottom:
-                                                entry.key ==
-                                                    presentation
-                                                            .detailLines
-                                                            .length -
-                                                        1
-                                                ? 0
-                                                : 6,
-                                          ),
-                                          child: Text.rich(
-                                            TextSpan(
-                                              children: <InlineSpan>[
-                                                TextSpan(
-                                                  text:
-                                                      '${entry.value.label}${widget.copy.isChinese ? '  ' : '  '}',
-                                                  style: _ChatTextStyles
-                                                      .runTraceDetailLabel,
-                                                ),
-                                                TextSpan(
-                                                  text: entry.value.value,
-                                                  style: _ChatTextStyles
-                                                      .runTraceDetailValue,
-                                                ),
-                                              ],
-                                            ),
-                                            maxLines: 2,
-                                            overflow: TextOverflow.ellipsis,
-                                          ),
-                                        ),
-                                      )
-                                      .toList(growable: false),
-                                ),
-                              ),
-                            ),
-                          ],
-                          if (presentation.footer != null) ...<Widget>[
-                            const SizedBox(height: 10),
-                            Text(
-                              presentation.footer!,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                              style: _ChatTextStyles.runTraceFooter,
-                            ),
-                          ],
-                          if (trace.isRetryable &&
-                              widget.onRetry != null) ...<Widget>[
-                            const SizedBox(height: 12),
-                            _RunTraceActionButton(
-                              label: widget.isRetryBusy
-                                  ? '${trace.retryLabel!}...'
-                                  : trace.retryLabel!,
-                              onTap: widget.isRetryBusy ? null : widget.onRetry,
-                            ),
-                          ],
-                          if (supplementalBody != null) ...<Widget>[
-                            const SizedBox(height: 12),
-                            DecoratedBox(
-                              decoration: BoxDecoration(
-                                color: _ChatPalette.runTraceDetailSurface,
-                                borderRadius: BorderRadius.circular(16),
-                              ),
-                              child: Padding(
-                                padding: const EdgeInsets.all(12),
-                                child: Text(
-                                  supplementalBody,
-                                  style: _ChatTextStyles.bodyMuted.copyWith(
-                                    color: _ChatPalette.textPrimary,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-                  if (sessionCard != null) ...<Widget>[
-                    const SizedBox(height: 12),
-                    _RunTraceSandboxSessionCard(
-                      key: ValueKey<String>(
-                        'chat-run-trace-session-card-${trace.runId}',
-                      ),
-                      copy: widget.copy,
-                      runId: trace.runId,
-                      session: sessionCard,
-                    ),
-                  ],
-                  if (previewCard != null) ...<Widget>[
-                    const SizedBox(height: 12),
-                    _RunTracePreviewCard(
-                      key: ValueKey<String>(
-                        'chat-run-trace-preview-card-${trace.runId}',
-                      ),
-                      copy: widget.copy,
-                      runId: trace.runId,
-                      preview: previewCard,
-                      bridge: widget.bridge,
-                      onOpen: widget.bridge == null
-                          ? null
-                          : () => _openPreviewCard(previewCard),
-                      onCopy: () => _copyPreviewUrl(previewCard),
-                    ),
-                  ],
-                ],
+            if (showInlineActions) ...<Widget>[
+              const SizedBox(height: 8),
+              _ChatRunTraceInlineActions(
+                copy: widget.copy,
+                traces: <ChatRunTraceData>[trace],
+                showRetryActions: widget.showRetryAction,
+                showInterruptActions: widget.showInterruptAction,
+                interruptConfirmRunId: widget.showInterruptConfirm
+                    ? trace.interruptId
+                    : null,
+                busyInterruptRunIds: widget.isInterruptBusy
+                    ? <String>{trace.interruptId}
+                    : const <String>{},
+                busyRetryRunIds: widget.isRetryBusy
+                    ? <String>{trace.retryId}
+                    : const <String>{},
+                onArmInterruptRunTrace: widget.onInterruptRequest == null
+                    ? null
+                    : (_) => widget.onInterruptRequest!(),
+                onDismissInterruptRunTrace: widget.onInterruptDismiss == null
+                    ? null
+                    : (_) => widget.onInterruptDismiss!(),
+                onInterruptRunTrace: widget.onInterruptConfirm == null
+                    ? null
+                    : (_) => widget.onInterruptConfirm!(),
+                onRetryRunTrace: widget.onRetry == null
+                    ? null
+                    : (_) => widget.onRetry!(),
               ),
+            ],
+            if (sessionCard != null) ...<Widget>[
+              const SizedBox(height: 10),
+              _RunTraceSandboxSessionCard(
+                key: ValueKey<String>(
+                  'chat-run-trace-session-card-${trace.runId}',
+                ),
+                copy: widget.copy,
+                runId: trace.runId,
+                session: sessionCard,
+                bridge: widget.bridge,
+              ),
+            ],
+            if (previewCard != null) ...<Widget>[
+              const SizedBox(height: 10),
+              _RunTracePreviewCard(
+                key: ValueKey<String>(
+                  'chat-run-trace-preview-card-${trace.runId}',
+                ),
+                copy: widget.copy,
+                runId: trace.runId,
+                preview: previewCard,
+                bridge: widget.bridge,
+                onOpen: widget.bridge == null
+                    ? null
+                    : () => _openPreviewCard(previewCard),
+                onCopy: () => _copyPreviewUrl(previewCard),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RunTraceStatusLine extends StatefulWidget {
+  const _RunTraceStatusLine({
+    required this.trace,
+    required this.presentation,
+    required this.copy,
+    required this.onTap,
+  });
+
+  final ChatRunTraceData trace;
+  final _RunTraceCompactPresentation presentation;
+  final OpenCrayUiCopy copy;
+  final VoidCallback onTap;
+
+  @override
+  State<_RunTraceStatusLine> createState() => _RunTraceStatusLineState();
+}
+
+class _RunTraceStatusLineState extends State<_RunTraceStatusLine>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _shimmerController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1450),
+  );
+
+  bool get _shouldAnimate {
+    final MediaQueryData? mediaQuery = MediaQuery.maybeOf(context);
+    return !widget.trace.isTerminal &&
+        !widget.trace.isRetryable &&
+        mediaQuery?.disableAnimations != true &&
+        !_isAutomatedWidgetTest;
+  }
+
+  bool get _isAutomatedWidgetTest {
+    bool result = false;
+    assert(() {
+      result = WidgetsBinding.instance.runtimeType.toString().contains(
+        'TestWidgetsFlutterBinding',
+      );
+      return true;
+    }());
+    return result;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncAnimation();
+  }
+
+  @override
+  void didUpdateWidget(covariant _RunTraceStatusLine oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncAnimation();
+  }
+
+  void _syncAnimation() {
+    if (_shouldAnimate) {
+      if (!_shimmerController.isAnimating) {
+        _shimmerController.repeat();
+      }
+    } else {
+      _shimmerController.stop();
+      _shimmerController.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _shimmerController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool animate = _shouldAnimate;
+    final Color baseColor = widget.trace.isHighRisk
+        ? _ChatPalette.highRiskAccent
+        : _ChatPalette.runTraceActivityText;
+    final Color mutedColor = widget.trace.isTerminal || widget.trace.isRetryable
+        ? _ChatPalette.textSecondary
+        : baseColor;
+    final String lead = _runTraceStatusLineLead(
+      trace: widget.trace,
+      presentation: widget.presentation,
+      copy: widget.copy,
+    );
+    final String? detail = _runTraceStatusLineDetail(
+      lead: lead,
+      presentation: widget.presentation,
+    );
+    final String label = detail == null ? lead : '$lead · $detail';
+    final TextStyle lineStyle = _ChatTextStyles.timeline.copyWith(
+      color: mutedColor,
+      fontWeight: FontWeight.w700,
+    );
+    final Widget text = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: <Widget>[
+        Text(
+          lead,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: lineStyle,
+        ),
+        if (detail != null) ...<Widget>[
+          Text(' · ', style: lineStyle),
+          Flexible(
+            child: Text(
+              detail,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: lineStyle,
+            ),
+          ),
+        ],
+      ],
+    );
+    final Widget animatedText = animate
+        ? AnimatedBuilder(
+            animation: _shimmerController,
+            child: text,
+            builder: (context, child) {
+              final double position = _shimmerController.value;
+              return ShaderMask(
+                shaderCallback: (bounds) {
+                  final double width = math.max(bounds.width, 1);
+                  final double center = (position * 2.4 - 0.7) * width;
+                  return LinearGradient(
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                    colors: <Color>[
+                      mutedColor,
+                      mutedColor.withValues(alpha: 0.54),
+                      mutedColor,
+                    ],
+                    stops: const <double>[0.0, 0.5, 1.0],
+                  ).createShader(
+                    Rect.fromLTWH(center - width, 0, width * 2, bounds.height),
+                  );
+                },
+                child: child,
+              );
+            },
+          )
+        : text;
+    return Semantics(
+      button: true,
+      label: label,
+      child: GestureDetector(
+        onTap: widget.onTap,
+        onDoubleTap: widget.onTap,
+        behavior: HitTestBehavior.opaque,
+        child: SizedBox(
+          width: double.infinity,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 3),
+            child: Row(
+              children: <Widget>[
+                SizedBox(
+                  width: 8,
+                  height: 8,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: mutedColor.withValues(
+                        alpha: animate ? 0.88 : 0.52,
+                      ),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Flexible(child: animatedText),
+                const SizedBox(width: 4),
+                Icon(
+                  Icons.chevron_right_rounded,
+                  size: 16,
+                  color: mutedColor.withValues(alpha: 0.78),
+                ),
+              ],
             ),
           ),
         ),
       ),
     );
   }
+}
+
+String _runTraceStatusLineLead({
+  required ChatRunTraceData trace,
+  required _RunTraceCompactPresentation presentation,
+  required OpenCrayUiCopy copy,
+}) {
+  final String statusLabel = presentation.statusLabel.trim();
+  if (trace.isTerminal || trace.isRetryable) {
+    return statusLabel;
+  }
+  final String genericRunningLabel = copy.isChinese ? '运行中' : 'RUNNING';
+  if (!_runTraceTextsMatch(statusLabel, genericRunningLabel)) {
+    return statusLabel;
+  }
+  return presentation.activityLabel ?? (copy.isChinese ? '思考中' : 'Thinking');
+}
+
+String? _runTraceStatusLineDetail({
+  required String lead,
+  required _RunTraceCompactPresentation presentation,
+}) {
+  final List<String> candidates = <String>[
+    presentation.headline,
+    if (presentation.description != null) presentation.description!,
+    ...presentation.detailLines.map((line) => line.value),
+  ];
+  final List<String> details = <String>[];
+  for (final candidate in candidates) {
+    final String text = candidate.trim();
+    final bool placeholder = _runTraceThinkingPlaceholders.contains(text);
+    if (text.isEmpty ||
+        placeholder ||
+        _runTraceTextsMatch(lead, text) ||
+        _runTraceTextContains(text, lead) ||
+        details.any(
+          (detail) =>
+              _runTraceTextsMatch(detail, text) ||
+              _runTraceTextContains(detail, text) ||
+              _runTraceTextContains(text, detail),
+        )) {
+      continue;
+    }
+    details.add(text);
+  }
+  if (details.isEmpty) {
+    return null;
+  }
+  return details.join(' · ');
 }
 
 class _RunTracePreviewCard extends StatelessWidget {
@@ -8997,14 +13917,18 @@ class _RunTracePreviewCard extends StatelessWidget {
               ),
             ],
             const SizedBox(height: 10),
-            Text(
-              preview.url,
+            KeyedSubtree(
               key: ValueKey<String>('$keyNamespace-url-$runId'),
-              maxLines: expanded ? null : 3,
-              overflow: expanded ? null : TextOverflow.ellipsis,
-              style: _ChatTextStyles.runTraceDetailValue.copyWith(
-                color: _ChatPalette.runTraceUrlText,
-                fontWeight: FontWeight.w600,
+              child: _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: preview.url,
+                bodyStyle: _ChatTextStyles.runTraceDetailValue.copyWith(
+                  color: _ChatPalette.runTraceUrlText,
+                  fontWeight: FontWeight.w600,
+                ),
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
+                preferAccentForStrong: true,
               ),
             ),
             if (detailParts.isNotEmpty) ...<Widget>[
@@ -9029,11 +13953,12 @@ class _RunTracePreviewCard extends StatelessWidget {
             ],
             if (preview.message?.trim().isNotEmpty == true) ...<Widget>[
               const SizedBox(height: 8),
-              Text(
-                preview.message!.trim(),
-                maxLines: expanded ? null : 3,
-                overflow: expanded ? null : TextOverflow.ellipsis,
-                style: _ChatTextStyles.bodyMuted,
+              _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: preview.message!.trim(),
+                bodyStyle: _ChatTextStyles.bodyMuted,
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
               ),
             ],
             const SizedBox(height: 10),
@@ -9257,6 +14182,7 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
     required this.copy,
     required this.runId,
     required this.session,
+    this.bridge,
     this.expanded = false,
     this.keyNamespace = 'chat-run-trace-session',
   });
@@ -9264,6 +14190,7 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
   final OpenCrayUiCopy copy;
   final String runId;
   final ChatRunTraceSandboxSessionCardData session;
+  final OpenCrayHostBridge? bridge;
   final bool expanded;
   final String keyNamespace;
 
@@ -9352,27 +14279,33 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 10),
-            Text(
-              summary,
+            KeyedSubtree(
               key: ValueKey<String>('$keyNamespace-summary-$runId'),
-              maxLines: expanded ? null : 3,
-              overflow: expanded ? null : TextOverflow.ellipsis,
-              style: _ChatTextStyles.runTraceDetailValue.copyWith(
-                color: session.sessionPresent
-                    ? _ChatPalette.textPrimary
-                    : _ChatPalette.textSecondary,
-                fontWeight: FontWeight.w600,
+              child: _OpenCrayMarkdownTextBlock(
+                key: ValueKey<String>('$keyNamespace-summary-markdown-$runId'),
+                copy: copy,
+                data: summary,
+                bodyStyle: _ChatTextStyles.runTraceDetailValue.copyWith(
+                  color: session.sessionPresent
+                      ? _ChatPalette.textPrimary
+                      : _ChatPalette.textSecondary,
+                  fontWeight: FontWeight.w600,
+                ),
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
+                preferAccentForStrong: true,
               ),
             ),
             if (subtitle != null) ...<Widget>[
               const SizedBox(height: 8),
-              Text(
-                subtitle,
-                maxLines: expanded ? null : 2,
-                overflow: expanded ? null : TextOverflow.ellipsis,
-                style: _ChatTextStyles.runTraceFooter.copyWith(
+              _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: subtitle,
+                bodyStyle: _ChatTextStyles.runTraceFooter.copyWith(
                   color: _ChatPalette.textSecondary,
                 ),
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
               ),
             ],
             if (detailParts.isNotEmpty) ...<Widget>[
@@ -9397,38 +14330,42 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
             ],
             if (updatedLabel != null) ...<Widget>[
               const SizedBox(height: 8),
-              Text(
-                updatedLabel,
-                maxLines: expanded ? null : 2,
-                overflow: expanded ? null : TextOverflow.ellipsis,
-                style: _ChatTextStyles.bodyMuted,
+              _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: updatedLabel,
+                bodyStyle: _ChatTextStyles.bodyMuted,
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
               ),
             ],
             if (lastActiveLabel != null) ...<Widget>[
               const SizedBox(height: 6),
-              Text(
-                lastActiveLabel,
-                maxLines: expanded ? null : 2,
-                overflow: expanded ? null : TextOverflow.ellipsis,
-                style: _ChatTextStyles.bodyMuted,
+              _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: lastActiveLabel,
+                bodyStyle: _ChatTextStyles.bodyMuted,
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
               ),
             ],
             if (staleAfterLabel != null) ...<Widget>[
               const SizedBox(height: 6),
-              Text(
-                staleAfterLabel,
-                maxLines: expanded ? null : 2,
-                overflow: expanded ? null : TextOverflow.ellipsis,
-                style: _ChatTextStyles.bodyMuted,
+              _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: staleAfterLabel,
+                bodyStyle: _ChatTextStyles.bodyMuted,
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
               ),
             ],
             if (previewCheckedLabel != null) ...<Widget>[
               const SizedBox(height: 6),
-              Text(
-                previewCheckedLabel,
-                maxLines: expanded ? null : 2,
-                overflow: expanded ? null : TextOverflow.ellipsis,
-                style: _ChatTextStyles.bodyMuted,
+              _OpenCrayMarkdownTextBlock(
+                copy: copy,
+                data: previewCheckedLabel,
+                bodyStyle: _ChatTextStyles.bodyMuted,
+                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bridge: bridge,
               ),
             ],
             if (expanded && session.runningRequestIds.isNotEmpty) ...<Widget>[
@@ -9745,23 +14682,17 @@ class _RunTraceInspectorActorSection {
 class _RunTraceFullscreenSheet extends StatefulWidget {
   const _RunTraceFullscreenSheet({
     required this.copy,
-    required this.trace,
+    required this.traceListenable,
+    required this.showSandboxPreviewCard,
     this.bridge,
-    this.session,
-    this.preview,
-    this.onOpenPreview,
-    this.onCopyPreview,
     this.onRetry,
     this.isRetryBusy = false,
   });
 
   final OpenCrayUiCopy copy;
-  final ChatRunTraceData trace;
+  final ValueListenable<ChatRunTraceData> traceListenable;
+  final bool showSandboxPreviewCard;
   final OpenCrayHostBridge? bridge;
-  final ChatRunTraceSandboxSessionCardData? session;
-  final ChatRunTracePreviewCardData? preview;
-  final VoidCallback? onOpenPreview;
-  final VoidCallback? onCopyPreview;
   final VoidCallback? onRetry;
   final bool isRetryBusy;
 
@@ -9772,12 +14703,99 @@ class _RunTraceFullscreenSheet extends StatefulWidget {
 
 class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
   late final ScrollController _scrollController = ScrollController();
+  late ChatRunTraceData _trace = widget.traceListenable.value;
   String? _selectedActorId;
 
   @override
+  void initState() {
+    super.initState();
+    widget.traceListenable.addListener(_handleTraceChanged);
+    _scheduleScrollToBottom();
+  }
+
+  @override
+  void didUpdateWidget(covariant _RunTraceFullscreenSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.traceListenable != widget.traceListenable) {
+      oldWidget.traceListenable.removeListener(_handleTraceChanged);
+      _trace = widget.traceListenable.value;
+      widget.traceListenable.addListener(_handleTraceChanged);
+      _scheduleScrollToBottom();
+    }
+  }
+
+  @override
   void dispose() {
+    widget.traceListenable.removeListener(_handleTraceChanged);
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _handleTraceChanged() {
+    final ChatRunTraceData nextTrace = widget.traceListenable.value;
+    if (identical(_trace, nextTrace)) {
+      return;
+    }
+    final int previousProcessEntryCount = _trace.history
+        .where(_isRunTraceProcessEntry)
+        .length;
+    final int nextProcessEntryCount = nextTrace.history
+        .where(_isRunTraceProcessEntry)
+        .length;
+    _runTraceDebug(
+      'fullscreen.traceChanged run=${nextTrace.runId} history=${_trace.history.length}->${nextTrace.history.length} processEntries=$previousProcessEntryCount->$nextProcessEntryCount',
+    );
+    final bool shouldStickToBottom =
+        !_scrollController.hasClients ||
+        (_scrollController.position.maxScrollExtent -
+                    _scrollController.position.pixels)
+                .abs() <
+            24;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || identical(_trace, nextTrace)) {
+        return;
+      }
+      setState(() {
+        _trace = nextTrace;
+      });
+      if (shouldStickToBottom) {
+        _scheduleScrollToBottom();
+      }
+    });
+  }
+
+  Future<void> _openPreviewCard(ChatRunTracePreviewCardData preview) async {
+    final OpenCrayHostBridge? bridge = widget.bridge;
+    if (bridge == null) {
+      return;
+    }
+    try {
+      await bridge.openExternalUri(preview.url);
+    } catch (_) {
+      await bridge.showNativeToast(widget.copy.markdownLinkOpenFailed);
+    }
+  }
+
+  Future<void> _copyPreviewUrl(ChatRunTracePreviewCardData preview) async {
+    await Clipboard.setData(ClipboardData(text: preview.url));
+    final OpenCrayHostBridge? bridge = widget.bridge;
+    if (bridge != null) {
+      await bridge.showNativeToast(widget.copy.chatRunPreviewCopied);
+    }
+  }
+
+  void _scheduleScrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) {
+        return;
+      }
+      final ScrollPosition position = _scrollController.position;
+      final double target = position.maxScrollExtent;
+      if ((position.pixels - target).abs() < 0.5) {
+        return;
+      }
+      _scrollController.jumpTo(target);
+    });
   }
 
   List<_RunTraceInspectorActorSection> _buildActorSections(
@@ -9846,7 +14864,10 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
           return Padding(
             padding: const EdgeInsets.only(right: 16),
             child: GestureDetector(
-              onTap: () => setState(() => _selectedActorId = section.id),
+              onTap: () {
+                setState(() => _selectedActorId = section.id);
+                _scheduleScrollToBottom();
+              },
               behavior: HitTestBehavior.opaque,
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 2),
@@ -9876,7 +14897,12 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
   @override
   Widget build(BuildContext context) {
     final OpenCrayUiCopy copy = widget.copy;
-    final ChatRunTraceData trace = widget.trace;
+    final ChatRunTraceData trace = _trace;
+    final ChatRunTraceSandboxSessionCardData? session =
+        widget.showSandboxPreviewCard ? trace.sessionCard : null;
+    final ChatRunTracePreviewCardData? preview = widget.showSandboxPreviewCard
+        ? trace.previewCard
+        : null;
     final List<ChatRunTraceHistoryEntry> history = trace.history.isNotEmpty
         ? trace.history
         : <ChatRunTraceHistoryEntry>[
@@ -10018,11 +15044,14 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                               if (compactPresentation.description !=
                                   null) ...<Widget>[
                                 const SizedBox(height: 8),
-                                Text(
-                                  compactPresentation.description!,
-                                  style: _ChatTextStyles.bodyMuted.copyWith(
+                                _OpenCrayMarkdownTextBlock(
+                                  copy: copy,
+                                  data: compactPresentation.description!,
+                                  bodyStyle: _ChatTextStyles.bodyMuted.copyWith(
                                     color: _ChatPalette.textPrimary,
                                   ),
+                                  surfaceColor: Colors.white,
+                                  bridge: widget.bridge,
                                 ),
                               ],
                               if (compactPresentation
@@ -10032,8 +15061,8 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                 ...compactPresentation.detailLines.map(
                                   (line) => Padding(
                                     padding: const EdgeInsets.only(bottom: 6),
-                                    child: Text.rich(
-                                      TextSpan(
+                                    child: RichText(
+                                      text: TextSpan(
                                         children: <InlineSpan>[
                                           TextSpan(
                                             text:
@@ -10041,10 +15070,19 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                             style: _ChatTextStyles
                                                 .runTraceDetailLabel,
                                           ),
-                                          TextSpan(
-                                            text: line.value,
-                                            style: _ChatTextStyles
-                                                .runTraceDetailValue,
+                                          WidgetSpan(
+                                            alignment:
+                                                PlaceholderAlignment.baseline,
+                                            baseline: TextBaseline.alphabetic,
+                                            child: _OpenCrayMarkdownTextBlock(
+                                              copy: copy,
+                                              data: line.value,
+                                              bodyStyle: _ChatTextStyles
+                                                  .runTraceDetailValue,
+                                              surfaceColor: Colors.white,
+                                              bridge: widget.bridge,
+                                              preferAccentForStrong: true,
+                                            ),
                                           ),
                                         ],
                                       ),
@@ -10095,41 +15133,48 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: <Widget>[
-                                if (widget.session != null) ...<Widget>[
+                                if (session != null) ...<Widget>[
                                   _RunTraceSandboxSessionCard(
                                     key: ValueKey<String>(
                                       'chat-run-trace-fullscreen-session-card-${trace.runId}',
                                     ),
                                     copy: copy,
                                     runId: trace.runId,
-                                    session: widget.session!,
+                                    session: session,
+                                    bridge: widget.bridge,
                                     expanded: true,
                                     keyNamespace:
                                         'chat-run-trace-fullscreen-session',
                                   ),
                                   const SizedBox(height: 14),
                                 ],
-                                if (widget.preview != null) ...<Widget>[
+                                if (preview != null) ...<Widget>[
                                   _RunTracePreviewCard(
                                     key: ValueKey<String>(
                                       'chat-run-trace-fullscreen-preview-card-${trace.runId}',
                                     ),
                                     copy: copy,
                                     runId: trace.runId,
-                                    preview: widget.preview!,
+                                    preview: preview,
                                     bridge: widget.bridge,
                                     expanded: true,
                                     keyNamespace:
                                         'chat-run-trace-fullscreen-preview',
-                                    onOpen: widget.onOpenPreview,
-                                    onCopy: widget.onCopyPreview,
+                                    onOpen: widget.bridge == null
+                                        ? null
+                                        : () => _openPreviewCard(preview),
+                                    onCopy: () => _copyPreviewUrl(preview),
                                   ),
                                   const SizedBox(height: 14),
                                 ],
                                 ...visibleHistory.map(
                                   (entry) => Padding(
                                     padding: const EdgeInsets.only(bottom: 14),
-                                    child: _RunTraceHistoryCard(entry: entry),
+                                    child: _RunTraceHistoryCard(
+                                      copy: copy,
+                                      entry: entry,
+                                      bridge: widget.bridge,
+                                    ),
                                   ),
                                 ),
                                 if (supplementalBody != null)
@@ -10140,12 +15185,16 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                     ),
                                     child: Padding(
                                       padding: const EdgeInsets.all(14),
-                                      child: Text(
-                                        supplementalBody,
-                                        style: _ChatTextStyles.bodyMuted
+                                      child: _OpenCrayMarkdownTextBlock(
+                                        copy: copy,
+                                        data: supplementalBody,
+                                        bodyStyle: _ChatTextStyles.bodyMuted
                                             .copyWith(
                                               color: _ChatPalette.textPrimary,
                                             ),
+                                        surfaceColor:
+                                            _ChatPalette.runTraceDetailSurface,
+                                        bridge: widget.bridge,
                                       ),
                                     ),
                                   ),
@@ -10502,6 +15551,20 @@ _RunTraceCompactPresentation _buildRunTraceCompactPresentation({
         (entry) => !_runTraceThinkingPlaceholders.contains(entry.body.trim()),
       )
       .toList(growable: false);
+  if (trace.isWritingAssistantDraft && !trace.isTerminal) {
+    return _RunTraceCompactPresentation(
+      statusLabel: copy.isChinese ? '正在写回复' : 'WRITING REPLY',
+      activityLabel: copy.isChinese ? '写回复' : 'Writing reply',
+      headline: copy.isChinese ? '生成最终回答' : 'Writing final answer',
+      description: null,
+      detailLines: const <_RunTraceCompactDetailLine>[],
+      footer: trace.history.isNotEmpty || trace.isRetryable
+          ? (copy.isChinese
+                ? '双击查看完整历史。'
+                : 'Double tap to inspect the full history.')
+          : null,
+    );
+  }
   final ChatRunTraceHistoryEntry? currentEntry = _resolveCompactRunTraceEntry(
     trace: trace,
     visibleHistory: visibleHistory,
@@ -10653,6 +15716,10 @@ String? _recentRunTraceProcessSummary({
   required ChatRunTraceHistoryEntry? currentEntry,
   required OpenCrayUiCopy copy,
 }) {
+  final bool hasProcessEntries = history.any(_isRunTraceProcessEntry);
+  if (currentEntry != null && _isRunTraceProcessEntry(currentEntry)) {
+    return _compactBodyForHistoryEntry(currentEntry);
+  }
   final String? currentCompactBody = currentEntry == null
       ? null
       : _compactBodyForHistoryEntry(currentEntry);
@@ -10673,6 +15740,9 @@ String? _recentRunTraceProcessSummary({
         candidate.inspectorActorId != currentEntry.inspectorActorId) {
       continue;
     }
+    if (hasProcessEntries && !_isRunTraceProcessEntry(candidate)) {
+      continue;
+    }
     final String compactBody = _compactBodyForHistoryEntry(candidate);
     if (_runTraceThinkingPlaceholders.contains(compactBody)) {
       continue;
@@ -10686,6 +15756,11 @@ String? _recentRunTraceProcessSummary({
     return compactBody;
   }
   return null;
+}
+
+bool _isRunTraceProcessEntry(ChatRunTraceHistoryEntry entry) {
+  final String label = entry.label.trim();
+  return label.startsWith('Process ') || label.startsWith('进程 ');
 }
 
 String? _compactStructuredInspectorDetail(ChatRunTraceHistoryEntry entry) {
@@ -10778,6 +15853,18 @@ String _runTraceStatusLabel({
     activityLabel,
     copy,
   );
+  if (trace.isTerminal) {
+    final String terminalActivity = mappedActivity?.trim().toLowerCase() ?? '';
+    if (terminalActivity == 'failed' ||
+        terminalActivity == '失败' ||
+        terminalActivity == 'cancelled' ||
+        terminalActivity == '已取消' ||
+        terminalActivity == 'timed out' ||
+        terminalActivity == '已超时') {
+      return mappedActivity!;
+    }
+    return copy.isChinese ? '已完成' : 'FINISHED';
+  }
   return mappedActivity ?? (copy.isChinese ? '运行中' : 'RUNNING');
 }
 
@@ -10828,6 +15915,25 @@ String? _runTraceActivityLabel({
 String? _runTraceActivityStatusFromLabel(String? label, OpenCrayUiCopy copy) {
   final String normalized = label?.trim().toLowerCase() ?? '';
   switch (normalized) {
+    case 'finished':
+    case 'finish':
+    case 'success':
+    case 'completed':
+    case 'complete':
+    case 'done':
+      return copy.isChinese ? '已完成' : 'FINISHED';
+    case 'failed':
+    case 'failure':
+    case 'error':
+    case 'spawn_error':
+      return copy.isChinese ? '失败' : 'FAILED';
+    case 'cancelled':
+    case 'canceled':
+      return copy.isChinese ? '已取消' : 'CANCELLED';
+    case 'timeout':
+    case 'timed':
+    case 'timedout':
+      return copy.isChinese ? '已超时' : 'TIMED OUT';
     case 'read':
       return copy.isChinese ? '读取中' : 'READING';
     case 'write':
@@ -10967,9 +16073,15 @@ bool _runTraceTextContains(String? source, String? fragment) {
 }
 
 class _RunTraceHistoryCard extends StatelessWidget {
-  const _RunTraceHistoryCard({required this.entry});
+  const _RunTraceHistoryCard({
+    required this.copy,
+    required this.entry,
+    this.bridge,
+  });
 
+  final OpenCrayUiCopy copy;
   final ChatRunTraceHistoryEntry entry;
+  final OpenCrayHostBridge? bridge;
 
   @override
   Widget build(BuildContext context) {
@@ -10991,11 +16103,14 @@ class _RunTraceHistoryCard extends StatelessWidget {
             ),
             const SizedBox(height: 4),
           ],
-          Text(
-            entry.body,
-            style: _ChatTextStyles.bubble.copyWith(
+          _OpenCrayMarkdownTextBlock(
+            copy: copy,
+            data: entry.body,
+            bodyStyle: _ChatTextStyles.bubble.copyWith(
               color: _ChatPalette.textPrimary,
             ),
+            surfaceColor: Colors.white,
+            bridge: bridge,
           ),
         ],
       ],
@@ -11023,11 +16138,14 @@ class _RunTraceHistoryCard extends StatelessWidget {
     if (inspectorCallDetail.isNotEmpty) {
       children.add(const SizedBox(height: 4));
       children.add(
-        Text(
-          inspectorCallDetail,
-          style: _ChatTextStyles.runInspectorDetail.copyWith(
+        _OpenCrayMarkdownTextBlock(
+          copy: copy,
+          data: inspectorCallDetail,
+          bodyStyle: _ChatTextStyles.runInspectorDetail.copyWith(
             color: _ChatPalette.textSecondary,
           ),
+          surfaceColor: Colors.white,
+          bridge: bridge,
         ),
       );
     }
@@ -11043,34 +16161,18 @@ class _RunTraceHistoryCard extends StatelessWidget {
   }
 
   Widget _buildInspectorResultText(String body) {
-    final List<String> lines = body
-        .replaceAll('\r\n', '\n')
-        .replaceAll('\r', '\n')
-        .split('\n');
-    final String firstLine = lines.isEmpty ? '' : lines.first;
-    final String remaining = lines.length <= 1
-        ? ''
-        : lines.sublist(1).join('\n');
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         Text('└', style: _ChatTextStyles.runInspectorResultBranch),
         const SizedBox(width: 8),
         Expanded(
-          child: Text.rich(
-            TextSpan(
-              children: <InlineSpan>[
-                TextSpan(
-                  text: firstLine,
-                  style: _ChatTextStyles.runInspectorResult,
-                ),
-                if (remaining.isNotEmpty)
-                  TextSpan(
-                    text: '\n$remaining',
-                    style: _ChatTextStyles.runInspectorResult,
-                  ),
-              ],
-            ),
+          child: _OpenCrayMarkdownTextBlock(
+            copy: copy,
+            data: body,
+            bodyStyle: _ChatTextStyles.runInspectorResult,
+            surfaceColor: Colors.white,
+            bridge: bridge,
           ),
         ),
       ],
@@ -11317,6 +16419,188 @@ class _ChatMessageMenuItem extends StatelessWidget {
   }
 }
 
+class _ChatRunTraceInlineActions extends StatefulWidget {
+  const _ChatRunTraceInlineActions({
+    required this.copy,
+    required this.traces,
+    this.showRetryActions = true,
+    this.showInterruptActions = true,
+    this.interruptConfirmRunId,
+    this.busyInterruptRunIds = const <String>{},
+    this.busyRetryRunIds = const <String>{},
+    this.onArmInterruptRunTrace,
+    this.onDismissInterruptRunTrace,
+    this.onInterruptRunTrace,
+    this.onRetryRunTrace,
+  });
+
+  final OpenCrayUiCopy copy;
+  final List<ChatRunTraceData> traces;
+  final bool showRetryActions;
+  final bool showInterruptActions;
+  final String? interruptConfirmRunId;
+  final Set<String> busyInterruptRunIds;
+  final Set<String> busyRetryRunIds;
+  final ValueChanged<ChatRunTraceData>? onArmInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onDismissInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onRetryRunTrace;
+
+  @override
+  State<_ChatRunTraceInlineActions> createState() =>
+      _ChatRunTraceInlineActionsState();
+}
+
+class _ChatRunTraceInlineActionsState
+    extends State<_ChatRunTraceInlineActions> {
+  bool _outsideDismissReady = false;
+
+  ChatRunTraceData? get _confirmTrace {
+    if (!widget.showInterruptActions) {
+      return null;
+    }
+    final String confirmRunId = widget.interruptConfirmRunId?.trim() ?? '';
+    if (confirmRunId.isEmpty) {
+      return null;
+    }
+    for (final trace in widget.traces) {
+      if (trace.interruptId == confirmRunId &&
+          trace.canInterrupt &&
+          !trace.isTerminal) {
+        return trace;
+      }
+    }
+    return null;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleOutsideDismissReady();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatRunTraceInlineActions oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.interruptConfirmRunId != widget.interruptConfirmRunId) {
+      _outsideDismissReady = false;
+      _scheduleOutsideDismissReady();
+    }
+  }
+
+  void _scheduleOutsideDismissReady() {
+    if (_confirmTrace == null) {
+      return;
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _confirmTrace == null) {
+        return;
+      }
+      setState(() {
+        _outsideDismissReady = true;
+      });
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final List<Widget> rows = <Widget>[];
+    for (final trace in widget.traces) {
+      final bool showConfirm = _confirmTrace == trace;
+      final bool interruptBusy = widget.busyInterruptRunIds.contains(
+        trace.interruptId,
+      );
+      final bool retryBusy = widget.busyRetryRunIds.contains(trace.retryId);
+      final bool canShowInterrupt =
+          widget.showInterruptActions &&
+          !trace.isTerminal &&
+          (trace.canInterrupt || showConfirm || interruptBusy) &&
+          (widget.onArmInterruptRunTrace != null ||
+              showConfirm ||
+              interruptBusy);
+      final bool canShowRetry =
+          widget.showRetryActions &&
+          trace.isRetryable &&
+          widget.onRetryRunTrace != null;
+      if (!canShowInterrupt && !canShowRetry) {
+        continue;
+      }
+      if (showConfirm) {
+        rows.add(
+          _RunTraceInterruptConfirmRow(
+            key: ValueKey<String>(
+              'chat-run-trace-interrupt-confirm-${trace.interruptId}',
+            ),
+            copy: widget.copy,
+            runId: trace.interruptId,
+            isBusy: interruptBusy,
+            onConfirmed: widget.onInterruptRunTrace == null
+                ? null
+                : () => widget.onInterruptRunTrace!(trace),
+          ),
+        );
+        continue;
+      }
+      final List<Widget> actions = <Widget>[];
+      if (canShowRetry) {
+        actions.add(
+          _RunTraceActionButton(
+            label: retryBusy ? '${trace.retryLabel!}...' : trace.retryLabel!,
+            onTap: retryBusy ? null : () => widget.onRetryRunTrace!(trace),
+          ),
+        );
+      }
+      if (canShowInterrupt) {
+        actions.add(
+          _RunTraceInlineInterruptAction(
+            key: ValueKey<String>(
+              'chat-run-trace-interrupt-${trace.interruptId}',
+            ),
+            label: interruptBusy
+                ? widget.copy.chatRunInterruptBusy
+                : widget.copy.chatRunInterruptAction,
+            enabled: !interruptBusy,
+            onTap: interruptBusy || widget.onArmInterruptRunTrace == null
+                ? null
+                : () => widget.onArmInterruptRunTrace!(trace),
+          ),
+        );
+      }
+      if (actions.isNotEmpty) {
+        rows.add(Wrap(spacing: 10, runSpacing: 8, children: actions));
+      }
+    }
+    if (rows.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return TapRegion(
+      onTapOutside: _confirmTrace != null && _outsideDismissReady
+          ? (_) {
+              final ChatRunTraceData? trace = _confirmTrace;
+              if (trace != null) {
+                widget.onDismissInterruptRunTrace?.call(trace);
+              }
+            }
+          : null,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: rows
+            .asMap()
+            .entries
+            .map(
+              (entry) => Padding(
+                padding: EdgeInsets.only(
+                  bottom: entry.key == rows.length - 1 ? 0 : 8,
+                ),
+                child: entry.value,
+              ),
+            )
+            .toList(growable: false),
+      ),
+    );
+  }
+}
+
 class _ChatMessageBubble extends StatefulWidget {
   const _ChatMessageBubble({
     required this.bridge,
@@ -11329,6 +16613,14 @@ class _ChatMessageBubble extends StatefulWidget {
     required this.selectionMode,
     required this.onLongPress,
     required this.onTextSelectionChanged,
+    this.attachedRunTraces = const <ChatRunTraceData>[],
+    this.interruptConfirmRunId,
+    this.busyInterruptRunIds = const <String>{},
+    this.busyRetryRunIds = const <String>{},
+    this.onArmInterruptRunTrace,
+    this.onDismissInterruptRunTrace,
+    this.onInterruptRunTrace,
+    this.onRetryRunTrace,
   });
 
   final OpenCrayHostBridge? bridge;
@@ -11341,6 +16633,14 @@ class _ChatMessageBubble extends StatefulWidget {
   final bool selectionMode;
   final void Function(ChatMessageData, Rect, String?) onLongPress;
   final ValueChanged<OpenCrayMarkdownSelectionSnapshot?> onTextSelectionChanged;
+  final List<ChatRunTraceData> attachedRunTraces;
+  final String? interruptConfirmRunId;
+  final Set<String> busyInterruptRunIds;
+  final Set<String> busyRetryRunIds;
+  final ValueChanged<ChatRunTraceData>? onArmInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onDismissInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData>? onRetryRunTrace;
 
   @override
   State<_ChatMessageBubble> createState() => _ChatMessageBubbleState();
@@ -11433,6 +16733,10 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
     final bool hasText = inlineBody.segments.isNotEmpty;
     final bool hasImages = imageAttachments.isNotEmpty;
     final bool hasOtherAttachments = otherAttachments.isNotEmpty;
+    final bool showStreamingIndicator =
+        hasText &&
+        widget.message.kind == ChatMessageKind.inbound &&
+        widget.message.isStreaming;
     final Widget bubble = ConstrainedBox(
       key: ValueKey<String>('chat-bubble-${widget.message.messageId}'),
       constraints: BoxConstraints(maxWidth: widget.maxWidth),
@@ -11449,33 +16753,39 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               if (hasText)
-                _ChatBubbleMarkdownBody(
-                  bridge: widget.bridge,
-                  copy: widget.copy,
-                  content: inlineBody,
-                  textColor: widget.textColor,
-                  backgroundColor: widget.backgroundColor,
+                _ChatBubbleStreamingTextBody(
                   messageId: widget.message.messageId,
-                  contentMaxWidth: widget.maxWidth - 28,
-                  selectionTheme: selectionTheme,
-                  onSelectionChanged: (selection) {
-                    _selectedText = selection?.plainText;
-                    widget.onTextSelectionChanged(selection);
-                  },
-                  contextMenuBuilder:
-                      (
-                        BuildContext context,
-                        SelectableRegionState selectableRegionState,
-                        OpenCrayMarkdownSelectionSnapshot? selection,
-                      ) => const SizedBox.shrink(),
-                  voicePlaybackControllerFactory:
-                      widget.voicePlaybackControllerFactory,
-                  isOutgoing: widget.message.kind == ChatMessageKind.outbound,
+                  textColor: widget.textColor,
+                  showIndicator: showStreamingIndicator,
+                  child: _ChatBubbleMarkdownBody(
+                    bridge: widget.bridge,
+                    copy: widget.copy,
+                    content: inlineBody,
+                    textColor: widget.textColor,
+                    backgroundColor: widget.backgroundColor,
+                    messageId: widget.message.messageId,
+                    contentMaxWidth: widget.maxWidth - 28,
+                    selectionTheme: selectionTheme,
+                    onSelectionChanged: (selection) {
+                      _selectedText = selection?.plainText;
+                      widget.onTextSelectionChanged(selection);
+                    },
+                    contextMenuBuilder:
+                        (
+                          BuildContext context,
+                          SelectableRegionState selectableRegionState,
+                          OpenCrayMarkdownSelectionSnapshot? selection,
+                        ) => const SizedBox.shrink(),
+                    voicePlaybackControllerFactory:
+                        widget.voicePlaybackControllerFactory,
+                    isOutgoing: widget.message.kind == ChatMessageKind.outbound,
+                  ),
                 ),
               if (hasImages) ...<Widget>[
                 if (hasText) const SizedBox(height: 10),
                 _ChatImageAttachmentGroup(
                   bridge: widget.bridge,
+                  copy: widget.copy,
                   messageId: widget.message.messageId,
                   attachments: imageAttachments,
                   maxWidth: widget.maxWidth - 28,
@@ -11501,6 +16811,22 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
                   );
                 }),
               ],
+              if (widget.attachedRunTraces.isNotEmpty) ...<Widget>[
+                if (hasText || hasImages || hasOtherAttachments)
+                  const SizedBox(height: 10),
+                _ChatRunTraceInlineActions(
+                  copy: widget.copy,
+                  traces: widget.attachedRunTraces,
+                  showInterruptActions: false,
+                  interruptConfirmRunId: widget.interruptConfirmRunId,
+                  busyInterruptRunIds: widget.busyInterruptRunIds,
+                  busyRetryRunIds: widget.busyRetryRunIds,
+                  onArmInterruptRunTrace: widget.onArmInterruptRunTrace,
+                  onDismissInterruptRunTrace: widget.onDismissInterruptRunTrace,
+                  onInterruptRunTrace: widget.onInterruptRunTrace,
+                  onRetryRunTrace: widget.onRetryRunTrace,
+                ),
+              ],
             ],
           ),
         ),
@@ -11515,6 +16841,135 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
       onPointerUp: (_) => _cancelLongPressTimer(),
       onPointerCancel: (_) => _cancelLongPressTimer(),
       child: bubble,
+    );
+  }
+}
+
+class _ChatBubbleStreamingTextBody extends StatelessWidget {
+  const _ChatBubbleStreamingTextBody({
+    required this.messageId,
+    required this.textColor,
+    required this.showIndicator,
+    required this.child,
+  });
+
+  final String messageId;
+  final Color textColor;
+  final bool showIndicator;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!showIndicator) {
+      return child;
+    }
+    final String keySuffix = messageId.trim().isNotEmpty
+        ? messageId.trim()
+        : 'anonymous';
+    return Stack(
+      clipBehavior: Clip.none,
+      children: <Widget>[
+        Padding(padding: const EdgeInsets.only(right: 14), child: child),
+        Positioned(
+          right: 1,
+          bottom: 2,
+          child: _ChatStreamingTailIndicator(
+            key: ValueKey<String>('chat-streaming-indicator-$keySuffix'),
+            color: textColor,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ChatStreamingTailIndicator extends StatefulWidget {
+  const _ChatStreamingTailIndicator({super.key, required this.color});
+
+  final Color color;
+
+  @override
+  State<_ChatStreamingTailIndicator> createState() =>
+      _ChatStreamingTailIndicatorState();
+}
+
+class _ChatStreamingTailIndicatorState
+    extends State<_ChatStreamingTailIndicator> {
+  Timer? _pulseTimer;
+  bool _highlighted = true;
+
+  @override
+  void initState() {
+    super.initState();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncPulseTimer();
+  }
+
+  void _syncPulseTimer() {
+    final bool disableAnimations =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    if (disableAnimations) {
+      _pulseTimer?.cancel();
+      _pulseTimer = null;
+      _highlighted = true;
+      return;
+    }
+    _pulseTimer ??= Timer.periodic(const Duration(milliseconds: 920), (_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _highlighted = !_highlighted;
+      });
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatStreamingTailIndicator oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.color != widget.color) {
+      _syncPulseTimer();
+    }
+  }
+
+  @override
+  void dispose() {
+    _pulseTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bool disableAnimations =
+        MediaQuery.maybeOf(context)?.disableAnimations ?? false;
+    return ExcludeSemantics(
+      child: SizedBox(
+        width: 10,
+        height: 10,
+        child: Center(
+          child: AnimatedOpacity(
+            opacity: disableAnimations || _highlighted ? 0.95 : 0.38,
+            duration: const Duration(milliseconds: 460),
+            curve: Curves.easeInOut,
+            child: AnimatedScale(
+              scale: disableAnimations || _highlighted ? 1.08 : 0.82,
+              duration: const Duration(milliseconds: 460),
+              curve: Curves.easeInOut,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: widget.color.withValues(alpha: 0.78),
+                  shape: BoxShape.circle,
+                ),
+                child: const SizedBox(width: 5.5, height: 5.5),
+              ),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -11747,6 +17202,228 @@ String _normalizeChatAttachmentMarkdownToken(String value) => value
     .replaceFirst(RegExp(r'^/'), '')
     .toLowerCase();
 
+Future<void> _handleOpenCrayMarkdownLinkTap(
+  BuildContext context, {
+  required String? href,
+  required OpenCrayUiCopy copy,
+  OpenCrayHostBridge? bridge,
+}) async {
+  final String target = href?.trim() ?? '';
+  if (target.isEmpty) {
+    return;
+  }
+  final ScaffoldMessengerState? messenger = ScaffoldMessenger.maybeOf(context);
+  try {
+    final String? routeName = openCrayResolveMarkdownInternalRoute(target);
+    if (routeName != null) {
+      await Navigator.of(context).pushNamed(routeName);
+      return;
+    }
+    final OpenCrayHostBridge? hostBridge = bridge;
+    if (hostBridge == null) {
+      throw StateError('Missing host bridge for markdown link target.');
+    }
+    final Uri? externalUri = openCrayResolveMarkdownExternalUri(target);
+    if (externalUri != null) {
+      await hostBridge.openExternalUri(externalUri.toString());
+      return;
+    }
+    final Uri? uri = Uri.tryParse(target);
+    if (_isWorkspaceRelativeChatLink(uri, target)) {
+      final String relativePath = _normalizeChatWorkspaceRelativePath(target);
+      if (_isPreviewableTextRelativePath(relativePath)) {
+        final OpenCrayFileTextPreview preview = await hostBridge
+            .loadWorkspaceTextPreview(relativePath);
+        if (!context.mounted) {
+          return;
+        }
+        await _showChatTextPreviewDialog(context, preview, bridge: hostBridge);
+        return;
+      }
+      await hostBridge.openWorkspaceEntry(relativePath);
+      return;
+    }
+    throw StateError('Unsupported markdown link target.');
+  } catch (error) {
+    if (!context.mounted) {
+      return;
+    }
+    final String message = openCrayMarkdownLocalizedErrorMessage(
+      error,
+      copy,
+      fallback: copy.chatMessageActionFailed,
+    );
+    messenger
+      ?..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+bool _fontWeightIsEmphasized(FontWeight? fontWeight) {
+  return fontWeight != null && fontWeight.index >= FontWeight.w600.index;
+}
+
+MarkdownStyleSheet _openCrayMarkdownStyleSheet(
+  BuildContext context, {
+  required TextStyle bodyStyle,
+  required Color surfaceColor,
+  required Color textColor,
+  Color? linkColor,
+  bool preferAccentForStrong = false,
+  Color? strongAccentColor,
+}) {
+  final MarkdownStyleSheet base = MarkdownStyleSheet.fromTheme(
+    Theme.of(context),
+  );
+  final bool darkSurface =
+      ThemeData.estimateBrightnessForColor(surfaceColor) == Brightness.dark;
+  final Color resolvedLinkColor =
+      linkColor ??
+      (darkSurface
+          ? const Color(0xFFDCEBFF)
+          : Theme.of(context).colorScheme.primary);
+  final Color resolvedStrongAccentColor =
+      strongAccentColor ?? Theme.of(context).colorScheme.primary;
+  final Color chromeColor = darkSurface
+      ? Colors.white.withValues(alpha: 0.18)
+      : Colors.black.withValues(alpha: 0.08);
+  final Color subtleChromeColor = darkSurface
+      ? Colors.white.withValues(alpha: 0.12)
+      : Colors.black.withValues(alpha: 0.05);
+  final bool accentStrong =
+      preferAccentForStrong || _fontWeightIsEmphasized(bodyStyle.fontWeight);
+  final TextStyle headingStyle = bodyStyle.copyWith(
+    fontWeight: FontWeight.w700,
+    height: 1.3,
+  );
+  return base.copyWith(
+    a: bodyStyle.copyWith(
+      color: resolvedLinkColor,
+      fontWeight: FontWeight.w600,
+      decoration: TextDecoration.underline,
+      decorationThickness: 1.2,
+      decorationColor: resolvedLinkColor.withValues(alpha: 0.75),
+    ),
+    p: bodyStyle,
+    pPadding: EdgeInsets.zero,
+    strong: accentStrong
+        ? bodyStyle.copyWith(color: resolvedStrongAccentColor)
+        : bodyStyle.copyWith(fontWeight: FontWeight.w700),
+    em: bodyStyle.copyWith(fontStyle: FontStyle.italic),
+    del: bodyStyle.copyWith(decoration: TextDecoration.lineThrough),
+    h1: headingStyle.copyWith(fontSize: 20),
+    h2: headingStyle.copyWith(fontSize: 18),
+    h3: headingStyle.copyWith(fontSize: 16),
+    h4: headingStyle.copyWith(fontSize: 15),
+    h5: headingStyle.copyWith(fontSize: 14),
+    h6: headingStyle.copyWith(fontSize: 14),
+    listBullet: bodyStyle,
+    code: TextStyle(
+      fontSize: 13,
+      height: 1.45,
+      fontFamily: 'monospace',
+      color: textColor,
+    ),
+    codeblockPadding: const EdgeInsets.all(10),
+    codeblockDecoration: BoxDecoration(
+      color: subtleChromeColor,
+      borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: chromeColor),
+    ),
+    blockquote: bodyStyle.copyWith(
+      color: textColor.withValues(alpha: darkSurface ? 0.88 : 0.82),
+    ),
+    blockquotePadding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+    blockquoteDecoration: BoxDecoration(
+      color: subtleChromeColor,
+      borderRadius: BorderRadius.circular(12),
+      border: Border(left: BorderSide(color: chromeColor, width: 3)),
+    ),
+    tableHead: bodyStyle.copyWith(fontWeight: FontWeight.w700),
+    tableBody: bodyStyle,
+    tableHeadAlign: TextAlign.left,
+    tablePadding: const EdgeInsets.only(top: 2, bottom: 4),
+    tableBorder: TableBorder.all(color: chromeColor),
+    tableColumnWidth: const IntrinsicColumnWidth(),
+    tableCellsPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+    tableCellsDecoration: BoxDecoration(color: subtleChromeColor),
+    tableHeadCellsDecoration: BoxDecoration(color: chromeColor),
+    horizontalRuleDecoration: BoxDecoration(
+      border: Border(top: BorderSide(color: chromeColor)),
+    ),
+    blockSpacing: 10,
+  );
+}
+
+MarkdownStyleSheet _runTraceMarkdownStyleSheet(
+  BuildContext context, {
+  required TextStyle bodyStyle,
+  required Color surfaceColor,
+  bool preferAccentForStrong = false,
+}) {
+  final Color textColor = bodyStyle.color ?? _ChatPalette.textPrimary;
+  return _openCrayMarkdownStyleSheet(
+    context,
+    bodyStyle: bodyStyle,
+    surfaceColor: surfaceColor,
+    textColor: textColor,
+    linkColor: _ChatPalette.inspectorAction,
+    preferAccentForStrong: preferAccentForStrong,
+    strongAccentColor: _ChatPalette.inspectorAction,
+  );
+}
+
+class _OpenCrayMarkdownTextBlock extends StatelessWidget {
+  const _OpenCrayMarkdownTextBlock({
+    super.key,
+    required this.copy,
+    required this.data,
+    required this.bodyStyle,
+    required this.surfaceColor,
+    this.bridge,
+    this.preferAccentForStrong = false,
+  });
+
+  final OpenCrayUiCopy copy;
+  final String data;
+  final TextStyle bodyStyle;
+  final Color surfaceColor;
+  final OpenCrayHostBridge? bridge;
+  final bool preferAccentForStrong;
+
+  @override
+  Widget build(BuildContext context) {
+    final String markdown = data.trim();
+    if (markdown.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    return OpenCrayMarkdownBody(
+      data: markdown,
+      hostBridge: bridge,
+      onTapLink: (_, href, __) {
+        unawaited(
+          _handleOpenCrayMarkdownLinkTap(
+            context,
+            href: href,
+            copy: copy,
+            bridge: bridge,
+          ),
+        );
+      },
+      latexTextStyle: bodyStyle,
+      styleSheet: _runTraceMarkdownStyleSheet(
+        context,
+        bodyStyle: bodyStyle,
+        surfaceColor: surfaceColor,
+        preferAccentForStrong: preferAccentForStrong,
+      ),
+      imageBackgroundColor: surfaceColor.withValues(alpha: 0.45),
+      imageBorderColor: (bodyStyle.color ?? _ChatPalette.textPrimary)
+          .withValues(alpha: 0.16),
+    );
+  }
+}
+
 class _ChatBubbleMarkdownBody extends StatelessWidget {
   const _ChatBubbleMarkdownBody({
     required this.bridge,
@@ -11777,61 +17454,12 @@ class _ChatBubbleMarkdownBody extends StatelessWidget {
   final bool isOutgoing;
 
   Future<void> _handleLinkTap(BuildContext context, String? href) async {
-    final String target = href?.trim() ?? '';
-    if (target.isEmpty) {
-      return;
-    }
-    final ScaffoldMessengerState? messenger = ScaffoldMessenger.maybeOf(
+    await _handleOpenCrayMarkdownLinkTap(
       context,
+      href: href,
+      copy: copy,
+      bridge: bridge,
     );
-    try {
-      final String? routeName = openCrayResolveMarkdownInternalRoute(target);
-      if (routeName != null) {
-        await Navigator.of(context).pushNamed(routeName);
-        return;
-      }
-      final OpenCrayHostBridge? hostBridge = bridge;
-      if (hostBridge == null) {
-        throw StateError('Missing host bridge for markdown link target.');
-      }
-      final Uri? externalUri = openCrayResolveMarkdownExternalUri(target);
-      if (externalUri != null) {
-        await hostBridge.openExternalUri(externalUri.toString());
-        return;
-      }
-      final Uri? uri = Uri.tryParse(target);
-      if (_isWorkspaceRelativeChatLink(uri, target)) {
-        final String relativePath = _normalizeChatWorkspaceRelativePath(target);
-        if (_isPreviewableTextRelativePath(relativePath)) {
-          final OpenCrayFileTextPreview preview = await hostBridge
-              .loadWorkspaceTextPreview(relativePath);
-          if (!context.mounted) {
-            return;
-          }
-          await _showChatTextPreviewDialog(
-            context,
-            preview,
-            bridge: hostBridge,
-          );
-          return;
-        }
-        await hostBridge.openWorkspaceEntry(relativePath);
-        return;
-      }
-      throw StateError('Unsupported markdown link target.');
-    } catch (error) {
-      if (!context.mounted) {
-        return;
-      }
-      final String message = openCrayMarkdownLocalizedErrorMessage(
-        error,
-        copy,
-        fallback: copy.chatMessageActionFailed,
-      );
-      messenger
-        ?..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(content: Text(message)));
-    }
   }
 
   @override
@@ -11874,6 +17502,7 @@ class _ChatBubbleMarkdownBody extends StatelessWidget {
                   segment.attachment.kind == ChatAttachmentKind.image) {
                 child = _ChatImageAttachmentPreview(
                   bridge: bridge,
+                  copy: copy,
                   attachment: segment.attachment,
                   maxWidth: contentMaxWidth,
                   isOutgoing: isOutgoing,
@@ -11908,83 +17537,19 @@ MarkdownStyleSheet _chatMarkdownStyleSheet(
   required Color textColor,
   required Color backgroundColor,
 }) {
-  final base = MarkdownStyleSheet.fromTheme(Theme.of(context));
-  final bool darkBubble =
-      ThemeData.estimateBrightnessForColor(backgroundColor) == Brightness.dark;
-  final Color chromeColor = darkBubble
-      ? Colors.white.withValues(alpha: 0.18)
-      : Colors.black.withValues(alpha: 0.08);
-  final Color subtleChromeColor = darkBubble
-      ? Colors.white.withValues(alpha: 0.12)
-      : Colors.black.withValues(alpha: 0.05);
   final TextStyle bodyStyle = _ChatTextStyles.bubble.copyWith(color: textColor);
-  final Color linkColor = darkBubble
-      ? const Color(0xFFDCEBFF)
-      : Theme.of(context).colorScheme.primary;
-  final TextStyle headingStyle = bodyStyle.copyWith(
-    fontWeight: FontWeight.w700,
-    height: 1.3,
-  );
-  return base.copyWith(
-    a: bodyStyle.copyWith(
-      color: linkColor,
-      fontWeight: FontWeight.w600,
-      decoration: TextDecoration.underline,
-      decorationThickness: 1.2,
-      decorationColor: linkColor.withValues(alpha: 0.75),
-    ),
-    p: bodyStyle,
-    pPadding: EdgeInsets.zero,
-    strong: bodyStyle.copyWith(fontWeight: FontWeight.w700),
-    em: bodyStyle.copyWith(fontStyle: FontStyle.italic),
-    del: bodyStyle.copyWith(decoration: TextDecoration.lineThrough),
-    h1: headingStyle.copyWith(fontSize: 20),
-    h2: headingStyle.copyWith(fontSize: 18),
-    h3: headingStyle.copyWith(fontSize: 16),
-    h4: headingStyle.copyWith(fontSize: 15),
-    h5: headingStyle.copyWith(fontSize: 14),
-    h6: headingStyle.copyWith(fontSize: 14),
-    listBullet: bodyStyle,
-    code: TextStyle(
-      fontSize: 13,
-      height: 1.45,
-      fontFamily: 'monospace',
-      color: textColor,
-    ),
-    codeblockPadding: const EdgeInsets.all(10),
-    codeblockDecoration: BoxDecoration(
-      color: subtleChromeColor,
-      borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: chromeColor),
-    ),
-    blockquote: bodyStyle.copyWith(
-      color: textColor.withValues(alpha: darkBubble ? 0.88 : 0.82),
-    ),
-    blockquotePadding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-    blockquoteDecoration: BoxDecoration(
-      color: subtleChromeColor,
-      borderRadius: BorderRadius.circular(12),
-      border: Border(left: BorderSide(color: chromeColor, width: 3)),
-    ),
-    tableHead: bodyStyle.copyWith(fontWeight: FontWeight.w700),
-    tableBody: bodyStyle,
-    tableHeadAlign: TextAlign.left,
-    tablePadding: const EdgeInsets.only(top: 2, bottom: 4),
-    tableBorder: TableBorder.all(color: chromeColor),
-    tableColumnWidth: const IntrinsicColumnWidth(),
-    tableCellsPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-    tableCellsDecoration: BoxDecoration(color: subtleChromeColor),
-    tableHeadCellsDecoration: BoxDecoration(color: chromeColor),
-    horizontalRuleDecoration: BoxDecoration(
-      border: Border(top: BorderSide(color: chromeColor)),
-    ),
-    blockSpacing: 10,
+  return _openCrayMarkdownStyleSheet(
+    context,
+    bodyStyle: bodyStyle,
+    surfaceColor: backgroundColor,
+    textColor: textColor,
   );
 }
 
 class _ChatImageAttachmentGroup extends StatelessWidget {
   const _ChatImageAttachmentGroup({
     required this.bridge,
+    required this.copy,
     required this.messageId,
     required this.attachments,
     required this.maxWidth,
@@ -11992,6 +17557,7 @@ class _ChatImageAttachmentGroup extends StatelessWidget {
   });
 
   final OpenCrayHostBridge? bridge;
+  final OpenCrayUiCopy copy;
   final String messageId;
   final List<ChatMessageAttachmentData> attachments;
   final double maxWidth;
@@ -12021,6 +17587,7 @@ class _ChatImageAttachmentGroup extends StatelessWidget {
               width: columnCount == 1 ? maxWidth : contentWidth,
               child: _ChatImageAttachmentPreview(
                 bridge: bridge,
+                copy: copy,
                 attachment: attachment,
                 maxWidth: columnCount == 1 ? maxWidth : contentWidth,
                 isOutgoing: isOutgoing,
@@ -12035,12 +17602,14 @@ class _ChatImageAttachmentGroup extends StatelessWidget {
 class _ChatImageAttachmentPreview extends StatefulWidget {
   const _ChatImageAttachmentPreview({
     required this.bridge,
+    required this.copy,
     required this.attachment,
     required this.maxWidth,
     required this.isOutgoing,
   });
 
   final OpenCrayHostBridge? bridge;
+  final OpenCrayUiCopy copy;
   final ChatMessageAttachmentData attachment;
   final double maxWidth;
   final bool isOutgoing;
@@ -12140,21 +17709,38 @@ class _ChatImageAttachmentPreviewState
             aspectRatio: aspectRatio,
             child: ClipRRect(
               borderRadius: BorderRadius.circular(14),
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: placeholderColor,
-                  border: Border.all(color: borderColor),
-                ),
-                child: ready
-                    ? OpenCrayImageBytesView(
-                        bytes: preview.bytes,
-                        mimeType: preview.mimeType,
-                        fit: BoxFit.cover,
-                      )
-                    : _ChatImageAttachmentPlaceholderBody(
-                        attachment: widget.attachment,
-                        isOutgoing: widget.isOutgoing,
-                      ),
+              child: Stack(
+                fit: StackFit.expand,
+                children: <Widget>[
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: placeholderColor,
+                      border: Border.all(color: borderColor),
+                    ),
+                    child: ready
+                        ? OpenCrayImageBytesView(
+                            bytes: preview.bytes,
+                            mimeType: preview.mimeType,
+                            fit: BoxFit.cover,
+                          )
+                        : _ChatImageAttachmentPlaceholderBody(
+                            attachment: widget.attachment,
+                            isOutgoing: widget.isOutgoing,
+                          ),
+                  ),
+                  Positioned(
+                    top: 6,
+                    right: 6,
+                    child: _ChatAttachmentActions(
+                      bridge: widget.bridge,
+                      copy: widget.copy,
+                      attachment: widget.attachment,
+                      isOutgoing: widget.isOutgoing,
+                      keyPrefix: 'chat-message-image-attachment',
+                      overlay: true,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -12333,9 +17919,6 @@ class _ChatFileAttachmentTile extends StatelessWidget {
         : _ChatPalette.textSecondary;
 
     return Ink(
-      key: ValueKey<String>(
-        'chat-message-attachment-${attachment.attachmentId}',
-      ),
       decoration: BoxDecoration(
         color: surfaceColor,
         borderRadius: BorderRadius.circular(14),
@@ -12343,67 +17926,88 @@ class _ChatFileAttachmentTile extends StatelessWidget {
       ),
       child: Material(
         color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: canOpen ? () => _openAttachment(context) : null,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            child: Row(
-              children: <Widget>[
-                Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: isOutgoing
-                        ? Colors.white.withValues(alpha: 0.18)
-                        : Colors.white,
-                    borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: <Widget>[
+              Expanded(
+                child: InkWell(
+                  key: ValueKey<String>(
+                    'chat-message-attachment-${attachment.attachmentId}',
                   ),
-                  child: Icon(
-                    _isPreviewableTextAttachment(attachment)
-                        ? Icons.article_outlined
-                        : Icons.description_outlined,
-                    size: 18,
-                    color: titleColor,
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: canOpen ? () => _openAttachment(context) : null,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      children: <Widget>[
+                        Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            color: isOutgoing
+                                ? Colors.white.withValues(alpha: 0.18)
+                                : Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Icon(
+                            _isPreviewableTextAttachment(attachment)
+                                ? Icons.article_outlined
+                                : Icons.description_outlined,
+                            size: 18,
+                            color: titleColor,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                attachment.displayName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: _ChatTextStyles.attachmentLabel.copyWith(
+                                  color: titleColor,
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                _chatAttachmentDetailText(attachment),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: _ChatTextStyles.attachmentDetail
+                                    .copyWith(color: detailColor),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (canOpen) ...<Widget>[
+                          const SizedBox(width: 10),
+                          Icon(
+                            _isPreviewableTextAttachment(attachment)
+                                ? Icons.visibility_outlined
+                                : Icons.open_in_new_rounded,
+                            size: 16,
+                            color: detailColor,
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text(
-                        attachment.displayName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: _ChatTextStyles.attachmentLabel.copyWith(
-                          color: titleColor,
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        _chatAttachmentDetailText(attachment),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: _ChatTextStyles.attachmentDetail.copyWith(
-                          color: detailColor,
-                        ),
-                      ),
-                    ],
-                  ),
+              ),
+              if (canOpen) ...<Widget>[
+                const SizedBox(width: 8),
+                _ChatAttachmentActions(
+                  bridge: bridge,
+                  copy: copy,
+                  attachment: attachment,
+                  isOutgoing: isOutgoing,
+                  keyPrefix: 'chat-message-attachment',
                 ),
-                if (canOpen) ...<Widget>[
-                  const SizedBox(width: 10),
-                  Icon(
-                    _isPreviewableTextAttachment(attachment)
-                        ? Icons.visibility_outlined
-                        : Icons.open_in_new_rounded,
-                    size: 16,
-                    color: detailColor,
-                  ),
-                ],
               ],
-            ),
+            ],
           ),
         ),
       ),
@@ -12574,6 +18178,26 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
       );
   }
 
+  Future<void> _shareAttachment() async {
+    _recordChildInteraction();
+    await _shareChatAttachment(
+      context,
+      bridge: widget.bridge,
+      copy: widget.copy,
+      attachment: widget.attachment,
+    );
+  }
+
+  Future<void> _saveAttachment() async {
+    _recordChildInteraction();
+    await _saveChatAttachment(
+      context,
+      bridge: widget.bridge,
+      copy: widget.copy,
+      attachment: widget.attachment,
+    );
+  }
+
   List<int> _effectiveWaveformBars() {
     if (widget.attachment.waveformBars.isNotEmpty) {
       return widget.attachment.waveformBars;
@@ -12638,6 +18262,10 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
             transcriptText != null &&
             _shouldCollapseVoiceTranscript(transcriptText);
         final List<int> waveformBars = _effectiveWaveformBars();
+
+        final bool canUseAttachmentActions =
+            widget.bridge != null &&
+            widget.attachment.localPath.trim().isNotEmpty;
 
         return Ink(
           key: ValueKey<String>(
@@ -12794,6 +18422,18 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
                         ],
                       ),
                     ),
+                    if (canUseAttachmentActions) ...<Widget>[
+                      const SizedBox(width: 8),
+                      _ChatAttachmentActions(
+                        bridge: widget.bridge,
+                        copy: widget.copy,
+                        attachment: widget.attachment,
+                        isOutgoing: widget.isOutgoing,
+                        keyPrefix: 'chat-message-attachment',
+                        onShare: _shareAttachment,
+                        onSave: _saveAttachment,
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -12803,6 +18443,189 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
       },
     );
   }
+}
+
+class _ChatAttachmentActions extends StatelessWidget {
+  const _ChatAttachmentActions({
+    required this.bridge,
+    required this.copy,
+    required this.attachment,
+    required this.isOutgoing,
+    required this.keyPrefix,
+    this.overlay = false,
+    this.onShare,
+    this.onSave,
+  });
+
+  final OpenCrayHostBridge? bridge;
+  final OpenCrayUiCopy copy;
+  final ChatMessageAttachmentData attachment;
+  final bool isOutgoing;
+  final String keyPrefix;
+  final bool overlay;
+  final Future<void> Function()? onShare;
+  final Future<void> Function()? onSave;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool enabled =
+        bridge != null && attachment.localPath.trim().isNotEmpty;
+    final Color foregroundColor = overlay || isOutgoing
+        ? Colors.white
+        : _ChatPalette.textSecondary;
+    final Color backgroundColor = overlay
+        ? Colors.black.withValues(alpha: 0.42)
+        : (isOutgoing
+              ? Colors.white.withValues(alpha: 0.14)
+              : Colors.white.withValues(alpha: 0.72));
+    final BorderSide border = BorderSide(
+      color: overlay || isOutgoing
+          ? Colors.white.withValues(alpha: 0.18)
+          : _ChatPalette.border,
+    );
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: backgroundColor,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.fromBorderSide(border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: <Widget>[
+          _ChatAttachmentActionButton(
+            key: ValueKey<String>(
+              '$keyPrefix-share-${attachment.attachmentId}',
+            ),
+            tooltip: copy.chatAttachmentShareAction,
+            icon: Icons.share_outlined,
+            color: foregroundColor,
+            onPressed: enabled
+                ? () async {
+                    if (onShare != null) {
+                      await onShare!();
+                      return;
+                    }
+                    await _shareChatAttachment(
+                      context,
+                      bridge: bridge,
+                      copy: copy,
+                      attachment: attachment,
+                    );
+                  }
+                : null,
+          ),
+          _ChatAttachmentActionButton(
+            key: ValueKey<String>('$keyPrefix-save-${attachment.attachmentId}'),
+            tooltip: copy.chatAttachmentSaveAction,
+            icon: Icons.download_rounded,
+            color: foregroundColor,
+            onPressed: enabled
+                ? () async {
+                    if (onSave != null) {
+                      await onSave!();
+                      return;
+                    }
+                    await _saveChatAttachment(
+                      context,
+                      bridge: bridge,
+                      copy: copy,
+                      attachment: attachment,
+                    );
+                  }
+                : null,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ChatAttachmentActionButton extends StatelessWidget {
+  const _ChatAttachmentActionButton({
+    super.key,
+    required this.tooltip,
+    required this.icon,
+    required this.color,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final Color color;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      icon: Icon(icon, size: 16),
+      color: color,
+      disabledColor: color.withValues(alpha: 0.36),
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+      padding: EdgeInsets.zero,
+      onPressed: onPressed,
+    );
+  }
+}
+
+Future<void> _shareChatAttachment(
+  BuildContext context, {
+  required OpenCrayHostBridge? bridge,
+  required OpenCrayUiCopy copy,
+  required ChatMessageAttachmentData attachment,
+}) async {
+  final OpenCrayHostBridge? hostBridge = bridge;
+  final String localPath = attachment.localPath.trim();
+  if (hostBridge == null || localPath.isEmpty) {
+    return;
+  }
+  try {
+    await hostBridge.shareWorkspaceEntries(<String>[localPath]);
+  } catch (_) {
+    if (!context.mounted) {
+      return;
+    }
+    _showChatAttachmentFeedback(context, copy.chatAttachmentShareFailed);
+  }
+}
+
+Future<void> _saveChatAttachment(
+  BuildContext context, {
+  required OpenCrayHostBridge? bridge,
+  required OpenCrayUiCopy copy,
+  required ChatMessageAttachmentData attachment,
+}) async {
+  final OpenCrayHostBridge? hostBridge = bridge;
+  final String localPath = attachment.localPath.trim();
+  if (hostBridge == null || localPath.isEmpty) {
+    return;
+  }
+  try {
+    final OpenCraySavedWorkspaceMediaAttachment saved = await hostBridge
+        .saveWorkspaceMediaAttachment(
+          relativePath: localPath,
+          kind: attachment.kind.name,
+        );
+    if (!context.mounted) {
+      return;
+    }
+    final String message = saved.collection == 'recordings'
+        ? copy.chatAttachmentSavedToRecordings
+        : copy.chatAttachmentSavedToDownloads;
+    _showChatAttachmentFeedback(context, message);
+  } catch (_) {
+    if (!context.mounted) {
+      return;
+    }
+    _showChatAttachmentFeedback(context, copy.chatAttachmentSaveFailed);
+  }
+}
+
+void _showChatAttachmentFeedback(BuildContext context, String message) {
+  ScaffoldMessenger.maybeOf(context)
+    ?..hideCurrentSnackBar()
+    ..showSnackBar(SnackBar(content: Text(message)));
 }
 
 class _ChatVoiceWaveform extends StatelessWidget {
@@ -13371,6 +19194,12 @@ class _ComposerCard extends StatelessWidget {
     required this.focusNode,
     required this.onPlusPressed,
     required this.onSendPressed,
+    required this.interruptTrace,
+    required this.interruptConfirmRunId,
+    required this.busyInterruptRunIds,
+    required this.onArmInterruptRunTrace,
+    required this.onDismissInterruptRunTrace,
+    required this.onInterruptRunTrace,
     required this.onAddActionSelected,
     required this.onCommandSelected,
     required this.onAttachmentRemoved,
@@ -13383,6 +19212,12 @@ class _ComposerCard extends StatelessWidget {
   final FocusNode focusNode;
   final VoidCallback onPlusPressed;
   final VoidCallback onSendPressed;
+  final ChatRunTraceData? interruptTrace;
+  final String? interruptConfirmRunId;
+  final Set<String> busyInterruptRunIds;
+  final ValueChanged<ChatRunTraceData> onArmInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData> onDismissInterruptRunTrace;
+  final ValueChanged<ChatRunTraceData> onInterruptRunTrace;
   final ValueChanged<ChatAddActionData> onAddActionSelected;
   final VoidCallback onCommandSelected;
   final ValueChanged<ChatAttachmentData> onAttachmentRemoved;
@@ -13447,16 +19282,52 @@ class _ComposerCard extends StatelessWidget {
           ),
           const SizedBox(height: 10),
         ],
-        _InputRow(
-          placeholder: state.composer.placeholder,
-          controller: controller,
-          focusNode: focusNode,
-          enabled: state.isInputEnabled,
-          hasIntegratedSurface: hasIntegratedSurface,
-          showDefaultGlass: !hasIntegratedSurface && !hasTodos,
-          plusHighlighted: hasIntegratedSurface,
-          onPlusPressed: onPlusPressed,
-          onSendPressed: onSendPressed,
+        AnimatedBuilder(
+          animation: controller,
+          builder: (BuildContext context, Widget? child) {
+            final bool hasSendableContent =
+                controller.text.trim().isNotEmpty ||
+                state.composer.attachments.isNotEmpty;
+            final ChatRunTraceData? effectiveInterruptTrace =
+                state.isInputEnabled && !hasSendableContent
+                ? interruptTrace
+                : null;
+            final bool showInterruptConfirm =
+                effectiveInterruptTrace != null &&
+                interruptConfirmRunId == effectiveInterruptTrace.interruptId;
+            if (showInterruptConfirm) {
+              return _ComposerInterruptConfirmSurface(
+                copy: copy,
+                trace: effectiveInterruptTrace,
+                isBusy: busyInterruptRunIds.contains(
+                  effectiveInterruptTrace.interruptId,
+                ),
+                onDismiss: () =>
+                    onDismissInterruptRunTrace(effectiveInterruptTrace),
+                onConfirmed: () => onInterruptRunTrace(effectiveInterruptTrace),
+              );
+            }
+            return _InputRow(
+              placeholder: state.composer.placeholder,
+              controller: controller,
+              focusNode: focusNode,
+              enabled: state.isInputEnabled,
+              hasIntegratedSurface: hasIntegratedSurface,
+              showDefaultGlass: !hasIntegratedSurface && !hasTodos,
+              plusHighlighted: hasIntegratedSurface,
+              interruptTrace: effectiveInterruptTrace,
+              isInterruptBusy:
+                  effectiveInterruptTrace != null &&
+                  busyInterruptRunIds.contains(
+                    effectiveInterruptTrace.interruptId,
+                  ),
+              onInterruptPressed: effectiveInterruptTrace == null
+                  ? null
+                  : () => onArmInterruptRunTrace(effectiveInterruptTrace),
+              onPlusPressed: onPlusPressed,
+              onSendPressed: onSendPressed,
+            );
+          },
         ),
         if (state.composer.showAddMenu) ...<Widget>[
           const SizedBox(height: 10),
@@ -13497,6 +19368,73 @@ class _ComposerCard extends StatelessWidget {
     return DecoratedBox(
       decoration: _ChatDecorations.card(),
       child: Padding(padding: const EdgeInsets.all(10), child: content),
+    );
+  }
+}
+
+class _ComposerInterruptConfirmSurface extends StatefulWidget {
+  const _ComposerInterruptConfirmSurface({
+    required this.copy,
+    required this.trace,
+    required this.isBusy,
+    required this.onDismiss,
+    required this.onConfirmed,
+  });
+
+  final OpenCrayUiCopy copy;
+  final ChatRunTraceData trace;
+  final bool isBusy;
+  final VoidCallback onDismiss;
+  final VoidCallback onConfirmed;
+
+  @override
+  State<_ComposerInterruptConfirmSurface> createState() =>
+      _ComposerInterruptConfirmSurfaceState();
+}
+
+class _ComposerInterruptConfirmSurfaceState
+    extends State<_ComposerInterruptConfirmSurface> {
+  bool _outsideDismissReady = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleOutsideDismissReady();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ComposerInterruptConfirmSurface oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.trace.interruptId != widget.trace.interruptId) {
+      _outsideDismissReady = false;
+      _scheduleOutsideDismissReady();
+    }
+  }
+
+  void _scheduleOutsideDismissReady() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _outsideDismissReady = true;
+      });
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TapRegion(
+      onTapOutside: _outsideDismissReady ? (_) => widget.onDismiss() : null,
+      child: _RunTraceInterruptConfirmRow(
+        key: ValueKey<String>(
+          'chat-composer-interrupt-confirm-${widget.trace.interruptId}',
+        ),
+        copy: widget.copy,
+        runId: widget.trace.interruptId,
+        isBusy: widget.isBusy,
+        onConfirmed: widget.onConfirmed,
+      ),
     );
   }
 }
@@ -13716,6 +19654,9 @@ class _InputRow extends StatelessWidget {
     required this.hasIntegratedSurface,
     required this.showDefaultGlass,
     required this.plusHighlighted,
+    required this.interruptTrace,
+    required this.isInterruptBusy,
+    required this.onInterruptPressed,
     required this.onPlusPressed,
     required this.onSendPressed,
   });
@@ -13727,6 +19668,9 @@ class _InputRow extends StatelessWidget {
   final bool hasIntegratedSurface;
   final bool showDefaultGlass;
   final bool plusHighlighted;
+  final ChatRunTraceData? interruptTrace;
+  final bool isInterruptBusy;
+  final VoidCallback? onInterruptPressed;
   final VoidCallback onPlusPressed;
   final VoidCallback onSendPressed;
 
@@ -13790,6 +19734,9 @@ class _InputRow extends StatelessWidget {
                                 controller: controller,
                                 focusNode: focusNode,
                                 enabled: enabled,
+                                onTapOutside: enabled
+                                    ? (_) => focusNode.unfocus()
+                                    : null,
                                 minLines: 1,
                                 maxLines: 4,
                                 textAlignVertical: TextAlignVertical.center,
@@ -13823,6 +19770,7 @@ class _InputRow extends StatelessWidget {
         ),
         const SizedBox(width: 10),
         _CircleButton(
+          key: const ValueKey<String>('chat-composer-plus-button'),
           backgroundColor: plusHighlighted
               ? _ChatPalette.plusActiveSurface
               : Colors.white,
@@ -13833,11 +19781,30 @@ class _InputRow extends StatelessWidget {
           onPressed: enabled ? onPlusPressed : null,
         ),
         const SizedBox(width: 8),
-        _CircleButton(
-          backgroundColor: _ChatPalette.accent,
-          foregroundColor: Colors.white,
-          icon: Icons.arrow_upward_rounded,
-          onPressed: enabled ? onSendPressed : null,
+        AnimatedBuilder(
+          animation: controller,
+          builder: (BuildContext context, Widget? child) {
+            final bool showInterruptButton =
+                enabled &&
+                interruptTrace != null &&
+                controller.text.trim().isEmpty;
+            if (showInterruptButton) {
+              return _CircleButton(
+                key: const ValueKey<String>('chat-composer-interrupt-button'),
+                backgroundColor: _ChatPalette.runTraceInterruptAction,
+                foregroundColor: Colors.white,
+                icon: Icons.stop_rounded,
+                onPressed: isInterruptBusy ? null : onInterruptPressed,
+              );
+            }
+            return _CircleButton(
+              key: const ValueKey<String>('chat-composer-send-button'),
+              backgroundColor: _ChatPalette.accent,
+              foregroundColor: Colors.white,
+              icon: Icons.arrow_upward_rounded,
+              onPressed: enabled ? onSendPressed : null,
+            );
+          },
         ),
       ],
     );
@@ -13888,6 +19855,7 @@ class _InputRow extends StatelessWidget {
 
 class _CircleButton extends StatelessWidget {
   const _CircleButton({
+    super.key,
     required this.backgroundColor,
     required this.foregroundColor,
     required this.icon,
@@ -14429,7 +20397,6 @@ class _ChatPalette {
   static const Color background = Color(0xFFF5F5F7);
   static const Color accent = Color(0xFF007AFF);
   static const Color highRiskAccent = Color(0xFFC84B31);
-  static const Color highRiskSurface = Color(0xFFFFF5F2);
   static const Color highRiskBorder = Color(0xFFF2C6BA);
   static const Color highRiskBadgeSurface = Color(0xFFFFE0D7);
   static const Color textPrimary = Color(0xFF111111);
@@ -14439,7 +20406,6 @@ class _ChatPalette {
   static const Color runTraceBorder = Color(0xFFDCE3ED);
   static const Color runTraceStatusSurface = Color(0xFFEAF2FF);
   static const Color runTraceStatusText = Color(0xFF1B67D9);
-  static const Color runTraceActivitySurface = Color(0xFFF3F5F9);
   static const Color runTraceActivityText = Color(0xFF526071);
   static const Color runTraceDetailSurface = Color(0xFFF5F7FC);
   static const Color runTracePreviewSurface = Color(0xFFF7FAFF);

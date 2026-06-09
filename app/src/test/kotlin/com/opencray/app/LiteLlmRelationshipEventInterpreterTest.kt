@@ -67,7 +67,9 @@ class LiteLlmRelationshipEventInterpreterTest {
     assertEquals(2, success.events.size)
     assertEquals("gpt-4o-mini", providerClient.lastRequest?.route?.model)
     assertEquals("Bearer test-key", providerClient.lastRequest?.request?.authHeaders?.get("Authorization"))
-    val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
+    val gatewayRequest = providerClient.lastRequest?.request
+    val prompt = gatewayRequest?.prompt.orEmpty()
+    assertTrue(prompt.contains(gatewayRequest?.messages?.single()?.content?.trim().orEmpty()))
     assertTrue(prompt.contains("WARM_REQUEST_WITHOUT_HISTORY"))
     assertTrue(prompt.contains("Do not infer romance, deep affection, or strong intimacy from repeated verbal requests alone."))
     assertTrue(prompt.contains("Assistant reply:"))

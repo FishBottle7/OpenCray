@@ -6,6 +6,7 @@ import 'package:opencray/core/bridge/opencray_failure_bridge.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge_bootstrap.dart';
 import 'package:opencray/core/bridge/opencray_platform_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
+import 'package:opencray/core/models/opencray_chat_draft_attachment.dart';
 import 'package:opencray/core/models/opencray_image_reference.dart';
 import 'package:opencray/core/models/opencray_notification_settings.dart';
 
@@ -588,7 +589,6 @@ void main() {
               'approvalReminderEnabled': true,
               'taskFinishedEnabled': false,
               'taskFailedEnabled': true,
-              'newUserMessageEnabled': false,
               'scheduledWakeEnabled': true,
               'backgroundTaskPausedEnabled': true,
               'serviceRecoveredEnabled': false,
@@ -607,7 +607,6 @@ void main() {
       expect(snapshot.approvalReminderEnabled, isTrue);
       expect(snapshot.taskFinishedEnabled, isFalse);
       expect(snapshot.taskFailedEnabled, isTrue);
-      expect(snapshot.newUserMessageEnabled, isFalse);
       expect(snapshot.scheduledWakeEnabled, isTrue);
       expect(snapshot.backgroundTaskPausedEnabled, isTrue);
       expect(snapshot.serviceRecoveredEnabled, isFalse);
@@ -629,7 +628,6 @@ void main() {
         approvalReminderEnabled: false,
         taskFinishedEnabled: true,
         taskFailedEnabled: true,
-        newUserMessageEnabled: true,
         scheduledWakeEnabled: true,
         backgroundTaskPausedEnabled: false,
         serviceRecoveredEnabled: true,
@@ -648,7 +646,6 @@ void main() {
               'approvalReminderEnabled': arguments['approvalReminderEnabled'],
               'taskFinishedEnabled': arguments['taskFinishedEnabled'],
               'taskFailedEnabled': arguments['taskFailedEnabled'],
-              'newUserMessageEnabled': arguments['newUserMessageEnabled'],
               'scheduledWakeEnabled': arguments['scheduledWakeEnabled'],
               'backgroundTaskPausedEnabled':
                   arguments['backgroundTaskPausedEnabled'],
@@ -670,7 +667,6 @@ void main() {
       expect(arguments['approvalReminderEnabled'], isFalse);
       expect(arguments['taskFinishedEnabled'], isTrue);
       expect(arguments['taskFailedEnabled'], isTrue);
-      expect(arguments['newUserMessageEnabled'], isTrue);
       expect(arguments['scheduledWakeEnabled'], isTrue);
       expect(arguments['backgroundTaskPausedEnabled'], isFalse);
       expect(arguments['serviceRecoveredEnabled'], isTrue);
@@ -683,7 +679,6 @@ void main() {
       expect(snapshot.approvalReminderEnabled, isFalse);
       expect(snapshot.taskFinishedEnabled, isTrue);
       expect(snapshot.taskFailedEnabled, isTrue);
-      expect(snapshot.newUserMessageEnabled, isTrue);
       expect(snapshot.scheduledWakeEnabled, isTrue);
       expect(snapshot.backgroundTaskPausedEnabled, isFalse);
       expect(snapshot.serviceRecoveredEnabled, isTrue);
@@ -1158,6 +1153,40 @@ void main() {
   });
 
   test(
+    'platform bridge forwards media save requests to the host channel',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return <String, Object?>{
+              'displayName': 'voice-note.m4a',
+              'collection': 'recordings',
+              'uri': 'content://media/audio/42',
+            };
+          });
+
+      final saved = await bridge.saveWorkspaceMediaAttachment(
+        relativePath: '.opencray/chat-media/session-1/hash/voice-note.m4a',
+        kind: 'voice',
+      );
+
+      expect(capturedCall.method, 'saveWorkspaceMediaAttachment');
+      expect(capturedCall.arguments, isA<Map<Object?, Object?>>());
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(
+        arguments['relativePath'],
+        '.opencray/chat-media/session-1/hash/voice-note.m4a',
+      );
+      expect(arguments['kind'], 'voice');
+      expect(saved.displayName, 'voice-note.m4a');
+      expect(saved.collection, 'recordings');
+      expect(saved.uri, 'content://media/audio/42');
+    },
+  );
+
+  test(
     'platform bridge forwards open file requests to the host channel',
     () async {
       late MethodCall capturedCall;
@@ -1223,6 +1252,12 @@ void main() {
                   'isTerminal': false,
                   'memoryFlush': <String, Object?>{
                     'outcome': 'written',
+                    'triggerStage': 'pre_compaction',
+                    'executionMode': 'inline',
+                    'contextWindowTokens': 128000,
+                    'autoCompactTokenLimit': 115200,
+                    'estimatedReplayTokens': 116000,
+                    'tokenThresholdTriggered': true,
                     'candidateCount': 2,
                     'writtenRecordCount': 1,
                     'writtenKinds': <Object?>['user_preference'],
@@ -1245,11 +1280,26 @@ void main() {
                   },
                   'durableCompaction': <String, Object?>{
                     'compactedThisRun': true,
+                    'triggerStage': 'pre_compaction',
+                    'executionMode': 'inline',
+                    'contextWindowTokens': 128000,
+                    'autoCompactTokenLimit': 115200,
+                    'estimatedReplayTokens': 116000,
+                    'tokenThresholdTriggered': true,
                     'sourceTranscriptMessageCount': 18,
                     'retainedTranscriptMessageCount': 12,
                     'latestCompactedMessageCount': 6,
                     'includedSummaryCount': 1,
                     'totalSummaryCount': 1,
+                    'remoteCompaction': <String, Object?>{
+                      'requested': true,
+                      'supported': true,
+                      'used': true,
+                      'triggerStage': 'pre_compaction',
+                      'outputItemCount': 2,
+                      'compactionItemCount': 1,
+                      'encryptedContentCount': 1,
+                    },
                   },
                   'skillInventory': <String, Object?>{
                     'visibleSkillCount': 2,
@@ -1269,6 +1319,7 @@ void main() {
                     'name': 'ui-ux-pro-max',
                     'relativePath': 'skills/ui-ux-pro-max/SKILL.md',
                     'activationSource': 'skill_read',
+                    'pinned': true,
                     'toolRestrictionEnabled': true,
                     'allowedToolKeys': <Object?>['read', 'write'],
                   },
@@ -1325,6 +1376,27 @@ void main() {
         'commitment-keep-1',
       ]);
       expect(snapshot.activeRuns.single.memoryFlush?.outcome, 'written');
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.triggerStage,
+        'pre_compaction',
+      );
+      expect(snapshot.activeRuns.single.memoryFlush?.executionMode, 'inline');
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.contextWindowTokens,
+        128000,
+      );
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.autoCompactTokenLimit,
+        115200,
+      );
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.estimatedReplayTokens,
+        116000,
+      );
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.tokenThresholdTriggered,
+        isTrue,
+      );
       expect(snapshot.activeRuns.single.bootstrap?.mode, 'full');
       expect(
         snapshot.activeRuns.single.bootstrap?.files.single.name,
@@ -1335,10 +1407,57 @@ void main() {
         isTrue,
       );
       expect(
+        snapshot.activeRuns.single.durableCompaction?.triggerStage,
+        'pre_compaction',
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.executionMode,
+        'inline',
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.contextWindowTokens,
+        128000,
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.autoCompactTokenLimit,
+        115200,
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.estimatedReplayTokens,
+        116000,
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.remoteCompaction?.used,
+        isTrue,
+      );
+      expect(
+        snapshot
+            .activeRuns
+            .single
+            .durableCompaction
+            ?.remoteCompaction
+            ?.triggerStage,
+        'pre_compaction',
+      );
+      expect(
+        snapshot
+            .activeRuns
+            .single
+            .durableCompaction
+            ?.remoteCompaction
+            ?.encryptedContentCount,
+        1,
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.tokenThresholdTriggered,
+        isTrue,
+      );
+      expect(
         snapshot.activeRuns.single.skillInventory?.skills.single.name,
         'ui-ux-pro-max',
       );
       expect(snapshot.activeRuns.single.activeSkill?.name, 'ui-ux-pro-max');
+      expect(snapshot.activeRuns.single.activeSkill?.pinned, isTrue);
       expect(snapshot.activeRuns.single.activeSkill?.allowedToolKeys, <String>[
         'read',
         'write',
@@ -1702,6 +1821,63 @@ void main() {
       'actionId': 'suppress',
     });
   });
+
+  test(
+    'platform bridge preserves attachment references when submitting chat messages',
+    () async {
+      late MethodCall capturedCall;
+      const bridge = OpenCrayPlatformBridge();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(methodChannel, (call) async {
+            capturedCall = call;
+            return <String, Object?>{
+              'sessionId': 'session-1',
+              'runId': 'run-1',
+              'taskId': 'task-1',
+              'acceptedAtEpochMs': 123,
+            };
+          });
+
+      await bridge.submitChatMessage(
+        'Reuse prior references',
+        attachments: const <OpenCrayChatDraftAttachment>[
+          OpenCrayChatDraftAttachment(
+            kind: OpenCrayChatDraftAttachmentKind.file,
+            displayName: 'diagram.png',
+            artifactId: 'artifact-diagram-1',
+          ),
+          OpenCrayChatDraftAttachment(
+            kind: OpenCrayChatDraftAttachmentKind.file,
+            displayName: 'report.pdf',
+            chatAttachmentId: 'chat-attachment-1',
+          ),
+        ],
+      );
+
+      expect(capturedCall.method, 'submitChatMessage');
+      expect(capturedCall.arguments, isA<Map<Object?, Object?>>());
+      final arguments = capturedCall.arguments as Map<Object?, Object?>;
+      expect(arguments['text'], 'Reuse prior references');
+      expect(arguments['attachments'], <Object?>[
+        <String, Object?>{
+          'kind': 'file',
+          'displayName': 'diagram.png',
+          'relativePath': '',
+          'artifactId': 'artifact-diagram-1',
+          'mimeType': null,
+          'sizeBytes': null,
+        },
+        <String, Object?>{
+          'kind': 'file',
+          'displayName': 'report.pdf',
+          'relativePath': '',
+          'chatAttachmentId': 'chat-attachment-1',
+          'mimeType': null,
+          'sizeBytes': null,
+        },
+      ]);
+    },
+  );
 
   test(
     'platform bridge forwards native toast requests to the host channel',

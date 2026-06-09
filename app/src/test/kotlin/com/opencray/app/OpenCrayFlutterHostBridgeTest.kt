@@ -375,6 +375,303 @@ class OpenCrayFlutterHostBridgeTest {
     assertEquals(localGateway.selectAgentResult, result.successPayload)
   }
 
+  @Test
+  fun saveLlmConfigMethodCallRoutesContextBudgetFieldsThroughSettingsGateway() {
+    val settingsGateway = RecordingSettingsGateway()
+    val result = RecordingMethodResult()
+    val bridge = OpenCrayFlutterHostBridge(
+      context = MinimalContext(),
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      localHostGateway = UnsupportedLocalGateway(),
+      shellGateway = UnsupportedShellGateway(),
+      chatRuntimeGateway = RecordingChatRuntimeGateway(),
+      skillsGateway = UnsupportedSkillsGateway(),
+      settingsGateway = settingsGateway,
+      debugPythonScriptRunnerFactory = {
+        throw UnsupportedOperationException("Debug Python runner should not be used.")
+      },
+      backgroundRunner = { action -> action() },
+      mainThreadPoster = { action -> action() },
+    )
+
+    bridge.onMethodCall(
+      MethodCall(
+        "saveLlmConfig",
+        mapOf(
+          "enabled" to true,
+          "providerId" to "openai",
+          "selectedProviderOptionId" to "openai",
+          "protocol" to "openai_responses",
+          "providerName" to "OpenAI",
+          "providerNotes" to "",
+          "baseUrl" to "https://api.openai.com/v1",
+          "apiKey" to "token",
+          "model" to "gpt-5-mini",
+          "reasoningEffort" to "medium",
+          "systemPrompt" to "Stay concise.",
+          "contextBudgetPreset" to "expanded",
+          "contextBudgetReservedOutputTokens" to 3072,
+          "contextBudgetSafetyMarginTokens" to 1536,
+          "contextBudgetEffectiveInputPercent" to 0.92,
+        ),
+      ),
+      result,
+    )
+
+    assertTrue(result.successCalled)
+    assertEquals("expanded", settingsGateway.lastSavedLlmConfig?.contextBudgetPreset)
+    assertEquals(3072, settingsGateway.lastSavedLlmConfig?.contextBudgetReservedOutputTokens)
+    assertEquals(1536, settingsGateway.lastSavedLlmConfig?.contextBudgetSafetyMarginTokens)
+    assertEquals(0.92, settingsGateway.lastSavedLlmConfig?.contextBudgetEffectiveInputPercent)
+  }
+
+  @Test
+  fun loadWorkspaceImagePreviewMethodCallRunsOnBackgroundRunner() {
+    val localGateway = RecordingLocalGateway().apply {
+      loadWorkspaceImagePreviewResult = mapOf("relativePath" to "images/cover.png")
+    }
+    var queuedAction: (() -> Unit)? = null
+    val bridge = OpenCrayFlutterHostBridge(
+      context = MinimalContext(),
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      localHostGateway = localGateway,
+      shellGateway = UnsupportedShellGateway(),
+      chatRuntimeGateway = RecordingChatRuntimeGateway(),
+      skillsGateway = UnsupportedSkillsGateway(),
+      settingsGateway = UnsupportedSettingsGateway(),
+      debugPythonScriptRunnerFactory = {
+        throw UnsupportedOperationException("Debug Python runner should not be used.")
+      },
+      backgroundRunner = { action -> queuedAction = action },
+      mainThreadPoster = { action -> action() },
+    )
+    val result = RecordingMethodResult()
+
+    bridge.onMethodCall(
+      MethodCall(
+        "loadWorkspaceImagePreview",
+        mapOf("relativePath" to "images/cover.png"),
+      ),
+      result,
+    )
+
+    assertEquals(0, localGateway.loadWorkspaceImagePreviewCallCount)
+    assertFalse(result.successCalled)
+    checkNotNull(queuedAction) { "Expected preview work to be queued." }.invoke()
+    assertEquals(1, localGateway.loadWorkspaceImagePreviewCallCount)
+    assertTrue(result.successCalled)
+    assertEquals(
+      "images/cover.png",
+      (result.successPayload as Map<*, *>)["relativePath"],
+    )
+  }
+
+  @Test
+  fun saveWorkspaceMediaAttachmentMethodCallRoutesThroughLocalHostGateway() {
+    val localGateway = RecordingLocalGateway().apply {
+      saveWorkspaceMediaAttachmentResult = mapOf(
+        "displayName" to "voice-note.m4a",
+        "collection" to "recordings",
+        "uri" to "content://media/audio/42",
+      )
+    }
+    val bridge = hostBridge(
+      chatGateway = RecordingChatRuntimeGateway(),
+      localHostGateway = localGateway,
+    )
+    val result = RecordingMethodResult()
+
+    bridge.onMethodCall(
+      MethodCall(
+        "saveWorkspaceMediaAttachment",
+        mapOf(
+          "relativePath" to ".opencray/chat-media/session-1/hash/voice-note.m4a",
+          "kind" to "voice",
+        ),
+      ),
+      result,
+    )
+
+    assertTrue(result.successCalled)
+    assertEquals(".opencray/chat-media/session-1/hash/voice-note.m4a", localGateway.lastSavedMediaPath)
+    assertEquals("voice", localGateway.lastSavedMediaKind)
+    assertEquals(
+      "recordings",
+      (result.successPayload as Map<*, *>)["collection"],
+    )
+  }
+
+  @Test
+  fun loadChatSnapshotMethodCallRunsOnBackgroundRunner() {
+    val chatGateway = RecordingChatRuntimeGateway().apply {
+      loadChatSnapshotResult = mapOf("messages" to listOf("hello"))
+    }
+    var queuedAction: (() -> Unit)? = null
+    val bridge = OpenCrayFlutterHostBridge(
+      context = MinimalContext(),
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      localHostGateway = UnsupportedLocalGateway(),
+      shellGateway = UnsupportedShellGateway(),
+      chatRuntimeGateway = chatGateway,
+      skillsGateway = UnsupportedSkillsGateway(),
+      settingsGateway = UnsupportedSettingsGateway(),
+      debugPythonScriptRunnerFactory = {
+        throw UnsupportedOperationException("Debug Python runner should not be used.")
+      },
+      backgroundRunner = { action -> queuedAction = action },
+      mainThreadPoster = { action -> action() },
+    )
+    val result = RecordingMethodResult()
+
+    bridge.onMethodCall(MethodCall("loadChatSnapshot", null), result)
+
+    assertEquals(0, chatGateway.loadChatSnapshotCallCount)
+    assertFalse(result.successCalled)
+    checkNotNull(queuedAction) { "Expected chat snapshot loading to be queued." }.invoke()
+    assertEquals(1, chatGateway.loadChatSnapshotCallCount)
+    assertTrue(result.successCalled)
+    assertEquals(chatGateway.loadChatSnapshotResult, result.successPayload)
+  }
+
+  @Test
+  fun loadChatRunSnapshotMethodCallRunsOnBackgroundRunner() {
+    val chatGateway = RecordingChatRuntimeGateway().apply {
+      loadChatRunSnapshotResult = mapOf("runId" to "run-1")
+    }
+    var queuedAction: (() -> Unit)? = null
+    val bridge = OpenCrayFlutterHostBridge(
+      context = MinimalContext(),
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      localHostGateway = UnsupportedLocalGateway(),
+      shellGateway = UnsupportedShellGateway(),
+      chatRuntimeGateway = chatGateway,
+      skillsGateway = UnsupportedSkillsGateway(),
+      settingsGateway = UnsupportedSettingsGateway(),
+      debugPythonScriptRunnerFactory = {
+        throw UnsupportedOperationException("Debug Python runner should not be used.")
+      },
+      backgroundRunner = { action -> queuedAction = action },
+      mainThreadPoster = { action -> action() },
+    )
+    val result = RecordingMethodResult()
+
+    bridge.onMethodCall(
+      MethodCall("loadChatRunSnapshot", mapOf("runId" to "run-1")),
+      result,
+    )
+
+    assertEquals(0, chatGateway.loadChatRunSnapshotCallCount)
+    assertFalse(result.successCalled)
+    checkNotNull(queuedAction) { "Expected chat run snapshot loading to be queued." }.invoke()
+    assertEquals(1, chatGateway.loadChatRunSnapshotCallCount)
+    assertEquals("run-1", chatGateway.lastLoadedRunId)
+    assertTrue(result.successCalled)
+    assertEquals(chatGateway.loadChatRunSnapshotResult, result.successPayload)
+  }
+
+  @Test
+  fun loadMemoryDebugSnapshotMethodCallRunsOnBackgroundRunner() {
+    val chatGateway = RecordingChatRuntimeGateway().apply {
+      loadMemoryDebugSnapshotResult = mapOf("records" to listOf("memory-1"))
+    }
+    var queuedAction: (() -> Unit)? = null
+    val bridge = OpenCrayFlutterHostBridge(
+      context = MinimalContext(),
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      localHostGateway = UnsupportedLocalGateway(),
+      shellGateway = UnsupportedShellGateway(),
+      chatRuntimeGateway = chatGateway,
+      skillsGateway = UnsupportedSkillsGateway(),
+      settingsGateway = UnsupportedSettingsGateway(),
+      debugPythonScriptRunnerFactory = {
+        throw UnsupportedOperationException("Debug Python runner should not be used.")
+      },
+      backgroundRunner = { action -> queuedAction = action },
+      mainThreadPoster = { action -> action() },
+    )
+    val result = RecordingMethodResult()
+
+    bridge.onMethodCall(MethodCall("loadMemoryDebugSnapshot", null), result)
+
+    assertEquals(0, chatGateway.loadMemoryDebugSnapshotCallCount)
+    assertFalse(result.successCalled)
+    checkNotNull(queuedAction) { "Expected memory debug snapshot loading to be queued." }.invoke()
+    assertEquals(1, chatGateway.loadMemoryDebugSnapshotCallCount)
+    assertTrue(result.successCalled)
+    assertEquals(chatGateway.loadMemoryDebugSnapshotResult, result.successPayload)
+  }
+
+  @Test
+  fun submitChatMessageMethodCallPreservesArtifactAndChatAttachmentReferences() {
+    val chatGateway = RecordingChatRuntimeGateway()
+    val result = RecordingMethodResult()
+    val bridge = hostBridge(chatGateway = chatGateway)
+
+    bridge.onMethodCall(
+      MethodCall(
+        "submitChatMessage",
+        mapOf(
+          "text" to "Reuse both references",
+          "attachments" to listOf(
+            mapOf("artifactId" to "artifact-diagram-1"),
+            mapOf("chatAttachmentId" to "chat-attachment-1"),
+          ),
+        ),
+      ),
+      result,
+    )
+
+    assertTrue(result.successCalled)
+    assertEquals("Reuse both references", chatGateway.lastSubmittedText)
+    assertEquals(2, chatGateway.lastSubmittedAttachments.size)
+    assertEquals(
+      "artifact-diagram-1",
+      chatGateway.lastSubmittedAttachments[0].artifactId,
+    )
+    assertEquals(
+      "chat-attachment-1",
+      chatGateway.lastSubmittedAttachments[1].chatAttachmentId,
+    )
+  }
+
+  @Test
+  fun pickChatAttachmentsMethodCallReturnsErrorWhenSelectedImportsAllFail() {
+    val localGateway = RecordingLocalGateway().apply {
+      importedDraftChatAttachmentsResult = emptyList()
+    }
+    val context = PickerContext(Result.success(listOf("content://picked/report.pdf")))
+    val result = RecordingMethodResult()
+    val bridge = OpenCrayFlutterHostBridge(
+      context = context,
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      localHostGateway = localGateway,
+      shellGateway = UnsupportedShellGateway(),
+      chatRuntimeGateway = RecordingChatRuntimeGateway(),
+      skillsGateway = UnsupportedSkillsGateway(),
+      settingsGateway = UnsupportedSettingsGateway(),
+      debugPythonScriptRunnerFactory = {
+        throw UnsupportedOperationException("Debug Python runner should not be used.")
+      },
+      backgroundRunner = { action -> action() },
+      mainThreadPoster = { action -> action() },
+    )
+
+    bridge.onMethodCall(
+      MethodCall("pickChatAttachments", mapOf("kind" to "file")),
+      result,
+    )
+
+    assertEquals("file", context.lastRequestedKind)
+    assertEquals("file", localGateway.lastImportedRequestedKind)
+    assertEquals(
+      listOf("content://picked/report.pdf"),
+      localGateway.lastImportedUriStrings,
+    )
+    assertFalse(result.successCalled)
+    assertEquals("HOST_BRIDGE_ERROR", result.errorCode)
+    assertEquals("Unable to import the selected attachments.", result.errorMessage)
+  }
+
   private fun hostBridge(
     chatGateway: RecordingChatRuntimeGateway,
     localHostGateway: OpenCrayLocalHostGateway = UnsupportedLocalGateway(),
@@ -405,6 +702,25 @@ class OpenCrayFlutterHostBridgeTest {
     override fun getApplicationContext(): Context = this
 
     override fun getPackageName(): String = "org.opencray.app"
+  }
+
+  private class PickerContext(
+    private val pickedUrisResult: Result<List<String>>,
+  ) : ContextWrapper(null), ChatAttachmentPickerHost {
+    var lastRequestedKind: String? = null
+      private set
+
+    override fun getApplicationContext(): Context = this
+
+    override fun getPackageName(): String = "org.opencray.app"
+
+    override fun pickChatAttachments(
+      requestedKind: String,
+      callback: (Result<List<String>>) -> Unit,
+    ) {
+      lastRequestedKind = requestedKind
+      callback(pickedUrisResult)
+    }
   }
 
   private class RecordingMethodResult : MethodChannel.Result {
@@ -491,6 +807,9 @@ class OpenCrayFlutterHostBridgeTest {
       throw UnsupportedOperationException()
     }
 
+    override fun saveWorkspaceMediaAttachment(relativePath: String, kind: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
     override fun showNativeToast(message: String) {
       throw UnsupportedOperationException()
     }
@@ -509,6 +828,13 @@ class OpenCrayFlutterHostBridgeTest {
 
     override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit =
       throw UnsupportedOperationException()
+
+    override fun saveShellDestination(
+      selectedTab: String,
+      settingsSubpage: String?,
+    ) {
+      throw UnsupportedOperationException()
+    }
   }
 
   private open class UnsupportedSettingsGateway : OpenCraySettingsGateway {
@@ -554,6 +880,7 @@ class OpenCrayFlutterHostBridgeTest {
     override fun saveLlmConfig(
       enabled: Boolean,
       streamingEnabled: Boolean?,
+      providerMode: String,
       providerId: String,
       selectedProviderOptionId: String,
       protocol: String,
@@ -568,6 +895,19 @@ class OpenCrayFlutterHostBridgeTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
+      selectedOnDeviceModelId: String,
+      onDeviceMaxContextWindow: Int,
+      onDeviceMaxTokens: Int,
+      onDeviceTopK: Int,
+      onDeviceTopP: Double,
+      onDeviceTemperature: Double,
+      onDeviceAccelerator: String,
+      onDeviceThinkingEnabled: Boolean,
+      onDeviceLiteModeEnabled: Boolean,
     ): Map<String, Any?> = throw UnsupportedOperationException()
 
     override fun saveCustomLlmProvider(
@@ -585,6 +925,10 @@ class OpenCrayFlutterHostBridgeTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
     ): Map<String, Any?> = throw UnsupportedOperationException()
 
     override fun validateLlmConfig(
@@ -595,6 +939,15 @@ class OpenCrayFlutterHostBridgeTest {
       model: String,
       reasoningEffort: String,
     ): Map<String, Any?> = throw UnsupportedOperationException()
+
+    override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
 
     override fun loadPersonalizationConfig(): Map<String, Any?> =
       throw UnsupportedOperationException()
@@ -644,6 +997,67 @@ class OpenCrayFlutterHostBridgeTest {
       subAgentContextProfileOverrides: Map<String, String>,
     ): Map<String, Any?> = throw UnsupportedOperationException()
   }
+
+  private class RecordingSettingsGateway : UnsupportedSettingsGateway() {
+    var lastSavedLlmConfig: SavedLlmConfigCall? = null
+      private set
+
+    override fun saveLlmConfig(
+      enabled: Boolean,
+      streamingEnabled: Boolean?,
+      providerMode: String,
+      providerId: String,
+      selectedProviderOptionId: String,
+      protocol: String,
+      providerName: String,
+      providerNotes: String,
+      baseUrl: String,
+      apiKey: String,
+      model: String,
+      reasoningEffort: String,
+      systemPrompt: String,
+      openAiPromptCacheKeyStrategy: String?,
+      openAiPromptCacheRetention: String?,
+      anthropicPromptCachingEnabled: Boolean?,
+      anthropicPromptCacheTtl: String?,
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
+      selectedOnDeviceModelId: String,
+      onDeviceMaxContextWindow: Int,
+      onDeviceMaxTokens: Int,
+      onDeviceTopK: Int,
+      onDeviceTopP: Double,
+      onDeviceTemperature: Double,
+      onDeviceAccelerator: String,
+      onDeviceThinkingEnabled: Boolean,
+      onDeviceLiteModeEnabled: Boolean,
+    ): Map<String, Any?> {
+      lastSavedLlmConfig = SavedLlmConfigCall(
+        enabled = enabled,
+        providerMode = providerMode,
+        providerId = providerId,
+        selectedProviderOptionId = selectedProviderOptionId,
+        contextBudgetPreset = contextBudgetPreset,
+        contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
+        contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
+        contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
+      )
+      return mapOf("saved" to true)
+    }
+  }
+
+  private data class SavedLlmConfigCall(
+    val enabled: Boolean,
+    val providerMode: String,
+    val providerId: String,
+    val selectedProviderOptionId: String,
+    val contextBudgetPreset: String?,
+    val contextBudgetReservedOutputTokens: Int?,
+    val contextBudgetSafetyMarginTokens: Int?,
+    val contextBudgetEffectiveInputPercent: Double?,
+  )
 
   private open class UnsupportedSkillsGateway : OpenCraySkillsGateway {
     override fun loadSkillsSnapshot(query: String, suggestedLimit: Int): Map<String, Any?> =
@@ -700,6 +1114,9 @@ class OpenCrayFlutterHostBridgeTest {
       throw UnsupportedOperationException()
 
     override fun loadChatRuntimeSnapshot(): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit =
       throw UnsupportedOperationException()
 
     override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? =
@@ -799,7 +1216,25 @@ class OpenCrayFlutterHostBridgeTest {
       private set
 
     var refreshSandboxSessionInfoError: Throwable? = null
+    var loadChatSnapshotCallCount: Int = 0
+      private set
+    var loadChatSnapshotResult: Map<String, Any?> = emptyMap()
+    var loadChatRuntimeSnapshotCallCount: Int = 0
+      private set
+    var loadChatRuntimeSnapshotResult: Map<String, Any?> = emptyMap()
+    var loadChatRunSnapshotCallCount: Int = 0
+      private set
+    var loadChatRunSnapshotResult: Map<String, Any?>? = null
+    var lastLoadedRunId: String? = null
+      private set
+    var loadMemoryDebugSnapshotCallCount: Int = 0
+      private set
+    var loadMemoryDebugSnapshotResult: Map<String, Any?> = emptyMap()
     var lastSelectedSessionId: String? = null
+      private set
+    var lastSubmittedText: String? = null
+      private set
+    var lastSubmittedAttachments: List<OpenCrayFinalAttachment> = emptyList()
       private set
 
     override fun selectChatSession(sessionId: String) {
@@ -809,6 +1244,36 @@ class OpenCrayFlutterHostBridgeTest {
     override fun refreshSandboxSessionInfo() {
       refreshSandboxSessionInfoCallCount += 1
       refreshSandboxSessionInfoError?.let { throwable -> throw throwable }
+    }
+
+    override fun loadChatSnapshot(): Map<String, Any?> {
+      loadChatSnapshotCallCount += 1
+      return loadChatSnapshotResult
+    }
+
+    override fun loadChatRuntimeSnapshot(): Map<String, Any?> {
+      loadChatRuntimeSnapshotCallCount += 1
+      return loadChatRuntimeSnapshotResult
+    }
+
+    override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? {
+      loadChatRunSnapshotCallCount += 1
+      lastLoadedRunId = runId
+      return loadChatRunSnapshotResult
+    }
+
+    override fun loadMemoryDebugSnapshot(): Map<String, Any?> {
+      loadMemoryDebugSnapshotCallCount += 1
+      return loadMemoryDebugSnapshotResult
+    }
+
+    override fun submitChatMessage(
+      text: String,
+      attachments: List<OpenCrayFinalAttachment>,
+    ): Map<String, Any?> {
+      lastSubmittedText = text
+      lastSubmittedAttachments = attachments
+      return mapOf("submittedText" to text, "attachmentCount" to attachments.size)
     }
   }
 
@@ -829,6 +1294,19 @@ class OpenCrayFlutterHostBridgeTest {
       private set
 
     var selectAgentResult: Map<String, Any?>? = null
+    var loadWorkspaceImagePreviewCallCount: Int = 0
+      private set
+    var loadWorkspaceImagePreviewResult: Map<String, Any?> = emptyMap()
+    var lastSavedMediaPath: String? = null
+      private set
+    var lastSavedMediaKind: String? = null
+      private set
+    var saveWorkspaceMediaAttachmentResult: Map<String, Any?> = emptyMap()
+    var lastImportedRequestedKind: String? = null
+      private set
+    var lastImportedUriStrings: List<String> = emptyList()
+      private set
+    var importedDraftChatAttachmentsResult: List<Map<String, Any?>> = emptyList()
 
     override fun listAgents(): List<Map<String, Any?>> {
       listAgentsCallCount += 1
@@ -848,6 +1326,26 @@ class OpenCrayFlutterHostBridgeTest {
     override fun selectAgent(agentId: String): Map<String, Any?>? {
       lastSelectedAgentId = agentId
       return selectAgentResult
+    }
+
+    override fun loadWorkspaceImagePreview(relativePath: String): Map<String, Any?> {
+      loadWorkspaceImagePreviewCallCount += 1
+      return loadWorkspaceImagePreviewResult
+    }
+
+    override fun saveWorkspaceMediaAttachment(relativePath: String, kind: String): Map<String, Any?> {
+      lastSavedMediaPath = relativePath
+      lastSavedMediaKind = kind
+      return saveWorkspaceMediaAttachmentResult
+    }
+
+    override fun importDraftChatAttachments(
+      requestedKind: String,
+      uriStrings: List<String>,
+    ): List<Map<String, Any?>> {
+      lastImportedRequestedKind = requestedKind
+      lastImportedUriStrings = uriStrings
+      return importedDraftChatAttachmentsResult
     }
   }
 }

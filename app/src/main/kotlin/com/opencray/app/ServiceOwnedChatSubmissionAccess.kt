@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import android.util.Log
 import com.opencray.app.facade.safety.SafetySettingsFacade
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
@@ -11,7 +12,10 @@ import com.opencray.persistence.model.ChatAttachmentEntry
 import com.opencray.persistence.model.ChatAttachmentKind
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
+import com.opencray.runtime.OpenCrayAttachmentArtifact
+import com.opencray.runtime.OpenCrayAttachmentArtifacts
 import com.opencray.runtime.OpenCrayFinalAttachment
+import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.context.RuntimeConversationAttachment
 import com.opencray.runtime.context.RuntimeConversationAttachmentKind
 import com.opencray.runtime.context.RuntimeConversationMessage
@@ -24,6 +28,11 @@ import kotlinx.serialization.json.Json
 
 private const val CHAT_ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
 private const val CHAT_ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
+private const val CHAT_FLOW_DEBUG_TAG: String = "OpenCrayDiag"
+
+private fun chatFlowDebug(message: String) {
+  runCatching { Log.d(CHAT_FLOW_DEBUG_TAG, message) }
+}
 
 internal fun latestChatRunForSnapshot(runs: List<AgentRunSnapshot>): AgentRunSnapshot? {
   var latest: AgentRunSnapshot? = null
@@ -112,6 +121,9 @@ internal class ChatSubmissionCoordinator(
     repairStaleSupplements(sessionId)
     val liveRun = supplementTargetRun(sessionId)
     val queuedBefore = chatSessionStore.loadPendingUserInputs(sessionId)
+    chatFlowDebug(
+      "chat.submit session=$sessionId textLen=${trimmed.length} attachments=${archivedAttachments.size} liveRun=${liveRun?.runId ?: "-"} queued=${queuedBefore.size} pendingTasks=${pendingTaskCount(sessionId)}",
+    )
     val submission = if (liveRun != null) {
       when {
         isLlmRetryPausedAwaitingResumeRun(liveRun) -> resumePausedRunWithUserInput(
@@ -346,14 +358,155 @@ internal class ChatSubmissionCoordinator(
     if (attachments.isEmpty()) {
       return emptyList()
     }
+    val resolvedAttachments = resolveSubmittedChatAttachments(
+      sessionId = sessionId,
+      attachments = attachments,
+    )
     val workspaceRoot = workspaceRootProvider?.invoke() ?: return emptyList()
     return AppChatAttachmentArchiver.archive(
       workspaceRoot = workspaceRoot,
       approvedReadRoots = approvedReadRootsProvider().roots,
       sessionId = sessionId,
-      attachments = attachments,
+      attachments = resolvedAttachments,
       voiceMetadataAnalyzer = voiceMetadataAnalyzer,
     )
+  }
+
+  private fun resolveSubmittedChatAttachments(
+    sessionId: String,
+    attachments: List<OpenCrayFinalAttachment>,
+  ): List<OpenCrayFinalAttachment> {
+    val resolvedArtifacts = resolveSubmittedAttachmentArtifacts(
+      sessionId = sessionId,
+      attachments = attachments,
+    )
+    val resolvedChatAttachments = resolveSubmittedChatAttachmentReferences(
+      sessionId = sessionId,
+      attachments = resolvedArtifacts,
+    )
+    val unresolvedReference = resolvedChatAttachments.firstOrNull { attachment ->
+      attachment.relativePath.isNullOrBlank() &&
+        attachment.path.isNullOrBlank() &&
+        (
+          !attachment.artifactId.isNullOrBlank() ||
+            !attachment.chatAttachmentId.isNullOrBlank()
+          )
+    }
+    if (unresolvedReference != null) {
+      val referenceId = unresolvedReference.chatAttachmentId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: unresolvedReference.artifactId
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        ?: "unknown"
+      throw IllegalArgumentException(
+        "Attachment reference '$referenceId' could not be resolved.",
+      )
+    }
+    return resolvedChatAttachments
+  }
+
+  private fun resolveSubmittedAttachmentArtifacts(
+    sessionId: String,
+    attachments: List<OpenCrayFinalAttachment>,
+  ): List<OpenCrayFinalAttachment> {
+    val requestedArtifactIds = attachments
+      .mapNotNull { attachment ->
+        attachment.artifactId?.trim()?.takeIf(String::isNotBlank)
+      }
+      .toSet()
+    if (requestedArtifactIds.isEmpty()) {
+      return attachments
+    }
+    val artifactsById = linkedMapOf<String, OpenCrayAttachmentArtifact>()
+    runtimeHostAccess.runEventJournalStore(sessionId)
+      .listRuntimeEvents()
+      .asReversed()
+      .forEach { event ->
+        val toolEvent = event as? OpenCrayToolResultEvent ?: return@forEach
+        OpenCrayAttachmentArtifacts.decodeMetadata(
+          json = Json,
+          metadata = toolEvent.result.metadata,
+        ).forEach artifactLoop@ { artifact ->
+          if (artifact.artifactId !in requestedArtifactIds || artifact.artifactId in artifactsById) {
+            return@artifactLoop
+          }
+          artifactsById[artifact.artifactId] = artifact
+        }
+    }
+    val workspaceRoot = workspaceRootProvider?.invoke()
+    (requestedArtifactIds - artifactsById.keys).forEach { artifactId ->
+      resolveWorkspaceMediaArtifact(
+        workspaceRoot = workspaceRoot,
+        artifactId = artifactId,
+      )?.let { artifact ->
+        artifactsById[artifact.artifactId] = artifact
+      }
+    }
+    return attachments.map { attachment ->
+      val artifactId = attachment.artifactId?.trim()?.takeIf(String::isNotBlank)
+        ?: return@map attachment
+      val artifact = artifactsById[artifactId] ?: return@map attachment
+      attachment.copy(
+        kind = artifact.kindHint ?: attachment.kind,
+        relativePath = artifact.relativePath,
+        displayName = attachment.displayName ?: artifact.displayName,
+        mimeType = attachment.mimeType ?: artifact.mimeType,
+        durationMs = attachment.durationMs ?: artifact.durationMs,
+        waveformBars = attachment.waveformBars.ifEmpty { artifact.waveformBars },
+        transcriptText = attachment.transcriptText ?: artifact.transcriptText,
+      )
+    }
+  }
+
+  private fun resolveSubmittedChatAttachmentReferences(
+    sessionId: String,
+    attachments: List<OpenCrayFinalAttachment>,
+  ): List<OpenCrayFinalAttachment> {
+    val requestedAttachmentIds = attachments
+      .mapNotNull { attachment ->
+        if (!attachment.artifactId.isNullOrBlank()) {
+          return@mapNotNull null
+        }
+        attachment.chatAttachmentId?.trim()?.takeIf(String::isNotBlank)
+      }
+      .toSet()
+    if (requestedAttachmentIds.isEmpty()) {
+      return attachments
+    }
+    val attachmentsById = buildMap<String, ChatAttachmentEntry> {
+      chatSessionStore.loadSession(sessionId)
+        ?.messages
+        ?.asReversed()
+        ?.forEach { message ->
+          message.attachments
+            .asReversed()
+            .forEach { attachment ->
+              val attachmentId = attachment.attachmentId.trim()
+              if (attachmentId.isNotEmpty() && attachmentId !in this) {
+                put(attachmentId, attachment)
+              }
+            }
+        }
+    }
+    return attachments.map { attachment ->
+      if (!attachment.artifactId.isNullOrBlank()) {
+        return@map attachment
+      }
+      val chatAttachmentId = attachment.chatAttachmentId?.trim()?.takeIf(String::isNotBlank)
+        ?: return@map attachment
+      val sessionAttachment = attachmentsById[chatAttachmentId] ?: return@map attachment
+      attachment.copy(
+        kind = sessionAttachment.kind.toWireKind(),
+        relativePath = sessionAttachment.localPath,
+        displayName = attachment.displayName ?: sessionAttachment.displayName,
+        mimeType = attachment.mimeType ?: sessionAttachment.mimeType,
+        durationMs = attachment.durationMs ?: sessionAttachment.durationMs,
+        waveformBars = attachment.waveformBars.ifEmpty { sessionAttachment.waveformBars },
+        transcriptText = attachment.transcriptText ?: sessionAttachment.transcriptText,
+      )
+    }
   }
 
   private fun isLlmRetryPausedAwaitingResumeRun(run: AgentRunSnapshot): Boolean =
@@ -413,6 +566,9 @@ internal class ChatSubmissionCoordinator(
           attachments = attachments,
         ) +
         taskMetadataProvider(RunSubmissionSources.CHAT_USER_MESSAGE),
+    )
+    chatFlowDebug(
+      "chat.submitPromptRun session=$sessionId run=${submittedRun.runId} task=${submittedRun.taskId} pending=$pendingMessageId textLen=${userText.length} attachments=${attachments.size}",
     )
     try {
       chatSessionStore.appendSubmittedTurn(
@@ -480,6 +636,13 @@ internal class ChatSubmissionCoordinator(
     ChatAttachmentKind.VOICE -> RuntimeConversationAttachmentKind.VOICE
     ChatAttachmentKind.AUDIO -> RuntimeConversationAttachmentKind.AUDIO
     ChatAttachmentKind.FILE -> RuntimeConversationAttachmentKind.FILE
+  }
+
+  private fun ChatAttachmentKind.toWireKind(): String = when (this) {
+    ChatAttachmentKind.IMAGE -> "image"
+    ChatAttachmentKind.VOICE -> "voice"
+    ChatAttachmentKind.AUDIO -> "audio"
+    ChatAttachmentKind.FILE -> "file"
   }
 
   private fun hasSession(sessionId: String): Boolean = chatSessionStore.loadState().sessions

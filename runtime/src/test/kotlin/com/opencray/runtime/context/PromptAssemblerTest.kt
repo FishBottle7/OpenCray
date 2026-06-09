@@ -87,6 +87,26 @@ class PromptAssemblerTest {
               description = "Keep a short live plan for multi-step work.",
             ),
             AgentToolDefinition(
+              name = "ScheduledTaskCreate",
+              description = "Create one persisted scheduled task.",
+            ),
+            AgentToolDefinition(
+              name = "ScheduledTaskList",
+              description = "List persisted scheduled tasks.",
+            ),
+            AgentToolDefinition(
+              name = "ScheduledTaskGet",
+              description = "Inspect one persisted scheduled task.",
+            ),
+            AgentToolDefinition(
+              name = "ScheduledTaskUpdate",
+              description = "Patch one persisted scheduled task.",
+            ),
+            AgentToolDefinition(
+              name = "ScheduledTaskDelete",
+              description = "Delete one persisted scheduled task.",
+            ),
+            AgentToolDefinition(
               name = "WebFetch",
               description = "Fetch a web page.",
             ),
@@ -163,6 +183,10 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("Omit todos to read the current plan without mutating it"))
     assertTrue(prompt.taskPrompt.contains("at most one in_progress item"))
     assertTrue(prompt.taskPrompt.contains("before returning the final answer make sure the plan state is accurate"))
+    assertTrue(prompt.taskPrompt.contains("prefer ScheduledTaskCreate"))
+    assertTrue(prompt.taskPrompt.contains("use trigger.at for one absolute time"))
+    assertTrue(prompt.taskPrompt.contains("use ScheduledTaskList or ScheduledTaskGet before guessing"))
+    assertTrue(prompt.taskPrompt.contains("inspect it with ScheduledTaskGet first"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"Bash"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"python_exec"))
     assertTrue(prompt.taskPrompt.contains("tool_name\":\"WebFetch"))
@@ -215,13 +239,11 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("Use list_subagents to inspect the delegated child registry"))
     assertTrue(prompt.taskPrompt.contains("Generated speech should usually be attached with kind=voice"))
     assertTrue(prompt.taskPrompt.contains("Available tools:"))
-    assertTrue(prompt.taskPrompt.contains("[Task Metadata]"))
     assertTrue(prompt.taskPrompt.contains("[Conversation]"))
     assertTrue(prompt.taskPrompt.contains("[Compaction Summary]"))
     assertTrue(prompt.taskPrompt.contains("Compacted 1 older message(s) outside the active transcript window."))
-    assertTrue(prompt.taskPrompt.contains("task_id=task-context"))
     assertTrue(prompt.taskPrompt.contains("Omitted 1 older message(s)"))
-    assertTrue(prompt.contextPrompt.contains("[Task Metadata]"))
+    assertFalse(prompt.contextPrompt.contains("[Task Metadata]"))
     assertFalse(prompt.contextPrompt.contains("[Conversation]"))
     assertFalse(prompt.contextPrompt.contains("Latest request."))
     assertEquals(3, prompt.report.sourceTranscriptMessageCount)
@@ -235,6 +257,87 @@ class PromptAssemblerTest {
     assertEquals(1, prompt.report.compactedTranscriptMessageCount)
     assertTrue(prompt.report.compactionSummaryIncluded)
     assertEquals(0, prompt.report.injectedMemoryRecordCount)
+  }
+
+  @Test
+  fun assembleSeparatesDurableAndDynamicFrontContextPrompts() {
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      ContextManager().prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "You are OpenCray for testing.",
+          sessionContext = AgentRuntimeSessionContext(
+            workingState = WorkingState(
+              objective = WorkingStateObjective(
+                taskId = "task-front-context",
+                runId = "run-front-context",
+                primaryGoal = "Keep transport-facing prompt groups explicit.",
+                currentSubgoal = "Separate durable context from dynamic context.",
+                status = "in_progress",
+              ),
+              nextActions = listOf(
+                WorkingStateEntry(text = "Verify grouped front context ordering."),
+              ),
+            ),
+            recalledMemory = MemoryRecallResult(
+              memories = listOf(
+                RetrievedMemory(
+                  id = "memory-front-context",
+                  kind = MemoryKind.USER_PREFERENCE,
+                  scope = MemoryScope.USER,
+                  status = MemoryStatus.ACTIVE,
+                  content = "The user prefers stable prompt prefixes when the runtime can preserve them.",
+                  lastConfirmedAtEpochMs = 42L,
+                  score = 640,
+                ),
+              ),
+              matchedRecordCount = 1,
+            ),
+          ),
+          toolDefinitions = listOf(
+            AgentToolDefinition(
+              name = "Read",
+              description = "Read a file from the workspace.",
+            ),
+          ),
+          liveConversation = listOf(
+            RuntimeConversationMessage(RuntimeConversationRole.USER, "Keep the grouped context stable."),
+            RuntimeConversationMessage(RuntimeConversationRole.ASSISTANT, "I will keep the replay separate."),
+          ),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.durableContextPrompt.contains("[Tool Protocol]"))
+    assertFalse(prompt.durableContextPrompt.contains("[Working State]"))
+    assertFalse(prompt.durableContextPrompt.contains("[Task Metadata]"))
+    assertFalse(prompt.durableContextPrompt.contains("[Retrieved Memory]"))
+    assertFalse(prompt.durableContextPrompt.contains("[Active Skill]"))
+
+    assertTrue(prompt.dynamicContextPrompt.contains("[Working State]"))
+    assertFalse(prompt.dynamicContextPrompt.contains("[Task Metadata]"))
+    assertTrue(prompt.dynamicContextPrompt.contains("[Retrieved Memory]"))
+    assertFalse(prompt.dynamicContextPrompt.contains("[Conversation]"))
+
+    assertTrue(prompt.replayTranscriptPrompt.contains("[Conversation]"))
+    assertFalse(prompt.replayTranscriptPrompt.contains("[Task Metadata]"))
+    assertEquals(prompt.durableContextPrompt, prompt.frontContextZones.durableContextPrompt)
+    assertEquals(prompt.dynamicContextPrompt, prompt.frontContextZones.dynamicContextPrompt)
+    assertEquals(
+      listOf(prompt.durableContextPrompt, prompt.dynamicContextPrompt),
+      prompt.frontContextPrompts,
+    )
+
+    val toolProtocolLayer = prompt.report.layers.first { layer -> layer.id == PromptLayerId.TOOL_PROTOCOL }
+    val memoryLayer = prompt.report.layers.first { layer -> layer.id == PromptLayerId.RETRIEVED_MEMORY }
+    val conversationLayer = prompt.report.layers.first { layer -> layer.id == PromptLayerId.CONVERSATION }
+
+    assertEquals(PromptLayerTransportGroup.DURABLE_CONTEXT, toolProtocolLayer.transportGroup)
+    assertEquals(PromptLayerTransportGroup.DYNAMIC_CONTEXT, memoryLayer.transportGroup)
+    assertTrue(prompt.report.layers.none { layer -> layer.id == PromptLayerId.TASK_METADATA })
+    assertEquals(PromptLayerTransportGroup.REPLAY_TRANSCRIPT, conversationLayer.transportGroup)
   }
 
   @Test
@@ -514,7 +617,7 @@ class PromptAssemblerTest {
   }
 
   @Test
-  fun assembleOmitsHostOnlyTaskMetadataFromPrompt() {
+  fun assembleDoesNotExposeTaskMetadataInPrompt() {
     val contextManager = ContextManager()
     val assembler = PromptAssembler()
 
@@ -535,7 +638,7 @@ class PromptAssemblerTest {
       ),
     )
 
-    assertTrue(prompt.taskPrompt.contains("chatMode=AUTO"))
+    assertFalse(prompt.taskPrompt.contains("chatMode=AUTO"))
     assertFalse(prompt.taskPrompt.contains("_host.pendingMessageId"))
     assertFalse(prompt.taskPrompt.contains("assistant-1"))
   }
@@ -919,11 +1022,119 @@ class PromptAssemblerTest {
     assertTrue(prompt.taskPrompt.contains("allowed_tools=read,write"))
     assertTrue(prompt.taskPrompt.contains("[Instructions]"))
     assertTrue(prompt.taskPrompt.indexOf("[Active Skill]") < prompt.taskPrompt.indexOf("[Tool Protocol]"))
+    assertTrue(prompt.dynamicContextPrompt.contains("[Active Skill]"))
+    assertFalse(prompt.durableContextPrompt.contains("[Active Skill]"))
     assertEquals("ui-ux-pro-max", prompt.report.activeSkillTrace.name)
     assertEquals(".codex/skills/ui-ux-pro-max/SKILL.md", prompt.report.activeSkillTrace.relativePath)
     assertEquals("skill_read", prompt.report.activeSkillTrace.activationSource)
     assertTrue(prompt.report.activeSkillTrace.toolRestrictionEnabled)
     assertEquals(listOf("read", "write"), prompt.report.activeSkillTrace.allowedToolKeys)
+    assertEquals(
+      PromptLayerTransportGroup.DYNAMIC_CONTEXT,
+      prompt.report.layers.first { layer -> layer.id == PromptLayerId.ACTIVE_SKILL }.transportGroup,
+    )
+  }
+
+  @Test
+  fun assembleInjectsPinnedActiveSkillIntoDurableContextLayer() {
+    val contextManager = ContextManager()
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(),
+          activeSkillCapsule = ActiveSkillCapsule(
+            name = "ui-ux-pro-max",
+            description = "High-end UI review workflow.",
+            relativePath = ".codex/skills/ui-ux-pro-max/SKILL.md",
+            invocationControl = "explicit-only",
+            executionContext = "inline",
+            activationSource = "skill_read",
+            pinned = true,
+            markdownBody = """
+              # UI UX Pro Max
+
+              1. Audit the current interface.
+              2. Produce a concrete design system.
+            """.trimIndent(),
+            toolPermissionSummary = listOf("read:allow", "write:allow"),
+            allowedToolKeys = setOf("read", "write"),
+          ),
+          toolDefinitions = emptyList(),
+          liveConversation = emptyList(),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.taskPrompt.contains("[Active Skill]"))
+    assertTrue(prompt.taskPrompt.contains("pinned=true"))
+    assertTrue(prompt.durableContextPrompt.contains("[Active Skill]"))
+    assertFalse(prompt.dynamicContextPrompt.contains("[Active Skill]"))
+    assertTrue(prompt.report.activeSkillTrace.pinned)
+    assertEquals(
+      PromptLayerTransportGroup.DURABLE_CONTEXT,
+      prompt.report.layers.first { layer -> layer.id == PromptLayerId.ACTIVE_SKILL }.transportGroup,
+    )
+  }
+
+  @Test
+  fun assembleInjectsStickyMemoryIntoDurableContextLayer() {
+    val contextManager = ContextManager()
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      contextManager.prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "Base identity.",
+          sessionContext = AgentRuntimeSessionContext(
+            recalledMemory = MemoryRecallResult(
+              memories = listOf(
+                RetrievedMemory(
+                  id = "memory-sticky-layer",
+                  kind = MemoryKind.DURABLE_INSTRUCTION,
+                  scope = MemoryScope.USER,
+                  status = MemoryStatus.ACTIVE,
+                  content = "Keep this durable instruction in the sticky capsule.",
+                  lastConfirmedAtEpochMs = 42L,
+                  sticky = true,
+                  score = 900,
+                ),
+                RetrievedMemory(
+                  id = "memory-dynamic-layer",
+                  kind = MemoryKind.PROJECT_FACT,
+                  scope = MemoryScope.WORKSPACE,
+                  status = MemoryStatus.ACTIVE,
+                  content = "Keep this project fact in dynamic recall.",
+                  lastConfirmedAtEpochMs = 43L,
+                  score = 800,
+                ),
+              ),
+              matchedRecordCount = 2,
+            ),
+          ),
+          toolDefinitions = emptyList(),
+          liveConversation = emptyList(),
+        ),
+      ),
+    )
+
+    assertTrue(prompt.taskPrompt.contains("[Sticky Memory]"))
+    assertTrue(prompt.durableContextPrompt.contains("[Sticky Memory]"))
+    assertFalse(prompt.dynamicContextPrompt.contains("[Sticky Memory]"))
+    assertTrue(prompt.taskPrompt.contains("Keep this durable instruction in the sticky capsule."))
+    assertTrue(prompt.taskPrompt.contains("[Retrieved Memory]"))
+    assertTrue(prompt.dynamicContextPrompt.contains("Keep this project fact in dynamic recall."))
+    assertFalse(prompt.dynamicContextPrompt.contains("Keep this durable instruction in the sticky capsule."))
+    assertEquals(1, prompt.report.stickyMemoryTrace.injectedRecordCount)
+    assertEquals(listOf("memory-sticky-layer"), prompt.report.stickyMemoryTrace.selectedRecordIds)
+    assertEquals(
+      PromptLayerTransportGroup.DURABLE_CONTEXT,
+      prompt.report.layers.first { layer -> layer.id == PromptLayerId.STICKY_MEMORY }.transportGroup,
+    )
   }
 
   @Test
@@ -1029,7 +1240,7 @@ class PromptAssemblerTest {
   }
 
   @Test
-  fun assembleBudgetCoordinatorTrimsConversationReplayBeforeDroppingMemory() {
+  fun assembleBudgetCoordinatorTrimsConversationReplayUnderPressure() {
     val contextManager = ContextManager(
       transcriptWindowBuilder = TranscriptWindowBuilder(
         TranscriptWindowConfig(
@@ -1081,17 +1292,15 @@ class PromptAssemblerTest {
             ),
           ),
           llmMetadata = budgetMetadata(
-            contextWindowTokens = 3_600,
-            reservedOutputTokens = 128,
+            contextWindowTokens = 2_400,
+            reservedOutputTokens = 256,
             safetyMarginTokens = 96,
-            effectiveInputPercent = "0.346",
+            effectiveInputPercent = "0.22",
           ),
         ),
       ),
     )
 
-    assertTrue(prompt.taskPrompt.contains("[Retrieved Memory]"))
-    assertTrue(prompt.taskPrompt.contains("Keep working state explicit instead of hiding progress inside generic summaries."))
     assertFalse(prompt.taskPrompt.contains("First replay note about the runtime rollout"))
     assertFalse(prompt.taskPrompt.contains("Second replay note describing the previous prompt composition"))
     assertTrue(prompt.taskPrompt.contains("Third replay note asking whether bounded transcript replay can shrink before memory injection disappears."))
@@ -1099,13 +1308,9 @@ class PromptAssemblerTest {
     val conversationBudgetReport = prompt.report.budgetReport.layers.first { layer ->
       layer.id == PromptLayerId.CONVERSATION
     }
-    val memoryBudgetReport = prompt.report.budgetReport.layers.first { layer ->
-      layer.id == PromptLayerId.RETRIEVED_MEMORY
-    }
     assertTrue(conversationBudgetReport.reduced)
+    assertEquals(ContextBudgetLayerFinalState.MINIMAL, conversationBudgetReport.finalState)
     assertTrue(conversationBudgetReport.appliedOperators.contains("trim_oldest_conversation_messages"))
-    assertFalse(memoryBudgetReport.omitted)
-    assertFalse(prompt.report.budgetReport.omittedLayerNames.contains("Retrieved Memory"))
   }
 
   fun assembleToolProtocolReducerAdjustsDetailModeAcrossBudgetBands() {
@@ -1212,6 +1417,52 @@ class PromptAssemblerTest {
   }
 
   @Test
+  fun assembleToolProtocolReducerHonorsExplicitDetailOverride() {
+    val assembler = PromptAssembler()
+
+    val prompt = assembler.assemble(
+      ContextManager().prepare(
+        PromptAssemblyInput(
+          task = promptTask(),
+          baseSystemPrompt = "You are OpenCray for testing.",
+          sessionContext = AgentRuntimeSessionContext(),
+          toolDefinitions = listOf(
+            AgentToolDefinition(
+              name = "Read",
+              description = "Read a file from the workspace.",
+            ),
+            AgentToolDefinition(
+              name = "Write",
+              description = "Write a file into the workspace.",
+            ),
+            AgentToolDefinition(
+              name = "GenerateImage",
+              description = "Generate an image.",
+            ),
+          ),
+          liveConversation = listOf(
+            RuntimeConversationMessage(
+              RuntimeConversationRole.USER,
+              "Inspect the override behavior.",
+            ),
+          ),
+          llmMetadata = mapOf(
+            "context_window_tokens" to "131072",
+            "toolProtocolDetailMode" to "minimal",
+          ),
+        ),
+      ),
+    )
+
+    assertEquals("minimal", prompt.report.toolProtocolTrace.detailMode)
+    assertFalse(
+      prompt.taskPrompt.contains(
+        "\"attachments\":[{\"artifact_id\":\"artifact-example-1234abcd\",\"kind\":\"image\"}]",
+      ),
+    )
+  }
+
+  @Test
   fun assembleBudgetCoordinatorStructurallyReducesWorkingStateBeforeDroppingIt() {
     val contextManager = ContextManager()
     val assembler = PromptAssembler()
@@ -1269,7 +1520,7 @@ class PromptAssemblerTest {
             RuntimeConversationMessage(RuntimeConversationRole.USER, "Keep the reducer honest."),
           ),
           llmMetadata = budgetMetadata(
-            contextWindowTokens = 900,
+            contextWindowTokens = 600,
             reservedOutputTokens = 256,
             safetyMarginTokens = 96,
             effectiveInputPercent = "0.15",
@@ -1297,6 +1548,7 @@ class PromptAssemblerTest {
     assertFalse(prompt.taskPrompt.contains("updated_at_epoch_ms=123456"))
     assertTrue(workingStateBudgetReport.reduced)
     assertFalse(workingStateBudgetReport.omitted)
+    assertEquals(ContextBudgetLayerFinalState.MINIMAL, workingStateBudgetReport.finalState)
     assertTrue(workingStateBudgetReport.appliedOperators.contains("reduce_working_state_minimal"))
   }
 
@@ -1316,7 +1568,7 @@ class PromptAssemblerTest {
             RuntimeConversationMessage(RuntimeConversationRole.USER, "Keep the latest task prompt intact."),
           ),
           llmMetadata = budgetMetadata(
-            contextWindowTokens = 900,
+            contextWindowTokens = 600,
             reservedOutputTokens = 256,
             safetyMarginTokens = 96,
             effectiveInputPercent = "0.15",

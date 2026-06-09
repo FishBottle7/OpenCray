@@ -276,6 +276,10 @@ object SessionTranscriptRules {
     "skill_read",
     "memory_search",
     "memory_get",
+    "session_search",
+    "session_get",
+    "past_session_search",
+    "past_session_get",
     "mcp_list_servers",
     -> ToolReplayCategory.DISCOVERY
 

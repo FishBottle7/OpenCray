@@ -3,7 +3,12 @@ package com.opencray.app
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCraySerializableGatewayMessage
+import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.RuntimeConversationMessageKind
+import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.context.RuntimeConversationToolResult
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Rule
@@ -204,6 +209,63 @@ class PromptCheckpointStoreFactoryTest {
   }
 
   @Test
+  fun fileBackedStoreRepairsLegacyNestedResumeMetadataWhenReloaded() {
+    val runtimeRoot = temporaryFolder.newFolder("runtime-prompt-checkpoints-repair")
+    val factory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val store = factory.forChatSession("session-1")
+    store.upsert(
+      PersistedPromptCheckpoint(
+        sessionId = "session-1",
+        runId = "run-1",
+        taskId = "task-1",
+        checkpointId = "checkpoint-1",
+        checkpointKind = PromptCheckpointKind.TOOL_RESULT_COMMITTED,
+        createdAtEpochMs = 100L,
+        updatedAtEpochMs = 100L,
+        toolName = "WebSearch",
+        promptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
+        promptResumeState = OpenCrayPromptResumeState(
+          turnIndex = 1,
+          toolCallCount = 1,
+          transcript = listOf(
+            RuntimeConversationMessage(
+              role = RuntimeConversationRole.TOOL,
+              kind = RuntimeConversationMessageKind.TOOL_RESULT,
+              content = sanitizedToolResultPayload(),
+              toolResult = RuntimeConversationToolResult(
+                toolName = "WebSearch",
+                status = "success",
+                isError = false,
+              ),
+            ),
+          ),
+        ),
+      ),
+    )
+
+    val recordFile = factory.directoryForSession("session-1").resolve("runtime-prompt-checkpoints.json")
+    recordFile.writeText(
+      recordFile.readText().replace(
+        encodedPayloadForRecord(sanitizedToolResultPayload()),
+        encodedPayloadForRecord(legacyToolResultPayload()),
+      ),
+    )
+
+    val restored = factory.forChatSession("session-1").get("task-1")
+
+    assertNotNull(restored?.promptResumeState)
+    assertFalse(
+      restored?.promptResumeState
+        ?.transcript
+        ?.single()
+        ?.content
+        ?.contains(com.opencray.runtime.OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON)
+        ?: true,
+    )
+    assertFalse(recordFile.readText().contains(encodedPayloadForRecord(legacyToolResultPayload())))
+  }
+
+  @Test
   fun fileBackedStoreRestoresSubAgentApprovalIdentityFromCheckpoint() {
     val runtimeRoot = temporaryFolder.newFolder("runtime-prompt-checkpoints-subagent-identity")
     val store = FileBackedPromptCheckpointStoreFactory(runtimeRoot).forChatSession("session-1")
@@ -241,4 +303,16 @@ class PromptCheckpointStoreFactoryTest {
     assertEquals("child-run-1", restored?.subAgentApprovalResume?.childRunId)
     assertEquals("child-task-1", restored?.subAgentApprovalResume?.childTaskId)
   }
+
+  private fun sanitizedToolResultPayload(): String = """
+    {"run_id":"run-1","task_id":"task-1","turn":1,"tool_name":"WebSearch","status":"success","content":"done","metadata":{"sourceUrls":"https://example.com"}}
+  """.trimIndent()
+
+  private fun legacyToolResultPayload(): String = """
+    {"run_id":"run-1","task_id":"task-1","turn":1,"tool_name":"WebSearch","status":"success","content":"done","metadata":{"sourceUrls":"https://example.com","opencray_prompt_resume_json":"{\"turnIndex\":0,\"toolCallCount\":0}","opencray_prompt_checkpoint_boundary":"tool_result_committed"}}
+  """.trimIndent()
+
+  private fun encodedPayloadForRecord(payload: String): String = payload
+    .replace("\\", "\\\\")
+    .replace("\"", "\\\"")
 }

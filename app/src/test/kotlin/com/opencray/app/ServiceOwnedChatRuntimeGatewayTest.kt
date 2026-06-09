@@ -3,8 +3,10 @@ package com.opencray.app
 import com.opencray.app.facade.safety.EmptySafetySettingsFacade
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskState
+import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.orchestrator.EXECUTION_KIND_CHECKPOINT_RESUME
+import com.opencray.core.orchestrator.EXECUTION_KIND_RETRY
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
@@ -46,16 +48,16 @@ class ServiceOwnedChatRuntimeGatewayTest {
     }
 
     try {
-      assertEquals(1, readGateway.activeChatObserverCount)
-      assertEquals(1, readGateway.activeChatRuntimeObserverCount)
+      assertEquals(0, readGateway.activeChatObserverCount)
+      assertEquals(0, readGateway.activeChatRuntimeObserverCount)
       assertEquals(listOf("projection-chat"), observedChatSources)
       assertEquals(listOf("projection-runtime"), observedRuntimeSources)
 
       gateway.dispose()
       gateway.dispose()
 
-      assertEquals(1, readGateway.chatObservationDisposeCount)
-      assertEquals(1, readGateway.chatRuntimeObservationDisposeCount)
+      assertEquals(0, readGateway.chatObservationDisposeCount)
+      assertEquals(0, readGateway.chatRuntimeObservationDisposeCount)
       assertEquals(0, readGateway.activeChatObserverCount)
       assertEquals(0, readGateway.activeChatRuntimeObserverCount)
 
@@ -69,6 +71,60 @@ class ServiceOwnedChatRuntimeGatewayTest {
     } finally {
       chatDisposer()
       runtimeDisposer()
+    }
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayExposesChatSnapshotWithoutEmbeddedRuntimeActivity() {
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatPayload = mapOf(
+        "source" to "projection-chat",
+        "runtimeActivity" to mapOf(
+          "sessionId" to "session-runtime",
+          "updatedAtEpochMs" to 1_000L,
+          "activeRuns" to listOf(
+            mapOf(
+              "runId" to "run-runtime",
+              "taskId" to "task-runtime",
+              "isTerminal" to false,
+            ),
+          ),
+        ),
+      )
+      chatRuntimePayload = mapOf(
+        "source" to "projection-runtime",
+        "sessionId" to "session-runtime",
+        "updatedAtEpochMs" to 1_000L,
+        "activeRuns" to listOf(
+          mapOf(
+            "runId" to "run-runtime",
+            "taskId" to "task-runtime",
+            "isTerminal" to false,
+          ),
+        ),
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedPayloads = mutableListOf<Map<String, Any?>>()
+    val disposer = gateway.observeChat { payload ->
+      observedPayloads += payload
+    }
+
+    try {
+      val loadedPayload = gateway.loadChatSnapshot()
+      val runtimePayload = gateway.loadChatRuntimeSnapshot()
+
+      assertEquals("projection-chat", loadedPayload["source"])
+      assertNull(loadedPayload["runtimeActivity"])
+      assertTrue(observedPayloads.isNotEmpty())
+      assertNull(observedPayloads.first()["runtimeActivity"])
+      assertEquals("projection-runtime", runtimePayload["source"])
+      assertEquals("session-runtime", runtimePayload["sessionId"])
+    } finally {
+      disposer()
     }
   }
 
@@ -396,6 +452,101 @@ class ServiceOwnedChatRuntimeGatewayTest {
   }
 
   @Test
+  fun serviceOwnedChatRuntimeGatewayDecoratesSnapshotWhileOnDeviceWarmupIsRunning() {
+    val warmupAccess = RecordingOnDeviceWarmupAccess(
+      state = OnDeviceLlmWarmupState(phase = OnDeviceLlmWarmupPhase.WARMING),
+    )
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatPayload = mapOf(
+        "source" to "projection-chat",
+        "composerPlaceholder" to "Message OpenCray",
+        "isInputEnabled" to true,
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      onDeviceWarmupAccess = warmupAccess,
+      onDevicePreparingPlaceholder = "Preparing on-device model",
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+
+    val payload = gateway.loadChatSnapshot()
+
+    assertEquals(false, payload["isInputEnabled"])
+    assertEquals("Preparing on-device model", payload["composerPlaceholder"])
+    assertTrue(warmupAccess.ensureActiveSessionCallCount >= 1)
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayAdvancesChatSnapshotUpdatedAtWhenWarmupDecorationChanges() {
+    val warmupAccess = object : OnDeviceLlmWarmupAccess {
+      var state: OnDeviceLlmWarmupState = OnDeviceLlmWarmupState()
+
+      override fun ensureWarmForSession(sessionId: String): OnDeviceLlmWarmupState = state
+
+      override fun ensureWarmForActiveSession(): OnDeviceLlmWarmupState = state
+
+      override fun clear(): OnDeviceLlmWarmupState {
+        state = OnDeviceLlmWarmupState()
+        return state
+      }
+    }
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatPayload = mapOf(
+        "source" to "projection-chat",
+        "updatedAtEpochMs" to 1_000L,
+        "composerPlaceholder" to "Message OpenCray",
+        "isInputEnabled" to true,
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      onDeviceWarmupAccess = warmupAccess,
+      onDevicePreparingPlaceholder = "Preparing on-device model",
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+
+    val initialPayload = gateway.loadChatSnapshot()
+    warmupAccess.state = OnDeviceLlmWarmupState(phase = OnDeviceLlmWarmupPhase.WARMING)
+    val warmingPayload = gateway.loadChatSnapshot()
+
+    assertEquals(true, initialPayload["isInputEnabled"])
+    assertEquals(false, warmingPayload["isInputEnabled"])
+    assertEquals("Preparing on-device model", warmingPayload["composerPlaceholder"])
+    assertTrue((warmingPayload["updatedAtEpochMs"] as Number).toLong() > 1_000L)
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewaySkipsSubmitWhileOnDeviceWarmupIsRunning() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("service-owned-chat-warmup-block-store"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeHostAccess = RecordingRuntimeHostAccess()
+    val delegate = RecordingChatGateway("delegate")
+    val warmupAccess = RecordingOnDeviceWarmupAccess(
+      state = OnDeviceLlmWarmupState(phase = OnDeviceLlmWarmupPhase.WARMING),
+    )
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      delegate = delegate,
+      readGateway = RecordingChatGateway("projection"),
+      snapshotNotifier = delegate::notifyChatSnapshotsChanged,
+      onDeviceWarmupAccess = warmupAccess,
+      chatSubmissionAccess = ServiceOwnedChatSubmissionAccess(
+        chatSessionStore = chatStore,
+        runtimeHostAccess = runtimeHostAccess,
+        safetySettingsFacade = EmptySafetySettingsFacade,
+        workspaceRootProvider = null,
+      ),
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+
+    val payload = gateway.submitChatMessage("hello", emptyList())
+
+    assertNull(payload)
+    assertEquals(1, delegate.notifiedChatSnapshotCount)
+    assertTrue(runtimeHostAccess.promptSubmissionRequestsOrEmpty(sessionId).isEmpty())
+  }
+
+  @Test
   fun serviceOwnedChatRuntimeGatewayUsesDelegateRuntimeSnapshotsSoLiveDraftsArePreserved() {
     val delegate = RecordingChatGateway("delegate").apply {
       chatRuntimePayload = mapOf(
@@ -436,6 +587,536 @@ class ServiceOwnedChatRuntimeGatewayTest {
       assertEquals(1, (runtimePayload["liveAssistantDrafts"] as List<*>).size)
       assertEquals(listOf(1), observedDraftCounts)
       assertFalse(readGateway.observedChatRuntime)
+    } finally {
+      disposer()
+    }
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayAugmentsProjectionRuntimeSnapshotsWithLiveDraftsWhenDelegateMissing() {
+    val runtimeHostAccess = RecordingRuntimeHostAccess()
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatRuntimePayload = mapOf(
+        "source" to "projection-runtime",
+        "sessionId" to "session-stream",
+        "updatedAtEpochMs" to 1_000L,
+        "liveAssistantDrafts" to emptyList<Map<String, Any?>>(),
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      runtimeHostAccess = runtimeHostAccess,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedDraftCounts = mutableListOf<Int>()
+    val task = AgentTask(
+      id = "task-stream",
+      type = com.opencray.core.contracts.AgentTaskType.PROMPT,
+      input = "hello",
+      state = AgentTaskState.RUNNING,
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "test",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_000L,
+      metadata = mapOf(
+        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-stream",
+        AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to "pending-stream",
+      ),
+    )
+
+    val disposer = gateway.observeChatRuntime { payload ->
+      val drafts = payload["liveAssistantDrafts"] as? List<*>
+      observedDraftCounts += drafts?.size ?: 0
+    }
+
+    try {
+      runtimeHostAccess.emitAssistantDraftUpdated(
+        sessionId = "session-stream",
+        task = task,
+        text = "hello",
+        emittedAtEpochMs = 1_234L,
+      )
+      val runtimePayload = gateway.loadChatRuntimeSnapshot()
+      val runtimeUpdatedAtEpochMs = (runtimePayload["updatedAtEpochMs"] as Number).toLong()
+      assertEquals("projection-runtime", runtimePayload["source"])
+      assertEquals(1, (runtimePayload["liveAssistantDrafts"] as List<*>).size)
+      assertTrue(runtimeUpdatedAtEpochMs > 1_000L)
+
+      runtimeHostAccess.emitAssistantDraftCleared(
+        sessionId = "session-stream",
+        task = task,
+        emittedAtEpochMs = 1_235L,
+      )
+      val clearedPayload = gateway.loadChatRuntimeSnapshot()
+      val clearedUpdatedAtEpochMs = (clearedPayload["updatedAtEpochMs"] as Number).toLong()
+      assertEquals(0, (clearedPayload["liveAssistantDrafts"] as List<*>).size)
+      assertTrue(clearedUpdatedAtEpochMs > runtimeUpdatedAtEpochMs)
+      assertEquals(listOf(0, 1, 0), observedDraftCounts)
+    } finally {
+      disposer()
+    }
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayEmitsRuntimeSnapshotsForTaskStartImmediately() {
+    val runtimeHostAccess = RecordingRuntimeHostAccess()
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatPayload = mapOf("source" to "projection-chat-idle")
+      chatRuntimePayload = mapOf(
+        "source" to "projection-runtime-idle",
+        "sessionId" to "session-start-events",
+        "updatedAtEpochMs" to 1_000L,
+        "activeRuns" to emptyList<Map<String, Any?>>(),
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      runtimeHostAccess = runtimeHostAccess,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedRuntimeSources = mutableListOf<String>()
+    val observedChatSources = mutableListOf<String>()
+    val task = AgentTask(
+      id = "task-start-events",
+      type = com.opencray.core.contracts.AgentTaskType.PROMPT,
+      input = "hello",
+      state = AgentTaskState.RUNNING,
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "test",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_000L,
+      metadata = mapOf(
+        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-start-events",
+        AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to "pending-start-events",
+      ),
+    )
+
+    val chatDisposer = gateway.observeChat { payload ->
+      observedChatSources += payload["source"] as String
+    }
+    val runtimeDisposer = gateway.observeChatRuntime { payload ->
+      observedRuntimeSources += payload["source"] as String
+    }
+
+    try {
+      readGateway.chatPayload = mapOf("source" to "projection-chat-running")
+      readGateway.chatRuntimePayload = mapOf(
+        "source" to "projection-runtime-running",
+        "sessionId" to "session-start-events",
+        "updatedAtEpochMs" to 2_000L,
+        "activeRuns" to listOf(
+          mapOf(
+            "runId" to "run-start-events",
+            "taskId" to "task-start-events",
+            "pendingMessageId" to "pending-start-events",
+            "isTerminal" to false,
+          ),
+        ),
+      )
+      runtimeHostAccess.emitTaskStarted(
+        sessionId = "session-start-events",
+        task = task,
+      )
+
+      assertEquals(
+        listOf("projection-runtime-idle", "projection-runtime-running"),
+        observedRuntimeSources,
+      )
+      assertEquals(
+        listOf("projection-chat-idle", "projection-chat-running"),
+        observedChatSources,
+      )
+    } finally {
+      runtimeDisposer()
+      chatDisposer()
+    }
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayEmitsRuntimeSnapshotsForRunEventsImmediately() {
+    val runtimeHostAccess = RecordingRuntimeHostAccess()
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatPayload = mapOf("source" to "projection-chat-initial")
+      chatRuntimePayload = mapOf(
+        "source" to "projection-runtime-initial",
+        "sessionId" to "session-runtime-events",
+        "updatedAtEpochMs" to 1_000L,
+        "events" to emptyList<Map<String, Any?>>(),
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      runtimeHostAccess = runtimeHostAccess,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedRuntimeSources = mutableListOf<String>()
+    val observedChatSources = mutableListOf<String>()
+    val task = AgentTask(
+      id = "task-runtime-events",
+      type = com.opencray.core.contracts.AgentTaskType.PROMPT,
+      input = "hello",
+      state = AgentTaskState.RUNNING,
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "test",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_000L,
+      metadata = mapOf(
+        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-runtime-events",
+        AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to "pending-runtime-events",
+      ),
+    )
+
+    val chatDisposer = gateway.observeChat { payload ->
+      observedChatSources += payload["source"] as String
+    }
+    val runtimeDisposer = gateway.observeChatRuntime { payload ->
+      observedRuntimeSources += payload["source"] as String
+    }
+
+    try {
+      readGateway.chatPayload = mapOf("source" to "projection-chat-event")
+      readGateway.chatRuntimePayload = mapOf(
+        "source" to "projection-runtime-event",
+        "sessionId" to "session-runtime-events",
+        "updatedAtEpochMs" to 2_000L,
+        "events" to listOf(
+          mapOf(
+            "kind" to "interrupted",
+            "runId" to "run-runtime-events",
+            "taskId" to "task-runtime-events",
+            "emittedAtEpochMs" to 2_000L,
+          ),
+        ),
+      )
+      runtimeHostAccess.emitRunEvent(
+        sessionId = "session-runtime-events",
+        task = task,
+        event = OpenCrayCancellationEvent(
+          runId = "run-runtime-events",
+          taskId = "task-runtime-events",
+          outcome = "user_interrupted",
+          text = "Interrupted.",
+          emittedAtEpochMs = 2_000L,
+        ),
+      )
+
+      assertEquals(
+        listOf("projection-runtime-initial", "projection-runtime-event"),
+        observedRuntimeSources,
+      )
+      assertEquals(
+        listOf("projection-chat-initial", "projection-chat-event"),
+        observedChatSources,
+      )
+    } finally {
+      runtimeDisposer()
+      chatDisposer()
+    }
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayKeepsPollingLiveProcessPayloadWhenOwnerSummaryIsIdle() {
+    val runtimeHostAccess = RecordingRuntimeHostAccess()
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatRuntimePayload = runningProcessRuntimePayload(
+        source = "projection-runtime-process-first",
+        stdout = "step 1",
+        updatedAtEpochMs = 1_000L,
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      runtimeHostAccess = runtimeHostAccess,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedLock = Any()
+    val observedStdouts = mutableListOf<String>()
+    val disposer = gateway.observeChatRuntime { payload ->
+      firstManagedProcessStdout(payload)?.let { stdout ->
+        synchronized(observedLock) {
+          observedStdouts += stdout
+        }
+      }
+    }
+
+    try {
+      readGateway.chatRuntimePayload = runningProcessRuntimePayload(
+        source = "projection-runtime-process-second",
+        stdout = "step 1\nstep 2",
+        updatedAtEpochMs = 1_400L,
+      )
+
+      waitUntil(timeoutMs = 2_000L) {
+        synchronized(observedLock) {
+          observedStdouts.contains("step 1\nstep 2")
+        }
+      }
+      assertTrue(
+        synchronized(observedLock) {
+          observedStdouts.contains("step 1")
+        },
+      )
+    } finally {
+      disposer()
+    }
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayEmitsTerminalRuntimeSnapshotEvenWithoutDraftToClear() {
+    val runtimeHostAccess = RecordingRuntimeHostAccess()
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatPayload = mapOf("source" to "projection-chat-running")
+      chatRuntimePayload = mapOf(
+        "source" to "projection-runtime-running",
+        "sessionId" to "session-terminal-runtime",
+        "updatedAtEpochMs" to 1_000L,
+        "activeRuns" to listOf(
+          mapOf(
+            "runId" to "run-terminal-runtime",
+            "taskId" to "task-terminal-runtime",
+            "isTerminal" to false,
+          ),
+        ),
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      runtimeHostAccess = runtimeHostAccess,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedRuntimeSources = mutableListOf<String>()
+    val task = AgentTask(
+      id = "task-terminal-runtime",
+      type = com.opencray.core.contracts.AgentTaskType.PROMPT,
+      input = "hello",
+      state = AgentTaskState.RUNNING,
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "test",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_000L,
+      metadata = mapOf(
+        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-terminal-runtime",
+      ),
+    )
+
+    val disposer = gateway.observeChatRuntime { payload ->
+      observedRuntimeSources += payload["source"] as String
+    }
+
+    try {
+      readGateway.chatPayload = mapOf("source" to "projection-chat-terminal")
+      readGateway.chatRuntimePayload = mapOf(
+        "source" to "projection-runtime-terminal",
+        "sessionId" to "session-terminal-runtime",
+        "updatedAtEpochMs" to 2_000L,
+        "activeRuns" to emptyList<Map<String, Any?>>(),
+        "retainedRuns" to listOf(
+          mapOf(
+            "runId" to "run-terminal-runtime",
+            "taskId" to "task-terminal-runtime",
+            "isTerminal" to true,
+          ),
+        ),
+      )
+      runtimeHostAccess.emitTaskFinished(
+        sessionId = "session-terminal-runtime",
+        task = task,
+        result = ExecutionResult(
+          taskId = "task-terminal-runtime",
+          status = ExecutionStatus.SUCCESS,
+          stdout = "done",
+          startedAtEpochMs = 1_000L,
+          finishedAtEpochMs = 2_000L,
+        ),
+      )
+
+      assertEquals(
+        listOf("projection-runtime-running", "projection-runtime-terminal"),
+        observedRuntimeSources,
+      )
+    } finally {
+      disposer()
+    }
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayEmitsLiveAssistantDraftEvents() {
+    val runtimeHostAccess = RecordingRuntimeHostAccess()
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatRuntimePayload = mapOf(
+        "source" to "projection-runtime",
+        "sessionId" to "session-stream",
+        "liveAssistantDrafts" to emptyList<Map<String, Any?>>(),
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      runtimeHostAccess = runtimeHostAccess,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedEvents = mutableListOf<Map<String, Any?>>()
+    val task = AgentTask(
+      id = "task-stream",
+      type = com.opencray.core.contracts.AgentTaskType.PROMPT,
+      input = "hello",
+      state = AgentTaskState.RUNNING,
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "test",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_000L,
+      metadata = mapOf(
+        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-stream",
+        AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to "pending-stream",
+      ),
+    )
+    val disposer = gateway.observeLiveAssistantDraftEvents { payload ->
+      observedEvents += payload
+    }
+
+    try {
+      runtimeHostAccess.emitAssistantDraftUpdated(
+        sessionId = "session-stream",
+        task = task,
+        text = "hello",
+        emittedAtEpochMs = 1_234L,
+      )
+      runtimeHostAccess.emitAssistantDraftCleared(
+        sessionId = "session-stream",
+        task = task,
+        emittedAtEpochMs = 1_235L,
+      )
+
+      assertEquals(2, observedEvents.size)
+      assertEquals("session-stream", observedEvents[0]["sessionId"])
+      assertEquals("hello", observedEvents[0]["text"])
+      assertEquals(false, observedEvents[0]["cleared"])
+      assertEquals(true, observedEvents[1]["cleared"])
+    } finally {
+      disposer()
+    }
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayEmitsRuntimeDeltasForLiveAssistantDraftChanges() {
+    val runtimeHostAccess = RecordingRuntimeHostAccess()
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatRuntimePayload = mapOf(
+        "source" to "projection-runtime",
+        "sessionId" to "session-stream",
+        "updatedAtEpochMs" to 1_000L,
+        "activeRuns" to listOf(
+          mapOf(
+            "runId" to "run-stream",
+            "taskId" to "task-stream",
+            "pendingMessageId" to "pending-stream",
+            "updatedAtEpochMs" to 1_000L,
+            "isTerminal" to false,
+          ),
+        ),
+        "events" to emptyList<Map<String, Any?>>(),
+        "liveAssistantDrafts" to emptyList<Map<String, Any?>>(),
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      runtimeHostAccess = runtimeHostAccess,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedDeltas = mutableListOf<Map<String, Any?>>()
+    val task = AgentTask(
+      id = "task-stream",
+      type = com.opencray.core.contracts.AgentTaskType.PROMPT,
+      input = "hello",
+      state = AgentTaskState.RUNNING,
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "test",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_000L,
+      metadata = mapOf(
+        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-stream",
+        AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to "pending-stream",
+      ),
+    )
+    val disposer = gateway.observeRuntimeEventDeltas { payload ->
+      observedDeltas += payload
+    }
+
+    try {
+      runtimeHostAccess.emitAssistantDraftUpdated(
+        sessionId = "session-stream",
+        task = task,
+        text = "hello",
+        emittedAtEpochMs = 1_234L,
+      )
+      runtimeHostAccess.emitAssistantDraftCleared(
+        sessionId = "session-stream",
+        task = task,
+        emittedAtEpochMs = 1_235L,
+      )
+
+      assertEquals(2, observedDeltas.size)
+      assertEquals(1L, observedDeltas[0]["sequence"])
+      assertEquals(2L, observedDeltas[1]["sequence"])
+      val updatedDrafts = observedDeltas[0]["liveAssistantDrafts"] as List<*>
+      val updatedDraft = updatedDrafts.single() as Map<*, *>
+      assertEquals("pending-stream", updatedDraft["pendingMessageId"])
+      assertEquals("hello", updatedDraft["text"])
+      assertTrue((observedDeltas[1]["liveAssistantDrafts"] as List<*>).isEmpty())
+      assertTrue((observedDeltas[0]["events"] as List<*>).isEmpty())
+      assertTrue((observedDeltas[1]["events"] as List<*>).isEmpty())
+    } finally {
+      disposer()
+    }
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayEmitsRuntimeDeltaWhenEventContentChanges() {
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatRuntimePayload = runtimeEventContentPayload(
+        source = "projection-runtime-first",
+        contentPreview = "Searching...",
+        status = "running",
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedDeltas = mutableListOf<Map<String, Any?>>()
+    val disposer = gateway.observeRuntimeEventDeltas { payload ->
+      observedDeltas += payload
+    }
+
+    try {
+      readGateway.chatRuntimePayload = runtimeEventContentPayload(
+        source = "projection-runtime-second",
+        contentPreview = "Found 3 results.",
+        status = "completed",
+      )
+
+      gateway.notifyChatSnapshotsChanged()
+
+      assertEquals(1, observedDeltas.size)
+      assertEquals("replace", observedDeltas.single()["runPatchMode"])
+      val events = observedDeltas.single()["events"] as List<*>
+      val event = events.single() as Map<*, *>
+      assertEquals("Found 3 results.", event["contentPreview"])
+      assertEquals(
+        mapOf("status" to "completed"),
+        event["resultMetadata"],
+      )
     } finally {
       disposer()
     }
@@ -578,6 +1259,74 @@ class ServiceOwnedChatRuntimeGatewayTest {
       runtimeHostAccess.resumeRequests(deferredResumeSessionId),
     )
     assertEquals(listOf(retryRun.taskId), runtimeHostAccess.retriedTaskIds(retrySessionId))
+  }
+
+  @Test
+  fun serviceOwnedChatRuntimeGatewayTreatsAlreadyStartedRetryAsSuccess() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("service-owned-chat-retry-idempotent-store"),
+    )
+    val queuedRetrySessionId = chatStore.loadState().activeSession.sessionId
+    val runningRetrySessionId = chatStore.copySession(
+      queuedRetrySessionId,
+    ).activeSession.sessionId
+    val queuedRetryRun = AgentRunSnapshot(
+      sessionId = queuedRetrySessionId,
+      runId = "run-queued-retry",
+      taskId = "task-queued-retry",
+      acceptedAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+      lifecycleState = QueueTaskLifecycleState.QUEUED,
+      taskState = AgentTaskState.QUEUED,
+      pendingExecutionKind = EXECUTION_KIND_RETRY,
+    )
+    val runningRetryRun = AgentRunSnapshot(
+      sessionId = runningRetrySessionId,
+      runId = "run-running-retry",
+      taskId = "task-running-retry",
+      acceptedAtEpochMs = 2_000L,
+      updatedAtEpochMs = 2_100L,
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+      taskState = AgentTaskState.RUNNING,
+      executionKind = EXECUTION_KIND_RETRY,
+    )
+    val runtimeHostAccess = RecordingRuntimeHostAccess().apply {
+      putSession(
+        RecordingRuntimeSessionAccess(
+          sessionId = queuedRetrySessionId,
+          resumeHistory = resumeHistory,
+          runs = listOf(queuedRetryRun),
+          retryResult = false,
+        ),
+      )
+      putSession(
+        RecordingRuntimeSessionAccess(
+          sessionId = runningRetrySessionId,
+          resumeHistory = resumeHistory,
+          runs = listOf(runningRetryRun),
+          retryResult = false,
+        ),
+      )
+    }
+    val delegate = RecordingChatGateway("delegate")
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      delegate = delegate,
+      readGateway = RecordingChatGateway("projection"),
+      snapshotNotifier = delegate::notifyChatSnapshotsChanged,
+      chatRunControlAccess = ServiceOwnedChatRunControlAccess(
+        chatSessionStore = chatStore,
+        runtimeHostAccess = runtimeHostAccess,
+      ),
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+
+    gateway.retryChatRun(queuedRetryRun.runId)
+    gateway.retryChatRun(runningRetryRun.runId)
+
+    assertTrue(delegate.retriedRunIds.isEmpty())
+    assertEquals(2, delegate.notifiedChatSnapshotCount)
+    assertTrue(runtimeHostAccess.retriedTaskIds(queuedRetrySessionId).isEmpty())
+    assertTrue(runtimeHostAccess.retriedTaskIds(runningRetrySessionId).isEmpty())
   }
 
   @Test
@@ -846,6 +1595,80 @@ class ServiceOwnedChatRuntimeGatewayTest {
     val metadata: Map<String, String>,
   )
 
+  private fun runningProcessRuntimePayload(
+    source: String,
+    stdout: String,
+    updatedAtEpochMs: Long,
+  ): Map<String, Any?> = mapOf(
+    "source" to source,
+    "sessionId" to "session-live-process-refresh",
+    "updatedAtEpochMs" to updatedAtEpochMs,
+    "activeRuns" to listOf(
+      mapOf(
+        "runId" to "run-live-process-refresh",
+        "taskId" to "task-live-process-refresh",
+        "pendingMessageId" to "pending-live-process-refresh",
+        "updatedAtEpochMs" to updatedAtEpochMs,
+        "isTerminal" to false,
+        "runningManagedProcessCount" to 1,
+        "hasLiveManagedProcesses" to true,
+        "managedProcesses" to listOf(
+          mapOf(
+            "processId" to "process-live-refresh",
+            "status" to "running",
+            "stdout" to stdout,
+            "updatedAtEpochMs" to updatedAtEpochMs,
+          ),
+        ),
+      ),
+    ),
+    "retainedRuns" to emptyList<Map<String, Any?>>(),
+    "events" to emptyList<Map<String, Any?>>(),
+    "liveAssistantDrafts" to emptyList<Map<String, Any?>>(),
+  )
+
+  private fun runtimeEventContentPayload(
+    source: String,
+    contentPreview: String,
+    status: String,
+  ): Map<String, Any?> = mapOf(
+    "source" to source,
+    "sessionId" to "session-runtime-event-content",
+    "updatedAtEpochMs" to 1_000L,
+    "events" to listOf(
+      mapOf(
+        "kind" to "tool_result",
+        "runId" to "run-runtime-event-content",
+        "taskId" to "task-runtime-event-content",
+        "toolName" to "WebSearch",
+        "emittedAtEpochMs" to 1_000L,
+        "contentPreview" to contentPreview,
+        "resultMetadata" to mapOf("status" to status),
+      ),
+    ),
+  )
+
+  private fun firstManagedProcessStdout(payload: Map<String, Any?>): String? {
+    val run = (payload["activeRuns"] as? List<*>)
+      ?.firstOrNull() as? Map<*, *>
+      ?: return null
+    val process = (run["managedProcesses"] as? List<*>)
+      ?.firstOrNull() as? Map<*, *>
+      ?: return null
+    return process["stdout"] as? String
+  }
+
+  private fun waitUntil(timeoutMs: Long, predicate: () -> Boolean) {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      if (predicate()) {
+        return
+      }
+      Thread.sleep(10L)
+    }
+    assertTrue("Condition not satisfied within ${timeoutMs}ms.", predicate())
+  }
+
   private class RecordingChatGateway(
     private val label: String,
   ) : OpenCrayRuntimeServiceChatGateway {
@@ -896,6 +1719,9 @@ class ServiceOwnedChatRuntimeGatewayTest {
         }
       }
     }
+
+    override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit =
+      { }
 
     override fun loadChatRuntimeSnapshot(): Map<String, Any?> = chatRuntimePayload
 
@@ -1018,11 +1844,33 @@ class ServiceOwnedChatRuntimeGatewayTest {
     }
   }
 
+  private class RecordingOnDeviceWarmupAccess(
+    private val state: OnDeviceLlmWarmupState,
+  ) : OnDeviceLlmWarmupAccess {
+    var ensureActiveSessionCallCount: Int = 0
+      private set
+
+    val ensuredSessionIds = mutableListOf<String>()
+
+    override fun ensureWarmForSession(sessionId: String): OnDeviceLlmWarmupState {
+      ensuredSessionIds += sessionId
+      return state
+    }
+
+    override fun ensureWarmForActiveSession(): OnDeviceLlmWarmupState {
+      ensureActiveSessionCallCount += 1
+      return state
+    }
+
+    override fun clear(): OnDeviceLlmWarmupState = OnDeviceLlmWarmupState()
+  }
+
   private class RecordingRuntimeHostAccess : OpenCrayRuntimeHostAccess {
     private val sessions = linkedMapOf<String, RecordingRuntimeSessionAccess>()
     private val runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory()
     private val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
     private val supplementStores = linkedMapOf<String, SessionSupplementStore>()
+    private val listeners = linkedSetOf<AgentSessionRuntimeListener>()
 
     val resumeHistory = mutableListOf<String>()
     val clearedApprovals = mutableListOf<Pair<String, String>>()
@@ -1030,7 +1878,12 @@ class ServiceOwnedChatRuntimeGatewayTest {
     override val lifecycleDescriptor: HostRuntimeLifecycleDescriptor =
       HostRuntimeLifecycleDescriptor()
 
-    override fun observe(listener: AgentSessionRuntimeListener): () -> Unit = { }
+    override fun observe(listener: AgentSessionRuntimeListener): () -> Unit {
+      listeners += listener
+      return {
+        listeners -= listener
+      }
+    }
 
     override fun activeWorkSummary(): RuntimeOwnerWorkSummary = RuntimeOwnerWorkSummary(
       trackedSessionCount = sessions.size,
@@ -1117,6 +1970,76 @@ class ServiceOwnedChatRuntimeGatewayTest {
     fun ensureProcessingCallCount(sessionId: String): Int =
       requireNotNull(sessions[sessionId]) { "Missing recording session '$sessionId'." }
         .ensureProcessingCallCount
+
+    fun emitAssistantDraftUpdated(
+      sessionId: String,
+      task: AgentTask,
+      text: String,
+      emittedAtEpochMs: Long,
+    ) {
+      listeners.toList().forEach { listener ->
+        listener.onAssistantDraftUpdated(
+          sessionId = sessionId,
+          task = task,
+          text = text,
+          emittedAtEpochMs = emittedAtEpochMs,
+        )
+      }
+    }
+
+    fun emitAssistantDraftCleared(
+      sessionId: String,
+      task: AgentTask,
+      emittedAtEpochMs: Long,
+    ) {
+      listeners.toList().forEach { listener ->
+        listener.onAssistantDraftCleared(
+          sessionId = sessionId,
+          task = task,
+          emittedAtEpochMs = emittedAtEpochMs,
+        )
+      }
+    }
+
+    fun emitTaskStarted(
+      sessionId: String,
+      task: AgentTask,
+    ) {
+      listeners.toList().forEach { listener ->
+        listener.onTaskStarted(
+          sessionId = sessionId,
+          task = task,
+        )
+      }
+    }
+
+    fun emitRunEvent(
+      sessionId: String,
+      task: AgentTask,
+      event: com.opencray.runtime.OpenCrayAgentRunEvent,
+    ) {
+      listeners.toList().forEach { listener ->
+        listener.onRunEvent(
+          sessionId = sessionId,
+          task = task,
+          event = event,
+        )
+      }
+    }
+
+    fun emitTaskFinished(
+      sessionId: String,
+      task: AgentTask,
+      result: ExecutionResult,
+    ) {
+      listeners.toList().forEach { listener ->
+        listener.onTaskFinished(
+          sessionId = sessionId,
+          task = task,
+          result = result,
+        )
+      }
+    }
   }
 
   private class RecordingRuntimeSessionAccess(

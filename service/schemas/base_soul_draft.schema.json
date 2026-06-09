@@ -175,6 +175,152 @@
       "type": "string",
       "minLength": 1
     },
+    "worldview_stack": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schwartz_value_order": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "moral_foundation_sensitivities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "trigger",
+              "sensitivity",
+              "observations"
+            ],
+            "properties": {
+              "trigger": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sensitivity": {
+                "type": "string",
+                "minLength": 1
+              },
+              "observations": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "examples": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "social_value_orientation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fairness_vs_loyalty_bias": {
+          "type": "string",
+          "minLength": 1
+        },
+        "autonomy_vs_harmony_bias": {
+          "type": "string",
+          "minLength": 1
+        },
+        "truth_vs_face_saving_bias": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "idiolect": {
+      "type": "object",
+      "properties": {
+        "turn_openers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/markerCluster"
+          }
+        },
+        "turn_closers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/markerCluster"
+          }
+        },
+        "hedge_markers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/markerCluster"
+          }
+        },
+        "repair_markers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/markerCluster"
+          }
+        },
+        "refusal_markers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/markerCluster"
+          }
+        },
+        "affection_markers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/markerCluster"
+          }
+        },
+        "function_word_tendencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/markerCluster"
+          }
+        },
+        "marker_clusters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/markerCluster"
+          }
+        },
+        "emoji_clusters": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/emojiCluster"
+          }
+        },
+        "punctuation_rhythm": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "dominant_style": {
+              "type": "string",
+              "minLength": 1
+            },
+            "ellipsis_frequency": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "question_frequency": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "signature_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "conditional_policies": {
       "type": "array",
       "items": {
@@ -449,6 +595,69 @@
             "type": "integer",
             "minimum": 1
           }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "markerCluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "marker",
+        "kind",
+        "count",
+        "confidence"
+      ],
+      "properties": {
+        "marker": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "example_excerpt": {
+          "type": "string"
+        }
+      }
+    },
+    "emojiCluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "marker",
+        "kind",
+        "count",
+        "confidence"
+      ],
+      "properties": {
+        "marker": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
         }
       }
     }

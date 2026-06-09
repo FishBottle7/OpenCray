@@ -54,6 +54,9 @@ internal fun localizedHostRuntimeStrings(context: Context): HostRuntimeStrings =
   agentFailed = { detail ->
     context.getString(R.string.chat_agent_failed, detail)
   },
+  agentAttachmentSaveFailed = { detail ->
+    context.getString(R.string.chat_agent_attachment_save_failed, detail)
+  },
   chatApprovalApproveLabel = context.getStringByNameOrFallback(
     resourceName = "chat_approval_approve_label",
     fallback = "Approve",

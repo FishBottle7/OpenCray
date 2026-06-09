@@ -1,8 +1,8 @@
 import json
 import pathlib
-import subprocess
-import sys
 from typing import TypedDict, cast
+
+from python_tests.subprocess_helpers import run_repo_module
 
 
 FAKE_PACKAGE = "opencray-invalid-package-7f4f8d2f6a4b-never-published"
@@ -29,8 +29,9 @@ class RunnerResult(TypedDict):
 
 
 def _run_runner(*args: str) -> RunnerResult:
-    completed = subprocess.run(
-        [sys.executable, "-m", "python_runner.runner", *args],
+    completed = run_repo_module(
+        "python_runner.runner",
+        *args,
         capture_output=True,
         text=True,
         check=False,

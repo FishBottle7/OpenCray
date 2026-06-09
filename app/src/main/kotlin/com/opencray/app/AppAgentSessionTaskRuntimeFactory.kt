@@ -1,35 +1,58 @@
 package com.opencray.app
 
+import android.util.Log
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.core.orchestrator.SessionTaskRuntime
+import com.opencray.llm.LiteLlmAssistantPhase
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
+import com.opencray.llm.LiteLlmBuiltinToolDefinition
+import com.opencray.llm.LiteLlmCompactRequest
+import com.opencray.llm.LiteLlmCompactResult
 import com.opencray.llm.LiteLlmGateway
+import com.opencray.llm.LiteLlmGatewayAttachment
+import com.opencray.llm.LiteLlmGatewayAttachmentKind
+import com.opencray.llm.LiteLlmGatewayMessage
+import com.opencray.llm.LiteLlmGatewayMessageRole
 import com.opencray.llm.LiteLlmGatewayRequest
+import com.opencray.llm.LiteLlmGatewayToolResult
+import com.opencray.llm.LiteLlmMetadataKeys
+import com.opencray.llm.LiteLlmProviderClient
 import com.opencray.llm.ModelProfile
 import com.opencray.llm.ProviderRoute
 import com.opencray.llm.ProviderRouting
+import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.mcp.McpClientExposureReport
 import com.opencray.persistence.model.MemoryRecord
+import com.opencray.runtime.AgentToolParameter
+import com.opencray.runtime.AgentToolDefinition
 import com.opencray.runtime.AgentTodoStore
 import com.opencray.runtime.AgentTodoStatus
 import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.CommandExecutor
+import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.HostProcessPythonRuntime
 import com.opencray.runtime.InMemoryAgentTodoStore
 import com.opencray.runtime.ManagedProcessObservationTracker
 import com.opencray.runtime.OpenCrayAgentRuntime
 import com.opencray.runtime.OpenCrayAgentRuntimeConfig
 import com.opencray.runtime.OpenCrayAgentRunEvent
+import com.opencray.runtime.OpenCrayAttachmentArtifact
+import com.opencray.runtime.OpenCrayAttachmentArtifacts
 import com.opencray.runtime.OpenCrayChatAttachmentSource
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.OpenCrayAssistantPhaseEvent
 import com.opencray.runtime.OpenCrayAssistantEvent
+import com.opencray.runtime.OpenCrayExecutionMetadataKeys
+import com.opencray.runtime.OpenCrayFinalAttachment
+import com.opencray.runtime.OpenCrayMidTurnMaintenanceRequest
+import com.opencray.runtime.OpenCrayMidTurnMaintenanceResult
 import com.opencray.runtime.OpenCrayImageGenerationClient
+import com.opencray.runtime.OpenCrayMediaArtifactRegistry
 import com.opencray.runtime.OpenCrayMediaToolSettings
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptCheckpointEmission
@@ -39,6 +62,7 @@ import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySpeechSynthesisClient
 import com.opencray.runtime.OpenCraySpeechSynthesisSettings
 import com.opencray.runtime.OpenCrayImageGenerationSettings
+import com.opencray.runtime.OpenCrayVideoGenerationSettings
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCraySupplementInput
 import com.opencray.runtime.OpenCrayToolDispatcher
@@ -49,14 +73,30 @@ import com.opencray.runtime.PythonRuntimeManifestSnapshot
 import com.opencray.runtime.SandboxPreviewService
 import com.opencray.runtime.SandboxSessionControlService
 import com.opencray.runtime.SandboxSessionInfoService
+import com.opencray.runtime.ScheduledTaskManager
+import com.opencray.runtime.defaultOpenCrayMediaArtifactRegistry
 import com.opencray.runtime.bootstrap.BootstrapContextResolver
 import com.opencray.runtime.bootstrap.BootstrapMode
 import com.opencray.runtime.PythonScriptRuntime
 import com.opencray.runtime.compaction.DurableCompactionCoordinator
 import com.opencray.runtime.compaction.InMemorySessionCompactionStore
+import com.opencray.runtime.compaction.NoOpRemoteCompactionProvider
+import com.opencray.runtime.compaction.RemoteCompactionProvider
+import com.opencray.runtime.compaction.RemoteCompactionRequest
+import com.opencray.runtime.compaction.RemoteCompactionResult
 import com.opencray.runtime.compaction.SessionCompactionStore
+import com.opencray.runtime.context.CompactionSummary
 import com.opencray.runtime.context.AgentRuntimeSessionContext
+import com.opencray.runtime.context.ContextManager
+import com.opencray.runtime.context.ContextSourceBudgetPolicy
+import com.opencray.runtime.context.ContextSourceBudgetProfile
+import com.opencray.runtime.context.GlobalContextBudgetCoordinator
 import com.opencray.runtime.context.LiveContextTrace
+import com.opencray.runtime.context.PromptAssemblyInput
+import com.opencray.runtime.context.PromptAssembler
+import com.opencray.runtime.context.RecentToolObservationSupport
+import com.opencray.runtime.context.RuntimeConversationAttachment
+import com.opencray.runtime.context.RuntimeConversationAttachmentKind
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationAssistantPhase
 import com.opencray.runtime.context.RuntimeConversationMessageKind
@@ -64,6 +104,8 @@ import com.opencray.runtime.context.RuntimeConversationCommentary
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.RuntimeConversationToolCall
 import com.opencray.runtime.context.RuntimeConversationToolResult
+import com.opencray.runtime.context.TranscriptWindowBuilder
+import com.opencray.runtime.memory.MemoryFlushTrace
 import com.opencray.runtime.memory.MemoryRecallRequest
 import com.opencray.runtime.memory.MemoryRecallResult
 import com.opencray.runtime.memory.MemoryRetriever
@@ -74,7 +116,9 @@ import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.session.InMemorySessionTranscriptStore
 import com.opencray.runtime.session.SessionTranscriptStore
 import com.opencray.runtime.skills.SkillCatalogResolver
+import com.opencray.runtime.skills.ActiveSkillPromptLayer
 import com.opencray.runtime.skills.SkillInstallManifestStore
+import com.opencray.runtime.skills.SkillInventoryPromptLayer
 import com.opencray.runtime.skills.SkillInventoryResolver
 import com.opencray.runtime.skills.SkillPackageManager
 import com.opencray.runtime.subagent.SubAgentExecutionCoordinator
@@ -92,15 +136,27 @@ import com.opencray.runtime.workingstate.InMemoryWorkingStateStore
 import com.opencray.runtime.workingstate.WorkingState
 import com.opencray.runtime.workingstate.WorkingStateStore
 import java.io.File
+import java.net.URI
 import java.nio.file.Path
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentMap
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+
+private const val SESSION_CONTEXT_DEBUG_TAG: String = "OpenCrayDiag"
+
+private fun sessionContextDebug(message: String) {
+  runCatching { Log.d(SESSION_CONTEXT_DEBUG_TAG, message) }
+}
 
 internal class AppAgentSessionTaskRuntimeFactory(
   private val llmSettingsProvider: () -> LlmSettingsState,
@@ -131,6 +187,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
   private val soulTurnSemanticSignalInterpreter: SoulTurnSemanticSignalInterpreter =
     NoOpSoulTurnSemanticSignalInterpreter,
+  private val providerClient: LiteLlmProviderClient = defaultProviderClient(providerUserAgent),
+  private val onDeviceThinkingTextProvider: () -> String = { "Thinking…" },
+  private val onDeviceModelReadyProvider: (String) -> Boolean = { true },
+  private val enableLiteRtDevAutomaticToolExecution: Boolean = false,
   private val commandExecutorProvider: () -> CommandExecutor? = { null },
   private val pythonRuntimeProvider: () -> PythonScriptRuntime = { HostProcessPythonRuntime() },
   private val pythonRuntimeManifestProvider: (() -> PythonRuntimeManifestSnapshot?)? = null,
@@ -139,9 +199,13 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val sandboxSessionControlServiceProvider: () -> SandboxSessionControlService? = { null },
   private val sandboxSessionInfoServiceProvider: () -> SandboxSessionInfoService? = { null },
   private val skillPackageManagerProvider: () -> SkillPackageManager? = { null },
+  private val scheduledTaskManagerProvider: () -> ScheduledTaskManager? = { null },
   private val mediaToolSettingsProvider: () -> OpenCrayMediaToolSettings? = { null },
   private val imageGenerationClientProvider: () -> OpenCrayImageGenerationClient? = { null },
   private val speechSynthesisClientProvider: () -> OpenCraySpeechSynthesisClient? = { null },
+  private val mediaArtifactRegistryProvider: () -> OpenCrayMediaArtifactRegistry = {
+    defaultOpenCrayMediaArtifactRegistry(workspaceRootsProvider().first())
+  },
   private val nativeWebSearchSessionApprovalProvider: (String) -> Boolean = { false },
   private val hiddenToolNamePrefixesProvider: () -> Set<String> = { emptySet() },
   private val subAgentExecutionCoordinatorProvider: ((String) -> SubAgentExecutionCoordinator)? = null,
@@ -159,10 +223,11 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val subAgentHandleStoresBySession: ConcurrentMap<String, SubAgentHandleStore> = ConcurrentHashMap()
   private val subAgentExecutionCoordinatorsBySession: ConcurrentMap<String, SubAgentExecutionCoordinator> =
     ConcurrentHashMap()
-  private val memoryRetriever: MemoryRetriever = MemoryRetriever()
+  private val contextSourceBudgetPolicy: ContextSourceBudgetPolicy = ContextSourceBudgetPolicy()
   private val memoryBackedSoulResolver: MemoryBackedSoulProfileResolver = MemoryBackedSoulProfileResolver()
-  private val bootstrapContextResolver: BootstrapContextResolver = BootstrapContextResolver()
-  private val durableCompactionCoordinator: DurableCompactionCoordinator = DurableCompactionCoordinator()
+  private val durableCompactionCoordinator: DurableCompactionCoordinator = DurableCompactionCoordinator(
+    sourceBudgetPolicy = contextSourceBudgetPolicy,
+  )
   private val skillCatalogResolver: SkillCatalogResolver = SkillCatalogResolver()
   private val skillInventoryResolver: SkillInventoryResolver = SkillInventoryResolver()
   private val replayJson: Json = Json { prettyPrint = false }
@@ -181,6 +246,11 @@ internal class AppAgentSessionTaskRuntimeFactory(
 
   override fun listManagedProcesses(sessionId: String): List<ManagedProcessSnapshot> =
     processRegistryForSession(sessionId).list()
+
+  override fun readManagedProcess(
+    sessionId: String,
+    processId: String,
+  ): ManagedProcessSnapshot? = processRegistryForSession(sessionId).read(processId)
 
   override fun terminateManagedProcess(
     sessionId: String,
@@ -288,7 +358,13 @@ internal class AppAgentSessionTaskRuntimeFactory(
         approvedSubAgentResume = approvedSubAgentResume,
         rejectedSubAgentResume = rejectedSubAgentResume,
       )
-    if (requiresLlmConfig && !llmSettings.isConfigured()) {
+    val hasOperationalLlmConfig = when {
+      !llmSettings.isConfigured() -> false
+      llmSettings.isOnDeviceProviderMode() ->
+        onDeviceModelReadyProvider(llmSettings.selectedOnDeviceModelId)
+      else -> true
+    }
+    if (requiresLlmConfig && !hasOperationalLlmConfig) {
       return ExecutionResult(
         taskId = task.id,
         status = ExecutionStatus.FAILED,
@@ -299,20 +375,30 @@ internal class AppAgentSessionTaskRuntimeFactory(
         metadata = task.metadata,
       )
     }
-
-    val routeProviderId = llmSettings.providerId.ifBlank { "openai-compatible" }
+    val routeProviderId = llmSettings.providerId.ifBlank {
+      if (llmSettings.isOnDeviceProviderMode()) {
+        "on-device"
+      } else {
+        "openai-compatible"
+      }
+    }
     val routeMetadata = if (requiresLlmConfig) {
-      effectiveLlmRouteMetadata(settings = llmSettings)
+      effectiveRuntimeRouteMetadata(settings = llmSettings)
     } else {
       emptyMap()
     }
     val gateway: LiteLlmGateway = if (requiresLlmConfig) {
+      val routeModel = if (llmSettings.isOnDeviceProviderMode()) {
+        llmSettings.selectedOnDeviceModelId
+      } else {
+        llmSettings.model
+      }
       val route = ProviderRoute(
         id = "route-$routeProviderId",
         providerId = routeProviderId,
-        baseUrl = llmSettings.baseUrl,
-        model = llmSettings.model,
-        timeoutMs = recommendedInteractiveProviderRouteTimeoutMs(llmSettings.model),
+        baseUrl = llmSettings.baseUrl.takeUnless { llmSettings.isOnDeviceProviderMode() },
+        model = routeModel,
+        timeoutMs = recommendedInteractiveProviderRouteTimeoutMs(routeModel),
         metadata = routeMetadata,
       )
       DefaultLiteLlmGateway(
@@ -329,9 +415,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
             ),
           ),
         ),
-        providerClient = OpenAiCompatibleLiteLlmProviderClient(
-          userAgent = providerUserAgent,
-        ),
+        providerClient = providerClient,
       )
     } else {
       NonPromptTaskLiteLlmGateway
@@ -373,6 +457,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
         manager.compatStagingRootPath()?.let(::add)
       }
     }.orEmpty()
+    val scheduledTaskManager = scheduledTaskManagerProvider()
+    val scheduledTaskPolicyRoots = scheduledTaskManager?.let { manager ->
+      setOf(manager.policyTargetPath())
+    }.orEmpty()
     val workspaceId = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider())
     val llmMetadata = buildRuntimeLlmMetadata(
       requiresLlmConfig = requiresLlmConfig,
@@ -383,6 +471,23 @@ internal class AppAgentSessionTaskRuntimeFactory(
       llmSettings = llmSettings,
       routeMetadata = routeMetadata,
     )
+    val llmAuthHeaders = if (requiresLlmConfig) {
+      LlmProviderProtocols.authHeaders(
+        protocol = llmSettings.protocol,
+        apiKey = llmSettings.apiKey,
+      )
+    } else {
+      emptyMap()
+    }
+    val sourceBudgetProfile = contextSourceBudgetPolicy.resolve(llmMetadata)
+    val effectiveLiveContextMode = effectiveLiveContextMode(
+      configuredMode = liveContextModeProvider(),
+      llmSettings = llmSettings,
+    )
+    val effectiveMemoryToolsEnabled = effectiveMemoryToolsEnabled(
+      configuredValue = safetySettings.memoryToolsEnabled,
+      llmSettings = llmSettings,
+    )
     val preparedContext = prepareSessionContext(
       sessionId = sessionId,
       workspaceId = workspaceId,
@@ -392,75 +497,85 @@ internal class AppAgentSessionTaskRuntimeFactory(
       taskType = task.type,
       taskId = task.id,
       taskInput = task.input,
+      taskMetadata = task.metadata,
       transcriptStore = transcriptStore,
       memoryRecords = memoryRecords,
       appendTaskInputToTranscript = task.type == com.opencray.core.contracts.AgentTaskType.PROMPT &&
         promptResumeState == null,
       llmMetadata = llmMetadata,
-      liveContextMode = liveContextModeProvider(),
-      memoryToolsEnabled = safetySettings.memoryToolsEnabled,
+      sourceBudgetProfile = sourceBudgetProfile,
+      liveContextMode = effectiveLiveContextMode,
+      memoryToolsEnabled = effectiveMemoryToolsEnabled,
+      remoteCompactionProvider = remoteCompactionProviderFor(
+        gateway = gateway,
+        llmMetadata = llmMetadata,
+        authHeaders = llmAuthHeaders,
+      ),
     )
     val sessionContext = preparedContext.sessionContext
     val effectiveMemoryRecords = preparedContext.effectiveMemoryRecords
+    val toolDispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = workspaceRootsProvider(),
+        readRoots = readRootsProvider(),
+        hiddenToolNamePrefixes = hiddenToolNamePrefixesProvider(),
+        extraPolicyReadRoots = skillPolicyReadRoots + scheduledTaskPolicyRoots,
+        extraPolicyWriteRoots = skillPolicyWriteRoots + scheduledTaskPolicyRoots,
+        skillsRoots = skillsRootsProvider(),
+        skillPackageManager = skillPackageManager,
+        scheduledTaskManager = scheduledTaskManager,
+        mcpExposureReport = mcpReportProvider(),
+        // Host UI tool actions are already user-initiated, so nested policy gates should not
+        // bounce them back into chat approval just because the internal gate uses Read/WebFetch.
+        approvedTaskId = task.id.takeIf {
+          approvalGrant != null || hostUiTaskPreapproved
+        },
+        approvedToolName = approvalGrant?.toolName,
+        rejectedTaskId = task.id.takeIf { approvalRejection != null },
+        rejectedToolName = approvalRejection?.toolName,
+        commandExecutor = commandExecutorProvider(),
+        pythonRuntimeAdapter = pythonRuntimeProvider(),
+        pythonRuntimeManifestProvider = pythonRuntimeManifestProvider,
+        supportsManagedPythonProcessStart = true,
+        managedPythonProcessUsesRuntimeAdapter = true,
+        todoStore = todoStoreForSession(sessionId),
+        processRegistry = processRegistryForSession(sessionId),
+        webSearchProvider = webSearchProviderFactory(),
+        sandboxPreviewService = sandboxPreviewServiceProvider(),
+        sandboxSessionControlService = sandboxSessionControlServiceProvider(),
+        sandboxSessionInfoService = sandboxSessionInfoServiceProvider(),
+        mediaToolSettingsProvider = mediaToolSettingsProvider,
+        imageGenerationClient = imageGenerationClientProvider(),
+        speechSynthesisClient = speechSynthesisClientProvider(),
+        mediaArtifactRegistry = mediaArtifactRegistryProvider(),
+        chatAttachmentResolver = fun(chatAttachmentId: String): OpenCrayChatAttachmentSource? {
+          val attachment = sessionContextFactory.resolveChatAttachmentEntry(
+            sessionId = sessionId,
+            attachmentId = chatAttachmentId,
+          ) ?: return null
+          val sourcePath = sessionContextFactory.resolveChatAttachmentFilePath(attachment) ?: return null
+          return OpenCrayChatAttachmentSource(
+            attachmentId = attachment.attachmentId,
+            displayName = attachment.displayName,
+            sourcePath = sourcePath,
+            mimeType = attachment.mimeType?.trim()?.takeIf(String::isNotBlank),
+          )
+        },
+        memoryToolContext = if (effectiveMemoryToolsEnabled) {
+          MemoryToolContext(
+            sessionId = sessionId,
+            workspaceId = workspaceId,
+            records = effectiveMemoryRecords,
+          )
+        } else {
+          null
+        },
+      ),
+      managedProcessObservationTracker = managedProcessObservationTrackerForSession(sessionId),
+    )
     val runtime = OpenCrayAgentRuntime(
       gateway = gateway,
-      toolDispatcher = OpenCrayToolDispatcher(
-        OpenCrayToolDispatcherConfig(
-          workspaceRoots = workspaceRootsProvider(),
-          readRoots = readRootsProvider(),
-          hiddenToolNamePrefixes = hiddenToolNamePrefixesProvider(),
-          extraPolicyReadRoots = skillPolicyReadRoots,
-          extraPolicyWriteRoots = skillPolicyWriteRoots,
-          skillsRoots = skillsRootsProvider(),
-          skillPackageManager = skillPackageManager,
-          mcpExposureReport = mcpReportProvider(),
-          // Host UI tool actions are already user-initiated, so nested policy gates should not
-          // bounce them back into chat approval just because the internal gate uses Read/WebFetch.
-          approvedTaskId = task.id.takeIf {
-            approvalGrant != null || hostUiTaskPreapproved
-          },
-          approvedToolName = approvalGrant?.toolName,
-          rejectedTaskId = task.id.takeIf { approvalRejection != null },
-          rejectedToolName = approvalRejection?.toolName,
-          commandExecutor = commandExecutorProvider(),
-          pythonRuntimeAdapter = pythonRuntimeProvider(),
-          pythonRuntimeManifestProvider = pythonRuntimeManifestProvider,
-          supportsManagedPythonProcessStart = true,
-          managedPythonProcessUsesRuntimeAdapter = true,
-          todoStore = todoStoreForSession(sessionId),
-          processRegistry = processRegistryForSession(sessionId),
-          webSearchProvider = webSearchProviderFactory(),
-          sandboxPreviewService = sandboxPreviewServiceProvider(),
-          sandboxSessionControlService = sandboxSessionControlServiceProvider(),
-          sandboxSessionInfoService = sandboxSessionInfoServiceProvider(),
-          mediaToolSettingsProvider = mediaToolSettingsProvider,
-          imageGenerationClient = imageGenerationClientProvider(),
-          speechSynthesisClient = speechSynthesisClientProvider(),
-          chatAttachmentResolver = fun(chatAttachmentId: String): OpenCrayChatAttachmentSource? {
-            val attachment = sessionContextFactory.resolveChatAttachmentEntry(
-              sessionId = sessionId,
-              attachmentId = chatAttachmentId,
-            ) ?: return null
-            val sourcePath = sessionContextFactory.resolveChatAttachmentFilePath(attachment) ?: return null
-            return OpenCrayChatAttachmentSource(
-              attachmentId = attachment.attachmentId,
-              displayName = attachment.displayName,
-              sourcePath = sourcePath,
-              mimeType = attachment.mimeType?.trim()?.takeIf(String::isNotBlank),
-            )
-          },
-          memoryToolContext = if (safetySettings.memoryToolsEnabled) {
-            MemoryToolContext(
-              sessionId = sessionId,
-              workspaceId = workspaceId,
-              records = effectiveMemoryRecords,
-            )
-          } else {
-            null
-          },
-        ),
-        managedProcessObservationTracker = managedProcessObservationTrackerForSession(sessionId),
-      ),
+      toolDispatcher = toolDispatcher,
       config = OpenCrayAgentRuntimeConfig(
         maxTurns = safetySettings.maxAgentTurns,
         maxToolCalls = safetySettings.maxToolCalls,
@@ -492,15 +607,31 @@ internal class AppAgentSessionTaskRuntimeFactory(
             emission = emission,
           )
         },
-        llmMetadata = llmMetadata,
-        llmAuthHeaders = if (requiresLlmConfig) {
-          LlmProviderProtocols.authHeaders(
-            protocol = llmSettings.protocol,
-            apiKey = llmSettings.apiKey,
+        midTurnMaintenance = { request ->
+          runMidTurnContextMaintenance(
+            sessionId = sessionId,
+            workspaceId = workspaceId,
+            request = request,
+            transcriptStore = transcriptStore,
+            llmMetadata = llmMetadata,
+            remoteCompactionProvider = remoteCompactionProviderFor(
+              gateway = gateway,
+              llmMetadata = llmMetadata,
+              authHeaders = llmAuthHeaders,
+            ),
+            sourceBudgetProfile = sourceBudgetProfile,
+            liveContextMode = effectiveLiveContextMode,
+            liveContextPolicy = liveContextPolicyFor(effectiveLiveContextMode),
+            memoryToolsEnabled = effectiveMemoryToolsEnabled,
+            enabled = task.type == com.opencray.core.contracts.AgentTaskType.PROMPT &&
+              detachedControlTask == null,
           )
-        } else {
-          emptyMap()
         },
+        contextManager = contextManagerFor(sourceBudgetProfile),
+        promptAssembler = promptAssemblerFor(sourceBudgetProfile),
+        llmMetadata = llmMetadata,
+        contextSourceBudgetProfile = sourceBudgetProfile,
+        llmAuthHeaders = llmAuthHeaders,
         subAgentContextPolicy = safetySettings.toRuntimeSubAgentContextPolicy(),
       ),
       eventSink = transcriptAwareEventSink(
@@ -509,25 +640,41 @@ internal class AppAgentSessionTaskRuntimeFactory(
         delegate = eventSink,
       ),
     )
-    val result = when (detachedControlTask) {
-      is DetachedSubAgentRecoveryWaitTaskSpec -> {
-        runtime.ensureDetachedSubAgentRecoveryExecution(
-          task = task,
-          hooks = hooks,
-          agentId = detachedControlTask.agentId,
-          parentRunId = detachedControlTask.parentRunId,
-        )
-        runtime.executeDetachedSubAgentRecoveryWait(
-          task = task,
-          hooks = hooks,
-          agentId = detachedControlTask.agentId,
-          parentRunId = detachedControlTask.parentRunId,
-        )
-      }
-
-      null -> runtime.execute(task, hooks)
+    val liteRtAutomaticToolExecutionContext = if (
+      enableLiteRtDevAutomaticToolExecution &&
+      llmSettings.isOnDeviceProviderMode()
+    ) {
+      LiteRtAutomaticToolExecutionContext(
+        task = task,
+        hooks = hooks,
+        toolDispatcher = toolDispatcher,
+      )
+    } else {
+      null
     }
-    recordSuccessfulAssistantTurn(
+    val result = LiteRtAutomaticToolExecutionRegistry.withContext(
+      liteRtAutomaticToolExecutionContext,
+    ) {
+      when (detachedControlTask) {
+        is DetachedSubAgentRecoveryWaitTaskSpec -> {
+          runtime.ensureDetachedSubAgentRecoveryExecution(
+            task = task,
+            hooks = hooks,
+            agentId = detachedControlTask.agentId,
+            parentRunId = detachedControlTask.parentRunId,
+          )
+          runtime.executeDetachedSubAgentRecoveryWait(
+            task = task,
+            hooks = hooks,
+            agentId = detachedControlTask.agentId,
+            parentRunId = detachedControlTask.parentRunId,
+          )
+        }
+
+        null -> runtime.execute(task, hooks)
+      }
+    }
+    recordFinalAssistantTurn(
       sessionId = sessionId,
       task = task,
       result = result,
@@ -802,7 +949,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     if (event.result.status != AgentToolResultStatus.SUCCESS) {
       return
     }
-    recordSuccessfulToolInteraction(
+    recordToolInteraction(
       transcriptStore = transcriptStoreForSession(sessionId),
       event = event,
     )
@@ -946,7 +1093,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
     taskInput: String,
     memoryRecords: List<MemoryRecord> = memoryRecordsProvider(),
     workspaceId: String? = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider()),
-  ): MemoryRecallResult = memoryRetriever.retrieve(
+    sourceBudgetProfile: ContextSourceBudgetProfile = contextSourceBudgetPolicy.resolve(emptyMap()),
+  ): MemoryRecallResult = MemoryRetriever(
+    policy = sourceBudgetProfile.memoryPolicy,
+  ).retrieve(
     records = memoryRecords,
     request = MemoryRecallRequest(
       sessionId = sessionId,
@@ -973,8 +1123,12 @@ internal class AppAgentSessionTaskRuntimeFactory(
   internal fun visibleSkillInventoryFor() =
     skillInventoryResolver.resolve(skillsRootsProvider())
 
-  internal fun bootstrapContextFor(mode: BootstrapMode) =
-    bootstrapContextResolver.resolve(
+  internal fun bootstrapContextFor(
+    mode: BootstrapMode,
+    sourceBudgetProfile: ContextSourceBudgetProfile = contextSourceBudgetPolicy.resolve(emptyMap()),
+  ) = BootstrapContextResolver(
+    config = sourceBudgetProfile.bootstrapContextResolverConfig,
+  ).resolve(
       workspaceRoots = workspaceRootsProvider(),
       mode = mode,
     )
@@ -984,6 +1138,600 @@ internal class AppAgentSessionTaskRuntimeFactory(
 
   internal fun skillCatalogFor() =
     skillCatalogResolver.resolve(skillsRootsProvider())
+
+  internal fun contextManagerFor(
+    sourceBudgetProfile: ContextSourceBudgetProfile,
+  ): ContextManager {
+    val transcriptWindowBuilder = TranscriptWindowBuilder(sourceBudgetProfile.transcriptWindowConfig)
+    val skillInventoryPromptLayer = SkillInventoryPromptLayer(sourceBudgetProfile.skillInventoryPromptLayerConfig)
+    val activeSkillPromptLayer = ActiveSkillPromptLayer(sourceBudgetProfile.activeSkillPromptLayerConfig)
+    val recentToolObservationSupport = RecentToolObservationSupport(sourceBudgetProfile.recentToolObservationConfig)
+    return ContextManager(
+      transcriptWindowBuilder = transcriptWindowBuilder,
+      skillInventoryPromptLayer = skillInventoryPromptLayer,
+      activeSkillPromptLayer = activeSkillPromptLayer,
+      recentToolObservationSupport = recentToolObservationSupport,
+      config = sourceBudgetProfile.contextManagerConfig,
+    )
+  }
+
+  internal fun promptAssemblerFor(
+    sourceBudgetProfile: ContextSourceBudgetProfile,
+  ): PromptAssembler {
+    val skillInventoryPromptLayer = SkillInventoryPromptLayer(sourceBudgetProfile.skillInventoryPromptLayerConfig)
+    val activeSkillPromptLayer = ActiveSkillPromptLayer(sourceBudgetProfile.activeSkillPromptLayerConfig)
+    val recentToolObservationSupport = RecentToolObservationSupport(sourceBudgetProfile.recentToolObservationConfig)
+    return PromptAssembler(
+      budgetCoordinator = GlobalContextBudgetCoordinator(
+        skillInventoryPromptLayer = skillInventoryPromptLayer,
+        activeSkillPromptLayer = activeSkillPromptLayer,
+        recentToolObservationSupport = recentToolObservationSupport,
+      ),
+    )
+  }
+
+  internal fun buildOnDeviceWarmupSpec(
+    sessionId: String,
+  ): OnDeviceLlmWarmupSpec? {
+    val llmSettings = llmSettingsProvider().sanitized()
+    if (!llmSettings.enabled || !llmSettings.isOnDeviceProviderMode()) {
+      return null
+    }
+    val modelId = llmSettings.selectedOnDeviceModelId.trim()
+    if (modelId.isBlank() || !onDeviceModelReadyProvider(modelId)) {
+      return null
+    }
+    val safetySettings = safetySettingsProvider().sanitized()
+    val routeMetadata = effectiveRuntimeRouteMetadata(settings = llmSettings)
+    val llmMetadata = buildRuntimeLlmMetadata(
+      requiresLlmConfig = true,
+      taskMetadata = emptyMap(),
+      sessionId = sessionId,
+      nativeWebSearchRunApproved = false,
+      nativeWebSearchSessionApproved = nativeWebSearchSessionApprovalProvider(sessionId),
+      llmSettings = llmSettings,
+      routeMetadata = routeMetadata,
+    )
+    val sourceBudgetProfile = contextSourceBudgetPolicy.resolve(llmMetadata)
+    val effectiveLiveContextMode = effectiveLiveContextMode(
+      configuredMode = liveContextModeProvider(),
+      llmSettings = llmSettings,
+    )
+    val effectiveMemoryToolsEnabled = effectiveMemoryToolsEnabled(
+      configuredValue = safetySettings.memoryToolsEnabled,
+      llmSettings = llmSettings,
+    )
+    val workspaceId = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider())
+    val memoryRecords = memoryRecordsProvider()
+    val sessionContext = prepareOnDeviceWarmupSessionContext(
+      sessionId = sessionId,
+      workspaceId = workspaceId,
+      soulProfile = soulProfileProvider(),
+      memoryRecords = memoryRecords,
+      sourceBudgetProfile = sourceBudgetProfile,
+      liveContextMode = effectiveLiveContextMode,
+      memoryToolsEnabled = effectiveMemoryToolsEnabled,
+    )
+    val toolDispatcher = onDeviceWarmupToolDispatcher(
+      sessionId = sessionId,
+      workspaceId = workspaceId,
+      effectiveMemoryRecords = memoryRecords,
+      memoryToolsEnabled = effectiveMemoryToolsEnabled,
+      approvedTaskId = null,
+    )
+    val allDefinitions = toolDispatcher.definitions()
+    val visibleToolDefinitions = visibleWarmupToolDefinitions(
+      allDefinitions = allDefinitions,
+      llmMetadata = llmMetadata,
+      memoryToolsEnabled = effectiveMemoryToolsEnabled,
+    )
+    val builtinTools = builtinToolsForWarmup(
+      visibleToolDefinitions = visibleToolDefinitions,
+      llmMetadata = llmMetadata,
+    )
+    val functionVisibleToolDefinitions = functionToolDefinitionsForWarmup(
+      visibleToolDefinitions = visibleToolDefinitions,
+      builtinTools = builtinTools,
+      llmMetadata = llmMetadata,
+    )
+    val nativeToolCallingEnabled =
+      functionVisibleToolDefinitions.isNotEmpty() || builtinTools.isNotEmpty()
+    val parallelToolCallsEnabled =
+      nativeToolCallingEnabled &&
+        llmMetadata["parallelToolCalls"]?.trim()?.lowercase() == "true"
+    val strictToolSchemaEnabled = llmMetadata["toolSchemaStrict"]?.trim()?.lowercase() == "true"
+    val managedContext = contextManagerFor(sourceBudgetProfile).prepare(
+      PromptAssemblyInput(
+        task = onDeviceWarmupTask(sessionId),
+        baseSystemPrompt = llmSettings.systemPrompt.ifBlank {
+          OpenCrayAgentRuntimeConfig.DEFAULT_OPENCRAY_SYSTEM_PROMPT
+        },
+        sessionContext = sessionContext,
+        nativeToolCallingEnabled = nativeToolCallingEnabled,
+        parallelToolCallsEnabled = parallelToolCallsEnabled,
+        legacyJsonFallbackEnabled = !nativeToolCallingEnabled,
+        toolDefinitions = functionVisibleToolDefinitions,
+        liveConversation = sessionContext.conversation,
+        todoSnapshot = toolDispatcher.todoSnapshot(),
+        llmMetadata = llmMetadata,
+      ),
+    )
+    val assembledPrompt = promptAssemblerFor(sourceBudgetProfile).assemble(managedContext)
+    return OnDeviceLlmWarmupSpec(
+      modelId = llmSettings.selectedOnDeviceModelId,
+      backend = llmSettings.onDeviceAccelerator,
+      maxContextWindow = llmSettings.onDeviceMaxContextWindow,
+      maxTokens = llmSettings.onDeviceMaxTokens,
+      topK = llmSettings.onDeviceTopK,
+      topP = llmSettings.onDeviceTopP,
+      temperature = llmSettings.onDeviceTemperature,
+      thinkingEnabled = llmSettings.onDeviceThinkingEnabled,
+      systemPrompt = assembledPrompt.systemPrompt.trim().takeIf(String::isNotBlank),
+      messages = assembledPrompt.frontContextZones.durableContextPrompt
+        .trim()
+        .takeIf(String::isNotBlank)
+        ?.let { durablePrompt ->
+          listOf(
+            LiteLlmGatewayMessage(
+              role = LiteLlmGatewayMessageRole.USER,
+              content = durablePrompt,
+            ),
+          )
+        }
+        .orEmpty(),
+      tools = if (nativeToolCallingEnabled) {
+        functionVisibleToolDefinitions.map { definition ->
+          definition.toWarmupLiteLlmToolDefinition(strict = strictToolSchemaEnabled)
+        }
+      } else {
+        emptyList()
+      },
+      builtinTools = if (nativeToolCallingEnabled) builtinTools else emptyList(),
+    )
+  }
+
+  private fun prepareOnDeviceWarmupSessionContext(
+    sessionId: String,
+    workspaceId: String?,
+    soulProfile: WorkspaceSoulProfile?,
+    memoryRecords: List<MemoryRecord>,
+    sourceBudgetProfile: ContextSourceBudgetProfile,
+    liveContextMode: LiveContextMode,
+    memoryToolsEnabled: Boolean,
+  ): AgentRuntimeSessionContext {
+    val liveContextPolicy = liveContextPolicyFor(liveContextMode)
+    val baseContext = sessionContextFactory.create(
+      sessionId = sessionId,
+      soulProfile = soulProfile.takeIf { liveContextPolicy.soulEnabled },
+      workingState = workingStateStoreForSession(sessionId).snapshot(),
+    )
+    val skillCatalog = skillCatalogFor()
+    return baseContext.copy(
+      soulProfile = if (liveContextPolicy.soulEnabled) {
+        memoryBackedSoulResolver.overlay(
+          baseProfile = baseContext.soulProfile,
+          records = memoryRecords,
+          sessionId = sessionId,
+          workspaceId = workspaceId,
+        )
+      } else {
+        baseContext.soulProfile
+      },
+      turnSemanticSignal = null,
+      injectionPolicy = liveContextPolicy.injectionPolicy,
+      memoryToolsEnabled = memoryToolsEnabled,
+      liveContextTrace = LiveContextTrace(
+        mode = liveContextMode.wireValue,
+        soulEnabled = liveContextPolicy.soulEnabled,
+        memoryRecallEnabled = liveContextPolicy.memoryRecallEnabled,
+      ),
+      bootstrapContext = bootstrapContextFor(
+        mode = liveContextPolicy.bootstrapMode,
+        sourceBudgetProfile = sourceBudgetProfile,
+      ),
+      recalledMemory = MemoryRecallResult(),
+      memoryFlushTrace = MemoryFlushTrace(),
+      durableCompaction = durableCompactionCoordinator.currentContext(
+        compactionStoreForSession(sessionId),
+      ),
+      skillInventory = skillCatalog.inventory,
+      skillCatalog = skillCatalog,
+      conversation = baseContext.conversation,
+    )
+  }
+
+  private fun onDeviceWarmupToolDispatcher(
+    sessionId: String,
+    workspaceId: String?,
+    effectiveMemoryRecords: List<MemoryRecord>,
+    memoryToolsEnabled: Boolean,
+    approvedTaskId: String?,
+  ): OpenCrayToolDispatcher {
+    val skillPackageManager = skillPackageManagerProvider()
+    val skillPolicyReadRoots = skillPackageManager?.let { manager ->
+      setOf(
+        manager.managedRootPath().toPath(),
+        manager.catalogRootPath().toPath(),
+      )
+    }.orEmpty()
+    val skillPolicyWriteRoots = skillPackageManager?.let { manager ->
+      buildSet {
+        add(manager.managedRootPath().toPath())
+        manager.compatStagingRootPath()?.let(::add)
+      }
+    }.orEmpty()
+    val scheduledTaskManager = scheduledTaskManagerProvider()
+    val scheduledTaskPolicyRoots = scheduledTaskManager?.let { manager ->
+      setOf(manager.policyTargetPath())
+    }.orEmpty()
+    return OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = workspaceRootsProvider(),
+        readRoots = readRootsProvider(),
+        hiddenToolNamePrefixes = hiddenToolNamePrefixesProvider(),
+        extraPolicyReadRoots = skillPolicyReadRoots + scheduledTaskPolicyRoots,
+        extraPolicyWriteRoots = skillPolicyWriteRoots + scheduledTaskPolicyRoots,
+        skillsRoots = skillsRootsProvider(),
+        skillPackageManager = skillPackageManager,
+        scheduledTaskManager = scheduledTaskManager,
+        mcpExposureReport = mcpReportProvider(),
+        approvedTaskId = approvedTaskId,
+        commandExecutor = commandExecutorProvider(),
+        pythonRuntimeAdapter = pythonRuntimeProvider(),
+        pythonRuntimeManifestProvider = pythonRuntimeManifestProvider,
+        supportsManagedPythonProcessStart = true,
+        managedPythonProcessUsesRuntimeAdapter = true,
+        todoStore = todoStoreForSession(sessionId),
+        processRegistry = processRegistryForSession(sessionId),
+        webSearchProvider = webSearchProviderFactory(),
+        sandboxPreviewService = sandboxPreviewServiceProvider(),
+        sandboxSessionControlService = sandboxSessionControlServiceProvider(),
+        sandboxSessionInfoService = sandboxSessionInfoServiceProvider(),
+        mediaToolSettingsProvider = mediaToolSettingsProvider,
+        imageGenerationClient = imageGenerationClientProvider(),
+        speechSynthesisClient = speechSynthesisClientProvider(),
+        mediaArtifactRegistry = mediaArtifactRegistryProvider(),
+        chatAttachmentResolver = { null },
+        memoryToolContext = if (memoryToolsEnabled) {
+          MemoryToolContext(
+            sessionId = sessionId,
+            workspaceId = workspaceId,
+            records = effectiveMemoryRecords,
+          )
+        } else {
+          null
+        },
+      ),
+      managedProcessObservationTracker = managedProcessObservationTrackerForSession(sessionId),
+    )
+  }
+
+  private fun visibleWarmupToolDefinitions(
+    allDefinitions: List<AgentToolDefinition>,
+    llmMetadata: Map<String, String>,
+    memoryToolsEnabled: Boolean,
+  ): List<AgentToolDefinition> {
+    if (llmMetadata["onDeviceLiteModeEnabled"]?.trim()?.lowercase() == "true") {
+      return emptyList()
+    }
+    val memoryAwareDefinitions = if (memoryToolsEnabled) {
+      allDefinitions
+    } else {
+      allDefinitions.filterNot { definition ->
+        definition.name.equals("memory_search", ignoreCase = true) ||
+          definition.name.equals("memory_get", ignoreCase = true)
+      }
+    }
+    val webSearchEnabled = llmMetadata["webSearchEnabled"]
+      ?.trim()
+      ?.lowercase()
+      ?.let { rawValue ->
+        when (rawValue) {
+          "true" -> true
+          "false" -> false
+          else -> null
+        }
+      } ?: true
+    return if (webSearchEnabled) {
+      memoryAwareDefinitions
+    } else {
+      memoryAwareDefinitions.filterNot { definition ->
+        definition.name.equals("WebSearch", ignoreCase = true)
+      }
+    }
+  }
+
+  private fun builtinToolsForWarmup(
+    visibleToolDefinitions: List<AgentToolDefinition>,
+    llmMetadata: Map<String, String>,
+  ): List<LiteLlmBuiltinToolDefinition> {
+    val nativeProviderWebSearchEnabled = llmMetadata["nativeWebSearchEnabled"]
+      ?.trim()
+      ?.lowercase()
+      ?.let { rawValue ->
+        when (rawValue) {
+          "true" -> true
+          "false" -> false
+          else -> null
+        }
+      } ?: (
+        llmMetadata["protocol"]?.trim()?.lowercase() == LlmProviderProtocols.OPENAI_RESPONSES &&
+          officialOpenAiRouteForHostMetadata(llmMetadata)
+        )
+    if (!nativeProviderWebSearchEnabled) {
+      return emptyList()
+    }
+    val hostWebSearchVisible = visibleToolDefinitions.any { definition ->
+      definition.name.equals("WebSearch", ignoreCase = true)
+    }
+    if (!hostWebSearchVisible) {
+      return emptyList()
+    }
+    return listOf(
+      LiteLlmBuiltinToolDefinition(
+        type = com.opencray.llm.LiteLlmBuiltinToolType.WEB_SEARCH,
+        includeSources = true,
+      ),
+    )
+  }
+
+  private fun officialOpenAiRouteForHostMetadata(llmMetadata: Map<String, String>): Boolean {
+    val hostBaseUrl = llmMetadata[HOST_METADATA_BASE_URL]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return false
+    val host = runCatching {
+      URI(hostBaseUrl).host.orEmpty().lowercase()
+    }.getOrDefault("")
+    return host == "api.openai.com" || host.endsWith(".openai.com")
+  }
+
+  private fun functionToolDefinitionsForWarmup(
+    visibleToolDefinitions: List<AgentToolDefinition>,
+    builtinTools: List<LiteLlmBuiltinToolDefinition>,
+    llmMetadata: Map<String, String>,
+  ): List<AgentToolDefinition> {
+    val dualExposeWebSearchEnabled = llmMetadata["dualExposeWebSearch"]
+      ?.trim()
+      ?.lowercase() == "true"
+    val hidesHostWebSearch = builtinTools.any { tool ->
+      tool.type == com.opencray.llm.LiteLlmBuiltinToolType.WEB_SEARCH
+    } && !dualExposeWebSearchEnabled
+    return if (hidesHostWebSearch) {
+      visibleToolDefinitions.filterNot { definition ->
+        definition.name.equals("WebSearch", ignoreCase = true)
+      }
+    } else {
+      visibleToolDefinitions
+    }
+  }
+
+  private fun onDeviceWarmupTask(sessionId: String): AgentTask {
+    val createdAtEpochMs = System.currentTimeMillis()
+    return AgentTask(
+      id = "warmup-$sessionId",
+      type = com.opencray.core.contracts.AgentTaskType.PROMPT,
+      input = "Prime the on-device model cache.",
+      createdAtEpochMs = createdAtEpochMs,
+      updatedAtEpochMs = createdAtEpochMs,
+      metadata = mapOf(METADATA_HOST_SESSION_ID to sessionId),
+    )
+  }
+
+  private fun AgentToolDefinition.toWarmupLiteLlmToolDefinition(
+    strict: Boolean,
+  ): com.opencray.llm.LiteLlmToolDefinition = com.opencray.llm.LiteLlmToolDefinition(
+    name = name,
+    description = description,
+    inputSchema = toWarmupJsonSchema(strict = strict),
+    strict = strict.takeIf { it },
+  )
+
+  private fun AgentToolDefinition.toWarmupJsonSchema(
+    strict: Boolean = false,
+  ): JsonObject = buildJsonObject {
+    put("type", "object")
+    put(
+      "properties",
+      buildJsonObject {
+        parameters.forEach { parameter ->
+          put(
+            parameter.name,
+            parameter.toWarmupJsonSchemaProperty(
+              strict = strict,
+              nullable = strict && !parameter.required,
+            ),
+          )
+        }
+      },
+    )
+    val requiredParameters = if (strict) {
+      parameters.map(AgentToolParameter::name)
+    } else {
+      parameters.filter(AgentToolParameter::required).map(AgentToolParameter::name)
+    }
+    if (strict || requiredParameters.isNotEmpty()) {
+      put(
+        "required",
+        buildJsonArray {
+          requiredParameters.forEach { requiredParameter ->
+            add(JsonPrimitive(requiredParameter))
+          }
+        },
+      )
+    }
+    put("additionalProperties", false)
+  }
+
+  private fun AgentToolParameter.toWarmupJsonSchemaProperty(
+    strict: Boolean = false,
+    nullable: Boolean = false,
+  ): JsonObject {
+    val baseSchema = jsonSchema ?: buildJsonObject {
+      when (type.trim().lowercase()) {
+        "string" -> put("type", "string")
+        "number" -> put("type", "number")
+        "boolean" -> put("type", "boolean")
+        "string[]" -> {
+          put("type", "array")
+          put(
+            "items",
+            buildJsonObject {
+              put("type", "string")
+            },
+          )
+        }
+
+        "object[]" -> {
+          put("type", "array")
+          put(
+            "items",
+            buildJsonObject {
+              put("type", "object")
+            },
+          )
+        }
+
+        else -> put("type", "string")
+      }
+      put("description", description)
+    }
+    if (!strict) {
+      return baseSchema
+    }
+    return strictCompatibleWarmupToolSchema(
+      schema = baseSchema,
+      nullable = nullable,
+    )
+  }
+
+  private fun strictCompatibleWarmupToolSchema(
+    schema: JsonObject,
+    nullable: Boolean = false,
+  ): JsonObject {
+    val normalized = normalizeWarmupToolSchemaForStrictMode(schema)
+    return if (nullable) {
+      allowNullInWarmupToolSchema(normalized)
+    } else {
+      normalized
+    }
+  }
+
+  private fun normalizeWarmupToolSchemaForStrictMode(
+    schema: JsonObject,
+  ): JsonObject {
+    val normalizedEntries = schema.mapValues { (key, value) ->
+      when {
+        key == "properties" && value is JsonObject ->
+          normalizeWarmupToolSchemaProperties(value, schema)
+        key in strictWarmupToolSchemaChildArrayKeys && value is JsonArray -> JsonArray(
+          value.map { item ->
+            if (item is JsonObject) {
+              normalizeWarmupToolSchemaForStrictMode(item)
+            } else {
+              item
+            }
+          },
+        )
+        key == "items" && value is JsonObject -> normalizeWarmupToolSchemaForStrictMode(value)
+        else -> value
+      }
+    }.toMutableMap()
+    if (warmupToolSchemaTypeNames(schema).contains("object")) {
+      if ("additionalProperties" !in normalizedEntries) {
+        normalizedEntries["additionalProperties"] = JsonPrimitive(false)
+      }
+      val propertyNames = (normalizedEntries["properties"] as? JsonObject)
+        ?.keys
+        ?.toList()
+        .orEmpty()
+      normalizedEntries["required"] = JsonArray(propertyNames.map(::JsonPrimitive))
+    }
+    return JsonObject(normalizedEntries)
+  }
+
+  private fun normalizeWarmupToolSchemaProperties(
+    properties: JsonObject,
+    ownerSchema: JsonObject,
+  ): JsonObject {
+    val requiredPropertyNames = (ownerSchema["required"] as? JsonArray)
+      ?.mapNotNull { item -> (item as? JsonPrimitive)?.content }
+      ?.toSet()
+      .orEmpty()
+    return buildJsonObject {
+      properties.forEach { (propertyName, propertyValue) ->
+        val propertySchema = propertyValue as? JsonObject ?: return@forEach
+        put(
+          propertyName,
+          strictCompatibleWarmupToolSchema(
+            schema = propertySchema,
+            nullable = propertyName !in requiredPropertyNames,
+          ),
+        )
+      }
+    }
+  }
+
+  private fun allowNullInWarmupToolSchema(
+    schema: JsonObject,
+  ): JsonObject {
+    if (warmupToolSchemaAllowsNull(schema)) {
+      return schema
+    }
+    val mutableEntries = schema.toMutableMap()
+    when (val typeValue = schema["type"]) {
+      is JsonPrimitive -> {
+        mutableEntries["type"] = JsonArray(listOf(typeValue, JsonPrimitive("null")))
+      }
+
+      is JsonArray -> {
+        val normalizedTypes = typeValue
+          .mapNotNull { item -> (item as? JsonPrimitive)?.content }
+          .toMutableList()
+        if ("null" !in normalizedTypes) {
+          normalizedTypes += "null"
+        }
+        mutableEntries["type"] = JsonArray(normalizedTypes.map(::JsonPrimitive))
+      }
+
+      else -> {
+        val anyOf = buildJsonArray {
+          (schema["anyOf"] as? JsonArray)?.forEach(::add) ?: add(schema)
+          add(buildJsonObject { put("type", "null") })
+        }
+        return buildJsonObject {
+          schema["description"]?.let { description -> put("description", description) }
+          put("anyOf", JsonArray(anyOf))
+        }
+      }
+    }
+    (schema["enum"] as? JsonArray)?.let { enumValues ->
+      if (enumValues.none { item -> item is JsonNull }) {
+        mutableEntries["enum"] = JsonArray(enumValues + JsonNull)
+      }
+    }
+    return JsonObject(mutableEntries)
+  }
+
+  private fun warmupToolSchemaAllowsNull(schema: JsonObject): Boolean {
+    if ("null" in warmupToolSchemaTypeNames(schema)) {
+      return true
+    }
+    return (schema["anyOf"] as? JsonArray)
+      ?.any { option ->
+        (option as? JsonObject)?.let(::warmupToolSchemaAllowsNull) == true
+      } == true
+  }
+
+  private fun warmupToolSchemaTypeNames(
+    schema: JsonObject,
+  ): Set<String> = when (val typeValue = schema["type"]) {
+    is JsonPrimitive -> setOf(typeValue.content)
+    is JsonArray -> typeValue.mapNotNull { item -> (item as? JsonPrimitive)?.content }.toSet()
+    else -> emptySet()
+  }
+
+  private val strictWarmupToolSchemaChildArrayKeys: Set<String> = setOf("anyOf", "allOf", "oneOf")
 
   private fun buildRuntimeLlmMetadata(
     requiresLlmConfig: Boolean,
@@ -1006,12 +1754,50 @@ internal class AppAgentSessionTaskRuntimeFactory(
         nativeWebSearchSessionApproved.toString(),
       )
       put(HOST_METADATA_PROVIDER_ID, llmSettings.providerId)
+      put(HOST_METADATA_BASE_URL, llmSettings.baseUrl)
       putAll(routeMetadata)
+      putAll(llmSettings.contextBudgetRuntimeMetadataOverrides())
       putAll(llmSettings.agentCapability.runtimeMetadataOverrides())
     }
   } else {
     mapOf("sessionId" to sessionId)
   }
+
+  private fun effectiveRuntimeRouteMetadata(
+    settings: LlmSettingsState,
+  ): Map<String, String> {
+    val baseMetadata = effectiveLlmRouteMetadata(settings = settings)
+    if (!settings.isOnDeviceProviderMode()) {
+      return baseMetadata
+    }
+    val thinkingLabel = onDeviceThinkingTextProvider()
+      .trim()
+      .takeIf(String::isNotBlank)
+      ?: return baseMetadata
+    return baseMetadata + mapOf(
+      LiteRtOnDeviceMetadataKeys.THINKING_LABEL to thinkingLabel,
+    )
+  }
+
+  private fun effectiveLiveContextMode(
+    configuredMode: LiveContextMode,
+    llmSettings: LlmSettingsState,
+  ): LiveContextMode =
+    if (llmSettings.isOnDeviceLiteModeEnabled()) {
+      LiveContextMode.NO_MEMORY_OR_SOUL
+    } else {
+      configuredMode
+    }
+
+  private fun effectiveMemoryToolsEnabled(
+    configuredValue: Boolean,
+    llmSettings: LlmSettingsState,
+  ): Boolean =
+    if (llmSettings.isOnDeviceLiteModeEnabled()) {
+      false
+    } else {
+      configuredValue
+    }
 
   internal fun prepareSessionContext(
     sessionId: String,
@@ -1022,14 +1808,21 @@ internal class AppAgentSessionTaskRuntimeFactory(
     taskType: com.opencray.core.contracts.AgentTaskType,
     taskId: String,
     taskInput: String,
+    taskMetadata: Map<String, String> = emptyMap(),
     transcriptStore: SessionTranscriptStore,
     memoryRecords: List<MemoryRecord>,
     appendTaskInputToTranscript: Boolean = taskType == com.opencray.core.contracts.AgentTaskType.PROMPT,
     llmMetadata: Map<String, String> = emptyMap(),
+    sourceBudgetProfile: ContextSourceBudgetProfile = contextSourceBudgetPolicy.resolve(llmMetadata),
     liveContextMode: LiveContextMode = LiveContextMode.FULL,
     memoryToolsEnabled: Boolean = safetySettingsProvider().sanitized().memoryToolsEnabled,
+    remoteCompactionProvider: RemoteCompactionProvider = NoOpRemoteCompactionProvider,
   ): PreparedSessionContext {
+    val prepareStartedAtEpochMs = System.currentTimeMillis()
     val liveContextPolicy = liveContextPolicyFor(liveContextMode)
+    sessionContextDebug(
+      "context.prepareStart session=$sessionId task=$taskId type=${taskType.name} inputLen=${taskInput.length} liveContextMode=${liveContextMode.wireValue}",
+    )
     val baseContext = sessionContextFactory.create(
       sessionId = sessionId,
       visibleThroughMessageId = visibleThroughMessageId,
@@ -1037,19 +1830,29 @@ internal class AppAgentSessionTaskRuntimeFactory(
       soulProfile = soulProfile.takeIf { liveContextPolicy.soulEnabled },
       workingState = workingStateStoreForSession(sessionId).snapshot(),
     )
+    val transcriptWasEmptyBeforeSeed = transcriptStore.snapshot().isEmpty()
     transcriptStore.seedIfEmpty(baseContext.conversation)
-    if (appendTaskInputToTranscript) {
-      taskInput.trim()
-        .takeIf(String::isNotBlank)
-        ?.let { normalizedInput ->
-          transcriptStore.appendIfDistinct(
-            RuntimeConversationMessage(
-              role = RuntimeConversationRole.USER,
-              content = normalizedInput,
-            ),
-          )
-        }
+    val promptMessage = if (appendTaskInputToTranscript) {
+      promptTranscriptInputMessage(
+        taskInput = taskInput,
+        taskMetadata = taskMetadata,
+      )
+    } else {
+      null
     }
+    if (promptMessage != null) {
+      if (!transcriptWasEmptyBeforeSeed || baseContext.conversation.isEmpty()) {
+        transcriptStore.appendIfDistinct(promptMessage)
+      } else if (
+        !mergePromptMessageIntoSeededTranscript(
+          transcriptStore = transcriptStore,
+          promptMessage = promptMessage,
+        )
+      ) {
+        transcriptStore.appendIfDistinct(promptMessage)
+      }
+    }
+    val memoryFlushStartedAtEpochMs = System.currentTimeMillis()
     val memoryFlushSummary = if (taskType == com.opencray.core.contracts.AgentTaskType.PROMPT) {
       memoryIngestionCoordinator?.flushBeforeCompaction(
         sessionId = sessionId,
@@ -1065,15 +1868,23 @@ internal class AppAgentSessionTaskRuntimeFactory(
     } else {
       memoryRecords
     }
+    sessionContextDebug(
+      "context.memoryFlush session=$sessionId task=$taskId durationMs=${System.currentTimeMillis() - memoryFlushStartedAtEpochMs} outcome=${memoryFlushSummary?.trace?.outcome ?: "skipped"} written=${memoryFlushSummary?.writtenRecords?.size ?: 0} candidates=${memoryFlushSummary?.trace?.candidateCount ?: 0} omitted=${memoryFlushSummary?.trace?.omittedMessageCount ?: 0}",
+    )
+    val compactionStartedAtEpochMs = System.currentTimeMillis()
     val durableCompaction = if (taskType == com.opencray.core.contracts.AgentTaskType.PROMPT) {
       durableCompactionCoordinator.compactIfNeeded(
         transcriptStore = transcriptStore,
         compactionStore = compactionStoreForSession(sessionId),
         llmMetadata = llmMetadata,
+        remoteCompactionProvider = remoteCompactionProvider,
       )
     } else {
       durableCompactionCoordinator.currentContext(compactionStoreForSession(sessionId))
     }
+    sessionContextDebug(
+      "context.compaction session=$sessionId task=$taskId durationMs=${System.currentTimeMillis() - compactionStartedAtEpochMs}",
+    )
     val skillCatalog = skillCatalogFor()
     val bootstrapContext = bootstrapContextFor(
       mode = if (taskType == com.opencray.core.contracts.AgentTaskType.PROMPT) {
@@ -1081,7 +1892,9 @@ internal class AppAgentSessionTaskRuntimeFactory(
       } else {
         BootstrapMode.NONE
       },
+      sourceBudgetProfile = sourceBudgetProfile,
     )
+    val soulTurnStartedAtEpochMs = System.currentTimeMillis()
     val turnSemanticSignal = if (
       taskType == com.opencray.core.contracts.AgentTaskType.PROMPT &&
       liveContextPolicy.injectionPolicy.soulTurnPolicyEnabled
@@ -1096,13 +1909,27 @@ internal class AppAgentSessionTaskRuntimeFactory(
           ),
         )
       ) {
-        is SoulTurnSemanticSignalInterpretation.Success -> interpretation.signal
-        is SoulTurnSemanticSignalInterpretation.Unavailable -> null
+        is SoulTurnSemanticSignalInterpretation.Success -> {
+          sessionContextDebug(
+            "context.soulTurn session=$sessionId task=$taskId durationMs=${System.currentTimeMillis() - soulTurnStartedAtEpochMs} outcome=success taskBearing=${interpretation.signal.isTaskBearingRequest} affect=${interpretation.signal.userAffect.name.lowercase()} clarification=${interpretation.signal.clarificationNeeded}",
+          )
+          interpretation.signal
+        }
+
+        is SoulTurnSemanticSignalInterpretation.Unavailable -> {
+          sessionContextDebug(
+            "context.soulTurn session=$sessionId task=$taskId durationMs=${System.currentTimeMillis() - soulTurnStartedAtEpochMs} outcome=unavailable reason=${interpretation.reason?.take(120) ?: "-"}",
+          )
+          null
+        }
       }
     } else {
+      sessionContextDebug(
+        "context.soulTurn session=$sessionId task=$taskId durationMs=${System.currentTimeMillis() - soulTurnStartedAtEpochMs} outcome=skipped",
+      )
       null
     }
-    return PreparedSessionContext(
+    val preparedContext = PreparedSessionContext(
       sessionContext = baseContext.copy(
         soulProfile = if (liveContextPolicy.soulEnabled) {
           memoryBackedSoulResolver.overlay(
@@ -1121,6 +1948,8 @@ internal class AppAgentSessionTaskRuntimeFactory(
           mode = liveContextMode.wireValue,
           soulEnabled = liveContextPolicy.soulEnabled,
           memoryRecallEnabled = liveContextPolicy.memoryRecallEnabled,
+          budgetPreset = llmMetadata["contextBudgetPreset"]
+            ?: llmMetadata["context_budget_preset"],
         ),
         recalledMemory = if (liveContextPolicy.memoryRecallEnabled) {
           recalledMemoryFor(
@@ -1128,6 +1957,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
             taskInput = taskInput,
             memoryRecords = effectiveMemoryRecords,
             workspaceId = workspaceId,
+            sourceBudgetProfile = sourceBudgetProfile,
           )
         } else {
           MemoryRecallResult()
@@ -1142,6 +1972,321 @@ internal class AppAgentSessionTaskRuntimeFactory(
       ),
       effectiveMemoryRecords = effectiveMemoryRecords,
     )
+    sessionContextDebug(
+      "context.prepareDone session=$sessionId task=$taskId durationMs=${System.currentTimeMillis() - prepareStartedAtEpochMs} turnSemanticSignal=${if (preparedContext.sessionContext.turnSemanticSignal != null) "present" else "absent"} durableMemoryCount=${preparedContext.effectiveMemoryRecords.size}",
+    )
+    return preparedContext
+  }
+
+  private fun runMidTurnContextMaintenance(
+    sessionId: String,
+    workspaceId: String?,
+    request: OpenCrayMidTurnMaintenanceRequest,
+    transcriptStore: SessionTranscriptStore,
+    llmMetadata: Map<String, String>,
+    remoteCompactionProvider: RemoteCompactionProvider,
+    sourceBudgetProfile: ContextSourceBudgetProfile,
+    liveContextMode: LiveContextMode,
+    liveContextPolicy: LiveContextPolicy,
+    memoryToolsEnabled: Boolean,
+    enabled: Boolean,
+  ): OpenCrayMidTurnMaintenanceResult {
+    if (!enabled) {
+      return OpenCrayMidTurnMaintenanceResult(
+        sessionContext = request.sessionContext,
+        conversation = request.conversation,
+      )
+    }
+    val maintenanceStartedAtEpochMs = System.currentTimeMillis()
+    transcriptStore.replace(request.conversation)
+    val memoryFlushSummary = memoryIngestionCoordinator?.flushMidTurn(
+      sessionId = sessionId,
+      conversation = transcriptStore.snapshot(),
+      llmMetadata = llmMetadata,
+      taskId = request.task.id,
+    )
+    val effectiveMemoryRecords = if (memoryFlushSummary?.wasWritten == true) {
+      memoryRecordsProvider()
+    } else {
+      memoryRecordsProvider()
+    }
+    val durableCompaction = durableCompactionCoordinator.compactMidTurn(
+      transcriptStore = transcriptStore,
+      compactionStore = compactionStoreForSession(sessionId),
+      llmMetadata = llmMetadata,
+      remoteCompactionProvider = remoteCompactionProvider,
+    )
+    val updatedConversation = transcriptStore.snapshot()
+    val updatedContext = request.sessionContext.copy(
+      soulProfile = if (liveContextPolicy.soulEnabled) {
+        memoryBackedSoulResolver.overlay(
+          baseProfile = request.sessionContext.soulProfile,
+          records = effectiveMemoryRecords,
+          sessionId = sessionId,
+          workspaceId = workspaceId,
+        )
+      } else {
+        request.sessionContext.soulProfile
+      },
+      injectionPolicy = liveContextPolicy.injectionPolicy,
+      memoryToolsEnabled = memoryToolsEnabled,
+      liveContextTrace = request.sessionContext.liveContextTrace.copy(
+        mode = liveContextMode.wireValue,
+        soulEnabled = liveContextPolicy.soulEnabled,
+        memoryRecallEnabled = liveContextPolicy.memoryRecallEnabled,
+        budgetPreset = llmMetadata["contextBudgetPreset"]
+          ?: llmMetadata["context_budget_preset"],
+      ),
+      recalledMemory = if (liveContextPolicy.memoryRecallEnabled) {
+        recalledMemoryFor(
+          sessionId = sessionId,
+          taskInput = request.task.input,
+          memoryRecords = effectiveMemoryRecords,
+          workspaceId = workspaceId,
+          sourceBudgetProfile = sourceBudgetProfile,
+        )
+      } else {
+        MemoryRecallResult()
+      },
+      memoryFlushTrace = memoryFlushSummary?.trace ?: request.sessionContext.memoryFlushTrace,
+      durableCompaction = durableCompaction,
+      conversation = updatedConversation,
+    )
+    sessionContextDebug(
+      "context.midTurnMaintenance session=$sessionId task=${request.task.id} turn=${request.turn} durationMs=${System.currentTimeMillis() - maintenanceStartedAtEpochMs} flush=${memoryFlushSummary?.trace?.outcome ?: "skipped"} compacted=${durableCompaction.trace.compactedThisRun} messages=${updatedConversation.size}",
+    )
+    return OpenCrayMidTurnMaintenanceResult(
+      sessionContext = updatedContext,
+      conversation = updatedConversation,
+    )
+  }
+
+  private fun remoteCompactionProviderFor(
+    gateway: LiteLlmGateway,
+    llmMetadata: Map<String, String>,
+    authHeaders: Map<String, String>,
+  ): RemoteCompactionProvider {
+    if (!responsesRemoteCompactionAvailable(llmMetadata)) {
+      return NoOpRemoteCompactionProvider
+    }
+    return RemoteCompactionProvider { request ->
+      val messages = request.omittedMessages.toRemoteCompactionGatewayMessages()
+      if (messages.isEmpty()) {
+        return@RemoteCompactionProvider RemoteCompactionResult.Unavailable(
+          reason = "responses_remote_compaction_no_omitted_messages",
+          metadata = remoteCompactionFallbackMetadata("responses_remote_compaction_no_omitted_messages"),
+        )
+      }
+      val compactResult = gateway.compactConversation(
+        LiteLlmCompactRequest(
+          gatewayRequest = LiteLlmGatewayRequest(
+            messages = messages,
+            metadata = llmMetadata + mapOf(
+              LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_REMOTE_COMPACTION to "true",
+            ),
+            authHeaders = authHeaders,
+          ),
+          triggerStage = request.triggerStage,
+          metadata = request.llmMetadata + mapOf(
+            LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_REMOTE_COMPACTION to "true",
+          ),
+        ),
+      )
+      when (compactResult) {
+        is LiteLlmCompactResult.Success -> {
+          val summaryText = compactResult.summaryText.trim()
+          if (summaryText.isBlank()) {
+            RemoteCompactionResult.Unavailable(
+              reason = "responses_remote_compaction_no_text_summary",
+              metadata = remoteCompactionFallbackMetadata(
+                reason = "responses_remote_compaction_no_text_summary",
+                metadata = compactResult.metadata,
+              ),
+            )
+          } else {
+            RemoteCompactionResult.Success(
+              summary = CompactionSummary(
+                text = summaryText,
+                compactedMessageCount = request.omittedMessages.size,
+                omittedUserMessageCount = request.omittedMessages.count {
+                  it.role == RuntimeConversationRole.USER
+                },
+                omittedAssistantMessageCount = request.omittedMessages.count {
+                  it.role == RuntimeConversationRole.ASSISTANT
+                },
+                omittedToolMessageCount = request.omittedMessages.count {
+                  it.role == RuntimeConversationRole.TOOL
+                },
+                omittedSystemMessageCount = request.omittedMessages.count {
+                  it.role == RuntimeConversationRole.SYSTEM
+                },
+              ),
+              metadata = compactResult.metadata,
+            )
+          }
+        }
+
+        is LiteLlmCompactResult.Unavailable -> RemoteCompactionResult.Unavailable(
+          reason = compactResult.reason,
+          metadata = remoteCompactionFallbackMetadata(
+            reason = compactResult.reason,
+            metadata = compactResult.metadata,
+          ),
+        )
+
+        is LiteLlmCompactResult.Failure -> RemoteCompactionResult.Failure(
+          errorCode = compactResult.errorCode,
+          errorMessage = compactResult.errorMessage,
+          metadata = remoteCompactionFallbackMetadata(
+            reason = compactResult.errorCode,
+            metadata = compactResult.metadata,
+          ),
+        )
+      }
+    }
+  }
+
+  private fun responsesRemoteCompactionAvailable(llmMetadata: Map<String, String>): Boolean {
+    if (LlmProviderProtocols.normalize(llmMetadata["protocol"]) != LlmProviderProtocols.OPENAI_RESPONSES) {
+      return false
+    }
+    return metadataBoolean(llmMetadata, LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_SUPPORTED) ||
+      metadataBoolean(llmMetadata, LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_REMOTE_COMPACTION)
+  }
+
+  private fun metadataBoolean(
+    metadata: Map<String, String>,
+    key: String,
+  ): Boolean = metadata[key]
+    ?.trim()
+    ?.lowercase() == "true"
+
+  private fun remoteCompactionFallbackMetadata(
+    reason: String,
+    metadata: Map<String, String> = emptyMap(),
+  ): Map<String, String> = metadata + mapOf(
+    LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_REQUESTED to "true",
+    LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_USED to "false",
+    LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_FALLBACK_REASON to reason,
+  )
+
+  private fun List<RuntimeConversationMessage>.toRemoteCompactionGatewayMessages(): List<LiteLlmGatewayMessage> {
+    val messages = mutableListOf<LiteLlmGatewayMessage>()
+    var syntheticToolCallIndex = 0
+    var pendingToolCallId: String? = null
+    forEach { entry ->
+      when (entry.role) {
+        RuntimeConversationRole.SYSTEM -> {
+          entry.content.trim().takeIf(String::isNotBlank)?.let { content ->
+            messages += LiteLlmGatewayMessage(
+              role = LiteLlmGatewayMessageRole.USER,
+              content = "[system]\n$content",
+            )
+          }
+        }
+
+        RuntimeConversationRole.USER -> {
+          val content = entry.content.trim().takeIf(String::isNotBlank)
+          val attachments = entry.attachments.map { attachment ->
+            attachment.toLiteLlmGatewayAttachment()
+          }
+          if (content != null || attachments.isNotEmpty()) {
+            messages += LiteLlmGatewayMessage(
+              role = LiteLlmGatewayMessageRole.USER,
+              content = content,
+              attachments = attachments,
+            )
+          }
+        }
+
+        RuntimeConversationRole.ASSISTANT -> {
+          val toolCall = entry.toolCall
+          if (entry.kind == RuntimeConversationMessageKind.TOOL_CALL && toolCall != null) {
+            val toolCallId = toolCall.id
+              ?.trim()
+              ?.takeIf(String::isNotBlank)
+              ?: "remote-compact-call-${++syntheticToolCallIndex}"
+            pendingToolCallId = toolCallId
+            messages += LiteLlmGatewayMessage(
+              role = LiteLlmGatewayMessageRole.ASSISTANT,
+              content = entry.content.trim().takeIf(String::isNotBlank),
+              toolCalls = listOf(
+                LiteLlmStructuredToolCall(
+                  id = toolCallId,
+                  toolName = toolCall.toolName,
+                  arguments = toolCall.arguments,
+                  reason = toolCall.reason,
+                ),
+              ),
+              assistantPhase = entry.assistantPhase?.toLiteLlmAssistantPhase(),
+            )
+          } else {
+            entry.content.trim().takeIf(String::isNotBlank)?.let { content ->
+              messages += LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.ASSISTANT,
+                content = content,
+                assistantPhase = entry.assistantPhase?.toLiteLlmAssistantPhase()
+                  ?: if (entry.kind == RuntimeConversationMessageKind.COMMENTARY) {
+                    LiteLlmAssistantPhase.COMMENTARY
+                  } else {
+                    null
+                  },
+              )
+            }
+          }
+        }
+
+        RuntimeConversationRole.TOOL -> {
+          val toolResult = entry.toolResult
+          val toolCallId = toolResult?.toolCallId
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: pendingToolCallId
+          if (entry.kind == RuntimeConversationMessageKind.TOOL_RESULT && toolResult != null && toolCallId != null) {
+            messages += LiteLlmGatewayMessage(
+              role = LiteLlmGatewayMessageRole.TOOL,
+              toolResult = LiteLlmGatewayToolResult(
+                toolCallId = toolCallId,
+                toolName = toolResult.toolName,
+                content = entry.content.trim().takeIf(String::isNotBlank) ?: "{}",
+                isError = toolResult.isError ?: toolResult.status
+                  ?.equals("success", ignoreCase = true)
+                  ?.not(),
+              ),
+            )
+            pendingToolCallId = null
+          } else {
+            entry.content.trim().takeIf(String::isNotBlank)?.let { content ->
+              messages += LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.USER,
+                content = "[tool]\n$content",
+              )
+            }
+          }
+        }
+      }
+    }
+    return messages
+  }
+
+  private fun RuntimeConversationAttachment.toLiteLlmGatewayAttachment(): LiteLlmGatewayAttachment =
+    LiteLlmGatewayAttachment(
+      attachmentId = attachmentId,
+      kind = when (kind) {
+        RuntimeConversationAttachmentKind.IMAGE -> LiteLlmGatewayAttachmentKind.IMAGE
+        RuntimeConversationAttachmentKind.VOICE -> LiteLlmGatewayAttachmentKind.VOICE
+        RuntimeConversationAttachmentKind.AUDIO -> LiteLlmGatewayAttachmentKind.AUDIO
+        RuntimeConversationAttachmentKind.FILE -> LiteLlmGatewayAttachmentKind.FILE
+      },
+      displayName = displayName,
+      filePath = filePath,
+      mimeType = mimeType,
+      transcriptText = transcriptText,
+    )
+
+  private fun RuntimeConversationAssistantPhase.toLiteLlmAssistantPhase(): LiteLlmAssistantPhase = when (this) {
+    RuntimeConversationAssistantPhase.COMMENTARY -> LiteLlmAssistantPhase.COMMENTARY
+    RuntimeConversationAssistantPhase.FINAL_ANSWER -> LiteLlmAssistantPhase.FINAL_ANSWER
   }
 
   private fun transcriptAwareEventSink(
@@ -1156,12 +2301,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
           event = event,
         )
 
-        is OpenCrayToolResultEvent -> if (event.result.status == AgentToolResultStatus.SUCCESS) {
-          recordSuccessfulToolInteraction(
-            transcriptStore = transcriptStore,
-            event = event,
-          )
-        }
+        is OpenCrayToolResultEvent -> recordToolInteraction(
+          transcriptStore = transcriptStore,
+          event = event,
+        )
 
         is OpenCrayAssistantPhaseEvent -> recordAssistantReplayEvent(
           transcriptStore = transcriptStore,
@@ -1198,7 +2341,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     }
   }
 
-  private fun recordSuccessfulAssistantTurn(
+  private fun recordFinalAssistantTurn(
     sessionId: String,
     task: AgentTask,
     result: ExecutionResult,
@@ -1206,21 +2349,76 @@ internal class AppAgentSessionTaskRuntimeFactory(
     if (task.type != com.opencray.core.contracts.AgentTaskType.PROMPT) {
       return
     }
-    if (result.status != ExecutionStatus.SUCCESS) {
+    if (isLlmRetryPausedResult(result)) {
       return
     }
-    result.stdout
-      .trim()
-      .takeIf(String::isNotBlank)
-      ?.let { assistantText ->
-        transcriptStoreForSession(sessionId).appendIfDistinct(
-          RuntimeConversationMessage(
-            role = RuntimeConversationRole.ASSISTANT,
-            content = assistantText,
-            assistantPhase = RuntimeConversationAssistantPhase.FINAL_ANSWER,
-          ),
-        )
-      }
+    val finalTurn = finalTranscriptTurn(
+      sessionId = sessionId,
+      result = result,
+    )
+    if (finalTurn.text.isBlank() && finalTurn.attachments.isEmpty()) {
+      return
+    }
+    upsertTrailingFinalAssistantTurn(
+      transcriptStore = transcriptStoreForSession(sessionId),
+      message = RuntimeConversationMessage(
+        role = RuntimeConversationRole.ASSISTANT,
+        content = finalTurn.text,
+        attachments = finalTurn.attachments,
+        assistantPhase = RuntimeConversationAssistantPhase.FINAL_ANSWER,
+      ),
+    )
+  }
+
+  private fun finalTranscriptTurn(
+    sessionId: String,
+    result: ExecutionResult,
+  ): FinalTranscriptTurnSnapshot {
+    val assistantText = finalTranscriptText(result)
+    val markdownCompatibility = attachmentMarkdownCompatibilityForTranscript(
+      sessionId = sessionId,
+      result = result,
+      text = assistantText,
+    )
+    val attachments = finalTranscriptAttachments(
+      result = result,
+      compatibilityAttachments = markdownCompatibility.attachments,
+    )
+    val rewrittenText = if (markdownCompatibility.rewrittenText.isBlank() && attachments.isNotEmpty()) {
+      ""
+    } else {
+      markdownCompatibility.rewrittenText
+    }
+    return FinalTranscriptTurnSnapshot(
+      text = rewrittenText,
+      attachments = attachments,
+    )
+  }
+
+  private fun finalTranscriptText(result: ExecutionResult): String = when (result.status) {
+    ExecutionStatus.SUCCESS -> result.stdout.trim()
+    ExecutionStatus.CANCELLED -> TRANSCRIPT_AGENT_CANCELLED
+    ExecutionStatus.DENIED -> approvalSupportSanitizePotentialInternalAgentText(
+      text = result.errorMessage
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: transcriptAgentFailedText(result.errorCode ?: result.status.name),
+      fallback = transcriptFinalTextFallback(result),
+    )
+
+    ExecutionStatus.FAILED -> approvalSupportSanitizePotentialInternalAgentText(
+      text = if (result.errorCode == ERROR_CODE_MISSING_LLM_CONFIG) {
+        TRANSCRIPT_AGENT_MISSING_LLM
+      } else {
+        transcriptAgentFailedText(result.errorMessage ?: result.errorCode ?: result.status.name)
+      },
+      fallback = transcriptFinalTextFallback(result),
+    )
+
+    else -> approvalSupportSanitizePotentialInternalAgentText(
+      text = transcriptAgentFailedText(result.errorMessage ?: result.errorCode ?: result.status.name),
+      fallback = transcriptFinalTextFallback(result),
+    )
   }
 
   internal fun finalizeWorkingStateAfterTask(
@@ -1274,7 +2472,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     )
   }
 
-  private fun recordSuccessfulToolInteraction(
+  private fun recordToolInteraction(
     transcriptStore: SessionTranscriptStore,
     event: OpenCrayToolResultEvent,
   ) {
@@ -1314,7 +2512,22 @@ internal class AppAgentSessionTaskRuntimeFactory(
     transcriptStore: SessionTranscriptStore,
     event: OpenCrayAssistantEvent,
   ) {
+    if (isPersistedDraftAssistantPhase(event)) {
+      return
+    }
     if (event.isFinal) {
+      val finalText = event.text.trim()
+      if (finalText.isBlank()) {
+        return
+      }
+      appendTrailingFinalAssistantReplayTurn(
+        transcriptStore = transcriptStore,
+        message = RuntimeConversationMessage(
+          role = RuntimeConversationRole.ASSISTANT,
+          content = finalText,
+          assistantPhase = RuntimeConversationAssistantPhase.FINAL_ANSWER,
+        ),
+      )
       return
     }
     appendIfMissing(
@@ -1335,6 +2548,45 @@ internal class AppAgentSessionTaskRuntimeFactory(
     )
   }
 
+  private fun upsertTrailingFinalAssistantTurn(
+    transcriptStore: SessionTranscriptStore,
+    message: RuntimeConversationMessage,
+  ) {
+    val existingMessages = transcriptStore.snapshot()
+    val trailingMessage = existingMessages.lastOrNull()
+    if (!isFinalAssistantTranscriptTurn(trailingMessage)) {
+      transcriptStore.appendIfDistinct(message)
+      return
+    }
+    val existingFinalMessage = trailingMessage ?: return
+    val mergedMessage = existingFinalMessage.copy(
+      content = message.content,
+      attachments = dedupeTranscriptAttachments(existingFinalMessage.attachments + message.attachments),
+      assistantPhase = RuntimeConversationAssistantPhase.FINAL_ANSWER,
+    )
+    if (mergedMessage == existingFinalMessage) {
+      return
+    }
+    val updatedMessages = existingMessages.toMutableList()
+    updatedMessages[updatedMessages.lastIndex] = mergedMessage
+    transcriptStore.replace(updatedMessages)
+  }
+
+  private fun appendTrailingFinalAssistantReplayTurn(
+    transcriptStore: SessionTranscriptStore,
+    message: RuntimeConversationMessage,
+  ) {
+    if (isFinalAssistantTranscriptTurn(transcriptStore.snapshot().lastOrNull())) {
+      return
+    }
+    transcriptStore.appendIfDistinct(message)
+  }
+
+  private fun isFinalAssistantTranscriptTurn(
+    message: RuntimeConversationMessage?,
+  ): Boolean = message?.role == RuntimeConversationRole.ASSISTANT &&
+    message.assistantPhase == RuntimeConversationAssistantPhase.FINAL_ANSWER
+
   private fun appendIfMissing(
     transcriptStore: SessionTranscriptStore,
     message: RuntimeConversationMessage,
@@ -1345,6 +2597,558 @@ internal class AppAgentSessionTaskRuntimeFactory(
     }
     transcriptStore.appendIfDistinct(message)
   }
+
+  private fun promptTranscriptInputMessage(
+    taskInput: String,
+    taskMetadata: Map<String, String>,
+  ): RuntimeConversationMessage? {
+    val attachments = promptTranscriptAttachments(taskMetadata)
+    val promptUserText = taskMetadata[METADATA_PROMPT_USER_TEXT]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    val content = promptUserText ?: taskInput.trim().takeIf { input ->
+      input.isNotBlank() && attachments.isEmpty()
+    }.orEmpty()
+    if (content.isBlank() && attachments.isEmpty()) {
+      return null
+    }
+    return RuntimeConversationMessage(
+      role = RuntimeConversationRole.USER,
+      content = content,
+      attachments = attachments,
+    )
+  }
+
+  private fun promptTranscriptAttachments(
+    taskMetadata: Map<String, String>,
+  ): List<RuntimeConversationAttachment> {
+    val attachmentsJson = taskMetadata[METADATA_PROMPT_RUNTIME_ATTACHMENTS_JSON]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return emptyList()
+    return runCatching {
+      replayJson.decodeFromString(
+        ListSerializer(RuntimeConversationAttachment.serializer()),
+        attachmentsJson,
+      )
+    }.getOrDefault(emptyList())
+  }
+
+  private fun mergePromptMessageIntoSeededTranscript(
+    transcriptStore: SessionTranscriptStore,
+    promptMessage: RuntimeConversationMessage,
+  ): Boolean {
+    val existingMessages = transcriptStore.snapshot()
+    val matchIndex = existingMessages.indexOfLast { message ->
+      message.role == RuntimeConversationRole.USER &&
+        message.content == promptMessage.content &&
+        promptAttachmentsEquivalent(
+          existing = message.attachments,
+          incoming = promptMessage.attachments,
+        )
+    }
+    if (matchIndex < 0) {
+      return false
+    }
+    val existingMessage = existingMessages[matchIndex]
+    val mergedMessage = existingMessage.copy(
+      attachments = mergePromptAttachments(
+        existing = existingMessage.attachments,
+        incoming = promptMessage.attachments,
+      ),
+    )
+    if (mergedMessage == existingMessage) {
+      return true
+    }
+    val updatedMessages = existingMessages.toMutableList()
+    updatedMessages[matchIndex] = mergedMessage
+    transcriptStore.replace(updatedMessages)
+    return true
+  }
+
+  private fun mergePromptAttachments(
+    existing: List<RuntimeConversationAttachment>,
+    incoming: List<RuntimeConversationAttachment>,
+  ): List<RuntimeConversationAttachment> {
+    if (existing.size != incoming.size) {
+      return existing
+    }
+    return existing.zip(incoming).map { (currentAttachment, incomingAttachment) ->
+      currentAttachment.copy(
+        attachmentId = incomingAttachment.attachmentId,
+        kind = incomingAttachment.kind,
+        displayName = incomingAttachment.displayName,
+        filePath = incomingAttachment.filePath
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: currentAttachment.filePath,
+        mimeType = incomingAttachment.mimeType
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: currentAttachment.mimeType,
+        transcriptText = incomingAttachment.transcriptText
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: currentAttachment.transcriptText,
+      )
+    }
+  }
+
+  private fun promptAttachmentsEquivalent(
+    existing: List<RuntimeConversationAttachment>,
+    incoming: List<RuntimeConversationAttachment>,
+  ): Boolean {
+    if (existing.size != incoming.size) {
+      return false
+    }
+    return existing.zip(incoming).all { (existingAttachment, incomingAttachment) ->
+      existingAttachment.kind == incomingAttachment.kind &&
+        promptAttachmentFieldEquivalent(
+          existingAttachment.attachmentId,
+          incomingAttachment.attachmentId,
+        ) &&
+        promptAttachmentFieldEquivalent(
+          existingAttachment.displayName,
+          incomingAttachment.displayName,
+        ) &&
+        promptAttachmentFieldEquivalent(
+          existingAttachment.filePath,
+          incomingAttachment.filePath,
+        ) &&
+        promptAttachmentFieldEquivalent(
+          existingAttachment.mimeType,
+          incomingAttachment.mimeType,
+        ) &&
+        promptAttachmentFieldEquivalent(
+          existingAttachment.transcriptText,
+          incomingAttachment.transcriptText,
+        )
+    }
+  }
+
+  private fun promptAttachmentFieldEquivalent(
+    existing: String?,
+    incoming: String?,
+  ): Boolean {
+    val normalizedExisting = existing?.trim()?.takeIf(String::isNotBlank)
+    val normalizedIncoming = incoming?.trim()?.takeIf(String::isNotBlank)
+    return normalizedExisting == normalizedIncoming ||
+      normalizedExisting == null ||
+      normalizedIncoming == null
+  }
+
+  private fun finalTranscriptAttachments(
+    result: ExecutionResult,
+    compatibilityAttachments: List<RuntimeConversationAttachment> = emptyList(),
+  ): List<RuntimeConversationAttachment> {
+    val requests = result.metadata[OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { finalAttachmentsJson ->
+        runCatching {
+          replayJson.decodeFromString(
+            ListSerializer(OpenCrayFinalAttachment.serializer()),
+            finalAttachmentsJson,
+          )
+        }.getOrDefault(emptyList())
+      }
+      .orEmpty()
+    val workspaceRoot = workspaceRootsProvider()
+      .firstOrNull()
+      ?.toAbsolutePath()
+      ?.normalize()
+    val artifactsById = OpenCrayAttachmentArtifacts.decodeMetadata(
+      json = replayJson,
+      metadata = result.metadata,
+    ).associateByTo(linkedMapOf(), OpenCrayAttachmentArtifact::artifactId)
+    val explicitAttachments = requests.mapIndexedNotNull { index, request ->
+      val requestedArtifactId = request.artifactId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+      val artifact = requestedArtifactId?.let { artifactId ->
+        artifactsById[artifactId]
+          ?: resolveWorkspaceMediaArtifact(
+            workspaceRoot = workspaceRoot,
+            artifactId = artifactId,
+            mediaArtifactRegistry = workspaceRoot?.let { mediaArtifactRegistryProvider() },
+          )?.also { resolved -> artifactsById[resolved.artifactId] = resolved }
+      }
+      val relativePath = request.relativePath
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: artifact?.relativePath
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+      val displayName = request.displayName
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: artifact?.displayName
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        ?: relativePath
+          ?.substringAfterLast('/')
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        ?: request.path
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?.let { path -> runCatching { Path.of(path).fileName?.toString() }.getOrNull() }
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        ?: request.chatAttachmentId
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        ?: return@mapIndexedNotNull null
+      val kind = request.kind
+        ?.trim()
+        ?.lowercase()
+        ?.takeIf(String::isNotBlank)
+        ?: artifact?.kindHint
+          ?.trim()
+          ?.lowercase()
+          ?.takeIf(String::isNotBlank)
+        ?: OpenCrayAttachmentArtifacts.kindHintForDisplayName(displayName)
+        ?: "file"
+      val filePath = request.path
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { rawPath ->
+          runCatching {
+            Path.of(rawPath).toAbsolutePath().normalize().toString().replace('\\', '/')
+          }.getOrNull()
+        }
+        ?: relativePath?.let { resolvedRelativePath ->
+          workspaceRoot?.resolve(resolvedRelativePath)
+            ?.toAbsolutePath()
+            ?.normalize()
+            ?.toString()
+            ?.replace('\\', '/')
+        }
+      val attachmentId = request.chatAttachmentId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: request.artifactId
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        ?: relativePath?.let { resolvedRelativePath ->
+          OpenCrayAttachmentArtifacts.buildArtifactId(
+            relativePath = resolvedRelativePath,
+            displayName = displayName,
+          )
+        }
+        ?: "final-attachment-${index + 1}"
+      RuntimeConversationAttachment(
+        attachmentId = attachmentId,
+        kind = when (kind) {
+          "image" -> RuntimeConversationAttachmentKind.IMAGE
+          "voice" -> RuntimeConversationAttachmentKind.VOICE
+          "audio" -> RuntimeConversationAttachmentKind.AUDIO
+          else -> RuntimeConversationAttachmentKind.FILE
+        },
+        displayName = displayName,
+        filePath = filePath,
+        mimeType = request.mimeType
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: artifact?.mimeType
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+          ?: OpenCrayAttachmentArtifacts.mimeTypeForDisplayName(displayName),
+        transcriptText = request.transcriptText
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: artifact?.transcriptText
+            ?.trim()
+            ?.takeIf(String::isNotBlank),
+      )
+    }
+    return dedupeTranscriptAttachments(explicitAttachments + compatibilityAttachments)
+  }
+
+  private fun attachmentMarkdownCompatibilityForTranscript(
+    sessionId: String,
+    result: ExecutionResult,
+    text: String,
+  ): TranscriptAttachmentMarkdownCompatibility {
+    if (text.isBlank()) {
+      return TranscriptAttachmentMarkdownCompatibility(rewrittenText = text)
+    }
+    val references = parseTranscriptAttachmentMarkdownReferences(text)
+    if (references.isEmpty()) {
+      return TranscriptAttachmentMarkdownCompatibility(rewrittenText = text)
+    }
+    val candidates = transcriptAttachmentMarkdownCandidates(
+      sessionId = sessionId,
+      result = result,
+    )
+    if (candidates.isEmpty()) {
+      return TranscriptAttachmentMarkdownCompatibility(rewrittenText = text)
+    }
+    val resolvedReferences = references.map { reference ->
+      TranscriptResolvedAttachmentMarkdownReference(
+        reference = reference,
+        attachment = resolveTranscriptAttachmentMarkdownReference(
+          reference = reference,
+          candidates = candidates,
+        ),
+      )
+    }
+    return TranscriptAttachmentMarkdownCompatibility(
+      rewrittenText = rewriteTranscriptAttachmentMarkdownText(
+        text = text,
+        resolvedReferences = resolvedReferences,
+      ),
+      attachments = dedupeTranscriptAttachments(
+        resolvedReferences.mapNotNull { resolved ->
+          resolved.attachment?.toRuntimeConversationAttachment(
+            forceImage = resolved.reference.isImage,
+          )
+        },
+      ),
+    )
+  }
+
+  private fun transcriptAttachmentMarkdownCandidates(
+    sessionId: String,
+    result: ExecutionResult,
+  ): List<TranscriptAttachmentMarkdownCandidate> {
+    val workspaceRoot = workspaceRootsProvider()
+      .firstOrNull()
+      ?.toAbsolutePath()
+      ?.normalize()
+    val runArtifacts = OpenCrayAttachmentArtifacts.decodeMetadata(
+      json = replayJson,
+      metadata = result.metadata,
+    )
+    val finalArtifactIds = result.metadata[OpenCrayExecutionMetadataKeys.FINAL_ATTACHMENTS_JSON]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { finalAttachmentsJson ->
+        runCatching {
+          replayJson.decodeFromString(
+            ListSerializer(OpenCrayFinalAttachment.serializer()),
+            finalAttachmentsJson,
+          )
+        }.getOrDefault(emptyList())
+      }
+      .orEmpty()
+      .mapNotNull { attachment -> attachment.artifactId?.trim()?.takeIf(String::isNotBlank) }
+    val artifactsById = runArtifacts.associateByTo(linkedMapOf(), OpenCrayAttachmentArtifact::artifactId)
+    finalArtifactIds.forEach { artifactId ->
+      if (artifactId !in artifactsById) {
+        resolveWorkspaceMediaArtifact(
+          workspaceRoot = workspaceRoot,
+          artifactId = artifactId,
+          mediaArtifactRegistry = workspaceRoot?.let { mediaArtifactRegistryProvider() },
+        )?.let { artifact -> artifactsById[artifact.artifactId] = artifact }
+      }
+    }
+    val runCandidates = artifactsById.values.map { artifact ->
+      TranscriptAttachmentMarkdownCandidate(
+        attachmentId = artifact.artifactId,
+        artifactId = artifact.artifactId,
+        relativePath = artifact.relativePath,
+        displayName = artifact.displayName
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: artifact.relativePath.substringAfterLast('/'),
+        kindHint = artifact.kindHint,
+        mimeType = artifact.mimeType,
+        transcriptText = artifact.transcriptText,
+        filePath = workspaceRoot
+          ?.resolve(artifact.relativePath)
+          ?.toAbsolutePath()
+          ?.normalize()
+          ?.toString()
+          ?.replace('\\', '/'),
+      )
+    }
+    val sessionCandidates = buildList {
+      val seenKeys = linkedSetOf<String>()
+      sessionContextFactory.loadChatAttachmentEntries(sessionId).forEach { attachment ->
+        val dedupeKey = attachment.attachmentId
+          .trim()
+          .takeIf(String::isNotBlank)
+          ?: attachment.localPath.trim().takeIf(String::isNotBlank)
+          ?: return@forEach
+        if (!seenKeys.add(dedupeKey)) {
+          return@forEach
+        }
+        add(
+          TranscriptAttachmentMarkdownCandidate(
+            attachmentId = attachment.attachmentId.trim().takeIf(String::isNotBlank),
+            relativePath = attachment.localPath,
+            displayName = attachment.displayName,
+            kindHint = attachment.kind.toTranscriptAttachmentKindHint(),
+            mimeType = attachment.mimeType?.trim()?.takeIf(String::isNotBlank),
+            transcriptText = attachment.transcriptText?.trim()?.takeIf(String::isNotBlank),
+            filePath = sessionContextFactory.resolveChatAttachmentFilePath(attachment)
+              ?.toString()
+              ?.replace('\\', '/')
+              ?: attachment.localPath
+                .trim()
+                .takeIf(String::isNotBlank)
+                ?.let { localPath ->
+                  runCatching {
+                    val path = Path.of(localPath)
+                    val resolved = if (path.isAbsolute) {
+                      path
+                    } else {
+                      workspaceRoot?.resolve(path)
+                    } ?: return@runCatching null
+                    resolved.toAbsolutePath().normalize().toString().replace('\\', '/')
+                  }.getOrNull()
+                },
+          ),
+        )
+      }
+    }
+    return runCandidates + sessionCandidates
+  }
+
+  private fun resolveTranscriptAttachmentMarkdownReference(
+    reference: TranscriptAttachmentMarkdownReference,
+    candidates: List<TranscriptAttachmentMarkdownCandidate>,
+  ): TranscriptAttachmentMarkdownCandidate? {
+    if (candidates.isEmpty()) {
+      return null
+    }
+    val preferredCandidates = if (reference.isImage) {
+      candidates.filter(TranscriptAttachmentMarkdownCandidate::isImageLike).ifEmpty { candidates }
+    } else {
+      candidates
+    }
+    val targetToken = reference.targetToken
+    if (targetToken.isNotBlank() && targetToken != "artifact") {
+      preferredCandidates.firstOrNull { candidate -> candidate.matches(targetToken) }?.let { match ->
+        return match
+      }
+    }
+    val labelToken = normalizeTranscriptAttachmentMarkdownToken(reference.label)
+    if (labelToken.isNotBlank()) {
+      preferredCandidates.firstOrNull { candidate ->
+        candidate.matches(
+          labelToken,
+          includeArtifactId = false,
+          includeAttachmentId = false,
+        )
+      }?.let { match ->
+        return match
+      }
+    }
+    return if ((targetToken.isBlank() || targetToken == "artifact") && preferredCandidates.size == 1) {
+      preferredCandidates.first()
+    } else {
+      null
+    }
+  }
+
+  private fun rewriteTranscriptAttachmentMarkdownText(
+    text: String,
+    resolvedReferences: List<TranscriptResolvedAttachmentMarkdownReference>,
+  ): String {
+    if (resolvedReferences.isEmpty()) {
+      return text
+    }
+    val resolvedTokens = resolvedReferences.filter { it.attachment != null }
+    if (resolvedTokens.isNotEmpty()) {
+      val stripped = resolvedTokens.fold(text) { current, resolved ->
+        current.replace(resolved.reference.raw, "")
+      }
+      if (cleanupTranscriptAttachmentMarkdownText(stripped).isBlank()) {
+        return ""
+      }
+    }
+    var rewritten = text
+    resolvedReferences.forEach { resolved ->
+      val replacement = when {
+        resolved.attachment != null && resolved.reference.isImage -> ""
+        else -> resolved.reference.fallbackLabel
+      }
+      rewritten = rewritten.replace(resolved.reference.raw, replacement)
+    }
+    return cleanupTranscriptAttachmentMarkdownText(rewritten)
+  }
+
+  private fun cleanupTranscriptAttachmentMarkdownText(text: String): String = text
+    .replace(Regex("""[ \t]+\n"""), "\n")
+    .replace(Regex("""\n[ \t]+"""), "\n")
+    .replace(Regex("""\n{3,}"""), "\n\n")
+    .trim()
+
+  private fun parseTranscriptAttachmentMarkdownReferences(
+    text: String,
+  ): List<TranscriptAttachmentMarkdownReference> =
+    TRANSCRIPT_ATTACHMENT_MARKDOWN_REFERENCE_REGEX.findAll(text)
+      .mapNotNull { match ->
+        val href = match.groupValues[3]
+          .trim()
+          .substringBefore(' ')
+          .trim()
+        if (!isTranscriptAttachmentMarkdownHref(href)) {
+          return@mapNotNull null
+        }
+        val normalizedHref = href
+          .removePrefix("attachment:")
+          .removePrefix("//")
+          .trim()
+        TranscriptAttachmentMarkdownReference(
+          raw = match.value,
+          label = match.groupValues[2].trim(),
+          targetToken = normalizeTranscriptAttachmentMarkdownToken(normalizedHref),
+          isImage = match.groupValues[1] == "!",
+        )
+      }
+      .toList()
+
+  private fun dedupeTranscriptAttachments(
+    attachments: List<RuntimeConversationAttachment>,
+  ): List<RuntimeConversationAttachment> {
+    val seen = linkedSetOf<String>()
+    return attachments.filter { attachment ->
+      val key = attachment.attachmentId
+        .trim()
+        .takeIf(String::isNotBlank)
+        ?.let { attachmentId -> "id:$attachmentId" }
+        ?: attachment.filePath
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?.let { filePath -> "path:$filePath" }
+        ?: attachment.displayName
+          .trim()
+          .takeIf(String::isNotBlank)
+          ?.lowercase(Locale.US)
+          ?.let { displayName -> "name:$displayName" }
+        ?: return@filter false
+      seen.add(key)
+    }
+  }
+
+  private fun isPersistedDraftAssistantPhase(
+    event: OpenCrayAssistantEvent,
+  ): Boolean = event.stage
+    ?.trim()
+    ?.equals(PERSISTED_DRAFT_ASSISTANT_STAGE, ignoreCase = true) == true
+
+  private fun isLlmRetryPausedResult(
+    result: ExecutionResult,
+  ): Boolean = result.status == ExecutionStatus.FAILED &&
+    result.errorCode == ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
+
+  private fun transcriptFinalTextFallback(result: ExecutionResult): String = when (result.status) {
+    ExecutionStatus.DENIED -> transcriptApprovalFallbackText(result.errorCode)
+    else -> TRANSCRIPT_AGENT_INTERNAL_PAYLOAD_HIDDEN
+  }
+
+  private fun transcriptApprovalFallbackText(errorCode: String?): String = if (
+    errorCode == TRANSCRIPT_ERROR_HIGH_RISK_APPROVAL_REQUIRED
+  ) {
+    TRANSCRIPT_HIGH_RISK_APPROVAL_REQUIRED_BODY
+  } else {
+    TRANSCRIPT_APPROVAL_REQUIRED_BODY
+  }
+
+  private fun transcriptAgentFailedText(detail: String): String = "Failed: $detail"
 
   private fun buildToolCallReplayContent(event: OpenCrayToolResultEvent): String =
     encodeReplayJsonObject {
@@ -1656,16 +3460,141 @@ internal class AppAgentSessionTaskRuntimeFactory(
 
   companion object {
     const val ERROR_CODE_MISSING_LLM_CONFIG: String = "MISSING_LLM_CONFIG"
+    const val ERROR_CODE_ON_DEVICE_LLM_NOT_SUPPORTED: String = "ON_DEVICE_LLM_NOT_SUPPORTED"
     const val METADATA_HOST_PREFIX: String = "_host."
     const val HOST_METADATA_PROVIDER_ID: String = "${METADATA_HOST_PREFIX}providerId"
+    const val HOST_METADATA_BASE_URL: String = "${METADATA_HOST_PREFIX}baseUrl"
     const val METADATA_RUN_ID: String = "${METADATA_HOST_PREFIX}runId"
     const val METADATA_HOST_SESSION_ID: String = "${METADATA_HOST_PREFIX}sessionId"
     const val METADATA_PENDING_MESSAGE_ID: String = "${METADATA_HOST_PREFIX}pendingMessageId"
     const val METADATA_VISIBLE_THROUGH_MESSAGE_ID: String = "${METADATA_HOST_PREFIX}visibleThroughMessageId"
     const val METADATA_PROMPT_USER_TEXT: String = "${METADATA_HOST_PREFIX}promptUserText"
     const val METADATA_PROMPT_RUNTIME_ATTACHMENTS_JSON: String = "${METADATA_HOST_PREFIX}promptRuntimeAttachmentsJson"
+    const val PERSISTED_DRAFT_ASSISTANT_STAGE: String = "Draft"
+    private const val TRANSCRIPT_ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
+    private const val TRANSCRIPT_AGENT_CANCELLED: String = "Interrupted"
+    private const val TRANSCRIPT_AGENT_MISSING_LLM: String = "Missing LLM"
+    private const val TRANSCRIPT_AGENT_INTERNAL_PAYLOAD_HIDDEN: String =
+      "The agent produced an internal tool payload instead of a user-facing reply."
+    private const val TRANSCRIPT_APPROVAL_REQUIRED_BODY: String =
+      "Approval required before the agent can continue."
+    private const val TRANSCRIPT_HIGH_RISK_APPROVAL_REQUIRED_BODY: String =
+      "High-risk approval required. Review this request carefully before approving."
     fun isLlmVisibleMetadataKey(key: String): Boolean = !key.startsWith(METADATA_HOST_PREFIX)
+
+    private fun defaultProviderClient(
+      providerUserAgent: String,
+    ): LiteLlmProviderClient = AppConfiguredLiteLlmProviderClient(
+      cloudProviderClient = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = providerUserAgent,
+        streamUpdateMinIntervalMs = 40L,
+      ),
+      onDeviceProviderClient = LiteRtOnDeviceLlmProviderClient(
+        runtime = LiteRtOnDeviceRuntime(
+          installStore = InMemoryLiteRtOnDeviceModelInstallStore(),
+        ),
+      ),
+    )
   }
+}
+
+private data class FinalTranscriptTurnSnapshot(
+  val text: String,
+  val attachments: List<RuntimeConversationAttachment>,
+)
+
+private data class TranscriptAttachmentMarkdownCompatibility(
+  val rewrittenText: String,
+  val attachments: List<RuntimeConversationAttachment> = emptyList(),
+)
+
+private data class TranscriptAttachmentMarkdownReference(
+  val raw: String,
+  val label: String,
+  val targetToken: String,
+  val isImage: Boolean,
+) {
+  val fallbackLabel: String
+    get() = label.ifBlank { targetToken.substringAfterLast('/').trim() }
+}
+
+private data class TranscriptResolvedAttachmentMarkdownReference(
+  val reference: TranscriptAttachmentMarkdownReference,
+  val attachment: TranscriptAttachmentMarkdownCandidate?,
+)
+
+private data class TranscriptAttachmentMarkdownCandidate(
+  val attachmentId: String? = null,
+  val relativePath: String,
+  val displayName: String,
+  val kindHint: String? = null,
+  val mimeType: String? = null,
+  val transcriptText: String? = null,
+  val artifactId: String? = null,
+  val filePath: String? = null,
+) {
+  private val normalizedRelativePath: String = normalizeTranscriptAttachmentMarkdownToken(relativePath)
+  private val normalizedDisplayName: String = normalizeTranscriptAttachmentMarkdownToken(displayName)
+  private val normalizedBaseName: String = normalizedRelativePath.substringAfterLast('/')
+  private val normalizedArtifactId: String? = artifactId
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?.lowercase(Locale.US)
+  private val normalizedAttachmentId: String? = attachmentId
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?.lowercase(Locale.US)
+
+  val isImageLike: Boolean
+    get() = kindHint?.trim()?.lowercase(Locale.US) == "image" ||
+      mimeType?.trim()?.lowercase(Locale.US)?.startsWith("image/") == true ||
+      TRANSCRIPT_IMAGE_ATTACHMENT_EXTENSIONS.contains(normalizedDisplayName.substringAfterLast('.', ""))
+
+  fun matches(
+    token: String,
+    includeArtifactId: Boolean = true,
+    includeAttachmentId: Boolean = true,
+  ): Boolean {
+    val normalizedToken = normalizeTranscriptAttachmentMarkdownToken(token)
+    if (normalizedToken.isBlank()) {
+      return false
+    }
+    return normalizedToken == normalizedRelativePath ||
+      normalizedToken == normalizedDisplayName ||
+      normalizedToken == normalizedBaseName ||
+      (includeAttachmentId && normalizedToken == normalizedAttachmentId) ||
+      (includeArtifactId && normalizedToken == normalizedArtifactId)
+  }
+
+  fun toRuntimeConversationAttachment(
+    forceImage: Boolean,
+  ): RuntimeConversationAttachment = RuntimeConversationAttachment(
+    attachmentId = attachmentId
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: artifactId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+      ?: filePath
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.hashCode()
+        ?.toString()
+      ?: normalizeTranscriptAttachmentMarkdownToken(relativePath),
+    kind = when {
+      forceImage -> RuntimeConversationAttachmentKind.IMAGE
+      kindHint?.trim()?.equals("image", ignoreCase = true) == true -> RuntimeConversationAttachmentKind.IMAGE
+      kindHint?.trim()?.equals("voice", ignoreCase = true) == true -> RuntimeConversationAttachmentKind.VOICE
+      kindHint?.trim()?.equals("audio", ignoreCase = true) == true -> RuntimeConversationAttachmentKind.AUDIO
+      mimeType?.trim()?.lowercase(Locale.US)?.startsWith("image/") == true ->
+        RuntimeConversationAttachmentKind.IMAGE
+      else -> RuntimeConversationAttachmentKind.FILE
+    },
+    displayName = displayName,
+    filePath = filePath,
+    mimeType = mimeType,
+    transcriptText = transcriptText,
+  )
 }
 
 internal data class PreparedSessionContext(
@@ -1682,11 +3611,8 @@ internal fun mediaToolSettingsFor(
   mediaSettings: MediaSpeechSettingsState,
   llmSettings: LlmSettingsState,
 ): OpenCrayMediaToolSettings {
-  val authHeaders = LlmProviderProtocols.authHeaders(
-    protocol = llmSettings.protocol,
-    apiKey = llmSettings.apiKey,
-  )
   val imageSettings = mediaSettings.imageGeneration
+  val videoSettings = mediaSettings.videoGeneration
   val voiceSettings = mediaSettings.voiceGeneration
   return OpenCrayMediaToolSettings(
     imageGeneration = OpenCrayImageGenerationSettings(
@@ -1694,15 +3620,31 @@ internal fun mediaToolSettingsFor(
       baseUrl = imageSettings.baseUrl,
       endpoint = imageSettings.endpoint,
       model = imageSettings.model,
-      authHeaders = authHeaders,
+      authHeaders = ProviderAuthProtocols.authHeaders(
+        protocol = imageSettings.authProtocol,
+        apiKey = imageSettings.apiKey,
+      ),
+    ),
+    videoGeneration = OpenCrayVideoGenerationSettings(
+      provider = videoSettings.provider,
+      baseUrl = videoSettings.baseUrl,
+      endpoint = videoSettings.endpoint,
+      model = videoSettings.model,
+      authHeaders = ProviderAuthProtocols.authHeaders(
+        protocol = videoSettings.authProtocol,
+        apiKey = videoSettings.apiKey,
+      ),
     ),
     speechSynthesis = OpenCraySpeechSynthesisSettings(
       provider = voiceSettings.provider,
       baseUrl = voiceSettings.baseUrl,
       endpoint = voiceSettings.endpoint,
-      defaultModel = OpenCraySpeechSynthesisSettings.DEFAULT_MODEL,
+      defaultModel = voiceSettings.model,
       defaultVoice = mediaVoiceIdFromPreset(voiceSettings.voicePreset),
-      authHeaders = authHeaders,
+      authHeaders = ProviderAuthProtocols.authHeaders(
+        protocol = voiceSettings.authProtocol,
+        apiKey = voiceSettings.apiKey,
+      ),
     ),
   )
 }
@@ -1771,3 +3713,45 @@ private const val ERROR_CODE_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE: String =
   "PROCESS_INTERRUPTED_ON_RESTORE"
 private const val METADATA_KEY_RESTORED_TERMINAL_STATE: String = "restoredTerminalState"
 private const val RESTORED_TERMINAL_STATE_VALUE_INTERRUPTED: String = "interrupted"
+
+private val TRANSCRIPT_ATTACHMENT_MARKDOWN_REFERENCE_REGEX: Regex =
+  Regex("""(!?)\[([^\]]*)]\(([^)]+)\)""")
+
+private val TRANSCRIPT_IMAGE_ATTACHMENT_EXTENSIONS: Set<String> = setOf(
+  "apng",
+  "avif",
+  "bmp",
+  "gif",
+  "jpeg",
+  "jpg",
+  "png",
+  "svg",
+  "webp",
+)
+
+private fun normalizeTranscriptAttachmentMarkdownToken(value: String): String = value
+  .trim()
+  .removePrefix("/")
+  .replace('\\', '/')
+  .lowercase(Locale.US)
+
+private fun isTranscriptAttachmentMarkdownHref(href: String): Boolean {
+  val normalized = href.trim()
+  if (normalized.isBlank()) {
+    return false
+  }
+  if (normalized.startsWith("attachment:", ignoreCase = true)) {
+    return true
+  }
+  return !listOf("http://", "https://", "mailto:", "data:").any { prefix ->
+    normalized.startsWith(prefix, ignoreCase = true)
+  }
+}
+
+private fun com.opencray.persistence.model.ChatAttachmentKind.toTranscriptAttachmentKindHint(): String =
+  when (this) {
+    com.opencray.persistence.model.ChatAttachmentKind.IMAGE -> "image"
+    com.opencray.persistence.model.ChatAttachmentKind.VOICE -> "voice"
+    com.opencray.persistence.model.ChatAttachmentKind.AUDIO -> "audio"
+    com.opencray.persistence.model.ChatAttachmentKind.FILE -> "file"
+  }

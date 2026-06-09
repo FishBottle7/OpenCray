@@ -61,7 +61,9 @@ class LiteLlmSoulTurnSignalInterpreterTest {
     assertEquals(true, success.signal.clarificationNeeded)
     assertEquals("gpt-4o-mini", providerClient.lastRequest?.route?.model)
     assertEquals("Bearer test-key", providerClient.lastRequest?.request?.authHeaders?.get("Authorization"))
-    val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
+    val gatewayRequest = providerClient.lastRequest?.request
+    val prompt = gatewayRequest?.prompt.orEmpty()
+    assertTrue(prompt.contains(gatewayRequest?.messages?.single()?.content?.trim().orEmpty()))
     assertTrue(prompt.contains("clarification_needed means the assistant likely still needs at least one missing fact"))
     assertTrue(prompt.contains("Current user message:"))
     assertTrue(prompt.contains("Recent conversation before the current user message:"))
@@ -98,6 +100,35 @@ class LiteLlmSoulTurnSignalInterpreterTest {
     )
 
     assertTrue(result is SoulTurnSemanticSignalInterpretation.Unavailable)
+  }
+
+  @Test
+  fun interpretReturnsUnavailableWhenOnDeviceModeIsSelected() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(outputText = "{}"),
+    )
+    val interpreter = LiteLlmSoulTurnSignalInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          selectedOnDeviceModelId = "gemma-4-e2b-it",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    val result = interpreter.interpret(
+      SoulTurnSemanticSignalRequest(
+        sessionId = "session-on-device",
+        taskId = "task-on-device",
+        userInput = "继续。",
+      ),
+    )
+
+    val unavailable = result as SoulTurnSemanticSignalInterpretation.Unavailable
+    assertTrue(unavailable.reason.orEmpty().contains("On-device LLM mode"))
+    assertTrue(providerClient.lastRequest == null)
   }
 
   private class RecordingProviderClient(

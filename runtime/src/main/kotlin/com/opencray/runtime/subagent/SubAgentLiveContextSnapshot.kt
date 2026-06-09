@@ -12,6 +12,10 @@ data class SubAgentLiveContextSnapshot(
   val canonicalSource: String? = null,
   val canonicalMessageCount: Int? = null,
   val canonicalHistoryPreserved: Boolean? = null,
+  val inheritanceSource: String? = null,
+  val parentMode: String? = null,
+  val parentReplayMessageCount: Int? = null,
+  val budgetPreset: String? = null,
 ) {
   val isEmpty: Boolean
     get() = mode.isNullOrBlank() &&
@@ -21,7 +25,11 @@ data class SubAgentLiveContextSnapshot(
       replayMessageCount == null &&
       canonicalSource.isNullOrBlank() &&
       canonicalMessageCount == null &&
-      canonicalHistoryPreserved == null
+      canonicalHistoryPreserved == null &&
+      inheritanceSource.isNullOrBlank() &&
+      parentMode.isNullOrBlank() &&
+      parentReplayMessageCount == null &&
+      budgetPreset.isNullOrBlank()
 
   fun toMetadataMap(
     prefix: String = CHILD_METADATA_PREFIX,
@@ -39,6 +47,10 @@ data class SubAgentLiveContextSnapshot(
       canonicalHistoryPreserved?.let {
         put("${prefix}CanonicalHistoryPreserved", it.toString())
       }
+      inheritanceSource?.let { put("${prefix}InheritanceSource", it) }
+      parentMode?.let { put("${prefix}ParentMode", it) }
+      parentReplayMessageCount?.let { put("${prefix}ParentReplayMessageCount", it.toString()) }
+      budgetPreset?.let { put("${prefix}BudgetPreset", it) }
     }
   }
 
@@ -54,6 +66,10 @@ data class SubAgentLiveContextSnapshot(
       canonicalSource?.let { put("canonicalSource", it) }
       canonicalMessageCount?.let { put("canonicalMessageCount", it) }
       canonicalHistoryPreserved?.let { put("canonicalHistoryPreserved", it) }
+      inheritanceSource?.let { put("inheritanceSource", it) }
+      parentMode?.let { put("parentMode", it) }
+      parentReplayMessageCount?.let { put("parentReplayMessageCount", it) }
+      budgetPreset?.let { put("budgetPreset", it) }
     }
   }
 
@@ -76,6 +92,12 @@ data class SubAgentLiveContextSnapshot(
         metadataPreferringChild(metadata, "CanonicalMessageCount")?.toIntOrNull(),
       canonicalHistoryPreserved =
         metadataPreferringChild(metadata, "CanonicalHistoryPreserved")?.toBooleanStrictOrNull(),
+      inheritanceSource =
+        metadataPreferringChild(metadata, "InheritanceSource")?.takeIf(String::isNotBlank),
+      parentMode = metadataPreferringChild(metadata, "ParentMode")?.takeIf(String::isNotBlank),
+      parentReplayMessageCount =
+        metadataPreferringChild(metadata, "ParentReplayMessageCount")?.toIntOrNull(),
+      budgetPreset = metadataPreferringChild(metadata, "BudgetPreset")?.takeIf(String::isNotBlank),
     )
 
     private fun metadataPreferringChild(

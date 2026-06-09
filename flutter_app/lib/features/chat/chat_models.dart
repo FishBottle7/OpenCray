@@ -80,11 +80,14 @@ class ChatRunTraceData {
   const ChatRunTraceData({
     required this.runId,
     required this.taskId,
+    this.anchorMessageId = '',
     required this.label,
     required this.body,
     this.history = const <ChatRunTraceHistoryEntry>[],
     this.isHighRisk = false,
+    this.isTerminal = false,
     this.canInterrupt = false,
+    this.isWritingAssistantDraft = false,
     this.retryLabel,
     this.previewCard,
     this.sessionCard,
@@ -92,11 +95,14 @@ class ChatRunTraceData {
 
   final String runId;
   final String taskId;
+  final String anchorMessageId;
   final String label;
   final String body;
   final List<ChatRunTraceHistoryEntry> history;
   final bool isHighRisk;
+  final bool isTerminal;
   final bool canInterrupt;
+  final bool isWritingAssistantDraft;
   final String? retryLabel;
   final ChatRunTracePreviewCardData? previewCard;
   final ChatRunTraceSandboxSessionCardData? sessionCard;
@@ -256,8 +262,10 @@ class ChatMessageData {
     required this.kind,
     required this.text,
     this.meta = '',
+    this.runtimeAnchorMessageId = '',
     this.createdAtEpochMs,
     this.isEphemeral = false,
+    this.isStreaming = false,
     this.attachments = const <ChatMessageAttachmentData>[],
   });
 
@@ -265,8 +273,10 @@ class ChatMessageData {
   final ChatMessageKind kind;
   final String text;
   final String meta;
+  final String runtimeAnchorMessageId;
   final int? createdAtEpochMs;
   final bool isEphemeral;
+  final bool isStreaming;
   final List<ChatMessageAttachmentData> attachments;
 }
 

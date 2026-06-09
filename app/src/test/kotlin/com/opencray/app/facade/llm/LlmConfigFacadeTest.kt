@@ -1,9 +1,15 @@
 package com.opencray.app.facade.llm
 
 import com.opencray.app.InMemoryLlmSettingsKeyValueStore
+import com.opencray.app.InMemoryLiteRtOnDeviceModelInstallStore
+import com.opencray.app.LiteRtOnDeviceModelInstallRecord
+import com.opencray.app.LlmProviderModes
 import com.opencray.app.LlmProviderProtocols
 import com.opencray.app.LlmSettingsState
 import com.opencray.app.LlmSettingsStore
+import com.opencray.app.OnDeviceLlmCatalog
+import com.opencray.app.OnDeviceLlmAccelerators
+import com.opencray.app.OnDeviceLlmDownloadStates
 import com.opencray.app.runtimeMetadataOverrides
 import com.opencray.llm.LiteLlmBuiltinToolType
 import com.opencray.llm.LiteLlmMetadataKeys
@@ -216,6 +222,7 @@ class LlmConfigFacadeTest {
     assertEquals("true", providerClient.requests[0].route.metadata["pdfInputSupported"])
     assertEquals("Bearer test-key", providerClient.requests[0].request.authHeaders["Authorization"])
     assertEquals("Reply with OK.", providerClient.requests[0].request.prompt)
+    assertEquals("Reply with OK.", providerClient.requests[0].request.messages.single().content)
     assertEquals("capability_probe", providerClient.requests[1].request.tools.single().name)
     assertNull(providerClient.requests[1].request.toolChoice)
     assertEquals(LiteLlmToolChoiceMode.TOOL, providerClient.requests[2].request.toolChoice?.mode)
@@ -409,6 +416,55 @@ class LlmConfigFacadeTest {
   }
 
   @Test
+  fun validateOmitsOfficialOpenAiMetadataAndBuiltinWebSearchForPresetWithCustomBaseUrl() {
+    val providerClient = RecordingProviderClient(
+      LiteLlmProviderResult.Success(outputText = "OK"),
+      capabilityProbeResult(expectedEcho = "native_tool_probe"),
+      capabilityProbeResult(expectedEcho = "tool_choice_probe"),
+      capabilityProbeResult(expectedEcho = "strict_schema_probe"),
+      parallelCapabilityProbeResult(),
+      LiteLlmProviderResult.Success(
+        outputText = "READY",
+        providerResponseId = "resp_seed",
+      ),
+      LiteLlmProviderResult.Success(
+        outputText = "responses_continuation_probe_token",
+      ),
+      LiteLlmProviderResult.Success(
+        outputText = "OK",
+        metadata = mapOf(
+          LiteLlmMetadataKeys.RESPONSES_COMMENTARY_PHASE_OBSERVED to "true",
+          LiteLlmMetadataKeys.RESPONSES_FINAL_PHASE_OBSERVED to "true",
+        ),
+      ),
+    )
+    val facade = LocalLlmConfigFacade.create(
+      llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
+      providerClient = providerClient,
+    )
+
+    val result = facade.validate(
+      ValidateLlmConfigRequest(
+        providerId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://third-party.example/v1",
+        apiKey = "test-key",
+        model = "gpt-5-mini",
+        reasoningEffort = "medium",
+      ),
+    )
+
+    assertTrue(result.isSuccess)
+    assertTrue(result.agentCapability?.responsesContinuationSupported == true)
+    assertTrue(result.agentCapability?.assistantPhaseSupported == true)
+    assertFalse(result.agentCapability?.builtinWebSearchSupported == true)
+    assertEquals(8, providerClient.requests.size)
+    assertEquals("openai_responses", providerClient.requests.first().route.metadata["protocol"])
+    assertNull(providerClient.requests.first().route.metadata["reasoning_effort"])
+    assertTrue(providerClient.requests.none { request -> request.request.builtinTools.isNotEmpty() })
+  }
+
+  @Test
   fun validateFailsWhenNativeToolCallingCannotBeVerified() {
     val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
     val providerClient = RecordingProviderClient(
@@ -522,7 +578,39 @@ class LlmConfigFacadeTest {
   }
 
   @Test
-  fun validateOpenAiProtocolCapturesBuiltinWebSearchCapability() {
+  fun validateSkipsBuiltinWebSearchProbeForCustomAnthropicBaseUrl() {
+    val providerClient = RecordingProviderClient(
+      LiteLlmProviderResult.Success(outputText = "OK"),
+      capabilityProbeResult(expectedEcho = "native_tool_probe"),
+      capabilityProbeResult(expectedEcho = "tool_choice_probe"),
+      capabilityProbeResult(expectedEcho = "strict_schema_probe"),
+      parallelCapabilityProbeResult(),
+    )
+    val facade = LocalLlmConfigFacade.create(
+      llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
+      providerClient = providerClient,
+    )
+
+    val result = facade.validate(
+      ValidateLlmConfigRequest(
+        providerId = "custom",
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://third-party.example/anthropic",
+        apiKey = "anthropic-secret",
+        model = "claude-3-7-sonnet",
+        reasoningEffort = "high",
+      ),
+    )
+
+    assertTrue(result.isSuccess)
+    assertFalse(result.agentCapability?.builtinWebSearchSupported == true)
+    assertEquals(5, providerClient.requests.size)
+    assertNull(providerClient.requests.first().route.metadata["thinking_budget_tokens"])
+    assertTrue(providerClient.requests.none { request -> request.request.builtinTools.isNotEmpty() })
+  }
+
+  @Test
+  fun validateOpenAiProtocolCapturesOfficialBuiltinWebSearchCapability() {
     val providerClient = RecordingProviderClient(
       LiteLlmProviderResult.Success(outputText = "OK"),
       capabilityProbeResult(expectedEcho = "native_tool_probe"),
@@ -545,11 +633,11 @@ class LlmConfigFacadeTest {
 
     val result = facade.validate(
       ValidateLlmConfigRequest(
-        providerId = "custom",
+        providerId = "openai",
         protocol = LlmProviderProtocols.OPENAI,
-        baseUrl = "https://open.bigmodel.cn/api/paas/v4",
+        baseUrl = "https://api.openai.com/v1",
         apiKey = "test-key",
-        model = "glm-4.6",
+        model = "gpt-4o-mini",
         reasoningEffort = "medium",
       ),
     )
@@ -566,8 +654,8 @@ class LlmConfigFacadeTest {
       store.load(
         defaults = LlmSettingsState(
           protocol = LlmProviderProtocols.OPENAI,
-          baseUrl = "https://open.bigmodel.cn/api/paas/v4",
-          model = "glm-4.6",
+          baseUrl = "https://api.openai.com/v1",
+          model = "gpt-4o-mini",
         ),
       ).agentCapability.builtinWebSearchSupported,
     )
@@ -802,6 +890,273 @@ class LlmConfigFacadeTest {
     assertEquals(OPENAI_PROMPT_CACHE_RETENTION_IN_MEMORY, snapshot.openAiPromptCacheRetention)
     assertTrue(snapshot.anthropicPromptCachingEnabled == true)
     assertEquals(ANTHROPIC_PROMPT_CACHE_TTL_1H, snapshot.anthropicPromptCacheTtl)
+  }
+
+  @Test
+  fun loadIncludesOnDeviceCatalogDefaults() {
+    val facade = LocalLlmConfigFacade.create(
+      llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
+      providerClient = RecordingProviderClient(
+        LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+    )
+
+    val snapshot = facade.load()
+
+    assertEquals(LlmProviderModes.CLOUD, snapshot.providerMode)
+    assertEquals("gemma-4-e2b-it", snapshot.selectedOnDeviceModelId)
+    assertEquals(32768, snapshot.onDeviceMaxContextWindow)
+    assertEquals(4096, snapshot.onDeviceMaxTokens)
+    assertEquals(40, snapshot.onDeviceTopK)
+    assertEquals(0.95, snapshot.onDeviceTopP, 0.0)
+    assertEquals(0.70, snapshot.onDeviceTemperature, 0.0)
+    assertEquals(OnDeviceLlmAccelerators.GPU, snapshot.onDeviceAccelerator)
+    assertFalse(snapshot.onDeviceThinkingEnabled)
+    assertFalse(snapshot.onDeviceLiteModeEnabled)
+    assertEquals(2, snapshot.onDeviceModels.size)
+    assertEquals("gemma-4-e2b-it", snapshot.onDeviceModels[0].id)
+    assertEquals(OnDeviceLlmDownloadStates.NOT_DOWNLOADED, snapshot.onDeviceModels[0].installState)
+    assertEquals("gemma-4-e4b-it", snapshot.onDeviceModels[1].id)
+    assertEquals(OnDeviceLlmDownloadStates.NOT_DOWNLOADED, snapshot.onDeviceModels[1].installState)
+  }
+
+  @Test
+  fun loadIncludesPersistedOnDeviceInstallState() {
+    val gemmaE2b = checkNotNull(OnDeviceLlmCatalog.entry(OnDeviceLlmCatalog.GEMMA_4_E2B_IT))
+    val installedModelFile = java.nio.file.Files.createTempFile("gemma-e2b-", ".litertlm")
+      .toFile()
+      .apply { deleteOnExit() }
+    val installStore = InMemoryLiteRtOnDeviceModelInstallStore(
+      initialRecords = listOf(
+        LiteRtOnDeviceModelInstallRecord(
+          modelId = gemmaE2b.id,
+          versionTag = gemmaE2b.versionTag,
+          sourceUrl = gemmaE2b.sourceUrl,
+          localFilePath = installedModelFile.absolutePath,
+          fileSizeBytes = gemmaE2b.fileSizeBytes,
+          sha256 = gemmaE2b.sha256,
+          installState = OnDeviceLlmDownloadStates.READY,
+          downloadedBytes = gemmaE2b.fileSizeBytes,
+          installedAtEpochMs = 123L,
+          sha256Verified = true,
+        ),
+      ),
+    )
+    val facade = LocalLlmConfigFacade.create(
+      llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
+      providerClient = RecordingProviderClient(
+        LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+      onDeviceModelInstallStore = installStore,
+    )
+
+    val snapshot = facade.load()
+    val readyModel = snapshot.onDeviceModels.first { option ->
+      option.id == OnDeviceLlmCatalog.GEMMA_4_E2B_IT
+    }
+
+    assertEquals(OnDeviceLlmDownloadStates.READY, readyModel.installState)
+    assertEquals(gemmaE2b.fileSizeBytes, readyModel.downloadedBytes)
+    assertTrue(readyModel.sha256Verified)
+  }
+
+  @Test
+  fun saveOnDeviceModeDoesNotRequireCloudUrlOrModel() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val gemmaE4b = checkNotNull(OnDeviceLlmCatalog.entry(OnDeviceLlmCatalog.GEMMA_4_E4B_IT))
+    val installedModelFile = java.nio.file.Files.createTempFile("gemma-e4b-", ".litertlm")
+      .toFile()
+      .apply { deleteOnExit() }
+    val installStore = InMemoryLiteRtOnDeviceModelInstallStore(
+      initialRecords = listOf(
+        LiteRtOnDeviceModelInstallRecord(
+          modelId = gemmaE4b.id,
+          versionTag = gemmaE4b.versionTag,
+          sourceUrl = gemmaE4b.sourceUrl,
+          localFilePath = installedModelFile.absolutePath,
+          fileSizeBytes = gemmaE4b.fileSizeBytes,
+          sha256 = gemmaE4b.sha256,
+          installState = OnDeviceLlmDownloadStates.READY,
+          downloadedBytes = gemmaE4b.fileSizeBytes,
+          installedAtEpochMs = 456L,
+          sha256Verified = true,
+        ),
+      ),
+    )
+    val facade = LocalLlmConfigFacade.create(
+      llmSettingsStore = store,
+      providerClient = RecordingProviderClient(
+        LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+      onDeviceModelInstallStore = installStore,
+    )
+
+    val snapshot = facade.save(
+      SaveLlmConfigRequest(
+        enabled = true,
+        providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+        providerId = "openai",
+        selectedProviderOptionId = "openai",
+        protocol = LlmProviderProtocols.OPENAI,
+        providerName = "OpenAI",
+        providerNotes = "",
+        baseUrl = "",
+        apiKey = "",
+        model = "",
+        reasoningEffort = "medium",
+        systemPrompt = "Stay concise.",
+        selectedOnDeviceModelId = "gemma-4-e4b-it",
+        onDeviceMaxContextWindow = 16384,
+        onDeviceMaxTokens = 2048,
+        onDeviceTopK = 24,
+        onDeviceTopP = 0.9,
+        onDeviceTemperature = 0.4,
+        onDeviceAccelerator = OnDeviceLlmAccelerators.CPU,
+        onDeviceThinkingEnabled = true,
+        onDeviceLiteModeEnabled = true,
+      ),
+    )
+
+    assertTrue(snapshot.enabled)
+    assertEquals(LlmProviderModes.ON_DEVICE_MODEL, snapshot.providerMode)
+    assertEquals("", snapshot.baseUrl)
+    assertEquals("", snapshot.model)
+    assertEquals("gemma-4-e4b-it", snapshot.selectedOnDeviceModelId)
+    assertEquals(16384, snapshot.onDeviceMaxContextWindow)
+    assertEquals(2048, snapshot.onDeviceMaxTokens)
+    assertEquals(24, snapshot.onDeviceTopK)
+    assertEquals(0.9, snapshot.onDeviceTopP, 0.0)
+    assertEquals(0.4, snapshot.onDeviceTemperature, 0.0)
+    assertEquals(OnDeviceLlmAccelerators.CPU, snapshot.onDeviceAccelerator)
+    assertTrue(snapshot.onDeviceThinkingEnabled)
+    assertTrue(snapshot.onDeviceLiteModeEnabled)
+
+    val stored = store.load()
+    assertTrue(stored.enabled)
+    assertEquals(LlmProviderModes.ON_DEVICE_MODEL, stored.providerMode)
+    assertEquals("", stored.baseUrl)
+    assertEquals("", stored.model)
+    assertEquals("gemma-4-e4b-it", stored.selectedOnDeviceModelId)
+    assertTrue(stored.onDeviceLiteModeEnabled)
+  }
+
+  @Test
+  fun savePersistsContextBudgetSettings() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val facade = LocalLlmConfigFacade.create(
+      llmSettingsStore = store,
+      providerClient = RecordingProviderClient(
+        LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+    )
+
+    val snapshot = facade.save(
+      SaveLlmConfigRequest(
+        enabled = true,
+        providerId = "openai",
+        selectedProviderOptionId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        providerName = "OpenAI",
+        providerNotes = "",
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        reasoningEffort = "medium",
+        systemPrompt = "Be concise.",
+        contextBudgetPreset = "expanded",
+        contextBudgetReservedOutputTokens = 3072,
+        contextBudgetSafetyMarginTokens = 1536,
+        contextBudgetEffectiveInputPercent = 0.92,
+      ),
+    )
+
+    assertEquals("expanded", snapshot.contextBudgetPreset)
+    assertEquals(3072, snapshot.contextBudgetReservedOutputTokens)
+    assertEquals(1536, snapshot.contextBudgetSafetyMarginTokens)
+    assertEquals(0.92, snapshot.contextBudgetEffectiveInputPercent ?: 0.0, 0.0001)
+
+    val stored = store.load(
+      defaults = LlmSettingsState(
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+      ),
+    )
+    assertEquals("expanded", stored.contextBudgetPreset)
+    assertEquals(3072, stored.contextBudgetReservedOutputTokens)
+    assertEquals(1536, stored.contextBudgetSafetyMarginTokens)
+    assertEquals(0.92, stored.contextBudgetEffectiveInputPercent ?: 0.0, 0.0001)
+  }
+
+  @Test
+  fun savePreservesOrClearsContextBudgetSettingsBasedOnExplicitPayload() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    store.save(
+      LlmSettingsState(
+        enabled = true,
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        contextBudgetPreset = "expanded",
+        contextBudgetReservedOutputTokens = 3072,
+        contextBudgetSafetyMarginTokens = 1536,
+        contextBudgetEffectiveInputPercent = 0.92,
+      ),
+    )
+    val facade = LocalLlmConfigFacade.create(
+      llmSettingsStore = store,
+      providerClient = RecordingProviderClient(
+        LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+    )
+
+    val preserved = facade.save(
+      SaveLlmConfigRequest(
+        enabled = true,
+        providerId = "openai",
+        selectedProviderOptionId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        providerName = "OpenAI",
+        providerNotes = "",
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        reasoningEffort = "medium",
+        systemPrompt = "Stay concise.",
+      ),
+    )
+
+    assertEquals("expanded", preserved.contextBudgetPreset)
+    assertEquals(3072, preserved.contextBudgetReservedOutputTokens)
+    assertEquals(1536, preserved.contextBudgetSafetyMarginTokens)
+    assertEquals(0.92, preserved.contextBudgetEffectiveInputPercent ?: 0.0, 0.0001)
+
+    val cleared = facade.save(
+      SaveLlmConfigRequest(
+        enabled = true,
+        providerId = "openai",
+        selectedProviderOptionId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        providerName = "OpenAI",
+        providerNotes = "",
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        reasoningEffort = "medium",
+        systemPrompt = "Stay concise.",
+        contextBudgetPreset = "balanced",
+        contextBudgetReservedOutputTokens = null,
+        contextBudgetSafetyMarginTokens = null,
+        contextBudgetEffectiveInputPercent = null,
+      ),
+    )
+
+    assertEquals("balanced", cleared.contextBudgetPreset)
+    assertNull(cleared.contextBudgetReservedOutputTokens)
+    assertNull(cleared.contextBudgetSafetyMarginTokens)
+    assertNull(cleared.contextBudgetEffectiveInputPercent)
   }
 
   private class RecordingProviderClient(

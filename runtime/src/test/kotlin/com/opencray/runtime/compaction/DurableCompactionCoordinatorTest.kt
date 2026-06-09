@@ -1,5 +1,6 @@
 package com.opencray.runtime.compaction
 
+import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.TranscriptWindowBuilder
@@ -48,12 +49,60 @@ class DurableCompactionCoordinatorTest {
     assertTrue(context.text.contains("Older session history has been durably compacted into summaries."))
     assertTrue(context.text.contains("[Compacted History]"))
     assertTrue(context.trace.compactedThisRun)
+    assertEquals("pre_compaction", context.trace.triggerStage)
+    assertEquals(64, context.trace.contextWindowTokens)
+    assertEquals(57, context.trace.autoCompactTokenLimit)
+    assertTrue(context.trace.estimatedReplayTokens >= context.trace.autoCompactTokenLimit)
+    assertTrue(context.trace.tokenThresholdTriggered)
     assertEquals(8, context.trace.sourceTranscriptMessageCount)
     assertEquals(4, context.trace.retainedTranscriptMessageCount)
     assertEquals(4, context.trace.latestCompactedMessageCount)
     assertEquals(1, context.trace.includedSummaryCount)
     assertEquals(4, context.trace.totalCompactedMessageCount)
     assertEquals(5_000L, context.trace.latestCompactedAtEpochMs)
+  }
+
+  @Test
+  fun compactMidTurnStoresSummaryWithMaintenanceTaskAndEntryTrace() {
+    val transcriptStore = InMemorySessionTranscriptStore()
+    transcriptStore.seedIfEmpty(
+      listOf(
+        user("User request 1"),
+        assistant("Assistant reply 1"),
+        user("User request 2"),
+        assistant("Assistant reply 2"),
+        user("User request 3"),
+        assistant("Assistant reply 3"),
+        user("User request 4"),
+        assistant("Assistant reply 4"),
+      ),
+    )
+    val compactionStore = InMemorySessionCompactionStore()
+    val coordinator = DurableCompactionCoordinator(
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 4,
+          maxCharsPerMessage = 200,
+        ),
+      ),
+      clock = { 5_100L },
+    )
+
+    val context = coordinator.compactMidTurn(
+      transcriptStore = transcriptStore,
+      compactionStore = compactionStore,
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+    )
+
+    assertTrue(context.trace.compactedThisRun)
+    assertEquals("mid_turn", context.trace.triggerStage)
+    assertEquals("durable_compaction:mid_turn", context.trace.maintenanceTask)
+    assertEquals("inline", context.trace.executionMode)
+    assertEquals(4, transcriptStore.snapshot().size)
+    assertEquals(1, context.trace.entryTraces.size)
+    assertEquals(4, context.trace.entryTraces.single().compactedMessageCount)
+    assertEquals(2, context.trace.entryTraces.single().omittedUserMessageCount)
+    assertEquals(2, context.trace.entryTraces.single().omittedAssistantMessageCount)
   }
 
   @Test
@@ -140,10 +189,65 @@ class DurableCompactionCoordinatorTest {
     assertEquals(8, transcriptStore.snapshot().size)
     assertTrue(compactionStore.load().entries.isEmpty())
     assertFalse(context.trace.compactedThisRun)
+    assertEquals("pre_compaction", context.trace.triggerStage)
+    assertEquals(4096, context.trace.contextWindowTokens)
+    assertEquals(3686, context.trace.autoCompactTokenLimit)
+    assertTrue(context.trace.estimatedReplayTokens < context.trace.autoCompactTokenLimit)
+    assertFalse(context.trace.tokenThresholdTriggered)
     assertEquals(8, context.trace.sourceTranscriptMessageCount)
     assertEquals(8, context.trace.retainedTranscriptMessageCount)
     assertEquals(0, context.trace.latestCompactedMessageCount)
     assertFalse(context.included)
+  }
+
+  @Test
+  fun compactIfNeededCouplesTranscriptWindowToExpandedSourcePreset() {
+    val balancedTranscriptStore = InMemorySessionTranscriptStore()
+    balancedTranscriptStore.seedIfEmpty(
+      (1..16).map { index ->
+        if (index % 2 == 0) {
+          assistant("Assistant reply $index with enough content to keep replay pressure high.")
+        } else {
+          user("User request $index with enough content to keep replay pressure high.")
+        }
+      },
+    )
+    val expandedTranscriptStore = InMemorySessionTranscriptStore()
+    expandedTranscriptStore.seedIfEmpty(balancedTranscriptStore.snapshot())
+    val balancedCoordinator = DurableCompactionCoordinator(
+      sourceBudgetPolicy = ContextSourceBudgetPolicy(),
+      clock = { 5_000L },
+    )
+    val expandedCoordinator = DurableCompactionCoordinator(
+      sourceBudgetPolicy = ContextSourceBudgetPolicy(),
+      clock = { 5_000L },
+    )
+
+    val balancedContext = balancedCoordinator.compactIfNeeded(
+      transcriptStore = balancedTranscriptStore,
+      compactionStore = InMemorySessionCompactionStore(),
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+    )
+    val expandedContext = expandedCoordinator.compactIfNeeded(
+      transcriptStore = expandedTranscriptStore,
+      compactionStore = InMemorySessionCompactionStore(),
+      llmMetadata = mapOf(
+        "context_window_tokens" to "64",
+        "context_budget_preset" to "expanded",
+      ),
+    )
+
+    assertTrue(balancedContext.trace.compactedThisRun)
+    assertEquals("pre_compaction", balancedContext.trace.triggerStage)
+    assertEquals(64, balancedContext.trace.contextWindowTokens)
+    assertEquals(57, balancedContext.trace.autoCompactTokenLimit)
+    assertTrue(balancedContext.trace.tokenThresholdTriggered)
+    assertEquals(12, balancedContext.trace.retainedTranscriptMessageCount)
+    assertEquals(12, balancedTranscriptStore.snapshot().size)
+    assertFalse(expandedContext.trace.compactedThisRun)
+    assertEquals("pre_compaction", expandedContext.trace.triggerStage)
+    assertEquals(16, expandedContext.trace.retainedTranscriptMessageCount)
+    assertEquals(16, expandedTranscriptStore.snapshot().size)
   }
 
   private fun user(content: String): RuntimeConversationMessage =

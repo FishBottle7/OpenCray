@@ -98,7 +98,9 @@ class LiteLlmUserMemoryIntentInterpreterTest {
     assertEquals("low", providerClient.lastRequest?.route?.metadata?.get("reasoning_effort"))
     assertEquals("512", providerClient.lastRequest?.route?.metadata?.get("max_tokens"))
     assertEquals("0", providerClient.lastRequest?.route?.metadata?.get("temperature"))
-    val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
+    val gatewayRequest = providerClient.lastRequest?.request
+    val prompt = gatewayRequest?.prompt.orEmpty()
+    assertTrue(prompt.contains(gatewayRequest?.messages?.single()?.content?.trim().orEmpty()))
     assertTrue(prompt.contains("git reset --hard"))
     assertTrue(prompt.contains("A single message may yield multiple durable intents"))
     assertTrue(prompt.contains("If the user tells the agent how to address them"))
@@ -211,6 +213,35 @@ class LiteLlmUserMemoryIntentInterpreterTest {
 
     val unavailable = result as UserMemoryIntentInterpretation.Unavailable
     assertEquals(false, unavailable.allowHeuristicFallback)
+  }
+
+  @Test
+  fun interpretReturnsUnavailableWhenOnDeviceModeIsSelected() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(outputText = """{"intents":[]}"""),
+    )
+    val interpreter = LiteLlmUserMemoryIntentInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          selectedOnDeviceModelId = "gemma-4-e2b-it",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    val result = interpreter.interpret(
+      UserMemoryIntentRequest(
+        sessionId = "session-on-device",
+        userInput = "以后都用 PowerShell。",
+      ),
+    )
+
+    val unavailable = result as UserMemoryIntentInterpretation.Unavailable
+    assertEquals(false, unavailable.allowHeuristicFallback)
+    assertTrue(unavailable.reason.orEmpty().contains("On-device LLM mode"))
+    assertTrue(providerClient.lastRequest == null)
   }
 
   @Test

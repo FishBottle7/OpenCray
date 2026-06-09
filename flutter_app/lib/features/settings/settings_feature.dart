@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:ui' show FlutterView;
 
 import 'package:flutter/material.dart';
 
+import '../../app/opencray_tabs.dart';
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/models/opencray_agent_snapshot.dart';
 import '../../core/models/opencray_chat_snapshot.dart';
@@ -24,6 +26,54 @@ part 'settings_api_pages.dart';
 part 'safety_settings_pages.dart';
 part 'settings_debug_pages.dart';
 
+bool _llmEndpointAllowsBlankApiKey({
+  required String protocol,
+  required String baseUrl,
+}) {
+  final normalizedProtocol = protocol.trim().toLowerCase();
+  if (normalizedProtocol != 'openai' &&
+      normalizedProtocol != 'openai_responses') {
+    return false;
+  }
+  return _isLikelyLocalLlmBaseUrl(baseUrl);
+}
+
+bool _isLikelyLocalLlmBaseUrl(String baseUrl) {
+  final host = (Uri.tryParse(baseUrl.trim())?.host ?? '').trim().toLowerCase();
+  if (host.isEmpty) {
+    return false;
+  }
+  if (host == 'localhost' ||
+      host == 'localhost.localdomain' ||
+      host == '0.0.0.0' ||
+      host == '::1' ||
+      host == '10.0.2.2' ||
+      host == 'host.docker.internal' ||
+      host.endsWith('.local')) {
+    return true;
+  }
+  return host.startsWith('127.') ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.') ||
+      _isPrivate172SubnetHost(host);
+}
+
+bool _isPrivate172SubnetHost(String host) {
+  if (!host.startsWith('172.')) {
+    return false;
+  }
+  final parts = host.split('.');
+  if (parts.length < 2) {
+    return false;
+  }
+  final secondOctet = int.tryParse(parts[1]);
+  return secondOctet != null && secondOctet >= 16 && secondOctet <= 31;
+}
+
+void _dismissActiveInput() {
+  FocusManager.instance.primaryFocus?.unfocus();
+}
+
 class SettingsFeatureScreen extends StatefulWidget {
   const SettingsFeatureScreen({
     super.key,
@@ -42,17 +92,21 @@ class SettingsFeatureScreen extends StatefulWidget {
   State<SettingsFeatureScreen> createState() => _SettingsFeatureScreenState();
 }
 
-class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
+class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
+    with WidgetsBindingObserver {
   late SettingsPage _page = widget.initialPage;
   final Map<SettingsPage, SettingsDetailSnapshot> _detailCache =
       <SettingsPage, SettingsDetailSnapshot>{};
   SettingsOverviewSnapshot? _overview;
   StreamSubscription<SettingsOverviewSnapshot>? _overviewSubscription;
+  bool _keyboardWasVisible = false;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _loadOverview();
+    _persistShellTarget(_page);
     _overviewSubscription = widget.facade.watchOverview().listen((overview) {
       if (!mounted) {
         return;
@@ -64,12 +118,28 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
     if (!_usesDedicatedPage(_page) && _page != SettingsPage.home) {
       _loadDetail(_page);
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _keyboardWasVisible = _isKeyboardVisible();
+    });
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _overviewSubscription?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeMetrics() {
+    final bool keyboardVisible = _isKeyboardVisible();
+    if (_keyboardWasVisible && !keyboardVisible) {
+      _dismissActiveInput();
+    }
+    _keyboardWasVisible = keyboardVisible;
   }
 
   @override
@@ -81,13 +151,17 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
           height: 20 / 14,
           color: OpenCrayColors.textSecondary,
         );
-    final content = DefaultTextStyle(
-      style: defaultTextStyle,
-      child: SafeArea(
-        bottom: false,
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 180),
-          child: _buildCurrentPage(context),
+    final content = GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onTap: _dismissActiveInput,
+      child: DefaultTextStyle(
+        style: defaultTextStyle,
+        child: SafeArea(
+          bottom: false,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            child: _buildCurrentPage(context),
+          ),
         ),
       ),
     );
@@ -104,6 +178,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
     final nestedBackTarget = _nestedBackTargetForPage(_page);
     void onBack() {
       if (nestedBackTarget != null) {
+        _persistShellTarget(nestedBackTarget);
         setState(() {
           _page = nestedBackTarget;
         });
@@ -113,6 +188,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
         Navigator.of(context).pop();
         return;
       }
+      _persistShellTarget(SettingsPage.home);
       setState(() => _page = SettingsPage.home);
     }
 
@@ -224,24 +300,28 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
           backLabel: backLabel,
         );
       case SettingsPage.aboutVersion:
+      case SettingsPage.privacyTelemetry:
         final detailSnapshot = _detailCache[_page];
         if (detailSnapshot == null) {
           return const _SettingsLoading(
             key: ValueKey<String>('settings-detail-loading'),
           );
         }
-        return _AboutVersionPage(
-          key: const ValueKey<String>('settings-about-version'),
+        return _DetailSettingsPage(
+          key: ValueKey<String>('settings-detail-${_page.routeId}'),
           snapshot: detailSnapshot,
           onBack: onBack,
           backLabel: backLabel,
-          facade: widget.facade,
-          debugBridge: widget.debugBridge,
+          facade: _page == SettingsPage.aboutVersion ? widget.facade : null,
+          debugBridge: _page == SettingsPage.aboutVersion
+              ? widget.debugBridge
+              : null,
         );
     }
   }
 
   void _openPage(SettingsPage page) {
+    _persistShellTarget(page);
     if (!widget.standalone && page != SettingsPage.home) {
       Navigator.of(context).push(
         MaterialPageRoute<void>(
@@ -343,6 +423,27 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen> {
     }
     return '';
   }
+
+  bool _isKeyboardVisible() {
+    final FlutterView? view = View.maybeOf(context);
+    if (view == null) {
+      return false;
+    }
+    return view.viewInsets.bottom > 0;
+  }
+
+  void _persistShellTarget(SettingsPage page) {
+    final bridge = widget.debugBridge;
+    if (bridge == null) {
+      return;
+    }
+    unawaited(
+      bridge.saveShellDestination(
+        selectedTab: OpenCrayTab.settings.routeSegment,
+        settingsSubpage: page.routeId,
+      ).catchError((Object _) {}),
+    );
+  }
 }
 
 class _SettingsHome extends StatelessWidget {
@@ -357,6 +458,9 @@ class _SettingsHome extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final visibleEntries = snapshot.entries
+        .where((entry) => entry.page != SettingsPage.agents)
+        .toList(growable: false);
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       child: Column(
@@ -382,7 +486,7 @@ class _SettingsHome extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
-          ...snapshot.entries.map(
+          ...visibleEntries.map(
             (SettingsHomeEntrySnapshot item) => _HomeEntryRow(
               title: item.title,
               selected: false,
@@ -470,20 +574,20 @@ List<Widget> _buildDetailSectionCards(
     )
     .toList(growable: false);
 
-class _AboutVersionPage extends StatelessWidget {
-  const _AboutVersionPage({
+class _DetailSettingsPage extends StatelessWidget {
+  const _DetailSettingsPage({
     super.key,
     required this.snapshot,
     required this.onBack,
     required this.backLabel,
-    required this.facade,
-    required this.debugBridge,
+    this.facade,
+    this.debugBridge,
   });
 
   final SettingsDetailSnapshot snapshot;
   final VoidCallback onBack;
   final String backLabel;
-  final SettingsFacade facade;
+  final SettingsFacade? facade;
   final OpenCrayHostBridge? debugBridge;
 
   @override
@@ -500,7 +604,7 @@ class _AboutVersionPage extends StatelessWidget {
           Text(snapshot.subtitle, style: _SettingsTextStyles.subtitle),
           const SizedBox(height: 16),
           ..._buildDetailSectionCards(snapshot.sections),
-          if (debugBridge != null) ...[
+          if (debugBridge != null && facade != null) ...[
             Padding(
               padding: const EdgeInsets.only(bottom: 16),
               child: _SettingsCard(
@@ -521,7 +625,7 @@ class _AboutVersionPage extends StatelessWidget {
                           MaterialPageRoute<void>(
                             builder: (context) => _DebugToolsPage(
                               bridge: debugBridge!,
-                              facade: facade,
+                              facade: facade!,
                               backLabel: snapshot.title,
                             ),
                           ),
@@ -967,6 +1071,15 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
         continue;
       }
       runEpochs[run.runId] = run.updatedAtEpochMs;
+    }
+    for (final run in snapshot.retainedRuns) {
+      if (run.runId.trim().isEmpty) {
+        continue;
+      }
+      final existingEpoch = runEpochs[run.runId];
+      if (existingEpoch == null || run.updatedAtEpochMs > existingEpoch) {
+        runEpochs[run.runId] = run.updatedAtEpochMs;
+      }
     }
     for (final event in snapshot.events) {
       if (event.runId.trim().isEmpty) {
@@ -1441,6 +1554,7 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
               hintText: copy.networkSearchBaseUrlHint,
               controller: _baseUrlController,
               focusNode: _baseUrlFocusNode,
+              keyboardType: TextInputType.url,
               onChanged: (_) => _scheduleEmit(),
             ),
           ],
@@ -1460,6 +1574,7 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
             hintText: copy.networkSearchApiKeyHint,
             controller: _apiKeyController,
             focusNode: _apiKeyFocusNode,
+            keyboardType: TextInputType.visiblePassword,
             onChanged: (_) => _scheduleEmit(),
           ),
           const SizedBox(height: 10),
@@ -1537,6 +1652,10 @@ class _LlmSettingsPage extends StatefulWidget {
 }
 
 class _LlmSettingsPageState extends State<_LlmSettingsPage> {
+  static const List<String> _providerModeOptions = <String>[
+    'cloud',
+    'on_device_model',
+  ];
   static const List<String> _protocolOptions = <String>[
     'openai',
     'openai_responses',
@@ -1569,6 +1688,18 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     '5m',
     '1h',
   ];
+  static const List<String> _contextBudgetPresetOptions = <String>[
+    'compact',
+    'balanced',
+    'expanded',
+    'dev',
+  ];
+  static const List<String> _acceleratorOptions = <String>['gpu', 'cpu'];
+  static const int _minOnDeviceContextWindow = 1024;
+  static const int _maxOnDeviceContextWindow = 131072;
+  static const int _minOnDeviceMaxTokens = 256;
+  static const int _minOnDeviceTopK = 1;
+  static const int _maxOnDeviceTopK = 128;
 
   final TextEditingController _providerNameController = TextEditingController();
   final TextEditingController _providerNotesController =
@@ -1577,14 +1708,37 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   final TextEditingController _apiKeyController = TextEditingController();
   final TextEditingController _modelController = TextEditingController();
   final TextEditingController _systemPromptController = TextEditingController();
+  final TextEditingController _onDeviceMaxContextController =
+      TextEditingController();
+  final TextEditingController _onDeviceMaxTokensController =
+      TextEditingController();
+  final TextEditingController _onDeviceTopKController = TextEditingController();
+  final TextEditingController _onDeviceTopPController = TextEditingController();
+  final TextEditingController _onDeviceTemperatureController =
+      TextEditingController();
+  final TextEditingController _contextBudgetReservedOutputController =
+      TextEditingController();
+  final TextEditingController _contextBudgetSafetyMarginController =
+      TextEditingController();
+  final TextEditingController _contextBudgetEffectiveInputPercentController =
+      TextEditingController();
   final FocusNode _providerNameFocusNode = FocusNode();
   final FocusNode _providerNotesFocusNode = FocusNode();
   final FocusNode _baseUrlFocusNode = FocusNode();
   final FocusNode _apiKeyFocusNode = FocusNode();
   final FocusNode _modelFocusNode = FocusNode();
   final FocusNode _systemPromptFocusNode = FocusNode();
+  final FocusNode _onDeviceMaxContextFocusNode = FocusNode();
+  final FocusNode _onDeviceMaxTokensFocusNode = FocusNode();
+  final FocusNode _onDeviceTopKFocusNode = FocusNode();
+  final FocusNode _onDeviceTopPFocusNode = FocusNode();
+  final FocusNode _onDeviceTemperatureFocusNode = FocusNode();
+  final FocusNode _contextBudgetReservedOutputFocusNode = FocusNode();
+  final FocusNode _contextBudgetSafetyMarginFocusNode = FocusNode();
+  final FocusNode _contextBudgetEffectiveInputPercentFocusNode = FocusNode();
 
   LlmConfigSnapshot? _snapshot;
+  String _providerMode = 'cloud';
   String _selectedProviderOptionId = 'custom';
   String _providerId = 'custom';
   String _protocol = 'openai';
@@ -1594,11 +1748,26 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   String _openAiPromptCacheRetention = '';
   bool _anthropicPromptCachingEnabled = false;
   String _anthropicPromptCacheTtl = '5m';
+  String _selectedOnDeviceModelId = 'gemma-4-e2b-it';
+  int _onDeviceMaxContextWindow = 32768;
+  int _onDeviceMaxTokens = 4096;
+  int _onDeviceTopK = 40;
+  double _onDeviceTopP = 0.95;
+  double _onDeviceTemperature = 0.70;
+  String _onDeviceAccelerator = 'gpu';
+  bool _onDeviceThinkingEnabled = false;
+  bool _onDeviceLiteModeEnabled = false;
+  String _contextBudgetPreset = 'balanced';
+  int? _contextBudgetReservedOutputTokens;
+  int? _contextBudgetSafetyMarginTokens;
+  double? _contextBudgetEffectiveInputPercent;
   bool _isApplyingSnapshot = false;
   bool _isSavingDraft = false;
   bool _isSavingCustomProvider = false;
   bool _hasQueuedSave = false;
   bool _isValidating = false;
+  bool _isOnDeviceModelActionPending = false;
+  Timer? _onDeviceModelStatusPollTimer;
   Completer<void>? _activeSaveCompleter;
 
   @override
@@ -1610,6 +1779,38 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     _registerAutosaveFocusNode(_apiKeyFocusNode);
     _registerAutosaveFocusNode(_modelFocusNode);
     _registerAutosaveFocusNode(_systemPromptFocusNode);
+    _registerAutosaveFocusNode(
+      _onDeviceMaxContextFocusNode,
+      onBlur: _normalizeOnDeviceMaxContextField,
+    );
+    _registerAutosaveFocusNode(
+      _onDeviceMaxTokensFocusNode,
+      onBlur: _normalizeOnDeviceMaxTokensField,
+    );
+    _registerAutosaveFocusNode(
+      _onDeviceTopKFocusNode,
+      onBlur: _normalizeOnDeviceTopKField,
+    );
+    _registerAutosaveFocusNode(
+      _onDeviceTopPFocusNode,
+      onBlur: _normalizeOnDeviceTopPField,
+    );
+    _registerAutosaveFocusNode(
+      _onDeviceTemperatureFocusNode,
+      onBlur: _normalizeOnDeviceTemperatureField,
+    );
+    _registerAutosaveFocusNode(
+      _contextBudgetReservedOutputFocusNode,
+      onBlur: _normalizeContextBudgetReservedOutputField,
+    );
+    _registerAutosaveFocusNode(
+      _contextBudgetSafetyMarginFocusNode,
+      onBlur: _normalizeContextBudgetSafetyMarginField,
+    );
+    _registerAutosaveFocusNode(
+      _contextBudgetEffectiveInputPercentFocusNode,
+      onBlur: _normalizeContextBudgetEffectiveInputPercentField,
+    );
     _providerNameController.addListener(_handleCustomProviderDraftChanged);
     _providerNotesController.addListener(_handleCustomProviderDraftChanged);
     _baseUrlController.addListener(_handleCustomProviderDraftChanged);
@@ -1620,18 +1821,35 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
 
   @override
   void dispose() {
+    _onDeviceModelStatusPollTimer?.cancel();
     _providerNameController.dispose();
     _providerNotesController.dispose();
     _baseUrlController.dispose();
     _apiKeyController.dispose();
     _modelController.dispose();
     _systemPromptController.dispose();
+    _onDeviceMaxContextController.dispose();
+    _onDeviceMaxTokensController.dispose();
+    _onDeviceTopKController.dispose();
+    _onDeviceTopPController.dispose();
+    _onDeviceTemperatureController.dispose();
+    _contextBudgetReservedOutputController.dispose();
+    _contextBudgetSafetyMarginController.dispose();
+    _contextBudgetEffectiveInputPercentController.dispose();
     _providerNameFocusNode.dispose();
     _providerNotesFocusNode.dispose();
     _baseUrlFocusNode.dispose();
     _apiKeyFocusNode.dispose();
     _modelFocusNode.dispose();
     _systemPromptFocusNode.dispose();
+    _onDeviceMaxContextFocusNode.dispose();
+    _onDeviceMaxTokensFocusNode.dispose();
+    _onDeviceTopKFocusNode.dispose();
+    _onDeviceTopPFocusNode.dispose();
+    _onDeviceTemperatureFocusNode.dispose();
+    _contextBudgetReservedOutputFocusNode.dispose();
+    _contextBudgetSafetyMarginFocusNode.dispose();
+    _contextBudgetEffectiveInputPercentFocusNode.dispose();
     super.dispose();
   }
 
@@ -1649,9 +1867,11 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         _hasTemporarySavedCustomProviderChanges(snapshot);
     final selectedProtocol = _draftProtocolFor(selectedProvider);
     final optionsLabel = copy.llmOptionsCount(snapshot.providerOptions.length);
+    final isCloudMode = _providerMode == 'cloud';
     final showsReasoning =
-        selectedProtocol == 'anthropic' ||
-        _modelController.text.toLowerCase().contains('gpt');
+        isCloudMode &&
+        (selectedProtocol == 'anthropic' ||
+            _modelController.text.toLowerCase().contains('gpt'));
     final reasoningLabel = selectedProtocol == 'anthropic'
         ? copy.llmThinkingLabel
         : copy.llmReasoningEffortLabel;
@@ -1666,265 +1886,595 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
           const SizedBox(height: 8),
           Text(copy.llmPageSubtitle, style: _SettingsTextStyles.subtitle),
           const SizedBox(height: 16),
-          _SettingsCard(
-            child: _PrototypeToggleRow(
-              rowKey: const ValueKey<String>('settings-llm-streaming-toggle'),
-              title: copy.llmStreamingTitle,
-              subtitle: copy.llmStreamingSubtitle,
-              value: _streamingEnabled,
-              onChanged: _handleStreamingEnabledChanged,
-            ),
-          ),
+          _buildModelSourceCard(copy),
           const SizedBox(height: 16),
-          _SettingsCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  copy.llmPrimaryProviderTitle,
-                  style: _SettingsTextStyles.cardTitle,
-                ),
-                const SizedBox(height: 10),
-                _PrototypeSelectionRow(
-                  title: selectedProvider.title,
-                  trailingLabel: optionsLabel,
-                  onTap: _openProviderSheet,
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: Text(
-                        hasTemporarySavedCustomChanges
-                            ? copy.llmSaveProviderTemporary
-                            : (selectedProvider.isCustom
-                                  ? copy.llmPrimaryProviderCustomHelper
-                                  : copy.llmPrimaryProviderPresetHelper),
-                        maxLines: hasTemporarySavedCustomChanges ? 1 : null,
-                        overflow: hasTemporarySavedCustomChanges
-                            ? TextOverflow.ellipsis
-                            : TextOverflow.visible,
-                        softWrap: !hasTemporarySavedCustomChanges,
-                        style: _SettingsTextStyles.body,
-                      ),
-                    ),
-                    if (selectedProvider.isCustom) ...[
-                      const SizedBox(width: 12),
-                      InkWell(
-                        key: const ValueKey<String>(
-                          'settings-llm-save-provider',
-                        ),
-                        borderRadius: BorderRadius.circular(8),
-                        onTap: _isSavingCustomProvider
-                            ? null
-                            : _saveCustomProvider,
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 4,
-                            vertical: 2,
-                          ),
-                          child: Text(
-                            _isSavingCustomProvider
-                                ? copy.llmSaving
-                                : copy.llmSaveProviderAction,
-                            style: _SettingsTextStyles.inlineAction,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-                if (selectedProvider.isCustom) ...[
-                  const SizedBox(height: 12),
-                  const Divider(height: 1, color: OpenCrayColors.divider),
-                  const SizedBox(height: 12),
-                  Text(
-                    copy.llmProtocolTitle,
-                    style: _SettingsTextStyles.fieldLabel,
-                  ),
-                  const SizedBox(height: 8),
-                  _PrototypeSelectionRow(
-                    title: _protocolTitle(selectedProtocol),
-                    trailingLabel: copy.llmOptionsCount(
-                      _protocolOptions.length,
-                    ),
-                    compact: true,
-                    onTap: _openProtocolSheet,
-                  ),
-                  const SizedBox(height: 12),
-                  _PrototypeField(
-                    label: copy.llmProviderNameLabel,
-                    controller: _providerNameController,
-                    focusNode: _providerNameFocusNode,
-                    hintText: copy.llmProviderNameHint,
-                    keyboardType: TextInputType.visiblePassword,
-                  ),
-                  const SizedBox(height: 12),
-                  _PrototypeField(
-                    label: copy.llmNotesLabel,
-                    controller: _providerNotesController,
-                    focusNode: _providerNotesFocusNode,
-                    hintText: copy.llmNotesHint,
-                    keyboardType: TextInputType.visiblePassword,
-                  ),
-                ],
-              ],
+          if (isCloudMode) ...[
+            _buildCloudProviderCard(
+              copy,
+              selectedProvider,
+              optionsLabel,
+              hasTemporarySavedCustomChanges,
+              selectedProtocol,
             ),
+            const SizedBox(height: 16),
+            _buildPromptCacheCard(copy, selectedProtocol),
+            const SizedBox(height: 16),
+            _buildCloudConnectionCard(
+              copy,
+              showsReasoning,
+              selectedProtocol,
+              reasoningLabel,
+            ),
+            const SizedBox(height: 16),
+            _buildContextBudgetCard(copy),
+            const SizedBox(height: 16),
+            _buildAdvancedPromptCard(copy, snapshot.helperText),
+          ] else ...[
+            _buildOnDeviceModelCard(copy, snapshot.onDeviceModels),
+            const SizedBox(height: 16),
+            _buildOnDeviceSamplingCard(copy),
+            const SizedBox(height: 16),
+            _buildContextBudgetCard(copy),
+            const SizedBox(height: 16),
+            _buildOnDeviceRuntimeCard(copy),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildModelSourceCard(OpenCrayUiCopy copy) {
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(copy.llmModelSourceTitle, style: _SettingsTextStyles.cardTitle),
+          const SizedBox(height: 10),
+          _InteractiveSegmentedSelector(
+            labels: _providerModeOptions,
+            selectedId: _providerMode,
+            labelBuilder: _providerModeTitle,
+            onSelected: _handleProviderModeSelected,
           ),
-          const SizedBox(height: 16),
-          _SettingsCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  copy.llmPromptCacheTitle,
-                  style: _SettingsTextStyles.cardTitle,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _showsAnthropicPromptCacheControls(selectedProtocol)
-                      ? copy.llmPromptCacheAnthropicHelper
-                      : copy.llmPromptCacheOpenAiHelper,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCloudProviderCard(
+    OpenCrayUiCopy copy,
+    LlmProviderOption selectedProvider,
+    String optionsLabel,
+    bool hasTemporarySavedCustomChanges,
+    String selectedProtocol,
+  ) {
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            copy.llmPrimaryProviderTitle,
+            style: _SettingsTextStyles.cardTitle,
+          ),
+          const SizedBox(height: 10),
+          _PrototypeSelectionRow(
+            title: selectedProvider.title,
+            trailingLabel: optionsLabel,
+            onTap: _openProviderSheet,
+          ),
+          const SizedBox(height: 12),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(
+                  hasTemporarySavedCustomChanges
+                      ? copy.llmSaveProviderTemporary
+                      : (selectedProvider.isCustom
+                            ? copy.llmPrimaryProviderCustomHelper
+                            : copy.llmPrimaryProviderPresetHelper),
+                  maxLines: hasTemporarySavedCustomChanges ? 1 : null,
+                  overflow: hasTemporarySavedCustomChanges
+                      ? TextOverflow.ellipsis
+                      : TextOverflow.visible,
+                  softWrap: !hasTemporarySavedCustomChanges,
                   style: _SettingsTextStyles.body,
                 ),
-                if (_showsOpenAiPromptCacheControls(selectedProtocol)) ...[
-                  const SizedBox(height: 12),
-                  _PrototypeSelectionField(
-                    label: copy.llmOpenAiPromptCacheKeyLabel,
-                    title: _openAiPromptCacheKeyStrategyTitle(
-                      _openAiPromptCacheKeyStrategy,
+              ),
+              if (selectedProvider.isCustom) ...[
+                const SizedBox(width: 12),
+                InkWell(
+                  key: const ValueKey<String>('settings-llm-save-provider'),
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: _isSavingCustomProvider ? null : _saveCustomProvider,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 4,
+                      vertical: 2,
                     ),
-                    onTap: _openOpenAiPromptCacheKeyStrategySheet,
+                    child: Text(
+                      _isSavingCustomProvider
+                          ? copy.llmSaving
+                          : copy.llmSaveProviderAction,
+                      style: _SettingsTextStyles.inlineAction,
+                    ),
                   ),
-                  const SizedBox(height: 12),
-                  _PrototypeSelectionField(
-                    label: copy.llmOpenAiPromptCacheRetentionLabel,
-                    title: _openAiPromptCacheRetentionTitle(
-                      _openAiPromptCacheRetention,
-                    ),
-                    onTap: _openOpenAiPromptCacheRetentionSheet,
-                  ),
-                ] else if (_showsAnthropicPromptCacheControls(
-                  selectedProtocol,
-                )) ...[
-                  const SizedBox(height: 12),
-                  _PrototypeToggleRow(
-                    rowKey: const ValueKey<String>(
-                      'settings-llm-anthropic-prompt-cache-toggle',
-                    ),
-                    title: copy.llmAnthropicPromptCachingTitle,
-                    subtitle: copy.llmAnthropicPromptCachingSubtitle,
-                    value: _anthropicPromptCachingEnabled,
-                    onChanged: _handleAnthropicPromptCachingChanged,
-                  ),
-                  if (_anthropicPromptCachingEnabled) ...[
-                    const SizedBox(height: 12),
-                    _PrototypeSelectionField(
-                      label: copy.llmAnthropicPromptCacheTtlLabel,
-                      title: _anthropicPromptCacheTtlTitle(
-                        _anthropicPromptCacheTtl,
-                      ),
-                      onTap: _openAnthropicPromptCacheTtlSheet,
-                    ),
-                  ],
-                ],
+                ),
               ],
-            ),
+            ],
           ),
-          const SizedBox(height: 16),
-          _SettingsCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        copy.llmConnectionTitle,
-                        style: _SettingsTextStyles.cardTitle,
-                      ),
-                    ),
-                    _HeaderActionChip(
-                      label: _isValidating
-                          ? copy.llmValidating
-                          : (_isSavingDraft
-                                ? copy.llmSaving
-                                : copy.llmValidateModel),
-                      onTap: _isValidating ? null : _validateLlmConfig,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 14),
-                _PrototypeField(
-                  label: copy.llmBaseUrlLabel,
-                  controller: _baseUrlController,
-                  focusNode: _baseUrlFocusNode,
-                  hintText: copy.llmBaseUrlHint,
-                  keyboardType: TextInputType.url,
-                ),
-                const SizedBox(height: 12),
-                _PrototypeField(
-                  label: copy.llmApiKeyLabel,
-                  controller: _apiKeyController,
-                  focusNode: _apiKeyFocusNode,
-                  hintText: copy.llmApiKeyHint,
-                  obscureText: true,
-                  keyboardType: TextInputType.visiblePassword,
-                  trailingText: _apiKeyController.text.trim().isEmpty
-                      ? null
-                      : copy.llmStoredLocally,
-                  onChanged: (_) => setState(() {}),
-                ),
-                const SizedBox(height: 12),
-                _PrototypeField(
-                  label: copy.llmModelNameLabel,
-                  controller: _modelController,
-                  focusNode: _modelFocusNode,
-                  hintText: copy.llmModelHint,
-                  keyboardType: TextInputType.visiblePassword,
-                  onChanged: (_) => setState(() {}),
-                ),
-                if (showsReasoning) ...[
-                  const SizedBox(height: 12),
-                  _PrototypeSelectionField(
-                    label: reasoningLabel,
-                    title: _reasoningEffortTitle(_reasoningEffort),
-                    trailingLabel: selectedProtocol == 'anthropic'
-                        ? (_reasoningEffort == 'off'
-                              ? copy.llmAnthropicThinkingDisabled
-                              : copy.llmAnthropicThinkingEnabled)
-                        : copy.llmGptModelDetected,
-                    onTap: _openReasoningSheet,
-                  ),
-                ],
-              ],
+          if (selectedProvider.isCustom) ...[
+            const SizedBox(height: 12),
+            const Divider(height: 1, color: OpenCrayColors.divider),
+            const SizedBox(height: 12),
+            Text(copy.llmProtocolTitle, style: _SettingsTextStyles.fieldLabel),
+            const SizedBox(height: 8),
+            _PrototypeSelectionRow(
+              title: _protocolTitle(selectedProtocol),
+              trailingLabel: copy.llmOptionsCount(_protocolOptions.length),
+              compact: true,
+              onTap: _openProtocolSheet,
             ),
+            const SizedBox(height: 12),
+            _PrototypeField(
+              label: copy.llmProviderNameLabel,
+              controller: _providerNameController,
+              focusNode: _providerNameFocusNode,
+              hintText: copy.llmProviderNameHint,
+            ),
+            const SizedBox(height: 12),
+            _PrototypeField(
+              label: copy.llmNotesLabel,
+              controller: _providerNotesController,
+              focusNode: _providerNotesFocusNode,
+              hintText: copy.llmNotesHint,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPromptCacheCard(OpenCrayUiCopy copy, String selectedProtocol) {
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(copy.llmPromptCacheTitle, style: _SettingsTextStyles.cardTitle),
+          const SizedBox(height: 8),
+          Text(
+            _showsAnthropicPromptCacheControls(selectedProtocol)
+                ? copy.llmPromptCacheAnthropicHelper
+                : copy.llmPromptCacheOpenAiHelper,
+            style: _SettingsTextStyles.body,
           ),
+          if (_showsOpenAiPromptCacheControls(selectedProtocol)) ...[
+            const SizedBox(height: 12),
+            _PrototypeSelectionField(
+              label: copy.llmOpenAiPromptCacheKeyLabel,
+              title: _openAiPromptCacheKeyStrategyTitle(
+                _openAiPromptCacheKeyStrategy,
+              ),
+              onTap: _openOpenAiPromptCacheKeyStrategySheet,
+            ),
+            const SizedBox(height: 12),
+            _PrototypeSelectionField(
+              label: copy.llmOpenAiPromptCacheRetentionLabel,
+              title: _openAiPromptCacheRetentionTitle(
+                _openAiPromptCacheRetention,
+              ),
+              onTap: _openOpenAiPromptCacheRetentionSheet,
+            ),
+          ] else if (_showsAnthropicPromptCacheControls(selectedProtocol)) ...[
+            const SizedBox(height: 12),
+            _PrototypeToggleRow(
+              rowKey: const ValueKey<String>(
+                'settings-llm-anthropic-prompt-cache-toggle',
+              ),
+              title: copy.llmAnthropicPromptCachingTitle,
+              subtitle: copy.llmAnthropicPromptCachingSubtitle,
+              value: _anthropicPromptCachingEnabled,
+              onChanged: _handleAnthropicPromptCachingChanged,
+            ),
+            if (_anthropicPromptCachingEnabled) ...[
+              const SizedBox(height: 12),
+              _PrototypeSelectionField(
+                label: copy.llmAnthropicPromptCacheTtlLabel,
+                title: _anthropicPromptCacheTtlTitle(_anthropicPromptCacheTtl),
+                onTap: _openAnthropicPromptCacheTtlSheet,
+              ),
+            ],
+          ],
           const SizedBox(height: 16),
-          _SettingsCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  copy.llmAdvancedPromptTitle,
+          _PrototypeToggleRow(
+            rowKey: const ValueKey<String>('settings-llm-streaming-toggle'),
+            title: copy.llmStreamingTitle,
+            subtitle: copy.llmStreamingSubtitle,
+            value: _streamingEnabled,
+            onChanged: _handleStreamingEnabledChanged,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCloudConnectionCard(
+    OpenCrayUiCopy copy,
+    bool showsReasoning,
+    String selectedProtocol,
+    String reasoningLabel,
+  ) {
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  copy.llmConnectionTitle,
                   style: _SettingsTextStyles.cardTitle,
                 ),
-                const SizedBox(height: 12),
-                _PrototypeField(
-                  label: copy.llmPromptOverrideLabel,
-                  controller: _systemPromptController,
-                  focusNode: _systemPromptFocusNode,
-                  hintText: copy.llmPromptOverrideHint,
-                  minLines: 5,
-                  maxLines: 8,
-                ),
-                const SizedBox(height: 12),
-                Text(copy.llmAutosaveHint, style: _SettingsTextStyles.body),
-                const SizedBox(height: 8),
-                Text(snapshot.helperText, style: _SettingsTextStyles.body),
-              ],
+              ),
+              _HeaderActionChip(
+                label: _isValidating
+                    ? copy.llmValidating
+                    : (_isSavingDraft ? copy.llmSaving : copy.llmValidateModel),
+                onTap: _isValidating ? null : _validateLlmConfig,
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          _PrototypeField(
+            label: copy.llmBaseUrlLabel,
+            controller: _baseUrlController,
+            focusNode: _baseUrlFocusNode,
+            hintText: copy.llmBaseUrlHint,
+            keyboardType: TextInputType.url,
+          ),
+          const SizedBox(height: 12),
+          _PrototypeField(
+            label: copy.llmApiKeyLabel,
+            controller: _apiKeyController,
+            focusNode: _apiKeyFocusNode,
+            hintText: copy.llmApiKeyHint,
+            obscureText: true,
+            keyboardType: TextInputType.visiblePassword,
+            trailing: _apiKeyController.text.trim().isEmpty
+                ? null
+                : _FieldClearButton(
+                    buttonKey: const ValueKey<String>(
+                      'settings-llm-api-key-clear',
+                    ),
+                    onTap: _clearApiKey,
+                  ),
+            onChanged: (_) => setState(() {}),
+          ),
+          const SizedBox(height: 12),
+          _PrototypeField(
+            label: copy.llmModelNameLabel,
+            controller: _modelController,
+            focusNode: _modelFocusNode,
+            hintText: copy.llmModelHint,
+            onChanged: (_) => setState(() {}),
+          ),
+          if (showsReasoning) ...[
+            const SizedBox(height: 12),
+            _PrototypeSelectionField(
+              label: reasoningLabel,
+              title: _reasoningEffortTitle(_reasoningEffort),
+              trailingLabel: selectedProtocol == 'anthropic'
+                  ? (_reasoningEffort == 'off'
+                        ? copy.llmAnthropicThinkingDisabled
+                        : copy.llmAnthropicThinkingEnabled)
+                  : copy.llmGptModelDetected,
+              onTap: _openReasoningSheet,
             ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContextBudgetCard(OpenCrayUiCopy copy) {
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Context budget', style: _SettingsTextStyles.cardTitle),
+          const SizedBox(height: 8),
+          const Text(
+            'Preset controls the normal context envelope; raw overrides are for development.',
+            style: _SettingsTextStyles.body,
+          ),
+          const SizedBox(height: 12),
+          _SegmentedSettingRow(
+            label: 'Preset',
+            width: 248,
+            selectedId: _contextBudgetPreset,
+            options: _contextBudgetPresetOptions,
+            labelBuilder: _contextBudgetPresetTitle,
+            onSelected: _handleContextBudgetPresetSelected,
+          ),
+          const SizedBox(height: 12),
+          _BudgetOverrideRow(
+            label: 'Reserved output',
+            fieldKey: const ValueKey<String>(
+              'settings-llm-context-budget-reserved-output',
+            ),
+            controller: _contextBudgetReservedOutputController,
+            focusNode: _contextBudgetReservedOutputFocusNode,
+            suffix: 'tokens',
+            onChanged: _handleContextBudgetReservedOutputChanged,
+            onClear: () => _clearContextBudgetOverride(
+              controller: _contextBudgetReservedOutputController,
+              setValue: () => _contextBudgetReservedOutputTokens = null,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _BudgetOverrideRow(
+            label: 'Safety margin',
+            fieldKey: const ValueKey<String>(
+              'settings-llm-context-budget-safety-margin',
+            ),
+            controller: _contextBudgetSafetyMarginController,
+            focusNode: _contextBudgetSafetyMarginFocusNode,
+            suffix: 'tokens',
+            onChanged: _handleContextBudgetSafetyMarginChanged,
+            onClear: () => _clearContextBudgetOverride(
+              controller: _contextBudgetSafetyMarginController,
+              setValue: () => _contextBudgetSafetyMarginTokens = null,
+            ),
+          ),
+          const SizedBox(height: 10),
+          _BudgetOverrideRow(
+            label: 'Effective input',
+            fieldKey: const ValueKey<String>(
+              'settings-llm-context-budget-effective-input',
+            ),
+            controller: _contextBudgetEffectiveInputPercentController,
+            focusNode: _contextBudgetEffectiveInputPercentFocusNode,
+            suffix: '0.50-0.99',
+            decimal: true,
+            onChanged: _handleContextBudgetEffectiveInputPercentChanged,
+            onClear: () => _clearContextBudgetOverride(
+              controller: _contextBudgetEffectiveInputPercentController,
+              setValue: () => _contextBudgetEffectiveInputPercent = null,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildAdvancedPromptCard(OpenCrayUiCopy copy, String helperText) {
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            copy.llmAdvancedPromptTitle,
+            style: _SettingsTextStyles.cardTitle,
+          ),
+          const SizedBox(height: 12),
+          _PrototypeField(
+            label: copy.llmPromptOverrideLabel,
+            controller: _systemPromptController,
+            focusNode: _systemPromptFocusNode,
+            hintText: copy.llmPromptOverrideHint,
+            minLines: 5,
+            maxLines: 8,
+          ),
+          const SizedBox(height: 12),
+          Text(copy.llmAutosaveHint, style: _SettingsTextStyles.body),
+          const SizedBox(height: 8),
+          Text(helperText, style: _SettingsTextStyles.body),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOnDeviceModelCard(
+    OpenCrayUiCopy copy,
+    List<LlmOnDeviceModelOption> options,
+  ) {
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            copy.llmOnDeviceModelTitle,
+            style: _SettingsTextStyles.cardTitle,
+          ),
+          const SizedBox(height: 8),
+          for (int index = 0; index < options.length; index++) ...[
+            _OnDeviceModelTile(
+              title: options[index].title,
+              subtitle: _onDeviceModelStatusLabel(options[index]),
+              actionLabel: _onDeviceModelPrimaryActionLabel(options[index]),
+              selected: options[index].id == _selectedOnDeviceModelId,
+              actionEnabled:
+                  !_isOnDeviceModelActionPending &&
+                  _onDeviceModelPrimaryActionEnabled(options[index]),
+              onActionTap: () =>
+                  _handleOnDeviceModelPrimaryAction(options[index]),
+              secondaryActionLabel: _onDeviceModelSecondaryActionLabel(
+                copy,
+                options[index],
+              ),
+              onSecondaryActionTap:
+                  _isOnDeviceModelActionPending ||
+                      !_onDeviceModelHasSecondaryAction(options[index])
+                  ? null
+                  : () => _handleOnDeviceModelSecondaryAction(options[index]),
+              progressValue: _onDeviceModelProgressValue(options[index]),
+            ),
+            if (index != options.length - 1) const SizedBox(height: 8),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOnDeviceSamplingCard(OpenCrayUiCopy copy) {
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            copy.llmSamplingLimitsTitle,
+            style: _SettingsTextStyles.cardTitle,
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  copy.llmMaxContextWindowLabel,
+                  style: _SettingsTextStyles.fieldValue,
+                ),
+              ),
+              const SizedBox(width: 12),
+              _CompactInlineValueField(
+                controller: _onDeviceMaxContextController,
+                focusNode: _onDeviceMaxContextFocusNode,
+                width: 84,
+                keyboardType: TextInputType.number,
+                onChanged: _handleOnDeviceMaxContextChanged,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _SliderValueRow(
+            label: copy.llmMaxTokensLabel,
+            minLabel: '256',
+            controller: _onDeviceMaxTokensController,
+            focusNode: _onDeviceMaxTokensFocusNode,
+            value: _onDeviceMaxTokens.toDouble(),
+            min: _minOnDeviceMaxTokens.toDouble(),
+            max: _maxTokensSliderMax.toDouble(),
+            onSliderChanged: (value) {
+              setState(() {
+                _onDeviceMaxTokens = _normalizedOnDeviceMaxTokens(
+                  value.round(),
+                );
+                _onDeviceMaxTokensController.text = _onDeviceMaxTokens
+                    .toString();
+              });
+            },
+            onSliderChangeEnd: (_) => unawaited(_saveDraft()),
+            onFieldChanged: _handleOnDeviceMaxTokensChanged,
+          ),
+          const SizedBox(height: 12),
+          _SliderValueRow(
+            label: copy.llmTopKLabel,
+            minLabel: '1',
+            controller: _onDeviceTopKController,
+            focusNode: _onDeviceTopKFocusNode,
+            value: _onDeviceTopK.toDouble(),
+            min: _minOnDeviceTopK.toDouble(),
+            max: _maxOnDeviceTopK.toDouble(),
+            onSliderChanged: (value) {
+              setState(() {
+                _onDeviceTopK = _normalizedOnDeviceTopK(value.round());
+                _onDeviceTopKController.text = _onDeviceTopK.toString();
+              });
+            },
+            onSliderChangeEnd: (_) => unawaited(_saveDraft()),
+            onFieldChanged: _handleOnDeviceTopKChanged,
+          ),
+          const SizedBox(height: 12),
+          _SliderValueRow(
+            label: copy.llmTopPLabel,
+            minLabel: '0.0',
+            controller: _onDeviceTopPController,
+            focusNode: _onDeviceTopPFocusNode,
+            value: _onDeviceTopP,
+            min: 0,
+            max: 1,
+            divisions: 100,
+            onSliderChanged: (value) {
+              setState(() {
+                _onDeviceTopP = _normalizedOnDeviceProbability(value);
+                _onDeviceTopPController.text = _formatDouble(_onDeviceTopP);
+              });
+            },
+            onSliderChangeEnd: (_) => unawaited(_saveDraft()),
+            onFieldChanged: _handleOnDeviceTopPChanged,
+            allowDecimal: true,
+          ),
+          const SizedBox(height: 12),
+          _SliderValueRow(
+            label: copy.llmTemperatureLabel,
+            minLabel: '0.0',
+            controller: _onDeviceTemperatureController,
+            focusNode: _onDeviceTemperatureFocusNode,
+            value: _onDeviceTemperature,
+            min: 0,
+            max: 2,
+            divisions: 200,
+            onSliderChanged: (value) {
+              setState(() {
+                _onDeviceTemperature = _normalizedOnDeviceTemperature(value);
+                _onDeviceTemperatureController.text = _formatDouble(
+                  _onDeviceTemperature,
+                );
+              });
+            },
+            onSliderChangeEnd: (_) => unawaited(_saveDraft()),
+            onFieldChanged: _handleOnDeviceTemperatureChanged,
+            allowDecimal: true,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOnDeviceRuntimeCard(OpenCrayUiCopy copy) {
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(copy.llmRuntimeTitle, style: _SettingsTextStyles.cardTitle),
+          const SizedBox(height: 10),
+          _PrototypeToggleRow(
+            rowKey: const ValueKey<String>(
+              'settings-llm-on-device-lite-mode-toggle',
+            ),
+            title: copy.llmOnDeviceLiteModeTitle,
+            subtitle: copy.llmOnDeviceLiteModeBody,
+            value: _onDeviceLiteModeEnabled,
+            onChanged: (value) {
+              setState(() => _onDeviceLiteModeEnabled = value);
+              unawaited(_saveDraft());
+            },
+          ),
+          const SizedBox(height: 12),
+          _SegmentedSettingRow(
+            label: copy.llmAcceleratorLabel,
+            width: 144,
+            selectedId: _onDeviceAccelerator,
+            options: _acceleratorOptions,
+            labelBuilder: (value) => value == 'cpu'
+                ? copy.llmAcceleratorCpu
+                : copy.llmAcceleratorGpu,
+            onSelected: (value) {
+              setState(() => _onDeviceAccelerator = value);
+              unawaited(_saveDraft());
+            },
+          ),
+          const SizedBox(height: 12),
+          _SegmentedSettingRow(
+            label: copy.llmThinkingLabel,
+            width: 144,
+            selectedId: _onDeviceThinkingEnabled ? 'on' : 'off',
+            options: const <String>['off', 'on'],
+            labelBuilder: (value) =>
+                value == 'on' ? copy.llmThinkingOn : copy.llmThinkingOff,
+            onSelected: (value) {
+              setState(() => _onDeviceThinkingEnabled = value == 'on');
+              unawaited(_saveDraft());
+            },
           ),
         ],
       ),
@@ -1939,11 +2489,13 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     setState(() {
       _applySnapshot(snapshot);
     });
+    _syncOnDeviceModelPolling(snapshot.onDeviceModels);
   }
 
   void _applyProvider(LlmProviderOption option) {
     _isApplyingSnapshot = true;
     setState(() {
+      _providerMode = 'cloud';
       _selectedProviderOptionId = option.id;
       _providerId = option.providerId;
       final isSavedCustomProvider = option.isCustom && option.id != 'custom';
@@ -1967,6 +2519,16 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       }
     });
     _isApplyingSnapshot = false;
+    unawaited(_saveDraft());
+  }
+
+  void _clearApiKey() {
+    if (_apiKeyController.text.isEmpty) {
+      return;
+    }
+    setState(() {
+      _apiKeyController.clear();
+    });
     unawaited(_saveDraft());
   }
 
@@ -2024,7 +2586,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   }
 
   Future<void> _validateLlmConfig() async {
-    if (_isValidating) {
+    if (_isValidating || _providerMode != 'cloud') {
       return;
     }
     final copy = _copyForSnapshot();
@@ -2466,9 +3028,10 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     );
   }
 
-  void _registerAutosaveFocusNode(FocusNode focusNode) {
+  void _registerAutosaveFocusNode(FocusNode focusNode, {VoidCallback? onBlur}) {
     focusNode.addListener(() {
       if (!focusNode.hasFocus && !_isSavingCustomProvider) {
+        onBlur?.call();
         unawaited(_saveDraft());
       }
     });
@@ -2534,6 +3097,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   void _applySnapshot(LlmConfigSnapshot snapshot) {
     _isApplyingSnapshot = true;
     _snapshot = snapshot;
+    _providerMode = _providerModeOptions.contains(snapshot.providerMode)
+        ? snapshot.providerMode
+        : 'cloud';
     _selectedProviderOptionId = snapshot.selectedProviderOptionId;
     _providerId = snapshot.providerId;
     _protocol = snapshot.protocol;
@@ -2549,6 +3115,42 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     _openAiPromptCacheRetention = snapshot.openAiPromptCacheRetention;
     _anthropicPromptCachingEnabled = snapshot.anthropicPromptCachingEnabled;
     _anthropicPromptCacheTtl = snapshot.anthropicPromptCacheTtl;
+    _selectedOnDeviceModelId = snapshot.selectedOnDeviceModelId.trim().isEmpty
+        ? _selectedOnDeviceModelId
+        : snapshot.selectedOnDeviceModelId;
+    _onDeviceMaxContextWindow = _normalizedOnDeviceContextWindow(
+      snapshot.onDeviceMaxContextWindow,
+    );
+    _onDeviceMaxTokens = _normalizedOnDeviceMaxTokens(
+      snapshot.onDeviceMaxTokens,
+    );
+    _onDeviceTopK = _normalizedOnDeviceTopK(snapshot.onDeviceTopK);
+    _onDeviceTopP = _normalizedOnDeviceProbability(snapshot.onDeviceTopP);
+    _onDeviceTemperature = _normalizedOnDeviceTemperature(
+      snapshot.onDeviceTemperature,
+    );
+    _onDeviceAccelerator =
+        _acceleratorOptions.contains(snapshot.onDeviceAccelerator)
+        ? snapshot.onDeviceAccelerator
+        : 'gpu';
+    _onDeviceThinkingEnabled = snapshot.onDeviceThinkingEnabled;
+    _onDeviceLiteModeEnabled = snapshot.onDeviceLiteModeEnabled;
+    _contextBudgetPreset = _normalizedContextBudgetPreset(
+      snapshot.contextBudgetPreset,
+    );
+    _contextBudgetReservedOutputTokens =
+        _normalizedContextBudgetTokenOverride(
+          snapshot.contextBudgetReservedOutputTokens,
+        );
+    _contextBudgetSafetyMarginTokens = _normalizedContextBudgetTokenOverride(
+      snapshot.contextBudgetSafetyMarginTokens,
+    );
+    _contextBudgetEffectiveInputPercent =
+        _normalizedContextBudgetEffectiveInputPercent(
+          snapshot.contextBudgetEffectiveInputPercent,
+        );
+    _syncOnDeviceControllers();
+    _syncContextBudgetControllers();
     _isApplyingSnapshot = false;
   }
 
@@ -2557,7 +3159,8 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     if (snapshot == null) {
       return false;
     }
-    return _providerId != snapshot.providerId ||
+    return _providerMode != snapshot.providerMode ||
+        _providerId != snapshot.providerId ||
         _selectedProviderOptionId != snapshot.selectedProviderOptionId ||
         _draftProtocol() != snapshot.protocol ||
         _streamingEnabled != snapshot.streamingEnabled ||
@@ -2573,12 +3176,46 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         _openAiPromptCacheRetention != snapshot.openAiPromptCacheRetention ||
         _anthropicPromptCachingEnabled !=
             snapshot.anthropicPromptCachingEnabled ||
-        _anthropicPromptCacheTtl != snapshot.anthropicPromptCacheTtl;
+        _anthropicPromptCacheTtl != snapshot.anthropicPromptCacheTtl ||
+        _selectedOnDeviceModelId != snapshot.selectedOnDeviceModelId ||
+        _onDeviceMaxContextWindow != snapshot.onDeviceMaxContextWindow ||
+        _onDeviceMaxTokens != snapshot.onDeviceMaxTokens ||
+        _onDeviceTopK != snapshot.onDeviceTopK ||
+        _onDeviceTopP != snapshot.onDeviceTopP ||
+        _onDeviceTemperature != snapshot.onDeviceTemperature ||
+        _onDeviceAccelerator != snapshot.onDeviceAccelerator ||
+        _onDeviceThinkingEnabled != snapshot.onDeviceThinkingEnabled ||
+        _onDeviceLiteModeEnabled != snapshot.onDeviceLiteModeEnabled ||
+        _contextBudgetPreset !=
+            _normalizedContextBudgetPreset(snapshot.contextBudgetPreset) ||
+        _contextBudgetReservedOutputTokens !=
+            _normalizedContextBudgetTokenOverride(
+              snapshot.contextBudgetReservedOutputTokens,
+            ) ||
+        _contextBudgetSafetyMarginTokens !=
+            _normalizedContextBudgetTokenOverride(
+              snapshot.contextBudgetSafetyMarginTokens,
+            ) ||
+        _contextBudgetEffectiveInputPercent !=
+            _normalizedContextBudgetEffectiveInputPercent(
+              snapshot.contextBudgetEffectiveInputPercent,
+            );
   }
 
-  bool _draftIsConfigured() =>
-      _baseUrlController.text.trim().isNotEmpty &&
-      _apiKeyController.text.trim().isNotEmpty;
+  bool _draftIsConfigured() => _providerMode == 'on_device_model'
+      ? _selectedOnDeviceModelId.trim().isNotEmpty &&
+            (_snapshot?.onDeviceModels.any(
+                  (option) =>
+                      option.id == _selectedOnDeviceModelId &&
+                      _normalizedOnDeviceInstallState(option) == 'ready',
+                ) ??
+                false)
+      : (_baseUrlController.text.trim().isNotEmpty &&
+            (_apiKeyController.text.trim().isNotEmpty ||
+                _llmEndpointAllowsBlankApiKey(
+                  protocol: _draftProtocol(),
+                  baseUrl: _baseUrlController.text,
+                )));
 
   Future<void> _saveDraft() async {
     if (_snapshot == null ||
@@ -2605,6 +3242,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       final savedSnapshot = await widget.facade.saveLlmConfig(
         enabled: _draftIsConfigured(),
         streamingEnabled: _streamingEnabled,
+        providerMode: _providerMode,
         providerId: _providerId,
         selectedProviderOptionId: _selectedProviderOptionId,
         protocol: _draftProtocol(),
@@ -2619,6 +3257,21 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         openAiPromptCacheRetention: _openAiPromptCacheRetention,
         anthropicPromptCachingEnabled: _anthropicPromptCachingEnabled,
         anthropicPromptCacheTtl: _anthropicPromptCacheTtl,
+        selectedOnDeviceModelId: _selectedOnDeviceModelId,
+        onDeviceMaxContextWindow: _onDeviceMaxContextWindow,
+        onDeviceMaxTokens: _onDeviceMaxTokens,
+        onDeviceTopK: _onDeviceTopK,
+        onDeviceTopP: _onDeviceTopP,
+        onDeviceTemperature: _onDeviceTemperature,
+        onDeviceAccelerator: _onDeviceAccelerator,
+        onDeviceThinkingEnabled: _onDeviceThinkingEnabled,
+        onDeviceLiteModeEnabled: _onDeviceLiteModeEnabled,
+        contextBudgetPreset: _contextBudgetPreset,
+        contextBudgetReservedOutputTokens:
+            _contextBudgetReservedOutputTokens,
+        contextBudgetSafetyMarginTokens: _contextBudgetSafetyMarginTokens,
+        contextBudgetEffectiveInputPercent:
+            _contextBudgetEffectiveInputPercent,
       );
       if (!mounted) {
         return;
@@ -2657,6 +3310,11 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
 
   OpenCrayUiCopy _copyForSnapshot() =>
       OpenCrayUiCopy.fromLocaleTag(_snapshot?.localeTag ?? 'en');
+
+  int get _maxTokensSliderMax =>
+      _onDeviceMaxContextWindow < _minOnDeviceMaxTokens
+      ? _minOnDeviceMaxTokens
+      : _onDeviceMaxContextWindow;
 
   String _draftProtocol() {
     final snapshot = _snapshot;
@@ -2700,6 +3358,665 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
 
   String _anthropicPromptCacheTtlTitle(String ttl) =>
       _copyForSnapshot().llmAnthropicPromptCacheTtlTitle(ttl);
+
+  String _contextBudgetPresetTitle(String preset) {
+    switch (preset) {
+      case 'compact':
+        return 'Compact';
+      case 'expanded':
+        return 'Expanded';
+      case 'dev':
+        return 'Dev';
+      default:
+        return 'Balanced';
+    }
+  }
+
+  void _handleProviderModeSelected(String providerMode) {
+    if (!mounted ||
+        !_providerModeOptions.contains(providerMode) ||
+        providerMode == _providerMode) {
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _providerMode = providerMode;
+    });
+    unawaited(_saveDraft());
+  }
+
+  void _handleOnDeviceModelSelected(String modelId) {
+    if (!mounted ||
+        modelId.trim().isEmpty ||
+        modelId == _selectedOnDeviceModelId) {
+      return;
+    }
+    setState(() {
+      _selectedOnDeviceModelId = modelId;
+    });
+    unawaited(_saveDraft());
+  }
+
+  String _providerModeTitle(String providerMode) {
+    final copy = _copyForSnapshot();
+    switch (providerMode) {
+      case 'on_device_model':
+        return copy.llmSourceOnDeviceLabel;
+      default:
+        return copy.llmSourceCloudLabel;
+    }
+  }
+
+  String _onDeviceModelStatusLabel(LlmOnDeviceModelOption option) {
+    final copy = _copyForSnapshot();
+    switch (_normalizedOnDeviceInstallState(option)) {
+      case 'ready':
+      case 'installed':
+        return copy.llmInstalledStatus(option.sizeLabel);
+      case 'downloading':
+        return copy.llmDownloadingStatus(
+          _formattedOnDeviceDownloadedSize(option),
+          option.sizeLabel,
+          speedLabel: _formattedOnDeviceDownloadSpeed(option),
+        );
+      case 'verifying':
+      case 'downloaded':
+        return copy.llmVerifyingStatus(option.sizeLabel);
+      case 'failed':
+        return copy.llmFailedStatus(option.lastError ?? '');
+      default:
+        return copy.llmNotDownloadedStatus(option.sizeLabel);
+    }
+  }
+
+  String? _onDeviceModelPrimaryActionLabel(LlmOnDeviceModelOption option) {
+    final copy = _copyForSnapshot();
+    switch (_normalizedOnDeviceInstallState(option)) {
+      case 'ready':
+      case 'installed':
+        return option.id == _selectedOnDeviceModelId
+            ? copy.llmSelectedChip
+            : copy.llmUseModelChip;
+      case 'downloading':
+        return null;
+      case 'verifying':
+      case 'downloaded':
+        return copy.llmPreparingChip;
+      case 'failed':
+        return copy.llmRetryModelChip;
+      default:
+        return copy.llmDownloadModelChip;
+    }
+  }
+
+  bool _onDeviceModelPrimaryActionEnabled(LlmOnDeviceModelOption option) {
+    switch (_normalizedOnDeviceInstallState(option)) {
+      case 'ready':
+      case 'installed':
+        return option.id != _selectedOnDeviceModelId;
+      case 'failed':
+      case 'not_downloaded':
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  String? _onDeviceModelSecondaryActionLabel(
+    OpenCrayUiCopy copy,
+    LlmOnDeviceModelOption option,
+  ) {
+    switch (_normalizedOnDeviceInstallState(option)) {
+      case 'downloading':
+        return copy.llmCancelChip;
+      case 'ready':
+      case 'installed':
+        return option.id == _selectedOnDeviceModelId
+            ? null
+            : copy.llmDeleteChip;
+      default:
+        return null;
+    }
+  }
+
+  bool _onDeviceModelHasSecondaryAction(LlmOnDeviceModelOption option) =>
+      _onDeviceModelSecondaryActionLabel(_copyForSnapshot(), option) != null;
+
+  double? _onDeviceModelProgressValue(LlmOnDeviceModelOption option) {
+    if (_normalizedOnDeviceInstallState(option) != 'downloading' ||
+        option.fileSizeBytes <= 0) {
+      return null;
+    }
+    final progress =
+        option.downloadedBytes.clamp(0, option.fileSizeBytes) /
+        option.fileSizeBytes;
+    return progress.clamp(0.0, 1.0);
+  }
+
+  String _normalizedOnDeviceInstallState(LlmOnDeviceModelOption option) {
+    final normalized = option.installState.trim().toLowerCase();
+    if (normalized.isEmpty) {
+      return 'not_downloaded';
+    }
+    return normalized == 'installed' ? 'ready' : normalized;
+  }
+
+  String _formattedOnDeviceDownloadedSize(LlmOnDeviceModelOption option) {
+    final downloaded = option.downloadedBytes.clamp(0, option.fileSizeBytes);
+    if (downloaded <= 0) {
+      return '0 GB';
+    }
+    final value = downloaded / (1024 * 1024 * 1024);
+    return '${value.toStringAsFixed(value >= 10 ? 1 : 2)} GB';
+  }
+
+  String? _formattedOnDeviceDownloadSpeed(LlmOnDeviceModelOption option) {
+    if (_normalizedOnDeviceInstallState(option) != 'downloading') {
+      return null;
+    }
+    final bytesPerSecond = option.downloadBytesPerSecond;
+    if (bytesPerSecond <= 0) {
+      return null;
+    }
+    const units = <String>['B/s', 'KB/s', 'MB/s', 'GB/s'];
+    var value = bytesPerSecond.toDouble();
+    var unitIndex = 0;
+    while (value >= 1024 && unitIndex < units.length - 1) {
+      value /= 1024;
+      unitIndex += 1;
+    }
+    final digits = value >= 100 ? 0 : (value >= 10 ? 1 : 2);
+    return '${value.toStringAsFixed(digits)} ${units[unitIndex]}';
+  }
+
+  void _handleOnDeviceModelPrimaryAction(LlmOnDeviceModelOption option) {
+    if (!_onDeviceModelPrimaryActionEnabled(option)) {
+      return;
+    }
+    switch (_normalizedOnDeviceInstallState(option)) {
+      case 'ready':
+      case 'installed':
+        _handleOnDeviceModelSelected(option.id);
+        return;
+      case 'failed':
+      case 'not_downloaded':
+        unawaited(_downloadOnDeviceModel(option));
+        return;
+    }
+  }
+
+  void _handleOnDeviceModelSecondaryAction(LlmOnDeviceModelOption option) {
+    switch (_normalizedOnDeviceInstallState(option)) {
+      case 'downloading':
+        unawaited(_cancelOnDeviceModelDownload(option));
+        return;
+      case 'ready':
+      case 'installed':
+        if (option.id != _selectedOnDeviceModelId) {
+          unawaited(_deleteOnDeviceModel(option));
+        }
+        return;
+    }
+  }
+
+  Future<void> _downloadOnDeviceModel(LlmOnDeviceModelOption option) async {
+    final copy = _copyForSnapshot();
+    if (_isOnDeviceModelActionPending) {
+      return;
+    }
+    setState(() {
+      _isOnDeviceModelActionPending = true;
+    });
+    try {
+      final refreshed = await widget.facade.downloadOnDeviceLlmModel(option.id);
+      if (!mounted) {
+        return;
+      }
+      _mergeOnDeviceModelSnapshot(refreshed);
+      final updatedOption = refreshed.onDeviceModels.firstWhere(
+        (candidate) => candidate.id == option.id,
+        orElse: () => option,
+      );
+      if (_normalizedOnDeviceInstallState(updatedOption) == 'failed' &&
+          (updatedOption.lastError?.isNotEmpty ?? false)) {
+        _showMessage(updatedOption.lastError!);
+      } else {
+        _showMessage(copy.llmModelDownloadStarted(option.title));
+      }
+    } catch (error) {
+      if (mounted) {
+        _showMessage(error.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isOnDeviceModelActionPending = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _cancelOnDeviceModelDownload(
+    LlmOnDeviceModelOption option,
+  ) async {
+    final copy = _copyForSnapshot();
+    if (_isOnDeviceModelActionPending) {
+      return;
+    }
+    setState(() {
+      _isOnDeviceModelActionPending = true;
+    });
+    try {
+      final refreshed = await widget.facade.cancelOnDeviceLlmModelDownload(
+        option.id,
+      );
+      if (!mounted) {
+        return;
+      }
+      _mergeOnDeviceModelSnapshot(refreshed);
+      _showMessage(copy.llmModelDownloadCancelled(option.title));
+    } catch (error) {
+      if (mounted) {
+        _showMessage(error.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isOnDeviceModelActionPending = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _deleteOnDeviceModel(LlmOnDeviceModelOption option) async {
+    final copy = _copyForSnapshot();
+    if (_isOnDeviceModelActionPending) {
+      return;
+    }
+    setState(() {
+      _isOnDeviceModelActionPending = true;
+    });
+    try {
+      final refreshed = await widget.facade.deleteOnDeviceLlmModel(option.id);
+      if (!mounted) {
+        return;
+      }
+      _mergeOnDeviceModelSnapshot(refreshed);
+      _showMessage(copy.llmModelDeleted(option.title));
+    } catch (error) {
+      if (mounted) {
+        _showMessage(error.toString().replaceFirst('Exception: ', ''));
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isOnDeviceModelActionPending = false;
+        });
+      }
+    }
+  }
+
+  void _mergeOnDeviceModelSnapshot(LlmConfigSnapshot refreshed) {
+    setState(() {
+      final currentSnapshot = _snapshot;
+      if (currentSnapshot == null || !_hasDraftChanges()) {
+        _applySnapshot(refreshed);
+      } else {
+        _snapshot = currentSnapshot.copyWith(
+          onDeviceModels: refreshed.onDeviceModels,
+        );
+      }
+    });
+    _syncOnDeviceModelPolling(refreshed.onDeviceModels);
+  }
+
+  void _syncOnDeviceModelPolling(List<LlmOnDeviceModelOption> options) {
+    final shouldPoll = options.any((option) {
+      final state = _normalizedOnDeviceInstallState(option);
+      return state == 'downloading' || state == 'verifying';
+    });
+    if (!shouldPoll) {
+      _onDeviceModelStatusPollTimer?.cancel();
+      _onDeviceModelStatusPollTimer = null;
+      return;
+    }
+    if (_onDeviceModelStatusPollTimer != null) {
+      return;
+    }
+    _onDeviceModelStatusPollTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => _refreshOnDeviceModelStatuses(),
+    );
+  }
+
+  Future<void> _refreshOnDeviceModelStatuses() async {
+    if (!mounted) {
+      return;
+    }
+    try {
+      final refreshed = await widget.facade.loadLlmConfig();
+      if (!mounted) {
+        return;
+      }
+      _mergeOnDeviceModelSnapshot(refreshed);
+    } catch (_) {
+      _onDeviceModelStatusPollTimer?.cancel();
+      _onDeviceModelStatusPollTimer = null;
+    }
+  }
+
+  int _normalizedOnDeviceContextWindow(int value) {
+    if (value < _minOnDeviceContextWindow) {
+      return _minOnDeviceContextWindow;
+    }
+    if (value > _maxOnDeviceContextWindow) {
+      return _maxOnDeviceContextWindow;
+    }
+    return value;
+  }
+
+  int _normalizedOnDeviceMaxTokens(int value) {
+    if (value < _minOnDeviceMaxTokens) {
+      return _minOnDeviceMaxTokens;
+    }
+    if (value > _maxTokensSliderMax) {
+      return _maxTokensSliderMax;
+    }
+    return value;
+  }
+
+  int _normalizedOnDeviceTopK(int value) {
+    if (value < _minOnDeviceTopK) {
+      return _minOnDeviceTopK;
+    }
+    if (value > _maxOnDeviceTopK) {
+      return _maxOnDeviceTopK;
+    }
+    return value;
+  }
+
+  double _normalizedOnDeviceProbability(double value) {
+    final clamped = value.clamp(0.0, 1.0).toDouble();
+    return (clamped * 100).round() / 100;
+  }
+
+  double _normalizedOnDeviceTemperature(double value) {
+    final clamped = value.clamp(0.0, 2.0).toDouble();
+    return (clamped * 100).round() / 100;
+  }
+
+  String _normalizedContextBudgetPreset(String value) {
+    final normalized = value.trim().toLowerCase();
+    return _contextBudgetPresetOptions.contains(normalized)
+        ? normalized
+        : 'balanced';
+  }
+
+  int? _normalizedContextBudgetTokenOverride(int? value) {
+    if (value == null || value <= 0) {
+      return null;
+    }
+    return value.clamp(256, 262144).toInt();
+  }
+
+  double? _normalizedContextBudgetEffectiveInputPercent(double? value) {
+    if (value == null || value <= 0) {
+      return null;
+    }
+    final clamped = value.clamp(0.50, 0.99).toDouble();
+    return (clamped * 100).round() / 100;
+  }
+
+  String _formatDouble(double value) => value.toStringAsFixed(2);
+
+  void _syncOnDeviceControllers() {
+    _onDeviceMaxContextController.text = _onDeviceMaxContextWindow.toString();
+    _onDeviceMaxTokensController.text = _onDeviceMaxTokens.toString();
+    _onDeviceTopKController.text = _onDeviceTopK.toString();
+    _onDeviceTopPController.text = _formatDouble(_onDeviceTopP);
+    _onDeviceTemperatureController.text = _formatDouble(_onDeviceTemperature);
+  }
+
+  void _syncContextBudgetControllers() {
+    _contextBudgetReservedOutputController.text =
+        _contextBudgetReservedOutputTokens?.toString() ?? '';
+    _contextBudgetSafetyMarginController.text =
+        _contextBudgetSafetyMarginTokens?.toString() ?? '';
+    _contextBudgetEffectiveInputPercentController.text =
+        _contextBudgetEffectiveInputPercent == null
+        ? ''
+        : _formatDouble(_contextBudgetEffectiveInputPercent!);
+  }
+
+  void _handleOnDeviceMaxContextChanged(String value) {
+    final parsed = int.tryParse(value);
+    if (parsed == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _onDeviceMaxContextWindow = _normalizedOnDeviceContextWindow(parsed);
+      _onDeviceMaxTokens = _normalizedOnDeviceMaxTokens(_onDeviceMaxTokens);
+      _onDeviceMaxTokensController.text = _onDeviceMaxTokens.toString();
+    });
+  }
+
+  void _handleOnDeviceMaxTokensChanged(String value) {
+    final parsed = int.tryParse(value);
+    if (parsed == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _onDeviceMaxTokens = _normalizedOnDeviceMaxTokens(parsed);
+    });
+  }
+
+  void _handleOnDeviceTopKChanged(String value) {
+    final parsed = int.tryParse(value);
+    if (parsed == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _onDeviceTopK = _normalizedOnDeviceTopK(parsed);
+    });
+  }
+
+  void _handleOnDeviceTopPChanged(String value) {
+    final parsed = double.tryParse(value);
+    if (parsed == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _onDeviceTopP = _normalizedOnDeviceProbability(parsed);
+    });
+  }
+
+  void _handleOnDeviceTemperatureChanged(String value) {
+    final parsed = double.tryParse(value);
+    if (parsed == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _onDeviceTemperature = _normalizedOnDeviceTemperature(parsed);
+    });
+  }
+
+  void _handleContextBudgetPresetSelected(String preset) {
+    final normalized = _normalizedContextBudgetPreset(preset);
+    if (!mounted || normalized == _contextBudgetPreset) {
+      return;
+    }
+    setState(() {
+      _contextBudgetPreset = normalized;
+    });
+    unawaited(_saveDraft());
+  }
+
+  void _handleContextBudgetReservedOutputChanged(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _contextBudgetReservedOutputTokens =
+          _normalizedContextBudgetTokenOverride(parsed);
+    });
+  }
+
+  void _handleContextBudgetSafetyMarginChanged(String value) {
+    final parsed = int.tryParse(value.trim());
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _contextBudgetSafetyMarginTokens =
+          _normalizedContextBudgetTokenOverride(parsed);
+    });
+  }
+
+  void _handleContextBudgetEffectiveInputPercentChanged(String value) {
+    final parsed = double.tryParse(value.trim());
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _contextBudgetEffectiveInputPercent =
+          _normalizedContextBudgetEffectiveInputPercent(parsed);
+    });
+  }
+
+  void _clearContextBudgetOverride({
+    required TextEditingController controller,
+    required VoidCallback setValue,
+  }) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      controller.clear();
+      setValue();
+    });
+    unawaited(_saveDraft());
+  }
+
+  void _normalizeOnDeviceMaxContextField() {
+    final normalized = _normalizedOnDeviceContextWindow(
+      int.tryParse(_onDeviceMaxContextController.text) ??
+          _onDeviceMaxContextWindow,
+    );
+    if (!mounted) {
+      _onDeviceMaxContextController.text = normalized.toString();
+      return;
+    }
+    setState(() {
+      _onDeviceMaxContextWindow = normalized;
+      _onDeviceMaxTokens = _normalizedOnDeviceMaxTokens(_onDeviceMaxTokens);
+      _syncOnDeviceControllers();
+    });
+  }
+
+  void _normalizeOnDeviceMaxTokensField() {
+    final normalized = _normalizedOnDeviceMaxTokens(
+      int.tryParse(_onDeviceMaxTokensController.text) ?? _onDeviceMaxTokens,
+    );
+    if (!mounted) {
+      _onDeviceMaxTokensController.text = normalized.toString();
+      return;
+    }
+    setState(() {
+      _onDeviceMaxTokens = normalized;
+      _syncOnDeviceControllers();
+    });
+  }
+
+  void _normalizeOnDeviceTopKField() {
+    final normalized = _normalizedOnDeviceTopK(
+      int.tryParse(_onDeviceTopKController.text) ?? _onDeviceTopK,
+    );
+    if (!mounted) {
+      _onDeviceTopKController.text = normalized.toString();
+      return;
+    }
+    setState(() {
+      _onDeviceTopK = normalized;
+      _syncOnDeviceControllers();
+    });
+  }
+
+  void _normalizeOnDeviceTopPField() {
+    final normalized = _normalizedOnDeviceProbability(
+      double.tryParse(_onDeviceTopPController.text) ?? _onDeviceTopP,
+    );
+    if (!mounted) {
+      _onDeviceTopPController.text = _formatDouble(normalized);
+      return;
+    }
+    setState(() {
+      _onDeviceTopP = normalized;
+      _syncOnDeviceControllers();
+    });
+  }
+
+  void _normalizeOnDeviceTemperatureField() {
+    final normalized = _normalizedOnDeviceTemperature(
+      double.tryParse(_onDeviceTemperatureController.text) ??
+          _onDeviceTemperature,
+    );
+    if (!mounted) {
+      _onDeviceTemperatureController.text = _formatDouble(normalized);
+      return;
+    }
+    setState(() {
+      _onDeviceTemperature = normalized;
+      _syncOnDeviceControllers();
+    });
+  }
+
+  void _normalizeContextBudgetReservedOutputField() {
+    final normalized = _normalizedContextBudgetTokenOverride(
+      int.tryParse(_contextBudgetReservedOutputController.text.trim()),
+    );
+    if (!mounted) {
+      _contextBudgetReservedOutputController.text =
+          normalized?.toString() ?? '';
+      return;
+    }
+    setState(() {
+      _contextBudgetReservedOutputTokens = normalized;
+      _syncContextBudgetControllers();
+    });
+  }
+
+  void _normalizeContextBudgetSafetyMarginField() {
+    final normalized = _normalizedContextBudgetTokenOverride(
+      int.tryParse(_contextBudgetSafetyMarginController.text.trim()),
+    );
+    if (!mounted) {
+      _contextBudgetSafetyMarginController.text = normalized?.toString() ?? '';
+      return;
+    }
+    setState(() {
+      _contextBudgetSafetyMarginTokens = normalized;
+      _syncContextBudgetControllers();
+    });
+  }
+
+  void _normalizeContextBudgetEffectiveInputPercentField() {
+    final normalized = _normalizedContextBudgetEffectiveInputPercent(
+      double.tryParse(
+        _contextBudgetEffectiveInputPercentController.text.trim(),
+      ),
+    );
+    if (!mounted) {
+      _contextBudgetEffectiveInputPercentController.text = normalized == null
+          ? ''
+          : _formatDouble(normalized);
+      return;
+    }
+    setState(() {
+      _contextBudgetEffectiveInputPercent = normalized;
+      _syncContextBudgetControllers();
+    });
+  }
 }
 
 class _PersonalizationSettingsPage extends StatefulWidget {
@@ -3972,6 +5289,7 @@ class _InlineEditableField extends StatelessWidget {
     required this.hintText,
     required this.controller,
     required this.focusNode,
+    this.keyboardType = TextInputType.text,
     this.onChanged,
   });
 
@@ -3979,10 +5297,12 @@ class _InlineEditableField extends StatelessWidget {
   final String hintText;
   final TextEditingController controller;
   final FocusNode focusNode;
+  final TextInputType keyboardType;
   final ValueChanged<String>? onChanged;
 
   @override
   Widget build(BuildContext context) {
+    final bool usesPrivateIme = keyboardType == TextInputType.visiblePassword;
     return _PrototypeFieldSurface(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -3997,13 +5317,13 @@ class _InlineEditableField extends StatelessWidget {
                 onChanged: onChanged,
                 textAlign: TextAlign.right,
                 autocorrect: false,
-                enableSuggestions: false,
-                enableIMEPersonalizedLearning: false,
+                enableSuggestions: !usesPrivateIme,
+                enableIMEPersonalizedLearning: !usesPrivateIme,
                 spellCheckConfiguration:
                     const SpellCheckConfiguration.disabled(),
                 smartDashesType: SmartDashesType.disabled,
                 smartQuotesType: SmartQuotesType.disabled,
-                keyboardType: TextInputType.visiblePassword,
+                keyboardType: keyboardType,
                 style: _SettingsTextStyles.fieldValue,
                 strutStyle: _SettingsTextStyles.fieldValueStrut,
                 decoration: InputDecoration(
@@ -4046,6 +5366,37 @@ class _InlineTextAction extends StatelessWidget {
         child: Text(
           label,
           style: _SettingsTextStyles.inlineAction.copyWith(color: color),
+        ),
+      ),
+    );
+  }
+}
+
+class _FieldClearButton extends StatelessWidget {
+  const _FieldClearButton({required this.onTap, this.buttonKey});
+
+  final VoidCallback onTap;
+  final Key? buttonKey;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: Tooltip(
+        message: 'Clear',
+        child: InkWell(
+          key: buttonKey,
+          borderRadius: BorderRadius.circular(999),
+          onTap: onTap,
+          child: const SizedBox(
+            width: 28,
+            height: 28,
+            child: Icon(
+              Icons.close_rounded,
+              size: 18,
+              color: OpenCrayColors.textSecondary,
+            ),
+          ),
         ),
       ),
     );
@@ -4106,7 +5457,7 @@ class _PrototypeField extends StatelessWidget {
     this.obscureText = false,
     this.minLines = 1,
     this.maxLines = 1,
-    this.trailingText,
+    this.trailing,
     this.onChanged,
     this.keyboardType,
   });
@@ -4119,12 +5470,19 @@ class _PrototypeField extends StatelessWidget {
   final bool obscureText;
   final int minLines;
   final int maxLines;
-  final String? trailingText;
+  final Widget? trailing;
   final ValueChanged<String>? onChanged;
   final TextInputType? keyboardType;
 
   @override
   Widget build(BuildContext context) {
+    final TextInputType resolvedKeyboardType =
+        keyboardType ??
+        (obscureText
+            ? TextInputType.visiblePassword
+            : (maxLines == 1 ? TextInputType.text : TextInputType.multiline));
+    final bool usesPrivateIme =
+        obscureText || resolvedKeyboardType == TextInputType.visiblePassword;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -4146,17 +5504,13 @@ class _PrototypeField extends StatelessWidget {
                     onChanged: onChanged,
                     obscureText: obscureText,
                     autocorrect: false,
-                    enableSuggestions: false,
-                    enableIMEPersonalizedLearning: false,
+                    enableSuggestions: !usesPrivateIme,
+                    enableIMEPersonalizedLearning: !usesPrivateIme,
                     spellCheckConfiguration:
                         const SpellCheckConfiguration.disabled(),
                     smartDashesType: SmartDashesType.disabled,
                     smartQuotesType: SmartQuotesType.disabled,
-                    keyboardType:
-                        keyboardType ??
-                        (maxLines == 1
-                            ? TextInputType.visiblePassword
-                            : TextInputType.multiline),
+                    keyboardType: resolvedKeyboardType,
                     minLines: minLines,
                     maxLines: maxLines,
                     style: _SettingsTextStyles.fieldValue.copyWith(
@@ -4182,16 +5536,7 @@ class _PrototypeField extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (trailingText != null) ...[
-                  const SizedBox(width: 8),
-                  Padding(
-                    padding: const EdgeInsets.only(right: 12),
-                    child: Text(
-                      trailingText!,
-                      style: _SettingsTextStyles.selectionMeta,
-                    ),
-                  ),
-                ],
+                if (trailing != null) ...[const SizedBox(width: 8), trailing!],
               ],
             ),
           ),
@@ -4380,6 +5725,366 @@ class _SegmentedSelector extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _CompactInlineValueField extends StatelessWidget {
+  const _CompactInlineValueField({
+    this.fieldKey,
+    required this.controller,
+    this.focusNode,
+    required this.width,
+    required this.keyboardType,
+    this.onChanged,
+  });
+
+  final Key? fieldKey;
+  final TextEditingController controller;
+  final FocusNode? focusNode;
+  final double width;
+  final TextInputType keyboardType;
+  final ValueChanged<String>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: width,
+      child: _PrototypeFieldSurface(
+        child: TextField(
+          key: fieldKey,
+          controller: controller,
+          focusNode: focusNode,
+          onChanged: onChanged,
+          keyboardType: keyboardType,
+          textInputAction: TextInputAction.done,
+          textAlign: TextAlign.center,
+          autocorrect: false,
+          enableSuggestions: true,
+          enableIMEPersonalizedLearning: true,
+          spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
+          smartDashesType: SmartDashesType.disabled,
+          smartQuotesType: SmartQuotesType.disabled,
+          style: _SettingsTextStyles.fieldValue,
+          strutStyle: _SettingsTextStyles.fieldValueStrut,
+          decoration: const InputDecoration(
+            isCollapsed: true,
+            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            border: InputBorder.none,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BudgetOverrideRow extends StatelessWidget {
+  const _BudgetOverrideRow({
+    required this.label,
+    this.fieldKey,
+    required this.controller,
+    this.focusNode,
+    required this.suffix,
+    this.decimal = false,
+    this.onChanged,
+    required this.onClear,
+  });
+
+  final String label;
+  final Key? fieldKey;
+  final TextEditingController controller;
+  final FocusNode? focusNode;
+  final String suffix;
+  final bool decimal;
+  final ValueChanged<String>? onChanged;
+  final VoidCallback onClear;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(label, style: _SettingsTextStyles.fieldValue),
+        ),
+        const SizedBox(width: 12),
+        _CompactInlineValueField(
+          fieldKey: fieldKey,
+          controller: controller,
+          focusNode: focusNode,
+          width: decimal ? 82 : 92,
+          keyboardType: decimal
+              ? const TextInputType.numberWithOptions(decimal: true)
+              : TextInputType.number,
+          onChanged: onChanged,
+        ),
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 62,
+          child: Text(
+            suffix,
+            overflow: TextOverflow.ellipsis,
+            style: _SettingsTextStyles.body,
+          ),
+        ),
+        InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: onClear,
+          child: const Padding(
+            padding: EdgeInsets.all(6),
+            child: Icon(
+              Icons.close_rounded,
+              size: 16,
+              color: OpenCrayColors.textSecondary,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SliderValueRow extends StatelessWidget {
+  const _SliderValueRow({
+    required this.label,
+    required this.minLabel,
+    required this.controller,
+    this.focusNode,
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onSliderChanged,
+    this.onSliderChangeEnd,
+    this.onFieldChanged,
+    this.divisions,
+    this.allowDecimal = false,
+  });
+
+  final String label;
+  final String minLabel;
+  final TextEditingController controller;
+  final FocusNode? focusNode;
+  final double value;
+  final double min;
+  final double max;
+  final ValueChanged<double> onSliderChanged;
+  final ValueChanged<double>? onSliderChangeEnd;
+  final ValueChanged<String>? onFieldChanged;
+  final int? divisions;
+  final bool allowDecimal;
+
+  @override
+  Widget build(BuildContext context) {
+    final resolvedValue = value.clamp(min, max).toDouble();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(child: Text(label, style: _SettingsTextStyles.fieldValue)),
+            const SizedBox(width: 12),
+            _CompactInlineValueField(
+              controller: controller,
+              focusNode: focusNode,
+              width: 84,
+              keyboardType: allowDecimal
+                  ? const TextInputType.numberWithOptions(decimal: true)
+                  : TextInputType.number,
+              onChanged: onFieldChanged,
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            SizedBox(
+              width: 32,
+              child: Text(minLabel, style: _SettingsTextStyles.selectionMeta),
+            ),
+            Expanded(
+              child: SliderTheme(
+                data: SliderTheme.of(context).copyWith(
+                  trackHeight: 3,
+                  thumbShape: const RoundSliderThumbShape(
+                    enabledThumbRadius: 8,
+                  ),
+                  overlayShape: const RoundSliderOverlayShape(
+                    overlayRadius: 14,
+                  ),
+                ),
+                child: Slider(
+                  value: resolvedValue,
+                  min: min,
+                  max: max,
+                  divisions: divisions,
+                  onChanged: onSliderChanged,
+                  onChangeEnd: onSliderChangeEnd,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _OnDeviceModelTile extends StatelessWidget {
+  const _OnDeviceModelTile({
+    required this.title,
+    required this.subtitle,
+    required this.actionLabel,
+    required this.selected,
+    required this.actionEnabled,
+    this.onActionTap,
+    this.secondaryActionLabel,
+    this.onSecondaryActionTap,
+    this.progressValue,
+  });
+
+  final String title;
+  final String subtitle;
+  final String? actionLabel;
+  final bool selected;
+  final bool actionEnabled;
+  final VoidCallback? onActionTap;
+  final String? secondaryActionLabel;
+  final VoidCallback? onSecondaryActionTap;
+  final double? progressValue;
+
+  @override
+  Widget build(BuildContext context) {
+    final chipBackground = selected
+        ? const Color(0xFFE8F1FF)
+        : const Color(0xFFF1F2F6);
+    final chipColor = selected
+        ? OpenCrayColors.primary
+        : (actionEnabled
+              ? OpenCrayColors.textPrimary
+              : OpenCrayColors.textTertiary);
+    return _PrototypeFieldSurface(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: _SettingsTextStyles.fieldValue),
+                      const SizedBox(height: 4),
+                      Text(subtitle, style: _SettingsTextStyles.rowSubtitle),
+                    ],
+                  ),
+                ),
+                if (actionLabel != null) ...[
+                  const SizedBox(width: 12),
+                  InkWell(
+                    borderRadius: BorderRadius.circular(999),
+                    onTap: actionEnabled ? onActionTap : null,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: chipBackground,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        child: Text(
+                          actionLabel!,
+                          style: _SettingsTextStyles.valueChip.copyWith(
+                            color: chipColor,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            if (progressValue != null || secondaryActionLabel != null) ...[
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  if (progressValue != null)
+                    Expanded(
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(999),
+                        child: LinearProgressIndicator(
+                          minHeight: 5,
+                          value: progressValue,
+                          backgroundColor: const Color(0xFFE2E6EE),
+                          valueColor: const AlwaysStoppedAnimation<Color>(
+                            OpenCrayColors.primary,
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (progressValue != null && secondaryActionLabel != null)
+                    const SizedBox(width: 12),
+                  if (secondaryActionLabel != null)
+                    InkWell(
+                      borderRadius: BorderRadius.circular(8),
+                      onTap: onSecondaryActionTap,
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 4,
+                          vertical: 2,
+                        ),
+                        child: Text(
+                          secondaryActionLabel!,
+                          style: _SettingsTextStyles.inlineAction,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SegmentedSettingRow extends StatelessWidget {
+  const _SegmentedSettingRow({
+    required this.label,
+    required this.width,
+    required this.selectedId,
+    required this.options,
+    required this.labelBuilder,
+    required this.onSelected,
+  });
+
+  final String label;
+  final double width;
+  final String selectedId;
+  final List<String> options;
+  final String Function(String value) labelBuilder;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(child: Text(label, style: _SettingsTextStyles.fieldValue)),
+        const SizedBox(width: 12),
+        SizedBox(
+          width: width,
+          child: _InteractiveSegmentedSelector(
+            labels: options,
+            selectedId: selectedId,
+            labelBuilder: labelBuilder,
+            onSelected: onSelected,
+          ),
+        ),
+      ],
     );
   }
 }

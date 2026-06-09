@@ -80,6 +80,16 @@ class GlobalContextBudgetCoordinator(
               )
             }
 
+            state.originalLayer.id == PromptLayerId.STICKY_MEMORY -> {
+              reduceStickyMemoryLayer(
+                state = state,
+                recalledMemory = MemoryRecallResult(memories = input.stickyMemoryCapsule.memories),
+                estimatedTotalTokens = states.sumOf(LayerBudgetState::estimatedTokensAfter),
+                targetInputBudgetTokens = envelope.targetInputBudgetTokens,
+                estimateTokens = estimateTokens,
+              )
+            }
+
             state.originalLayer.id == PromptLayerId.ACTIVE_SKILL -> {
               reduceActiveSkillLayer(
                 state = state,
@@ -144,6 +154,7 @@ class GlobalContextBudgetCoordinator(
               reduceSkillInventoryLayer(
                 state = state,
                 skillInventory = input.skillInventory,
+                activeSkillCapsule = input.activeSkillCapsule,
                 estimatedTotalTokens = states.sumOf(LayerBudgetState::estimatedTokensAfter),
                 targetInputBudgetTokens = envelope.targetInputBudgetTokens,
                 estimateTokens = estimateTokens,
@@ -199,6 +210,22 @@ class GlobalContextBudgetCoordinator(
       else -> ContextBudgetPressureMode.NORMAL
     }
 
+    val layerReports = states.map { state ->
+      val finalState = finalStateFor(state)
+      ContextBudgetLayerReport(
+        id = state.originalLayer.id,
+        name = state.originalLayer.name,
+        priorityClass = state.spec.priorityClass,
+        retentionPriority = state.spec.retentionPriority,
+        estimatedTokensBefore = state.estimatedTokensBefore,
+        estimatedTokensAfter = state.estimatedTokensAfter,
+        finalState = finalState,
+        omitted = finalState == ContextBudgetLayerFinalState.OMITTED,
+        reduced = finalState != ContextBudgetLayerFinalState.FULL && finalState != ContextBudgetLayerFinalState.OMITTED,
+        appliedOperators = state.appliedOperators.toList(),
+      )
+    }
+
     return CoordinatedPromptLayers(
       layers = states.mapNotNull(LayerBudgetState::currentLayer),
       report = ContextBudgetReport(
@@ -207,30 +234,36 @@ class GlobalContextBudgetCoordinator(
         contextWindowTokens = envelope.contextWindowTokens,
         reservedOutputTokens = envelope.reservedOutputTokens,
         safetyMarginTokens = envelope.safetyMarginTokens,
+        selectedPreset = envelope.selectedPreset,
+        effectivePreset = envelope.effectivePreset,
+        presetSource = envelope.presetSource,
+        presetDiverged = envelope.presetDiverged,
         hardInputBudgetTokens = envelope.hardInputBudgetTokens,
         targetInputBudgetTokens = envelope.targetInputBudgetTokens,
         emergencyInputBudgetTokens = envelope.emergencyInputBudgetTokens,
         effectiveInputPercent = envelope.effectiveInputPercent,
         estimatedInputTokensBefore = estimatedBefore,
         estimatedInputTokensAfter = estimatedAfter,
-        omittedLayerCount = omittedLayerNames.size,
-        reducedLayerCount = reducedLayerNames.size,
+        fullLayerCount = layerReports.count { report ->
+          report.finalState == ContextBudgetLayerFinalState.FULL
+        },
+        compactLayerCount = layerReports.count { report ->
+          report.finalState == ContextBudgetLayerFinalState.COMPACT
+        },
+        minimalLayerCount = layerReports.count { report ->
+          report.finalState == ContextBudgetLayerFinalState.MINIMAL
+        },
+        omittedLayerCount = layerReports.count { report ->
+          report.finalState == ContextBudgetLayerFinalState.OMITTED
+        },
+        reducedLayerCount = layerReports.count { report ->
+          report.finalState == ContextBudgetLayerFinalState.COMPACT ||
+            report.finalState == ContextBudgetLayerFinalState.MINIMAL
+        },
         omittedLayerNames = omittedLayerNames,
         reducedLayerNames = reducedLayerNames,
         unresolvedOverflow = unresolvedOverflow,
-        layers = states.map { state ->
-          ContextBudgetLayerReport(
-            id = state.originalLayer.id,
-            name = state.originalLayer.name,
-            priorityClass = state.spec.priorityClass,
-            retentionPriority = state.spec.retentionPriority,
-            estimatedTokensBefore = state.estimatedTokensBefore,
-            estimatedTokensAfter = state.estimatedTokensAfter,
-            omitted = state.currentLayer == null,
-            reduced = state.currentLayer != null && state.estimatedTokensAfter < state.estimatedTokensBefore,
-            appliedOperators = state.appliedOperators.toList(),
-          )
-        },
+        layers = layerReports,
       ),
     )
   }
@@ -266,6 +299,13 @@ class GlobalContextBudgetCoordinator(
       PromptLayerId.RETRIEVED_MEMORY -> estimateTokens(
         memoryPromptLayer.render(
           input.selectedMemory,
+          MemoryPromptDetailMode.COMPACT,
+        ),
+      )
+
+      PromptLayerId.STICKY_MEMORY -> estimateTokens(
+        memoryPromptLayer.render(
+          MemoryRecallResult(memories = input.stickyMemoryCapsule.memories),
           MemoryPromptDetailMode.COMPACT,
         ),
       )
@@ -385,6 +425,16 @@ class GlobalContextBudgetCoordinator(
         maxTokens = estimatedTokens,
       )
 
+      PromptLayerId.STICKY_MEMORY -> LayerBudgetSpec(
+        id = layer.id,
+        priorityClass = PromptLayerBudgetClass.PROTECTED_PROCEDURAL_CONTINUITY,
+        retentionPriority = 30,
+        mayDrop = false,
+        minTokens = compactMemoryTokens,
+        targetTokens = compactMemoryTokens,
+        maxTokens = estimatedTokens,
+      )
+
       PromptLayerId.CONVERSATION -> LayerBudgetSpec(
         id = layer.id,
         priorityClass = PromptLayerBudgetClass.RECENT_REPLAY,
@@ -397,10 +447,14 @@ class GlobalContextBudgetCoordinator(
 
       PromptLayerId.ACTIVE_SKILL -> LayerBudgetSpec(
         id = layer.id,
-        priorityClass = PromptLayerBudgetClass.BOUNDED_DURABLE_RECALL,
-        retentionPriority = 60,
-        mayDrop = true,
-        minTokens = 0,
+        priorityClass = if (input.activeSkillCapsule?.pinned == true) {
+          PromptLayerBudgetClass.PROTECTED_PROCEDURAL_CONTINUITY
+        } else {
+          PromptLayerBudgetClass.BOUNDED_DURABLE_RECALL
+        },
+        retentionPriority = if (input.activeSkillCapsule?.pinned == true) 30 else 60,
+        mayDrop = input.activeSkillCapsule?.pinned != true,
+        minTokens = if (input.activeSkillCapsule?.pinned == true) compactActiveSkillTokens else 0,
         targetTokens = compactActiveSkillTokens,
         maxTokens = estimatedTokens,
       )
@@ -771,6 +825,7 @@ class GlobalContextBudgetCoordinator(
   private fun reduceSkillInventoryLayer(
     state: LayerBudgetState,
     skillInventory: SkillInventory,
+    activeSkillCapsule: ActiveSkillCapsule?,
     estimatedTotalTokens: Int,
     targetInputBudgetTokens: Int,
     estimateTokens: (String) -> Int,
@@ -816,6 +871,14 @@ class GlobalContextBudgetCoordinator(
       state.currentLayer = layer.copy(content = reduction.text)
       state.estimatedTokensAfter = estimateTokens(reduction.text)
       state.appliedOperators += reduction.operator
+      return
+    }
+    if (activeSkillCapsule?.pinned == true) {
+      if (minimal.text.isNotBlank() && minimal.text != layer.content) {
+        state.currentLayer = layer.copy(content = minimal.text)
+        state.estimatedTokensAfter = estimateTokens(minimal.text)
+        state.appliedOperators += OPERATOR_REDUCE_ACTIVE_SKILL_MINIMAL
+      }
       return
     }
     state.currentLayer = null
@@ -971,6 +1034,50 @@ class GlobalContextBudgetCoordinator(
     state.appliedOperators += OPERATOR_OMIT_LAYER
   }
 
+  private fun reduceStickyMemoryLayer(
+    state: LayerBudgetState,
+    recalledMemory: MemoryRecallResult,
+    estimatedTotalTokens: Int,
+    targetInputBudgetTokens: Int,
+    estimateTokens: (String) -> Int,
+  ) {
+    val layer = state.currentLayer ?: return
+    if (recalledMemory.memories.isEmpty()) {
+      return
+    }
+    val overflowTokens = estimatedTotalTokens - targetInputBudgetTokens
+    if (overflowTokens <= 0) {
+      return
+    }
+    val availableTokens = max(state.spec.minTokens, state.estimatedTokensAfter - overflowTokens)
+    val compact = memoryPromptLayer.render(
+      recalledMemory,
+      MemoryPromptDetailMode.COMPACT,
+    )
+    val minimal = memoryPromptLayer.render(
+      recalledMemory,
+      MemoryPromptDetailMode.MINIMAL,
+    )
+    val reduction = when {
+      compact != layer.content && estimateTokens(compact) <= availableTokens -> ReducedLayerContent(
+        text = compact,
+        operator = OPERATOR_REDUCE_STICKY_MEMORY_COMPACT,
+      )
+
+      minimal != layer.content && estimateTokens(minimal) <= availableTokens -> ReducedLayerContent(
+        text = minimal,
+        operator = OPERATOR_REDUCE_STICKY_MEMORY_MINIMAL,
+      )
+
+      else -> null
+    }
+    if (reduction != null) {
+      state.currentLayer = layer.copy(content = reduction.text)
+      state.estimatedTokensAfter = estimateTokens(reduction.text)
+      state.appliedOperators += reduction.operator
+    }
+  }
+
   private fun renderRecentToolObservationLayer(
     layer: RecentToolObservationLayer?,
     detailMode: RecentToolObservationDetailMode,
@@ -1045,6 +1152,29 @@ class GlobalContextBudgetCoordinator(
     }
   }
 
+  private fun finalStateFor(
+    state: LayerBudgetState,
+  ): ContextBudgetLayerFinalState {
+    if (state.currentLayer == null) {
+      return ContextBudgetLayerFinalState.OMITTED
+    }
+    if (state.appliedOperators.any { operator -> operator.endsWith("_minimal") }) {
+      return ContextBudgetLayerFinalState.MINIMAL
+    }
+    if (
+      state.appliedOperators.any { operator ->
+        operator == OPERATOR_TRIM_OLDEST_CONVERSATION_MESSAGES ||
+          operator == OPERATOR_TRUNCATE_LAYER_CONTENT
+      }
+    ) {
+      return ContextBudgetLayerFinalState.MINIMAL
+    }
+    if (state.appliedOperators.any { operator -> operator.endsWith("_compact") }) {
+      return ContextBudgetLayerFinalState.COMPACT
+    }
+    return ContextBudgetLayerFinalState.FULL
+  }
+
   private data class LayerBudgetState(
     val originalLayer: PromptLayer,
     var currentLayer: PromptLayer?,
@@ -1078,6 +1208,8 @@ class GlobalContextBudgetCoordinator(
       "reduce_recent_tool_observations_minimal"
     const val OPERATOR_REDUCE_RETRIEVED_MEMORY_COMPACT: String = "reduce_retrieved_memory_compact"
     const val OPERATOR_REDUCE_RETRIEVED_MEMORY_MINIMAL: String = "reduce_retrieved_memory_minimal"
+    const val OPERATOR_REDUCE_STICKY_MEMORY_COMPACT: String = "reduce_sticky_memory_compact"
+    const val OPERATOR_REDUCE_STICKY_MEMORY_MINIMAL: String = "reduce_sticky_memory_minimal"
     const val OPERATOR_REDUCE_SKILL_INVENTORY_COMPACT: String = "reduce_skill_inventory_compact"
     const val OPERATOR_REDUCE_SKILL_INVENTORY_MINIMAL: String = "reduce_skill_inventory_minimal"
     const val OPERATOR_REDUCE_WORKING_STATE_COMPACT: String = "reduce_working_state_compact"

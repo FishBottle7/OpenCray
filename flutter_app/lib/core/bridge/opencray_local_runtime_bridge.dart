@@ -53,6 +53,15 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       _watchMap(() => _getMap('v1/shell_snapshot'), _parseShellSnapshot);
 
   @override
+  Future<void> saveShellDestination({
+    required String selectedTab,
+    String? settingsSubpage,
+  }) => _postVoid('v1/save_shell_destination', <String, Object?>{
+    'selectedTab': selectedTab,
+    'settingsSubpage': settingsSubpage,
+  });
+
+  @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
       OpenCrayFilesSnapshot.fromMap(await _getMap('v1/files_snapshot'));
 
@@ -191,6 +200,17 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   Future<void> shareWorkspaceEntries(List<String> relativePaths) => _postVoid(
     'v1/share_workspace_entries',
     <String, Object?>{'relativePaths': relativePaths},
+  );
+
+  @override
+  Future<OpenCraySavedWorkspaceMediaAttachment> saveWorkspaceMediaAttachment({
+    required String relativePath,
+    required String kind,
+  }) async => OpenCraySavedWorkspaceMediaAttachment.fromMap(
+    await _postMap('v1/save_workspace_media_attachment', <String, Object?>{
+      'relativePath': relativePath,
+      'kind': kind,
+    }),
   );
 
   @override
@@ -433,6 +453,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     bool? streamingEnabled,
+    String providerMode = 'cloud',
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -447,10 +468,24 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    String selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    int onDeviceMaxContextWindow = 32768,
+    int onDeviceMaxTokens = 4096,
+    int onDeviceTopK = 40,
+    double onDeviceTopP = 0.95,
+    double onDeviceTemperature = 0.70,
+    String onDeviceAccelerator = 'gpu',
+    bool onDeviceThinkingEnabled = false,
+    bool onDeviceLiteModeEnabled = false,
+    String? contextBudgetPreset,
+    int? contextBudgetReservedOutputTokens,
+    int? contextBudgetSafetyMarginTokens,
+    double? contextBudgetEffectiveInputPercent,
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _postMap('v1/save_llm_config', <String, Object?>{
       'enabled': enabled,
       if (streamingEnabled != null) 'streamingEnabled': streamingEnabled,
+      'providerMode': providerMode,
       'providerId': providerId,
       'selectedProviderOptionId': selectedProviderOptionId,
       'protocol': protocol,
@@ -469,6 +504,19 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
         'anthropicPromptCachingEnabled': anthropicPromptCachingEnabled,
       if (anthropicPromptCacheTtl != null)
         'anthropicPromptCacheTtl': anthropicPromptCacheTtl,
+      'selectedOnDeviceModelId': selectedOnDeviceModelId,
+      'onDeviceMaxContextWindow': onDeviceMaxContextWindow,
+      'onDeviceMaxTokens': onDeviceMaxTokens,
+      'onDeviceTopK': onDeviceTopK,
+      'onDeviceTopP': onDeviceTopP,
+      'onDeviceTemperature': onDeviceTemperature,
+      'onDeviceAccelerator': onDeviceAccelerator,
+      'onDeviceThinkingEnabled': onDeviceThinkingEnabled,
+      'onDeviceLiteModeEnabled': onDeviceLiteModeEnabled,
+      'contextBudgetPreset': contextBudgetPreset,
+      'contextBudgetReservedOutputTokens': contextBudgetReservedOutputTokens,
+      'contextBudgetSafetyMarginTokens': contextBudgetSafetyMarginTokens,
+      'contextBudgetEffectiveInputPercent': contextBudgetEffectiveInputPercent,
     }),
   );
 
@@ -527,6 +575,33 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       'apiKey': apiKey,
       'model': model,
       'reasoningEffort': reasoningEffort,
+    }),
+  );
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> downloadOnDeviceLlmModel(
+    String modelId,
+  ) async => OpenCrayLlmConfigSnapshot.fromMap(
+    await _postMap('v1/download_on_device_llm_model', <String, Object?>{
+      'modelId': modelId,
+    }),
+  );
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> cancelOnDeviceLlmModelDownload(
+    String modelId,
+  ) async => OpenCrayLlmConfigSnapshot.fromMap(
+    await _postMap('v1/cancel_on_device_llm_model_download', <String, Object?>{
+      'modelId': modelId,
+    }),
+  );
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> deleteOnDeviceLlmModel(
+    String modelId,
+  ) async => OpenCrayLlmConfigSnapshot.fromMap(
+    await _postMap('v1/delete_on_device_llm_model', <String, Object?>{
+      'modelId': modelId,
     }),
   );
 
@@ -816,6 +891,14 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   );
 
   @override
+  Stream<OpenCrayChatLiveAssistantDraftEvent> watchLiveAssistantDraftEvents() =>
+      const Stream<OpenCrayChatLiveAssistantDraftEvent>.empty();
+
+  @override
+  Stream<OpenCrayChatRuntimeEventDelta> watchRuntimeEventDeltas() =>
+      const Stream<OpenCrayChatRuntimeEventDelta>.empty();
+
+  @override
   Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async {
     final payload = await _getJson(
       'v1/chat_run_snapshot',
@@ -963,7 +1046,9 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   @override
   Future<List<OpenCrayChatDraftAttachment>> pickChatAttachments({
     required OpenCrayChatDraftAttachmentKind kind,
-  }) async => const <OpenCrayChatDraftAttachment>[];
+  }) async => throw UnsupportedError(
+    'Adding attachments is unavailable in local runtime mode.',
+  );
 
   @override
   Future<OpenCrayChatRunSubmission?> submitChatMessage(

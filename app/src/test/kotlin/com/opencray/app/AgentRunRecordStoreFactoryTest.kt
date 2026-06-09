@@ -1,16 +1,135 @@
 package com.opencray.app
 
+import com.opencray.runtime.AgentToolCall
+import com.opencray.runtime.AgentToolResult
+import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.OpenCrayMemoryWriteEvent
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCraySupplementEvent
+import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.memory.MemoryStewardshipAction
+import com.opencray.runtime.memory.MemoryStewardshipPlanGraph
+import com.opencray.runtime.memory.MemoryStewardshipPlanGraphEdge
+import com.opencray.runtime.memory.MemoryStewardshipPlanGraphNode
+import com.opencray.runtime.memory.MemoryStewardshipPlanStep
+import com.opencray.runtime.memory.MemoryStewardshipPlanStepOutcome
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AgentRunRecordStoreFactoryTest {
+  @Test
+  fun memoryWriteEventRoundTripsStewardshipPlanGraph() {
+    val event = OpenCrayMemoryWriteEvent(
+      runId = "run-memory",
+      taskId = "task-memory",
+      resolvedRecordIds = listOf("fact-old"),
+      stewardshipPlanSteps = listOf(
+        MemoryStewardshipPlanStep(
+          action = MemoryStewardshipAction.MERGE_RECORD_WITH_CANDIDATE,
+          outcome = MemoryStewardshipPlanStepOutcome.APPLIED,
+          recordId = "fact-old",
+          candidateIndex = 0,
+          producedRecordId = "fact-new",
+          reason = "record_merged_into_candidate",
+        ),
+      ),
+      stewardshipPlanGraph = MemoryStewardshipPlanGraph(
+        nodes = listOf(
+          MemoryStewardshipPlanGraphNode(
+            id = "record:fact-old",
+            kind = "record",
+            label = "fact-old",
+            recordId = "fact-old",
+          ),
+          MemoryStewardshipPlanGraphNode(
+            id = "step:0",
+            kind = "step",
+            label = "merge_record_with_candidate",
+            action = "merge_record_with_candidate",
+            outcome = "applied",
+            recordId = "fact-old",
+            candidateIndex = 0,
+            producedRecordId = "fact-new",
+            reason = "record_merged_into_candidate",
+          ),
+          MemoryStewardshipPlanGraphNode(
+            id = "record:fact-new",
+            kind = "record",
+            label = "fact-new",
+            recordId = "fact-new",
+          ),
+        ),
+        edges = listOf(
+          MemoryStewardshipPlanGraphEdge(
+            from = "record:fact-old",
+            to = "step:0",
+            kind = "input_record",
+          ),
+          MemoryStewardshipPlanGraphEdge(
+            from = "step:0",
+            to = "record:fact-new",
+            kind = "produces_record",
+          ),
+        ),
+      ),
+      emittedAtEpochMs = 3_000L,
+    )
+
+    val restored = runtimeEventForTest(
+      persistedRecordForTest(event),
+    ) as OpenCrayMemoryWriteEvent
+
+    assertEquals(listOf("fact-old"), restored.resolvedRecordIds)
+    assertEquals(
+      listOf(MemoryStewardshipAction.MERGE_RECORD_WITH_CANDIDATE),
+      restored.stewardshipPlanSteps.map(MemoryStewardshipPlanStep::action),
+    )
+    assertEquals(
+      setOf("record:fact-old", "step:0", "record:fact-new"),
+      restored.stewardshipPlanGraph.nodes.map { node -> node.id }.toSet(),
+    )
+    assertEquals(
+      setOf("input_record", "produces_record"),
+      restored.stewardshipPlanGraph.edges.map { edge -> edge.kind }.toSet(),
+    )
+  }
+
+  @Test
+  fun successfulToolResultRoundTripsThroughPersistedRecordWithFullContent() {
+    val event = OpenCrayToolResultEvent(
+      runId = "run-tool",
+      taskId = "task-tool",
+      turn = 1,
+      call = AgentToolCall(
+        toolName = "Read",
+        reason = "Inspect README",
+      ),
+      result = AgentToolResult(
+        toolName = "Read",
+        status = AgentToolResultStatus.SUCCESS,
+        content = "README full content from durable storage.",
+      ),
+      emittedAtEpochMs = 1_234L,
+    )
+
+    val restored = runtimeEventForTest(
+      persistedRecordForTest(event),
+    ) as OpenCrayToolResultEvent
+
+    assertEquals("run-tool", restored.runId)
+    assertEquals("task-tool", restored.taskId)
+    assertEquals("Read", restored.call.toolName)
+    assertEquals("Inspect README", restored.call.reason)
+    assertEquals(AgentToolResultStatus.SUCCESS, restored.result.status)
+    assertEquals("README full content from durable storage.", restored.result.content)
+  }
+
   @Test
   fun subagentEventRoundTripsThroughPersistedRecord() {
     val event = OpenCraySubAgentEvent(
@@ -162,5 +281,17 @@ class AgentRunRecordStoreFactoryTest {
     assertEquals("Legacy supplement", restored.text)
     assertEquals("turn_start", restored.checkpoint)
     assertTrue(restored.metadata.isEmpty())
+  }
+
+  @Test
+  fun checkpointEventsDoNotProjectIntoRuntimeEvents() {
+    val restored = PersistedAgentRunEvent(
+      kind = PersistedAgentRunEventKind.CHECKPOINT,
+      runId = "run-checkpoint",
+      taskId = "task-checkpoint",
+      emittedAtEpochMs = 55L,
+    ).toRuntimeEventOrNull()
+
+    assertNull(restored)
   }
 }

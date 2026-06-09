@@ -266,7 +266,7 @@ fun ManagedProcessSnapshot.normalizedDeliveredObservationState(): ManagedProcess
   deliveredObservationState.mergeMissing(inferredDeliveredObservationStateFromMetadata(metadata))
 
 data class AgentProcessRegistryConfig(
-  val maxTrackedProcesses: Int = 16,
+  val maxTrackedProcesses: Int = 64,
 ) {
   init {
     require(maxTrackedProcesses >= 1) { "AgentProcessRegistryConfig maxTrackedProcesses must be >= 1." }

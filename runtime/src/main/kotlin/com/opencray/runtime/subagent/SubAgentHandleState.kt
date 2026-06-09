@@ -21,6 +21,7 @@ data class SubAgentHandleState(
   val depth: Int,
   val activeSkillName: String? = null,
   val activeSkillActivationSource: String? = null,
+  val activeSkillPinned: Boolean = false,
   val snapshot: SubAgentExecutionSnapshot,
   val pendingApprovalResume: SubAgentApprovalResume? = null,
   val childPromptResumeState: OpenCrayPromptResumeState? = null,
@@ -162,6 +163,7 @@ data class SubAgentHandleState(
     depth = depth,
     activeSkillName = activeSkillName,
     activeSkillActivationSource = activeSkillActivationSource,
+    activeSkillPinned = activeSkillPinned,
   )
 
   companion object {
@@ -179,6 +181,7 @@ data class SubAgentHandleState(
       depth: Int,
       activeSkillName: String?,
       activeSkillActivationSource: String?,
+      activeSkillPinned: Boolean = false,
       createdAtEpochMs: Long,
     ): SubAgentHandleState = SubAgentHandleState(
       agentId = agentId,
@@ -194,6 +197,7 @@ data class SubAgentHandleState(
       depth = depth,
       activeSkillName = activeSkillName,
       activeSkillActivationSource = activeSkillActivationSource,
+      activeSkillPinned = activeSkillPinned,
       snapshot = SubAgentExecutionSnapshot.backgroundQueued(
         headline = "Queued delegated child run '$description'.",
       ),

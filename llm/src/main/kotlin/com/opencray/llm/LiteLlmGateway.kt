@@ -5,6 +5,9 @@ import kotlinx.serialization.json.JsonObject
 
 interface LiteLlmGateway {
   fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult
+
+  fun compactConversation(request: LiteLlmCompactRequest): LiteLlmCompactResult =
+    LiteLlmCompactResult.Unavailable("gateway_compaction_not_supported")
 }
 
 interface LiteLlmVisibleTextObserver {
@@ -17,8 +20,10 @@ object NoOpLiteLlmVisibleTextObserver : LiteLlmVisibleTextObserver
 
 data class LiteLlmGatewayRequest(
   val requestId: String = "llm-${UUID.randomUUID()}",
-  val prompt: String,
+  // Compatibility/debug fallback for providers or flows that still accept a single text blob.
+  var prompt: String = "",
   val systemPrompt: String? = null,
+  // Authoritative transport for the main agent request path.
   val messages: List<LiteLlmGatewayMessage> = emptyList(),
   val tools: List<LiteLlmToolDefinition> = emptyList(),
   val builtinTools: List<LiteLlmBuiltinToolDefinition> = emptyList(),
@@ -31,12 +36,132 @@ data class LiteLlmGatewayRequest(
   val streamObserver: LiteLlmVisibleTextObserver = NoOpLiteLlmVisibleTextObserver,
 ) {
   init {
+    prompt = prompt.trim().takeIf(String::isNotBlank)
+      ?: projectedPromptFromConversation(
+        systemPrompt = systemPrompt,
+        messages = messages,
+      )
     require(requestId.isNotBlank()) { "LiteLlmGatewayRequest requestId must not be blank." }
-    require(prompt.isNotBlank()) { "LiteLlmGatewayRequest prompt must not be blank." }
+    require(prompt.isNotBlank() || messages.isNotEmpty()) {
+      "LiteLlmGatewayRequest must provide a non-blank prompt or at least one message."
+    }
     require(previousResponseId == null || previousResponseId.isNotBlank()) {
       "LiteLlmGatewayRequest previousResponseId must not be blank."
     }
   }
+}
+
+private fun projectedPromptFromConversation(
+  systemPrompt: String?,
+  messages: List<LiteLlmGatewayMessage>,
+): String = buildList {
+  systemPrompt?.trim()?.takeIf(String::isNotBlank)?.let(::add)
+  projectedPromptFromMessages(messages).takeIf(String::isNotBlank)?.let(::add)
+}.joinToString(separator = "\n\n").trim()
+
+private fun projectedPromptFromMessages(
+  messages: List<LiteLlmGatewayMessage>,
+): String = messages.joinToString(separator = "\n\n") { message ->
+  buildString {
+    message.content?.trim()?.takeIf(String::isNotBlank)?.let(::append)
+    when (message.role) {
+      LiteLlmGatewayMessageRole.SYSTEM -> Unit
+
+      LiteLlmGatewayMessageRole.USER -> {
+        projectedAttachmentFallback(message.attachments)
+          ?.let { attachmentsText ->
+            if (isNotEmpty()) {
+              append("\n\n")
+            }
+            append(attachmentsText)
+          }
+      }
+
+      LiteLlmGatewayMessageRole.ASSISTANT -> {
+        if (message.toolCalls.isNotEmpty()) {
+          if (isNotEmpty()) {
+            appendLine()
+          }
+          message.toolCalls.forEachIndexed { index, toolCall ->
+            if (index > 0) {
+              appendLine()
+            }
+            append("{\"tool_name\": \"")
+            append(toolCall.toolName)
+            append("\", \"arguments\": ")
+            append(toolCall.arguments.toString())
+            toolCall.id?.takeIf(String::isNotBlank)?.let { toolCallId ->
+              append(", \"id\": \"")
+              append(escapePromptProjectionText(toolCallId))
+              append("\"")
+            }
+            toolCall.reason?.takeIf(String::isNotBlank)?.let { reason ->
+              append(", \"reason\": \"")
+              append(escapePromptProjectionText(reason))
+              append("\"")
+            }
+            append('}')
+          }
+        }
+      }
+
+      LiteLlmGatewayMessageRole.TOOL -> {
+        message.toolResult?.let { toolResult ->
+          toolResult.errorCode?.trim()?.takeIf(String::isNotBlank)?.let { errorCode ->
+            if (isNotEmpty()) {
+              appendLine()
+            }
+            append(errorCode)
+          }
+          toolResult.content.trim().takeIf(String::isNotBlank)?.let { toolResultContent ->
+            if (isNotEmpty()) {
+              appendLine()
+            }
+            append(toolResultContent)
+          }
+        }
+      }
+    }
+  }.trim()
+}.trim()
+
+private fun escapePromptProjectionText(
+  raw: String,
+): String = raw
+  .replace("\\", "\\\\")
+  .replace("\"", "\\\"")
+
+private fun projectedAttachmentFallback(
+  attachments: List<LiteLlmGatewayAttachment>,
+): String? {
+  if (attachments.isEmpty()) {
+    return null
+  }
+  return buildString {
+    appendLine("Attachments:")
+    attachments.forEach { attachment ->
+      append("- ")
+      append(
+        attachment.displayName
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+          ?: attachment.attachmentId
+          ?: "attachment",
+      )
+      append(" [kind=")
+      append(attachment.kind.name.lowercase())
+      attachment.filePath?.trim()?.takeIf(String::isNotBlank)?.let { filePath ->
+        append(", file_path=")
+        append(filePath)
+      }
+      attachment.mimeType?.trim()?.takeIf(String::isNotBlank)?.let { mimeType ->
+        append(", mime_type=")
+        append(mimeType)
+      }
+      append(']')
+      appendLine()
+    }
+  }.trim().takeIf(String::isNotBlank)
 }
 
 enum class LiteLlmToolChoiceMode {
@@ -265,10 +390,29 @@ data class LiteLlmStructuredToolCall(
   }
 }
 
+data class LiteLlmStructuredFinalAttachment(
+  val kind: String? = null,
+  val relativePath: String? = null,
+  val path: String? = null,
+  val artifactId: String? = null,
+  val chatAttachmentId: String? = null,
+  val displayName: String? = null,
+  val mimeType: String? = null,
+  val durationMs: Long? = null,
+  val waveformBars: List<Int> = emptyList(),
+  val transcriptText: String? = null,
+)
+
 data class LiteLlmStructuredCompletion(
   val toolCalls: List<LiteLlmStructuredToolCall> = emptyList(),
   val finalText: String? = null,
+  val finalAttachments: List<LiteLlmStructuredFinalAttachment> = emptyList(),
   val commentaryText: String? = null,
+  val commentaryTexts: List<String> = commentaryText
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?.let(::listOf)
+    ?: emptyList(),
   val reasoningText: String? = null,
   val rawText: String? = null,
   val toolCallErrors: List<String> = emptyList(),
@@ -276,6 +420,8 @@ data class LiteLlmStructuredCompletion(
   val hasStructuredActions: Boolean
     get() = toolCalls.isNotEmpty() ||
       !finalText.isNullOrBlank() ||
+      finalAttachments.isNotEmpty() ||
+      commentaryTexts.any(String::isNotBlank) ||
       !commentaryText.isNullOrBlank()
 
   val hasRecoverableDiagnostics: Boolean
@@ -316,6 +462,23 @@ data class LiteLlmProviderRequest(
   val selection: LiteLlmRouteSelectionMetadata,
 )
 
+data class LiteLlmCompactRequest(
+  val requestId: String = "compact-${UUID.randomUUID()}",
+  val gatewayRequest: LiteLlmGatewayRequest,
+  val triggerStage: String = "",
+  val metadata: Map<String, String> = emptyMap(),
+) {
+  init {
+    require(requestId.isNotBlank()) { "LiteLlmCompactRequest requestId must not be blank." }
+  }
+}
+
+data class LiteLlmProviderCompactRequest(
+  val route: ProviderRoute,
+  val request: LiteLlmCompactRequest,
+  val selection: LiteLlmRouteSelectionMetadata,
+)
+
 sealed interface LiteLlmProviderResult {
   data class Success(
     val outputText: String,
@@ -352,8 +515,47 @@ sealed interface LiteLlmProviderResult {
   }
 }
 
+sealed interface LiteLlmCompactResult {
+  data class Success(
+    val summaryText: String,
+    val outputItemCount: Int = 0,
+    val compactionItemCount: Int = 0,
+    val encryptedContentCount: Int = 0,
+    val metadata: Map<String, String> = emptyMap(),
+  ) : LiteLlmCompactResult {
+    init {
+      require(outputItemCount >= 0) { "LiteLlmCompactResult outputItemCount must be >= 0." }
+      require(compactionItemCount >= 0) { "LiteLlmCompactResult compactionItemCount must be >= 0." }
+      require(encryptedContentCount >= 0) { "LiteLlmCompactResult encryptedContentCount must be >= 0." }
+    }
+  }
+
+  data class Unavailable(
+    val reason: String,
+    val metadata: Map<String, String> = emptyMap(),
+  ) : LiteLlmCompactResult {
+    init {
+      require(reason.isNotBlank()) { "LiteLlmCompactResult.Unavailable reason must not be blank." }
+    }
+  }
+
+  data class Failure(
+    val errorCode: String = "PROVIDER_COMPACT_FAILURE",
+    val errorMessage: String,
+    val metadata: Map<String, String> = emptyMap(),
+  ) : LiteLlmCompactResult {
+    init {
+      require(errorCode.isNotBlank()) { "LiteLlmCompactResult.Failure errorCode must not be blank." }
+      require(errorMessage.isNotBlank()) { "LiteLlmCompactResult.Failure errorMessage must not be blank." }
+    }
+  }
+}
+
 interface LiteLlmProviderClient {
   fun execute(request: LiteLlmProviderRequest): LiteLlmProviderResult
+
+  fun compactConversation(request: LiteLlmProviderCompactRequest): LiteLlmCompactResult =
+    LiteLlmCompactResult.Unavailable("provider_compaction_not_supported")
 }
 
 interface LiteLlmRoutingSettingsStore {
@@ -485,6 +687,22 @@ class DefaultLiteLlmGateway(
   private val logger: LiteLlmGatewayLogger = NoOpLiteLlmGatewayLogger,
   private val clock: () -> Long = System::currentTimeMillis,
 ) : LiteLlmGateway {
+
+  override fun compactConversation(request: LiteLlmCompactRequest): LiteLlmCompactResult {
+    val routing = routingStore.readRouting()
+    val activeProfile = routing.activeProfile()
+      ?: return LiteLlmCompactResult.Unavailable("routing_profile_missing")
+    val selectedRoute = activeProfile.orderedRoutes().firstOrNull()
+      ?: return LiteLlmCompactResult.Unavailable("routing_route_missing")
+    val routeMetadata = activeProfile.safeSelectionMetadata(routeId = selectedRoute.id)
+    return providerClient.compactConversation(
+      LiteLlmProviderCompactRequest(
+        route = selectedRoute,
+        request = request,
+        selection = routeMetadata,
+      ),
+    )
+  }
 
   override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
     val startedAtEpochMs = clock()

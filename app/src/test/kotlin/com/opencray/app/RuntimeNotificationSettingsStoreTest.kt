@@ -21,7 +21,6 @@ class RuntimeNotificationSettingsStoreTest {
       approvalReminderEnabled = false,
       taskFinishedEnabled = true,
       taskFailedEnabled = true,
-      newUserMessageEnabled = false,
       scheduledWakeEnabled = true,
       backgroundTaskPausedEnabled = false,
       serviceRecoveredEnabled = true,

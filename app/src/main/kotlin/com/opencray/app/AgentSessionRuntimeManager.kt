@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import android.util.Log
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.ExecutionResult
@@ -69,6 +70,7 @@ internal data class AgentRunSnapshot(
   val resultMetadata: Map<String, String> = emptyMap(),
   val pendingMessageId: String? = null,
   val managedProcessIds: List<String> = emptyList(),
+  val managedProcesses: List<ManagedProcessSnapshot> = emptyList(),
   val runningManagedProcessCount: Int = 0,
   val hasLiveManagedProcesses: Boolean = false,
   val hasAutoResumeEligibleManagedProcesses: Boolean = false,
@@ -133,6 +135,11 @@ const val METADATA_RESTORED_FROM_DURABLE_STORE: String = "restoredFromDurableSto
 const val METADATA_RUN_REPAIR_SOURCE: String = "runRepairSource"
 const val RUN_REPAIR_SOURCE_MANAGED_PROCESS_RESTORE: String = "managed_process_restore"
 const val RESTORED_TERMINAL_STATE_INTERRUPTED: String = "interrupted"
+private const val RUNTIME_FLOW_DEBUG_TAG: String = "OpenCrayDiag"
+
+private fun runtimeFlowDebug(message: String) {
+  runCatching { Log.d(RUNTIME_FLOW_DEBUG_TAG, message) }
+}
 
 internal interface AgentSessionRuntimeManager {
   fun forSession(sessionId: String): AgentSessionHandle
@@ -262,6 +269,12 @@ internal interface AgentSessionTaskRuntimeFactory {
   fun releaseSession(sessionId: String) = Unit
 
   fun listManagedProcesses(sessionId: String): List<ManagedProcessSnapshot> = emptyList()
+
+  fun readManagedProcess(
+    sessionId: String,
+    processId: String,
+  ): ManagedProcessSnapshot? = listManagedProcesses(sessionId)
+    .firstOrNull { snapshot -> snapshot.processId == processId }
 
   fun terminateManagedProcess(
     sessionId: String,
@@ -441,6 +454,7 @@ private class ManagedAgentSessionHandle(
   private val detachedControlTasksByTaskId = linkedMapOf<String, DetachedControlTaskState>()
   private val processingLock = Any()
   private var processing: Boolean = false
+  private var processingThread: Thread? = null
   private var lastAccessEpochMs: Long = System.currentTimeMillis()
   private val snapshotStore: SessionQueueSnapshotStore = snapshotStoreFactory.forChatSession(sessionId)
   private val snapshotRestoreTransformer: RecoveryAwareQueueSnapshotStore =
@@ -459,6 +473,7 @@ private class ManagedAgentSessionHandle(
         metadata = task.metadata,
       )
       recordRunEvent(enrichedEvent)
+      runEventJournalStore.append(enrichedEvent)
       listenerProvider().forEach { listener ->
         listener.onRunEvent(sessionId = sessionId, task = task, event = enrichedEvent)
         when (enrichedEvent) {
@@ -485,6 +500,9 @@ private class ManagedAgentSessionHandle(
       text: String,
       emittedAtEpochMs: Long,
     ) {
+      runtimeFlowDebug(
+        "runtime.draftUpdated session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} len=${text.length} preview=${text.take(80).replace('\n', ' ')}",
+      )
       listenerProvider().forEach { listener ->
         listener.onAssistantDraftUpdated(
           sessionId = sessionId,
@@ -499,6 +517,9 @@ private class ManagedAgentSessionHandle(
       task: AgentTask,
       emittedAtEpochMs: Long,
     ) {
+      runtimeFlowDebug(
+        "runtime.draftCleared session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"}",
+      )
       listenerProvider().forEach { listener ->
         listener.onAssistantDraftCleared(
           sessionId = sessionId,
@@ -519,6 +540,7 @@ private class ManagedAgentSessionHandle(
       runStateByTaskId = ::subAgentRecoveryRunStateByTaskId,
       runStateByRunId = ::subAgentRecoveryRunStateByRunId,
       replaceLastResult = ::replaceRunLastResult,
+      replaceDetachedTask = ::replaceRunDetachedTask,
       notifyTaskStarted = { task ->
         listenerProvider().forEach { listener ->
           listener.onTaskStarted(sessionId = sessionId, task = task)
@@ -553,12 +575,18 @@ private class ManagedAgentSessionHandle(
   )
   private val loop = OpenCrayAgentEngine(
     runtime = SessionTaskRuntime { task, hooks ->
+      runtimeFlowDebug(
+        "runtime.taskStarted session=$sessionId task=${task.id} run=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: "-"} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} type=${task.type}",
+      )
       listenerProvider().forEach { listener ->
         listener.onTaskStarted(sessionId = sessionId, task = task)
       }
       val result = enrichResultExecutionContext(
         task = task,
         result = baseRuntime.execute(task, hooks),
+      )
+      runtimeFlowDebug(
+        "runtime.taskFinished session=$sessionId task=${task.id} run=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: "-"} status=${result.status} error=${result.errorCode ?: "-"}",
       )
       recordRunResult(task = task, result = result)
       listenerProvider().forEach { listener ->
@@ -576,6 +604,7 @@ private class ManagedAgentSessionHandle(
   init {
     synchronized(runLock) {
       restorePersistedRunRecordsLocked()
+      restoreDetachedControlTasksLocked()
       seedMissingRunRecordsLocked(loop.snapshot())
     }
   }
@@ -640,6 +669,9 @@ private class ManagedAgentSessionHandle(
       runRecordsById[runId] = record
       persistRunRecordLocked(record)
     }
+    runtimeFlowDebug(
+      "runtime.submit session=$sessionId task=${submittedTask.id} run=$runId pending=${submittedTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} source=${submission.lifecycleDiagnostics.submissionSource ?: "-"}",
+    )
     return submission
   }
 
@@ -665,6 +697,7 @@ private class ManagedAgentSessionHandle(
       val record = ManagedRunRecord(
         submission = submission,
         pendingMessageId = normalizedTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
+        detachedTask = normalizedTask,
       )
       runRecordsById[runId] = record
       persistRunRecordLocked(record)
@@ -701,6 +734,7 @@ private class ManagedAgentSessionHandle(
   override fun ensureProcessing() {
     touch()
     if (!hasRunnableWork()) {
+      runtimeFlowDebug("runtime.ensureProcessingSkipped session=$sessionId reason=no_runnable_work")
       return
     }
     val shouldSchedule = synchronized(processingLock) {
@@ -712,9 +746,14 @@ private class ManagedAgentSessionHandle(
       }
     }
     if (!shouldSchedule) {
+      runtimeFlowDebug("runtime.ensureProcessingSkipped session=$sessionId reason=already_processing")
       return
     }
+    runtimeFlowDebug("runtime.ensureProcessingScheduled session=$sessionId")
     executor.execute {
+      synchronized(processingLock) {
+        processingThread = Thread.currentThread()
+      }
       try {
         loop.resume()
         while (true) {
@@ -723,14 +762,20 @@ private class ManagedAgentSessionHandle(
           }
           val results = loop.runUntilIdle()
           if (results.isEmpty()) {
+            runtimeFlowDebug("runtime.ensureProcessingIdle session=$sessionId reason=no_results")
             break
           }
         }
       } finally {
+        Thread.interrupted()
         val reschedule = synchronized(processingLock) {
+          if (processingThread === Thread.currentThread()) {
+            processingThread = null
+          }
           processing = false
           hasRunnableWork()
         }
+        runtimeFlowDebug("runtime.ensureProcessingFinished session=$sessionId reschedule=$reschedule")
         if (reschedule) {
           ensureProcessing()
         }
@@ -838,6 +883,9 @@ private class ManagedAgentSessionHandle(
     )
     val cancelRequested = AtomicBoolean(false)
     val future = FutureTask<Unit> {
+      runtimeFlowDebug(
+        "runtime.detachedTaskStarted session=$sessionId task=${executionTask.id} run=${executionTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: "-"} kind=$executionKind",
+      )
       listenerProvider().forEach { listener ->
         listener.onTaskStarted(sessionId = sessionId, task = executionTask)
       }
@@ -869,6 +917,9 @@ private class ManagedAgentSessionHandle(
           metadata = executionMetadataFrom(executionTask.metadata),
         )
       }
+      runtimeFlowDebug(
+        "runtime.detachedTaskFinished session=$sessionId task=${executionTask.id} run=${executionTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: "-"} status=${result.status} error=${result.errorCode ?: "-"}",
+      )
       completeDetachedControlExecution(
         submission = submission,
         task = executionTask,
@@ -981,6 +1032,9 @@ private class ManagedAgentSessionHandle(
   override fun requestCancel(taskId: String): Boolean {
     touch()
     if (loop.requestCancel(taskId)) {
+      if (isQueueTaskAwaitingCancellation(taskId)) {
+        interruptProcessingThread()
+      }
       return true
     }
     if (requestDetachedControlCancel(taskId)) {
@@ -1115,6 +1169,20 @@ private class ManagedAgentSessionHandle(
 
   override fun hasPendingWork(): Boolean = currentRunSnapshots().any { snapshot -> !snapshot.isTerminal }
 
+  private fun isQueueTaskAwaitingCancellation(taskId: String): Boolean =
+    loop.snapshot().tasks.any { taskSnapshot ->
+      taskSnapshot.task.id == taskId &&
+        taskSnapshot.lifecycleState == QueueTaskLifecycleState.CANCEL_REQUESTED
+    }
+
+  private fun interruptProcessingThread() {
+    val activeThread = synchronized(processingLock) { processingThread }
+    runtimeFlowDebug(
+      "runtime.requestCancelInterrupt session=$sessionId threadActive=${activeThread != null}",
+    )
+    activeThread?.interrupt()
+  }
+
   private fun hasRunnableWork(): Boolean {
     val runnableTaskIds = loop.snapshot().tasks
       .asSequence()
@@ -1221,6 +1289,7 @@ private class ManagedAgentSessionHandle(
       val record = ManagedRunRecord(
         submission = submission,
         pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
+        detachedTask = task,
       )
       runRecordsById[submission.runId] = record
       persistRunRecordLocked(record)
@@ -1245,6 +1314,18 @@ private class ManagedAgentSessionHandle(
     synchronized(runLock) {
       val existing = runRecordsById[runId] ?: return
       val updated = existing.copy(lastResult = result)
+      runRecordsById[runId] = updated
+      persistRunRecordLocked(updated)
+    }
+  }
+
+  private fun replaceRunDetachedTask(
+    runId: String,
+    task: AgentTask?,
+  ) {
+    synchronized(runLock) {
+      val existing = runRecordsById[runId] ?: return
+      val updated = existing.copy(detachedTask = task)
       runRecordsById[runId] = updated
       persistRunRecordLocked(updated)
     }
@@ -1333,9 +1414,14 @@ private class ManagedAgentSessionHandle(
         existingIds = record?.managedProcessIds.orEmpty(),
         managedProcessesById = managedProcessesById,
       )
-      val associatedProcesses = managedProcessIds.mapNotNull(managedProcessesById::get)
-      val runningManagedProcessCount = associatedProcesses.count { snapshot ->
-        snapshot.status == ManagedProcessStatus.RUNNING
+      val associatedProcesses = associatedManagedProcesses(
+        taskId = taskId,
+        existingIds = managedProcessIds,
+        managedProcessesById = managedProcessesById,
+        managedProcessReader = { processId -> runtimeFactory.readManagedProcess(sessionId, processId) },
+      )
+      val runningManagedProcessCount = associatedProcesses.count { process ->
+        process.status == ManagedProcessStatus.RUNNING
       }
       val acceptedAtEpochMs = record?.submission?.acceptedAtEpochMs
         ?: taskSnapshot?.task?.createdAtEpochMs
@@ -1344,9 +1430,7 @@ private class ManagedAgentSessionHandle(
         taskSnapshot?.task?.updatedAtEpochMs ?: 0L,
         result?.finishedAtEpochMs ?: 0L,
         record?.lastEvent?.emittedAtEpochMs ?: 0L,
-        managedProcessIds.maxOfOrNull { processId ->
-          managedProcessesById[processId]?.updatedAtEpochMs ?: 0L
-        } ?: 0L,
+        associatedProcesses.maxOfOrNull(ManagedProcessSnapshot::updatedAtEpochMs) ?: 0L,
         acceptedAtEpochMs,
       )
       val projectedLifecycleState = projectedLifecycleState(
@@ -1391,6 +1475,7 @@ private class ManagedAgentSessionHandle(
           ?.get(AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID)
           ?: record?.pendingMessageId,
         managedProcessIds = managedProcessIds,
+        managedProcesses = associatedProcesses,
         runningManagedProcessCount = runningManagedProcessCount,
         hasLiveManagedProcesses = runningManagedProcessCount > 0,
         hasAutoResumeEligibleManagedProcesses = associatedProcesses.any { snapshot ->
@@ -1421,6 +1506,7 @@ private class ManagedAgentSessionHandle(
         taskId = taskId,
         existingIds = record.managedProcessIds,
         managedProcessesById = managedProcessesById,
+        managedProcessReader = { processId -> runtimeFactory.readManagedProcess(sessionId, processId) },
       )
       if (!shouldRepairRestoredInterruptedRun(taskSnapshot, record, associatedProcesses)) {
         return@forEach
@@ -1453,9 +1539,56 @@ private class ManagedAgentSessionHandle(
         ),
         pendingMessageId = persisted.pendingMessageId,
         managedProcessIds = persisted.managedProcessIds,
+        detachedTask = persisted.detachedTask,
         lastEvent = persisted.lastEvent?.toRuntimeEventOrNull(),
         lastResult = persisted.lastResult,
       )
+    }
+  }
+
+  private fun restoreDetachedControlTasksLocked() {
+    runRecordsById.values.forEach { record ->
+      val task = record.detachedTask ?: return@forEach
+      val lastResult = record.lastResult
+      val isRecoveryTask = detachedControlTaskSpec(task) is DetachedSubAgentRecoveryWaitTaskSpec
+      if (lastResult == null) {
+        if (isRecoveryTask) {
+          subAgentRecoveryDriver.restoreInFlightTask(
+            submission = record.submission,
+            task = task,
+          )
+        } else {
+          launchDetachedControlExecution(
+            submission = record.submission,
+            task = task,
+            executionKind = task.metadata[METADATA_EXECUTION_KIND]
+              ?.trim()
+              ?.takeIf(String::isNotBlank)
+              ?: EXECUTION_KIND_INITIAL,
+            clearPreviousResult = false,
+          )
+        }
+        return@forEach
+      }
+      if (!isDetachedControlAwaitingManualResume(lastResult)) {
+        return@forEach
+      }
+      if (isRecoveryTask) {
+        subAgentRecoveryDriver.restorePendingTask(
+          submission = record.submission,
+          task = task,
+          lastResult = lastResult,
+        )
+      } else {
+        synchronized(detachedControlLock) {
+          detachedControlTasksByTaskId[record.submission.taskId] = DetachedControlTaskState(
+            submission = record.submission,
+            task = task,
+            cancelRequested = AtomicBoolean(false),
+            future = null,
+          )
+        }
+      }
     }
   }
 
@@ -1497,6 +1630,7 @@ private class ManagedAgentSessionHandle(
         acceptedAtEpochMs = record.submission.acceptedAtEpochMs,
         pendingMessageId = record.pendingMessageId,
         managedProcessIds = record.managedProcessIds,
+        detachedTask = record.detachedTask,
         lastResult = record.lastResult,
         lastEvent = record.lastEvent?.toPersistedRecord(),
       ),
@@ -1729,11 +1863,14 @@ private class ManagedAgentSessionHandle(
     taskId: String,
     existingIds: List<String>,
     managedProcessesById: Map<String, ManagedProcessSnapshot>,
+    managedProcessReader: ((String) -> ManagedProcessSnapshot?)? = null,
   ): List<ManagedProcessSnapshot> = associatedManagedProcessIds(
     taskId = taskId,
     existingIds = existingIds,
     managedProcessesById = managedProcessesById,
-  ).mapNotNull(managedProcessesById::get)
+  ).mapNotNull { processId ->
+    managedProcessesById[processId] ?: managedProcessReader?.invoke(processId)
+  }
 
   private fun projectedLifecycleState(
     original: QueueTaskLifecycleState?,
@@ -1842,6 +1979,7 @@ private class ManagedAgentSessionHandle(
     val submission: AgentRunSubmission,
     val pendingMessageId: String? = null,
     val managedProcessIds: List<String> = emptyList(),
+    val detachedTask: AgentTask? = null,
     val lastEvent: OpenCrayAgentRunEvent? = null,
     val lastResult: ExecutionResult? = null,
   )

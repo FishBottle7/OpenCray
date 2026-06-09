@@ -2,6 +2,7 @@ package com.opencray.app
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -23,16 +24,44 @@ class LlmSettingsStoreTest {
   }
 
   @Test
-  fun configuredStateRequiresApiKey() {
+  fun configuredStateRequiresApiKeyForRemoteEndpoint() {
     val state = LlmSettingsState(
       enabled = false,
       providerId = "custom",
-      baseUrl = "http://10.0.2.2:11434/v1",
+      baseUrl = "https://api.example.com/v1",
       apiKey = "",
       model = "qwen2.5",
     )
 
     assertFalse(state.isConfigured())
+  }
+
+  @Test
+  fun configuredStateAllowsBlankApiKeyForLocalOpenAiCompatibleEndpoint() {
+    val state = LlmSettingsState(
+      enabled = false,
+      providerId = "custom",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      baseUrl = "http://10.0.2.2:11434/v1",
+      apiKey = "",
+      model = "qwen2.5",
+    )
+
+    assertTrue(state.isConfigured())
+  }
+
+  @Test
+  fun configuredStateAllowsBlankApiKeyForIpv6LoopbackOpenAiCompatibleEndpoint() {
+    val state = LlmSettingsState(
+      enabled = false,
+      providerId = "custom",
+      protocol = LlmProviderProtocols.OPENAI,
+      baseUrl = "http://[::1]:11434/v1",
+      apiKey = "",
+      model = "qwen2.5",
+    )
+
+    assertTrue(state.isConfigured())
   }
 
   @Test
@@ -43,6 +72,17 @@ class LlmSettingsStoreTest {
       baseUrl = "http://10.0.2.2:11434/v1",
       apiKey = "token",
       model = "",
+    )
+
+    assertTrue(state.isConfigured())
+  }
+
+  @Test
+  fun configuredStateUsesSelectedOnDeviceModelInOnDeviceMode() {
+    val state = LlmSettingsState(
+      enabled = true,
+      providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+      selectedOnDeviceModelId = "gemma-4-e2b-it",
     )
 
     assertTrue(state.isConfigured())
@@ -80,6 +120,42 @@ class LlmSettingsStoreTest {
     store.save(saved)
 
     assertEquals(saved.sanitized(), store.load())
+  }
+
+  @Test
+  fun saveAndLoadPersistsOnDeviceSettings() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val saved = LlmSettingsState(
+      enabled = true,
+      providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+      providerId = "openai",
+      baseUrl = "https://api.openai.com/v1",
+      apiKey = "token",
+      model = "gpt-4o-mini",
+      selectedOnDeviceModelId = "gemma-4-e4b-it",
+      onDeviceMaxContextWindow = 16384,
+      onDeviceMaxTokens = 2048,
+      onDeviceTopK = 24,
+      onDeviceTopP = 0.9,
+      onDeviceTemperature = 0.4,
+      onDeviceAccelerator = OnDeviceLlmAccelerators.CPU,
+      onDeviceThinkingEnabled = true,
+      onDeviceLiteModeEnabled = true,
+    )
+
+    store.save(saved)
+
+    val loaded = store.load()
+    assertEquals(LlmProviderModes.ON_DEVICE_MODEL, loaded.providerMode)
+    assertEquals("gemma-4-e4b-it", loaded.selectedOnDeviceModelId)
+    assertEquals(16384, loaded.onDeviceMaxContextWindow)
+    assertEquals(2048, loaded.onDeviceMaxTokens)
+    assertEquals(24, loaded.onDeviceTopK)
+    assertEquals(0.9, loaded.onDeviceTopP, 0.0)
+    assertEquals(0.4, loaded.onDeviceTemperature, 0.0)
+    assertEquals(OnDeviceLlmAccelerators.CPU, loaded.onDeviceAccelerator)
+    assertTrue(loaded.onDeviceThinkingEnabled)
+    assertTrue(loaded.onDeviceLiteModeEnabled)
   }
 
   @Test
@@ -288,5 +364,54 @@ class LlmSettingsStoreTest {
     )
 
     assertFalse(loaded.streamingEnabled)
+  }
+
+  @Test
+  fun saveAndLoadPersistsContextBudgetSettings() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val saved = LlmSettingsState(
+      enabled = true,
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      baseUrl = "https://api.openai.com/v1",
+      apiKey = "token",
+      model = "gpt-5-mini",
+      contextBudgetPreset = "expanded",
+      contextBudgetReservedOutputTokens = 3072,
+      contextBudgetSafetyMarginTokens = 1536,
+      contextBudgetEffectiveInputPercent = 0.92,
+    )
+
+    store.save(saved)
+
+    val loaded = store.load(
+      defaults = LlmSettingsState(
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+      ),
+    )
+
+    assertEquals("expanded", loaded.contextBudgetPreset)
+    assertEquals(3072, loaded.contextBudgetReservedOutputTokens)
+    assertEquals(1536, loaded.contextBudgetSafetyMarginTokens)
+    assertEquals(0.92, loaded.contextBudgetEffectiveInputPercent)
+  }
+
+  @Test
+  fun sanitizedContextBudgetSettingsNormalizePresetAndInvalidOverrides() {
+    val state = LlmSettingsState(
+      contextBudgetPreset = "unknown",
+      contextBudgetReservedOutputTokens = 0,
+      contextBudgetSafetyMarginTokens = -8,
+      contextBudgetEffectiveInputPercent = 2.5,
+    )
+
+    val sanitized = state.sanitized()
+
+    assertEquals(LlmSettingsState.DEFAULT_CONTEXT_BUDGET_PRESET, sanitized.contextBudgetPreset)
+    assertNull(sanitized.contextBudgetReservedOutputTokens)
+    assertNull(sanitized.contextBudgetSafetyMarginTokens)
+    assertEquals(1.0, sanitized.contextBudgetEffectiveInputPercent)
   }
 }

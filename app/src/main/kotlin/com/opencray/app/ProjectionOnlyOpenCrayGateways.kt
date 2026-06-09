@@ -32,6 +32,7 @@ import com.opencray.app.facade.settings.SettingsRowSnapshot
 import com.opencray.app.facade.settings.SettingsSectionSnapshot
 import com.opencray.app.facade.skills.LocalSkillsFacade
 import com.opencray.app.facade.skills.SkillsFacade
+import com.opencray.app.shell.AppShellDestination
 import com.opencray.app.shell.AppShellStateStore
 import java.util.Timer
 import java.util.TimerTask
@@ -51,7 +52,9 @@ internal class ProjectionOnlyOpenCrayShellGateway(
 ) : OpenCrayShellGateway {
   override fun loadShellSnapshot(): Map<String, Any?> = buildMap {
     val projectionSnapshot = projectionSnapshotProvider()
-    put("initialTab", stateStore.load().selectedTab.routeKey)
+    val destination = stateStore.load()
+    put("initialTab", destination.selectedTab.routeKey)
+    put("settingsSubpage", destination.settingsSubpage.routeKey)
     put("localeTag", localeTagProvider())
     put("hostLabel", hostLabel)
     put("hostSummary", hostSummary)
@@ -79,6 +82,18 @@ internal class ProjectionOnlyOpenCrayShellGateway(
       listener = listener,
       pollIntervalMs = pollIntervalMs,
     )
+
+  override fun saveShellDestination(
+    selectedTab: String,
+    settingsSubpage: String?,
+  ) {
+    stateStore.save(
+      AppShellDestination.fromRaw(
+        selectedTabRaw = selectedTab,
+        settingsSubpageRaw = settingsSubpage,
+      ),
+    )
+  }
 }
 
 internal class ProjectionOnlyOpenCraySettingsGateway(
@@ -149,6 +164,7 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
   override fun saveLlmConfig(
     enabled: Boolean,
     streamingEnabled: Boolean?,
+    providerMode: String,
     providerId: String,
     selectedProviderOptionId: String,
     protocol: String,
@@ -163,6 +179,19 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    contextBudgetPreset: String?,
+    contextBudgetReservedOutputTokens: Int?,
+    contextBudgetSafetyMarginTokens: Int?,
+    contextBudgetEffectiveInputPercent: Double?,
+    selectedOnDeviceModelId: String,
+    onDeviceMaxContextWindow: Int,
+    onDeviceMaxTokens: Int,
+    onDeviceTopK: Int,
+    onDeviceTopP: Double,
+    onDeviceTemperature: Double,
+    onDeviceAccelerator: String,
+    onDeviceThinkingEnabled: Boolean,
+    onDeviceLiteModeEnabled: Boolean,
   ): Map<String, Any?> = throw writeUnavailable("saveLlmConfig")
 
   override fun saveCustomLlmProvider(
@@ -180,6 +209,10 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    contextBudgetPreset: String?,
+    contextBudgetReservedOutputTokens: Int?,
+    contextBudgetSafetyMarginTokens: Int?,
+    contextBudgetEffectiveInputPercent: Double?,
   ): Map<String, Any?> = throw writeUnavailable("saveCustomLlmProvider")
 
   override fun validateLlmConfig(
@@ -190,6 +223,15 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     model: String,
     reasoningEffort: String,
   ): Map<String, Any?> = throw writeUnavailable("validateLlmConfig")
+
+  override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+    throw writeUnavailable("downloadOnDeviceLlmModel")
+
+  override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> =
+    throw writeUnavailable("cancelOnDeviceLlmModelDownload")
+
+  override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+    throw writeUnavailable("deleteOnDeviceLlmModel")
 
   override fun loadPersonalizationConfig(): Map<String, Any?> =
     personalizationFacade.load().toGatewayMap()
@@ -407,9 +449,16 @@ internal fun observeProjectionWithPollingSnapshot(
 ): () -> Unit {
   val lock = Any()
   var disposed = false
-  var latestPayload = payloadProvider()
-  mainThreadPoster.post {
-    listener(latestPayload)
+  var latestPayload: Map<String, Any?>? = runCatching(payloadProvider).getOrNull()
+  latestPayload?.let { initialPayload ->
+    mainThreadPoster.post {
+      synchronized(lock) {
+        if (disposed) {
+          return@post
+        }
+      }
+      listener(initialPayload)
+    }
   }
   val timer = Timer("projection-shell-gateway-observer", true)
   timer.scheduleAtFixedRate(
@@ -437,7 +486,7 @@ internal fun observeProjectionWithPollingSnapshot(
         }
       }
     },
-    pollIntervalMs.coerceAtLeast(1L),
+    0L,
     pollIntervalMs.coerceAtLeast(1L),
   )
   return {
@@ -447,6 +496,130 @@ internal fun observeProjectionWithPollingSnapshot(
     timer.cancel()
   }
 }
+
+internal fun observeLiveAssistantDraftsWithPollingSnapshot(
+  mainThreadPoster: MainThreadPoster,
+  runtimePayloadProvider: () -> Map<String, Any?>,
+  listener: (Map<String, Any?>) -> Unit,
+  pollIntervalMs: Long,
+): () -> Unit {
+  val lock = Any()
+  var disposed = false
+  var latestDrafts = polledLiveAssistantDrafts(runtimePayloadProvider())
+  val timer = Timer("projection-draft-gateway-observer", true)
+  timer.scheduleAtFixedRate(
+    object : TimerTask() {
+      override fun run() {
+        val nextPayload = runCatching(runtimePayloadProvider).getOrNull() ?: return
+        val nextDrafts = polledLiveAssistantDrafts(nextPayload)
+        val events = synchronized(lock) {
+          if (disposed) {
+            emptyList()
+          } else {
+            diffPolledLiveAssistantDrafts(
+              previous = latestDrafts,
+              current = nextDrafts,
+            ).also {
+              latestDrafts = nextDrafts
+            }
+          }
+        }
+        if (events.isEmpty()) {
+          return
+        }
+        mainThreadPoster.post {
+          synchronized(lock) {
+            if (disposed) {
+              return@post
+            }
+          }
+          events.forEach(listener)
+        }
+      }
+    },
+    0L,
+    pollIntervalMs.coerceAtLeast(1L),
+  )
+  return {
+    synchronized(lock) {
+      disposed = true
+    }
+    timer.cancel()
+  }
+}
+
+private data class PolledLiveAssistantDraft(
+  val sessionId: String,
+  val runId: String,
+  val taskId: String,
+  val pendingMessageId: String,
+  val text: String,
+  val updatedAtEpochMs: Long,
+)
+
+private fun polledLiveAssistantDrafts(
+  payload: Map<String, Any?>,
+): Map<String, PolledLiveAssistantDraft> {
+  val sessionId = (payload["sessionId"] as? String)
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: return emptyMap()
+  @Suppress("UNCHECKED_CAST")
+  val drafts = payload["liveAssistantDrafts"] as? List<Map<String, Any?>> ?: return emptyMap()
+  return drafts.mapNotNull { draft ->
+    val pendingMessageId = (draft["pendingMessageId"] as? String)
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return@mapNotNull null
+    val runId = (draft["runId"] as? String)?.trim().orEmpty()
+    val taskId = (draft["taskId"] as? String)?.trim().orEmpty()
+    val text = (draft["text"] as? String)?.trim().orEmpty()
+    val updatedAtEpochMs = (draft["updatedAtEpochMs"] as? Number)?.toLong() ?: 0L
+    "${sessionId}:${pendingMessageId}" to PolledLiveAssistantDraft(
+      sessionId = sessionId,
+      runId = runId,
+      taskId = taskId,
+      pendingMessageId = pendingMessageId,
+      text = text,
+      updatedAtEpochMs = updatedAtEpochMs,
+    )
+  }.toMap(linkedMapOf())
+}
+
+private fun diffPolledLiveAssistantDrafts(
+  previous: Map<String, PolledLiveAssistantDraft>,
+  current: Map<String, PolledLiveAssistantDraft>,
+): List<Map<String, Any?>> {
+  val events = mutableListOf<Map<String, Any?>>()
+  current.forEach { (key, draft) ->
+    val prior = previous[key]
+    if (prior != draft) {
+      events += draft.toEventPayload(cleared = false)
+    }
+  }
+  previous.forEach { (key, draft) ->
+    if (key !in current) {
+      events += draft.toEventPayload(
+        cleared = true,
+        textOverride = "",
+      )
+    }
+  }
+  return events
+}
+
+private fun PolledLiveAssistantDraft.toEventPayload(
+  cleared: Boolean,
+  textOverride: String? = null,
+): Map<String, Any?> = mapOf(
+  "sessionId" to sessionId,
+  "runId" to runId,
+  "taskId" to taskId,
+  "pendingMessageId" to pendingMessageId,
+  "text" to (textOverride ?: text),
+  "updatedAtEpochMs" to updatedAtEpochMs,
+  "cleared" to cleared,
+)
 
 private const val DEFAULT_PROJECTION_SHELL_POLL_INTERVAL_MS: Long = 350L
 

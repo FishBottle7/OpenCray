@@ -218,26 +218,166 @@ internal fun approvalSupportSanitizePotentialInternalAgentText(
   if (trimmed.isBlank()) {
     return fallback
   }
+  approvalSupportVisibleAssistantTextOrNull(trimmed)?.let { visibleText ->
+    return visibleText
+  }
   return if (approvalSupportLooksLikeInternalToolPayload(trimmed)) fallback else text
+}
+
+internal fun approvalSupportVisibleAssistantTextOrNull(
+  text: String,
+): String? {
+  val normalized = text.trim().takeIf(String::isNotBlank) ?: return null
+  approvalSupportExtractStructuredAssistantText(normalized)?.let { return it }
+  return approvalSupportExtractEmbeddedJsonObjects(normalized)
+    .asSequence()
+    .mapNotNull(::approvalSupportExtractStructuredAssistantText)
+    .firstOrNull()
 }
 
 internal fun approvalSupportLooksLikeInternalToolPayload(
   text: String,
 ): Boolean {
-  val jsonCandidate = approvalSupportExtractEmbeddedJsonObject(text) ?: return false
-  val normalized = jsonCandidate.lowercase(Locale.US)
+  val normalizedText = text.trim().takeIf(String::isNotBlank) ?: return false
+  if (approvalSupportVisibleAssistantTextOrNull(normalizedText) != null) {
+    return false
+  }
+  if (!normalizedText.startsWith('{') && !normalizedText.startsWith('[')) {
+    return false
+  }
+  val normalized = normalizedText.lowercase(Locale.US)
   val explicitToolAction =
     "\"type\"" in normalized &&
       ("\"tool_call\"" in normalized || "\"tool\"" in normalized)
   val toolArgumentShape = "\"tool_name\"" in normalized && "\"arguments\"" in normalized
-  return explicitToolAction || toolArgumentShape
+  val toolCallEnvelope =
+    "\"tool_calls\"" in normalized ||
+      "\"function_call\"" in normalized ||
+      "\"call_id\"" in normalized
+  val internalSignal =
+    "\"is_task_bearing_request\"" in normalized ||
+      "\"user_affect\"" in normalized ||
+      "\"user_invites_playfulness\"" in normalized ||
+      "\"user_requests_relational_support\"" in normalized ||
+      "\"clarification_needed\"" in normalized
+  return explicitToolAction || toolArgumentShape || toolCallEnvelope || internalSignal
 }
 
-private fun approvalSupportExtractEmbeddedJsonObject(raw: String): String? {
-  val trimmed = raw.trim()
-  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-    return trimmed
+private fun approvalSupportExtractStructuredAssistantText(rawText: String): String? {
+  val lowercase = rawText.lowercase(Locale.US)
+  val actionType = approvalSupportFirstNonBlankString(
+    approvalSupportPartialJsonStringFieldValue(rawText, "type")?.trim()?.lowercase(Locale.US),
+    approvalSupportPartialJsonStringFieldValue(rawText, "decision")?.trim()?.lowercase(Locale.US),
+  )
+  val visibleField = approvalSupportFirstNonBlankString(
+    approvalSupportPartialJsonStringFieldValue(rawText, "answer"),
+    approvalSupportPartialJsonStringFieldValue(rawText, "text"),
+    approvalSupportPartialJsonStringFieldValue(rawText, "message"),
+    approvalSupportPartialJsonStringFieldValue(rawText, "summary"),
+  )?.trim()?.takeIf(String::isNotBlank)
+  val hasToolMarkers =
+    "\"tool_name\"" in lowercase ||
+      "\"tool_calls\"" in lowercase ||
+      "\"function_call\"" in lowercase ||
+      "\"call_id\"" in lowercase ||
+      "\"arguments\"" in lowercase
+  val hasInternalSignals =
+    "\"is_task_bearing_request\"" in lowercase ||
+      "\"user_affect\"" in lowercase ||
+      "\"user_invites_playfulness\"" in lowercase ||
+      "\"user_requests_relational_support\"" in lowercase ||
+      "\"clarification_needed\"" in lowercase
+  return when (actionType) {
+    "final",
+    "answer",
+    -> visibleField
+
+    null,
+    "",
+    -> if (hasToolMarkers || hasInternalSignals) {
+      null
+    } else {
+      visibleField
+    }
+
+    else -> null
   }
+}
+
+private fun approvalSupportFirstNonBlankString(vararg values: String?): String? =
+  values.firstOrNull { value -> !value.isNullOrBlank() }
+
+private fun approvalSupportPartialJsonStringFieldValue(
+  rawText: String,
+  fieldName: String,
+): String? {
+  val fieldPattern = "\"$fieldName\""
+  var searchStart = 0
+  while (true) {
+    val keyIndex = rawText.indexOf(fieldPattern, startIndex = searchStart)
+    if (keyIndex < 0) {
+      return null
+    }
+    var index = keyIndex + fieldPattern.length
+    while (index < rawText.length && rawText[index].isWhitespace()) {
+      index += 1
+    }
+    if (index >= rawText.length || rawText[index] != ':') {
+      searchStart = keyIndex + fieldPattern.length
+      continue
+    }
+    index += 1
+    while (index < rawText.length && rawText[index].isWhitespace()) {
+      index += 1
+    }
+    if (index >= rawText.length || rawText[index] != '"') {
+      return null
+    }
+    index += 1
+    val builder = StringBuilder()
+    var escaped = false
+    while (index < rawText.length) {
+      val character = rawText[index]
+      if (escaped) {
+        builder.append(
+          when (character) {
+            'n' -> '\n'
+            'r' -> '\r'
+            't' -> '\t'
+            '\\',
+            '"',
+            '/',
+            -> character
+            else -> character
+          },
+        )
+        escaped = false
+        index += 1
+        continue
+      }
+      when (character) {
+        '\\' -> {
+          escaped = true
+          index += 1
+        }
+
+        '"' -> return builder.toString()
+        else -> {
+          builder.append(character)
+          index += 1
+        }
+      }
+    }
+    return builder.toString()
+  }
+}
+
+private fun approvalSupportExtractEmbeddedJsonObjects(raw: String): List<String> {
+  val trimmed = raw.trim()
+  if (trimmed.isBlank()) {
+    return emptyList()
+  }
+  val matches = mutableListOf<String>()
   var depth = 0
   var startIndex = -1
   var inString = false
@@ -257,10 +397,11 @@ private fun approvalSupportExtractEmbeddedJsonObject(raw: String): String? {
       !inString && character == '}' -> {
         depth -= 1
         if (depth == 0 && startIndex >= 0) {
-          return raw.substring(startIndex, index + 1)
+          matches += raw.substring(startIndex, index + 1)
+          startIndex = -1
         }
       }
     }
   }
-  return null
+  return matches
 }

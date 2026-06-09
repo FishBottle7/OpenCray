@@ -156,12 +156,16 @@ class InMemorySubAgentExecutionCoordinator : SubAgentExecutionCoordinator {
     if (parentRunIds.isEmpty()) {
       synchronized(lock) {
         handlesByKey.clear()
+        activeExecutionsByKey.clear()
       }
       return
     }
     synchronized(lock) {
       handlesByKey.entries.removeIf { (_, handle) ->
         handle.parentRunId !in parentRunIds
+      }
+      activeExecutionsByKey.entries.removeIf { (key, _) ->
+        key.parentRunId !in parentRunIds
       }
     }
   }

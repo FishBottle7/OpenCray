@@ -8,6 +8,7 @@ internal data class RuntimeOwnerBootstrap(
   val chatMutationAccess: RuntimeChatMutationAccess,
   val chatSubmissionHostAccess: RuntimeChatSubmissionHostAccess,
   val runtimeReplayAccess: OpenCrayRuntimeReplayAccess,
+  val onDeviceWarmupPlanner: (String) -> OnDeviceLlmWarmupSpec? = { null },
   val retainedHandle: RetainedRuntimeOwnerHandle? = null,
   private val disposeHandler: () -> Unit = {},
 ) {
@@ -35,6 +36,7 @@ internal fun RuntimeOwnerBootstrap.toRuntimeServicePort(): RuntimeServicePort = 
   chatMutationAccess = chatMutationAccess,
   chatSubmissionHostAccess = chatSubmissionHostAccess,
   runtimeReplayAccess = runtimeReplayAccess,
+  onDeviceWarmupPlanner = onDeviceWarmupPlanner,
 )
 
 internal interface RetainedRuntimeOwnerHandle {

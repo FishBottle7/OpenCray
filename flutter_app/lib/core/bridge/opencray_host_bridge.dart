@@ -24,10 +24,38 @@ import '../models/opencray_strong_background.dart';
 import '../models/opencray_twin_import_source_probe.dart';
 import '../models/opencray_workspace_text_document.dart';
 
+final class OpenCraySavedWorkspaceMediaAttachment {
+  const OpenCraySavedWorkspaceMediaAttachment({
+    required this.displayName,
+    required this.collection,
+    this.uri,
+    this.absolutePath,
+  });
+
+  factory OpenCraySavedWorkspaceMediaAttachment.fromMap(
+    Map<Object?, Object?> map,
+  ) => OpenCraySavedWorkspaceMediaAttachment(
+    displayName: map['displayName'] as String? ?? '',
+    collection: map['collection'] as String? ?? '',
+    uri: map['uri'] as String?,
+    absolutePath: map['absolutePath'] as String?,
+  );
+
+  final String displayName;
+  final String collection;
+  final String? uri;
+  final String? absolutePath;
+}
+
 abstract interface class OpenCrayHostBridge {
   Future<OpenCrayShellSnapshot> loadShellSnapshot();
 
   Stream<OpenCrayShellSnapshot> watchShellSnapshot();
+
+  Future<void> saveShellDestination({
+    required String selectedTab,
+    String? settingsSubpage,
+  });
 
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot();
 
@@ -89,6 +117,11 @@ abstract interface class OpenCrayHostBridge {
   });
 
   Future<void> shareWorkspaceEntries(List<String> relativePaths);
+
+  Future<OpenCraySavedWorkspaceMediaAttachment> saveWorkspaceMediaAttachment({
+    required String relativePath,
+    required String kind,
+  });
 
   Future<void> showNativeToast(String message);
 
@@ -170,6 +203,7 @@ abstract interface class OpenCrayHostBridge {
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     bool? streamingEnabled,
+    String providerMode = 'cloud',
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -184,6 +218,19 @@ abstract interface class OpenCrayHostBridge {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    String selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    int onDeviceMaxContextWindow = 32768,
+    int onDeviceMaxTokens = 4096,
+    int onDeviceTopK = 40,
+    double onDeviceTopP = 0.95,
+    double onDeviceTemperature = 0.70,
+    String onDeviceAccelerator = 'gpu',
+    bool onDeviceThinkingEnabled = false,
+    bool onDeviceLiteModeEnabled = false,
+    String? contextBudgetPreset,
+    int? contextBudgetReservedOutputTokens,
+    int? contextBudgetSafetyMarginTokens,
+    double? contextBudgetEffectiveInputPercent,
   });
 
   Future<OpenCrayLlmConfigSnapshot> saveCustomLlmProvider({
@@ -211,6 +258,14 @@ abstract interface class OpenCrayHostBridge {
     required String model,
     required String reasoningEffort,
   });
+
+  Future<OpenCrayLlmConfigSnapshot> downloadOnDeviceLlmModel(String modelId);
+
+  Future<OpenCrayLlmConfigSnapshot> cancelOnDeviceLlmModelDownload(
+    String modelId,
+  );
+
+  Future<OpenCrayLlmConfigSnapshot> deleteOnDeviceLlmModel(String modelId);
 
   Future<OpenCrayPersonalizationConfigSnapshot> loadPersonalizationConfig();
 
@@ -315,6 +370,10 @@ abstract interface class OpenCrayHostBridge {
   Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot();
 
   Stream<OpenCrayChatRuntimeSnapshot> watchChatRuntimeSnapshot();
+
+  Stream<OpenCrayChatLiveAssistantDraftEvent> watchLiveAssistantDraftEvents();
+
+  Stream<OpenCrayChatRuntimeEventDelta> watchRuntimeEventDeltas();
 
   Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId);
 

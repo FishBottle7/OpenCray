@@ -1457,6 +1457,13 @@ internal class ProjectionOnlyChatDebugProjector(
     rememberMemoryActionIds(
       target = target,
       runLink = runLink,
+      action = "reopened",
+      occurredAtEpochMs = event.emittedAtEpochMs,
+      recordIds = event.reopenedRecordIds,
+    )
+    rememberMemoryActionIds(
+      target = target,
+      runLink = runLink,
       action = "reaffirmed",
       occurredAtEpochMs = event.emittedAtEpochMs,
       recordIds = event.reaffirmedRecordIds,

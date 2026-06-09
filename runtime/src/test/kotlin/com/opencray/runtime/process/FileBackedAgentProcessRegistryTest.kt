@@ -62,6 +62,44 @@ class FileBackedAgentProcessRegistryTest {
   }
 
   @Test
+  fun defaultRetentionKeepsMoreThanSixteenPersistedProcesses() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-default-retention")
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        FakeManagedProcessController(
+          snapshot = successSnapshot(
+            processId = request.processId,
+            taskId = request.taskId,
+          ).copy(
+            startedAtEpochMs = request.requestedAtEpochMs,
+            updatedAtEpochMs = request.requestedAtEpochMs + 1L,
+            finishedAtEpochMs = request.requestedAtEpochMs + 1L,
+          ),
+        )
+      },
+    )
+
+    repeat(17) { index ->
+      registry.start(
+        ManagedProcessStartRequest(
+          processId = "proc-$index",
+          taskId = "task-$index",
+          command = "echo",
+          timeoutMs = 30_000L,
+          requestedAtEpochMs = 1_000L + index,
+        ),
+      )
+    }
+
+    val restored = FileBackedAgentProcessRegistry(directory = directory)
+
+    assertEquals(17, restored.list().size)
+    assertNotNull(restored.read("proc-0"))
+    assertNotNull(restored.read("proc-16"))
+  }
+
+  @Test
   fun restoredRunningSnapshotIsRepairedToInterruptedFailure() {
     val directory = temporaryFolder.newFolder("durable-process-registry-running")
     val runtimeIdentity = ManagedProcessRuntimeIdentity(

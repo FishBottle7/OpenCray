@@ -7,8 +7,15 @@ import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
+import com.opencray.runtime.ScheduledTaskCreateRequest
+import com.opencray.runtime.ScheduledTaskDeleteRequest
+import com.opencray.runtime.ScheduledTaskGetRequest
+import com.opencray.runtime.ScheduledTaskListRequest
+import com.opencray.runtime.ScheduledTaskTriggerRequest
+import com.opencray.runtime.ScheduledTaskUpdateRequest
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.subagent.SubAgentApprovalResume
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -71,6 +78,10 @@ class ScheduledTaskRuntimeTest {
       linkedSetOf(" schedule-store ", "", "schedule-store", "schedule-two"),
     )
 
+    val specStoreFile = runtimeRoot.resolve("scheduled-task-specs-v2.json")
+    val runRecordStoreFile = runtimeRoot.resolve("scheduled-task-run-records-v2.json")
+    val triggerSyncStateStoreFile = runtimeRoot.resolve("scheduled-task-trigger-sync-state-v2.json")
+
     val reloadedSpecStore = FileBackedScheduledTaskSpecStoreFactory(runtimeRoot).create()
     val reloadedRunRecordStore = FileBackedScheduledTaskRunRecordStoreFactory(runtimeRoot).create()
     val reloadedTriggerSyncStateStore =
@@ -90,6 +101,110 @@ class ScheduledTaskRuntimeTest {
       linkedSetOf("schedule-store", "schedule-two"),
       reloadedTriggerSyncStateStore.loadScheduleIds(),
     )
+    assertTrue(specStoreFile.exists())
+    assertTrue(runRecordStoreFile.exists())
+    assertTrue(triggerSyncStateStoreFile.exists())
+    assertFalse(runtimeRoot.resolve("scheduled-task-specs.json").exists())
+    assertFalse(runtimeRoot.resolve("scheduled-task-run-records.json").exists())
+    assertFalse(runtimeRoot.resolve("scheduled-task-trigger-sync-state.json").exists())
+    val specStorePayload = specStoreFile.readText()
+    assertTrue(specStorePayload.contains("\"persistenceType\":\"at\""))
+    assertFalse(specStorePayload.contains("run_at_timestamp"))
+    assertFalse(specStorePayload.contains("run_after_delay"))
+  }
+
+  @Test
+  fun appScheduledTaskManagerCanListGetUpdateAndDeleteSchedules() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-manager-runtime-root")
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat-store"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val specStore = inMemoryScheduledTaskSpecStoreFactory().create()
+    val runRecordStore = inMemoryScheduledTaskRunRecordStoreFactory().create()
+    val triggerSyncStateStore = inMemoryScheduledTaskTriggerSyncStateStoreFactory().create()
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val manager = AppScheduledTaskManager(
+      storageRootPath = runtimeRoot.toPath(),
+      chatSessionStore = chatStore,
+      specStore = specStore,
+      runRecordStore = runRecordStore,
+      triggerRegistrar = registrar,
+      triggerSyncStateStore = triggerSyncStateStore,
+      clock = { 10_000L },
+    )
+
+    val created = manager.create(
+      ScheduledTaskCreateRequest(
+        sessionId = sessionId,
+        prompt = "Summarize the workspace status",
+        trigger = ScheduledTaskTriggerRequest.After("PT1M"),
+      ),
+    )
+    runRecordStore.upsert(
+      ScheduledTaskRunRecord(
+        scheduleRunId = "schedule-run-manager",
+        scheduleId = created.scheduleId,
+        sessionId = sessionId,
+        triggerReason = ScheduledTaskTriggerReasons.ALARM,
+        triggeredAtEpochMs = 20_000L,
+        acceptedAtEpochMs = 20_100L,
+        createdRunId = "run-manager",
+        createdTaskId = "task-manager",
+        result = ScheduledTaskRunResult.ACCEPTED,
+        updatedAtEpochMs = 20_100L,
+      ),
+    )
+
+    val listed = manager.list(
+      ScheduledTaskListRequest(
+        sessionId = sessionId,
+        limit = 10,
+      ),
+    )
+    assertEquals(1, listed.tasks.size)
+    assertEquals(created.scheduleId, listed.tasks.single().scheduleId)
+    assertEquals("after", listed.tasks.single().triggerKind)
+
+    val loaded = manager.get(
+      ScheduledTaskGetRequest(
+        scheduleId = created.scheduleId,
+        recentRunLimit = 5,
+      ),
+    )
+    assertEquals("Summarize the workspace status", loaded.task.prompt)
+    assertEquals("after", loaded.task.triggerKind)
+    assertEquals(1, loaded.recentRuns.size)
+    assertEquals("run-manager", loaded.recentRuns.single().createdRunId)
+
+    val updated = manager.update(
+      ScheduledTaskUpdateRequest(
+        scheduleId = created.scheduleId,
+        title = "Weekly review",
+        trigger = ScheduledTaskTriggerRequest.Recurrence(
+          startAt = "2026-04-13T09:00:00+08:00",
+          timezone = "Asia/Shanghai",
+          rrule = "FREQ=WEEKLY;BYDAY=MO",
+        ),
+        notifyOnCompletion = false,
+      ),
+    )
+    assertEquals("Weekly review", updated.title)
+    assertEquals("rrule", updated.triggerKind)
+
+    val refreshed = manager.get(ScheduledTaskGetRequest(scheduleId = created.scheduleId))
+    assertEquals("Weekly review", refreshed.task.title)
+    assertEquals("rrule", refreshed.task.triggerKind)
+    assertFalse(refreshed.task.notifyOnCompletion)
+
+    val deleted = manager.delete(
+      ScheduledTaskDeleteRequest(
+        scheduleId = created.scheduleId,
+      ),
+    )
+    assertEquals(created.scheduleId, deleted.scheduleId)
+    assertTrue(specStore.list().isEmpty())
+    assertTrue(runRecordStore.list().isEmpty())
+    assertTrue(triggerSyncStateStore.loadScheduleIds().isEmpty())
+    assertTrue(registrar.cancelledScheduleIds.contains(created.scheduleId))
   }
 
   @Test
@@ -352,7 +467,7 @@ class ScheduledTaskRuntimeTest {
       sessionId = "session-future",
       scheduleId = "schedule-future",
     ).copy(
-      trigger = ScheduledTrigger.RunAtTimestamp(triggerAtEpochMs = 12_000L),
+      trigger = ScheduledTrigger.At(atEpochMs = 12_000L),
       updatedAtEpochMs = 3_000L,
     )
 
@@ -613,6 +728,99 @@ class ScheduledTaskRuntimeTest {
     assertEquals(8_000L, requireNotNull(specStore.get(spec.scheduleId)).snoozedUntilEpochMs)
   }
 
+  @Test
+  fun nextScheduledTriggerAtEpochMsSkipsExcludedWeeklyRecurrenceOccurrences() {
+    val recurrence = parseScheduledTaskRecurrenceTrigger(
+      startAt = "2026-04-13T09:00:00+08:00",
+      timezone = "Asia/Shanghai",
+      rrule = "FREQ=WEEKLY;BYDAY=MO,TU",
+      exdates = listOf("2026-04-20T09:00:00+08:00"),
+      rdates = emptyList(),
+    )
+    val spec = scheduledTaskSpec(
+      sessionId = "session-recurrence-next",
+      scheduleId = "schedule-recurrence-next",
+    ).copy(trigger = recurrence)
+
+    val nextAtEpochMs = nextScheduledTriggerAtEpochMs(
+      spec = spec,
+      nowEpochMs = parseScheduledTaskAbsoluteEpochMs(
+        value = "2026-04-20T09:00:00+08:00",
+        fieldName = "test.now",
+      ),
+    )
+
+    assertEquals(
+      parseScheduledTaskAbsoluteEpochMs(
+        value = "2026-04-21T09:00:00+08:00",
+        fieldName = "test.expected",
+      ),
+      nextAtEpochMs,
+    )
+  }
+
+  @Test
+  fun dueScheduledTriggerAtEpochMsIncludesAdditionalRecurrenceDates() {
+    val recurrence = parseScheduledTaskRecurrenceTrigger(
+      startAt = "2026-04-13T09:00:00+08:00",
+      timezone = "Asia/Shanghai",
+      rrule = "FREQ=WEEKLY;BYDAY=MO,TU",
+      exdates = listOf("2026-04-20T09:00:00+08:00"),
+      rdates = listOf("2026-04-22T09:00:00+08:00"),
+    )
+    val spec = scheduledTaskSpec(
+      sessionId = "session-recurrence-due",
+      scheduleId = "schedule-recurrence-due",
+    ).copy(trigger = recurrence)
+
+    val dueAtEpochMs = dueScheduledTriggerAtEpochMs(
+      spec = spec,
+      nowEpochMs = parseScheduledTaskAbsoluteEpochMs(
+        value = "2026-04-22T10:00:00+08:00",
+        fieldName = "test.now",
+      ),
+    )
+
+    assertEquals(
+      parseScheduledTaskAbsoluteEpochMs(
+        value = "2026-04-22T09:00:00+08:00",
+        fieldName = "test.expected",
+      ),
+      dueAtEpochMs,
+    )
+  }
+
+  @Test
+  fun nextScheduledTriggerAtEpochMsSupportsMonthlyFirstDayRecurrence() {
+    val recurrence = parseScheduledTaskRecurrenceTrigger(
+      startAt = "2026-05-01T09:00:00+08:00",
+      timezone = "Asia/Shanghai",
+      rrule = "FREQ=MONTHLY;BYMONTHDAY=1",
+      exdates = emptyList(),
+      rdates = emptyList(),
+    )
+    val spec = scheduledTaskSpec(
+      sessionId = "session-monthly",
+      scheduleId = "schedule-monthly",
+    ).copy(trigger = recurrence)
+
+    val nextAtEpochMs = nextScheduledTriggerAtEpochMs(
+      spec = spec,
+      nowEpochMs = parseScheduledTaskAbsoluteEpochMs(
+        value = "2026-05-15T09:00:00+08:00",
+        fieldName = "test.now",
+      ),
+    )
+
+    assertEquals(
+      parseScheduledTaskAbsoluteEpochMs(
+        value = "2026-06-01T09:00:00+08:00",
+        fieldName = "test.expected",
+      ),
+      nextAtEpochMs,
+    )
+  }
+
   private fun scheduledTaskSpec(
     sessionId: String,
     scheduleId: String = "schedule-default",
@@ -624,7 +832,7 @@ class ScheduledTaskRuntimeTest {
     sessionId = sessionId,
     title = title,
     enabled = true,
-    trigger = ScheduledTrigger.RunAtTimestamp(triggerAtEpochMs = 9_000L),
+    trigger = ScheduledTrigger.At(atEpochMs = 9_000L),
     payload = ScheduledTaskPayload(prompt = "Summarize the workspace status"),
     policy = ScheduledTaskPolicy(conflictPolicy = conflictPolicy),
     createdAtEpochMs = 1_000L,

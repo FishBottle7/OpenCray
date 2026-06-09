@@ -18,6 +18,7 @@ import com.opencray.llm.LiteLlmRouteSelectionMetadata
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -28,7 +29,7 @@ class OpenCrayAgentRuntimeRecentObservationTest {
   val temporaryFolder: TemporaryFolder = TemporaryFolder()
 
   @Test
-  fun secondTurnPromptIncludesRecentWorkspaceObservationLayer() {
+  fun secondTurnReplaysWorkspaceReadWithoutRecentObservationLayer() {
     val workspaceRoot = temporaryFolder.newFolder("recent-observation-layer").toPath()
     Files.write(
       workspaceRoot.resolve("README.md"),
@@ -63,11 +64,14 @@ class OpenCrayAgentRuntimeRecentObservationTest {
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals(2, gateway.requests.size)
-    assertTrue(gateway.requests[1].prompt.contains("[Recent Working Observations]"))
-    assertTrue(gateway.requests[1].prompt.contains("Read file_path=README.md"))
-    assertTrue(gateway.requests[1].prompt.contains("line 1"))
-    assertEquals("1", gateway.requests[1].metadata["contextRecentObservationCount"])
-    assertEquals("true", gateway.requests[1].metadata["contextRecentObservationLayerIncluded"])
+    assertFalse(gateway.requests[1].prompt.contains("[Recent Working Observations]"))
+    assertEquals("0", gateway.requests[1].metadata["contextRecentObservationCount"])
+    assertEquals("false", gateway.requests[1].metadata["contextRecentObservationLayerIncluded"])
+    assertTrue(
+      gateway.requests[1].messages.any { message ->
+        message.toolResult?.toolName == "Read"
+      },
+    )
   }
 
   @Test

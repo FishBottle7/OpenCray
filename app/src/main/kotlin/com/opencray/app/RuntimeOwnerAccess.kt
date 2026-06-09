@@ -2,6 +2,7 @@ package com.opencray.app
 
 import com.opencray.core.contracts.AgentTask
 import com.opencray.runtime.OpenCraySubAgentEvent
+import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
 
@@ -357,3 +358,29 @@ internal class DefaultOpenCrayRuntimeHostAccess(
   override fun isApprovalRejected(sessionId: String, taskId: String): Boolean =
     approvalRegistry.isRejected(sessionId, taskId)
 }
+
+internal data class OpenCrayRuntimeOwnerAccess(
+  val lifecycleDescriptor: HostRuntimeLifecycleDescriptor,
+  val hostAccess: OpenCrayRuntimeHostAccess,
+  val transcriptMessagesProvider: (String) -> List<RuntimeConversationMessage>,
+  val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator,
+  val replayAccess: OpenCrayRuntimeReplayAccess,
+  val onDeviceWarmupPlanner: (String) -> OnDeviceLlmWarmupSpec? = { null },
+)
+
+internal fun RetainedInProcessOpenCrayRuntimeOwnerCore.toRuntimeOwnerAccess(): OpenCrayRuntimeOwnerAccess =
+  OpenCrayRuntimeOwnerAccess(
+    lifecycleDescriptor = currentLifecycleDescriptor(),
+    hostAccess = DefaultOpenCrayRuntimeHostAccess(
+      lifecycleDescriptor = currentLifecycleDescriptor(),
+      sessionRuntimeManager = sessionRuntimeManager,
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      supplementStoreFactory = supplementStoreFactory,
+      approvalRegistry = approvalRegistry,
+    ),
+    transcriptMessagesProvider = transcriptMessagesProvider,
+    memoryIngestionCoordinator = memoryIngestionCoordinator,
+    replayAccess = replayAccess,
+    onDeviceWarmupPlanner = onDeviceWarmupPlanner,
+  )

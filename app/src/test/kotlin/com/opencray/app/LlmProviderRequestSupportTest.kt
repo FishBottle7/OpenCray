@@ -10,7 +10,7 @@ class LlmProviderRequestSupportTest {
   fun recommendedInteractiveProviderRouteTimeoutUsesLongerBudgetForKimiK2Family() {
     assertEquals(120_000L, recommendedInteractiveProviderRouteTimeoutMs("kimi-k2.5"))
     assertEquals(120_000L, recommendedInteractiveProviderRouteTimeoutMs("moonshotai/kimi-k2:online"))
-    assertEquals(30_000L, recommendedInteractiveProviderRouteTimeoutMs("gpt-4o-mini"))
+    assertEquals(120_000L, recommendedInteractiveProviderRouteTimeoutMs("gpt-4o-mini"))
   }
 
   @Test
@@ -18,6 +18,18 @@ class LlmProviderRequestSupportTest {
     assertEquals(60_000L, recommendedInterpreterProviderRouteTimeoutMs("kimi-k2.5"))
     assertEquals(60_000L, recommendedValidationProviderRouteTimeoutMs("moonshotai/kimi-k2:online"))
     assertEquals(15_000L, recommendedValidationProviderRouteTimeoutMs("claude-3-7-sonnet"))
+  }
+
+  @Test
+  fun recommendedProviderRouteTimeoutUsesLongerBudgetForOnDeviceCatalogModels() {
+    assertEquals(
+      180_000L,
+      recommendedInteractiveProviderRouteTimeoutMs(OnDeviceLlmCatalog.GEMMA_4_E2B_IT),
+    )
+    assertEquals(
+      60_000L,
+      recommendedValidationProviderRouteTimeoutMs(OnDeviceLlmCatalog.GEMMA_4_E2B_IT),
+    )
   }
 
   @Test
@@ -43,6 +55,62 @@ class LlmProviderRequestSupportTest {
     )
 
     assertEquals("false", metadata["stream"])
+  }
+
+  @Test
+  fun routeMetadataOmitsOfficialFieldsWhenBaseUrlIsMissing() {
+    val openAiMetadata = LlmProviderProtocols.routeMetadata(
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5",
+      reasoningEffort = "medium",
+    )
+    val anthropicMetadata = LlmProviderProtocols.routeMetadata(
+      protocol = LlmProviderProtocols.ANTHROPIC,
+      model = "claude-3-7-sonnet",
+      reasoningEffort = "high",
+    )
+
+    assertFalse(openAiMetadata.containsKey("reasoning_effort"))
+    assertFalse(anthropicMetadata.containsKey("thinking_budget_tokens"))
+  }
+
+  @Test
+  fun openAiResponsesRouteMetadataIncludesReasoningEffortForOfficialBaseUrl() {
+    val metadata = LlmProviderProtocols.routeMetadata(
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5",
+      reasoningEffort = "medium",
+      baseUrl = "https://api.openai.com/v1",
+    )
+
+    assertEquals("medium", metadata["reasoning_effort"])
+  }
+
+  @Test
+  fun openAiResponsesRouteMetadataOmitsReasoningEffortForCustomBaseUrl() {
+    val metadata = LlmProviderProtocols.routeMetadata(
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5",
+      reasoningEffort = "medium",
+      baseUrl = "https://third-party.example/v1",
+    )
+
+    assertEquals("openai_responses", metadata["protocol"])
+    assertEquals("true", metadata["responseApiPreferred"])
+    assertFalse(metadata.containsKey("reasoning_effort"))
+  }
+
+  @Test
+  fun anthropicRouteMetadataOmitsThinkingBudgetForCustomBaseUrl() {
+    val metadata = LlmProviderProtocols.routeMetadata(
+      protocol = LlmProviderProtocols.ANTHROPIC,
+      model = "claude-3-7-sonnet",
+      reasoningEffort = "high",
+      baseUrl = "https://third-party.example/anthropic",
+    )
+
+    assertEquals("anthropic", metadata["protocol"])
+    assertFalse(metadata.containsKey("thinking_budget_tokens"))
   }
 
   @Test
@@ -73,6 +141,7 @@ class LlmProviderRequestSupportTest {
       protocol = LlmProviderProtocols.ANTHROPIC,
       model = "claude-3-7-sonnet",
       reasoningEffort = "high",
+      baseUrl = "https://api.anthropic.com",
       anthropicPromptCachingEnabled = true,
       anthropicPromptCacheTtl = AnthropicPromptCacheTtlPolicies.HOUR_1,
     )

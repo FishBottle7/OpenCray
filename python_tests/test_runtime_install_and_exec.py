@@ -1,8 +1,8 @@
 import json
 import pathlib
-import subprocess
-import sys
 from typing import TypedDict, cast
+
+from python_tests.subprocess_helpers import run_repo_module
 
 
 class RunnerResult(TypedDict):
@@ -26,8 +26,9 @@ class Manifest(TypedDict):
 
 
 def _run_runner(*args: str) -> dict[str, object]:
-    completed = subprocess.run(
-        [sys.executable, "-m", "python_runner.runner", *args],
+    completed = run_repo_module(
+        "python_runner.runner",
+        *args,
         capture_output=True,
         text=True,
         check=False,

@@ -43,6 +43,7 @@ internal data class RetainedInProcessOpenCrayRuntimeOwnerCore(
   val promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
   val supplementStoreFactory: AgentSessionSupplementStoreFactory,
   val transcriptMessagesProvider: (String) -> List<RuntimeConversationMessage>,
+  val onDeviceWarmupPlanner: (String) -> OnDeviceLlmWarmupSpec? = { null },
   val approvalRegistry: AgentTaskApprovalRegistry,
   val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator,
   val replayAccess: OpenCrayRuntimeReplayAccess,
@@ -83,6 +84,7 @@ internal data class RetainedInProcessOpenCrayRuntimeOwnerCore(
       chatMutationAccess = runtimeHostAccess,
       chatSubmissionHostAccess = runtimeHostAccess,
       runtimeReplayAccess = replayAccess,
+      onDeviceWarmupPlanner = onDeviceWarmupPlanner,
       retainedHandle = RetainedInProcessRuntimeOwnerHandle(this),
     )
   }
@@ -156,11 +158,16 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
     workspaceRootProvider = workspaceRootProvider,
   )
   val approvalRegistry = AgentTaskApprovalRegistry()
+  val runtimeRootDirectory = File(
+    appContext.filesDir,
+    FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+  )
   val localPythonRuntime = P4aPythonRuntime.fromContext(appContext)
   val e2bSessionStore = E2BSandboxSessionStore.fromContext(appContext)
   val e2bPythonRuntime = E2BCodeInterpreterPythonRuntime(
     settingsProvider = sandboxSettingsRepository::load,
     sessionStore = e2bSessionStore,
+    durableRunningRequestIdsProvider = durableE2BNativeRunningRequestIdsProvider(runtimeRootDirectory),
   )
   val e2bSandboxPreviewService = E2BSandboxPreviewService(
     settingsProvider = sandboxSettingsRepository::load,
@@ -239,18 +246,25 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
   val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext)
   val subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext)
   val processRegistryFactory = FileBackedAgentProcessRegistryFactory(
-    runtimeRootDirectory = File(
-      appContext.filesDir,
-      FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
-    ),
+    runtimeRootDirectory = runtimeRootDirectory,
     controllerFactory = managedProcessControllerFactory,
     runtimeIdentity = ManagedProcessRuntimeIdentity(
       processStartId = runtimeOwnerLifecycleState.current().processStartId,
       runtimeControllerId = runtimeOwnerLifecycleState.current().runtimeControllerId,
     ),
   )
-  val liteLlmProviderClient = OpenAiCompatibleLiteLlmProviderClient(
-    userAgent = providerUserAgent,
+  val onDeviceModelInstallStore = LiteRtOnDeviceModelInstallStore.fromContext(appContext)
+  val liteLlmProviderClient = AppConfiguredLiteLlmProviderClient(
+    cloudProviderClient = OpenAiCompatibleLiteLlmProviderClient(
+      userAgent = providerUserAgent,
+      streamUpdateMinIntervalMs = 40L,
+    ),
+    onDeviceProviderClient = LiteRtOnDeviceLlmProviderClient(
+      runtime = LiteRtOnDeviceRuntime.fromContext(
+        context = appContext,
+        installStore = onDeviceModelInstallStore,
+      ),
+    ),
   )
   val mediaProviderClient = OpenCrayConfigurableMediaProviderClient(
     userAgent = providerUserAgent,
@@ -348,6 +362,15 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
     subAgentHandleStoreProvider = subAgentHandleStoreFactory::forChatSession,
     memoryIngestionCoordinator = memoryIngestionCoordinator,
     soulTurnSemanticSignalInterpreter = soulTurnSignalInterpreter,
+    providerClient = liteLlmProviderClient,
+    onDeviceThinkingTextProvider = {
+      localizedHostRuntimeStrings(OpenCrayLocaleManager.wrap(appContext)).agentThinking
+    },
+    onDeviceModelReadyProvider = { modelId ->
+      LiteRtOnDeviceModelInstallStore.fromContext(appContext).hasReadyModel(modelId)
+    },
+    enableLiteRtDevAutomaticToolExecution =
+      (appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0,
     commandExecutorProvider = { commandExecutor },
     pythonRuntimeProvider = { pythonRuntime },
     pythonRuntimeManifestProvider = pythonRuntimeManifestProvider::currentManifest,
@@ -398,6 +421,21 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
         ),
       )
     },
+    scheduledTaskManagerProvider = {
+      AppScheduledTaskManager(
+        storageRootPath = runtimeRootDirectory.toPath(),
+        chatSessionStore = chatSessionStore,
+        specStore = FileBackedScheduledTaskSpecStoreFactory(runtimeRootDirectory).create(),
+        runRecordStore = FileBackedScheduledTaskRunRecordStoreFactory(runtimeRootDirectory).create(),
+        triggerRegistrar = DefaultScheduledTriggerRegistrar(
+          alarmScheduler = AlarmManagerScheduledAlarmScheduler.fromContext(appContext),
+          workScheduler = WorkManagerScheduledWorkScheduler.fromContext(appContext),
+        ),
+        triggerSyncStateStore = FileBackedScheduledTaskTriggerSyncStateStoreFactory(
+          runtimeRootDirectory,
+        ).create(),
+      )
+    },
   )
   val sessionRuntimeManager = DefaultAgentSessionRuntimeManager(
     agentId = "opencray-flutter-host",
@@ -420,6 +458,7 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
     transcriptMessagesProvider = { sessionId ->
       transcriptStoreFactory.forChatSession(sessionId).snapshot()
     },
+    onDeviceWarmupPlanner = runtimeFactory::buildOnDeviceWarmupSpec,
     approvalRegistry = approvalRegistry,
     memoryIngestionCoordinator = memoryIngestionCoordinator,
     replayAccess = OpenCrayRuntimeReplayAccess(

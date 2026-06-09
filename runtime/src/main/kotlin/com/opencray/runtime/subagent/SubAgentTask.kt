@@ -11,6 +11,7 @@ data class SubAgentTask(
   val depth: Int = 1,
   val activeSkillName: String? = null,
   val activeSkillActivationSource: String? = null,
+  val activeSkillPinned: Boolean = false,
 ) {
   init {
     require(description.isNotBlank()) { "SubAgentTask description must not be blank." }
@@ -41,6 +42,9 @@ data class SubAgentTask(
       ?.let { activationSource ->
         put(SubAgentMetadataKeys.ACTIVE_SKILL_ACTIVATION_SOURCE, activationSource)
       }
+    if (activeSkillPinned) {
+      put(SubAgentMetadataKeys.ACTIVE_SKILL_PINNED, "true")
+    }
   }
 }
 
@@ -54,4 +58,5 @@ object SubAgentMetadataKeys {
   const val CONTROL_TOOL: String = "subagentControlTool"
   const val ACTIVE_SKILL_NAME: String = "activeSkillName"
   const val ACTIVE_SKILL_ACTIVATION_SOURCE: String = "activeSkillActivationSource"
+  const val ACTIVE_SKILL_PINNED: String = "activeSkillPinned"
 }

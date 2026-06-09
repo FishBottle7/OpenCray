@@ -2,6 +2,8 @@ package com.opencray.app
 
 import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.LiteLlmAssistantPhase
+import com.opencray.llm.LiteLlmCompactRequest
+import com.opencray.llm.LiteLlmCompactResult
 import com.opencray.llm.LiteLlmGatewayAttachment
 import com.opencray.llm.LiteLlmGatewayAttachmentKind
 import com.opencray.llm.LiteLlmGatewayMessage
@@ -10,6 +12,7 @@ import com.opencray.llm.LiteLlmGatewayToolResult
 import com.opencray.llm.LiteLlmBuiltinToolDefinition
 import com.opencray.llm.LiteLlmBuiltinToolType
 import com.opencray.llm.LiteLlmMetadataKeys
+import com.opencray.llm.LiteLlmProviderCompactRequest
 import com.opencray.llm.LiteLlmProviderRequest
 import com.opencray.llm.LiteLlmProviderResult
 import com.opencray.llm.LiteLlmRouteSelectionMetadata
@@ -106,6 +109,8 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
         "OpenCray/1.0.0-test (Android; host-runtime)",
         userAgent.get(),
       )
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("prompt_projection", success.metadata["conversationTransportMode"])
     } finally {
       runCatching { server.close() }
       serverThread.join(5_000L)
@@ -471,6 +476,105 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
+  fun executeUsesLastStructuredUserMessageForOpenAiBuiltinWebSearchFallbackQuery() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "glm_search_messages_response",
+                "choices": [
+                  {
+                    "message": { "content": "https://example.com" },
+                    "finish_reason": "stop"
+                  }
+                ]
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-glm-search-messages",
+            providerId = "custom",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "zhipuai/glm-4.6:online",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI,
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "legacy prompt blob should stay non-authoritative here",
+            messages = listOf(
+              LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.USER,
+                content = "[Durable Context]\nRepository uses Gradle.",
+              ),
+              LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.USER,
+                content = "Use web search to find the canonical example.com URL.",
+              ),
+            ),
+            builtinTools = listOf(
+              LiteLlmBuiltinToolDefinition(
+                type = LiteLlmBuiltinToolType.WEB_SEARCH,
+                includeSources = true,
+              ),
+            ),
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-glm-search-messages",
+            providerId = "custom",
+            model = "zhipuai/glm-4.6:online",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      val messages = payload.getJSONArray("messages")
+      assertEquals(2, messages.length())
+      assertEquals("[Durable Context]\nRepository uses Gradle.", messages.getJSONObject(0).getString("content"))
+      assertEquals(
+        "Use web search to find the canonical example.com URL.",
+        messages.getJSONObject(1).getString("content"),
+      )
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("messages", success.metadata["conversationTransportMode"])
+      val observations = JSONArray(
+        success.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON],
+      )
+      assertEquals(
+        "Use web search to find the canonical example.com URL.",
+        observations.getJSONObject(0).getJSONArray("queries").getString(0),
+      )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
   fun executeInfersKimiBuiltinWebSearchDialectFromModelNameAndAutoContinues() {
     val requestBodies = mutableListOf<String>()
     val responseSent = CountDownLatch(2)
@@ -656,6 +760,7 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
               "responsesContinuationSupported" to "true",
               "assistantPhaseSupported" to "true",
               "citationIncludeSupported" to "true",
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_HINTS_SUPPORTED to "true",
               LlmPromptCachingMetadataKeys.PROMPT_CACHE_KEY_STRATEGY to
                 LlmPromptCacheKeyStrategies.ROUTE,
               LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION to
@@ -774,6 +879,168 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       runCatching { server.close() }
       serverThread.join(5_000L)
     }
+  }
+
+  @Test
+  fun compactConversationUsesResponsesCompactEndpointAndParsesCompactionOutput() {
+    val requestLine = AtomicReference<String>()
+    val userAgent = AtomicReference<String>()
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, requestLine, userAgent, requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "resp_compact",
+                "output": [
+                  {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                      { "type": "output_text", "text": "Remote compacted summary." }
+                    ]
+                  },
+                  {
+                    "type": "compaction",
+                    "encrypted_content": "opaque-capsule"
+                  }
+                ]
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.compactConversation(
+        LiteLlmProviderCompactRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "reasoning_effort" to "medium",
+              "responsesRemoteCompactionSupported" to "true",
+            ),
+          ),
+          request = LiteLlmCompactRequest(
+            gatewayRequest = LiteLlmGatewayRequest(
+              prompt = "fallback prompt",
+              systemPrompt = "system prompt",
+              messages = listOf(
+                LiteLlmGatewayMessage(
+                  role = LiteLlmGatewayMessageRole.USER,
+                  content = "Older task context",
+                ),
+                LiteLlmGatewayMessage(
+                  role = LiteLlmGatewayMessageRole.ASSISTANT,
+                  toolCalls = listOf(sampleStructuredToolCall(id = "oc-call-compact")),
+                ),
+                LiteLlmGatewayMessage(
+                  role = LiteLlmGatewayMessageRole.TOOL,
+                  toolResult = LiteLlmGatewayToolResult(
+                    toolCallId = "oc-call-compact",
+                    toolName = "EchoProbe",
+                    content = """{"status":"success"}""",
+                  ),
+                ),
+              ),
+              tools = listOf(sampleToolDefinition()),
+              toolChoice = LiteLlmToolChoice(
+                mode = LiteLlmToolChoiceMode.TOOL,
+                toolName = "EchoProbe",
+              ),
+              parallelToolCalls = false,
+              previousResponseId = "resp_previous",
+              responseApiPreferred = true,
+              authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            ),
+            triggerStage = "pre_compaction",
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      assertEquals("POST /v1/responses/compact HTTP/1.1", requestLine.get())
+      assertTrue(result is LiteLlmCompactResult.Success)
+      val success = result as LiteLlmCompactResult.Success
+      assertEquals("Remote compacted summary.", success.summaryText)
+      assertEquals(2, success.outputItemCount)
+      assertEquals(1, success.compactionItemCount)
+      assertEquals(1, success.encryptedContentCount)
+      assertEquals("true", success.metadata[LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_USED])
+      assertEquals("pre_compaction", success.metadata[LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_TRIGGER_STAGE])
+
+      val payload = JSONObject(requestBody.get())
+      assertEquals("gpt-5-mini", payload.getString("model"))
+      assertFalse(payload.has("previous_response_id"))
+      assertFalse(payload.has("stream"))
+      assertEquals("system prompt", payload.getString("instructions"))
+      assertEquals("medium", payload.getJSONObject("reasoning").getString("effort"))
+      assertEquals(false, payload.getBoolean("parallel_tool_calls"))
+      val input = payload.getJSONArray("input")
+      assertEquals("Older task context", input.getJSONObject(0).getString("content"))
+      assertEquals("function_call", input.getJSONObject(1).getString("type"))
+      assertEquals("function_call_output", input.getJSONObject(2).getString("type"))
+      assertEquals("function", payload.getJSONArray("tools").getJSONObject(0).getString("type"))
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun compactConversationReturnsUnavailableForNonResponsesProtocols() {
+    val client = OpenAiCompatibleLiteLlmProviderClient()
+
+    val result = client.compactConversation(
+      LiteLlmProviderCompactRequest(
+        route = ProviderRoute(
+          id = "route-openai-chat",
+          providerId = "openai",
+          baseUrl = "http://127.0.0.1:1/v1",
+          model = "gpt-4o-mini",
+          metadata = mapOf("protocol" to LlmProviderProtocols.OPENAI),
+        ),
+        request = LiteLlmCompactRequest(
+          gatewayRequest = LiteLlmGatewayRequest(prompt = "Compact this conversation."),
+        ),
+        selection = LiteLlmRouteSelectionMetadata(
+          profileId = "profile-test",
+          routeId = "route-openai-chat",
+          providerId = "openai",
+          model = "gpt-4o-mini",
+          attemptIndex = 0,
+        ),
+      ),
+    )
+
+    assertTrue(result is LiteLlmCompactResult.Unavailable)
+    assertEquals(
+      "protocol_remote_compaction_not_supported",
+      (result as LiteLlmCompactResult.Unavailable).reason,
+    )
   }
 
   @Test
@@ -1279,6 +1546,43 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
+  fun executeParsesOpenAiProtocolFinalAttachmentsIntoStructuredCompletion() {
+    val result = executeWithOpenAiResponse(
+      """
+      {
+        "id": "req_final_attachments",
+        "choices": [
+          {
+            "message": {
+              "content": "{\"attachments\":[{\"artifact_id\":\"artifact-image-1\",\"kind\":\"image\",\"display_name\":\"diagram.png\",\"mime_type\":\"image/png\"},{\"relative_path\":\"outputs/voice.m4a\",\"kind\":\"voice\",\"duration_ms\":3200,\"waveform_bars\":[10,20,30],\"transcript_text\":\"Voice summary\"}]}"
+            },
+            "finish_reason": "stop"
+          }
+        ]
+      }
+      """.trimIndent(),
+    )
+
+    val success = result as LiteLlmProviderResult.Success
+    val completion = requireNotNull(success.completion)
+    assertTrue(completion.finalText.isNullOrBlank())
+    assertEquals(2, completion.finalAttachments.size)
+    assertEquals("artifact-image-1", completion.finalAttachments.first().artifactId)
+    assertEquals("image", completion.finalAttachments.first().kind)
+    assertEquals("diagram.png", completion.finalAttachments.first().displayName)
+    assertEquals("image/png", completion.finalAttachments.first().mimeType)
+    assertEquals("outputs/voice.m4a", completion.finalAttachments.last().relativePath)
+    assertEquals("voice", completion.finalAttachments.last().kind)
+    assertEquals(3_200L, completion.finalAttachments.last().durationMs)
+    assertEquals(listOf(10, 20, 30), completion.finalAttachments.last().waveformBars)
+    assertEquals("Voice summary", completion.finalAttachments.last().transcriptText)
+    assertEquals(
+      "{\"attachments\":[{\"artifact_id\":\"artifact-image-1\",\"kind\":\"image\",\"display_name\":\"diagram.png\",\"mime_type\":\"image/png\"},{\"relative_path\":\"outputs/voice.m4a\",\"kind\":\"voice\",\"duration_ms\":3200,\"waveform_bars\":[10,20,30],\"transcript_text\":\"Voice summary\"}]}",
+      completion.rawText,
+    )
+  }
+
+  @Test
   fun executeUsesReasoningContentWhenItCarriesProtocolJson() {
     val result = executeWithOpenAiResponse(
       """
@@ -1449,6 +1753,46 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
     assertEquals("All set.", success.outputText)
     assertEquals("All set.", completion.finalText)
     assertTrue(completion.commentaryText.isNullOrBlank())
+    assertTrue(completion.toolCalls.isEmpty())
+    assertEquals("responses_text", success.metadata[LiteLlmMetadataKeys.PROVIDER_RESPONSE_SHAPE])
+  }
+
+  @Test
+  fun executeParsesResponsesCommentaryAndFinalAnswerPhasesTogether() {
+    val success = executeWithResponsesResponse(
+      """
+      {
+        "id": "resp_commentary_final",
+        "status": "completed",
+        "output": [
+          {
+            "type": "message",
+            "role": "assistant",
+            "phase": "commentary",
+            "content": [
+              { "type": "output_text", "text": "Checking the transcript first." }
+            ]
+          },
+          {
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [
+              { "type": "output_text", "text": "Here is the final answer." }
+            ]
+          }
+        ]
+      }
+      """.trimIndent(),
+    )
+
+    val completion = requireNotNull(success.completion)
+    assertEquals(
+      "Checking the transcript first.\nHere is the final answer.",
+      success.outputText,
+    )
+    assertEquals("Checking the transcript first.", completion.commentaryText)
+    assertEquals("Here is the final answer.", completion.finalText)
     assertTrue(completion.toolCalls.isEmpty())
     assertEquals("responses_text", success.metadata[LiteLlmMetadataKeys.PROVIDER_RESPONSE_SHAPE])
   }
@@ -1730,6 +2074,100 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
+  fun executeDerivesAnthropicBuiltinWebSearchFallbackQueryFromStructuredMessages() {
+    val requestLine = AtomicReference<String>()
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, requestLine, AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "msg_builtin_web_search",
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "The canonical URL is https://example.com."
+                  }
+                ],
+                "stop_reason": "end_turn",
+                "usage": {
+                  "server_tool_use": {
+                    "web_search_requests": 1
+                  }
+                }
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-anthropic-builtin-web-search",
+            providerId = "anthropic",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "claude-sonnet-4-5",
+            timeoutMs = 5_000L,
+            metadata = mapOf("protocol" to LlmProviderProtocols.ANTHROPIC),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "stale fallback prompt",
+            messages = listOf(
+              LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.USER,
+                content = "Search the canonical example.com URL.",
+              ),
+            ),
+            builtinTools = listOf(
+              LiteLlmBuiltinToolDefinition(
+                type = LiteLlmBuiltinToolType.WEB_SEARCH,
+                domains = listOf("example.com"),
+              ),
+            ),
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-anthropic-builtin-web-search",
+            providerId = "anthropic",
+            model = "claude-sonnet-4-5",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      assertEquals("POST /v1/messages HTTP/1.1", requestLine.get())
+      val success = result as LiteLlmProviderResult.Success
+      val observations = JSONArray(
+        success.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON],
+      )
+      assertEquals(
+        "Search the canonical example.com URL.",
+        observations.getJSONObject(0).getJSONArray("queries").getString(0),
+      )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
   fun executeAutoContinuesAnthropicBuiltinWebSearchPauseTurnForKimi() {
     val requestBodies = mutableListOf<String>()
     val responseSent = CountDownLatch(2)
@@ -1854,6 +2292,110 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       )
       assertEquals(
         "example canonical url",
+        observations.getJSONObject(0).getJSONArray("queries").getString(0),
+      )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeUsesLastStructuredUserMessageForAnthropicBuiltinWebSearchFallbackQuery() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "anthropic_search_messages_response",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "The canonical URL is https://example.com."
+                  }
+                ],
+                "usage": {
+                  "server_tool_use": {
+                    "web_search_requests": 1
+                  }
+                },
+                "stop_reason": "end_turn"
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-anthropic-builtin-web-search-messages",
+            providerId = "anthropic",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "claude-sonnet-4-5",
+            timeoutMs = 5_000L,
+            metadata = mapOf("protocol" to LlmProviderProtocols.ANTHROPIC),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "legacy anthropic prompt blob should stay non-authoritative here",
+            messages = listOf(
+              LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.USER,
+                content = "[Dynamic Context]\nUse concise answers.",
+              ),
+              LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.USER,
+                content = "Use web search to find the canonical example.com URL.",
+              ),
+            ),
+            builtinTools = listOf(
+              LiteLlmBuiltinToolDefinition(
+                type = LiteLlmBuiltinToolType.WEB_SEARCH,
+                domains = listOf("example.com"),
+                includeSources = true,
+              ),
+            ),
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-anthropic-builtin-web-search-messages",
+            providerId = "anthropic",
+            model = "claude-sonnet-4-5",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      val messages = payload.getJSONArray("messages")
+      assertEquals(2, messages.length())
+      assertEquals("[Dynamic Context]\nUse concise answers.", messages.getJSONObject(0).getString("content"))
+      assertEquals(
+        "Use web search to find the canonical example.com URL.",
+        messages.getJSONObject(1).getString("content"),
+      )
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("messages", success.metadata["conversationTransportMode"])
+      val observations = JSONArray(
+        success.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON],
+      )
+      assertEquals(
+        "Use web search to find the canonical example.com URL.",
         observations.getJSONObject(0).getJSONArray("queries").getString(0),
       )
     } finally {
@@ -2358,6 +2900,371 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
+  fun executeStreamsOnlyCurrentUserVisibleResponsesPhaseDraft() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_phased_visible"}}
+
+              event: response.output_item.added
+              data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_stream_commentary","type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":""}]}}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"I am checking the official timeline first."}
+
+              event: response.output_item.added
+              data: {"type":"response.output_item.added","output_index":1,"item":{"id":"msg_stream_final","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":""}]}}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":1,"content_index":0,"delta":"The most recent update is about the expansion plan and lawsuit."}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_phased_visible","status":"completed"}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-phased-visible",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Summarize the latest timeline.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-phased-visible",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(
+        listOf(
+          "I am checking the official timeline first.",
+          "The most recent update is about the expansion plan and lawsuit.",
+        ),
+        visibleDrafts,
+      )
+      assertEquals("I am checking the official timeline first.", success.completion?.commentaryText)
+      assertEquals(
+        "The most recent update is about the expansion plan and lawsuit.",
+        success.completion?.finalText,
+      )
+      assertEquals("completed", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executePreservesResponsesCommentaryWhenToolCallReusesMessageOutputIndex() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_commentary_tool_same_index"}}
+
+              event: response.output_item.added
+              data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_stream_commentary_same_index","type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":""}]}}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"I am checking the latest official sources first."}
+
+              event: response.output_item.done
+              data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_stream_same_index","type":"function_call","call_id":"call_stream_same_index","name":"EchoProbe","arguments":"{\"echo\":\"hello\"}"}}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_commentary_tool_same_index","status":"completed"}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-commentary-tool-same-index",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Check first, then call EchoProbe.",
+            tools = listOf(sampleToolDefinition()),
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-commentary-tool-same-index",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(listOf("I am checking the latest official sources first."), visibleDrafts)
+      assertEquals(
+        "I am checking the latest official sources first.",
+        success.completion?.commentaryText,
+      )
+      assertEquals("EchoProbe", success.completion?.toolCalls?.single()?.toolName)
+      assertEquals("\"hello\"", success.completion?.toolCalls?.single()?.arguments?.get("echo")?.toString())
+      assertEquals("completed", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executePreservesResponsesCommentaryWhenFinalAnswerReusesMessageOutputIndex() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_commentary_final_same_index"}}
+
+              event: response.output_item.added
+              data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_stream_commentary_same_slot","type":"message","role":"assistant","phase":"commentary","content":[{"type":"output_text","text":""}]}}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"I am checking the timeline first."}
+
+              event: response.output_item.done
+              data: {"type":"response.output_item.done","output_index":0,"item":{"id":"msg_stream_final_same_slot","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"The latest update is the product expansion."}]}}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_commentary_final_same_index","status":"completed"}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-commentary-final-same-index",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Check first, then answer.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-commentary-final-same-index",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(
+        listOf(
+          "I am checking the timeline first.",
+          "The latest update is the product expansion.",
+        ),
+        visibleDrafts,
+      )
+      assertEquals("I am checking the timeline first.", success.completion?.commentaryText)
+      assertEquals(
+        "The latest update is the product expansion.",
+        success.completion?.finalText,
+      )
+      assertEquals("completed", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsOpenAiResponsesTextWhenEventStreamContentTypeIsMissing() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_text_headerless"}}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Hello"}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":" world"}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_text_headerless","status":"completed"}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-text-headerless",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Say hello.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-text-headerless",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(listOf("Hello", "Hello world"), visibleDrafts)
+      assertEquals("Hello world", success.outputText)
+      assertEquals("completed", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
   fun executeKeepsOpenAiResponsesStreamTextWhenCompletedPayloadClearsOutput() {
     val requestBody = AtomicReference<String>()
     val visibleDrafts = mutableListOf<String>()
@@ -2434,6 +3341,1333 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
       assertEquals("Hello world", success.outputText)
       assertEquals("Hello world", success.completion?.finalText)
       assertEquals("completed", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executePrefersCompletedResponsesOutputOverPartialStreamText() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_text_authoritative"}}
+
+              event: response.output_item.added
+              data: {"type":"response.output_item.added","output_index":0,"item":{"id":"msg_stream_text_authoritative","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":""}]}}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"item_id":"msg_stream_text_authoritative","content_index":0,"delta":"Hel"}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_text_authoritative","status":"completed","output":[{"id":"msg_stream_text_authoritative","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Hello"}]}]}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-text-authoritative-output",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Say hello.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-text-authoritative-output",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(listOf("Hel", "Hello"), visibleDrafts)
+      assertEquals("Hello", success.outputText)
+      assertEquals("Hello", success.completion?.finalText)
+      assertTrue(success.completion?.toolCalls.isNullOrEmpty())
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeKeepsOpenAiResponsesFunctionCallWhenCompletedPayloadClearsOutput() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_tool_cleared"}}
+
+              event: response.output_item.done
+              data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_stream_resp_1","type":"function_call","call_id":"call_stream_resp_1","name":"EchoProbe","arguments":"{\"echo\":\"hello\"}"}}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_tool_cleared","status":"completed","output":[]}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-tool-cleared-output",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Call EchoProbe.",
+            tools = listOf(sampleToolDefinition()),
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-tool-cleared-output",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("completed", success.finishReason)
+      assertEquals("EchoProbe", success.completion?.toolCalls?.single()?.toolName)
+      assertEquals("\"hello\"", success.completion?.toolCalls?.single()?.arguments?.get("echo")?.toString())
+      assertTrue(success.outputText.contains("\"tool_name\":\"EchoProbe\""))
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeKeepsResponsesBuiltinWebSearchWhenCompletedOutputOnlyHasFinalAnswer() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_builtin_search"}}
+
+              event: response.output_item.done
+              data: {"type":"response.output_item.done","output_index":0,"item":{"id":"ws_stream_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"OpenCray streaming inspector","sources":[{"type":"url_citation","title":"OpenCray","url":"https://example.com/opencray"}]}}}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_builtin_search","status":"completed","output":[{"id":"msg_stream_builtin_search","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Search result summarized."}]}]}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-builtin-search",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Search and summarize.",
+            builtinTools = listOf(
+              LiteLlmBuiltinToolDefinition(type = LiteLlmBuiltinToolType.WEB_SEARCH),
+            ),
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-builtin-search",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("Search result summarized.", success.completion?.finalText)
+      assertEquals("true", success.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED])
+      val observations = JSONArray(
+        success.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON],
+      )
+      assertEquals(1, observations.length())
+      assertEquals(
+        "OpenCray streaming inspector",
+        observations.getJSONObject(0).getJSONArray("queries").getString(0),
+      )
+      assertEquals(
+        "https://example.com/opencray",
+        observations
+          .getJSONObject(0)
+          .getJSONArray("sources")
+          .getJSONObject(0)
+          .getString("url"),
+      )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeDropsStreamOnlyFunctionCallWhenCompletedResponsesOutputHasOnlyFinalAnswer() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_tool_replaced"}}
+
+              event: response.output_item.done
+              data: {"type":"response.output_item.done","output_index":0,"item":{"id":"fc_stream_resp_replaced_1","type":"function_call","call_id":"call_stream_resp_replaced_1","name":"EchoProbe","arguments":"{\"echo\":\"hello\"}"}}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_tool_replaced","status":"completed","output":[{"id":"msg_stream_resp_replaced_1","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Hello"}]}]}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-tool-replaced-output",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Answer without a tool in the final payload.",
+            tools = listOf(sampleToolDefinition()),
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-tool-replaced-output",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("Hello", success.outputText)
+      assertEquals("Hello", success.completion?.finalText)
+      assertTrue(success.completion?.toolCalls.isNullOrEmpty())
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsOpenAiResponsesFunctionCallArgumentDeltasWithoutOutputItemDone() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_tool_delta"}}
+
+              event: response.output_item.added
+              data: {"type":"response.output_item.added","output_index":0,"item":{"id":"fc_stream_resp_delta_1","type":"function_call","call_id":"call_stream_resp_delta_1","name":"EchoProbe","arguments":""}}
+
+              event: response.function_call_arguments.delta
+              data: {"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_stream_resp_delta_1","delta":"{\"echo\":\"hel"}
+
+              event: response.function_call_arguments.delta
+              data: {"type":"response.function_call_arguments.delta","output_index":0,"item_id":"fc_stream_resp_delta_1","delta":"lo\"}"}
+
+              event: response.function_call_arguments.done
+              data: {"type":"response.function_call_arguments.done","output_index":0,"item_id":"fc_stream_resp_delta_1","arguments":"{\"echo\":\"hello\"}"}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_tool_delta","status":"completed","output":[]}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-tool-delta",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Call EchoProbe.",
+            tools = listOf(sampleToolDefinition()),
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-tool-delta",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("completed", success.finishReason)
+      assertEquals("EchoProbe", success.completion?.toolCalls?.single()?.toolName)
+      assertEquals("\"hello\"", success.completion?.toolCalls?.single()?.arguments?.get("echo")?.toString())
+      assertTrue(success.outputText.contains("\"tool_name\":\"EchoProbe\""))
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsOnlyStructuredFinalAnswerDraftFromOpenAiResponses() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_structured_final"}}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"{\"type\":\"final\",\"answer\":\"Hel"}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"lo\"}"}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_structured_final","status":"completed"}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-structured-final",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Say hello.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-structured-final",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(listOf("Hel", "Hello"), visibleDrafts)
+      assertEquals("{\"type\":\"final\",\"answer\":\"Hello\"}", success.outputText)
+      assertEquals("{\"type\":\"final\",\"answer\":\"Hello\"}", success.completion?.rawText)
+      assertEquals("completed", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsStructuredActionsDraftTextFromOpenAiResponses() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_structured_actions"}}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"{\"actions\":[{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"}"}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":",{\"type\":\"final\",\"answer\":\"Here is"}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":" the final answer.\"}]}"}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_structured_actions","status":"completed"}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-structured-actions",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Check first, then answer.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-structured-actions",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(
+        listOf(
+          "Checking the transcript first.",
+          "Here is",
+          "Here is the final answer.",
+        ),
+        visibleDrafts,
+      )
+      assertEquals(
+        "{\"actions\":[{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"},{\"type\":\"final\",\"answer\":\"Here is the final answer.\"}]}",
+        success.outputText,
+      )
+      assertEquals("completed", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeSuppressesStructuredFinalDraftWhenActionsBatchContainsToolCallFromOpenAiResponses() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_structured_actions_tool_final"}}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"{\"actions\":[{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"}"}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":",{\"type\":\"tool_call\",\"tool_name\":\"Read\",\"arguments\":{\"file_path\":\"README.md\"}},{\"type\":\"final\",\"answer\":\"This final must stay hidden.\"}]}"}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_structured_actions_tool_final","status":"completed"}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-structured-actions-tool-final",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Check first, use a tool, then answer.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-structured-actions-tool-final",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(listOf("Checking the transcript first."), visibleDrafts)
+      assertEquals(
+        "{\"actions\":[{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"},{\"type\":\"tool_call\",\"tool_name\":\"Read\",\"arguments\":{\"file_path\":\"README.md\"}},{\"type\":\"final\",\"answer\":\"This final must stay hidden.\"}]}",
+        success.outputText,
+      )
+      assertEquals("completed", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeSuppressesStructuredFinalDraftWhenActionsBatchContainsToolCallFromOpenAiChatCompletions() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              data: {"id":"chatcmpl_stream_structured_actions_tool_final","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"{\"actions\":[{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"}"},"finish_reason":null}]}
+
+              data: {"id":"chatcmpl_stream_structured_actions_tool_final","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":",{\"type\":\"tool_call\",\"tool_name\":\"Read\",\"arguments\":{\"file_path\":\"README.md\"}},{\"type\":\"final\",\"answer\":\"This final must stay hidden.\"}]}"},"finish_reason":null}]}
+
+              data: {"id":"chatcmpl_stream_structured_actions_tool_final","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+              data: [DONE]
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-chat-stream-structured-actions-tool-final",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-4o-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Check first, use a tool, then answer.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-chat-stream-structured-actions-tool-final",
+            providerId = "openai",
+            model = "gpt-4o-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(
+        listOf("Checking the transcript first."),
+        visibleDrafts,
+      )
+      assertEquals(
+        "{\"actions\":[{\"type\":\"commentary\",\"text\":\"Checking the transcript first.\"},{\"type\":\"tool_call\",\"tool_name\":\"Read\",\"arguments\":{\"file_path\":\"README.md\"}},{\"type\":\"final\",\"answer\":\"This final must stay hidden.\"}]}",
+        success.outputText,
+      )
+      assertEquals("stop", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsTopLevelStructuredCommentaryDraftTextFromOpenAiChatCompletions() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              data: {"id":"chatcmpl_stream_top_level_commentary","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"{\"type\":\"commentary\",\"text\":\"Che"},"finish_reason":null}]}
+
+              data: {"id":"chatcmpl_stream_top_level_commentary","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"cking the timeline first.\"}"},"finish_reason":null}]}
+
+              data: {"id":"chatcmpl_stream_top_level_commentary","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+              data: [DONE]
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-chat-stream-top-level-commentary",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-4o-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Report commentary only.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-chat-stream-top-level-commentary",
+            providerId = "openai",
+            model = "gpt-4o-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(
+        listOf("Che", "Checking the timeline first."),
+        visibleDrafts,
+      )
+      assertEquals(
+        "{\"type\":\"commentary\",\"text\":\"Checking the timeline first.\"}",
+        success.outputText,
+      )
+      assertEquals("stop", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsTopLevelStructuredProgressDraftTextFromOpenAiChatCompletions() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              data: {"id":"chatcmpl_stream_top_level_progress","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"{\"type\":\"progress\",\"text\":\"Che"},"finish_reason":null}]}
+
+              data: {"id":"chatcmpl_stream_top_level_progress","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"cking the timeline\"}"},"finish_reason":null}]}
+
+              data: {"id":"chatcmpl_stream_top_level_progress","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+              data: [DONE]
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-chat-stream-top-level-progress",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-4o-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Report progress only.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-chat-stream-top-level-progress",
+            providerId = "openai",
+            model = "gpt-4o-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(listOf("Che", "Checking the timeline"), visibleDrafts)
+      assertEquals(
+        "{\"type\":\"progress\",\"text\":\"Checking the timeline\"}",
+        success.outputText,
+      )
+      assertEquals("stop", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsTopLevelStructuredStatusDraftTextFromOpenAiChatCompletions() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              data: {"id":"chatcmpl_stream_top_level_status","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"{\"type\":\"status\",\"text\":\"Che"},"finish_reason":null}]}
+
+              data: {"id":"chatcmpl_stream_top_level_status","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"cking the timeline\"}"},"finish_reason":null}]}
+
+              data: {"id":"chatcmpl_stream_top_level_status","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+              data: [DONE]
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-chat-stream-top-level-status",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-4o-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Report status only.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-chat-stream-top-level-status",
+            providerId = "openai",
+            model = "gpt-4o-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(listOf("Che", "Checking the timeline"), visibleDrafts)
+      assertEquals(
+        "{\"type\":\"status\",\"text\":\"Checking the timeline\"}",
+        success.outputText,
+      )
+      assertEquals("stop", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeSuppressesPartialStructuredResponsesJsonPrefixesUntilAnswerAppears() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_structured_prefix"}}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"{"}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"\"type\":\"final\",\"answer\":\"Hel"}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"lo\"}"}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_structured_prefix","status":"completed"}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-structured-prefix",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Say hello.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-structured-prefix",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(listOf("Hel", "Hello"), visibleDrafts)
+      assertEquals("{\"type\":\"final\",\"answer\":\"Hello\"}", success.outputText)
+      assertEquals("{\"type\":\"final\",\"answer\":\"Hello\"}", success.completion?.rawText)
+      assertEquals("completed", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeSuppressesStructuredToolDraftFromOpenAiResponses() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_structured_tool"}}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"{\"tool_calls\":[{\"tool_name\":\"Read\",\"arguments\":{\"file_path\":\"README.md\"}}]}"}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_structured_tool","status":"completed"}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-structured-tool",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Use a tool.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-structured-tool",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertTrue(visibleDrafts.isEmpty())
+      assertEquals(
+        "{\"tool_calls\":[{\"tool_name\":\"Read\",\"arguments\":{\"file_path\":\"README.md\"}}]}",
+        success.outputText,
+      )
+      assertEquals("completed", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeSuppressesNestedActionsInsideStructuredToolDraftsFromOpenAiResponses() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_structured_tool_nested_actions"}}
+
+              event: response.output_text.delta
+              data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"{\"tool_calls\":[{\"tool_name\":\"Read\",\"arguments\":{\"actions\":[{\"type\":\"final\",\"answer\":\"leak\"}],\"file_path\":\"README.md\"}}]}"}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_structured_tool_nested_actions","status":"completed"}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-structured-tool-nested-actions",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Use a tool.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-structured-tool-nested-actions",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertTrue(visibleDrafts.isEmpty())
+      assertEquals(
+        "{\"tool_calls\":[{\"tool_name\":\"Read\",\"arguments\":{\"actions\":[{\"type\":\"final\",\"answer\":\"leak\"}],\"file_path\":\"README.md\"}}]}",
+        success.outputText,
+      )
+      assertEquals("completed", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsTopLevelStructuredFinalDraftTextFromOpenAiChatCompletions() {
+    val requestBody = AtomicReference<String>()
+    val visibleDrafts = mutableListOf<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              data: {"id":"chatcmpl_stream_top_level_final","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"{\"type\":\"final\",\"answer\":\"Hel"},"finish_reason":null}]}
+
+              data: {"id":"chatcmpl_stream_top_level_final","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"lo\"}"},"finish_reason":null}]}
+
+              data: {"id":"chatcmpl_stream_top_level_final","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+              data: [DONE]
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+        streamUpdateMinIntervalMs = 0L,
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-chat-stream-top-level-final",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-4o-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Report final answer only.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+            streamObserver = object : LiteLlmVisibleTextObserver {
+              override fun onVisibleTextSnapshot(text: String) {
+                visibleDrafts += text
+              }
+            },
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-chat-stream-top-level-final",
+            providerId = "openai",
+            model = "gpt-4o-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals(listOf("Hel", "Hello"), visibleDrafts)
+      assertEquals(
+        "{\"type\":\"final\",\"answer\":\"Hello\"}",
+        success.outputText,
+      )
+      assertEquals("stop", success.finishReason)
     } finally {
       runCatching { server.close() }
       serverThread.join(5_000L)
@@ -2615,10 +4849,10 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
             body = """
               event: response.created
               data: {"type":"response.created","response":{"id":"resp_stream_tool"}}
-              
+
               event: response.output_item.done
               data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_stream_resp_1","name":"EchoProbe","arguments":"{\"echo\":\"hello\"}"}}
-              
+
               event: response.completed
               data: {"type":"response.completed","response":{"id":"resp_stream_tool","status":"completed"}}
             """.trimIndent(),
@@ -2834,6 +5068,268 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
+  fun executeSendsOpenAiStructuredFinalJsonSchemaWhenRouteExplicitlySupportsIt() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "openai",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "gpt-4o-mini",
+      responseBody = """
+        {
+          "id": "req_structured_final_schema",
+          "choices": [
+            {
+              "message": {
+                "content": "{\"type\":\"final\",\"answer\":\"OK\",\"attachments\":[]}"
+              },
+              "finish_reason": "stop"
+            }
+          ]
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+      routeMetadata = mapOf(
+        LlmStructuredFinalMetadataKeys.STRUCTURED_FINAL_SCHEMA_SUPPORTED to "true",
+      ),
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val success = result as LiteLlmProviderResult.Success
+    assertEquals("true", success.metadata[LlmStructuredFinalMetadataKeys.STRUCTURED_FINAL_SCHEMA_SUPPORTED])
+    val payload = JSONObject(capturedBody.get())
+    val responseFormat = payload.getJSONObject("response_format")
+    assertEquals("json_schema", responseFormat.getString("type"))
+    val jsonSchema = responseFormat.getJSONObject("json_schema")
+    assertEquals("opencray_final_response", jsonSchema.getString("name"))
+    assertEquals(true, jsonSchema.getBoolean("strict"))
+    val schema = jsonSchema.getJSONObject("schema")
+    assertEquals(false, schema.getBoolean("additionalProperties"))
+    assertEquals("attachments", schema.getJSONArray("required").getString(2))
+    val attachmentSchema = schema
+      .getJSONObject("properties")
+      .getJSONObject("attachments")
+      .getJSONObject("items")
+    assertEquals(false, attachmentSchema.getBoolean("additionalProperties"))
+    assertEquals("artifact_id", attachmentSchema.getJSONArray("required").getString(1))
+  }
+
+  @Test
+  fun executeOmitsStructuredFinalJsonSchemaForThirdPartyOpenAiRoutesByDefault() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "custom-openai-compatible",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "third-party-model",
+      responseBody = """
+        {
+          "id": "req_third_party_no_schema",
+          "choices": [
+            {
+              "message": { "content": "OK" },
+              "finish_reason": "stop"
+            }
+          ]
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val payload = JSONObject(capturedBody.get())
+    assertFalse(payload.has("response_format"))
+  }
+
+  @Test
+  fun executeOmitsStructuredFinalJsonSchemaForOpenAiProviderWithCustomBaseUrlByDefault() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "openai",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "gpt-4o-mini",
+      responseBody = """
+        {
+          "id": "req_openai_provider_custom_base_no_schema",
+          "choices": [
+            {
+              "message": { "content": "OK" },
+              "finish_reason": "stop"
+            }
+          ]
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val payload = JSONObject(capturedBody.get())
+    assertFalse(payload.has("response_format"))
+  }
+
+  @Test
+  fun executeSendsOpenAiResponsesStructuredFinalJsonSchemaWhenRouteExplicitlySupportsIt() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      responseBody = """
+        {
+          "id": "resp_structured_final_schema",
+          "status": "completed",
+          "output": [
+            {
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                { "type": "output_text", "text": "{\"type\":\"final\",\"answer\":\"OK\",\"attachments\":[]}" }
+              ]
+            }
+          ]
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+      routeMetadata = mapOf(
+        LlmStructuredFinalMetadataKeys.STRUCTURED_FINAL_SCHEMA_SUPPORTED to "true",
+      ),
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val success = result as LiteLlmProviderResult.Success
+    assertEquals("true", success.metadata[LlmStructuredFinalMetadataKeys.STRUCTURED_FINAL_SCHEMA_SUPPORTED])
+    val payload = JSONObject(capturedBody.get())
+    val format = payload
+      .getJSONObject("text")
+      .getJSONObject("format")
+    assertEquals("json_schema", format.getString("type"))
+    assertEquals("opencray_final_response", format.getString("name"))
+    assertEquals(true, format.getBoolean("strict"))
+    assertEquals("object", format.getJSONObject("schema").getString("type"))
+  }
+
+  @Test
+  fun executeOmitsOpenAiResponsesStructuredFinalJsonSchemaForOpenAiProviderWithCustomBaseUrlByDefault() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      responseBody = """
+        {
+          "id": "resp_openai_provider_custom_base_no_schema",
+          "status": "completed",
+          "output": [
+            {
+              "type": "message",
+              "role": "assistant",
+              "content": [
+                { "type": "output_text", "text": "OK" }
+              ]
+            }
+          ]
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val payload = JSONObject(capturedBody.get())
+    assertFalse(payload.has("text"))
+  }
+
+  @Test
+  fun executeSendsAndParsesAnthropicStructuredFinalToolWhenRouteExplicitlySupportsIt() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "anthropic",
+      protocol = LlmProviderProtocols.ANTHROPIC,
+      model = "claude-3-5-sonnet",
+      authHeaders = mapOf("x-api-key" to "test-key"),
+      responseBody = """
+        {
+          "id": "msg_structured_final_tool",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "toolu_final_1",
+              "name": "OpenCrayFinalResponse",
+              "input": {
+                "type": "final",
+                "answer": "Created the image.",
+                "attachments": [
+                  {
+                    "kind": "image",
+                    "artifact_id": "artifact-image-1",
+                    "relative_path": null,
+                    "path": null,
+                    "chat_attachment_id": null,
+                    "display_name": "diagram.png",
+                    "mime_type": "image/png",
+                    "duration_ms": null,
+                    "waveform_bars": [],
+                    "transcript_text": null
+                  }
+                ]
+              }
+            }
+          ],
+          "stop_reason": "tool_use"
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+      routeMetadata = mapOf(
+        LlmStructuredFinalMetadataKeys.ANTHROPIC_STRUCTURED_FINAL_TOOL_SUPPORTED to "true",
+      ),
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val success = result as LiteLlmProviderResult.Success
+    assertEquals("true", success.metadata[LlmStructuredFinalMetadataKeys.ANTHROPIC_STRUCTURED_FINAL_TOOL_SUPPORTED])
+    assertEquals("false", success.metadata[LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED])
+    val tool = JSONObject(capturedBody.get())
+      .getJSONArray("tools")
+      .let { tools ->
+        (0 until tools.length())
+          .map { index -> tools.getJSONObject(index) }
+          .single { candidate -> candidate.getString("name") == "OpenCrayFinalResponse" }
+      }
+    assertEquals("object", tool.getJSONObject("input_schema").getString("type"))
+    val completion = requireNotNull(success.completion)
+    assertTrue(completion.toolCalls.isEmpty())
+    assertEquals("Created the image.", completion.finalText)
+    assertEquals(1, completion.finalAttachments.size)
+    assertEquals("artifact-image-1", completion.finalAttachments.single().artifactId)
+    assertEquals("image/png", completion.finalAttachments.single().mimeType)
+  }
+
+  @Test
+  fun executeOmitsAnthropicStructuredFinalToolForAnthropicProviderWithCustomBaseUrlByDefault() {
+    val capturedBody = AtomicReference<String>()
+    val result = executeWithCapturedProviderRequest(
+      routeProviderId = "anthropic",
+      protocol = LlmProviderProtocols.ANTHROPIC,
+      model = "claude-3-5-sonnet",
+      authHeaders = mapOf("x-api-key" to "test-key"),
+      responseBody = """
+        {
+          "id": "msg_anthropic_provider_custom_base_no_final_tool",
+          "content": [
+            {
+              "type": "text",
+              "text": "OK"
+            }
+          ],
+          "stop_reason": "end_turn"
+        }
+      """.trimIndent(),
+      capturedBody = capturedBody,
+    )
+
+    assertTrue(result is LiteLlmProviderResult.Success)
+    val payload = JSONObject(capturedBody.get())
+    assertFalse(payload.has("tools"))
+  }
+
+  @Test
   fun executeBuildsOpenAiCanonicalMessagesWhenGatewayMessagesArePresent() {
     val requestLine = AtomicReference<String>()
     val userAgent = AtomicReference<String>()
@@ -2955,7 +5451,7 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
-  fun executeBuildsOpenAiPromptCacheHintsWhenConfigured() {
+  fun executeBuildsOpenAiPromptCacheHintsWhenExplicitlySupported() {
     val requestBody = AtomicReference<String>()
     val responseSent = CountDownLatch(1)
     val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
@@ -2995,6 +5491,7 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
             timeoutMs = 5_000L,
             metadata = mapOf(
               "protocol" to LlmProviderProtocols.OPENAI,
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_HINTS_SUPPORTED to "true",
               LlmPromptCachingMetadataKeys.PROMPT_CACHE_KEY_STRATEGY to
                 LlmPromptCacheKeyStrategies.SESSION,
               LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION to
@@ -3032,6 +5529,161 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
         LlmPromptCacheRetentionPolicies.HOURS_24,
         success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION],
       )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeSkipsOpenAiPromptCacheHintsForOpenAiProviderWithCustomBaseUrlByDefault() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "req_prompt_cache_openai_custom_base",
+                "choices": [
+                  {
+                    "message": { "content": "OK" },
+                    "finish_reason": "stop"
+                  }
+                ]
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient()
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-prompt-cache-openai-custom-base",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-4o-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI,
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_KEY_STRATEGY to
+                LlmPromptCacheKeyStrategies.SESSION,
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION to
+                LlmPromptCacheRetentionPolicies.HOURS_24,
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            metadata = mapOf("sessionId" to "session-123"),
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-prompt-cache-openai-custom-base",
+            providerId = "openai",
+            model = "gpt-4o-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertFalse(payload.has("prompt_cache_key"))
+      assertFalse(payload.has("prompt_cache_retention"))
+      val success = result as LiteLlmProviderResult.Success
+      assertFalse(success.metadata.containsKey(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_KEY_PRESENT))
+      assertFalse(success.metadata.containsKey(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION))
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeSkipsOpenAiResponsesPromptCacheHintsForOpenAiProviderWithCustomBaseUrlByDefault() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpResponse(
+            client = client,
+            body = """
+              {
+                "id": "resp_prompt_cache_openai_custom_base",
+                "status": "completed",
+                "output": [
+                  {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                      { "type": "output_text", "text": "OK" }
+                    ]
+                  }
+                ]
+              }
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient()
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-prompt-cache-openai-custom-base",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_KEY_STRATEGY to
+                LlmPromptCacheKeyStrategies.SESSION,
+              LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION to
+                LlmPromptCacheRetentionPolicies.HOURS_24,
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            metadata = mapOf("sessionId" to "session-123"),
+            responseApiPreferred = true,
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-prompt-cache-openai-custom-base",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertFalse(payload.has("prompt_cache_key"))
+      assertFalse(payload.has("prompt_cache_retention"))
+      val success = result as LiteLlmProviderResult.Success
+      assertFalse(success.metadata.containsKey(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_KEY_PRESENT))
+      assertFalse(success.metadata.containsKey(LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION))
     } finally {
       runCatching { server.close() }
       serverThread.join(5_000L)
@@ -4366,6 +7018,80 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
     assertEquals("1h", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_RETENTION])
   }
 
+  private fun executeWithCapturedProviderRequest(
+    routeProviderId: String,
+    protocol: String,
+    model: String,
+    responseBody: String,
+    capturedBody: AtomicReference<String>,
+    authHeaders: Map<String, String> = mapOf("Authorization" to "Bearer test-key"),
+    routeMetadata: Map<String, String> = emptyMap(),
+    requestMetadata: Map<String, String> = emptyMap(),
+  ): LiteLlmProviderResult {
+    val requestLine = AtomicReference<String>()
+    val userAgent = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, requestLine, userAgent, capturedBody)
+          writeHttpResponse(
+            client = client,
+            body = responseBody,
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    return try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent(
+          "1.0.0-test",
+        ),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-captured",
+            providerId = routeProviderId,
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = model,
+            timeoutMs = 5_000L,
+            metadata = mapOf("protocol" to protocol) + routeMetadata,
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            metadata = requestMetadata,
+            authHeaders = authHeaders,
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-captured",
+            providerId = routeProviderId,
+            model = model,
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val expectedPath = when (protocol) {
+        LlmProviderProtocols.ANTHROPIC -> "/v1/messages"
+        LlmProviderProtocols.OPENAI_RESPONSES -> "/v1/responses"
+        else -> "/v1/chat/completions"
+      }
+      assertEquals("POST $expectedPath HTTP/1.1", requestLine.get())
+      assertNotNull(userAgent.get())
+      result
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
   private fun executeWithOpenAiResponse(
     body: String,
     expectSuccess: Boolean = true,
@@ -4516,53 +7242,85 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   private fun executeWithResponsesResponse(body: String): LiteLlmProviderResult.Success {
     val requestLine = AtomicReference<String>()
     val userAgent = AtomicReference<String>()
+    val serverReady = CountDownLatch(1)
     val responseSent = CountDownLatch(1)
-    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverFailure = AtomicReference<Throwable?>()
+    val server = ServerSocket(0, 2, InetAddress.getByName("127.0.0.1"))
     val serverThread = Thread {
       server.use { listeningSocket ->
-        listeningSocket.accept().use { client ->
-          readHttpRequest(client, requestLine, userAgent)
-          writeHttpResponse(
-            client = client,
-            body = body,
-          )
-          responseSent.countDown()
+        serverReady.countDown()
+        repeat(2) {
+          val acceptedClient = try {
+            listeningSocket.accept()
+          } catch (error: Throwable) {
+            serverFailure.compareAndSet(null, error)
+            return@Thread
+          }
+          acceptedClient.use { client ->
+            try {
+              readHttpRequest(client, requestLine, userAgent)
+              writeHttpResponse(
+                client = client,
+                body = body,
+              )
+              responseSent.countDown()
+              return@Thread
+            } catch (error: Throwable) {
+              serverFailure.compareAndSet(null, error)
+            }
+          }
         }
       }
     }
     serverThread.start()
 
     return try {
+      assertTrue(serverReady.await(5, TimeUnit.SECONDS))
       val client = OpenAiCompatibleLiteLlmProviderClient(
         userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent(
           "1.0.0-test",
         ),
       )
-      val result = client.execute(
-        LiteLlmProviderRequest(
-          route = ProviderRoute(
-            id = "route-test",
-            providerId = "openai",
-            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
-            model = "gpt-5-mini",
-            timeoutMs = 5_000L,
-            metadata = mapOf("protocol" to LlmProviderProtocols.OPENAI_RESPONSES),
-          ),
-          request = LiteLlmGatewayRequest(
-            prompt = "Reply with OK.",
-            authHeaders = mapOf("Authorization" to "Bearer test-key"),
-          ),
-          selection = LiteLlmRouteSelectionMetadata(
-            profileId = "profile-test",
-            routeId = "route-test",
-            providerId = "openai",
-            model = "gpt-5-mini",
-            attemptIndex = 0,
-          ),
+      val providerRequest = LiteLlmProviderRequest(
+        route = ProviderRoute(
+          id = "route-test",
+          providerId = "openai",
+          baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+          model = "gpt-5-mini",
+          timeoutMs = 5_000L,
+          metadata = mapOf("protocol" to LlmProviderProtocols.OPENAI_RESPONSES),
+        ),
+        request = LiteLlmGatewayRequest(
+          prompt = "Reply with OK.",
+          authHeaders = mapOf("Authorization" to "Bearer test-key"),
+        ),
+        selection = LiteLlmRouteSelectionMetadata(
+          profileId = "profile-test",
+          routeId = "route-test",
+          providerId = "openai",
+          model = "gpt-5-mini",
+          attemptIndex = 0,
         ),
       )
+      val initialResult = client.execute(providerRequest)
+      val result = if (
+        initialResult is LiteLlmProviderResult.Failure &&
+        initialResult.errorCode == "PROVIDER_TRANSPORT_ERROR" &&
+        initialResult.metadata["exceptionType"] == "java.net.ConnectException" &&
+        initialResult.errorMessage.contains("Connection refused", ignoreCase = true)
+      ) {
+        client.execute(providerRequest)
+      } else {
+        initialResult
+      }
 
-      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      if (!responseSent.await(5, TimeUnit.SECONDS)) {
+        serverFailure.get()?.let { error ->
+          throw AssertionError("Responses test server failed before sending a reply.", error)
+        }
+        throw AssertionError("Timed out waiting for the Responses test server reply.")
+      }
+
       assertEquals("POST /v1/responses HTTP/1.1", requestLine.get())
       assertNotNull(userAgent.get())
       when (result) {

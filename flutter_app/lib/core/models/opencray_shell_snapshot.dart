@@ -1,9 +1,11 @@
 import '../../app/opencray_tabs.dart';
+import '../../features/settings/settings_models.dart';
 import 'opencray_chat_snapshot.dart' show OpenCrayHostLifecycleSnapshot;
 
 class OpenCrayShellSnapshot {
   const OpenCrayShellSnapshot({
     required this.initialTab,
+    this.initialSettingsPage = SettingsPage.home,
     required this.localeTag,
     required this.hostLabel,
     required this.hostSummary,
@@ -21,6 +23,7 @@ class OpenCrayShellSnapshot {
   });
 
   final OpenCrayTab initialTab;
+  final SettingsPage initialSettingsPage;
   final String localeTag;
   final String hostLabel;
   final String hostSummary;
@@ -53,6 +56,9 @@ class OpenCrayShellSnapshot {
         map['runtimeServiceConnectionState'];
     return OpenCrayShellSnapshot(
       initialTab: _parseTab(map['initialTab'] as String?),
+      initialSettingsPage: _parseSettingsPage(
+        map['initialSettingsRouteId'] as String?,
+      ),
       localeTag: map['localeTag'] as String? ?? 'en',
       hostLabel: map['hostLabel'] as String? ?? 'HOST READY',
       hostSummary: map['hostSummary'] as String? ?? defaultHostSummary,
@@ -106,6 +112,7 @@ class OpenCrayShellSnapshot {
 
   OpenCrayShellSnapshot copyWith({
     OpenCrayTab? initialTab,
+    SettingsPage? initialSettingsPage,
     String? localeTag,
     String? hostLabel,
     String? hostSummary,
@@ -124,6 +131,7 @@ class OpenCrayShellSnapshot {
   }) {
     return OpenCrayShellSnapshot(
       initialTab: initialTab ?? this.initialTab,
+      initialSettingsPage: initialSettingsPage ?? this.initialSettingsPage,
       localeTag: localeTag ?? this.localeTag,
       hostLabel: hostLabel ?? this.hostLabel,
       hostSummary: hostSummary ?? this.hostSummary,
@@ -367,6 +375,13 @@ OpenCrayTab _parseTab(String? rawValue) {
     default:
       return OpenCrayTab.chat;
   }
+}
+
+SettingsPage _parseSettingsPage(String? rawValue) {
+  if (rawValue == null || rawValue.trim().isEmpty) {
+    return SettingsPage.home;
+  }
+  return settingsPageFromRouteId(rawValue);
 }
 
 List<String> _listOfStrings(Object? payload) {

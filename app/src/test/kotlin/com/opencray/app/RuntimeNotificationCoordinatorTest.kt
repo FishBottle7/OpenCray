@@ -108,7 +108,7 @@ class RuntimeNotificationCoordinatorTest {
     sessionId = sessionId,
     title = "Test schedule",
     enabled = true,
-    trigger = ScheduledTrigger.RunAfterDelay(
+    trigger = ScheduledTrigger.After(
       delayMs = 1_000L,
       createdAtEpochMs = 1_000L,
     ),

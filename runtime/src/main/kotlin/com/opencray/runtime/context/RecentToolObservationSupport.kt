@@ -1,6 +1,7 @@
 package com.opencray.runtime.context
 
 import com.opencray.runtime.AgentToolCall
+import com.opencray.runtime.ScheduledTaskToolMetadataKeys
 import com.opencray.runtime.TodoWriteMetadataKeys
 import com.opencray.runtime.subagent.SubAgentResultMetadataKeys
 import com.opencray.runtime.workingstate.WorkingStateEntry
@@ -262,10 +263,7 @@ class RecentToolObservationSupport(
       .filter { parsed ->
         parsed.status.equals("success", ignoreCase = true) &&
           parsed.metadata["duplicateGuard"] != "true" &&
-          categoryForToolName(parsed.toolName).let { category ->
-            category == ObservationCategory.DISCOVERY ||
-              category == ObservationCategory.DELEGATION
-          }
+          frontContextObservationCategoryForToolName(parsed.toolName) != null
       }
       .mapNotNull(::renderObservation)
 
@@ -315,6 +313,11 @@ class RecentToolObservationSupport(
     "search_workspace_document" -> renderWorkspaceDocumentSearchObservation(parsed)
     "inspect_workspace_package" -> renderWorkspacePackageInspectObservation(parsed)
     "Task" -> renderTaskObservation(parsed)
+    "ScheduledTaskCreate" -> renderScheduledTaskCreateObservation(parsed)
+    "ScheduledTaskList" -> renderScheduledTaskListObservation(parsed)
+    "ScheduledTaskGet" -> renderScheduledTaskGetObservation(parsed)
+    "ScheduledTaskUpdate" -> renderScheduledTaskUpdateObservation(parsed)
+    "ScheduledTaskDelete" -> renderScheduledTaskDeleteObservation(parsed)
     "SkillsFind" -> renderSkillsFindObservation(parsed)
     "SkillsList" -> renderSkillsListObservation(parsed)
     "SkillsInspect" -> renderSkillsInspectObservation(parsed)
@@ -324,14 +327,8 @@ class RecentToolObservationSupport(
 
   private fun renderWorkingStateAction(parsed: ParsedToolResult): RenderedWorkingStateAction? {
     val canonicalToolName = canonicalToolName(parsed.toolName)
-    renderObservation(parsed)?.let { observation ->
-      return RenderedWorkingStateAction(
-        signature = "observation|${observation.signature}",
-        entry = WorkingStateEntry(
-          text = observation.summaryLine.removePrefix("- ").trim(),
-          sourceType = workingStateSourceTypeFor(canonicalToolName),
-        ),
-      )
+    if (frontContextObservationCategoryForToolName(canonicalToolName) != null) {
+      return renderObservationBackedWorkingStateAction(parsed, canonicalToolName)
     }
     return when (canonicalToolName) {
       "Write",
@@ -401,8 +398,26 @@ class RecentToolObservationSupport(
         sourceType = "skills_mutation",
       )
 
+      "ScheduledTaskCreate",
+      "ScheduledTaskUpdate",
+      "ScheduledTaskDelete",
+      -> renderObservationBackedWorkingStateAction(parsed, canonicalToolName)
+
       else -> null
     }
+  }
+
+  private fun renderObservationBackedWorkingStateAction(
+    parsed: ParsedToolResult,
+    canonicalToolName: String,
+  ): RenderedWorkingStateAction? = renderObservation(parsed)?.let { observation ->
+    RenderedWorkingStateAction(
+      signature = "observation|${observation.signature}",
+      entry = WorkingStateEntry(
+        text = observation.summaryLine.removePrefix("- ").trim(),
+        sourceType = workingStateSourceTypeFor(canonicalToolName),
+      ),
+    )
   }
 
   private fun renderWorkspaceMutationAction(
@@ -682,6 +697,12 @@ class RecentToolObservationSupport(
     "search_workspace_document" -> "workspace_document_search"
     "inspect_workspace_package" -> "workspace_package_inspect"
     "Task" -> "delegation"
+    "ScheduledTaskCreate",
+    "ScheduledTaskList",
+    "ScheduledTaskGet",
+    "ScheduledTaskUpdate",
+    "ScheduledTaskDelete",
+    -> "automation_scheduling"
     "SkillsFind",
     "SkillsList",
     "SkillsInspect",
@@ -938,6 +959,193 @@ class RecentToolObservationSupport(
     )
   }
 
+  private fun renderScheduledTaskCreateObservation(
+    parsed: ParsedToolResult,
+  ): RenderedObservation {
+    val scheduleId = parsed.metadata[ScheduledTaskToolMetadataKeys.SCHEDULE_ID]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val sessionId = parsed.metadata[ScheduledTaskToolMetadataKeys.SESSION_ID]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val triggerKind = parsed.metadata[ScheduledTaskToolMetadataKeys.TRIGGER_KIND]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+      ?: "unknown"
+    val nextTriggerAtEpochMs = parsed.metadata[ScheduledTaskToolMetadataKeys.NEXT_TRIGGER_AT_EPOCH_MS]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val enabled = parsed.metadata[ScheduledTaskToolMetadataKeys.ENABLED]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val detailParts = mutableListOf("trigger=$triggerKind")
+    scheduleId?.let { detailParts += "schedule=$it" }
+    sessionId?.let { detailParts += "session=$it" }
+    enabled?.let { detailParts += "enabled=$it" }
+    nextTriggerAtEpochMs?.let { detailParts += "next_at=$it" }
+    return RenderedObservation(
+      signature = buildScheduledTaskCreateSignature(
+        scheduleId = scheduleId,
+        sessionId = sessionId,
+        triggerKind = triggerKind,
+      ),
+      summaryLine = "- ScheduledTaskCreate ${detailParts.joinToString(separator = " ")}",
+      body = boundMultiline(
+        text = parsed.content,
+        maxChars = config.maxListChars,
+        maxLines = config.maxListLines,
+      ),
+    )
+  }
+
+  private fun renderScheduledTaskListObservation(
+    parsed: ParsedToolResult,
+  ): RenderedObservation {
+    val sessionId = parsed.metadata[ScheduledTaskToolMetadataKeys.SESSION_ID]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val enabled = parsed.metadata[ScheduledTaskToolMetadataKeys.ENABLED]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val returnedCount = parsed.metadata[ScheduledTaskToolMetadataKeys.RETURNED_COUNT]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+      ?: "unknown"
+    val totalCount = parsed.metadata[ScheduledTaskToolMetadataKeys.TOTAL_COUNT]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val detailParts = mutableListOf("returned=$returnedCount")
+    totalCount?.let { detailParts += "total=$it" }
+    sessionId?.let { detailParts += "session=$it" }
+    enabled?.let { detailParts += "enabled=$it" }
+    if (parsed.resultTruncated()) {
+      detailParts += "truncated=true"
+    }
+    parsed.resultLimitKind()?.let { detailParts += "limit_kind=$it" }
+    return RenderedObservation(
+      signature = buildScheduledTaskListSignature(
+        sessionId = sessionId,
+        enabled = enabled,
+        limit = null,
+      ),
+      summaryLine = "- ScheduledTaskList ${detailParts.joinToString(separator = " ")}",
+      body = boundMultiline(
+        text = parsed.content,
+        maxChars = config.maxListChars,
+        maxLines = config.maxListLines,
+      ),
+    )
+  }
+
+  private fun renderScheduledTaskGetObservation(
+    parsed: ParsedToolResult,
+  ): RenderedObservation {
+    val scheduleId = parsed.metadata[ScheduledTaskToolMetadataKeys.SCHEDULE_ID]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+      ?: "unknown"
+    val sessionId = parsed.metadata[ScheduledTaskToolMetadataKeys.SESSION_ID]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val triggerKind = parsed.metadata[ScheduledTaskToolMetadataKeys.TRIGGER_KIND]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+      ?: "unknown"
+    val enabled = parsed.metadata[ScheduledTaskToolMetadataKeys.ENABLED]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val runCount = parsed.metadata[ScheduledTaskToolMetadataKeys.RECENT_RUN_COUNT]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val detailParts = mutableListOf("schedule=$scheduleId", "trigger=$triggerKind")
+    sessionId?.let { detailParts += "session=$it" }
+    enabled?.let { detailParts += "enabled=$it" }
+    runCount?.let { detailParts += "recent_runs=$it" }
+    if (parsed.resultTruncated()) {
+      detailParts += "truncated=true"
+    }
+    parsed.resultLimitKind()?.let { detailParts += "limit_kind=$it" }
+    return RenderedObservation(
+      signature = buildScheduledTaskEntitySignature(
+        toolName = "ScheduledTaskGet",
+        scheduleId = scheduleId,
+        triggerKind = triggerKind,
+      ),
+      summaryLine = "- ScheduledTaskGet ${detailParts.joinToString(separator = " ")}",
+      body = boundMultiline(
+        text = parsed.content,
+        maxChars = config.maxListChars,
+        maxLines = config.maxListLines,
+      ),
+    )
+  }
+
+  private fun renderScheduledTaskUpdateObservation(
+    parsed: ParsedToolResult,
+  ): RenderedObservation {
+    val scheduleId = parsed.metadata[ScheduledTaskToolMetadataKeys.SCHEDULE_ID]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val sessionId = parsed.metadata[ScheduledTaskToolMetadataKeys.SESSION_ID]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val triggerKind = parsed.metadata[ScheduledTaskToolMetadataKeys.TRIGGER_KIND]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+      ?: "unknown"
+    val nextTriggerAtEpochMs = parsed.metadata[ScheduledTaskToolMetadataKeys.NEXT_TRIGGER_AT_EPOCH_MS]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val detailParts = mutableListOf("trigger=$triggerKind")
+    scheduleId?.let { detailParts += "schedule=$it" }
+    sessionId?.let { detailParts += "session=$it" }
+    nextTriggerAtEpochMs?.let { detailParts += "next_at=$it" }
+    return RenderedObservation(
+      signature = buildScheduledTaskEntitySignature(
+        toolName = "ScheduledTaskUpdate",
+        scheduleId = scheduleId ?: "unknown",
+        triggerKind = triggerKind,
+      ),
+      summaryLine = "- ScheduledTaskUpdate ${detailParts.joinToString(separator = " ")}",
+      body = boundMultiline(
+        text = parsed.content,
+        maxChars = config.maxListChars,
+        maxLines = config.maxListLines,
+      ),
+    )
+  }
+
+  private fun renderScheduledTaskDeleteObservation(
+    parsed: ParsedToolResult,
+  ): RenderedObservation {
+    val scheduleId = parsed.metadata[ScheduledTaskToolMetadataKeys.SCHEDULE_ID]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+      ?: "unknown"
+    val sessionId = parsed.metadata[ScheduledTaskToolMetadataKeys.SESSION_ID]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val title = parsed.metadata[ScheduledTaskToolMetadataKeys.TITLE]
+      ?.trim()
+      .takeUnless { it.isNullOrBlank() }
+    val detailParts = mutableListOf("schedule=$scheduleId")
+    sessionId?.let { detailParts += "session=$it" }
+    title?.let { detailParts += "title=$it" }
+    return RenderedObservation(
+      signature = buildScheduledTaskEntitySignature(
+        toolName = "ScheduledTaskDelete",
+        scheduleId = scheduleId,
+        triggerKind = null,
+      ),
+      summaryLine = "- ScheduledTaskDelete ${detailParts.joinToString(separator = " ")}",
+      body = boundMultiline(
+        text = parsed.content,
+        maxChars = config.maxListChars,
+        maxLines = config.maxListLines,
+      ),
+    )
+  }
+
   private fun renderSkillsFindObservation(parsed: ParsedToolResult): RenderedObservation {
     val query = parsed.metadata["query"]?.trim().orEmpty()
     val resultCount = parsed.metadata["resultCount"]?.toIntOrNull()
@@ -1171,6 +1379,36 @@ class RecentToolObservationSupport(
         skillId = arguments.stringValueFrom("skill_id", "skillId", "name"),
       )
 
+      "ScheduledTaskCreate" -> buildScheduledTaskCreateSignature(
+        scheduleId = null,
+        sessionId = arguments.stringValueFrom("session_id", "sessionId"),
+        triggerKind = arguments.objectValue("trigger")?.scheduledTaskTriggerKind(),
+      )
+
+      "ScheduledTaskList" -> buildScheduledTaskListSignature(
+        sessionId = arguments.stringValueFrom("session_id", "sessionId"),
+        enabled = arguments.stringValue("enabled"),
+        limit = null,
+      )
+
+      "ScheduledTaskGet" -> buildScheduledTaskEntitySignature(
+        toolName = "ScheduledTaskGet",
+        scheduleId = arguments.stringValueFrom("schedule_id", "scheduleId") ?: return null,
+        triggerKind = null,
+      )
+
+      "ScheduledTaskUpdate" -> buildScheduledTaskEntitySignature(
+        toolName = "ScheduledTaskUpdate",
+        scheduleId = arguments.stringValueFrom("schedule_id", "scheduleId") ?: return null,
+        triggerKind = arguments.objectValue("trigger")?.scheduledTaskTriggerKind(),
+      )
+
+      "ScheduledTaskDelete" -> buildScheduledTaskEntitySignature(
+        toolName = "ScheduledTaskDelete",
+        scheduleId = arguments.stringValueFrom("schedule_id", "scheduleId") ?: return null,
+        triggerKind = null,
+      )
+
       else -> null
     }
   }
@@ -1277,6 +1515,38 @@ class RecentToolObservationSupport(
     skillId?.trim().orEmpty(),
   ).joinToString(separator = "|")
 
+  private fun buildScheduledTaskCreateSignature(
+    scheduleId: String?,
+    sessionId: String?,
+    triggerKind: String?,
+  ): String = listOf(
+    "ScheduledTaskCreate",
+    scheduleId?.trim().orEmpty(),
+    sessionId?.trim().orEmpty(),
+    triggerKind?.trim().orEmpty(),
+  ).joinToString(separator = "|")
+
+  private fun buildScheduledTaskListSignature(
+    sessionId: String?,
+    enabled: String?,
+    limit: String?,
+  ): String = listOf(
+    "ScheduledTaskList",
+    sessionId?.trim().orEmpty(),
+    enabled?.trim().orEmpty(),
+    limit?.trim().orEmpty(),
+  ).joinToString(separator = "|")
+
+  private fun buildScheduledTaskEntitySignature(
+    toolName: String,
+    scheduleId: String,
+    triggerKind: String?,
+  ): String = listOf(
+    toolName.trim(),
+    scheduleId.trim(),
+    triggerKind?.trim().orEmpty(),
+  ).joinToString(separator = "|")
+
   private fun buildTaskSignature(
     description: String,
     subagentType: String,
@@ -1300,18 +1570,18 @@ class RecentToolObservationSupport(
     val lines = mutableListOf<String>()
     when (detailMode) {
       RecentToolObservationDetailMode.FULL -> {
-        lines += "Recent successful workspace and delegation observations from the current task are available below."
-        lines += "Reuse them before repeating identical workspace discovery, skills lookup, or delegated investigation calls."
-        lines += "If you still need more detail, narrow the next discovery call with offset, limit, path, pattern, glob, query, or source."
+        lines += "Recent replay-independent task observations are available below."
+        lines += "Reuse them before repeating the same delegated investigation, scheduling inspection, or skills lookup."
+        lines += "Workspace discovery tools such as Read or LS stay in conversation replay; use this layer only for control-plane context that replay does not keep front-loaded."
       }
 
       RecentToolObservationDetailMode.COMPACT -> {
-        lines += "Recent workspace and delegation observations from the current task are available below."
-        lines += "Reuse them before repeating the same discovery or delegation call."
+        lines += "Recent replay-independent task observations are available below."
+        lines += "Reuse them before repeating the same delegation, scheduling, or skills-discovery call."
       }
 
       RecentToolObservationDetailMode.MINIMAL -> {
-        lines += "Latest workspace or delegation observations from the current task:"
+        lines += "Latest replay-independent task observations:"
       }
     }
     selectedItems.forEach { item ->
@@ -1325,7 +1595,7 @@ class RecentToolObservationSupport(
     }
     if (detailMode == RecentToolObservationDetailMode.FULL && effectiveOmittedCount > 0) {
       lines += ""
-      lines += "Omitted $effectiveOmittedCount older unique workspace observation(s) from this working set."
+      lines += "Omitted $effectiveOmittedCount older unique task observation(s) from this working set."
     }
     return RecentToolObservationLayer(
       text = boundRenderedText(lines.joinToString(separator = "\n").trim()),
@@ -1399,6 +1669,11 @@ class RecentToolObservationSupport(
     "extractworkspacepackage" -> "extract_workspace_package"
     "viewworkspacedocument" -> "view_workspace_document"
     "task" -> "Task"
+    "scheduledtaskcreate", "scheduled_task_create" -> "ScheduledTaskCreate"
+    "scheduledtasklist", "scheduled_task_list" -> "ScheduledTaskList"
+    "scheduledtaskget", "scheduled_task_get" -> "ScheduledTaskGet"
+    "scheduledtaskupdate", "scheduled_task_update" -> "ScheduledTaskUpdate"
+    "scheduledtaskdelete", "scheduled_task_delete" -> "ScheduledTaskDelete"
     "skillsfind", "skills_find" -> "SkillsFind"
     "skillslist", "skills_list" -> "SkillsList"
     "skillsinspect", "skills_inspect" -> "SkillsInspect"
@@ -1420,6 +1695,8 @@ class RecentToolObservationSupport(
     "search_workspace_document",
     "inspect_workspace_package",
     "Task",
+    "ScheduledTaskList",
+    "ScheduledTaskGet",
     "SkillsFind",
     "SkillsList",
     "SkillsInspect",
@@ -1457,16 +1734,35 @@ class RecentToolObservationSupport(
     "ProcessWait",
     "ProcessTerminate",
     "TodoWrite",
+    "ScheduledTaskCreate",
+    "ScheduledTaskUpdate",
+    "ScheduledTaskDelete",
     -> ObservationCategory.BARRIER
 
     else -> null
   }
+
+  // Keep replay-clean discovery tools in conversation history, closer to Codex's ResponseItem model.
+  // Codex-style assembly keeps ordinary tool traces in replay/history instead of duplicating them into
+  // a separate front-loaded observation block. The front observation layer stays empty until a future
+  // category is explicitly promoted as replay-independent runtime state.
+  private fun frontContextObservationCategoryForToolName(toolName: String): ObservationCategory? = null
 
   private fun JsonObject.stringValue(key: String): String? =
     (this[key] as? JsonPrimitive)?.content
 
   private fun JsonObject.stringValueFrom(vararg keys: String): String? =
     keys.firstNotNullOfOrNull { key -> stringValue(key) }
+
+  private fun JsonObject.objectValue(key: String): JsonObject? =
+    this[key] as? JsonObject
+
+  private fun JsonObject.scheduledTaskTriggerKind(): String? = when {
+    stringValue("at") != null -> "at"
+    stringValue("after") != null -> "after"
+    stringValueFrom("start_at", "startAt") != null || stringValue("rrule") != null -> "rrule"
+    else -> null
+  }
 
   private fun JsonObject.intValue(key: String): Int? =
     stringValue(key)?.toIntOrNull()

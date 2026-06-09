@@ -9,6 +9,7 @@ import '../core/models/opencray_shell_snapshot.dart';
 import '../core/design/opencray_widgets.dart';
 import '../features/chat/chat_feature.dart';
 import '../features/files/files.dart';
+import '../features/settings/settings.dart';
 import 'opencray_tabs.dart';
 
 typedef OpenCrayTabBuilder =
@@ -25,6 +26,7 @@ class OpenCrayAppShell extends StatefulWidget {
     required this.initialSnapshot,
     required this.buildersForSnapshot,
     required this.initialTab,
+    this.initialSettingsPage = SettingsPage.home,
     required this.chatController,
     required this.filesController,
   });
@@ -33,6 +35,7 @@ class OpenCrayAppShell extends StatefulWidget {
   final OpenCrayShellSnapshot initialSnapshot;
   final OpenCrayTabBuilderFactory buildersForSnapshot;
   final OpenCrayTab initialTab;
+  final SettingsPage initialSettingsPage;
   final ChatFeatureController chatController;
   final FilesFeatureController filesController;
 
@@ -51,6 +54,7 @@ class _OpenCrayAppShellState extends State<OpenCrayAppShell> {
   @override
   void initState() {
     super.initState();
+    _syncInitialShellTarget();
     _subscription = widget.bridge.watchShellSnapshot().listen((snapshot) {
       if (!mounted) {
         return;
@@ -122,9 +126,37 @@ class _OpenCrayAppShellState extends State<OpenCrayAppShell> {
               _selectedTab = tab;
               _lastBackPressedAt = null;
             });
+            _persistShellTarget(tab: tab);
           },
         ),
       ),
+    );
+  }
+
+  void _syncInitialShellTarget() {
+    if (widget.initialTab == OpenCrayTab.settings) {
+      _persistShellTarget(
+        tab: widget.initialTab,
+        settingsPage: widget.initialSettingsPage,
+      );
+      return;
+    }
+    _persistShellTarget(tab: widget.initialTab);
+  }
+
+  void _persistShellTarget({
+    required OpenCrayTab tab,
+    SettingsPage? settingsPage,
+  }) {
+    unawaited(
+      widget.bridge
+          .saveShellDestination(
+            selectedTab: tab.routeSegment,
+            settingsSubpage: tab == OpenCrayTab.settings
+                ? (settingsPage ?? SettingsPage.home).routeId
+                : null,
+          )
+          .catchError((Object _) {}),
     );
   }
 }

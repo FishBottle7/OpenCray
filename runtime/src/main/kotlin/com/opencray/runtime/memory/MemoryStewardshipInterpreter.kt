@@ -1,5 +1,7 @@
 package com.opencray.runtime.memory
 
+import kotlinx.serialization.Serializable
+
 data class MemoryStewardshipRequest(
   val sessionId: String,
   val workspaceId: String? = null,
@@ -19,6 +21,7 @@ data class StewardableMemoryRecord(
   val id: String,
   val kind: MemoryKind,
   val scope: MemoryScope,
+  val status: MemoryStatus = MemoryStatus.ACTIVE,
   val content: String,
   val source: MemoryEvidenceSource? = null,
   val sourceSessionId: String? = null,
@@ -47,11 +50,14 @@ data class StewardableMemoryCandidate(
   }
 }
 
+@Serializable
 enum class MemoryStewardshipAction(val wireValue: String) {
   REFRESH_RECORD_WITH_CANDIDATE("refresh_record_with_candidate"),
   MERGE_RECORD_WITH_CANDIDATE("merge_record_with_candidate"),
   REAFFIRM_RECORD("reaffirm_record"),
   RESOLVE_RECORD("resolve_record"),
+  REOPEN_RECORD("reopen_record"),
+  REOPEN_RECORD_WITH_CANDIDATE("reopen_record_with_candidate"),
   SUPERSEDE_RECORD_WITH_CANDIDATE("supersede_record_with_candidate"),
   DROP_CANDIDATE("drop_candidate");
 
@@ -63,6 +69,7 @@ enum class MemoryStewardshipAction(val wireValue: String) {
   }
 }
 
+@Serializable
 enum class MemoryStewardshipResolutionReason(val wireValue: String) {
   INVALIDATED("invalidated"),
   OBSOLETE("obsolete"),
@@ -75,6 +82,59 @@ enum class MemoryStewardshipResolutionReason(val wireValue: String) {
       }
   }
 }
+
+@Serializable
+enum class MemoryStewardshipPlanStepOutcome(val wireValue: String) {
+  APPLIED("applied"),
+  REJECTED("rejected"),
+  IGNORED("ignored");
+
+  companion object {
+    fun fromWireValue(raw: String?): MemoryStewardshipPlanStepOutcome? =
+      entries.firstOrNull { outcome ->
+        outcome.wireValue.equals(raw?.trim(), ignoreCase = true)
+      }
+  }
+}
+
+@Serializable
+data class MemoryStewardshipPlanStep(
+  val action: MemoryStewardshipAction,
+  val outcome: MemoryStewardshipPlanStepOutcome,
+  val recordId: String? = null,
+  val candidateIndex: Int? = null,
+  val producedRecordId: String? = null,
+  val reason: String? = null,
+)
+
+@Serializable
+data class MemoryStewardshipPlanGraph(
+  val nodes: List<MemoryStewardshipPlanGraphNode> = emptyList(),
+  val edges: List<MemoryStewardshipPlanGraphEdge> = emptyList(),
+) {
+  val isEmpty: Boolean
+    get() = nodes.isEmpty() && edges.isEmpty()
+}
+
+@Serializable
+data class MemoryStewardshipPlanGraphNode(
+  val id: String,
+  val kind: String,
+  val label: String,
+  val action: String? = null,
+  val outcome: String? = null,
+  val recordId: String? = null,
+  val candidateIndex: Int? = null,
+  val producedRecordId: String? = null,
+  val reason: String? = null,
+)
+
+@Serializable
+data class MemoryStewardshipPlanGraphEdge(
+  val from: String,
+  val to: String,
+  val kind: String,
+)
 
 data class MemoryStewardshipDecision(
   val action: MemoryStewardshipAction,

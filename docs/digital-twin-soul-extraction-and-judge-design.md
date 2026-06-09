@@ -1,6 +1,6 @@
 # Digital Twin Soul Extraction And Judge Design
 
-Last updated: 2026-03-18
+Last updated: 2026-04-21
 
 ## Status
 
@@ -87,6 +87,37 @@ It is the compact representation of a person's stable conversational behavior:
 
 This is the layer that determines whether a response merely copies vocabulary or actually feels like the same person is speaking.
 
+## What Online Character Skills And Character Cards Get Right
+
+The better online character systems usually keep five things separate:
+
+- stable character persona
+- the user's role or persona
+- the current scenario
+- example dialogue
+- triggered lore or memory
+
+That split is useful and should be absorbed into the import design, but not as a giant runtime prompt.
+
+Recommended OpenCray mapping:
+
+| Community field | OpenCray artifact | Notes |
+| --- | --- | --- |
+| Character persona | `BaseSoulDraft` persona shell + policy fields | Stable identity and behavior tendencies |
+| User persona | `current_user_role_binding` and selected counterpart binding | Who the twin thinks the user is in this simulation |
+| Scenario | scene labels + situation policy draft | Temporary context, not evergreen identity |
+| Example dialogue | exemplar bank + quote bank for calibration and judging | Bounded reference material only |
+| Lorebook / triggered memory | memory retrieval + Graphiti relationship neighborhood | Facts and tie context should stay retrievable, not hardcoded |
+
+What should not be absorbed:
+
+- one long prose card as the main source of truth
+- stuffing all facts, style, and scenario into one prompt block
+- overfitting to first-message theatrics
+- mistaking a catchphrase for the person's whole voice
+
+The main lesson from those systems is structural, not literal: stable selfhood, user-role mapping, situation, and examples should be separate artifacts.
+
 ## Design Principle
 
 Do not try to derive `soul` in one jump from raw corpus to a persona paragraph.
@@ -161,6 +192,70 @@ The highest-value targets are:
 - `conditional contradictions`: when they act differently and why
 
 In practice, users often experience "this really feels like them" when these deeper policies are right, even if the wording is not copied exactly.
+
+## Human Fidelity Stack
+
+If the target is "this feels like that exact person," four stacks have to be recovered together.
+
+### 1. Persona Shell
+
+This is the closest thing to what users often mean by `人设`.
+
+It includes:
+
+- public self-presentation
+- private disclosure mode
+- aspirational self-image
+- identity taboos
+- competence face
+- tenderness face
+
+This layer should separate:
+
+- what the person explicitly says they are
+- what they repeatedly perform in front of others
+- what only appears under trust or stress
+
+### 2. Worldview Stack
+
+This is the closest thing to `三观`, but it should not be reduced to one scalar.
+
+Recommended subframes:
+
+- Schwartz basic values for broad motivational priorities
+- Moral Foundations sensitivities for what kinds of moral violations trigger them most
+- Social Value Orientation for self / other / fairness tradeoffs
+
+This stack is what keeps a twin from sounding right while making the wrong moral move.
+
+### 3. Idiolect Stack
+
+This is the person's own micro-style of language, below obvious vocabulary.
+
+Recommended dimensions:
+
+- discourse markers
+- function-word habits
+- turn openers and closers
+- hedge markers
+- repair phrases
+- refusal softenings
+- punctuation rhythm
+- emoji clusters
+- code-switch triggers
+
+Catchphrases belong here, but only as one thin visible layer on top of a deeper idiolect.
+
+### 4. Relational Script Stack
+
+This captures repeated move sequences:
+
+- what they do first
+- what they do second
+- how they close
+- how they recover after rupture
+
+Without this layer, the twin may know the right values and phrases but still move through a conversation unlike the real person.
 
 ## On "SVO"
 
@@ -364,6 +459,7 @@ Purpose:
 Recommended split:
 
 - broader personal values
+- moral trigger sensitivities
 - social value orientation in interpersonal tradeoffs
 
 Useful value families:
@@ -376,6 +472,12 @@ Useful value families:
 - achievement / ambition
 - power / control
 - stimulation / novelty
+
+Recommended theory supports:
+
+- `Schwartz values` for broad motivational ordering
+- `Moral Foundations` for care, fairness, loyalty, authority, purity, and liberty sensitivities when morally evaluating situations
+- `Social Value Orientation` for repeated self / other / fairness tradeoffs under scarce resources, effort, risk, or relational cost
 
 This layer should answer not just what values appear, but how they are ordered when they conflict.
 
@@ -404,6 +506,8 @@ Purpose:
 Useful dimensions:
 
 - phrase choice
+- discourse markers
+- function-word tendencies
 - paraphrase preference
 - punctuation rhythm
 - sentence length
@@ -412,6 +516,29 @@ Useful dimensions:
 - signature turns of phrase
 
 This layer matters, but it should be downstream of the deeper layers above.
+
+### Layer I2: Idiolect / Phrase Ecology Layer
+
+Purpose:
+
+- recover the person's own local speech mechanics instead of only high-level style adjectives
+
+Useful dimensions:
+
+- turn openers
+- turn closers
+- hedge markers
+- certainty markers
+- refusal markers
+- repair markers
+- affection markers
+- filler clusters
+- repetition signatures
+- phrase families and paraphrase neighborhoods
+
+Why it matters:
+
+People often recognize someone from tiny recurring moves like "actually", "说实话", "我不是那个意思", or a particular comma-and-ellipsis rhythm. If the system only imitates one phrase and misses the surrounding ecology, it feels like an actor doing an impression instead of the real person.
 
 ### Layer J: Relational Script Layer
 
@@ -538,6 +665,11 @@ Recommended signal families:
 - `agency_communion_hint`
 - `attachment_hint`
 - `social_value_orientation_hint`
+- `moral_foundation_hint`
+- `persona_shell_hint`
+- `idiolect_marker`
+- `catchphrase_candidate`
+- `exemplar_dialogue_candidate`
 - `quote_candidate`
 - `anti_pattern_hint`
 
@@ -788,13 +920,119 @@ Recommended entries:
 
 In practice, anti-pattern filtering often protects identity more effectively than adding more positive style tokens.
 
+### 13. Idiolect And Catchphrase Ecology
+
+Recommended fields:
+
+- `turn_openers`
+- `turn_closers`
+- `hedge_markers`
+- `certainty_markers`
+- `repair_markers`
+- `refusal_markers`
+- `affection_markers`
+- `function_word_tendencies`
+- `punctuation_rhythm`
+- `emoji_clusters`
+- `code_switch_triggers`
+
+Recommended catchphrase entry:
+
+```json
+{
+  "phrase": "说实话",
+  "kind": "turn_opener",
+  "scene_scope": ["explanation", "boundary"],
+  "relationship_scope": "broad",
+  "frequency_band": "medium",
+  "saturation_cap_per_20_turns": 2,
+  "paraphrase_family": [
+    "坦白讲",
+    "讲真的"
+  ],
+  "confidence": 0.78
+}
+```
+
+Rules:
+
+- promote only when the marker recurs across time and scenes
+- store trigger and relationship scope, not just the phrase string
+- apply a saturation cap so the runtime cannot spam the phrase
+- preserve paraphrase families when the person varies the same move instead of repeating one exact line
+
+This is the practical way to represent `口头禅` without turning the twin into self-parody.
+
+### 14. Exemplar Dialogue Seed Bank
+
+Community character systems often rely heavily on example dialogue. The useful idea should be kept, but bounded.
+
+Recommended uses:
+
+- import review preview
+- judge calibration reference
+- cold-start fallback when relationship context is sparse
+
+Recommended non-uses:
+
+- permanent transcript stuffing
+- source of truth for facts
+- direct quote replay unless the scene strongly warrants it
+
+Recommended entry shape:
+
+```json
+{
+  "seed_id": "comfort_close_01",
+  "scene_scope": ["comfort"],
+  "relationship_scope": "close_tie",
+  "opening_move": "acknowledge_feeling",
+  "closure_move": "practical_reassurance",
+  "surface_notes": ["short_sentences", "low_emoji", "soft_directness"],
+  "evidence_refs": ["turn_1021", "turn_1022", "turn_1023"],
+  "usage_mode": "judge_calibration_only"
+}
+```
+
+This keeps the strongest part of online character-card practice while preserving the OpenCray rule that memory and soul are not replaced by one giant few-shot prompt.
+
 ## Recommended Soul Draft Shape
 
 A practical `BaseSoulDraft` can be structured like this:
 
 ```json
 {
+  "persona_shell": {
+    "public_self_presentation": [
+      "competent",
+      "dry_humored"
+    ],
+    "private_disclosure_mode": "guarded_until_safe",
+    "aspirational_self": [
+      "reliable",
+      "not_dramatic"
+    ],
+    "identity_taboos": [
+      "fragile",
+      "performative_sweetness"
+    ]
+  },
   "identity_view": "how this person tends to frame selfhood",
+  "worldview_profile": {
+    "schwartz_value_order": [
+      "benevolence",
+      "self_direction",
+      "security"
+    ],
+    "moral_foundation_sensitivities": {
+      "care": "high",
+      "fairness": "high",
+      "loyalty": "medium",
+      "authority": "low_medium",
+      "purity": "low"
+    },
+    "social_value_orientation": "prosocial_but_bounded"
+  },
   "language_modes": {
     "zh-CN": {
       "surface_confidence": 0.91,
@@ -814,6 +1052,13 @@ A practical `BaseSoulDraft` can be structured like this:
       "不是...我是...",
       "说实话"
     ]
+  },
+  "idiolect": {
+    "turn_openers": ["说实话", "其实"],
+    "hedge_markers": ["有点", "可能"],
+    "repair_markers": ["我不是那个意思"],
+    "punctuation_rhythm": "light_commas_low_exclamation",
+    "function_word_tendencies": "contrastive_reframing"
   },
   "judgment_policy": {
     "fact_vs_feeling": "feeling_first_then_reason",
@@ -865,6 +1110,24 @@ A practical `BaseSoulDraft` can be structured like this:
     "autonomy"
   ],
   "social_value_orientation": "prosocial_but_bounded",
+  "catchphrase_bank": [
+    {
+      "phrase": "说实话",
+      "kind": "turn_opener",
+      "scene_scope": ["explanation", "boundary"],
+      "frequency_band": "medium",
+      "saturation_cap_per_20_turns": 2
+    }
+  ],
+  "example_dialogue_seeds": [
+    {
+      "seed_id": "repair_practical_01",
+      "scene_scope": ["repair"],
+      "relationship_scope": "close_tie",
+      "opening_move": "resume_contact",
+      "closure_move": "light_reassurance"
+    }
+  ],
   "anti_patterns": [
     "generic_therapy_tone",
     "salesy_encouragement",
@@ -949,12 +1212,16 @@ Recommended primary scored dimensions:
 - `relationship_fit`
 - `scene_fit`
 - `memory_consistency`
+- `persona_shell_fit`
+- `worldview_fit`
 - `value_order_fit`
 - `interpersonal_stance_fit`
+- `idiolect_fit`
 - `speech_act_fit`
 - `regulation_fit`
 - `script_continuity_fit`
 - `anti_pattern_risk`
+- `catchphrase_saturation_risk`
 - `quote_regurgitation_risk`
 - `fiction_contamination_risk`
 
@@ -990,12 +1257,16 @@ Recommended boolean gates:
   "relationship_fit": 0.91,
   "scene_fit": 0.82,
   "memory_consistency": 0.93,
+  "persona_shell_fit": 0.83,
+  "worldview_fit": 0.87,
   "value_order_fit": 0.86,
   "interpersonal_stance_fit": 0.80,
+  "idiolect_fit": 0.76,
   "speech_act_fit": 0.89,
   "regulation_fit": 0.84,
   "script_continuity_fit": 0.78,
   "anti_pattern_risk": 0.08,
+  "catchphrase_saturation_risk": 0.05,
   "passes_identity_gate": true,
   "passes_relationship_gate": true,
   "passes_consistency_gate": true,
@@ -1118,6 +1389,193 @@ Hard reject when:
 - relationship fit clearly fails
 - speech act fit clearly fails for the scene
 
+## Feedback-Driven Soul Calibration
+
+Even a strong extractor and judge will miss some human-specific details until real users see actual candidate replies.
+
+The recommended near-term answer is not immediate training. It is a structured preference-feedback loop.
+
+### Core Rule
+
+User feedback may calibrate how the system applies the imported soul.
+
+User feedback may not silently rewrite the base soul as if one click revealed the truth of the person.
+
+Near-term feedback should primarily update:
+
+- judge weights
+- anti-pattern thresholds
+- catchphrase saturation caps
+- exemplar dialogue seed ranking
+- relationship overlay confidence
+- script ranking priors
+- interaction-preference offsets
+
+Anything that looks like a durable identity edit should become a review patch rather than an automatic mutation.
+
+### Why This Matters
+
+This solves a common problem in digital-twin systems:
+
+- extraction says the person is "warm"
+- generation produces a reply that is technically warm
+- but the user immediately feels "no, not like this"
+
+That last signal is valuable. The system should preserve it as structured supervision instead of wasting it.
+
+### Preference Calibration Loop
+
+Recommended loop:
+
+```text
+effective soul context
+  -> generate 2 to 4 constrained candidates
+  -> judge initial ranking
+  -> ask user which one is most like the target person
+  -> store structured preference event
+  -> aggregate repeated preference events
+  -> propose calibration patches
+  -> creator review
+  -> publish approved judge / overlay / exemplar updates
+```
+
+This keeps the loop inspectable and reversible.
+
+### What To Vary Between Candidates
+
+Candidates should not differ randomly. They should vary on a small controlled set of interpretable axes.
+
+Recommended axes:
+
+- warmth
+- directness
+- emotional explicitness
+- explanation density
+- pacing and brevity
+- opening move
+- closure softness
+- boundary firmness
+- repair softness
+- catchphrase frequency
+- emoji density
+- intimacy calibration
+
+Recommended rule:
+
+- vary 1 to 3 axes per batch
+- keep memory and relationship context fixed
+- keep topic content fixed
+- keep candidate count small enough for humans to compare reliably
+
+Otherwise the feedback event becomes too entangled to teach anything specific.
+
+### Preference Event Contract
+
+Recommended per-event fields:
+
+- `event_id`
+- `twin_id`
+- `selected_relationship_binding_id`
+- `scene_labels`
+- `prompt_ref`
+- `candidate_ids`
+- `chosen_candidate_id`
+- `variation_axes`
+- `feedback_tags`
+- `freeform_note`
+- `created_at`
+
+Recommended feedback tags:
+
+- `more_like_target`
+- `less_like_target`
+- `too_generic`
+- `too_intimate`
+- `too_distant`
+- `too_soft`
+- `too_hard`
+- `better_idiolect`
+- `better_value_fit`
+- `better_script_fit`
+
+These tags let the system learn more than one scalar win/loss signal.
+
+### Calibration Patch Types
+
+Repeated feedback events should aggregate into reviewable patches such as:
+
+- `judge_weight_patch`
+- `anti_pattern_patch`
+- `catchphrase_cap_patch`
+- `exemplar_seed_patch`
+- `overlay_confidence_patch`
+- `script_priority_patch`
+- `interaction_preference_patch`
+- `language_mode_patch`
+
+Recommended patch requirements:
+
+- each patch cites supporting feedback events
+- each patch targets one narrow issue
+- each patch remains reviewable and reversible
+- patches should prefer calibration artifacts before proposing base-soul edits
+
+### Feedback-Aware Judge Behavior
+
+The judge should eventually consume aggregated preference feedback as one more input channel.
+
+Recommended additional inputs:
+
+- `feedback_profile`
+- `preference_patch_refs`
+- `recent_preference_summary`
+
+Recommended additional diagnostics:
+
+- `preference_alignment_fit`
+- `historical_disagreement_risk`
+- `feedback_coverage`
+
+This lets the judge say not only "this fits the extracted soul," but also "this matches what users repeatedly recognized as more in-character."
+
+### Feedback Quality Rules
+
+Not all user feedback should carry equal authority.
+
+Increase authority when:
+
+- the rater knows the real person well
+- the same preference recurs across scenes
+- the preference holds across multiple dates
+- the same signal appears in both import evidence and feedback
+
+Reduce authority when:
+
+- feedback comes from one isolated comparison
+- the user is clearly selecting wish-fulfillment rather than fidelity
+- the preference conflicts with strong imported anti-pattern evidence
+- the preference only appears in one high-emotion scene
+
+This is important because "I like this answer more" is not always the same as "this is more like them."
+
+### Near-Term Product Boundary
+
+Near-term implementation should stop at:
+
+- storing preference events
+- aggregating them into calibration summaries
+- proposing reviewable patches
+- applying approved calibration patches to judge and draft artifacts
+
+Near-term implementation should not depend on:
+
+- on-device fine-tuning
+- automatic LoRA training
+- silent online learning during chat
+- immediate base-soul mutation without review
+
+This keeps the system safe enough to ship while still learning from user recognition.
+
 ## How To Make The Extraction Logic More Complete
 
 If the goal is to recover a person as fully as possible, the service should not stop at style labels like `warm` or `direct`.
@@ -1142,6 +1600,11 @@ Recommended completeness checklist:
 - relationship overlays split from base soul
 - fatigue or stress mode modeled separately
 - repeated relational scripts captured, not just one-turn style tags
+- persona shell split into public, private, and aspirational self where evidence supports it
+- worldview modeled with Schwartz values, Moral Foundations, and SVO rather than one fuzzy "values" blob
+- idiolect modeled below phrase level, not only at vocabulary level
+- catchphrase saturation control present so signature phrases cannot dominate
+- exemplar dialogue seeds kept bounded and relation-scoped instead of becoming transcript stuffing
 - anti-pattern bank always maintained
 - quote bank used only for calibration, not as a training crutch
 - fiction-only features kept as hypotheses unless corroborated
@@ -1161,6 +1624,7 @@ Reasons:
 - current deployment is API-first
 - the highest-risk problems are still structural, not stylistic
 - LoRA cannot replace memory retrieval, relationship reasoning, or judge-based quality control
+- the new preference-feedback loop gives a cheaper and safer fidelity gain before any model adaptation work
 
 ### Roadmap Position
 
@@ -1213,6 +1677,13 @@ memory + relationship retrieval
   -> judge reranks candidates
 ```
 
+If future model adaptation is explored, the preference-feedback event store should become one of its supervised data sources only after:
+
+1. feedback quality filtering
+2. patch-level evaluation
+3. held-out preference agreement testing
+4. proof that structured calibration alone has plateaued
+
 ## Evaluation Plan
 
 A usable evaluation stack should include:
@@ -1228,6 +1699,8 @@ A usable evaluation stack should include:
 - `anti-pattern violation rate`
 - `quote-regurgitation rate`
 - `fiction contamination rate`
+- `preference agreement rate`
+- `feedback-patch win rate`
 
 Recommended eval setup:
 
@@ -1237,6 +1710,7 @@ Recommended eval setup:
 - add 2 to 5 turn sequence tests for rupture, repair, and boundary maintenance
 - score multilingual surface fidelity separately when applicable
 - compare baseline prompting against structured extraction plus judge
+- compare judge-only ranking against judge-plus-feedback-calibration ranking
 - only later compare structured-only against structured-plus-LoRA if LoRA becomes relevant
 
 ## Recommended Rollout
@@ -1291,6 +1765,9 @@ Known remaining gaps for a later pass:
 - explicit reply-link resolution when `reply_to_turn_id` is missing but timestamps allow safe inference
 - stronger recurrence promotion across multiple windows separated by time, not just adjacent evidence
 - deeper event role recovery for fiction scenes with more than two salient actors
+- explicit worldview-profile aggregation that keeps Schwartz, Moral Foundations, and SVO separate before final synthesis
+- explicit idiolect-marker clustering with frequency bands and saturation caps
+- exemplar dialogue seed generation from held-out evidence rather than ad hoc snippets
 
 ## References
 
@@ -1298,6 +1775,8 @@ Known remaining gaps for a later pass:
   https://www.cambridge.org/core/journals/judgment-and-decision-making/article/measuring-social-value-orientation/78981D731BFB89AFCFC789D40FD8C11F
 - Basic values: Schwartz, “An Overview of the Schwartz Theory of Basic Values”
   https://scholarworks.gvsu.edu/orpc/vol2/iss1/11/
+- Moral Foundations Theory overview
+  https://moralfoundations.org/
 - Adult attachment: Fraley, “Attachment in Adulthood: Recent Developments, Emerging Debates, and Future Directions”
   https://www.annualreviews.org/content/journals/10.1146/annurev-psych-010418-102813
 - Emotion regulation: Gross, “Emotion regulation: Affective, cognitive, and social consequences”
@@ -1312,6 +1791,10 @@ Known remaining gaps for a later pass:
   https://www.scholars.northwestern.edu/en/publications/the-psychology-of-life-stories/
 - Phrase choice and style: Preoţiuc-Pietro, Carpenter, and Ungar, “Personality Driven Differences in Paraphrase Preference”
   https://aclanthology.org/W17-2903/
+- Linguistic style matching and function-word cues: Niederhoffer and Pennebaker, “Linguistic Style Matching in Social Interaction”
+  https://journals.sagepub.com/doi/10.1177/026192702237953
+- Idiolect overview
+  https://www.britannica.com/topic/idiolect
 - Conversational SRL: Fei et al., “Conversational Semantic Role Labeling with Predicate-Oriented Latent Graph”
   https://www.ijcai.org/proceedings/2022/571
 - SRL in dialogue rewriting: Xu et al., “Semantic Role Labeling Guided Multi-turn Dialogue ReWriter”
@@ -1326,6 +1809,10 @@ Known remaining gaps for a later pass:
   https://philpapers.org/rec/ELLATO-4
 - Appraisal in NLP: Troiano, Oberländer, and Klinger, “Dimensional Modeling of Emotions in Text with Appraisal Theories”
   https://ouci.dntb.gov.ua/en/works/lD3AeYL4/
+- Community character-card structure: Backyard AI, “Character Prompt”
+  https://backyard.ai/docs/creating-characters/character-prompt
+- Community user-role mapping: SillyTavern, “Personas”
+  https://docs.sillytavern.app/usage/core-concepts/personas/
 
 ## Summary
 

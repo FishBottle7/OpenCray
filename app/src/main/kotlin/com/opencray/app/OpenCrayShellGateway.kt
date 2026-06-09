@@ -4,4 +4,9 @@ internal interface OpenCrayShellGateway {
   fun loadShellSnapshot(): Map<String, Any?>
 
   fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit
+
+  fun saveShellDestination(
+    selectedTab: String,
+    settingsSubpage: String? = null,
+  )
 }

@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.Context
+import com.opencray.app.agent.AgentPathResolver
 import com.opencray.runtime.process.AgentProcessRegistry
 import com.opencray.runtime.process.AgentProcessRegistryConfig
 import com.opencray.runtime.process.FileBackedAgentProcessRegistry
@@ -51,5 +52,34 @@ internal class FileBackedAgentProcessRegistryFactory(
         ),
         restoreMode = restoreMode,
       )
+
+    fun fromAgent(
+      context: Context,
+      agentId: String,
+      controllerFactory: ManagedProcessControllerFactory = LocalManagedProcessControllerFactory(),
+      config: AgentProcessRegistryConfig = AgentProcessRegistryConfig(),
+      pathResolver: AgentPathResolver = AgentPathResolver.fromContext(context),
+    ): FileBackedAgentProcessRegistryFactory = fromAgent(
+      pathResolver = pathResolver,
+      agentId = agentId,
+      controllerFactory = controllerFactory,
+      config = config,
+    )
+
+    internal fun fromAgent(
+      pathResolver: AgentPathResolver,
+      agentId: String,
+      controllerFactory: ManagedProcessControllerFactory = LocalManagedProcessControllerFactory(),
+      config: AgentProcessRegistryConfig = AgentProcessRegistryConfig(),
+    ): FileBackedAgentProcessRegistryFactory = FileBackedAgentProcessRegistryFactory(
+      runtimeRootDirectory = rootDirectoryForAgent(pathResolver, agentId),
+      controllerFactory = controllerFactory,
+      config = config,
+    )
+
+    internal fun rootDirectoryForAgent(
+      pathResolver: AgentPathResolver,
+      agentId: String,
+    ): File = pathResolver.resolve(agentId).processRegistryRoot.toFile()
   }
 }

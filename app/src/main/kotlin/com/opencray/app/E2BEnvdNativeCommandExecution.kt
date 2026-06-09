@@ -38,6 +38,7 @@ import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -118,6 +119,7 @@ internal class E2BMinimalProtocolSandboxCommandExecutionBackend(
   private val pythonRuntime: PythonScriptRuntime,
   private val transport: E2BEnvdCommandTransport = UrlConnectionE2BEnvdCommandTransport(),
   private val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
+  private val activityTracker: E2BSandboxActivityTracker = SharedE2BSandboxActivityTracker,
 ) : SandboxCommandExecutionBackend {
   override val capabilities: SandboxCommandBackendCapabilities = SandboxCommandBackendCapabilities(
     backendKind = "provider_native",
@@ -197,6 +199,7 @@ internal class E2BMinimalProtocolSandboxCommandExecutionBackend(
         transport = transport,
         capabilities = capabilities,
         json = json,
+        activityTracker = activityTracker,
       )
     return object : ReconnectableManagedProcessControllerFactory {
       override fun start(request: ManagedProcessStartRequest): ManagedProcessController {
@@ -1017,6 +1020,7 @@ private class E2BMinimalProtocolManagedProcessControllerFactory(
   private val transport: E2BEnvdCommandTransport,
   private val capabilities: SandboxCommandBackendCapabilities,
   private val json: Json,
+  private val activityTracker: E2BSandboxActivityTracker,
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) : ReconnectableManagedProcessControllerFactory {
   override fun start(request: ManagedProcessStartRequest): ManagedProcessController {
@@ -1101,6 +1105,7 @@ private class E2BMinimalProtocolManagedProcessControllerFactory(
         putAll(capabilities.metadata())
         putAll(selectionMetadata)
       },
+      activityTracker = activityTracker,
       clock = clock,
     )
   }
@@ -1247,6 +1252,7 @@ private class E2BMinimalProtocolManagedProcessControllerFactory(
         putAll(capabilities.metadata())
         putAll(selectionMetadata)
       },
+      activityTracker = activityTracker,
       clock = clock,
       streamMode = NativeManagedCommandStreamMode.CONNECT,
       initialSnapshot = normalizedSnapshot,
@@ -1737,6 +1743,7 @@ private class E2BMinimalNativeManagedCommandController(
   private val nativeAttemptContext: NativeCommandAttemptContext,
   private val fallbackControllerProvider: ((Map<String, String>) -> ManagedProcessController)?,
   initialMetadata: Map<String, String>,
+  private val activityTracker: E2BSandboxActivityTracker,
   private val clock: () -> Long,
   private val streamMode: NativeManagedCommandStreamMode = NativeManagedCommandStreamMode.START,
   initialSnapshot: ManagedProcessSnapshot? = null,
@@ -1780,8 +1787,10 @@ private class E2BMinimalNativeManagedCommandController(
   private var terminationRequestAccepted: Boolean? =
     initialSnapshot?.metadata?.get("terminationRequestAccepted")?.toBooleanStrictOrNull()
   private var delegateController: ManagedProcessController? = null
+  private val activityReleased = AtomicBoolean(false)
 
   init {
+    activityTracker.register(requestId = request.processId, sandboxId = session.sandboxId)
     ensureObservationMetadataLocked()
     initialSnapshot?.stdout
       ?.takeIf(String::isNotEmpty)
@@ -2008,6 +2017,9 @@ private class E2BMinimalNativeManagedCommandController(
         }
       }
     } finally {
+      if (synchronized(lock) { status.isTerminal || delegateController != null }) {
+        releaseTrackedActivity()
+      }
       completion.countDown()
     }
   }
@@ -2466,6 +2478,9 @@ private class E2BMinimalNativeManagedCommandController(
       }
       updatedAtEpochMs = maxOf(updatedAtEpochMs, clock())
     }
+    if (synchronized(lock) { status.isTerminal }) {
+      releaseTrackedActivity()
+    }
   }
 
   private fun shouldDispatchTerminationLocked(): Boolean =
@@ -2490,6 +2505,7 @@ private class E2BMinimalNativeManagedCommandController(
       synchronized(lock) {
         delegateController = fallbackController
       }
+      releaseTrackedActivity()
       return
     }
     val failedAt = clock()
@@ -2503,6 +2519,12 @@ private class E2BMinimalNativeManagedCommandController(
       runtimeMetadata.putAll(nativeAttemptMetadata)
       runtimeMetadata["sandboxCommandBackendFallbackReasonCode"] = reasonCode
       runtimeMetadata["sandboxCommandBackendFallbackDetail"] = detail
+    }
+  }
+
+  private fun releaseTrackedActivity() {
+    if (activityReleased.compareAndSet(false, true)) {
+      activityTracker.complete(request.processId)
     }
   }
 

@@ -77,9 +77,12 @@ class LiteLlmTaskCommitmentIntentInterpreterTest {
     val success = result as TaskCommitmentIntentInterpretation.Success
     assertEquals(4, success.decisions.size)
     assertEquals("gpt-4o-mini", providerClient.lastRequest?.route?.model)
-    assertTrue(providerClient.lastRequest?.request?.prompt.orEmpty().contains("commitment-1"))
-    assertTrue(providerClient.lastRequest?.request?.prompt.orEmpty().contains("Android smoke tests"))
-    assertTrue(providerClient.lastRequest?.request?.prompt.orEmpty().contains("candidate 0"))
+    val gatewayRequest = providerClient.lastRequest?.request
+    val prompt = gatewayRequest?.prompt.orEmpty()
+    assertTrue(prompt.contains(gatewayRequest?.messages?.single()?.content?.trim().orEmpty()))
+    assertTrue(prompt.contains("commitment-1"))
+    assertTrue(prompt.contains("Android smoke tests"))
+    assertTrue(prompt.contains("candidate 0"))
     assertEquals(TaskCommitmentIntentAction.RESOLVE, success.decisions.first { it.commitmentId == "commitment-1" }.action)
     assertEquals(
       TaskCommitmentIntentDecision(
@@ -160,6 +163,40 @@ class LiteLlmTaskCommitmentIntentInterpreterTest {
 
     val unavailable = result as TaskCommitmentIntentInterpretation.Unavailable
     assertEquals(false, unavailable.allowHeuristicFallback)
+  }
+
+  @Test
+  fun interpretReturnsUnavailableWhenOnDeviceModeIsSelected() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(outputText = """{"decisions":[]}"""),
+    )
+    val interpreter = LiteLlmTaskCommitmentIntentInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          selectedOnDeviceModelId = "gemma-4-e2b-it",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    val result = interpreter.interpret(
+      TaskCommitmentIntentRequest(
+        sessionId = "session-4",
+        commitments = listOf(
+          OpenTaskCommitment(
+            id = "commitment-1",
+            content = "run the targeted runtime tests",
+          ),
+        ),
+      ),
+    )
+
+    val unavailable = result as TaskCommitmentIntentInterpretation.Unavailable
+    assertEquals(false, unavailable.allowHeuristicFallback)
+    assertTrue(unavailable.reason.orEmpty().contains("On-device LLM mode"))
+    assertTrue(providerClient.lastRequest == null)
   }
 
   private class RecordingProviderClient(

@@ -8,6 +8,7 @@ internal data class RuntimeServicePort(
   val chatMutationAccess: RuntimeChatMutationAccess,
   val chatSubmissionHostAccess: RuntimeChatSubmissionHostAccess,
   val replayAccess: OpenCrayRuntimeReplayAccess,
+  val onDeviceWarmupPlanner: (String) -> OnDeviceLlmWarmupSpec? = { null },
 )
 
 internal fun runtimeServicePort(
@@ -18,6 +19,7 @@ internal fun runtimeServicePort(
   chatMutationAccess: RuntimeChatMutationAccess,
   chatSubmissionHostAccess: RuntimeChatSubmissionHostAccess,
   runtimeReplayAccess: OpenCrayRuntimeReplayAccess,
+  onDeviceWarmupPlanner: (String) -> OnDeviceLlmWarmupSpec? = { null },
 ): RuntimeServicePort = RuntimeServicePort(
   lifecycleDescriptor = lifecycleDescriptor,
   ownerObservationAccess = ownerObservationAccess,
@@ -26,4 +28,5 @@ internal fun runtimeServicePort(
   chatMutationAccess = chatMutationAccess,
   chatSubmissionHostAccess = chatSubmissionHostAccess,
   replayAccess = runtimeReplayAccess,
+  onDeviceWarmupPlanner = onDeviceWarmupPlanner,
 )

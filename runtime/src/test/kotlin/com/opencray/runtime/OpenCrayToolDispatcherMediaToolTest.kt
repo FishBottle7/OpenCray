@@ -6,13 +6,20 @@ import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.RetryRequest
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
+import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.Base64
+import java.util.concurrent.CancellationException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -28,7 +35,10 @@ class OpenCrayToolDispatcherMediaToolTest {
     val dispatcher = dispatcher(
       workspaceRoot = workspaceRoot,
       imageGenerationClient = object : OpenCrayImageGenerationClient {
-        override fun generate(request: OpenCrayImageGenerationRequest): OpenCrayImageGenerationResponse {
+        override fun generate(
+          request: OpenCrayImageGenerationRequest,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayImageGenerationResponse {
           assertEquals("Draw a test banner", request.prompt)
           assertEquals(2, request.count)
           assertEquals("1024x1024", request.size)
@@ -86,7 +96,10 @@ class OpenCrayToolDispatcherMediaToolTest {
     val dispatcher = dispatcher(
       workspaceRoot = workspaceRoot,
       speechSynthesisClient = object : OpenCraySpeechSynthesisClient {
-        override fun synthesize(request: OpenCraySpeechSynthesisRequest): OpenCraySpeechSynthesisResponse {
+        override fun synthesize(
+          request: OpenCraySpeechSynthesisRequest,
+          cancellationRequested: () -> Boolean,
+        ): OpenCraySpeechSynthesisResponse {
           assertEquals("Summarize the rollout status.", request.text)
           assertEquals("m4a", request.format)
           return OpenCraySpeechSynthesisResponse(
@@ -134,10 +147,400 @@ class OpenCrayToolDispatcherMediaToolTest {
     assertTrue(Files.exists(workspaceRoot.resolve(descriptor.relativePath)))
   }
 
+  @Test
+  fun generateVideoReturnsPendingJobAndPollCompletesWithArtifact() {
+    val workspaceRoot = temporaryFolder.newFolder("media-video-workspace").toPath()
+    val dispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      mediaGenerationClient = object : MediaGenerationClient {
+        override fun generate(
+          request: OpenCrayImageGenerationRequest,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayImageGenerationResponse = error("Image generation not expected.")
+
+        override fun generateVideo(
+          request: OpenCrayVideoGenerationRequest,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayVideoGenerationResponse {
+          return OpenCrayVideoGenerationResponse(
+            pendingJob = OpenCrayMediaJobSnapshot(
+              receipt = OpenCrayMediaJobReceipt(
+                jobId = "provider-video-job-1",
+                toolName = "GenerateVideo",
+                status = OpenCrayMediaJobStatus.PENDING,
+                pollAfterMs = 250L,
+              ),
+              metadata = mapOf(
+                "providerPollUrl" to "https://media.example.com/jobs/provider-video-job-1",
+                "providerCancelUrl" to "https://media.example.com/jobs/provider-video-job-1/cancel",
+                "providerInternalSecret" to "top-secret",
+              ),
+            ),
+          )
+        }
+
+        override fun poll(
+          job: OpenCrayMediaJobSnapshot,
+          settings: OpenCrayMediaToolSettings,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayMediaJobPollResult {
+          assertEquals("provider-video-job-1", job.receipt.jobId)
+          return OpenCrayMediaJobPollResult(
+            snapshot = job.copy(
+              receipt = job.receipt.copy(status = OpenCrayMediaJobStatus.COMPLETED),
+            ),
+            videos = listOf(
+              OpenCrayBinaryAsset(
+                bytes = byteArrayOf(1, 2, 3, 4),
+                mimeType = "video/mp4",
+                fileName = "clip.mp4",
+              ),
+            ),
+          )
+        }
+      },
+    )
+
+    val startResult = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "GenerateVideo",
+        arguments = buildJsonObject {
+          put("prompt", "A calm aerial harbor shot")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, startResult.status)
+    assertEquals("true", startResult.metadata["jobPending"])
+    val jobId = startResult.metadata["jobId"]
+    assertNotNull(jobId)
+    val encodedPayload = String(
+      Base64.getUrlDecoder().decode(jobId!!.removePrefix("provider_media_job:")),
+      StandardCharsets.UTF_8,
+    )
+    assertTrue(encodedPayload.contains("providerPollUrl"))
+    assertTrue(!encodedPayload.contains("providerInternalSecret"))
+    assertTrue(!encodedPayload.contains("promptPreview"))
+    assertTrue(!encodedPayload.contains("outputDirectory"))
+    val recoveredDispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      mediaGenerationClient = object : MediaGenerationClient {
+        override fun generate(
+          request: OpenCrayImageGenerationRequest,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayImageGenerationResponse = error("Image generation not expected.")
+
+        override fun generateVideo(
+          request: OpenCrayVideoGenerationRequest,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayVideoGenerationResponse = error("Video generation not expected.")
+
+        override fun poll(
+          job: OpenCrayMediaJobSnapshot,
+          settings: OpenCrayMediaToolSettings,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayMediaJobPollResult {
+          assertEquals("provider-video-job-1", job.receipt.jobId)
+          return OpenCrayMediaJobPollResult(
+            snapshot = job.copy(
+              receipt = job.receipt.copy(status = OpenCrayMediaJobStatus.COMPLETED),
+            ),
+            videos = listOf(
+              OpenCrayBinaryAsset(
+                bytes = byteArrayOf(1, 2, 3, 4),
+                mimeType = "video/mp4",
+                fileName = "clip.mp4",
+              ),
+            ),
+          )
+        }
+      },
+    )
+    val pollResult = recoveredDispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "PollMediaJob",
+        arguments = buildJsonObject {
+          put("job_id", jobId)
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, pollResult.status)
+    assertEquals("completed", pollResult.metadata["jobStatus"])
+    val descriptors = Json.decodeFromString(
+      ListSerializer(OpenCrayAttachmentArtifact.serializer()),
+      pollResult.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACTS_JSON].orEmpty(),
+    )
+    val descriptor = descriptors.single()
+    assertEquals("video/mp4", descriptor.mimeType)
+    assertTrue(descriptor.relativePath.startsWith(".opencray/generated-media/videos/"))
+    assertTrue(Files.exists(workspaceRoot.resolve(descriptor.relativePath)))
+  }
+
+  @Test
+  fun cancelMediaJobStopsRunningVideoGenerationJob() {
+    val workspaceRoot = temporaryFolder.newFolder("media-video-cancel-workspace").toPath()
+    val dispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      mediaGenerationClient = object : MediaGenerationClient {
+        override fun generate(
+          request: OpenCrayImageGenerationRequest,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayImageGenerationResponse = error("Image generation not expected.")
+
+        override fun generateVideo(
+          request: OpenCrayVideoGenerationRequest,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayVideoGenerationResponse {
+          return OpenCrayVideoGenerationResponse(
+            pendingJob = OpenCrayMediaJobSnapshot(
+              receipt = OpenCrayMediaJobReceipt(
+                jobId = "provider-video-job-2",
+                toolName = "GenerateVideo",
+                status = OpenCrayMediaJobStatus.PENDING,
+              ),
+              metadata = mapOf(
+                "providerPollUrl" to "https://media.example.com/jobs/provider-video-job-2",
+                "providerCancelUrl" to "https://media.example.com/jobs/provider-video-job-2/cancel",
+              ),
+            ),
+          )
+        }
+
+        override fun cancel(
+          job: OpenCrayMediaJobSnapshot,
+          settings: OpenCrayMediaToolSettings,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayMediaJobSnapshot {
+          assertEquals("provider-video-job-2", job.receipt.jobId)
+          return job.copy(
+            receipt = job.receipt.copy(status = OpenCrayMediaJobStatus.CANCELLED),
+          )
+        }
+
+        override fun poll(
+          job: OpenCrayMediaJobSnapshot,
+          settings: OpenCrayMediaToolSettings,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayMediaJobPollResult {
+          return OpenCrayMediaJobPollResult(
+            snapshot = job.copy(
+              receipt = job.receipt.copy(status = OpenCrayMediaJobStatus.CANCELLED),
+            ),
+          )
+        }
+      },
+    )
+
+    val startResult = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "GenerateVideo",
+        arguments = buildJsonObject {
+          put("prompt", "A looping city timelapse")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+    val jobId = startResult.metadata["jobId"]!!
+
+    val recoveredDispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      mediaGenerationClient = object : MediaGenerationClient {
+        override fun generate(
+          request: OpenCrayImageGenerationRequest,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayImageGenerationResponse = error("Image generation not expected.")
+
+        override fun generateVideo(
+          request: OpenCrayVideoGenerationRequest,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayVideoGenerationResponse = error("Video generation not expected.")
+
+        override fun cancel(
+          job: OpenCrayMediaJobSnapshot,
+          settings: OpenCrayMediaToolSettings,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayMediaJobSnapshot = job.copy(
+          receipt = job.receipt.copy(status = OpenCrayMediaJobStatus.CANCELLED),
+        )
+
+        override fun poll(
+          job: OpenCrayMediaJobSnapshot,
+          settings: OpenCrayMediaToolSettings,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayMediaJobPollResult = OpenCrayMediaJobPollResult(
+          snapshot = job.copy(
+            receipt = job.receipt.copy(status = OpenCrayMediaJobStatus.CANCELLED),
+          ),
+        )
+      },
+    )
+
+    val cancelResult = recoveredDispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "CancelMediaJob",
+        arguments = buildJsonObject {
+          put("job_id", jobId)
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, cancelResult.status)
+    assertEquals("cancelled", cancelResult.metadata["jobStatus"])
+    val pollResult = recoveredDispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "PollMediaJob",
+        arguments = buildJsonObject {
+          put("job_id", jobId)
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, pollResult.status)
+    assertEquals("cancelled", pollResult.metadata["jobStatus"])
+  }
+
+  @Test
+  fun publishMediaArtifactCopiesRegisteredArtifactAcrossDispatchers() {
+    val workspaceRoot = temporaryFolder.newFolder("media-publish-workspace").toPath()
+    val generator = dispatcher(
+      workspaceRoot = workspaceRoot,
+      imageGenerationClient = object : OpenCrayImageGenerationClient {
+        override fun generate(
+          request: OpenCrayImageGenerationRequest,
+          cancellationRequested: () -> Boolean,
+        ): OpenCrayImageGenerationResponse = OpenCrayImageGenerationResponse(
+          images = listOf(
+            OpenCrayBinaryAsset(
+              bytes = byteArrayOf(10, 20, 30),
+              mimeType = "image/png",
+            ),
+          ),
+        )
+      },
+    )
+    val generated = generator.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "GenerateImage",
+        arguments = buildJsonObject {
+          put("prompt", "Draw a reusable icon")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+    val generatedDescriptor = Json.decodeFromString(
+      ListSerializer(OpenCrayAttachmentArtifact.serializer()),
+      generated.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACTS_JSON].orEmpty(),
+    ).single()
+    val publisher = dispatcher(workspaceRoot = workspaceRoot)
+
+    val published = publisher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "PublishMediaArtifact",
+        arguments = buildJsonObject {
+          put("artifact_id", generatedDescriptor.artifactId)
+          put("relative_path", "exports/icon.png")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, published.status)
+    assertEquals("write_file", published.metadata["capabilityKind"])
+    assertTrue(Files.exists(workspaceRoot.resolve(generatedDescriptor.relativePath)))
+    val destination = workspaceRoot.resolve("exports/icon.png")
+    assertTrue(Files.exists(destination))
+    assertEquals(listOf(10.toByte(), 20.toByte(), 30.toByte()), Files.readAllBytes(destination).toList())
+    val publishedDescriptor = Json.decodeFromString(
+      ListSerializer(OpenCrayAttachmentArtifact.serializer()),
+      published.metadata[OpenCrayAttachmentArtifactMetadataKeys.ARTIFACTS_JSON].orEmpty(),
+    ).single()
+    assertEquals("exports/icon.png", publishedDescriptor.relativePath)
+    assertEquals("image", publishedDescriptor.kindHint)
+  }
+
+  @Test
+  fun publishMediaArtifactFailsWhenDestinationAlreadyExists() {
+    val workspaceRoot = temporaryFolder.newFolder("media-publish-conflict-workspace").toPath()
+    Files.createDirectories(workspaceRoot.resolve(".opencray/generated-media/images"))
+    Files.write(workspaceRoot.resolve(".opencray/generated-media/images/source.png"), byteArrayOf(1, 2, 3))
+    Files.createDirectories(workspaceRoot.resolve("exports"))
+    Files.write(workspaceRoot.resolve("exports/icon.png"), byteArrayOf(9))
+    val artifact = OpenCrayAttachmentArtifact(
+      artifactId = "artifact-source-image",
+      relativePath = ".opencray/generated-media/images/source.png",
+      displayName = "source.png",
+      kindHint = "image",
+      mimeType = "image/png",
+    )
+    defaultOpenCrayMediaArtifactRegistry(workspaceRoot).register(
+      artifacts = listOf(artifact),
+      source = OpenCrayMediaArtifactSource(
+        runId = "run-source",
+        toolName = "GenerateImage",
+        source = "generated",
+      ),
+    )
+    val publisher = dispatcher(workspaceRoot = workspaceRoot)
+
+    val result = publisher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "PublishMediaArtifact",
+        arguments = buildJsonObject {
+          put("artifact_id", artifact.artifactId)
+          put("relative_path", "exports/icon.png")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.FAILED, result.status)
+    assertEquals("ILLEGAL_ARGUMENT", result.errorCode)
+    assertEquals(listOf(9.toByte()), Files.readAllBytes(workspaceRoot.resolve("exports/icon.png")).toList())
+  }
+
+  @Test
+  fun mediaArtifactRegistryRejectsPathsOutsideWorkspace() {
+    val workspaceRoot = temporaryFolder.newFolder("media-registry-boundary-workspace").toPath()
+    val registry = defaultOpenCrayMediaArtifactRegistry(workspaceRoot)
+
+    registry.register(
+      artifacts = listOf(
+        OpenCrayAttachmentArtifact(
+          artifactId = "artifact-escape",
+          relativePath = "../outside.png",
+          displayName = "outside.png",
+          kindHint = "image",
+          mimeType = "image/png",
+        ),
+      ),
+      source = OpenCrayMediaArtifactSource(
+        runId = "run-escape",
+        toolName = "GenerateImage",
+        source = "generated",
+      ),
+    )
+
+    assertNull(registry.resolve("artifact-escape"))
+  }
+
   private fun dispatcher(
     workspaceRoot: Path,
     imageGenerationClient: OpenCrayImageGenerationClient? = null,
     speechSynthesisClient: OpenCraySpeechSynthesisClient? = null,
+    mediaGenerationClient: MediaGenerationClient? = null,
   ): OpenCrayToolDispatcher = OpenCrayToolDispatcher(
     OpenCrayToolDispatcherConfig(
       workspaceRoots = setOf(workspaceRoot),
@@ -149,6 +552,12 @@ class OpenCrayToolDispatcherMediaToolTest {
             endpoint = "/v1/images",
             model = "test-image-model",
           ),
+          videoGeneration = OpenCrayVideoGenerationSettings(
+            provider = "Test Video",
+            baseUrl = "https://media.example.com",
+            endpoint = "/v1/videos",
+            model = "test-video-model",
+          ),
           speechSynthesis = OpenCraySpeechSynthesisSettings(
             provider = "Test Speech",
             baseUrl = "https://media.example.com",
@@ -157,8 +566,9 @@ class OpenCrayToolDispatcherMediaToolTest {
           ),
         )
       },
-      imageGenerationClient = imageGenerationClient,
+      imageGenerationClient = mediaGenerationClient ?: imageGenerationClient,
       speechSynthesisClient = speechSynthesisClient,
+      mediaArtifactRegistry = defaultOpenCrayMediaArtifactRegistry(workspaceRoot),
     ),
   )
 
@@ -180,4 +590,21 @@ class OpenCrayToolDispatcherMediaToolTest {
       error("Retry not expected in OpenCrayToolDispatcherMediaToolTest.")
     },
   )
+
+  private interface MediaGenerationClient :
+    OpenCrayImageGenerationClient,
+    OpenCrayVideoGenerationClient,
+    OpenCrayMediaJobClient {
+    override fun poll(
+      job: OpenCrayMediaJobSnapshot,
+      settings: OpenCrayMediaToolSettings,
+      cancellationRequested: () -> Boolean,
+    ): OpenCrayMediaJobPollResult = error("Poll not expected.")
+
+    override fun cancel(
+      job: OpenCrayMediaJobSnapshot,
+      settings: OpenCrayMediaToolSettings,
+      cancellationRequested: () -> Boolean,
+    ): OpenCrayMediaJobSnapshot = error("Cancel not expected.")
+  }
 }

@@ -3,6 +3,7 @@ class OpenCrayLlmConfigSnapshot {
     required this.localeTag,
     required this.enabled,
     this.streamingEnabled = true,
+    this.providerMode = 'cloud',
     required this.providerId,
     required this.selectedProviderOptionId,
     required this.protocol,
@@ -19,11 +20,26 @@ class OpenCrayLlmConfigSnapshot {
     this.openAiPromptCacheRetention = '',
     this.anthropicPromptCachingEnabled = false,
     this.anthropicPromptCacheTtl = '5m',
+    this.onDeviceModels = const <OpenCrayOnDeviceLlmModelOptionSnapshot>[],
+    this.selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    this.onDeviceMaxContextWindow = 32768,
+    this.onDeviceMaxTokens = 4096,
+    this.onDeviceTopK = 40,
+    this.onDeviceTopP = 0.95,
+    this.onDeviceTemperature = 0.70,
+    this.onDeviceAccelerator = 'gpu',
+    this.onDeviceThinkingEnabled = false,
+    this.onDeviceLiteModeEnabled = false,
+    this.contextBudgetPreset = 'balanced',
+    this.contextBudgetReservedOutputTokens,
+    this.contextBudgetSafetyMarginTokens,
+    this.contextBudgetEffectiveInputPercent,
   });
 
   final String localeTag;
   final bool enabled;
   final bool streamingEnabled;
+  final String providerMode;
   final String providerId;
   final String selectedProviderOptionId;
   final String protocol;
@@ -40,12 +56,70 @@ class OpenCrayLlmConfigSnapshot {
   final String openAiPromptCacheRetention;
   final bool anthropicPromptCachingEnabled;
   final String anthropicPromptCacheTtl;
+  final List<OpenCrayOnDeviceLlmModelOptionSnapshot> onDeviceModels;
+  final String selectedOnDeviceModelId;
+  final int onDeviceMaxContextWindow;
+  final int onDeviceMaxTokens;
+  final int onDeviceTopK;
+  final double onDeviceTopP;
+  final double onDeviceTemperature;
+  final String onDeviceAccelerator;
+  final bool onDeviceThinkingEnabled;
+  final bool onDeviceLiteModeEnabled;
+  final String contextBudgetPreset;
+  final int? contextBudgetReservedOutputTokens;
+  final int? contextBudgetSafetyMarginTokens;
+  final double? contextBudgetEffectiveInputPercent;
+
+  OpenCrayLlmConfigSnapshot copyWith({
+    List<OpenCrayOnDeviceLlmModelOptionSnapshot>? onDeviceModels,
+    String? selectedOnDeviceModelId,
+  }) {
+    return OpenCrayLlmConfigSnapshot(
+      localeTag: localeTag,
+      enabled: enabled,
+      streamingEnabled: streamingEnabled,
+      providerMode: providerMode,
+      providerId: providerId,
+      selectedProviderOptionId: selectedProviderOptionId,
+      protocol: protocol,
+      providerOptions: providerOptions,
+      providerName: providerName,
+      providerNotes: providerNotes,
+      baseUrl: baseUrl,
+      apiKey: apiKey,
+      model: model,
+      reasoningEffort: reasoningEffort,
+      systemPrompt: systemPrompt,
+      helperText: helperText,
+      openAiPromptCacheKeyStrategy: openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention: openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled: anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl: anthropicPromptCacheTtl,
+      onDeviceModels: onDeviceModels ?? this.onDeviceModels,
+      selectedOnDeviceModelId:
+          selectedOnDeviceModelId ?? this.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: onDeviceMaxContextWindow,
+      onDeviceMaxTokens: onDeviceMaxTokens,
+      onDeviceTopK: onDeviceTopK,
+      onDeviceTopP: onDeviceTopP,
+      onDeviceTemperature: onDeviceTemperature,
+      onDeviceAccelerator: onDeviceAccelerator,
+      onDeviceThinkingEnabled: onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
+      contextBudgetPreset: contextBudgetPreset,
+      contextBudgetReservedOutputTokens: contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens: contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent: contextBudgetEffectiveInputPercent,
+    );
+  }
 
   factory OpenCrayLlmConfigSnapshot.fromMap(Map<Object?, Object?> payload) {
     return OpenCrayLlmConfigSnapshot(
       localeTag: payload['localeTag'] as String? ?? 'en',
       enabled: payload['enabled'] as bool? ?? false,
       streamingEnabled: payload['streamingEnabled'] as bool? ?? true,
+      providerMode: payload['providerMode'] as String? ?? 'cloud',
       providerId: payload['providerId'] as String? ?? 'custom',
       selectedProviderOptionId:
           payload['selectedProviderOptionId'] as String? ??
@@ -71,6 +145,83 @@ class OpenCrayLlmConfigSnapshot {
           payload['anthropicPromptCachingEnabled'] as bool? ?? false,
       anthropicPromptCacheTtl:
           payload['anthropicPromptCacheTtl'] as String? ?? '5m',
+      onDeviceModels: _requireList(payload['onDeviceModels'])
+          .map(_requireMap)
+          .map(OpenCrayOnDeviceLlmModelOptionSnapshot.fromMap)
+          .toList(growable: false),
+      selectedOnDeviceModelId:
+          payload['selectedOnDeviceModelId'] as String? ?? 'gemma-4-e2b-it',
+      onDeviceMaxContextWindow:
+          (payload['onDeviceMaxContextWindow'] as num?)?.toInt() ?? 32768,
+      onDeviceMaxTokens:
+          (payload['onDeviceMaxTokens'] as num?)?.toInt() ?? 4096,
+      onDeviceTopK: (payload['onDeviceTopK'] as num?)?.toInt() ?? 40,
+      onDeviceTopP: (payload['onDeviceTopP'] as num?)?.toDouble() ?? 0.95,
+      onDeviceTemperature:
+          (payload['onDeviceTemperature'] as num?)?.toDouble() ?? 0.70,
+      onDeviceAccelerator: payload['onDeviceAccelerator'] as String? ?? 'gpu',
+      onDeviceThinkingEnabled:
+          payload['onDeviceThinkingEnabled'] as bool? ?? false,
+      onDeviceLiteModeEnabled:
+          payload['onDeviceLiteModeEnabled'] as bool? ?? false,
+      contextBudgetPreset:
+          payload['contextBudgetPreset'] as String? ?? 'balanced',
+      contextBudgetReservedOutputTokens:
+          (payload['contextBudgetReservedOutputTokens'] as num?)?.toInt(),
+      contextBudgetSafetyMarginTokens:
+          (payload['contextBudgetSafetyMarginTokens'] as num?)?.toInt(),
+      contextBudgetEffectiveInputPercent:
+          (payload['contextBudgetEffectiveInputPercent'] as num?)?.toDouble(),
+    );
+  }
+}
+
+class OpenCrayOnDeviceLlmModelOptionSnapshot {
+  const OpenCrayOnDeviceLlmModelOptionSnapshot({
+    required this.id,
+    required this.title,
+    required this.subtitle,
+    required this.sizeLabel,
+    required this.fileSizeBytes,
+    required this.installState,
+    this.downloadedBytes = 0,
+    this.downloadBytesPerSecond = 0,
+    this.sha256Verified = false,
+    this.isSelected = false,
+    this.lastError,
+  });
+
+  final String id;
+  final String title;
+  final String subtitle;
+  final String sizeLabel;
+  final int fileSizeBytes;
+  final String installState;
+  final int downloadedBytes;
+  final int downloadBytesPerSecond;
+  final bool sha256Verified;
+  final bool isSelected;
+  final String? lastError;
+
+  factory OpenCrayOnDeviceLlmModelOptionSnapshot.fromMap(
+    Map<Object?, Object?> payload,
+  ) {
+    return OpenCrayOnDeviceLlmModelOptionSnapshot(
+      id: payload['id'] as String? ?? '',
+      title: payload['title'] as String? ?? '',
+      subtitle: payload['subtitle'] as String? ?? '',
+      sizeLabel: payload['sizeLabel'] as String? ?? '',
+      fileSizeBytes: (payload['fileSizeBytes'] as num?)?.toInt() ?? 0,
+      installState:
+          payload['installState'] as String? ??
+          payload['downloadState'] as String? ??
+          'not_downloaded',
+      downloadedBytes: (payload['downloadedBytes'] as num?)?.toInt() ?? 0,
+      downloadBytesPerSecond:
+          (payload['downloadBytesPerSecond'] as num?)?.toInt() ?? 0,
+      sha256Verified: payload['sha256Verified'] as bool? ?? false,
+      isSelected: payload['isSelected'] as bool? ?? false,
+      lastError: payload['lastError'] as String?,
     );
   }
 }

@@ -2,7 +2,9 @@ package com.opencray.runtime.memory
 
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.context.ContextPruner
+import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import com.opencray.runtime.context.ReplayPressureEvaluator
+import com.opencray.runtime.context.ReplayPressureSnapshot
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.TranscriptWindowBuilder
@@ -20,6 +22,13 @@ enum class MemoryFlushOutcome {
 
 data class MemoryFlushTrace(
   val outcome: MemoryFlushOutcome? = null,
+  val triggerStage: String = "",
+  val maintenanceTask: String = "",
+  val executionMode: String = "",
+  val contextWindowTokens: Int = 0,
+  val autoCompactTokenLimit: Int = 0,
+  val estimatedReplayTokens: Int = 0,
+  val tokenThresholdTriggered: Boolean = false,
   val omittedMessageCount: Int = 0,
   val omittedCharCount: Int = 0,
   val signature: String? = null,
@@ -27,16 +36,25 @@ data class MemoryFlushTrace(
   val writtenRecordCount: Int = 0,
   val writtenKinds: List<String> = emptyList(),
   val writtenRecordIds: List<String> = emptyList(),
+  val candidateRecordIds: List<String> = emptyList(),
 ) {
   val isEmpty: Boolean
     get() = outcome == null &&
+      triggerStage.isBlank() &&
+      maintenanceTask.isBlank() &&
+      executionMode.isBlank() &&
+      contextWindowTokens == 0 &&
+      autoCompactTokenLimit == 0 &&
+      estimatedReplayTokens == 0 &&
+      !tokenThresholdTriggered &&
       omittedMessageCount == 0 &&
       omittedCharCount == 0 &&
       signature == null &&
       candidateCount == 0 &&
       writtenRecordCount == 0 &&
       writtenKinds.isEmpty() &&
-      writtenRecordIds.isEmpty()
+      writtenRecordIds.isEmpty() &&
+      candidateRecordIds.isEmpty()
 }
 
 data class MemoryFlushSummary(
@@ -55,6 +73,7 @@ class MemoryFlushCoordinator(
   private val candidateExtractor: MemoryCandidateExtractor = MemoryCandidateExtractor(),
   private val writer: MemoryWriter,
   private val existingRecordIdsProvider: (() -> Set<String>)? = null,
+  private val sourceBudgetPolicy: ContextSourceBudgetPolicy? = null,
   private val lastFlushedSignatureBySession: ConcurrentMap<String, String> = ConcurrentHashMap(),
   private val flushedCandidateRecordIdsBySession: ConcurrentMap<String, MutableSet<String>> = ConcurrentHashMap(),
 ) {
@@ -64,20 +83,58 @@ class MemoryFlushCoordinator(
     conversation: List<RuntimeConversationMessage>,
     llmMetadata: Map<String, String> = emptyMap(),
     taskId: String? = null,
+  ): MemoryFlushSummary = flush(
+    triggerStage = MEMORY_FLUSH_TRIGGER_STAGE_PRE_COMPACTION,
+    sessionId = sessionId,
+    workspaceId = workspaceId,
+    conversation = conversation,
+    llmMetadata = llmMetadata,
+    taskId = taskId,
+  )
+
+  fun flushMidTurn(
+    sessionId: String,
+    workspaceId: String?,
+    conversation: List<RuntimeConversationMessage>,
+    llmMetadata: Map<String, String> = emptyMap(),
+    taskId: String? = null,
+  ): MemoryFlushSummary = flush(
+    triggerStage = MEMORY_FLUSH_TRIGGER_STAGE_MID_TURN,
+    sessionId = sessionId,
+    workspaceId = workspaceId,
+    conversation = conversation,
+    llmMetadata = llmMetadata,
+    taskId = taskId,
+  )
+
+  internal fun flush(
+    triggerStage: String,
+    sessionId: String,
+    workspaceId: String?,
+    conversation: List<RuntimeConversationMessage>,
+    llmMetadata: Map<String, String> = emptyMap(),
+    taskId: String? = null,
   ): MemoryFlushSummary {
+    val effectiveProfile = sourceBudgetPolicy?.resolve(llmMetadata)
+    val effectiveTranscriptWindowBuilder = effectiveProfile
+      ?.let { profile -> TranscriptWindowBuilder(profile.transcriptWindowConfig) }
+      ?: transcriptWindowBuilder
+    val effectivePolicy = effectiveProfile?.memoryFlushPolicy ?: policy
     val prunedConversation = contextPruner.prune(conversation).messages
     val replayPressure = replayPressureEvaluator.evaluate(
       conversation = prunedConversation,
       llmMetadata = llmMetadata,
     )
-    val omittedMessages = transcriptWindowBuilder
+    val omittedMessages = effectiveTranscriptWindowBuilder
       .buildSelection(prunedConversation)
       .omittedMessages
     val omittedCharCount = omittedMessages.sumOf { message -> message.content.length }
-    if (!policy.shouldFlush(omittedMessages, replayPressure)) {
+    if (!effectivePolicy.shouldFlush(omittedMessages, replayPressure)) {
       return MemoryFlushSummary(
-        trace = MemoryFlushTrace(
+        trace = memoryFlushTrace(
+          triggerStage = triggerStage,
           outcome = MemoryFlushOutcome.NO_PRESSURE,
+          replayPressure = replayPressure,
           omittedMessageCount = omittedMessages.size,
           omittedCharCount = omittedCharCount,
         ),
@@ -91,8 +148,10 @@ class MemoryFlushCoordinator(
     syncFlushedCandidateRecordIds(flushedCandidateRecordIds)
     if (lastFlushedSignatureBySession[sessionId] == signature && flushedCandidateRecordIds.isNotEmpty()) {
       return MemoryFlushSummary(
-        trace = MemoryFlushTrace(
+        trace = memoryFlushTrace(
+          triggerStage = triggerStage,
           outcome = MemoryFlushOutcome.ALREADY_FLUSHED,
+          replayPressure = replayPressure,
           omittedMessageCount = omittedMessages.size,
           omittedCharCount = omittedCharCount,
           signature = signature,
@@ -104,10 +163,10 @@ class MemoryFlushCoordinator(
       sessionId = sessionId,
       taskId = taskId,
       workspaceId = workspaceId,
-      userInput = policy.mergeUserInput(
+      userInput = effectivePolicy.mergeUserInput(
         omittedMessages.filter { message -> message.role == RuntimeConversationRole.USER },
       ),
-      assistantOutput = policy.mergeAssistantOutput(
+      assistantOutput = effectivePolicy.mergeAssistantOutput(
         omittedMessages.filter { message ->
           message.role == RuntimeConversationRole.ASSISTANT &&
             !message.isAssistantToolCallMessage()
@@ -119,15 +178,17 @@ class MemoryFlushCoordinator(
         .map(String::trim)
         .filter(String::isNotBlank)
         .distinct()
-        .take(policy.maxToolObservations)
+        .take(effectivePolicy.maxToolObservations)
         .toList(),
     )
     val candidates = candidateExtractor.extract(evidence)
     if (candidates.isEmpty()) {
       lastFlushedSignatureBySession[sessionId] = signature
       return MemoryFlushSummary(
-        trace = MemoryFlushTrace(
+        trace = memoryFlushTrace(
+          triggerStage = triggerStage,
           outcome = MemoryFlushOutcome.NO_CANDIDATES,
+          replayPressure = replayPressure,
           omittedMessageCount = omittedMessages.size,
           omittedCharCount = omittedCharCount,
           signature = signature,
@@ -143,12 +204,15 @@ class MemoryFlushCoordinator(
     if (pendingCandidateEntries.isEmpty()) {
       lastFlushedSignatureBySession[sessionId] = signature
       return MemoryFlushSummary(
-        trace = MemoryFlushTrace(
+        trace = memoryFlushTrace(
+          triggerStage = triggerStage,
           outcome = MemoryFlushOutcome.ALREADY_FLUSHED,
+          replayPressure = replayPressure,
           omittedMessageCount = omittedMessages.size,
           omittedCharCount = omittedCharCount,
           signature = signature,
           candidateCount = candidateEntries.size,
+          candidateRecordIds = candidateEntries.map { (recordId, _) -> recordId },
         ),
       )
     }
@@ -158,8 +222,10 @@ class MemoryFlushCoordinator(
     lastFlushedSignatureBySession[sessionId] = signature
     return MemoryFlushSummary(
       writtenRecords = writeSummary.writtenRecords,
-      trace = MemoryFlushTrace(
+      trace = memoryFlushTrace(
+        triggerStage = triggerStage,
         outcome = MemoryFlushOutcome.WRITTEN,
+        replayPressure = replayPressure,
         omittedMessageCount = omittedMessages.size,
         omittedCharCount = omittedCharCount,
         signature = signature,
@@ -169,6 +235,7 @@ class MemoryFlushCoordinator(
           record.extensions[MemoryRecordExtensionKeys.KIND]
         }.distinct().sorted(),
         writtenRecordIds = writeSummary.writtenRecords.map(MemoryRecord::id),
+        candidateRecordIds = candidateEntries.map { (recordId, _) -> recordId },
       ),
     )
   }
@@ -178,3 +245,38 @@ class MemoryFlushCoordinator(
     flushedCandidateRecordIds.retainAll(existingRecordIds)
   }
 }
+
+private fun memoryFlushTrace(
+  triggerStage: String,
+  outcome: MemoryFlushOutcome,
+  replayPressure: ReplayPressureSnapshot,
+  omittedMessageCount: Int,
+  omittedCharCount: Int,
+  signature: String? = null,
+  candidateCount: Int = 0,
+  writtenRecordCount: Int = 0,
+  writtenKinds: List<String> = emptyList(),
+  writtenRecordIds: List<String> = emptyList(),
+  candidateRecordIds: List<String> = emptyList(),
+): MemoryFlushTrace = MemoryFlushTrace(
+  outcome = outcome,
+  triggerStage = triggerStage,
+  maintenanceTask = "memory_flush:$triggerStage",
+  executionMode = MEMORY_MAINTENANCE_EXECUTION_MODE_INLINE,
+  contextWindowTokens = replayPressure.contextWindowTokens,
+  autoCompactTokenLimit = replayPressure.autoCompactTokenLimit,
+  estimatedReplayTokens = replayPressure.estimatedReplayTokens,
+  tokenThresholdTriggered = replayPressure.tokenThresholdTriggered,
+  omittedMessageCount = omittedMessageCount,
+  omittedCharCount = omittedCharCount,
+  signature = signature,
+  candidateCount = candidateCount,
+  writtenRecordCount = writtenRecordCount,
+  writtenKinds = writtenKinds,
+  writtenRecordIds = writtenRecordIds,
+  candidateRecordIds = candidateRecordIds,
+)
+
+private const val MEMORY_FLUSH_TRIGGER_STAGE_PRE_COMPACTION: String = "pre_compaction"
+private const val MEMORY_FLUSH_TRIGGER_STAGE_MID_TURN: String = "mid_turn"
+private const val MEMORY_MAINTENANCE_EXECUTION_MODE_INLINE: String = "inline"

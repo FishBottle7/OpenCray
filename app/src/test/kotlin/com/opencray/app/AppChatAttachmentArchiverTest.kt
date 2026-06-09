@@ -5,6 +5,7 @@ import com.opencray.runtime.OpenCrayFinalAttachment
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -84,5 +85,28 @@ class AppChatAttachmentArchiverTest {
     assertEquals(0, analyzerCalls)
     assertEquals(1_800L, attachment.durationMs)
     assertEquals(listOf(9, 18, 27), attachment.waveformBars)
+  }
+
+  @Test
+  fun archiveFailsFastForUnresolvedReferenceOnlyAttachments() {
+    val workspaceRoot = temporaryFolder.newFolder("chat-attachment-archiver-reference").toPath()
+
+    try {
+      AppChatAttachmentArchiver.archive(
+        workspaceRoot = workspaceRoot,
+        approvedReadRoots = emptySet(),
+        sessionId = "session-ref",
+        attachments = listOf(
+          OpenCrayFinalAttachment(
+            artifactId = "artifact-diagram-1",
+          ),
+        ),
+      )
+      fail("Expected unresolved reference attachments to fail fast.")
+    } catch (expected: IllegalArgumentException) {
+      assertTrue(
+        expected.message.orEmpty().contains("artifact-diagram-1"),
+      )
+    }
   }
 }

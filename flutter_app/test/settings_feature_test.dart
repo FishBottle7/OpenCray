@@ -11,6 +11,29 @@ import 'package:opencray/core/models/opencray_image_reference.dart';
 import 'package:opencray/core/models/opencray_shell_snapshot.dart';
 import 'package:opencray/features/settings/settings.dart';
 
+const List<LlmOnDeviceModelOption> _defaultOnDeviceLlmModels =
+    <LlmOnDeviceModelOption>[
+      LlmOnDeviceModelOption(
+        id: 'gemma-4-e2b-it',
+        title: 'Gemma 4 E2B',
+        subtitle: 'Instruction-tuned Gemma 4 E2B for LiteRT-LM.',
+        sizeLabel: '2.58 GB',
+        fileSizeBytes: 2583085056,
+        installState: 'ready',
+        downloadedBytes: 2583085056,
+        downloadBytesPerSecond: 0,
+        sha256Verified: true,
+      ),
+      LlmOnDeviceModelOption(
+        id: 'gemma-4-e4b-it',
+        title: 'Gemma 4 E4B',
+        subtitle: 'Instruction-tuned Gemma 4 E4B for LiteRT-LM.',
+        sizeLabel: '3.65 GB',
+        fileSizeBytes: 3654467584,
+        installState: 'not_downloaded',
+      ),
+    ];
+
 void main() {
   testWidgets('standalone llm page auto-saves when a field loses focus', (
     tester,
@@ -76,6 +99,280 @@ void main() {
     expect(facade.llmConfig.apiKey, 'secret');
     expect(facade.llmConfig.enabled, isTrue);
   });
+
+  testWidgets(
+    'standalone llm page uses normal keyboards for non-api-key fields, dismisses focus, and clears api key',
+    (tester) async {
+      final facade = _buildSettingsFacade();
+      facade.llmConfig = const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: true,
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: 'secret',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'secret',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+        onDeviceModels: _defaultOnDeviceLlmModels,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final Finder fields = find.byType(TextField);
+      expect(
+        tester.widget<TextField>(fields.at(0)).keyboardType,
+        TextInputType.url,
+      );
+      expect(
+        tester.widget<TextField>(fields.at(1)).keyboardType,
+        TextInputType.visiblePassword,
+      );
+      expect(
+        tester.widget<TextField>(fields.at(2)).keyboardType,
+        TextInputType.text,
+      );
+
+      await tester.ensureVisible(fields.at(0));
+      await tester.tap(fields.at(0));
+      await tester.pump();
+      expect(tester.widget<TextField>(fields.at(0)).focusNode?.hasFocus, isTrue);
+
+      await tester.ensureVisible(find.text('LLM'));
+      await tester.tap(find.text('LLM'));
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(fields.at(0)).focusNode?.hasFocus,
+        isFalse,
+      );
+
+      final Finder clearApiKeyButton = find.byKey(
+        const ValueKey<String>('settings-llm-api-key-clear'),
+      );
+      await tester.ensureVisible(clearApiKeyButton);
+      await tester.tap(clearApiKeyButton);
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<TextField>(fields.at(1)).controller!.text, isEmpty);
+      expect(facade.llmConfig.apiKey, '');
+    },
+  );
+
+  testWidgets('standalone llm page saves context budget preset and raw overrides', (
+    tester,
+  ) async {
+    final facade = _buildSettingsFacade();
+    facade.llmConfig = const LlmConfigSnapshot(
+      localeTag: 'en',
+      enabled: true,
+      providerId: 'openai',
+      selectedProviderOptionId: 'openai',
+      protocol: 'openai',
+      providerOptions: <LlmProviderOption>[
+        LlmProviderOption(
+          id: 'openai',
+          providerId: 'openai',
+          title: 'OpenAI',
+          subtitle: 'Official OpenAI-compatible endpoint.',
+          defaultBaseUrl: 'https://api.openai.com/v1',
+          defaultModel: 'gpt-4o-mini',
+          protocol: 'openai',
+          apiKey: 'secret',
+          isCustom: false,
+        ),
+      ],
+      providerName: 'OpenAI',
+      providerNotes: '',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'secret',
+      model: 'gpt-4o-mini',
+      reasoningEffort: 'medium',
+      systemPrompt: '',
+      helperText: 'Helper text',
+      contextBudgetPreset: 'balanced',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.llm,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('Context budget'));
+    await tester.tap(find.text('Expanded'));
+    await tester.pumpAndSettle();
+
+    expect(facade.llmConfig.contextBudgetPreset, 'expanded');
+
+    final reservedOutputField = find.byKey(
+      const ValueKey<String>('settings-llm-context-budget-reserved-output'),
+    );
+    await tester.enterText(reservedOutputField, '3072');
+    await tester.tap(find.text('Safety margin'));
+    await tester.pumpAndSettle();
+
+    final safetyMarginField = find.byKey(
+      const ValueKey<String>('settings-llm-context-budget-safety-margin'),
+    );
+    await tester.enterText(safetyMarginField, '1536');
+    await tester.tap(find.text('Effective input'));
+    await tester.pumpAndSettle();
+
+    final effectiveInputField = find.byKey(
+      const ValueKey<String>('settings-llm-context-budget-effective-input'),
+    );
+    await tester.enterText(effectiveInputField, '0.92');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+
+    expect(facade.llmConfig.contextBudgetReservedOutputTokens, 3072);
+    expect(facade.llmConfig.contextBudgetSafetyMarginTokens, 1536);
+    expect(facade.llmConfig.contextBudgetEffectiveInputPercent, 0.92);
+  });
+
+  testWidgets(
+    'standalone llm page clears input focus when the keyboard closes',
+    (tester) async {
+      final facade = _buildSettingsFacade();
+      addTearDown(tester.view.resetViewInsets);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final Finder baseUrlField = find.byType(TextField).first;
+      await tester.ensureVisible(baseUrlField);
+      await tester.tap(baseUrlField);
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(baseUrlField).focusNode?.hasFocus,
+        isTrue,
+      );
+
+      tester.view.viewInsets = const FakeViewPadding(bottom: 320);
+      tester.binding.handleMetricsChanged();
+      await tester.pump();
+      expect(FocusManager.instance.primaryFocus, isNotNull);
+
+      tester.view.viewInsets = FakeViewPadding.zero;
+      tester.binding.handleMetricsChanged();
+      await tester.pump();
+      expect(
+        tester.widget<TextField>(baseUrlField).focusNode?.hasFocus,
+        isFalse,
+      );
+    },
+  );
+
+  testWidgets(
+    'standalone llm page shows download speed without a separate downloading chip',
+    (tester) async {
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: true,
+          providerId: 'openai',
+          selectedProviderOptionId: 'openai',
+          protocol: 'openai',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'openai',
+              providerId: 'openai',
+              title: 'OpenAI',
+              subtitle: 'Official OpenAI-compatible endpoint.',
+              defaultBaseUrl: 'https://api.openai.com/v1',
+              defaultModel: 'gpt-4o-mini',
+              protocol: 'openai',
+              apiKey: '',
+              isCustom: false,
+            ),
+          ],
+          providerName: 'OpenAI',
+          providerNotes: '',
+          baseUrl: 'https://api.openai.com/v1',
+          apiKey: '',
+          model: 'gpt-4o-mini',
+          reasoningEffort: 'medium',
+          systemPrompt: '',
+          helperText: 'Helper text',
+          providerMode: 'on_device_model',
+          onDeviceModels: <LlmOnDeviceModelOption>[
+            LlmOnDeviceModelOption(
+              id: 'gemma-4-e2b-it',
+              title: 'Gemma 4 E2B',
+              subtitle: 'Instruction-tuned Gemma 4 E2B for LiteRT-LM.',
+              sizeLabel: '2.58 GB',
+              fileSizeBytes: 2583085056,
+              installState: 'downloading',
+              downloadedBytes: 260000000,
+              downloadBytesPerSecond: 12582912,
+            ),
+          ],
+          selectedOnDeviceModelId: 'gemma-4-e2b-it',
+        ),
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Downloading · 0.24 GB / 2.58 GB · 12.0 MB/s'),
+        findsOneWidget,
+      );
+      expect(find.text('Downloading'), findsNothing);
+      expect(find.text('Cancel'), findsOneWidget);
+    },
+  );
 
   testWidgets(
     'standalone llm page shows validation feedback when validation fails',
@@ -618,6 +915,136 @@ void main() {
   });
 
   testWidgets(
+    'standalone llm page switches to on-device cards and hides cloud validation',
+    (tester) async {
+      final facade = _buildSettingsFacade();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Validate Model'), findsOneWidget);
+
+      await tester.tap(find.text('On-device'));
+      await tester.pumpAndSettle();
+
+      expect(facade.saveCallCount, 1);
+      expect(facade.llmConfig.providerMode, 'on_device_model');
+      expect(find.text('On-device model'), findsOneWidget);
+      expect(find.text('Sampling & limits'), findsOneWidget);
+      expect(find.text('Runtime'), findsOneWidget);
+      expect(find.text('Gemma 4 E2B'), findsOneWidget);
+      expect(find.text('Installed · 2.58 GB'), findsOneWidget);
+      expect(find.text('Validate Model'), findsNothing);
+    },
+  );
+
+  testWidgets('standalone llm page saves on-device tuning controls', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: true,
+        providerMode: 'on_device_model',
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+        onDeviceModels: _defaultOnDeviceLlmModels,
+        selectedOnDeviceModelId: 'gemma-4-e2b-it',
+        onDeviceMaxContextWindow: 32768,
+        onDeviceMaxTokens: 4096,
+        onDeviceTopK: 40,
+        onDeviceTopP: 0.95,
+        onDeviceTemperature: 0.70,
+        onDeviceAccelerator: 'gpu',
+        onDeviceThinkingEnabled: false,
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.llm,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).at(0), '16384');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.enterText(find.byType(TextField).at(1), '2048');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.enterText(find.byType(TextField).at(2), '24');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.enterText(find.byType(TextField).at(3), '0.90');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.enterText(find.byType(TextField).at(4), '0.40');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.ensureVisible(find.text('CPU'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('CPU'), warnIfMissed: false);
+    await tester.pump(const Duration(milliseconds: 500));
+
+    await tester.ensureVisible(find.text('On'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('On'), warnIfMissed: false);
+    await tester.pump(const Duration(milliseconds: 500));
+
+    expect(facade.llmConfig.onDeviceMaxContextWindow, 16384);
+    expect(facade.llmConfig.onDeviceMaxTokens, 2048);
+    expect(facade.llmConfig.onDeviceTopK, 24);
+    expect(facade.llmConfig.onDeviceTopP, 0.9);
+    expect(facade.llmConfig.onDeviceTemperature, 0.4);
+    expect(facade.llmConfig.onDeviceAccelerator, 'cpu');
+    expect(facade.llmConfig.onDeviceThinkingEnabled, isTrue);
+  });
+
+  testWidgets(
     'standalone notifications page saves the master switch and opens channels',
     (tester) async {
       final facade = _FakeSettingsFacade(
@@ -902,7 +1329,7 @@ void main() {
     },
   );
 
-  testWidgets('home settings includes Agent entry and opens agents page', (
+  testWidgets('home settings hides Agent entry from the overview list', (
     tester,
   ) async {
     final facade = _FakeSettingsFacade(
@@ -946,6 +1373,10 @@ void main() {
         deviceSummary: 'API routes: Search + Media',
         entries: <SettingsHomeEntrySnapshot>[
           SettingsHomeEntrySnapshot(page: SettingsPage.agents, title: 'Agent'),
+          SettingsHomeEntrySnapshot(
+            page: SettingsPage.apiIntegrations,
+            title: 'API Integrations',
+          ),
         ],
       ),
     );
@@ -955,15 +1386,15 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Agent'), findsOneWidget);
+    expect(find.text('Agent'), findsNothing);
+    expect(find.text('API Integrations'), findsOneWidget);
 
-    await tester.tap(find.text('Agent'));
+    await tester.tap(find.text('API Integrations'));
     await tester.pumpAndSettle();
 
     expect(find.byIcon(Icons.arrow_back_ios_new_rounded), findsOneWidget);
     expect(find.text('Settings'), findsOneWidget);
-    expect(find.text('Agents'), findsOneWidget);
-    expect(find.text('New agent'), findsOneWidget);
+    expect(find.text('Routing rules'), findsOneWidget);
   });
 
   testWidgets('agents page loads host-backed agents and persists creation', (
@@ -1412,6 +1843,184 @@ void main() {
   });
 
   testWidgets(
+    'local OpenAI-compatible custom provider stays enabled without API key',
+    (tester) async {
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: false,
+          providerId: 'custom',
+          selectedProviderOptionId: 'custom',
+          protocol: 'openai',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'custom',
+              providerId: 'custom',
+              title: 'Custom provider',
+              subtitle:
+                  'Any OpenAI-compatible, OpenAI Responses, or Anthropic endpoint.',
+              defaultBaseUrl: '',
+              defaultModel: '',
+              protocol: 'openai',
+              apiKey: '',
+              isCustom: true,
+            ),
+          ],
+          providerName: 'Custom provider',
+          providerNotes: '',
+          baseUrl: '',
+          apiKey: '',
+          model: '',
+          reasoningEffort: 'medium',
+          systemPrompt: '',
+          helperText: 'Helper text',
+        ),
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).at(0), 'LM Studio');
+      await tester.enterText(
+        find.byType(TextField).at(1),
+        'Local desktop endpoint',
+      );
+      await tester.enterText(
+        find.byType(TextField).at(2),
+        'http://10.0.2.2:1234/v1',
+      );
+      await tester.enterText(find.byType(TextField).at(3), '');
+      await tester.enterText(
+        find.byType(TextField).at(4),
+        'qwen2.5-7b-instruct',
+      );
+
+      final onTap = tester
+          .widget<InkWell>(
+            find.byKey(const ValueKey<String>('settings-llm-save-provider')),
+          )
+          .onTap;
+      expect(onTap, isNotNull);
+      await tester.runAsync(() async {
+        final result = Function.apply(onTap!, const <Object?>[]);
+        if (result is Future<void>) {
+          await result;
+        }
+      });
+      await tester.pumpAndSettle();
+
+      expect(facade.llmConfig.enabled, isTrue);
+      expect(facade.llmConfig.apiKey, isEmpty);
+      expect(facade.llmConfig.providerOptions.last.apiKey, isEmpty);
+      expect(
+        facade.llmConfig.providerOptions.last.defaultBaseUrl,
+        'http://10.0.2.2:1234/v1',
+      );
+    },
+  );
+
+  testWidgets(
+    'IPv6 loopback OpenAI-compatible custom provider stays enabled without API key',
+    (tester) async {
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: false,
+          providerId: 'custom',
+          selectedProviderOptionId: 'custom',
+          protocol: 'openai',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'custom',
+              providerId: 'custom',
+              title: 'Custom provider',
+              subtitle:
+                  'Any OpenAI-compatible, OpenAI Responses, or Anthropic endpoint.',
+              defaultBaseUrl: '',
+              defaultModel: '',
+              protocol: 'openai',
+              apiKey: '',
+              isCustom: true,
+            ),
+          ],
+          providerName: 'Custom provider',
+          providerNotes: '',
+          baseUrl: '',
+          apiKey: '',
+          model: '',
+          reasoningEffort: 'medium',
+          systemPrompt: '',
+          helperText: 'Helper text',
+        ),
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).at(0), 'LM Studio IPv6');
+      await tester.enterText(
+        find.byType(TextField).at(1),
+        'IPv6 loopback endpoint',
+      );
+      await tester.enterText(
+        find.byType(TextField).at(2),
+        'http://[::1]:1234/v1',
+      );
+      await tester.enterText(find.byType(TextField).at(3), '');
+      await tester.enterText(
+        find.byType(TextField).at(4),
+        'qwen2.5-7b-instruct',
+      );
+
+      final onTap = tester
+          .widget<InkWell>(
+            find.byKey(const ValueKey<String>('settings-llm-save-provider')),
+          )
+          .onTap;
+      expect(onTap, isNotNull);
+      await tester.runAsync(() async {
+        final result = Function.apply(onTap!, const <Object?>[]);
+        if (result is Future<void>) {
+          await result;
+        }
+      });
+      await tester.pumpAndSettle();
+
+      expect(facade.llmConfig.enabled, isTrue);
+      expect(facade.llmConfig.apiKey, isEmpty);
+      expect(facade.llmConfig.providerOptions.last.apiKey, isEmpty);
+      expect(
+        facade.llmConfig.providerOptions.last.defaultBaseUrl,
+        'http://[::1]:1234/v1',
+      );
+    },
+  );
+
+  testWidgets(
     'saved custom provider edits stay selected, show temporary hint, and overwrite on save',
     (tester) async {
       final facade = _FakeSettingsFacade(
@@ -1585,175 +2194,255 @@ void main() {
     expect(find.text(finalOption.title), findsOneWidget);
   });
 
-  testWidgets(
-    'about version page opens debug tools and renders context trace details',
-    (tester) async {
-      final facade = _buildDebugSettingsFacade();
-      final debugBridge = _buildDebugBridge();
+  testWidgets('about version page opens debug tools and renders context trace details', (
+    tester,
+  ) async {
+    final facade = _buildDebugSettingsFacade();
+    final debugBridge = _buildDebugBridge();
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: SettingsFeatureScreen(
-            facade: facade,
-            initialPage: SettingsPage.aboutVersion,
-            standalone: true,
-            debugBridge: debugBridge,
-          ),
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.aboutVersion,
+          standalone: true,
+          debugBridge: debugBridge,
         ),
-      );
-      await tester.pumpAndSettle();
+      ),
+    );
+    await tester.pumpAndSettle();
 
-      expect(find.text('Debug tools'), findsOneWidget);
-      expect(find.text('Open Debug Tools'), findsOneWidget);
+    expect(find.text('Debug tools'), findsOneWidget);
+    expect(find.text('Open Debug Tools'), findsOneWidget);
 
-      await tester.tap(find.text('Open Debug Tools'));
-      await tester.pumpAndSettle();
+    await tester.tap(find.text('Open Debug Tools'));
+    await tester.pumpAndSettle();
 
-      expect(find.text('Runtime Diagnostics'), findsOneWidget);
-      expect(find.text('Context & Memory Trace'), findsOneWidget);
-      expect(find.text('Memory Inspector'), findsOneWidget);
-      expect(find.text('Soul Inspector'), findsOneWidget);
+    expect(find.text('Runtime Diagnostics'), findsOneWidget);
+    expect(find.text('Context & Memory Trace'), findsOneWidget);
+    expect(find.text('Memory Inspector'), findsOneWidget);
+    expect(find.text('Soul Inspector'), findsOneWidget);
 
-      await tester.tap(find.text('Context & Memory Trace'));
-      await tester.pumpAndSettle();
+    await tester.tap(find.text('Context & Memory Trace'));
+    await tester.pumpAndSettle();
 
-      expect(find.text('Run overview'), findsOneWidget);
-      expect(find.text('Context setup'), findsOneWidget);
-      expect(find.text('Memory writes'), findsOneWidget);
-      expect(find.text('Memory recall'), findsOneWidget);
-      expect(find.text('Skill context'), findsOneWidget);
-      expect(find.text('Soul resolution'), findsOneWidget);
-      expect(find.text('Raw trace'), findsOneWidget);
-      expect(find.text('Projected subagents'), findsOneWidget);
-      expect(find.text('run-memory'), findsWidgets);
-      expect(find.text('Subagent: Inspect detached recovery'), findsOneWidget);
-      expect(find.text('Status: background running'), findsOneWidget);
-      expect(find.text('Mailbox: 1 pending / 2 total'), findsOneWidget);
-      expect(
-        find.textContaining(
-          'Last delivered: mailbox-memory-1',
-          findRichText: true,
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining(
-          'researcher · minimal · depth 1 · Detached child runtime is still running in the background.',
-        ),
-        findsOneWidget,
-      );
-      expect(find.text('Mode: full'), findsOneWidget);
-      expect(find.text('Soul: disabled'), findsOneWidget);
-      expect(find.text('Memory recall: enabled'), findsOneWidget);
-      expect(
-        find.textContaining('Attempt: 1', findRichText: true),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining('Execution: 2', findRichText: true),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining(
-          'Execution kind: checkpoint_resume',
-          findRichText: true,
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining('Retry code:', findRichText: true),
-        findsNothing,
-      );
-      expect(find.text('Outcome: written'), findsOneWidget);
-      expect(find.text('Compacted: yes'), findsOneWidget);
-      expect(find.text('Restricted: yes'), findsOneWidget);
-      expect(find.text('Matched: 2'), findsOneWidget);
-      expect(find.text('Injected: 1'), findsOneWidget);
-      expect(
-        find.textContaining(
-          'AGENTS.md: workspace/AGENTS.md · injected 520/900 chars · truncated',
-          findRichText: true,
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining(
-          'Summary window: included 1, omitted 2',
-          findRichText: true,
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining(
-          'memory-link: skills/memory-link/SKILL.md · manual · inline · user-invocable',
-          findRichText: true,
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining(
-          'Allowed tools: skill_read, memory_search',
-          findRichText: true,
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining('Query terms: chinese, gradle', findRichText: true),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining('Record: memory-user', findRichText: true),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining('Reason: max_records', findRichText: true),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining('scope_mismatch: 1', findRichText: true),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining('expired: 2', findRichText: true),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining(
-          'Written ids: memory-user, commitment-1',
-          findRichText: true,
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining(
-          'Bridge note: Detailed soul attribution and relationship gates live in Soul Inspector only.',
-          findRichText: true,
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining('Read workspace/AGENTS.md lines 1-14'),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining(
-          'reason Inspect workspace instructions before planning.',
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining(
-          'Returned 14 lines from workspace/AGENTS.md (56-line file)',
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.textContaining('Repository guidelines for mobile work.'),
-        findsOneWidget,
-      );
-      expect(find.text('No additional payload.'), findsNothing);
-    },
-  );
+    expect(find.text('Run overview'), findsOneWidget);
+    expect(find.text('Context setup'), findsOneWidget);
+    expect(find.text('Memory writes'), findsOneWidget);
+    expect(find.text('Memory recall'), findsOneWidget);
+    expect(find.text('Skill context'), findsOneWidget);
+    expect(find.text('Soul resolution'), findsOneWidget);
+    expect(find.text('Raw trace'), findsOneWidget);
+    expect(find.text('Projected subagents'), findsOneWidget);
+    expect(find.text('run-memory'), findsWidgets);
+    expect(find.text('Subagent: Inspect detached recovery'), findsOneWidget);
+    expect(find.text('Status: background running'), findsOneWidget);
+    expect(find.text('Mailbox: 1 pending / 2 total'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'Last delivered: mailbox-memory-1',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'researcher · minimal · depth 1 · Detached child runtime is still running in the background.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Response shape: openai_tool_calls'), findsOneWidget);
+    expect(find.text('Cache break: user_setting_changed'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'Tool path: requested yes, observed yes, parsed yes',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Responses recovery: 1 (responses_restored_replay_required)',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Local continuation: used 0, fallback 1, mode full_rebuild, reason user_setting_changed',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Responses context updates: pending 1, hash hash-dynamic-context',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Last successful tool: EchoProbe',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Mode: full'), findsOneWidget);
+    expect(find.text('Soul: disabled'), findsOneWidget);
+    expect(find.text('Memory recall: enabled'), findsOneWidget);
+    expect(find.text('Preset: dev (selected balanced)'), findsOneWidget);
+    expect(find.text('Pressure: emergency'), findsOneWidget);
+    expect(find.text('Layers: 4/2/1/1'), findsOneWidget);
+    expect(find.text('Overflow: unresolved'), findsOneWidget);
+    expect(find.text('Source caps: expanded'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'Source cap profile: expanded (stable fallback for dev envelope)',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Working State: compact, 220 -> 120 tokens, optional support context #70, ops reduce_working_state_compact',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Retrieved Memory: omitted, 48 -> 0 tokens, bounded durable recall #90, ops omit_layer',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('Attempt: 1', findRichText: true),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('Execution: 2', findRichText: true),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Execution kind: checkpoint_resume',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('Retry code:', findRichText: true),
+      findsNothing,
+    );
+    expect(find.text('Outcome: written'), findsOneWidget);
+    expect(
+      find.textContaining('Execution mode: inline', findRichText: true),
+      findsAtLeastNWidgets(2),
+    );
+    expect(find.text('Compacted: yes'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'Remote compaction: used, supported, requested, trigger pre_compaction',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Remote compaction details: output 2, compaction 1, encrypted 1',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Restricted: yes'), findsOneWidget);
+    expect(find.text('Matched: 2'), findsOneWidget);
+    expect(find.text('Injected: 1'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'AGENTS.md: workspace/AGENTS.md · injected 520/900 chars · truncated',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Summary window: included 1, omitted 2',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'memory-link: skills/memory-link/SKILL.md · manual · inline · user-invocable',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Allowed tools: skill_read, memory_search',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('Query terms: chinese, gradle', findRichText: true),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('Record: memory-user', findRichText: true),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('Reason: max_records', findRichText: true),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('scope_mismatch: 1', findRichText: true),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('expired: 2', findRichText: true),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Written ids: memory-user, commitment-1',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Bridge note: Detailed soul attribution and relationship gates live in Soul Inspector only.',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('Read workspace/AGENTS.md lines 1-14'),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'reason Inspect workspace instructions before planning.',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Returned 14 lines from workspace/AGENTS.md (56-line file)',
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('Repository guidelines for mobile work.'),
+      findsOneWidget,
+    );
+    expect(find.text('No additional payload.'), findsNothing);
+  });
 
   testWidgets(
     'runtime diagnostics page renders detached host and service state',
@@ -2450,6 +3139,130 @@ void main() {
     },
   );
 
+  testWidgets('privacy route maps to the privacy detail page', (tester) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: false,
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.privacyTelemetry,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('Privacy & Telemetry'), findsOneWidget);
+    expect(find.text('Share crash diagnostics'), findsOneWidget);
+    expect(find.text('API Integrations'), findsNothing);
+  });
+
+  testWidgets('settings page persists shell target for privacy subpage', (
+    tester,
+  ) async {
+    final facade = _FakeSettingsFacade(
+      llmConfig: const LlmConfigSnapshot(
+        localeTag: 'en',
+        enabled: false,
+        providerId: 'openai',
+        selectedProviderOptionId: 'openai',
+        protocol: 'openai',
+        providerOptions: <LlmProviderOption>[
+          LlmProviderOption(
+            id: 'openai',
+            providerId: 'openai',
+            title: 'OpenAI',
+            subtitle: 'Official OpenAI-compatible endpoint.',
+            defaultBaseUrl: 'https://api.openai.com/v1',
+            defaultModel: 'gpt-4o-mini',
+            protocol: 'openai',
+            apiKey: '',
+            isCustom: false,
+          ),
+        ],
+        providerName: 'OpenAI',
+        providerNotes: '',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: '',
+        model: 'gpt-4o-mini',
+        reasoningEffort: 'medium',
+        systemPrompt: '',
+        helperText: 'Helper text',
+      ),
+      validationResult: const LlmValidationResult(
+        isSuccess: true,
+        message: 'Validated.',
+      ),
+      overviewSnapshot: const SettingsOverviewSnapshot(
+        eyebrow: 'APP SHELL',
+        title: 'Settings',
+        subtitle: 'Access, providers, and personal defaults.',
+        deviceTitle: 'OpenCray on this device',
+        deviceSummary: 'API routes: Search + Media',
+        entries: <SettingsHomeEntrySnapshot>[
+          SettingsHomeEntrySnapshot(
+            page: SettingsPage.privacyTelemetry,
+            title: 'Privacy & Telemetry',
+          ),
+        ],
+      ),
+    );
+    final debugBridge = _buildDebugBridge();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          debugBridge: debugBridge,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Privacy & Telemetry'));
+    await tester.pumpAndSettle();
+
+    expect(debugBridge.persistedShellTabs.last, OpenCrayTab.settings);
+    expect(
+      debugBridge.persistedSettingsRouteIds.last,
+      SettingsPage.privacyTelemetry.routeId,
+    );
+  });
+
   testWidgets('standalone E2B page saves backend routing changes', (
     tester,
   ) async {
@@ -2505,6 +3318,20 @@ void main() {
       facade.mediaSpeechConfig.imageGeneration.baseUrl,
       'https://media.example.com',
     );
+
+    await tester.ensureVisible(find.text('Video generation'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).at(6), 'Runway Turbo');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 800));
+
+    expect(facade.mediaSpeechConfig.videoGeneration.provider, 'Runway Turbo');
+
+    await tester.enterText(find.byType(TextField).at(15), 'tts-omni');
+    FocusManager.instance.primaryFocus?.unfocus();
+    await tester.pump(const Duration(milliseconds: 800));
+
+    expect(facade.mediaSpeechConfig.voiceGeneration.model, 'tts-omni');
 
     await tester.ensureVisible(find.text('External API'));
     await tester.pumpAndSettle();
@@ -2772,6 +3599,7 @@ _FakeSettingsFacade _buildSettingsFacade() {
       reasoningEffort: 'medium',
       systemPrompt: '',
       helperText: 'Helper text',
+      onDeviceModels: _defaultOnDeviceLlmModels,
     ),
     validationResult: const LlmValidationResult(
       isSuccess: true,
@@ -2811,6 +3639,7 @@ _FakeSettingsFacade _buildDebugSettingsFacade({
       reasoningEffort: 'medium',
       systemPrompt: '',
       helperText: 'Helper text',
+      onDeviceModels: _defaultOnDeviceLlmModels,
     ),
     validationResult: const LlmValidationResult(
       isSuccess: true,
@@ -3028,13 +3857,105 @@ _FakeDebugBridge _buildDebugBridge({
         diagnostics: OpenCrayChatRunDiagnosticsSnapshot(
           recoveryReason: 'host_restart_inflight_task_interrupted',
         ),
+        llmDiagnostics: OpenCrayChatRunLlmDiagnosticsSnapshot(
+          providerResponseShape: 'openai_tool_calls',
+          nativeToolCallRequested: true,
+          nativeToolCallObserved: true,
+          parsedToolCallObserved: true,
+          fallbackParserAttempted: false,
+          fallbackParserSucceeded: false,
+          responsesContinuationRecoveryCount: 1,
+          responsesContinuationRecoveryLastReason:
+              'responses_restored_replay_required',
+          localContinuationUsedCount: 0,
+          localContinuationFallbackCount: 1,
+          localContinuationLastMode: 'full_rebuild',
+          localContinuationLastReason: 'user_setting_changed',
+          responsesPendingContextUpdateCount: 1,
+          responsesPendingContextUpdateHash: 'hash-dynamic-context',
+          toolCallEventEmitted: true,
+          toolResultEventEmitted: true,
+          contextCacheBreakReason: 'user_setting_changed',
+          lastSuccessfulToolName: 'EchoProbe',
+        ),
         liveContext: OpenCrayChatRunLiveContextSnapshot(
           mode: 'no_soul',
           soulEnabled: false,
           memoryRecallEnabled: true,
         ),
+        contextBudget: OpenCrayChatRunContextBudgetSnapshot(
+          applied: true,
+          pressureMode: 'EMERGENCY',
+          selectedPreset: 'balanced',
+          effectivePreset: 'dev',
+          presetSource: 'raw',
+          presetDiverged: true,
+          sourcePreset: 'expanded',
+          sourceTranscriptMaxMessages: 16,
+          sourceInjectedMemoryMaxRecords: 6,
+          sourceMemoryRecallMaxRecords: 8,
+          sourceBootstrapMaxChars: 4800,
+          sourceSkillInventoryMaxSkills: 12,
+          sourceActiveSkillMaxChars: 4800,
+          sourceRecentObservationMaxEntries: 6,
+          sourceMemoryFlushMaxToolObservations: 12,
+          contextWindowTokens: 900,
+          reservedOutputTokens: 256,
+          safetyMarginTokens: 96,
+          hardInputTokens: 548,
+          targetInputTokens: 512,
+          emergencyInputTokens: 548,
+          unresolvedOverflow: true,
+          fullLayerCount: 4,
+          compactLayerCount: 2,
+          minimalLayerCount: 1,
+          omittedLayerCount: 1,
+          reducedLayerNames: <String>['Working State', 'Conversation'],
+          omittedLayerNames: <String>['Retrieved Memory'],
+          layers: <OpenCrayChatRunContextBudgetLayerSnapshot>[
+            OpenCrayChatRunContextBudgetLayerSnapshot(
+              id: 'WORKING_STATE',
+              name: 'Working State',
+              priorityClass: 'OPTIONAL_SUPPORT_CONTEXT',
+              retentionPriority: 70,
+              estimatedTokensBefore: 220,
+              estimatedTokensAfter: 120,
+              finalState: 'compact',
+              omitted: false,
+              reduced: true,
+              appliedOperators: <String>['reduce_working_state_compact'],
+            ),
+            OpenCrayChatRunContextBudgetLayerSnapshot(
+              id: 'CONVERSATION',
+              name: 'Conversation',
+              priorityClass: 'RECENT_REPLAY',
+              retentionPriority: 110,
+              estimatedTokensBefore: 420,
+              estimatedTokensAfter: 180,
+              finalState: 'minimal',
+              omitted: false,
+              reduced: true,
+              appliedOperators: <String>['reduce_conversation_window_minimal'],
+            ),
+            OpenCrayChatRunContextBudgetLayerSnapshot(
+              id: 'RETRIEVED_MEMORY',
+              name: 'Retrieved Memory',
+              priorityClass: 'BOUNDED_DURABLE_RECALL',
+              retentionPriority: 90,
+              estimatedTokensBefore: 48,
+              estimatedTokensAfter: 0,
+              finalState: 'omitted',
+              omitted: true,
+              reduced: false,
+              appliedOperators: <String>['omit_layer'],
+            ),
+          ],
+          layerSummary:
+              'WORKING_STATE:compact:20;CONVERSATION:minimal:120;RETRIEVED_MEMORY:omitted:48',
+        ),
         memoryFlush: OpenCrayChatRunMemoryFlushSnapshot(
           outcome: 'written',
+          executionMode: 'inline',
           omittedMessageCount: 6,
           omittedCharCount: 2100,
           signature: 'user-intro|tool-scan|workspace-facts',
@@ -3068,6 +3989,7 @@ _FakeDebugBridge _buildDebugBridge({
         ),
         durableCompaction: OpenCrayChatRunDurableCompactionSnapshot(
           compactedThisRun: true,
+          executionMode: 'inline',
           sourceTranscriptMessageCount: 18,
           retainedTranscriptMessageCount: 7,
           latestCompactedMessageCount: 9,
@@ -3076,6 +3998,15 @@ _FakeDebugBridge _buildDebugBridge({
           totalSummaryCount: 3,
           totalCompactedMessageCount: 14,
           latestCompactedAtEpochMs: 1950,
+          remoteCompaction: OpenCrayChatRunRemoteCompactionSnapshot(
+            requested: true,
+            supported: true,
+            used: true,
+            triggerStage: 'pre_compaction',
+            outputItemCount: 2,
+            compactionItemCount: 1,
+            encryptedContentCount: 1,
+          ),
         ),
         memoryTrace: OpenCrayChatRunMemoryTraceSnapshot(
           matchedRecordCount: 2,
@@ -3868,12 +4799,25 @@ class _FakeSettingsFacade implements SettingsFacade {
       baseUrl: 'https://api.fal.ai',
       endpoint: '/v1/images',
       model: 'flux-pro',
+      authProtocol: 'bearer',
+      apiKey: '',
+    ),
+    videoGeneration: MediaProviderConfigSnapshot(
+      provider: 'Runway',
+      baseUrl: 'https://api.runwayml.com',
+      endpoint: '/v1/videos',
+      model: 'gen4_turbo',
+      authProtocol: 'bearer',
+      apiKey: '',
     ),
     voiceGeneration: VoiceProviderConfigSnapshot(
       provider: 'OpenAI TTS',
       baseUrl: 'https://api.openai.com',
       endpoint: '/v1/audio/speech',
+      model: 'tts-1',
       voicePreset: 'alloy · calm',
+      authProtocol: 'bearer',
+      apiKey: '',
     ),
     sttRoute: MediaSpeechSttRoute.onDeviceModel,
     externalStt: MediaProviderConfigSnapshot(
@@ -3881,6 +4825,8 @@ class _FakeSettingsFacade implements SettingsFacade {
       baseUrl: 'https://api.openai.com',
       endpoint: '/v1/audio/transcriptions',
       model: 'whisper-1',
+      authProtocol: 'bearer',
+      apiKey: '',
     ),
     onDeviceModel: OnDeviceSttConfigSnapshot(
       modelPackage: 'Whisper Small',
@@ -3956,18 +4902,17 @@ class _FakeSettingsFacade implements SettingsFacade {
   NotificationSettingsSnapshot notificationSettings =
       const NotificationSettingsSnapshot(
         masterEnabled: true,
-        defaultDeliveryMode: NotificationDeliveryMode.critical,
+        defaultDeliveryMode: NotificationDeliveryMode.all,
         quietHoursEnabled: true,
         quietHoursStartMinutes: 23 * 60,
         quietHoursEndMinutes: 8 * 60,
         approvalRequestsEnabled: true,
         approvalReminderEnabled: true,
-        taskFinishedEnabled: false,
+        taskFinishedEnabled: true,
         taskFailedEnabled: true,
-        newUserMessageEnabled: true,
-        scheduledWakeEnabled: false,
+        scheduledWakeEnabled: true,
         backgroundTaskPausedEnabled: true,
-        serviceRecoveredEnabled: false,
+        serviceRecoveredEnabled: true,
       );
   StrongBackgroundSnapshot strongBackgroundSnapshot =
       const StrongBackgroundSnapshot(
@@ -4027,6 +4972,7 @@ class _FakeSettingsFacade implements SettingsFacade {
         title: switch (page) {
           SettingsPage.notificationsBackground => 'Notifications & Background',
           SettingsPage.notificationChannels => 'Notification Channels',
+          SettingsPage.privacyTelemetry => 'Privacy & Telemetry',
           SettingsPage.aboutVersion => 'About & Version',
           _ => '',
         },
@@ -4035,6 +4981,8 @@ class _FakeSettingsFacade implements SettingsFacade {
             'Control alerts, service visibility, and wakeups.',
           SettingsPage.notificationChannels =>
             'Choose which events can interrupt you.',
+          SettingsPage.privacyTelemetry =>
+            'Review what stays on device and what diagnostic signals are shared.',
           SettingsPage.aboutVersion => 'Build information and app diagnostics.',
           _ => '',
         },
@@ -4046,6 +4994,20 @@ class _FakeSettingsFacade implements SettingsFacade {
                     SettingsRowSnapshot.value(
                       title: 'Installed version',
                       valueLabel: '1.0.0',
+                    ),
+                  ],
+                ),
+              ]
+            : page == SettingsPage.privacyTelemetry
+            ? const <SettingsSectionSnapshot>[
+                SettingsSectionSnapshot(
+                  title: 'Diagnostics',
+                  rows: <SettingsRowSnapshot>[
+                    SettingsRowSnapshot.toggle(
+                      title: 'Share crash diagnostics',
+                      subtitle:
+                          'Include app and runtime failure summaries only.',
+                      toggleValue: false,
                     ),
                   ],
                 ),
@@ -4135,6 +5097,7 @@ class _FakeSettingsFacade implements SettingsFacade {
   Future<LlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     bool? streamingEnabled,
+    String providerMode = 'cloud',
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -4149,13 +5112,28 @@ class _FakeSettingsFacade implements SettingsFacade {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    String selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    int onDeviceMaxContextWindow = 32768,
+    int onDeviceMaxTokens = 4096,
+    int onDeviceTopK = 40,
+    double onDeviceTopP = 0.95,
+    double onDeviceTemperature = 0.70,
+    String onDeviceAccelerator = 'gpu',
+    bool onDeviceThinkingEnabled = false,
+    bool onDeviceLiteModeEnabled = false,
+    String? contextBudgetPreset,
+    int? contextBudgetReservedOutputTokens,
+    int? contextBudgetSafetyMarginTokens,
+    double? contextBudgetEffectiveInputPercent,
   }) async {
     saveCallCount += 1;
     await onSaveLlmConfig?.call();
+    final hasExplicitContextBudgetPayload = contextBudgetPreset != null;
     llmConfig = LlmConfigSnapshot(
       localeTag: llmConfig.localeTag,
       enabled: enabled,
       streamingEnabled: streamingEnabled ?? llmConfig.streamingEnabled,
+      providerMode: providerMode,
       providerId: providerId,
       selectedProviderOptionId: selectedProviderOptionId,
       protocol: protocol,
@@ -4178,6 +5156,26 @@ class _FakeSettingsFacade implements SettingsFacade {
           llmConfig.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl:
           anthropicPromptCacheTtl ?? llmConfig.anthropicPromptCacheTtl,
+      onDeviceModels: llmConfig.onDeviceModels,
+      selectedOnDeviceModelId: selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: onDeviceMaxContextWindow,
+      onDeviceMaxTokens: onDeviceMaxTokens,
+      onDeviceTopK: onDeviceTopK,
+      onDeviceTopP: onDeviceTopP,
+      onDeviceTemperature: onDeviceTemperature,
+      onDeviceAccelerator: onDeviceAccelerator,
+      onDeviceThinkingEnabled: onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
+      contextBudgetPreset: contextBudgetPreset ?? llmConfig.contextBudgetPreset,
+      contextBudgetReservedOutputTokens: hasExplicitContextBudgetPayload
+          ? contextBudgetReservedOutputTokens
+          : llmConfig.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens: hasExplicitContextBudgetPayload
+          ? contextBudgetSafetyMarginTokens
+          : llmConfig.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent: hasExplicitContextBudgetPayload
+          ? contextBudgetEffectiveInputPercent
+          : llmConfig.contextBudgetEffectiveInputPercent,
     );
     return llmConfig;
   }
@@ -4216,8 +5214,15 @@ class _FakeSettingsFacade implements SettingsFacade {
     );
     llmConfig = LlmConfigSnapshot(
       localeTag: llmConfig.localeTag,
-      enabled: baseUrl.isNotEmpty && apiKey.isNotEmpty,
+      enabled:
+          baseUrl.isNotEmpty &&
+          (apiKey.isNotEmpty ||
+              _llmEndpointAllowsBlankApiKeyForTest(
+                protocol: protocol,
+                baseUrl: baseUrl,
+              )),
       streamingEnabled: streamingEnabled ?? llmConfig.streamingEnabled,
+      providerMode: 'cloud',
       providerId: 'custom',
       selectedProviderOptionId: savedOptionId,
       protocol: protocol,
@@ -4244,6 +5249,22 @@ class _FakeSettingsFacade implements SettingsFacade {
           llmConfig.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl:
           anthropicPromptCacheTtl ?? llmConfig.anthropicPromptCacheTtl,
+      onDeviceModels: llmConfig.onDeviceModels,
+      selectedOnDeviceModelId: llmConfig.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: llmConfig.onDeviceMaxContextWindow,
+      onDeviceMaxTokens: llmConfig.onDeviceMaxTokens,
+      onDeviceTopK: llmConfig.onDeviceTopK,
+      onDeviceTopP: llmConfig.onDeviceTopP,
+      onDeviceTemperature: llmConfig.onDeviceTemperature,
+      onDeviceAccelerator: llmConfig.onDeviceAccelerator,
+      onDeviceThinkingEnabled: llmConfig.onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: llmConfig.onDeviceLiteModeEnabled,
+      contextBudgetPreset: llmConfig.contextBudgetPreset,
+      contextBudgetReservedOutputTokens:
+          llmConfig.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens: llmConfig.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent:
+          llmConfig.contextBudgetEffectiveInputPercent,
     );
     return llmConfig;
   }
@@ -4259,6 +5280,63 @@ class _FakeSettingsFacade implements SettingsFacade {
   }) async {
     validationCallCount += 1;
     return validationResult;
+  }
+
+  @override
+  Future<LlmConfigSnapshot> downloadOnDeviceLlmModel(String modelId) async {
+    llmConfig = llmConfig.copyWith(
+      onDeviceModels: llmConfig.onDeviceModels
+          .map(
+            (option) => option.id == modelId
+                ? LlmOnDeviceModelOption(
+                    id: option.id,
+                    title: option.title,
+                    subtitle: option.subtitle,
+                    sizeLabel: option.sizeLabel,
+                    fileSizeBytes: option.fileSizeBytes,
+                    installState: 'ready',
+                    downloadedBytes: option.fileSizeBytes,
+                    downloadBytesPerSecond: 0,
+                    sha256Verified: true,
+                    isSelected: option.isSelected,
+                    lastError: null,
+                  )
+                : option,
+          )
+          .toList(growable: false),
+    );
+    return llmConfig;
+  }
+
+  @override
+  Future<LlmConfigSnapshot> cancelOnDeviceLlmModelDownload(
+    String modelId,
+  ) async => llmConfig;
+
+  @override
+  Future<LlmConfigSnapshot> deleteOnDeviceLlmModel(String modelId) async {
+    llmConfig = llmConfig.copyWith(
+      onDeviceModels: llmConfig.onDeviceModels
+          .map(
+            (option) => option.id == modelId
+                ? LlmOnDeviceModelOption(
+                    id: option.id,
+                    title: option.title,
+                    subtitle: option.subtitle,
+                    sizeLabel: option.sizeLabel,
+                    fileSizeBytes: option.fileSizeBytes,
+                    installState: 'not_downloaded',
+                    downloadedBytes: 0,
+                    downloadBytesPerSecond: 0,
+                    sha256Verified: false,
+                    isSelected: option.isSelected,
+                    lastError: null,
+                  )
+                : option,
+          )
+          .toList(growable: false),
+    );
+    return llmConfig;
   }
 
   @override
@@ -4314,6 +5392,44 @@ class _FakeSettingsFacade implements SettingsFacade {
   }
 }
 
+bool _llmEndpointAllowsBlankApiKeyForTest({
+  required String protocol,
+  required String baseUrl,
+}) {
+  final normalizedProtocol = protocol.trim().toLowerCase();
+  if (normalizedProtocol != 'openai' &&
+      normalizedProtocol != 'openai_responses') {
+    return false;
+  }
+  final host = (Uri.tryParse(baseUrl.trim())?.host ?? '').trim().toLowerCase();
+  if (host.isEmpty) {
+    return false;
+  }
+  if (host == 'localhost' ||
+      host == 'localhost.localdomain' ||
+      host == '0.0.0.0' ||
+      host == '::1' ||
+      host == '10.0.2.2' ||
+      host == 'host.docker.internal' ||
+      host.endsWith('.local')) {
+    return true;
+  }
+  if (host.startsWith('127.') ||
+      host.startsWith('10.') ||
+      host.startsWith('192.168.')) {
+    return true;
+  }
+  if (!host.startsWith('172.')) {
+    return false;
+  }
+  final parts = host.split('.');
+  if (parts.length < 2) {
+    return false;
+  }
+  final secondOctet = int.tryParse(parts[1]);
+  return secondOctet != null && secondOctet >= 16 && secondOctet <= 31;
+}
+
 class _FakeDebugBridge extends OpenCraySeedBridge {
   _FakeDebugBridge({
     required this.shellSnapshot,
@@ -4365,9 +5481,25 @@ class _FakeDebugBridge extends OpenCraySeedBridge {
   int? lastMemorySliceLines;
   String? lastMemoryActionRecordId;
   String? lastMemoryActionId;
+  final List<OpenCrayTab> persistedShellTabs = <OpenCrayTab>[];
+  final List<String?> persistedSettingsRouteIds = <String?>[];
 
   @override
   Future<OpenCrayShellSnapshot> loadShellSnapshot() async => shellSnapshot;
+
+  @override
+  Future<void> saveShellDestination({
+    required String selectedTab,
+    String? settingsSubpage,
+  }) async {
+    persistedShellTabs.add(
+      OpenCrayTab.values.firstWhere(
+        (tab) => selectedTab == tab.routeSegment || selectedTab == tab.routeName,
+        orElse: () => OpenCrayTab.chat,
+      ),
+    );
+    persistedSettingsRouteIds.add(settingsSubpage);
+  }
 
   @override
   Future<OpenCrayChatRuntimeSnapshot> loadChatRuntimeSnapshot() async =>

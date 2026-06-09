@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class LlmRouteCapabilityMetadataTest {
@@ -68,6 +69,114 @@ class LlmRouteCapabilityMetadataTest {
     assertEquals("true", metadata["pdfInputSupported"])
     assertEquals("262144", metadata["context_window_tokens"])
     assertEquals("true", metadata["nativeToolCallingAvailable"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataDoesNotDisableResponsesNativeSearchFromUnobservedProbe() {
+    val metadata = effectiveLlmRouteMetadata(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot(
+        routeFingerprint = llmRouteFingerprint(
+          protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+          baseUrl = "https://api.openai.com/v1",
+          model = "gpt-5-mini",
+        ),
+        verifiedAtEpochMs = 123L,
+        nativeToolCallingAvailable = true,
+        builtinWebSearchSupported = false,
+      ),
+    )
+
+    assertEquals("openai_responses", metadata["protocol"])
+    assertEquals(null, metadata["nativeWebSearchEnabled"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataEnablesRemoteCompactionOnlyForOpenAiResponsesByDefault() {
+    val responsesMetadata = effectiveLlmRouteMetadata(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot.unknown(
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        model = "gpt-5-mini",
+      ),
+    )
+    val chatMetadata = effectiveLlmRouteMetadata(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "gpt-4o-mini",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot.unknown(
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://api.openai.com/v1",
+        model = "gpt-4o-mini",
+      ),
+    )
+    val anthropicMetadata = effectiveLlmRouteMetadata(
+      providerId = "anthropic",
+      protocol = LlmProviderProtocols.ANTHROPIC,
+      model = "claude-sonnet-4-5",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot.unknown(
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://api.anthropic.com/v1",
+        model = "claude-sonnet-4-5",
+      ),
+    )
+
+    assertEquals("true", responsesMetadata["responsesRemoteCompactionSupported"])
+    assertEquals(null, chatMetadata["responsesRemoteCompactionSupported"])
+    assertEquals(null, anthropicMetadata["responsesRemoteCompactionSupported"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataKeepsOpenAiResponsesRemoteCompactionWhenVerifiedSnapshotDidNotProbeIt() {
+    val metadata = effectiveLlmRouteMetadata(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot(
+        routeFingerprint = llmRouteFingerprint(
+          protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+          baseUrl = "https://api.openai.com/v1",
+          model = "gpt-5-mini",
+        ),
+        verifiedAtEpochMs = 123L,
+        nativeToolCallingAvailable = true,
+        responsesRemoteCompactionSupported = false,
+      ),
+    )
+
+    assertEquals("true", metadata["responsesRemoteCompactionSupported"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataEnablesNativeSearchWhenVerifiedSupported() {
+    val metadata = effectiveLlmRouteMetadata(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot(
+        routeFingerprint = llmRouteFingerprint(
+          protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+          baseUrl = "https://api.openai.com/v1",
+          model = "gpt-5-mini",
+        ),
+        verifiedAtEpochMs = 123L,
+        nativeToolCallingAvailable = true,
+        builtinWebSearchSupported = true,
+      ),
+    )
+
+    assertEquals("true", metadata["nativeWebSearchEnabled"])
   }
 
   @Test
@@ -146,6 +255,35 @@ class LlmRouteCapabilityMetadataTest {
       metadata[LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION],
     )
     assertEquals("true", metadata["stream"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataFromSettingsOmitsOfficialFieldsForCustomBaseUrl() {
+    val openAiMetadata = effectiveLlmRouteMetadata(
+      settings = LlmSettingsState(
+        providerId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://third-party.example/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        reasoningEffort = "medium",
+      ),
+    )
+    val anthropicMetadata = effectiveLlmRouteMetadata(
+      settings = LlmSettingsState(
+        providerId = "anthropic",
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://third-party.example/anthropic",
+        apiKey = "token",
+        model = "claude-3-7-sonnet",
+        reasoningEffort = "high",
+      ),
+    )
+
+    assertEquals("openai_responses", openAiMetadata["protocol"])
+    assertFalse(openAiMetadata.containsKey("reasoning_effort"))
+    assertEquals("anthropic", anthropicMetadata["protocol"])
+    assertFalse(anthropicMetadata.containsKey("thinking_budget_tokens"))
   }
 
   @Test

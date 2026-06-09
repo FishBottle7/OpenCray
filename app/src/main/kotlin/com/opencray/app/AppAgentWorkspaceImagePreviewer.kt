@@ -6,8 +6,10 @@ import android.graphics.Canvas
 import android.graphics.RectF
 import com.caverock.androidsvg.SVG
 import java.io.ByteArrayOutputStream
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Base64
+import java.util.LinkedHashMap
 import java.util.Locale
 import kotlin.math.roundToInt
 import kotlin.io.path.exists
@@ -15,6 +17,14 @@ import kotlin.io.path.isDirectory
 import kotlin.io.path.name
 
 internal object AppAgentWorkspaceImagePreviewer {
+  private val previewCacheLock = Any()
+  private val previewCache =
+    object : LinkedHashMap<String, Map<String, Any?>>(16, 0.75f, true) {
+      override fun removeEldestEntry(
+        eldest: MutableMap.MutableEntry<String, Map<String, Any?>>?,
+      ): Boolean = size > MAX_PREVIEW_CACHE_ENTRIES
+    }
+
   fun loadPreview(
     workspaceRoot: Path,
     relativePath: String,
@@ -33,10 +43,17 @@ internal object AppAgentWorkspaceImagePreviewer {
     require(isPreviewableName(target.name)) {
       "Image preview is available for image files only."
     }
-    val preview = loadPreviewBitmap(target)
     val normalizedRelativePath = relativePath.trim().replace('\\', '/').removePrefix("/")
+    val cacheKey = previewCacheKey(
+      target = target,
+      normalizedRelativePath = normalizedRelativePath,
+    )
+    synchronized(previewCacheLock) {
+      previewCache[cacheKey]?.let { cached -> return cached }
+    }
+    val preview = loadPreviewBitmap(target)
     val compressed = compressBitmap(preview.bitmap)
-    return mapOf(
+    val payload = mapOf(
       "name" to target.name,
       "relativePath" to normalizedRelativePath,
       "mimeType" to compressed.mimeType,
@@ -44,6 +61,22 @@ internal object AppAgentWorkspaceImagePreviewer {
       "height" to preview.height,
       "bytesBase64" to Base64.getEncoder().encodeToString(compressed.bytes),
     )
+    synchronized(previewCacheLock) {
+      previewCache[cacheKey] = payload
+    }
+    return payload
+  }
+
+  private fun previewCacheKey(
+    target: Path,
+    normalizedRelativePath: String,
+  ): String {
+    val absolutePath = target.toAbsolutePath().normalize().toString()
+    val sizeBytes = runCatching { Files.size(target) }.getOrDefault(-1L)
+    val lastModifiedEpochMs = runCatching {
+      Files.getLastModifiedTime(target).toMillis()
+    }.getOrDefault(-1L)
+    return "$absolutePath|$normalizedRelativePath|$sizeBytes|$lastModifiedEpochMs"
   }
 
   private fun loadPreviewBitmap(target: Path): LoadedPreviewBitmap =
@@ -223,6 +256,7 @@ internal object AppAgentWorkspaceImagePreviewer {
 
   private const val MAX_PREVIEW_DIMENSION: Int = 2_048
   private const val MAX_PREVIEW_PIXELS: Int = 5_242_880
+  private const val MAX_PREVIEW_CACHE_ENTRIES: Int = 12
   private const val DEFAULT_SVG_DIMENSION: Int = 512
 
   private val PREVIEWABLE_EXTENSIONS = setOf(

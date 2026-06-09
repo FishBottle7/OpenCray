@@ -579,6 +579,12 @@ class OpenCrayChatRunMemoryTraceSnapshot {
 class OpenCrayChatRunMemoryFlushSnapshot {
   const OpenCrayChatRunMemoryFlushSnapshot({
     this.outcome,
+    this.triggerStage,
+    this.executionMode,
+    this.contextWindowTokens,
+    this.autoCompactTokenLimit,
+    this.estimatedReplayTokens,
+    this.tokenThresholdTriggered,
     this.omittedMessageCount,
     this.omittedCharCount,
     this.signature,
@@ -589,6 +595,12 @@ class OpenCrayChatRunMemoryFlushSnapshot {
   });
 
   final String? outcome;
+  final String? triggerStage;
+  final String? executionMode;
+  final int? contextWindowTokens;
+  final int? autoCompactTokenLimit;
+  final int? estimatedReplayTokens;
+  final bool? tokenThresholdTriggered;
   final int? omittedMessageCount;
   final int? omittedCharCount;
   final String? signature;
@@ -606,6 +618,12 @@ class OpenCrayChatRunMemoryFlushSnapshot {
         map['writtenRecordIds'] as List<Object?>? ?? const <Object?>[];
     return OpenCrayChatRunMemoryFlushSnapshot(
       outcome: map['outcome'] as String?,
+      triggerStage: map['triggerStage'] as String?,
+      executionMode: map['executionMode'] as String?,
+      contextWindowTokens: map['contextWindowTokens'] as int?,
+      autoCompactTokenLimit: map['autoCompactTokenLimit'] as int?,
+      estimatedReplayTokens: map['estimatedReplayTokens'] as int?,
+      tokenThresholdTriggered: map['tokenThresholdTriggered'] as bool?,
       omittedMessageCount: map['omittedMessageCount'] as int?,
       omittedCharCount: map['omittedCharCount'] as int?,
       signature: map['signature'] as String?,
@@ -617,6 +635,34 @@ class OpenCrayChatRunMemoryFlushSnapshot {
           .where((value) => value.isNotEmpty)
           .toList(growable: false),
       writtenRecordIds: rawWrittenRecordIds
+          .whereType<String>()
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty)
+          .toList(growable: false),
+    );
+  }
+}
+
+class OpenCrayChatRunStickyMemorySnapshot {
+  const OpenCrayChatRunStickyMemorySnapshot({
+    this.injectedRecordCount,
+    this.omittedRecordCount,
+    this.recordIds = const <String>[],
+  });
+
+  final int? injectedRecordCount;
+  final int? omittedRecordCount;
+  final List<String> recordIds;
+
+  factory OpenCrayChatRunStickyMemorySnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    final rawRecordIds =
+        map['recordIds'] as List<Object?>? ?? const <Object?>[];
+    return OpenCrayChatRunStickyMemorySnapshot(
+      injectedRecordCount: map['injectedRecordCount'] as int?,
+      omittedRecordCount: map['omittedRecordCount'] as int?,
+      recordIds: rawRecordIds
           .whereType<String>()
           .map((value) => value.trim())
           .where((value) => value.isNotEmpty)
@@ -643,6 +689,181 @@ class OpenCrayChatRunLiveContextSnapshot {
       mode: map['mode'] as String?,
       soulEnabled: map['soulEnabled'] as bool?,
       memoryRecallEnabled: map['memoryRecallEnabled'] as bool?,
+    );
+  }
+}
+
+class OpenCrayChatRunContextBudgetSnapshot {
+  const OpenCrayChatRunContextBudgetSnapshot({
+    this.applied,
+    this.pressureMode,
+    this.selectedPreset,
+    this.effectivePreset,
+    this.presetSource,
+    this.presetDiverged,
+    this.sourcePreset,
+    this.sourceTranscriptMaxMessages,
+    this.sourceInjectedMemoryMaxRecords,
+    this.sourceMemoryRecallMaxRecords,
+    this.sourceBootstrapMaxChars,
+    this.sourceSkillInventoryMaxSkills,
+    this.sourceActiveSkillMaxChars,
+    this.sourceRecentObservationMaxEntries,
+    this.sourceMemoryFlushMaxToolObservations,
+    this.contextWindowTokens,
+    this.reservedOutputTokens,
+    this.safetyMarginTokens,
+    this.hardInputTokens,
+    this.targetInputTokens,
+    this.emergencyInputTokens,
+    this.unresolvedOverflow,
+    this.fullLayerCount,
+    this.compactLayerCount,
+    this.minimalLayerCount,
+    this.omittedLayerCount,
+    this.reducedLayerNames = const <String>[],
+    this.omittedLayerNames = const <String>[],
+    this.layers = const <OpenCrayChatRunContextBudgetLayerSnapshot>[],
+    this.layerSummary,
+  });
+
+  final bool? applied;
+  final String? pressureMode;
+  final String? selectedPreset;
+  final String? effectivePreset;
+  final String? presetSource;
+  final bool? presetDiverged;
+  final String? sourcePreset;
+  final int? sourceTranscriptMaxMessages;
+  final int? sourceInjectedMemoryMaxRecords;
+  final int? sourceMemoryRecallMaxRecords;
+  final int? sourceBootstrapMaxChars;
+  final int? sourceSkillInventoryMaxSkills;
+  final int? sourceActiveSkillMaxChars;
+  final int? sourceRecentObservationMaxEntries;
+  final int? sourceMemoryFlushMaxToolObservations;
+  final int? contextWindowTokens;
+  final int? reservedOutputTokens;
+  final int? safetyMarginTokens;
+  final int? hardInputTokens;
+  final int? targetInputTokens;
+  final int? emergencyInputTokens;
+  final bool? unresolvedOverflow;
+  final int? fullLayerCount;
+  final int? compactLayerCount;
+  final int? minimalLayerCount;
+  final int? omittedLayerCount;
+  final List<String> reducedLayerNames;
+  final List<String> omittedLayerNames;
+  final List<OpenCrayChatRunContextBudgetLayerSnapshot> layers;
+  final String? layerSummary;
+
+  factory OpenCrayChatRunContextBudgetSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayChatRunContextBudgetSnapshot(
+      applied: map['applied'] as bool?,
+      pressureMode: map['pressureMode'] as String?,
+      selectedPreset: map['selectedPreset'] as String?,
+      effectivePreset: map['effectivePreset'] as String?,
+      presetSource: map['presetSource'] as String?,
+      presetDiverged: map['presetDiverged'] as bool?,
+      sourcePreset: map['sourcePreset'] as String?,
+      sourceTranscriptMaxMessages: map['sourceTranscriptMaxMessages'] as int?,
+      sourceInjectedMemoryMaxRecords:
+          map['sourceInjectedMemoryMaxRecords'] as int?,
+      sourceMemoryRecallMaxRecords: map['sourceMemoryRecallMaxRecords'] as int?,
+      sourceBootstrapMaxChars: map['sourceBootstrapMaxChars'] as int?,
+      sourceSkillInventoryMaxSkills:
+          map['sourceSkillInventoryMaxSkills'] as int?,
+      sourceActiveSkillMaxChars: map['sourceActiveSkillMaxChars'] as int?,
+      sourceRecentObservationMaxEntries:
+          map['sourceRecentObservationMaxEntries'] as int?,
+      sourceMemoryFlushMaxToolObservations:
+          map['sourceMemoryFlushMaxToolObservations'] as int?,
+      contextWindowTokens: map['contextWindowTokens'] as int?,
+      reservedOutputTokens: map['reservedOutputTokens'] as int?,
+      safetyMarginTokens: map['safetyMarginTokens'] as int?,
+      hardInputTokens: map['hardInputTokens'] as int?,
+      targetInputTokens: map['targetInputTokens'] as int?,
+      emergencyInputTokens: map['emergencyInputTokens'] as int?,
+      unresolvedOverflow: map['unresolvedOverflow'] as bool?,
+      fullLayerCount: map['fullLayerCount'] as int?,
+      compactLayerCount: map['compactLayerCount'] as int?,
+      minimalLayerCount: map['minimalLayerCount'] as int?,
+      omittedLayerCount: map['omittedLayerCount'] as int?,
+      reducedLayerNames:
+          (map['reducedLayerNames'] as List<Object?>?)
+              ?.whereType<String>()
+              .map((value) => value.trim())
+              .where((value) => value.isNotEmpty)
+              .toList(growable: false) ??
+          const <String>[],
+      omittedLayerNames:
+          (map['omittedLayerNames'] as List<Object?>?)
+              ?.whereType<String>()
+              .map((value) => value.trim())
+              .where((value) => value.isNotEmpty)
+              .toList(growable: false) ??
+          const <String>[],
+      layers:
+          (map['layers'] as List<Object?>?)
+              ?.whereType<Map<Object?, Object?>>()
+              .map(OpenCrayChatRunContextBudgetLayerSnapshot.fromMap)
+              .toList(growable: false) ??
+          const <OpenCrayChatRunContextBudgetLayerSnapshot>[],
+      layerSummary: map['layerSummary'] as String?,
+    );
+  }
+}
+
+class OpenCrayChatRunContextBudgetLayerSnapshot {
+  const OpenCrayChatRunContextBudgetLayerSnapshot({
+    required this.id,
+    required this.name,
+    this.priorityClass,
+    this.retentionPriority,
+    this.estimatedTokensBefore,
+    this.estimatedTokensAfter,
+    this.finalState,
+    this.omitted,
+    this.reduced,
+    this.appliedOperators = const <String>[],
+  });
+
+  final String id;
+  final String name;
+  final String? priorityClass;
+  final int? retentionPriority;
+  final int? estimatedTokensBefore;
+  final int? estimatedTokensAfter;
+  final String? finalState;
+  final bool? omitted;
+  final bool? reduced;
+  final List<String> appliedOperators;
+
+  factory OpenCrayChatRunContextBudgetLayerSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    final id = (map['id'] as String?)?.trim() ?? '';
+    final name = (map['name'] as String?)?.trim() ?? id;
+    return OpenCrayChatRunContextBudgetLayerSnapshot(
+      id: id,
+      name: name.isEmpty ? id : name,
+      priorityClass: map['priorityClass'] as String?,
+      retentionPriority: map['retentionPriority'] as int?,
+      estimatedTokensBefore: map['estimatedTokensBefore'] as int?,
+      estimatedTokensAfter: map['estimatedTokensAfter'] as int?,
+      finalState: map['finalState'] as String?,
+      omitted: map['omitted'] as bool?,
+      reduced: map['reduced'] as bool?,
+      appliedOperators:
+          (map['appliedOperators'] as List<Object?>?)
+              ?.whereType<String>()
+              .map((value) => value.trim())
+              .where((value) => value.isNotEmpty)
+              .toList(growable: false) ??
+          const <String>[],
     );
   }
 }
@@ -708,9 +929,52 @@ class OpenCrayChatRunBootstrapSnapshot {
   }
 }
 
+class OpenCrayChatRunRemoteCompactionSnapshot {
+  const OpenCrayChatRunRemoteCompactionSnapshot({
+    this.requested,
+    this.supported,
+    this.used,
+    this.triggerStage,
+    this.fallbackReason,
+    this.outputItemCount,
+    this.compactionItemCount,
+    this.encryptedContentCount,
+  });
+
+  final bool? requested;
+  final bool? supported;
+  final bool? used;
+  final String? triggerStage;
+  final String? fallbackReason;
+  final int? outputItemCount;
+  final int? compactionItemCount;
+  final int? encryptedContentCount;
+
+  factory OpenCrayChatRunRemoteCompactionSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayChatRunRemoteCompactionSnapshot(
+      requested: map['requested'] as bool?,
+      supported: map['supported'] as bool?,
+      used: map['used'] as bool?,
+      triggerStage: map['triggerStage'] as String?,
+      fallbackReason: map['fallbackReason'] as String?,
+      outputItemCount: map['outputItemCount'] as int?,
+      compactionItemCount: map['compactionItemCount'] as int?,
+      encryptedContentCount: map['encryptedContentCount'] as int?,
+    );
+  }
+}
+
 class OpenCrayChatRunDurableCompactionSnapshot {
   const OpenCrayChatRunDurableCompactionSnapshot({
     this.compactedThisRun,
+    this.triggerStage,
+    this.executionMode,
+    this.contextWindowTokens,
+    this.autoCompactTokenLimit,
+    this.estimatedReplayTokens,
+    this.tokenThresholdTriggered,
     this.sourceTranscriptMessageCount,
     this.retainedTranscriptMessageCount,
     this.latestCompactedMessageCount,
@@ -719,9 +983,16 @@ class OpenCrayChatRunDurableCompactionSnapshot {
     this.totalSummaryCount,
     this.totalCompactedMessageCount,
     this.latestCompactedAtEpochMs,
+    this.remoteCompaction,
   });
 
   final bool? compactedThisRun;
+  final String? triggerStage;
+  final String? executionMode;
+  final int? contextWindowTokens;
+  final int? autoCompactTokenLimit;
+  final int? estimatedReplayTokens;
+  final bool? tokenThresholdTriggered;
   final int? sourceTranscriptMessageCount;
   final int? retainedTranscriptMessageCount;
   final int? latestCompactedMessageCount;
@@ -730,12 +1001,20 @@ class OpenCrayChatRunDurableCompactionSnapshot {
   final int? totalSummaryCount;
   final int? totalCompactedMessageCount;
   final int? latestCompactedAtEpochMs;
+  final OpenCrayChatRunRemoteCompactionSnapshot? remoteCompaction;
 
   factory OpenCrayChatRunDurableCompactionSnapshot.fromMap(
     Map<Object?, Object?> map,
   ) {
+    final rawRemoteCompaction = map['remoteCompaction'];
     return OpenCrayChatRunDurableCompactionSnapshot(
       compactedThisRun: map['compactedThisRun'] as bool?,
+      triggerStage: map['triggerStage'] as String?,
+      executionMode: map['executionMode'] as String?,
+      contextWindowTokens: map['contextWindowTokens'] as int?,
+      autoCompactTokenLimit: map['autoCompactTokenLimit'] as int?,
+      estimatedReplayTokens: map['estimatedReplayTokens'] as int?,
+      tokenThresholdTriggered: map['tokenThresholdTriggered'] as bool?,
       sourceTranscriptMessageCount: map['sourceTranscriptMessageCount'] as int?,
       retainedTranscriptMessageCount:
           map['retainedTranscriptMessageCount'] as int?,
@@ -745,6 +1024,9 @@ class OpenCrayChatRunDurableCompactionSnapshot {
       totalSummaryCount: map['totalSummaryCount'] as int?,
       totalCompactedMessageCount: map['totalCompactedMessageCount'] as int?,
       latestCompactedAtEpochMs: map['latestCompactedAtEpochMs'] as int?,
+      remoteCompaction: rawRemoteCompaction is Map<Object?, Object?>
+          ? OpenCrayChatRunRemoteCompactionSnapshot.fromMap(rawRemoteCompaction)
+          : null,
     );
   }
 }
@@ -822,6 +1104,7 @@ class OpenCrayChatRunActiveSkillSnapshot {
     this.invocationControl,
     this.executionContext,
     this.activationSource,
+    this.pinned,
     this.toolRestrictionEnabled,
     this.truncated,
     this.allowedToolKeys = const <String>[],
@@ -832,6 +1115,7 @@ class OpenCrayChatRunActiveSkillSnapshot {
   final String? invocationControl;
   final String? executionContext;
   final String? activationSource;
+  final bool? pinned;
   final bool? toolRestrictionEnabled;
   final bool? truncated;
   final List<String> allowedToolKeys;
@@ -847,6 +1131,7 @@ class OpenCrayChatRunActiveSkillSnapshot {
       invocationControl: map['invocationControl'] as String?,
       executionContext: map['executionContext'] as String?,
       activationSource: map['activationSource'] as String?,
+      pinned: map['pinned'] as bool?,
       toolRestrictionEnabled: map['toolRestrictionEnabled'] as bool?,
       truncated: map['truncated'] as bool?,
       allowedToolKeys: rawAllowedToolKeys
@@ -958,6 +1243,79 @@ class OpenCrayChatRunRecoveryPlanSnapshot {
   }
 }
 
+class OpenCrayChatRunLlmDiagnosticsSnapshot {
+  const OpenCrayChatRunLlmDiagnosticsSnapshot({
+    this.nativeToolCallRequested,
+    this.providerResponseShape,
+    this.nativeToolCallObserved,
+    this.parsedToolCallObserved,
+    this.fallbackParserAttempted,
+    this.fallbackParserSucceeded,
+    this.responsesContinuationRecoveryCount,
+    this.responsesContinuationRecoveryLastReason,
+    this.localContinuationUsedCount,
+    this.localContinuationFallbackCount,
+    this.localContinuationLastMode,
+    this.localContinuationLastReason,
+    this.responsesPendingContextUpdateCount,
+    this.responsesPendingContextUpdateHash,
+    this.toolCallEventEmitted,
+    this.toolResultEventEmitted,
+    this.contextCacheBreakReason,
+    this.lastSuccessfulToolName,
+  });
+
+  final bool? nativeToolCallRequested;
+  final String? providerResponseShape;
+  final bool? nativeToolCallObserved;
+  final bool? parsedToolCallObserved;
+  final bool? fallbackParserAttempted;
+  final bool? fallbackParserSucceeded;
+  final int? responsesContinuationRecoveryCount;
+  final String? responsesContinuationRecoveryLastReason;
+  final int? localContinuationUsedCount;
+  final int? localContinuationFallbackCount;
+  final String? localContinuationLastMode;
+  final String? localContinuationLastReason;
+  final int? responsesPendingContextUpdateCount;
+  final String? responsesPendingContextUpdateHash;
+  final bool? toolCallEventEmitted;
+  final bool? toolResultEventEmitted;
+  final String? contextCacheBreakReason;
+  final String? lastSuccessfulToolName;
+
+  factory OpenCrayChatRunLlmDiagnosticsSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayChatRunLlmDiagnosticsSnapshot(
+      nativeToolCallRequested: map['nativeToolCallRequested'] as bool?,
+      providerResponseShape: map['providerResponseShape'] as String?,
+      nativeToolCallObserved: map['nativeToolCallObserved'] as bool?,
+      parsedToolCallObserved: map['parsedToolCallObserved'] as bool?,
+      fallbackParserAttempted: map['fallbackParserAttempted'] as bool?,
+      fallbackParserSucceeded: map['fallbackParserSucceeded'] as bool?,
+      responsesContinuationRecoveryCount:
+          map['responsesContinuationRecoveryCount'] as int?,
+      responsesContinuationRecoveryLastReason:
+          map['responsesContinuationRecoveryLastReason'] as String?,
+      localContinuationUsedCount: map['localContinuationUsedCount'] as int?,
+      localContinuationFallbackCount:
+          map['localContinuationFallbackCount'] as int?,
+      localContinuationLastMode: map['localContinuationLastMode'] as String?,
+      localContinuationLastReason:
+          map['localContinuationLastReason'] as String?,
+      responsesPendingContextUpdateCount:
+          map['responsesPendingContextUpdateCount'] as int?,
+      responsesPendingContextUpdateHash:
+          map['responsesPendingContextUpdateHash'] as String?,
+      toolCallEventEmitted: map['toolCallEventEmitted'] as bool?,
+      toolResultEventEmitted: map['toolResultEventEmitted'] as bool?,
+      contextCacheBreakReason: map['contextCacheBreakReason'] as String?,
+      lastSuccessfulToolName: map['lastSuccessfulToolName'] as String?,
+    );
+  }
+}
+
 class OpenCrayChatRunSnapshot {
   const OpenCrayChatRunSnapshot({
     required this.sessionId,
@@ -978,9 +1336,17 @@ class OpenCrayChatRunSnapshot {
     this.errorMessage,
     this.responseFormat,
     this.pendingMessageId,
+    this.finalAttachments = const <OpenCrayChatAttachmentSnapshot>[],
+    this.managedProcessIds = const <String>[],
+    this.managedProcesses = const <OpenCrayChatManagedProcessSnapshot>[],
+    this.runningManagedProcessCount = 0,
+    this.hasLiveManagedProcesses = false,
     this.lastEvent,
+    this.llmDiagnostics,
     this.liveContext,
+    this.contextBudget,
     this.memoryTrace,
+    this.stickyMemory,
     this.memoryFlush,
     this.bootstrap,
     this.durableCompaction,
@@ -1007,10 +1373,18 @@ class OpenCrayChatRunSnapshot {
   final String? errorMessage;
   final String? responseFormat;
   final String? pendingMessageId;
+  final List<OpenCrayChatAttachmentSnapshot> finalAttachments;
+  final List<String> managedProcessIds;
+  final List<OpenCrayChatManagedProcessSnapshot> managedProcesses;
+  final int runningManagedProcessCount;
+  final bool hasLiveManagedProcesses;
   final bool isTerminal;
   final OpenCrayChatRuntimeEventSnapshot? lastEvent;
+  final OpenCrayChatRunLlmDiagnosticsSnapshot? llmDiagnostics;
   final OpenCrayChatRunLiveContextSnapshot? liveContext;
+  final OpenCrayChatRunContextBudgetSnapshot? contextBudget;
   final OpenCrayChatRunMemoryTraceSnapshot? memoryTrace;
+  final OpenCrayChatRunStickyMemorySnapshot? stickyMemory;
   final OpenCrayChatRunMemoryFlushSnapshot? memoryFlush;
   final OpenCrayChatRunBootstrapSnapshot? bootstrap;
   final OpenCrayChatRunDurableCompactionSnapshot? durableCompaction;
@@ -1021,8 +1395,11 @@ class OpenCrayChatRunSnapshot {
 
   factory OpenCrayChatRunSnapshot.fromMap(Map<Object?, Object?> map) {
     final rawLastEvent = map['lastEvent'];
+    final rawLlmDiagnostics = map['llmDiagnostics'];
     final rawLiveContext = map['liveContext'];
+    final rawContextBudget = map['contextBudget'];
     final rawMemoryTrace = map['memoryTrace'];
+    final rawStickyMemory = map['stickyMemory'];
     final rawMemoryFlush = map['memoryFlush'];
     final rawBootstrap = map['bootstrap'];
     final rawDurableCompaction = map['durableCompaction'];
@@ -1030,6 +1407,12 @@ class OpenCrayChatRunSnapshot {
     final rawActiveSkill = map['activeSkill'];
     final rawDiagnostics = map['diagnostics'];
     final rawRecoveryPlan = map['recoveryPlan'];
+    final rawFinalAttachments =
+        map['finalAttachments'] as List<Object?>? ?? const <Object?>[];
+    final rawManagedProcessIds =
+        map['managedProcessIds'] as List<Object?>? ?? const <Object?>[];
+    final rawManagedProcesses =
+        map['managedProcesses'] as List<Object?>? ?? const <Object?>[];
     return OpenCrayChatRunSnapshot(
       sessionId: map['sessionId'] as String? ?? '',
       runId: map['runId'] as String? ?? '',
@@ -1048,15 +1431,38 @@ class OpenCrayChatRunSnapshot {
       errorMessage: map['errorMessage'] as String?,
       responseFormat: map['responseFormat'] as String?,
       pendingMessageId: map['pendingMessageId'] as String?,
+      finalAttachments: rawFinalAttachments
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatAttachmentSnapshot.fromMap)
+          .toList(growable: false),
+      managedProcessIds: rawManagedProcessIds.whereType<String>().toList(
+        growable: false,
+      ),
+      managedProcesses: rawManagedProcesses
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatManagedProcessSnapshot.fromMap)
+          .toList(growable: false),
+      runningManagedProcessCount:
+          map['runningManagedProcessCount'] as int? ?? 0,
+      hasLiveManagedProcesses: map['hasLiveManagedProcesses'] as bool? ?? false,
       isTerminal: map['isTerminal'] as bool? ?? false,
       lastEvent: rawLastEvent is Map<Object?, Object?>
           ? OpenCrayChatRuntimeEventSnapshot.fromMap(rawLastEvent)
           : null,
+      llmDiagnostics: rawLlmDiagnostics is Map<Object?, Object?>
+          ? OpenCrayChatRunLlmDiagnosticsSnapshot.fromMap(rawLlmDiagnostics)
+          : null,
       liveContext: rawLiveContext is Map<Object?, Object?>
           ? OpenCrayChatRunLiveContextSnapshot.fromMap(rawLiveContext)
           : null,
+      contextBudget: rawContextBudget is Map<Object?, Object?>
+          ? OpenCrayChatRunContextBudgetSnapshot.fromMap(rawContextBudget)
+          : null,
       memoryTrace: rawMemoryTrace is Map<Object?, Object?>
           ? OpenCrayChatRunMemoryTraceSnapshot.fromMap(rawMemoryTrace)
+          : null,
+      stickyMemory: rawStickyMemory is Map<Object?, Object?>
+          ? OpenCrayChatRunStickyMemorySnapshot.fromMap(rawStickyMemory)
           : null,
       memoryFlush: rawMemoryFlush is Map<Object?, Object?>
           ? OpenCrayChatRunMemoryFlushSnapshot.fromMap(rawMemoryFlush)
@@ -1085,12 +1491,94 @@ class OpenCrayChatRunSnapshot {
   }
 }
 
+class OpenCrayChatManagedProcessSnapshot {
+  const OpenCrayChatManagedProcessSnapshot({
+    required this.processId,
+    required this.status,
+    required this.command,
+    required this.startedAtEpochMs,
+    required this.updatedAtEpochMs,
+    this.args = const <String>[],
+    this.workingDirectory,
+    this.processStarted = false,
+    this.timeoutMs = 0,
+    this.finishedAtEpochMs,
+    this.exitCode,
+    this.errorCode,
+    this.errorMessage,
+    this.timedOut = false,
+    this.cancelled = false,
+    this.outputLimitExceeded = false,
+    this.stdout = '',
+    this.stderr = '',
+    this.stdoutPreview = '',
+    this.stderrPreview = '',
+    this.stdoutTruncated = false,
+    this.stderrTruncated = false,
+  });
+
+  final String processId;
+  final String status;
+  final String command;
+  final List<String> args;
+  final String? workingDirectory;
+  final bool processStarted;
+  final int timeoutMs;
+  final int startedAtEpochMs;
+  final int updatedAtEpochMs;
+  final int? finishedAtEpochMs;
+  final int? exitCode;
+  final String? errorCode;
+  final String? errorMessage;
+  final bool timedOut;
+  final bool cancelled;
+  final bool outputLimitExceeded;
+  final String stdout;
+  final String stderr;
+  final String stdoutPreview;
+  final String stderrPreview;
+  final bool stdoutTruncated;
+  final bool stderrTruncated;
+
+  factory OpenCrayChatManagedProcessSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    final rawArgs = map['args'] as List<Object?>? ?? const <Object?>[];
+    return OpenCrayChatManagedProcessSnapshot(
+      processId: map['processId'] as String? ?? '',
+      status: map['status'] as String? ?? '',
+      command: map['command'] as String? ?? '',
+      args: rawArgs.whereType<String>().toList(growable: false),
+      workingDirectory: map['workingDirectory'] as String?,
+      processStarted: map['processStarted'] as bool? ?? false,
+      timeoutMs: map['timeoutMs'] as int? ?? 0,
+      startedAtEpochMs: map['startedAtEpochMs'] as int? ?? 0,
+      updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
+      finishedAtEpochMs: map['finishedAtEpochMs'] as int?,
+      exitCode: map['exitCode'] as int?,
+      errorCode: map['errorCode'] as String?,
+      errorMessage: map['errorMessage'] as String?,
+      timedOut: map['timedOut'] as bool? ?? false,
+      cancelled: map['cancelled'] as bool? ?? false,
+      outputLimitExceeded: map['outputLimitExceeded'] as bool? ?? false,
+      stdout:
+          map['stdout'] as String? ?? (map['stdoutPreview'] as String? ?? ''),
+      stderr:
+          map['stderr'] as String? ?? (map['stderrPreview'] as String? ?? ''),
+      stdoutPreview: map['stdoutPreview'] as String? ?? '',
+      stderrPreview: map['stderrPreview'] as String? ?? '',
+      stdoutTruncated: map['stdoutTruncated'] as bool? ?? false,
+      stderrTruncated: map['stderrTruncated'] as bool? ?? false,
+    );
+  }
+}
+
 extension OpenCrayChatRunExecutionScope on OpenCrayChatRunSnapshot {
   List<OpenCrayChatRuntimeEventSnapshot> scopeRuntimeEvents(
     Iterable<OpenCrayChatRuntimeEventSnapshot> events,
   ) {
     final List<OpenCrayChatRuntimeEventSnapshot> runEvents = events
-        .where((event) => event.runId == runId)
+        .where(_matchesRuntimeEventIdentity)
         .toList(growable: false);
     final bool preserveHistoryAcrossExecutions =
         _preservesHistoryAcrossExecutions(executionKind) ||
@@ -1099,9 +1587,21 @@ extension OpenCrayChatRunExecutionScope on OpenCrayChatRunSnapshot {
     if (currentExecutionId == null) {
       if (_normalizedExecutionValue(pendingExecutionKind) != null &&
           !isTerminal) {
-        return preserveHistoryAcrossExecutions
-            ? runEvents
-            : const <OpenCrayChatRuntimeEventSnapshot>[];
+        if (preserveHistoryAcrossExecutions) {
+          return runEvents;
+        }
+        final List<OpenCrayChatRuntimeEventSnapshot> untagged = runEvents
+            .where(_isRuntimeEventExecutionUntagged)
+            .toList(growable: false);
+        if (untagged.isNotEmpty) {
+          return untagged;
+        }
+        final bool hasTaggedEvents = runEvents.any(
+          (event) => !_isRuntimeEventExecutionUntagged(event),
+        );
+        return hasTaggedEvents
+            ? const <OpenCrayChatRuntimeEventSnapshot>[]
+            : runEvents;
       }
       return runEvents;
     }
@@ -1138,21 +1638,41 @@ extension OpenCrayChatRunExecutionScope on OpenCrayChatRunSnapshot {
   }
 
   bool matchesRuntimeEvent(OpenCrayChatRuntimeEventSnapshot event) {
-    if (event.runId != runId) {
+    if (!_matchesRuntimeEventIdentity(event)) {
       return false;
     }
     final String? currentExecutionId = _normalizedExecutionValue(executionId);
     if (currentExecutionId == null) {
-      return _normalizedExecutionValue(pendingExecutionKind) == null ||
-          isTerminal;
+      if (_normalizedExecutionValue(pendingExecutionKind) != null &&
+          !isTerminal) {
+        return _isRuntimeEventExecutionUntagged(event);
+      }
+      return true;
     }
     return _normalizedExecutionValue(event.executionId) == currentExecutionId;
+  }
+
+  bool _matchesRuntimeEventIdentity(OpenCrayChatRuntimeEventSnapshot event) {
+    final String normalizedRunId = runId.trim();
+    final String eventRunId = event.runId.trim();
+    if (normalizedRunId.isNotEmpty && eventRunId == normalizedRunId) {
+      return true;
+    }
+    final String normalizedTaskId = taskId.trim();
+    final String eventTaskId = event.taskId.trim();
+    return normalizedTaskId.isNotEmpty && eventTaskId == normalizedTaskId;
   }
 }
 
 String? _normalizedExecutionValue(String? raw) {
   final String value = raw?.trim() ?? '';
   return value.isEmpty ? null : value;
+}
+
+bool _isRuntimeEventExecutionUntagged(OpenCrayChatRuntimeEventSnapshot event) {
+  return _normalizedExecutionValue(event.executionId) == null &&
+      event.executionOrdinal == null &&
+      _normalizedExecutionValue(event.executionKind) == null;
 }
 
 bool _preservesHistoryAcrossExecutions(String? executionKind) {
@@ -1176,6 +1696,7 @@ class OpenCrayChatRuntimeSnapshot {
     this.flutterAppInstanceId,
     this.bridgeInstanceId,
     this.hostLifecycle,
+    this.updatedAtEpochMs = 0,
   });
 
   final String sessionId;
@@ -1187,6 +1708,7 @@ class OpenCrayChatRuntimeSnapshot {
   final String? flutterAppInstanceId;
   final String? bridgeInstanceId;
   final OpenCrayHostLifecycleSnapshot? hostLifecycle;
+  final int updatedAtEpochMs;
 
   factory OpenCrayChatRuntimeSnapshot.fromMap(Map<Object?, Object?> map) {
     final rawActiveRuns =
@@ -1226,8 +1748,109 @@ class OpenCrayChatRuntimeSnapshot {
       hostLifecycle: rawHostLifecycle is Map<Object?, Object?>
           ? OpenCrayHostLifecycleSnapshot.fromMap(rawHostLifecycle)
           : null,
+      updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
     );
   }
+}
+
+class OpenCrayChatRuntimeEventDelta {
+  const OpenCrayChatRuntimeEventDelta({
+    required this.sessionId,
+    required this.events,
+    required this.totalLength,
+    this.sequence = 0,
+    this.activeRuns = const <OpenCrayChatRunSnapshot>[],
+    this.retainedRuns = const <OpenCrayChatRunSnapshot>[],
+    this.subAgents = const <OpenCrayChatSubAgentSnapshot>[],
+    this.liveAssistantDrafts = const <OpenCrayChatLiveAssistantDraftSnapshot>[],
+    this.hasActiveRunsPatch = false,
+    this.hasRetainedRunsPatch = false,
+    this.hasSubAgentsPatch = false,
+    this.hasLiveAssistantDraftsPatch = false,
+    this.hostLifecycle,
+    this.runPatchMode = 'replace',
+    this.updatedAtEpochMs = 0,
+  });
+
+  final String sessionId;
+  final List<OpenCrayChatRuntimeEventSnapshot> events;
+  final int totalLength;
+  final int sequence;
+  final List<OpenCrayChatRunSnapshot> activeRuns;
+  final List<OpenCrayChatRunSnapshot> retainedRuns;
+  final List<OpenCrayChatSubAgentSnapshot> subAgents;
+  final List<OpenCrayChatLiveAssistantDraftSnapshot> liveAssistantDrafts;
+  final bool hasActiveRunsPatch;
+  final bool hasRetainedRunsPatch;
+  final bool hasSubAgentsPatch;
+  final bool hasLiveAssistantDraftsPatch;
+  final OpenCrayHostLifecycleSnapshot? hostLifecycle;
+  final String runPatchMode;
+  final int updatedAtEpochMs;
+
+  factory OpenCrayChatRuntimeEventDelta.fromMap(Map<Object?, Object?> map) {
+    final rawEvents = map['events'] as List<Object?>? ?? const <Object?>[];
+    final hasActiveRunsPatch = map.containsKey('activeRuns');
+    final rawActiveRuns =
+        map['activeRuns'] as List<Object?>? ?? const <Object?>[];
+    final hasRetainedRunsPatch = map.containsKey('retainedRuns');
+    final rawRetainedRuns =
+        map['retainedRuns'] as List<Object?>? ?? const <Object?>[];
+    final hasSubAgentsPatch = map.containsKey('subAgents');
+    final rawSubAgents =
+        map['subAgents'] as List<Object?>? ?? const <Object?>[];
+    final hasLiveAssistantDraftsPatch = map.containsKey('liveAssistantDrafts');
+    final rawLiveAssistantDrafts =
+        map['liveAssistantDrafts'] as List<Object?>? ?? const <Object?>[];
+    final rawHostLifecycle = map['hostLifecycle'];
+    return OpenCrayChatRuntimeEventDelta(
+      sessionId: map['sessionId'] as String? ?? '',
+      events: rawEvents
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatRuntimeEventSnapshot.fromMap)
+          .toList(growable: false),
+      totalLength: map['totalLength'] as int? ?? 0,
+      sequence: map['sequence'] as int? ?? 0,
+      activeRuns: rawActiveRuns
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatRunSnapshot.fromMap)
+          .toList(growable: false),
+      retainedRuns: rawRetainedRuns
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatRunSnapshot.fromMap)
+          .toList(growable: false),
+      subAgents: rawSubAgents
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatSubAgentSnapshot.fromMap)
+          .toList(growable: false),
+      liveAssistantDrafts: rawLiveAssistantDrafts
+          .whereType<Map<Object?, Object?>>()
+          .map(OpenCrayChatLiveAssistantDraftSnapshot.fromMap)
+          .toList(growable: false),
+      hasActiveRunsPatch: hasActiveRunsPatch,
+      hasRetainedRunsPatch: hasRetainedRunsPatch,
+      hasSubAgentsPatch: hasSubAgentsPatch,
+      hasLiveAssistantDraftsPatch: hasLiveAssistantDraftsPatch,
+      hostLifecycle: rawHostLifecycle is Map<Object?, Object?>
+          ? OpenCrayHostLifecycleSnapshot.fromMap(rawHostLifecycle)
+          : null,
+      runPatchMode: map['runPatchMode'] as String? ?? 'replace',
+      updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
+    );
+  }
+
+  bool get hasRuntimeActivityPatch =>
+      events.isNotEmpty ||
+      hasActiveRunsPatch ||
+      activeRuns.isNotEmpty ||
+      hasRetainedRunsPatch ||
+      retainedRuns.isNotEmpty ||
+      hasSubAgentsPatch ||
+      subAgents.isNotEmpty ||
+      hasLiveAssistantDraftsPatch ||
+      liveAssistantDrafts.isNotEmpty ||
+      hostLifecycle != null ||
+      updatedAtEpochMs > 0;
 }
 
 class OpenCrayChatLiveAssistantDraftSnapshot {
@@ -1254,6 +1877,40 @@ class OpenCrayChatLiveAssistantDraftSnapshot {
       pendingMessageId: map['pendingMessageId'] as String? ?? '',
       text: map['text'] as String? ?? '',
       updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
+    );
+  }
+}
+
+class OpenCrayChatLiveAssistantDraftEvent {
+  const OpenCrayChatLiveAssistantDraftEvent({
+    required this.sessionId,
+    required this.runId,
+    required this.taskId,
+    required this.pendingMessageId,
+    required this.text,
+    required this.updatedAtEpochMs,
+    this.cleared = false,
+  });
+
+  final String sessionId;
+  final String runId;
+  final String taskId;
+  final String pendingMessageId;
+  final String text;
+  final int updatedAtEpochMs;
+  final bool cleared;
+
+  factory OpenCrayChatLiveAssistantDraftEvent.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayChatLiveAssistantDraftEvent(
+      sessionId: map['sessionId'] as String? ?? '',
+      runId: map['runId'] as String? ?? '',
+      taskId: map['taskId'] as String? ?? '',
+      pendingMessageId: map['pendingMessageId'] as String? ?? '',
+      text: map['text'] as String? ?? '',
+      updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
+      cleared: map['cleared'] as bool? ?? false,
     );
   }
 }
@@ -1402,6 +2059,7 @@ class OpenCrayChatSnapshot {
     this.todoCompletedAtEpochMs,
     this.pendingApprovals = const <OpenCrayChatPendingApprovalSnapshot>[],
     this.runtimeActivity,
+    this.updatedAtEpochMs = 0,
   });
 
   final String screenTitle;
@@ -1418,6 +2076,7 @@ class OpenCrayChatSnapshot {
   final int? todoCompletedAtEpochMs;
   final List<OpenCrayChatPendingApprovalSnapshot> pendingApprovals;
   final OpenCrayChatRuntimeSnapshot? runtimeActivity;
+  final int updatedAtEpochMs;
 
   factory OpenCrayChatSnapshot.fromMap(Map<Object?, Object?> map) {
     final rawMessages = map['messages'] as List<Object?>? ?? const <Object?>[];
@@ -1458,6 +2117,7 @@ class OpenCrayChatSnapshot {
       runtimeActivity: rawRuntimeActivity is Map<Object?, Object?>
           ? OpenCrayChatRuntimeSnapshot.fromMap(rawRuntimeActivity)
           : null,
+      updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
     );
   }
 }

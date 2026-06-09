@@ -118,6 +118,15 @@ internal class ChatRuntimeSessionContextFactory(
       }
   }
 
+  internal fun loadChatAttachmentEntries(
+    sessionId: String,
+  ): List<com.opencray.persistence.model.ChatAttachmentEntry> =
+    chatSessionStore.loadSession(sessionId)
+      ?.messages
+      ?.asReversed()
+      ?.flatMap { message -> message.attachments.asReversed() }
+      .orEmpty()
+
   internal fun resolveChatAttachmentFilePath(
     attachment: com.opencray.persistence.model.ChatAttachmentEntry,
   ): Path? = resolveAttachmentFilePath(

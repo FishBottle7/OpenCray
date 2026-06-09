@@ -9,7 +9,6 @@ class OpenCrayNotificationSettingsSnapshot {
     required this.approvalReminderEnabled,
     required this.taskFinishedEnabled,
     required this.taskFailedEnabled,
-    required this.newUserMessageEnabled,
     required this.scheduledWakeEnabled,
     required this.backgroundTaskPausedEnabled,
     required this.serviceRecoveredEnabled,
@@ -24,7 +23,6 @@ class OpenCrayNotificationSettingsSnapshot {
   final bool approvalReminderEnabled;
   final bool taskFinishedEnabled;
   final bool taskFailedEnabled;
-  final bool newUserMessageEnabled;
   final bool scheduledWakeEnabled;
   final bool backgroundTaskPausedEnabled;
   final bool serviceRecoveredEnabled;
@@ -35,7 +33,7 @@ class OpenCrayNotificationSettingsSnapshot {
     return OpenCrayNotificationSettingsSnapshot(
       masterEnabled: payload['masterEnabled'] as bool? ?? true,
       defaultDeliveryModeId:
-          payload['defaultDeliveryModeId'] as String? ?? 'critical',
+          payload['defaultDeliveryModeId'] as String? ?? 'all',
       quietHoursEnabled: payload['quietHoursEnabled'] as bool? ?? true,
       quietHoursStartMinutes: payload['quietHoursStartMinutes'] as int? ?? 1380,
       quietHoursEndMinutes: payload['quietHoursEndMinutes'] as int? ?? 480,
@@ -43,14 +41,13 @@ class OpenCrayNotificationSettingsSnapshot {
           payload['approvalRequestsEnabled'] as bool? ?? true,
       approvalReminderEnabled:
           payload['approvalReminderEnabled'] as bool? ?? true,
-      taskFinishedEnabled: payload['taskFinishedEnabled'] as bool? ?? false,
+      taskFinishedEnabled: payload['taskFinishedEnabled'] as bool? ?? true,
       taskFailedEnabled: payload['taskFailedEnabled'] as bool? ?? true,
-      newUserMessageEnabled: payload['newUserMessageEnabled'] as bool? ?? true,
-      scheduledWakeEnabled: payload['scheduledWakeEnabled'] as bool? ?? false,
+      scheduledWakeEnabled: payload['scheduledWakeEnabled'] as bool? ?? true,
       backgroundTaskPausedEnabled:
           payload['backgroundTaskPausedEnabled'] as bool? ?? true,
       serviceRecoveredEnabled:
-          payload['serviceRecoveredEnabled'] as bool? ?? false,
+          payload['serviceRecoveredEnabled'] as bool? ?? true,
     );
   }
 
@@ -65,7 +62,6 @@ class OpenCrayNotificationSettingsSnapshot {
       'approvalReminderEnabled': approvalReminderEnabled,
       'taskFinishedEnabled': taskFinishedEnabled,
       'taskFailedEnabled': taskFailedEnabled,
-      'newUserMessageEnabled': newUserMessageEnabled,
       'scheduledWakeEnabled': scheduledWakeEnabled,
       'backgroundTaskPausedEnabled': backgroundTaskPausedEnabled,
       'serviceRecoveredEnabled': serviceRecoveredEnabled,

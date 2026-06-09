@@ -4,12 +4,16 @@ class OpenCrayMediaProviderConfigSnapshot {
     required this.baseUrl,
     required this.endpoint,
     required this.model,
+    this.authProtocol = 'bearer',
+    this.apiKey = '',
   });
 
   final String provider;
   final String baseUrl;
   final String endpoint;
   final String model;
+  final String authProtocol;
+  final String apiKey;
 
   factory OpenCrayMediaProviderConfigSnapshot.fromMap(
     Map<Object?, Object?> map,
@@ -19,6 +23,8 @@ class OpenCrayMediaProviderConfigSnapshot {
       baseUrl: map['baseUrl'] as String? ?? '',
       endpoint: map['endpoint'] as String? ?? '',
       model: map['model'] as String? ?? '',
+      authProtocol: map['authProtocol'] as String? ?? 'bearer',
+      apiKey: map['apiKey'] as String? ?? '',
     );
   }
 
@@ -27,6 +33,8 @@ class OpenCrayMediaProviderConfigSnapshot {
     'baseUrl': baseUrl,
     'endpoint': endpoint,
     'model': model,
+    'authProtocol': authProtocol,
+    'apiKey': apiKey,
   };
 }
 
@@ -35,13 +43,19 @@ class OpenCrayVoiceProviderConfigSnapshot {
     required this.provider,
     required this.baseUrl,
     required this.endpoint,
+    this.model = 'tts-1',
     required this.voicePreset,
+    this.authProtocol = 'bearer',
+    this.apiKey = '',
   });
 
   final String provider;
   final String baseUrl;
   final String endpoint;
+  final String model;
   final String voicePreset;
+  final String authProtocol;
+  final String apiKey;
 
   factory OpenCrayVoiceProviderConfigSnapshot.fromMap(
     Map<Object?, Object?> map,
@@ -50,7 +64,10 @@ class OpenCrayVoiceProviderConfigSnapshot {
       provider: map['provider'] as String? ?? '',
       baseUrl: map['baseUrl'] as String? ?? '',
       endpoint: map['endpoint'] as String? ?? '',
+      model: map['model'] as String? ?? 'tts-1',
       voicePreset: map['voicePreset'] as String? ?? '',
+      authProtocol: map['authProtocol'] as String? ?? 'bearer',
+      apiKey: map['apiKey'] as String? ?? '',
     );
   }
 
@@ -58,7 +75,10 @@ class OpenCrayVoiceProviderConfigSnapshot {
     'provider': provider,
     'baseUrl': baseUrl,
     'endpoint': endpoint,
+    'model': model,
     'voicePreset': voicePreset,
+    'authProtocol': authProtocol,
+    'apiKey': apiKey,
   };
 }
 
@@ -90,6 +110,12 @@ class OpenCrayMediaSpeechConfigSnapshot {
     required this.title,
     required this.subtitle,
     required this.imageGeneration,
+    this.videoGeneration = const OpenCrayMediaProviderConfigSnapshot(
+      provider: '',
+      baseUrl: '',
+      endpoint: '',
+      model: '',
+    ),
     required this.voiceGeneration,
     required this.sttRouteId,
     required this.externalStt,
@@ -100,6 +126,7 @@ class OpenCrayMediaSpeechConfigSnapshot {
   final String title;
   final String subtitle;
   final OpenCrayMediaProviderConfigSnapshot imageGeneration;
+  final OpenCrayMediaProviderConfigSnapshot videoGeneration;
   final OpenCrayVoiceProviderConfigSnapshot voiceGeneration;
   final String sttRouteId;
   final OpenCrayMediaProviderConfigSnapshot externalStt;
@@ -112,6 +139,10 @@ class OpenCrayMediaSpeechConfigSnapshot {
       subtitle: map['subtitle'] as String? ?? '',
       imageGeneration: OpenCrayMediaProviderConfigSnapshot.fromMap(
         map['imageGeneration'] as Map<Object?, Object?>? ??
+            const <Object?, Object?>{},
+      ),
+      videoGeneration: OpenCrayMediaProviderConfigSnapshot.fromMap(
+        map['videoGeneration'] as Map<Object?, Object?>? ??
             const <Object?, Object?>{},
       ),
       voiceGeneration: OpenCrayVoiceProviderConfigSnapshot.fromMap(
@@ -135,6 +166,7 @@ class OpenCrayMediaSpeechConfigSnapshot {
     'title': title,
     'subtitle': subtitle,
     'imageGeneration': imageGeneration.toMap(),
+    'videoGeneration': videoGeneration.toMap(),
     'voiceGeneration': voiceGeneration.toMap(),
     'sttRouteId': sttRouteId,
     'externalStt': externalStt.toMap(),

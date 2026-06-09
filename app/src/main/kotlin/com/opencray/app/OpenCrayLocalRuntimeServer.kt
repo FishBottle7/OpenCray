@@ -206,6 +206,13 @@ internal class OpenCrayLocalRuntimeServer(
     val body = request.jsonBody()
     val payload: Any? = when (request.method to request.path) {
       "GET" to "/v1/shell_snapshot" -> shellGateway.loadShellSnapshot()
+      "POST" to "/v1/save_shell_destination" -> {
+        shellGateway.saveShellDestination(
+          selectedTab = body.optString("selectedTab"),
+          settingsSubpage = body.optString("settingsSubpage").takeIf(String::isNotBlank),
+        )
+        null
+      }
       "GET" to "/v1/files_snapshot" -> localGateway.loadFilesSnapshot()
       "POST" to "/v1/resolve_sandbox_preview_embed_config" -> localGateway.resolveSandboxPreviewEmbedConfig(
         previewUrl = body.optString("previewUrl"),
@@ -270,6 +277,10 @@ internal class OpenCrayLocalRuntimeServer(
         )
         null
       }
+      "POST" to "/v1/save_workspace_media_attachment" -> localGateway.saveWorkspaceMediaAttachment(
+        relativePath = body.optString("relativePath"),
+        kind = body.optString("kind"),
+      )
       "GET" to "/v1/settings_overview" -> settingsGateway.loadSettingsOverview()
       "GET" to "/v1/settings_detail" -> settingsGateway.loadSettingsDetail(
         routeIdRaw = request.queryParameter("routeId"),
@@ -302,6 +313,7 @@ internal class OpenCrayLocalRuntimeServer(
         } else {
           null
         },
+        providerMode = body.optString("providerMode", LlmProviderModes.CLOUD),
         providerId = body.optString("providerId"),
         selectedProviderOptionId = body.optString("selectedProviderOptionId"),
         protocol = body.optString("protocol"),
@@ -332,6 +344,56 @@ internal class OpenCrayLocalRuntimeServer(
         } else {
           null
         },
+        contextBudgetPreset = if (body.has("contextBudgetPreset")) {
+          body.optString("contextBudgetPreset")
+        } else {
+          null
+        },
+        contextBudgetReservedOutputTokens =
+          body.takeIf { !it.isNull("contextBudgetReservedOutputTokens") }
+            ?.optInt("contextBudgetReservedOutputTokens"),
+        contextBudgetSafetyMarginTokens =
+          body.takeIf { !it.isNull("contextBudgetSafetyMarginTokens") }
+            ?.optInt("contextBudgetSafetyMarginTokens"),
+        contextBudgetEffectiveInputPercent =
+          body.takeIf { !it.isNull("contextBudgetEffectiveInputPercent") }
+            ?.optDouble("contextBudgetEffectiveInputPercent"),
+        selectedOnDeviceModelId = body.optString(
+          "selectedOnDeviceModelId",
+          LlmSettingsState.DEFAULT_ON_DEVICE_MODEL_ID,
+        ),
+        onDeviceMaxContextWindow = body.optInt(
+          "onDeviceMaxContextWindow",
+          LlmSettingsState.DEFAULT_ON_DEVICE_MAX_CONTEXT_WINDOW,
+        ),
+        onDeviceMaxTokens = body.optInt(
+          "onDeviceMaxTokens",
+          LlmSettingsState.DEFAULT_ON_DEVICE_MAX_TOKENS,
+        ),
+        onDeviceTopK = body.optInt(
+          "onDeviceTopK",
+          LlmSettingsState.DEFAULT_ON_DEVICE_TOP_K,
+        ),
+        onDeviceTopP = body.optDouble(
+          "onDeviceTopP",
+          LlmSettingsState.DEFAULT_ON_DEVICE_TOP_P,
+        ),
+        onDeviceTemperature = body.optDouble(
+          "onDeviceTemperature",
+          LlmSettingsState.DEFAULT_ON_DEVICE_TEMPERATURE,
+        ),
+        onDeviceAccelerator = body.optString(
+          "onDeviceAccelerator",
+          LlmSettingsState.DEFAULT_ON_DEVICE_ACCELERATOR,
+        ),
+        onDeviceThinkingEnabled = body.optBoolean(
+          "onDeviceThinkingEnabled",
+          LlmSettingsState.DEFAULT_ON_DEVICE_THINKING_ENABLED,
+        ),
+        onDeviceLiteModeEnabled = body.optBoolean(
+          "onDeviceLiteModeEnabled",
+          LlmSettingsState.DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
+        ),
       )
       "POST" to "/v1/save_custom_llm_provider" -> settingsGateway.saveCustomLlmProvider(
         selectedProviderOptionId = body.optString("selectedProviderOptionId"),
@@ -368,6 +430,20 @@ internal class OpenCrayLocalRuntimeServer(
         } else {
           null
         },
+        contextBudgetPreset = if (body.has("contextBudgetPreset")) {
+          body.optString("contextBudgetPreset")
+        } else {
+          null
+        },
+        contextBudgetReservedOutputTokens =
+          body.takeIf { !it.isNull("contextBudgetReservedOutputTokens") }
+            ?.optInt("contextBudgetReservedOutputTokens"),
+        contextBudgetSafetyMarginTokens =
+          body.takeIf { !it.isNull("contextBudgetSafetyMarginTokens") }
+            ?.optInt("contextBudgetSafetyMarginTokens"),
+        contextBudgetEffectiveInputPercent =
+          body.takeIf { !it.isNull("contextBudgetEffectiveInputPercent") }
+            ?.optDouble("contextBudgetEffectiveInputPercent"),
       )
       "POST" to "/v1/validate_llm_config" -> settingsGateway.validateLlmConfig(
         providerId = body.optString("providerId"),
@@ -376,6 +452,15 @@ internal class OpenCrayLocalRuntimeServer(
         apiKey = body.optString("apiKey"),
         model = body.optString("model"),
         reasoningEffort = body.optString("reasoningEffort"),
+      )
+      "POST" to "/v1/download_on_device_llm_model" -> settingsGateway.downloadOnDeviceLlmModel(
+        modelId = body.optString("modelId"),
+      )
+      "POST" to "/v1/cancel_on_device_llm_model_download" -> settingsGateway.cancelOnDeviceLlmModelDownload(
+        modelId = body.optString("modelId"),
+      )
+      "POST" to "/v1/delete_on_device_llm_model" -> settingsGateway.deleteOnDeviceLlmModel(
+        modelId = body.optString("modelId"),
       )
       "GET" to "/v1/personalization_config" -> settingsGateway.loadPersonalizationConfig()
       "POST" to "/v1/save_personalization_config" -> settingsGateway.savePersonalizationConfig(
@@ -791,7 +876,13 @@ private fun parseSubmitChatMessageAttachments(body: JSONObject): List<OpenCrayFi
     val relativePath = payload["relativePath"] as String?
     val path = payload["path"] as String?
     val artifactId = payload["artifactId"] as String?
-    if (relativePath.isNullOrBlank() && path.isNullOrBlank() && artifactId.isNullOrBlank()) {
+    val chatAttachmentId = payload["chatAttachmentId"] as String?
+    if (
+      relativePath.isNullOrBlank() &&
+      path.isNullOrBlank() &&
+      artifactId.isNullOrBlank() &&
+      chatAttachmentId.isNullOrBlank()
+    ) {
       return@mapNotNull null
     }
     OpenCrayFinalAttachment(
@@ -799,6 +890,7 @@ private fun parseSubmitChatMessageAttachments(body: JSONObject): List<OpenCrayFi
       relativePath = relativePath,
       path = path,
       artifactId = artifactId,
+      chatAttachmentId = chatAttachmentId,
       displayName = payload["displayName"] as String?,
       mimeType = payload["mimeType"] as String?,
       durationMs = (payload["durationMs"] as Number?)?.toLong(),

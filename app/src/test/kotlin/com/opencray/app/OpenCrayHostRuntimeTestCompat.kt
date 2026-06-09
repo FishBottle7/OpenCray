@@ -142,6 +142,7 @@ internal fun OpenCrayHostRuntime.Companion.createForTest(
     runtimeServiceConnectionState
   },
   runtimeServiceConnectionChangeRegistrar: RuntimeServiceConnectionChangeRegistrar? = null,
+  onDeviceLlmWarmupController: OnDeviceLlmWarmupController? = null,
   resumeActiveSessionOnInit: Boolean = true,
 ): OpenCrayHostRuntime {
   val runtimeHostAccess = DefaultOpenCrayRuntimeHostAccess(
@@ -204,6 +205,7 @@ internal fun OpenCrayHostRuntime.Companion.createForTest(
     strings = strings,
     mainThreadPoster = mainThreadPoster,
     lifecycleDescriptor = lifecycleDescriptor,
+    onDeviceLlmWarmupController = onDeviceLlmWarmupController,
     runtimeDiagnosticsBridge = runtimeDiagnosticsBridge,
     resumeActiveSessionOnInit = resumeActiveSessionOnInit,
   )

@@ -8,7 +8,7 @@ buildscript {
     // Android Gradle Plugin for library/app modules
     classpath("com.android.tools.build:gradle:8.12.0")
     // Kotlin plugin for Android
-    classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:1.9.22")
+    classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.2.21")
   }
 }
 
@@ -26,8 +26,8 @@ tasks.register("clean", Delete::class) {
 
 subprojects {
   tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
-    kotlinOptions {
-      jvmTarget = JavaVersion.VERSION_11.toString()
+    compilerOptions {
+      jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
     }
   }
 }

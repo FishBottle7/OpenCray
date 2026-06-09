@@ -32,7 +32,6 @@ class NotificationSettingsSnapshot {
     required this.approvalReminderEnabled,
     required this.taskFinishedEnabled,
     required this.taskFailedEnabled,
-    required this.newUserMessageEnabled,
     required this.scheduledWakeEnabled,
     required this.backgroundTaskPausedEnabled,
     required this.serviceRecoveredEnabled,
@@ -47,7 +46,6 @@ class NotificationSettingsSnapshot {
   final bool approvalReminderEnabled;
   final bool taskFinishedEnabled;
   final bool taskFailedEnabled;
-  final bool newUserMessageEnabled;
   final bool scheduledWakeEnabled;
   final bool backgroundTaskPausedEnabled;
   final bool serviceRecoveredEnabled;
@@ -62,7 +60,6 @@ class NotificationSettingsSnapshot {
     bool? approvalReminderEnabled,
     bool? taskFinishedEnabled,
     bool? taskFailedEnabled,
-    bool? newUserMessageEnabled,
     bool? scheduledWakeEnabled,
     bool? backgroundTaskPausedEnabled,
     bool? serviceRecoveredEnabled,
@@ -80,8 +77,6 @@ class NotificationSettingsSnapshot {
           approvalReminderEnabled ?? this.approvalReminderEnabled,
       taskFinishedEnabled: taskFinishedEnabled ?? this.taskFinishedEnabled,
       taskFailedEnabled: taskFailedEnabled ?? this.taskFailedEnabled,
-      newUserMessageEnabled:
-          newUserMessageEnabled ?? this.newUserMessageEnabled,
       scheduledWakeEnabled: scheduledWakeEnabled ?? this.scheduledWakeEnabled,
       backgroundTaskPausedEnabled:
           backgroundTaskPausedEnabled ?? this.backgroundTaskPausedEnabled,

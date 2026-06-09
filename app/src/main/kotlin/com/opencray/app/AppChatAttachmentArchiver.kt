@@ -105,7 +105,12 @@ internal object AppChatAttachmentArchiver {
               ?.takeIf(String::isNotBlank),
           contentSha256 = contentSha256,
         )
-      }.getOrNull()
+      }.getOrElse { throwable ->
+        if (isReferenceOnlyAttachment(attachment)) {
+          throw throwable
+        }
+        null
+      }
     }
   }
 
@@ -114,6 +119,18 @@ internal object AppChatAttachmentArchiver {
     workspaceRoot: Path,
     allowedRoots: Set<Path>,
   ): Path? {
+    if (isReferenceOnlyAttachment(attachment)) {
+      val referenceId = attachment.chatAttachmentId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: attachment.artifactId
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+        ?: "unknown"
+      throw IllegalArgumentException(
+        "Attachment reference '$referenceId' must be resolved before archiving.",
+      )
+    }
     val relativePath = attachment.relativePath
       ?.trim()
       ?.replace('\\', '/')
@@ -137,6 +154,14 @@ internal object AppChatAttachmentArchiver {
     }
     return resolved
   }
+
+  private fun isReferenceOnlyAttachment(attachment: OpenCrayFinalAttachment): Boolean =
+    attachment.relativePath.isNullOrBlank() &&
+      attachment.path.isNullOrBlank() &&
+      (
+        !attachment.artifactId.isNullOrBlank() ||
+          !attachment.chatAttachmentId.isNullOrBlank()
+        )
 
   private fun archiveCopy(
     archiveRoot: Path,

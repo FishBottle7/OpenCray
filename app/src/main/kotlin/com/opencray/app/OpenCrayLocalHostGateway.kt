@@ -46,6 +46,8 @@ internal interface OpenCrayLocalHostGateway {
 
   fun shareWorkspaceEntries(relativePaths: List<String>)
 
+  fun saveWorkspaceMediaAttachment(relativePath: String, kind: String): Map<String, Any?>
+
   fun showNativeToast(message: String)
 
   fun resolveSandboxPreviewEmbedConfig(previewUrl: String): Map<String, Any?> =
@@ -308,6 +310,23 @@ internal class DefaultOpenCrayLocalHostGateway(
     failure?.let { throwable -> throw throwable }
   }
 
+  override fun saveWorkspaceMediaAttachment(
+    relativePath: String,
+    kind: String,
+  ): Map<String, Any?> {
+    val context = requireNotNull(appContext) {
+      "Workspace media saving is unavailable."
+    }
+    return synchronized(lock) {
+      AppAgentWorkspaceMediaSaver.saveAttachment(
+        appContext = context,
+        workspaceRoot = requireWorkspaceRoot(),
+        relativePath = relativePath,
+        kind = kind,
+      ).toMap()
+    }
+  }
+
   override fun showNativeToast(message: String) {
     val normalizedMessage = message.trim()
     if (normalizedMessage.isEmpty()) {
@@ -353,14 +372,20 @@ internal class DefaultOpenCrayLocalHostGateway(
     requestedKind: String,
     uriStrings: List<String>,
   ): List<Map<String, Any?>> {
-    val workspaceRoot = workspaceRootProvider?.invoke() ?: return emptyList()
-    val context = appContext ?: return emptyList()
-    return AppChatAttachmentDraftImporter.importAttachments(
+    val workspaceRoot = workspaceRootProvider?.invoke()
+      ?: throw IllegalStateException("Attachment import is unavailable because the workspace is not ready.")
+    val context = appContext
+      ?: throw IllegalStateException("Attachment import is unavailable on this host.")
+    val imported = AppChatAttachmentDraftImporter.importAttachments(
       appContext = context,
       workspaceRoot = workspaceRoot,
       requestedKind = requestedKind,
       uriStrings = uriStrings,
-    ).map(::chatDraftAttachmentMap)
+    )
+    if (uriStrings.isNotEmpty() && imported.isEmpty()) {
+      throw IllegalStateException("Unable to import the selected attachments.")
+    }
+    return imported.map(::chatDraftAttachmentMap)
   }
 
   override fun probeTwinImportSource(filePath: String): Map<String, Any?> =
@@ -485,6 +510,13 @@ private fun defaultSandboxPreviewEmbedConfigService(
     settingsProvider = sandboxSettingsRepository::load,
     sessionStore = sessionStore,
   )
+}
+
+private fun SavedWorkspaceMediaAttachment.toMap(): Map<String, Any?> = buildMap {
+  put("displayName", displayName)
+  put("collection", collection)
+  uri?.let { value -> put("uri", value) }
+  absolutePath?.let { value -> put("absolutePath", value) }
 }
 
 private fun chatDraftAttachmentMap(

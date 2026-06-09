@@ -30,9 +30,7 @@ internal fun loadStoredRunRecoveryPlan(
   val checkpoint = checkpointStore.get(run.taskId)
   val lastJournalEvent = run.lastEvent ?: journalStore
     .listForRun(run.runId)
-    .lastOrNull()
-    ?.payload
-    ?.toRuntimeEvent()
+    .latestRuntimeEventOrNull()
   return planRunRecovery(
     run = run,
     checkpoint = checkpoint,

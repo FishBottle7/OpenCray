@@ -264,6 +264,7 @@ private fun RuntimeServiceBootstrapAssembly.toGatewayBundleDependencies(
     workspaceRootProvider = bootstrapContext.workspaceRootProvider,
     approvedReadRootsProvider = bootstrapContext.approvedReadRootsProvider,
     approvalDecisionAccess = approvalDecisionAccess,
+    onDeviceWarmupPlanner = runtimeServicePort.onDeviceWarmupPlanner,
   )
 }
 

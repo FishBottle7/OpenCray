@@ -53,7 +53,6 @@ class BridgeSettingsFacade implements SettingsFacade {
         approvalReminderEnabled: snapshot.approvalReminderEnabled,
         taskFinishedEnabled: snapshot.taskFinishedEnabled,
         taskFailedEnabled: snapshot.taskFailedEnabled,
-        newUserMessageEnabled: snapshot.newUserMessageEnabled,
         scheduledWakeEnabled: snapshot.scheduledWakeEnabled,
         backgroundTaskPausedEnabled: snapshot.backgroundTaskPausedEnabled,
         serviceRecoveredEnabled: snapshot.serviceRecoveredEnabled,
@@ -115,12 +114,25 @@ class BridgeSettingsFacade implements SettingsFacade {
           baseUrl: snapshot.imageGeneration.baseUrl,
           endpoint: snapshot.imageGeneration.endpoint,
           model: snapshot.imageGeneration.model,
+          authProtocol: snapshot.imageGeneration.authProtocol,
+          apiKey: snapshot.imageGeneration.apiKey,
+        ),
+        videoGeneration: OpenCrayMediaProviderConfigSnapshot(
+          provider: snapshot.videoGeneration.provider,
+          baseUrl: snapshot.videoGeneration.baseUrl,
+          endpoint: snapshot.videoGeneration.endpoint,
+          model: snapshot.videoGeneration.model,
+          authProtocol: snapshot.videoGeneration.authProtocol,
+          apiKey: snapshot.videoGeneration.apiKey,
         ),
         voiceGeneration: OpenCrayVoiceProviderConfigSnapshot(
           provider: snapshot.voiceGeneration.provider,
           baseUrl: snapshot.voiceGeneration.baseUrl,
           endpoint: snapshot.voiceGeneration.endpoint,
+          model: snapshot.voiceGeneration.model,
           voicePreset: snapshot.voiceGeneration.voicePreset,
+          authProtocol: snapshot.voiceGeneration.authProtocol,
+          apiKey: snapshot.voiceGeneration.apiKey,
         ),
         sttRouteId: snapshot.sttRoute.id,
         externalStt: OpenCrayMediaProviderConfigSnapshot(
@@ -128,6 +140,8 @@ class BridgeSettingsFacade implements SettingsFacade {
           baseUrl: snapshot.externalStt.baseUrl,
           endpoint: snapshot.externalStt.endpoint,
           model: snapshot.externalStt.model,
+          authProtocol: snapshot.externalStt.authProtocol,
+          apiKey: snapshot.externalStt.apiKey,
         ),
         onDeviceModel: OpenCrayOnDeviceSttConfigSnapshot(
           modelPackage: snapshot.onDeviceModel.modelPackage,
@@ -172,6 +186,7 @@ class BridgeSettingsFacade implements SettingsFacade {
   Future<LlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     bool? streamingEnabled,
+    String providerMode = 'cloud',
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -186,10 +201,24 @@ class BridgeSettingsFacade implements SettingsFacade {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    String selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    int onDeviceMaxContextWindow = 32768,
+    int onDeviceMaxTokens = 4096,
+    int onDeviceTopK = 40,
+    double onDeviceTopP = 0.95,
+    double onDeviceTemperature = 0.70,
+    String onDeviceAccelerator = 'gpu',
+    bool onDeviceThinkingEnabled = false,
+    bool onDeviceLiteModeEnabled = false,
+    String? contextBudgetPreset,
+    int? contextBudgetReservedOutputTokens,
+    int? contextBudgetSafetyMarginTokens,
+    double? contextBudgetEffectiveInputPercent,
   }) async => _mapLlmConfig(
     await _bridge.saveLlmConfig(
       enabled: enabled,
       streamingEnabled: streamingEnabled,
+      providerMode: providerMode,
       providerId: providerId,
       selectedProviderOptionId: selectedProviderOptionId,
       protocol: protocol,
@@ -204,6 +233,19 @@ class BridgeSettingsFacade implements SettingsFacade {
       openAiPromptCacheRetention: openAiPromptCacheRetention,
       anthropicPromptCachingEnabled: anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl: anthropicPromptCacheTtl,
+      selectedOnDeviceModelId: selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: onDeviceMaxContextWindow,
+      onDeviceMaxTokens: onDeviceMaxTokens,
+      onDeviceTopK: onDeviceTopK,
+      onDeviceTopP: onDeviceTopP,
+      onDeviceTemperature: onDeviceTemperature,
+      onDeviceAccelerator: onDeviceAccelerator,
+      onDeviceThinkingEnabled: onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
+      contextBudgetPreset: contextBudgetPreset,
+      contextBudgetReservedOutputTokens: contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens: contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent: contextBudgetEffectiveInputPercent,
     ),
   );
 
@@ -260,6 +302,20 @@ class BridgeSettingsFacade implements SettingsFacade {
       reasoningEffort: reasoningEffort,
     ),
   );
+
+  @override
+  Future<LlmConfigSnapshot> downloadOnDeviceLlmModel(String modelId) async =>
+      _mapLlmConfig(await _bridge.downloadOnDeviceLlmModel(modelId));
+
+  @override
+  Future<LlmConfigSnapshot> cancelOnDeviceLlmModelDownload(
+    String modelId,
+  ) async =>
+      _mapLlmConfig(await _bridge.cancelOnDeviceLlmModelDownload(modelId));
+
+  @override
+  Future<LlmConfigSnapshot> deleteOnDeviceLlmModel(String modelId) async =>
+      _mapLlmConfig(await _bridge.deleteOnDeviceLlmModel(modelId));
 
   @override
   Future<PersonalizationConfigSnapshot> loadPersonalizationConfig() async =>
@@ -462,7 +518,6 @@ class BridgeSettingsFacade implements SettingsFacade {
       approvalReminderEnabled: snapshot.approvalReminderEnabled,
       taskFinishedEnabled: snapshot.taskFinishedEnabled,
       taskFailedEnabled: snapshot.taskFailedEnabled,
-      newUserMessageEnabled: snapshot.newUserMessageEnabled,
       scheduledWakeEnabled: snapshot.scheduledWakeEnabled,
       backgroundTaskPausedEnabled: snapshot.backgroundTaskPausedEnabled,
       serviceRecoveredEnabled: snapshot.serviceRecoveredEnabled,
@@ -512,6 +567,7 @@ class BridgeSettingsFacade implements SettingsFacade {
       localeTag: snapshot.localeTag,
       enabled: snapshot.enabled,
       streamingEnabled: snapshot.streamingEnabled,
+      providerMode: snapshot.providerMode,
       providerId: snapshot.providerId,
       selectedProviderOptionId: snapshot.selectedProviderOptionId,
       protocol: snapshot.protocol,
@@ -542,6 +598,38 @@ class BridgeSettingsFacade implements SettingsFacade {
       openAiPromptCacheRetention: snapshot.openAiPromptCacheRetention,
       anthropicPromptCachingEnabled: snapshot.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl: snapshot.anthropicPromptCacheTtl,
+      onDeviceModels: snapshot.onDeviceModels
+          .map(
+            (option) => LlmOnDeviceModelOption(
+              id: option.id,
+              title: option.title,
+              subtitle: option.subtitle,
+              sizeLabel: option.sizeLabel,
+              fileSizeBytes: option.fileSizeBytes,
+              installState: option.installState,
+              downloadedBytes: option.downloadedBytes,
+              downloadBytesPerSecond: option.downloadBytesPerSecond,
+              sha256Verified: option.sha256Verified,
+              isSelected: option.isSelected,
+              lastError: option.lastError,
+            ),
+          )
+          .toList(growable: false),
+      selectedOnDeviceModelId: snapshot.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: snapshot.onDeviceMaxContextWindow,
+      onDeviceMaxTokens: snapshot.onDeviceMaxTokens,
+      onDeviceTopK: snapshot.onDeviceTopK,
+      onDeviceTopP: snapshot.onDeviceTopP,
+      onDeviceTemperature: snapshot.onDeviceTemperature,
+      onDeviceAccelerator: snapshot.onDeviceAccelerator,
+      onDeviceThinkingEnabled: snapshot.onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: snapshot.onDeviceLiteModeEnabled,
+      contextBudgetPreset: snapshot.contextBudgetPreset,
+      contextBudgetReservedOutputTokens:
+          snapshot.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens: snapshot.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent:
+          snapshot.contextBudgetEffectiveInputPercent,
     );
   }
 
@@ -557,12 +645,25 @@ class BridgeSettingsFacade implements SettingsFacade {
         baseUrl: snapshot.imageGeneration.baseUrl,
         endpoint: snapshot.imageGeneration.endpoint,
         model: snapshot.imageGeneration.model,
+        authProtocol: snapshot.imageGeneration.authProtocol,
+        apiKey: snapshot.imageGeneration.apiKey,
+      ),
+      videoGeneration: MediaProviderConfigSnapshot(
+        provider: snapshot.videoGeneration.provider,
+        baseUrl: snapshot.videoGeneration.baseUrl,
+        endpoint: snapshot.videoGeneration.endpoint,
+        model: snapshot.videoGeneration.model,
+        authProtocol: snapshot.videoGeneration.authProtocol,
+        apiKey: snapshot.videoGeneration.apiKey,
       ),
       voiceGeneration: VoiceProviderConfigSnapshot(
         provider: snapshot.voiceGeneration.provider,
         baseUrl: snapshot.voiceGeneration.baseUrl,
         endpoint: snapshot.voiceGeneration.endpoint,
+        model: snapshot.voiceGeneration.model,
         voicePreset: snapshot.voiceGeneration.voicePreset,
+        authProtocol: snapshot.voiceGeneration.authProtocol,
+        apiKey: snapshot.voiceGeneration.apiKey,
       ),
       sttRoute: mediaSpeechSttRouteFromId(snapshot.sttRouteId),
       externalStt: MediaProviderConfigSnapshot(
@@ -570,6 +671,8 @@ class BridgeSettingsFacade implements SettingsFacade {
         baseUrl: snapshot.externalStt.baseUrl,
         endpoint: snapshot.externalStt.endpoint,
         model: snapshot.externalStt.model,
+        authProtocol: snapshot.externalStt.authProtocol,
+        apiKey: snapshot.externalStt.apiKey,
       ),
       onDeviceModel: OnDeviceSttConfigSnapshot(
         modelPackage: snapshot.onDeviceModel.modelPackage,

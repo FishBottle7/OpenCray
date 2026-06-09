@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import java.net.URI
+
 internal object LlmProviderProtocols {
   const val OPENAI: String = "openai"
   const val OPENAI_RESPONSES: String = "openai_responses"
@@ -17,27 +19,16 @@ internal object LlmProviderProtocols {
   fun authHeaders(
     protocol: String,
     apiKey: String,
-  ): Map<String, String> {
-    val sanitizedApiKey = apiKey.trim()
-    if (sanitizedApiKey.isEmpty()) {
-      return emptyMap()
-    }
-    return when (normalize(protocol)) {
-      ANTHROPIC -> mapOf(
-        "x-api-key" to sanitizedApiKey,
-        "anthropic-version" to DEFAULT_ANTHROPIC_VERSION,
-      )
-
-      else -> mapOf(
-        "Authorization" to "Bearer $sanitizedApiKey",
-      )
-    }
-  }
+  ): Map<String, String> = ProviderAuthProtocols.authHeaders(
+    protocol = protocol,
+    apiKey = apiKey,
+  )
 
   fun routeMetadata(
     protocol: String,
     model: String,
     reasoningEffort: String,
+    baseUrl: String? = null,
     streamingEnabled: Boolean = LlmSettingsState.DEFAULT_STREAMING_ENABLED,
     openAiPromptCacheKeyStrategy: String = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY,
     openAiPromptCacheRetention: String = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
@@ -48,6 +39,7 @@ internal object LlmProviderProtocols {
     ANTHROPIC -> anthropicRouteMetadata(
       model = model,
       reasoningEffort = reasoningEffort,
+      officialRoute = officialAnthropicRouteByDefault(baseUrl),
       streamingEnabled = streamingEnabled,
       promptCachingEnabled = anthropicPromptCachingEnabled,
       promptCacheTtl = anthropicPromptCacheTtl,
@@ -56,6 +48,7 @@ internal object LlmProviderProtocols {
     OPENAI_RESPONSES -> openAiResponsesRouteMetadata(
       model = model,
       reasoningEffort = reasoningEffort,
+      officialRoute = officialOpenAiRouteByDefault(baseUrl),
       streamingEnabled = streamingEnabled,
       promptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
       promptCacheRetention = openAiPromptCacheRetention,
@@ -64,6 +57,7 @@ internal object LlmProviderProtocols {
     else -> openAiRouteMetadata(
       model = model,
       reasoningEffort = reasoningEffort,
+      officialRoute = officialOpenAiRouteByDefault(baseUrl),
       streamingEnabled = streamingEnabled,
       promptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
       promptCacheRetention = openAiPromptCacheRetention,
@@ -73,6 +67,7 @@ internal object LlmProviderProtocols {
   private fun openAiRouteMetadata(
     model: String,
     reasoningEffort: String,
+    officialRoute: Boolean,
     streamingEnabled: Boolean,
     promptCacheKeyStrategy: String,
     promptCacheRetention: String,
@@ -81,7 +76,8 @@ internal object LlmProviderProtocols {
     return buildMap {
       put("protocol", OPENAI)
       put("stream", streamingEnabled.toString())
-      if (model.contains("gpt", ignoreCase = true) &&
+      if (officialRoute &&
+        model.contains("gpt", ignoreCase = true) &&
         normalizedEffort != REASONING_EFFORT_OFF
       ) {
         put("reasoning_effort", normalizedEffort)
@@ -98,6 +94,7 @@ internal object LlmProviderProtocols {
   private fun openAiResponsesRouteMetadata(
     model: String,
     reasoningEffort: String,
+    officialRoute: Boolean,
     streamingEnabled: Boolean,
     promptCacheKeyStrategy: String,
     promptCacheRetention: String,
@@ -107,7 +104,8 @@ internal object LlmProviderProtocols {
       put("protocol", OPENAI_RESPONSES)
       put("stream", streamingEnabled.toString())
       put("responseApiPreferred", "true")
-      if (model.contains("gpt", ignoreCase = true) &&
+      if (officialRoute &&
+        model.contains("gpt", ignoreCase = true) &&
         normalizedEffort != REASONING_EFFORT_OFF
       ) {
         put("reasoning_effort", normalizedEffort)
@@ -124,6 +122,7 @@ internal object LlmProviderProtocols {
   private fun anthropicRouteMetadata(
     model: String,
     reasoningEffort: String,
+    officialRoute: Boolean,
     streamingEnabled: Boolean,
     promptCachingEnabled: Boolean,
     promptCacheTtl: String,
@@ -131,7 +130,7 @@ internal object LlmProviderProtocols {
     return buildMap {
       put("protocol", ANTHROPIC)
       put("stream", streamingEnabled.toString())
-      if (!shouldDisableAnthropicThinkingForModel(model)) {
+      if (officialRoute && !shouldDisableAnthropicThinkingForModel(model)) {
         val normalizedEffort = normalizedReasoningEffort(reasoningEffort)
         if (normalizedEffort != REASONING_EFFORT_OFF) {
           val thinkingBudget = when (normalizedEffort) {
@@ -169,6 +168,26 @@ internal object LlmProviderProtocols {
       LlmSettingsState.DEFAULT_REASONING_EFFORT
     }
 
+  private fun officialOpenAiRouteByDefault(baseUrl: String?): Boolean {
+    val host = routeHost(baseUrl) ?: return false
+    return host == "api.openai.com" || host.endsWith(".openai.com")
+  }
+
+  private fun officialAnthropicRouteByDefault(baseUrl: String?): Boolean {
+    val host = routeHost(baseUrl) ?: return false
+    return host == "api.anthropic.com" || host.endsWith(".anthropic.com")
+  }
+
+  private fun routeHost(baseUrl: String?): String? {
+    val trimmed = baseUrl?.trim() ?: return null
+    if (trimmed.isBlank()) {
+      return null
+    }
+    return runCatching {
+      URI(trimmed).host.orEmpty().lowercase()
+    }.getOrDefault("").takeIf(String::isNotBlank)
+  }
+
   private fun openAiPromptCacheMetadata(
     promptCacheKeyStrategy: String,
     promptCacheRetention: String,
@@ -187,12 +206,57 @@ internal object LlmProviderProtocols {
   }
 }
 
+internal object ProviderAuthProtocols {
+  const val NONE: String = "none"
+  const val BEARER: String = "bearer"
+  const val ANTHROPIC: String = LlmProviderProtocols.ANTHROPIC
+
+  private const val DEFAULT_ANTHROPIC_VERSION: String = "2023-06-01"
+
+  fun normalize(rawValue: String?): String = when (rawValue?.trim()?.lowercase()) {
+    NONE -> NONE
+    ANTHROPIC -> ANTHROPIC
+    LlmProviderProtocols.OPENAI,
+    LlmProviderProtocols.OPENAI_RESPONSES,
+    BEARER,
+    -> BEARER
+
+    else -> BEARER
+  }
+
+  fun authHeaders(
+    protocol: String,
+    apiKey: String,
+  ): Map<String, String> {
+    val sanitizedApiKey = apiKey.trim()
+    if (sanitizedApiKey.isEmpty()) {
+      return emptyMap()
+    }
+    return when (normalize(protocol)) {
+      NONE -> emptyMap()
+      ANTHROPIC -> mapOf(
+        "x-api-key" to sanitizedApiKey,
+        "anthropic-version" to DEFAULT_ANTHROPIC_VERSION,
+      )
+
+      else -> mapOf(
+        "Authorization" to "Bearer $sanitizedApiKey",
+      )
+    }
+  }
+}
+
 internal object LlmPromptCachingMetadataKeys {
   const val PROMPT_CACHE_KEY_STRATEGY: String = "promptCacheKeyStrategy"
   const val PROMPT_CACHE_RETENTION: String = "promptCacheRetention"
   const val PROMPT_CACHE_HINTS_SUPPORTED: String = "promptCacheHintsSupported"
   const val ANTHROPIC_PROMPT_CACHING_ENABLED: String = "anthropicPromptCachingEnabled"
   const val ANTHROPIC_PROMPT_CACHE_TTL: String = "anthropicPromptCacheTtl"
+}
+
+internal object LlmStructuredFinalMetadataKeys {
+  const val STRUCTURED_FINAL_SCHEMA_SUPPORTED: String = "structuredFinalSchemaSupported"
+  const val ANTHROPIC_STRUCTURED_FINAL_TOOL_SUPPORTED: String = "anthropicStructuredFinalToolSupported"
 }
 
 internal object LlmPromptCacheKeyStrategies {
@@ -211,33 +275,45 @@ internal object AnthropicPromptCacheTtlPolicies {
   const val HOUR_1: String = "1h"
 }
 
-private const val DEFAULT_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS: Long = 30_000L
+private const val DEFAULT_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS: Long = 120_000L
 private const val DEFAULT_SHORT_PROVIDER_ROUTE_TIMEOUT_MS: Long = 15_000L
+private const val ON_DEVICE_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS: Long = 180_000L
+private const val ON_DEVICE_SHORT_PROVIDER_ROUTE_TIMEOUT_MS: Long = 60_000L
 private const val KIMI_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS: Long = 120_000L
 private const val KIMI_SHORT_PROVIDER_ROUTE_TIMEOUT_MS: Long = 60_000L
 
 internal fun recommendedInteractiveProviderRouteTimeoutMs(
   model: String,
-): Long = if (isLongRunningKimiModel(model)) {
-  KIMI_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS
-} else {
-  DEFAULT_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS
+): Long = when {
+  isOnDeviceRuntimeModel(model) -> ON_DEVICE_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS
+  isLongRunningKimiModel(model) -> KIMI_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS
+  else -> DEFAULT_INTERACTIVE_PROVIDER_ROUTE_TIMEOUT_MS
 }
 
 internal fun recommendedInterpreterProviderRouteTimeoutMs(
   model: String,
-): Long = if (isLongRunningKimiModel(model)) {
-  KIMI_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
-} else {
-  DEFAULT_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+): Long = when {
+  isOnDeviceRuntimeModel(model) -> ON_DEVICE_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+  isLongRunningKimiModel(model) -> KIMI_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+  else -> DEFAULT_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
 }
 
 internal fun recommendedValidationProviderRouteTimeoutMs(
   model: String,
-): Long = if (isLongRunningKimiModel(model)) {
-  KIMI_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
-} else {
-  DEFAULT_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+): Long = when {
+  isOnDeviceRuntimeModel(model) -> ON_DEVICE_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+  isLongRunningKimiModel(model) -> KIMI_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+  else -> DEFAULT_SHORT_PROVIDER_ROUTE_TIMEOUT_MS
+}
+
+private fun isOnDeviceRuntimeModel(
+  model: String,
+): Boolean {
+  val normalized = model.trim().lowercase()
+  if (normalized.isBlank()) {
+    return false
+  }
+  return OnDeviceLlmCatalog.hasModel(normalized)
 }
 
 private fun isLongRunningKimiModel(

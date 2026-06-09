@@ -539,7 +539,7 @@ Recommended service modes:
 
 ### Purpose
 
-Prepare delayed execution and future periodic tasks without reintroducing UI ownership.
+Prepare future scheduled execution and recurring automation without reintroducing UI ownership.
 
 ### Current implementation status
 

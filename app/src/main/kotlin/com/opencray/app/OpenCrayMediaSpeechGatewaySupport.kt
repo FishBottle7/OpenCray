@@ -14,6 +14,7 @@ internal fun MediaSpeechConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf
   "title" to title,
   "subtitle" to subtitle,
   "imageGeneration" to imageGeneration.toGatewayMap(),
+  "videoGeneration" to videoGeneration.toGatewayMap(),
   "voiceGeneration" to voiceGeneration.toGatewayMap(),
   "sttRouteId" to sttRouteId,
   "externalStt" to externalStt.toGatewayMap(),
@@ -22,11 +23,13 @@ internal fun MediaSpeechConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf
 
 internal fun Map<String, Any?>.toSaveMediaSpeechConfigRequest(): SaveMediaSpeechConfigRequest {
   val imageGeneration = this["imageGeneration"] as? Map<String, Any?> ?: emptyMap()
+  val videoGeneration = this["videoGeneration"] as? Map<String, Any?> ?: emptyMap()
   val voiceGeneration = this["voiceGeneration"] as? Map<String, Any?> ?: emptyMap()
   val externalStt = this["externalStt"] as? Map<String, Any?> ?: emptyMap()
   val onDeviceModel = this["onDeviceModel"] as? Map<String, Any?> ?: emptyMap()
   return SaveMediaSpeechConfigRequest(
     imageGeneration = imageGeneration.toSaveMediaProviderRequest(),
+    videoGeneration = videoGeneration.toSaveMediaProviderRequest(),
     voiceGeneration = voiceGeneration.toSaveVoiceProviderRequest(),
     sttRouteId = this["sttRouteId"]?.toString().orEmpty(),
     externalStt = externalStt.toSaveMediaProviderRequest(),
@@ -39,13 +42,18 @@ private fun MediaProviderSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "baseUrl" to baseUrl,
   "endpoint" to endpoint,
   "model" to model,
+  "authProtocol" to authProtocol,
+  "apiKey" to apiKey,
 )
 
 private fun VoiceProviderSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "provider" to provider,
   "baseUrl" to baseUrl,
   "endpoint" to endpoint,
+  "model" to model,
   "voicePreset" to voicePreset,
+  "authProtocol" to authProtocol,
+  "apiKey" to apiKey,
 )
 
 private fun OnDeviceSttSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
@@ -59,6 +67,8 @@ private fun Map<String, Any?>.toSaveMediaProviderRequest(): SaveMediaProviderReq
     baseUrl = this["baseUrl"]?.toString().orEmpty(),
     endpoint = this["endpoint"]?.toString().orEmpty(),
     model = this["model"]?.toString().orEmpty(),
+    authProtocol = this["authProtocol"]?.toString().orEmpty(),
+    apiKey = this["apiKey"]?.toString().orEmpty(),
   )
 
 private fun Map<String, Any?>.toSaveVoiceProviderRequest(): SaveVoiceProviderRequest =
@@ -66,7 +76,10 @@ private fun Map<String, Any?>.toSaveVoiceProviderRequest(): SaveVoiceProviderReq
     provider = this["provider"]?.toString().orEmpty(),
     baseUrl = this["baseUrl"]?.toString().orEmpty(),
     endpoint = this["endpoint"]?.toString().orEmpty(),
+    model = this["model"]?.toString().orEmpty(),
     voicePreset = this["voicePreset"]?.toString().orEmpty(),
+    authProtocol = this["authProtocol"]?.toString().orEmpty(),
+    apiKey = this["apiKey"]?.toString().orEmpty(),
   )
 
 private fun Map<String, Any?>.toSaveOnDeviceSttRequest(): SaveOnDeviceSttRequest =

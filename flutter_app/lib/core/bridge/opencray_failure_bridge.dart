@@ -50,6 +50,12 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<void> saveShellDestination({
+    required String selectedTab,
+    String? settingsSubpage,
+  }) async {}
+
+  @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async =>
       throw StateError(_failureMessage);
 
@@ -131,6 +137,12 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   @override
   Future<void> shareWorkspaceEntries(List<String> relativePaths) async =>
       throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCraySavedWorkspaceMediaAttachment> saveWorkspaceMediaAttachment({
+    required String relativePath,
+    required String kind,
+  }) async => throw StateError(_failureMessage);
 
   @override
   Future<void> showNativeToast(String message) async {}
@@ -221,18 +233,17 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   loadNotificationSettings() async =>
       const OpenCrayNotificationSettingsSnapshot(
         masterEnabled: false,
-        defaultDeliveryModeId: 'critical',
+        defaultDeliveryModeId: 'all',
         quietHoursEnabled: true,
         quietHoursStartMinutes: 1380,
         quietHoursEndMinutes: 480,
         approvalRequestsEnabled: true,
         approvalReminderEnabled: true,
-        taskFinishedEnabled: false,
+        taskFinishedEnabled: true,
         taskFailedEnabled: true,
-        newUserMessageEnabled: true,
-        scheduledWakeEnabled: false,
+        scheduledWakeEnabled: true,
         backgroundTaskPausedEnabled: true,
-        serviceRecoveredEnabled: false,
+        serviceRecoveredEnabled: true,
       );
 
   @override
@@ -397,6 +408,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     bool? streamingEnabled,
+    String providerMode = 'cloud',
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -411,6 +423,19 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    String selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    int onDeviceMaxContextWindow = 32768,
+    int onDeviceMaxTokens = 4096,
+    int onDeviceTopK = 40,
+    double onDeviceTopP = 0.95,
+    double onDeviceTemperature = 0.70,
+    String onDeviceAccelerator = 'gpu',
+    bool onDeviceThinkingEnabled = false,
+    bool onDeviceLiteModeEnabled = false,
+    String? contextBudgetPreset,
+    int? contextBudgetReservedOutputTokens,
+    int? contextBudgetSafetyMarginTokens,
+    double? contextBudgetEffectiveInputPercent,
   }) async => throw StateError(_failureMessage);
 
   @override
@@ -441,6 +466,21 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     required String reasoningEffort,
   }) async =>
       OpenCrayLlmValidationResult(isSuccess: false, message: _failureMessage);
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> downloadOnDeviceLlmModel(
+    String modelId,
+  ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> cancelOnDeviceLlmModelDownload(
+    String modelId,
+  ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> deleteOnDeviceLlmModel(
+    String modelId,
+  ) async => throw StateError(_failureMessage);
 
   @override
   Future<OpenCrayPersonalizationConfigSnapshot>
@@ -774,6 +814,14 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   Stream<OpenCrayChatRuntimeSnapshot> watchChatRuntimeSnapshot() async* {
     yield await loadChatRuntimeSnapshot();
   }
+
+  @override
+  Stream<OpenCrayChatLiveAssistantDraftEvent> watchLiveAssistantDraftEvents() =>
+      const Stream<OpenCrayChatLiveAssistantDraftEvent>.empty();
+
+  @override
+  Stream<OpenCrayChatRuntimeEventDelta> watchRuntimeEventDeltas() =>
+      const Stream<OpenCrayChatRuntimeEventDelta>.empty();
 
   @override
   Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async =>

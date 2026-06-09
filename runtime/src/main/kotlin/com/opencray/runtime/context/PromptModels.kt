@@ -11,6 +11,8 @@ import com.opencray.runtime.compaction.DurableCompactionTrace
 import com.opencray.runtime.memory.MemoryFlushTrace
 import com.opencray.runtime.memory.MemoryRecallTrace
 import com.opencray.runtime.memory.MemoryRecallResult
+import com.opencray.runtime.memory.StickyMemoryCapsule
+import com.opencray.runtime.memory.StickyMemoryTrace
 import com.opencray.runtime.soul.SoulTurnSemanticSignal
 import com.opencray.runtime.skills.ActiveSkillCapsule
 import com.opencray.runtime.skills.ActiveSkillTrace
@@ -178,6 +180,10 @@ data class LiveContextTrace(
   val canonicalSource: String? = null,
   val canonicalMessageCount: Int? = null,
   val canonicalHistoryPreserved: Boolean? = null,
+  val inheritanceSource: String? = null,
+  val parentMode: String? = null,
+  val parentReplayMessageCount: Int? = null,
+  val budgetPreset: String? = null,
 ) {
   val isEmpty: Boolean
     get() = mode.isNullOrBlank() &&
@@ -187,7 +193,11 @@ data class LiveContextTrace(
       replayMessageCount == null &&
       canonicalSource.isNullOrBlank() &&
       canonicalMessageCount == null &&
-      canonicalHistoryPreserved == null
+      canonicalHistoryPreserved == null &&
+      inheritanceSource.isNullOrBlank() &&
+      parentMode.isNullOrBlank() &&
+      parentReplayMessageCount == null &&
+      budgetPreset.isNullOrBlank()
 }
 
 data class AgentRuntimeSessionContext(
@@ -199,6 +209,7 @@ data class AgentRuntimeSessionContext(
   val liveContextTrace: LiveContextTrace = LiveContextTrace(),
   val bootstrapContext: BootstrapContext = BootstrapContext(),
   val recalledMemory: MemoryRecallResult = MemoryRecallResult(),
+  val stickyMemoryCapsule: StickyMemoryCapsule = StickyMemoryCapsule(),
   val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
   val durableCompaction: DurableCompactionContext = DurableCompactionContext(),
   val workingState: WorkingState = WorkingState(),
@@ -232,12 +243,14 @@ data class ManagedPromptContext(
   val bootstrapFiles: List<BootstrapSnippet> = emptyList(),
   val workingState: WorkingState = WorkingState(),
   val selectedMemory: MemoryRecallResult = MemoryRecallResult(),
+  val stickyMemoryCapsule: StickyMemoryCapsule = StickyMemoryCapsule(),
   val durableCompaction: DurableCompactionContext = DurableCompactionContext(),
   val skillInventory: SkillInventory = SkillInventory(),
   val activeSkillCapsule: ActiveSkillCapsule? = null,
   val recentToolObservationLayer: RecentToolObservationLayer? = null,
   val workingStateText: String = "",
   val memoryText: String = "",
+  val stickyMemoryText: String = "",
   val durableCompactionText: String = "",
   val skillInventoryText: String = "",
   val activeSkillText: String = "",
@@ -274,6 +287,7 @@ data class ContextSelectionReport(
   val injectedMemoryRecordCount: Int = 0,
   val omittedMemoryRecordCount: Int = 0,
   val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
+  val stickyMemoryTrace: StickyMemoryTrace = StickyMemoryTrace(),
   val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
   val durableCompactionTrace: DurableCompactionTrace = DurableCompactionTrace(),
   val workingStateTrace: WorkingStateTrace = WorkingStateTrace(),
@@ -295,11 +309,19 @@ data class PromptLayer(
   val name: String,
   val kind: PromptLayerKind,
   val content: String,
+  val transportGroup: PromptLayerTransportGroup = defaultPromptLayerTransportGroup(kind),
 ) {
   init {
     require(name.isNotBlank()) { "PromptLayer name must not be blank." }
     require(content.isNotBlank()) { "PromptLayer content must not be blank." }
   }
+}
+
+enum class PromptLayerTransportGroup {
+  SYSTEM_PREFIX,
+  DURABLE_CONTEXT,
+  DYNAMIC_CONTEXT,
+  REPLAY_TRANSCRIPT,
 }
 
 enum class PromptLayerId {
@@ -310,6 +332,7 @@ enum class PromptLayerId {
   TURN_RESPONSE_POLICY,
   BOOTSTRAP,
   WORKING_STATE,
+  STICKY_MEMORY,
   RETRIEVED_MEMORY,
   DURABLE_COMPACTION,
   SKILL_INVENTORY,
@@ -331,10 +354,45 @@ enum class PromptLayerKind {
 data class AssembledPrompt(
   val systemPrompt: String,
   val contextPrompt: String,
+  val durableContextPrompt: String,
+  val dynamicContextPrompt: String,
+  val replayTranscriptPrompt: String,
   val taskPrompt: String,
   val layers: List<PromptLayer>,
   val report: ContextAssemblyReport,
-)
+) {
+  val frontContextZones: FrontContextZones
+    get() = FrontContextZones(
+      durableContextPrompt = durableContextPrompt,
+      dynamicContextPrompt = dynamicContextPrompt,
+    )
+
+  val frontContextPrompts: List<String>
+    get() = frontContextZones.promptsInTransportOrder
+}
+
+data class FrontContextZones(
+  val durableContextPrompt: String = "",
+  val dynamicContextPrompt: String = "",
+) {
+  val promptsInTransportOrder: List<String>
+    get() = listOf(
+      normalizePrompt(durableContextPrompt),
+      normalizePrompt(dynamicContextPrompt),
+    ).filter(String::isNotBlank)
+
+  companion object {
+    fun fromTransportPrompts(prompts: List<String>): FrontContextZones {
+      val normalizedPrompts = prompts.map(::normalizePrompt).filter(String::isNotBlank)
+      return FrontContextZones(
+        durableContextPrompt = normalizedPrompts.getOrNull(0).orEmpty(),
+        dynamicContextPrompt = normalizedPrompts.getOrNull(1).orEmpty(),
+      )
+    }
+
+    private fun normalizePrompt(prompt: String): String = prompt.trim().takeIf(String::isNotBlank).orEmpty()
+  }
+}
 
 data class ToolProtocolTrace(
   val detailMode: String = "full",
@@ -363,6 +421,7 @@ data class ContextAssemblyReport(
   val injectedMemoryRecordCount: Int = 0,
   val omittedMemoryRecordCount: Int = 0,
   val memoryRecallTrace: MemoryRecallTrace = MemoryRecallTrace(),
+  val stickyMemoryTrace: StickyMemoryTrace = StickyMemoryTrace(),
   val memoryFlushTrace: MemoryFlushTrace = MemoryFlushTrace(),
   val durableCompactionTrace: DurableCompactionTrace = DurableCompactionTrace(),
   val workingStateTrace: WorkingStateTrace = WorkingStateTrace(),
@@ -388,6 +447,7 @@ data class ContextLayerReport(
   val id: PromptLayerId,
   val name: String,
   val kind: PromptLayerKind,
+  val transportGroup: PromptLayerTransportGroup,
   val characterCount: Int,
   val estimatedTokenCount: Int,
 )
@@ -437,4 +497,13 @@ data class CompactionSummary(
     require(text.isNotBlank()) { "CompactionSummary text must not be blank." }
     require(compactedMessageCount >= 1) { "CompactionSummary compactedMessageCount must be >= 1." }
   }
+}
+
+private fun defaultPromptLayerTransportGroup(
+  kind: PromptLayerKind,
+): PromptLayerTransportGroup = when (kind) {
+  PromptLayerKind.SYSTEM -> PromptLayerTransportGroup.SYSTEM_PREFIX
+  PromptLayerKind.PROTOCOL,
+  PromptLayerKind.CONTEXT,
+  -> PromptLayerTransportGroup.DYNAMIC_CONTEXT
 }

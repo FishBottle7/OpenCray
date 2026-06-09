@@ -5795,7 +5795,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         sessionId = sessionId,
         title = "Repair wake schedule",
         enabled = true,
-        trigger = ScheduledTrigger.RunAtTimestamp(triggerAtEpochMs = nowEpochMs - 500L),
+        trigger = ScheduledTrigger.At(atEpochMs = nowEpochMs - 500L),
         payload = ScheduledTaskPayload(prompt = "Run repaired scheduled task"),
         createdAtEpochMs = nowEpochMs - 1_000L,
         updatedAtEpochMs = nowEpochMs - 1_000L,
@@ -6441,6 +6441,11 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         override fun loadShellSnapshot(): Map<String, Any?> = emptyMap()
 
         override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
+
+        override fun saveShellDestination(
+          selectedTab: String,
+          settingsSubpage: String?,
+        ) = Unit
       },
       chatRuntimeGateway = object : OpenCrayRuntimeServiceChatGateway {
         override fun loadChatSnapshot(): Map<String, Any?> = emptyMap()
@@ -6448,6 +6453,9 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         override fun observeChat(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
 
         override fun loadChatRuntimeSnapshot(): Map<String, Any?> = emptyMap()
+
+        override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit =
+          { }
 
         override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? = null
 
@@ -6598,6 +6606,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         override fun saveLlmConfig(
           enabled: Boolean,
           streamingEnabled: Boolean?,
+          providerMode: String,
           providerId: String,
           selectedProviderOptionId: String,
           protocol: String,
@@ -6612,6 +6621,19 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           openAiPromptCacheRetention: String?,
           anthropicPromptCachingEnabled: Boolean?,
           anthropicPromptCacheTtl: String?,
+          contextBudgetPreset: String?,
+          contextBudgetReservedOutputTokens: Int?,
+          contextBudgetSafetyMarginTokens: Int?,
+          contextBudgetEffectiveInputPercent: Double?,
+          selectedOnDeviceModelId: String,
+          onDeviceMaxContextWindow: Int,
+          onDeviceMaxTokens: Int,
+          onDeviceTopK: Int,
+          onDeviceTopP: Double,
+          onDeviceTemperature: Double,
+          onDeviceAccelerator: String,
+          onDeviceThinkingEnabled: Boolean,
+          onDeviceLiteModeEnabled: Boolean,
         ): Map<String, Any?> = emptyMap()
 
         override fun saveCustomLlmProvider(
@@ -6629,6 +6651,10 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           openAiPromptCacheRetention: String?,
           anthropicPromptCachingEnabled: Boolean?,
           anthropicPromptCacheTtl: String?,
+          contextBudgetPreset: String?,
+          contextBudgetReservedOutputTokens: Int?,
+          contextBudgetSafetyMarginTokens: Int?,
+          contextBudgetEffectiveInputPercent: Double?,
         ): Map<String, Any?> = emptyMap()
 
         override fun validateLlmConfig(
@@ -6639,6 +6665,13 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           model: String,
           reasoningEffort: String,
         ): Map<String, Any?> = emptyMap()
+
+        override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> = emptyMap()
+
+        override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> =
+          emptyMap()
+
+        override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> = emptyMap()
 
         override fun loadPersonalizationConfig(): Map<String, Any?> = emptyMap()
 
@@ -6968,6 +7001,9 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     ): Map<String, Any?> = emptyMap()
 
     override fun shareWorkspaceEntries(relativePaths: List<String>) = Unit
+
+    override fun saveWorkspaceMediaAttachment(relativePath: String, kind: String): Map<String, Any?> =
+      emptyMap()
 
     override fun showNativeToast(message: String) = Unit
 

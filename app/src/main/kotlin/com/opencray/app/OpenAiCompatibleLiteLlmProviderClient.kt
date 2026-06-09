@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import android.util.Log
 import com.opencray.llm.LiteLlmProviderClient
 import com.opencray.llm.LiteLlmGatewayMessage
 import com.opencray.llm.LiteLlmGatewayMessageRole
@@ -9,14 +10,18 @@ import com.opencray.llm.LiteLlmBuiltinToolDefinition
 import com.opencray.llm.LiteLlmBuiltinWebSearchObservation
 import com.opencray.llm.LiteLlmBuiltinWebSearchSource
 import com.opencray.llm.LiteLlmBuiltinToolType
+import com.opencray.llm.LiteLlmCompactResult
 import com.opencray.llm.LiteLlmMetadataKeys
+import com.opencray.llm.LiteLlmProviderCompactRequest
 import com.opencray.llm.LiteLlmProviderRequest
 import com.opencray.llm.LiteLlmProviderResult
 import com.opencray.llm.LiteLlmStructuredCompletion
+import com.opencray.llm.LiteLlmStructuredFinalAttachment
 import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.llm.LiteLlmToolChoice
 import com.opencray.llm.LiteLlmToolChoiceMode
 import com.opencray.llm.LiteLlmVisibleTextObserver
+import java.io.BufferedInputStream
 import java.io.BufferedReader
 import java.io.InputStream
 import java.io.InputStreamReader
@@ -74,6 +79,13 @@ private data class PromptCacheUsageSnapshot(
   val retention: String? = null,
 )
 
+private data class ResponsesCompactionSummary(
+  val summaryText: String,
+  val outputItemCount: Int,
+  val compactionItemCount: Int,
+  val encryptedContentCount: Int,
+)
+
 private enum class OpenAiBuiltinWebSearchDialect(
   val wireValue: String,
 ) {
@@ -104,6 +116,13 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
     val protocol = resolvedProtocol(request)
     val streamResponses = shouldStreamResponses(request, protocol)
+    val startedAtEpochMs = System.currentTimeMillis()
+    streamDebug(
+      "provider.execute protocol=$protocol stream=$streamResponses model=${request.route.model} routeStream=${request.route.metadata["stream"]}",
+    )
+    providerFlowDebug(
+      "provider.executeStart ${request.debugSummary(protocol = protocol, streamResponses = streamResponses)}",
+    )
     val requestDiagnostics = requestDiagnosticsMetadata(request)
     invalidToolMessageContract(request.request.messages)?.let { validationError ->
       return LiteLlmProviderResult.Failure(
@@ -144,6 +163,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       }
 
       val responseCode = connection.responseCode
+      streamDebug(
+        "provider.response code=$responseCode protocol=$protocol contentType=${connection.contentType ?: "-"} contentEncoding=${connection.contentEncoding ?: "-"}",
+      )
       val responseText = if (responseCode in 200..299) {
         readSuccessResponse(
           input = connection.inputStream,
@@ -156,7 +178,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         readStream(connection.errorStream)
       }
 
-      when {
+      val providerResult = when {
         responseCode == 429 -> LiteLlmProviderResult.RateLimited(
           retryAfterMs = parseRetryAfterMillis(connection.getHeaderField("Retry-After")),
           errorMessage = extractErrorMessage(responseText).ifBlank { "Provider returned HTTP 429." },
@@ -228,19 +250,245 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           }
         }
       }
+      providerFlowDebug(
+        "provider.executeEnd ${request.debugSummary(protocol = protocol, streamResponses = streamResponses)} http=$responseCode durationMs=${System.currentTimeMillis() - startedAtEpochMs} outcome=${providerResult.debugOutcome()}",
+      )
+      providerResult
     } catch (timeout: java.net.SocketTimeoutException) {
-      LiteLlmProviderResult.Timeout(
+      streamDebug("provider.timeout protocol=$protocol message=${timeout.message ?: "-"}")
+      val providerResult = LiteLlmProviderResult.Timeout(
         errorMessage = timeout.message ?: "Provider request timed out.",
         metadata = requestDiagnostics,
       )
+      providerFlowDebug(
+        "provider.executeEnd ${request.debugSummary(protocol = protocol, streamResponses = streamResponses)} http=- durationMs=${System.currentTimeMillis() - startedAtEpochMs} outcome=${providerResult.debugOutcome()}",
+      )
+      providerResult
     } catch (exception: Exception) {
-      LiteLlmProviderResult.Failure(
+      streamDebug(
+        "provider.exception protocol=$protocol type=${exception::class.java.name} message=${exception.message ?: "-"}",
+      )
+      val providerResult = LiteLlmProviderResult.Failure(
         errorCode = "PROVIDER_TRANSPORT_ERROR",
         errorMessage = exception.message ?: exception::class.java.simpleName,
         metadata = requestDiagnostics + mapOf("exceptionType" to exception::class.java.name),
       )
+      providerFlowDebug(
+        "provider.executeEnd ${request.debugSummary(protocol = protocol, streamResponses = streamResponses)} http=- durationMs=${System.currentTimeMillis() - startedAtEpochMs} outcome=${providerResult.debugOutcome()}",
+      )
+      providerResult
     } finally {
       connection.disconnect()
+    }
+  }
+
+  override fun compactConversation(request: LiteLlmProviderCompactRequest): LiteLlmCompactResult {
+    val baseUrl = request.route.baseUrl?.trim().orEmpty()
+    if (baseUrl.isEmpty()) {
+      return LiteLlmCompactResult.Failure(
+        errorCode = "PROVIDER_BASE_URL_MISSING",
+        errorMessage = "Provider route baseUrl is required.",
+        metadata = compactDiagnosticsMetadata(request),
+      )
+    }
+    val protocol = resolvedProtocol(request)
+    if (protocol != LlmProviderProtocols.OPENAI_RESPONSES) {
+      return LiteLlmCompactResult.Unavailable(
+        reason = "protocol_remote_compaction_not_supported",
+        metadata = compactDiagnosticsMetadata(request),
+      )
+    }
+    if (!responsesRemoteCompactionSupported(request)) {
+      return LiteLlmCompactResult.Unavailable(
+        reason = "responses_remote_compaction_not_enabled",
+        metadata = compactDiagnosticsMetadata(request),
+      )
+    }
+    invalidToolMessageContract(request.request.gatewayRequest.messages)?.let { validationError ->
+      return LiteLlmCompactResult.Failure(
+        errorCode = "PROVIDER_COMPACT_REQUEST_INVALID_TOOL_CALL_ID",
+        errorMessage = validationError,
+        metadata = compactDiagnosticsMetadata(request),
+      )
+    }
+    val endpoint = buildResponsesCompactEndpointUrl(baseUrl)
+    val timeoutMs = request.route.timeoutMs
+    val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+      requestMethod = "POST"
+      connectTimeout = timeoutMs.toInt()
+      readTimeout = timeoutMs.toInt()
+      doInput = true
+      doOutput = true
+      setRequestProperty("Content-Type", "application/json")
+      setRequestProperty("Accept", "application/json")
+      request.request.gatewayRequest.authHeaders.forEach { (name, value) ->
+        if (name.isNotBlank() && value.isNotBlank()) {
+          setRequestProperty(name, value)
+        }
+      }
+      setRequestProperty("User-Agent", userAgent)
+    }
+
+    val diagnostics = compactDiagnosticsMetadata(request)
+    return try {
+      val body = buildOpenAiResponsesCompactRequestBody(request)
+      connection.outputStream.use { output ->
+        output.write(body.toByteArray(StandardCharsets.UTF_8))
+      }
+      val responseCode = connection.responseCode
+      val responseText = if (responseCode in 200..299) {
+        readStream(connection.inputStream)
+      } else {
+        readStream(connection.errorStream)
+      }
+      when {
+        responseCode !in 200..299 -> LiteLlmCompactResult.Failure(
+          errorCode = "HTTP_$responseCode",
+          errorMessage = extractErrorMessage(responseText).ifBlank {
+            "Provider compact endpoint returned HTTP $responseCode."
+          },
+          metadata = diagnostics + mapOf("statusCode" to responseCode.toString()),
+        )
+
+        else -> {
+          val payload = JSONObject(responseText)
+          val summary = responsesCompactionSummary(payload)
+          LiteLlmCompactResult.Success(
+            summaryText = summary.summaryText,
+            outputItemCount = summary.outputItemCount,
+            compactionItemCount = summary.compactionItemCount,
+            encryptedContentCount = summary.encryptedContentCount,
+            metadata = diagnostics + mapOf(
+              "statusCode" to responseCode.toString(),
+              LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_REQUESTED to "true",
+              LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_USED to "true",
+              LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_TRIGGER_STAGE to request.request.triggerStage,
+              LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_OUTPUT_ITEM_COUNT to summary.outputItemCount.toString(),
+              LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_ITEM_COUNT to summary.compactionItemCount.toString(),
+              LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_ENCRYPTED_CONTENT_COUNT to
+                summary.encryptedContentCount.toString(),
+            ),
+          )
+        }
+      }
+    } catch (timeout: java.net.SocketTimeoutException) {
+      LiteLlmCompactResult.Failure(
+        errorCode = "PROVIDER_COMPACT_TIMEOUT",
+        errorMessage = timeout.message ?: "Provider compact request timed out.",
+        metadata = diagnostics,
+      )
+    } catch (exception: Exception) {
+      LiteLlmCompactResult.Failure(
+        errorCode = "PROVIDER_COMPACT_TRANSPORT_ERROR",
+        errorMessage = exception.message ?: exception::class.java.simpleName,
+        metadata = diagnostics + mapOf("exceptionType" to exception::class.java.name),
+      )
+    } finally {
+      connection.disconnect()
+    }
+  }
+
+  private fun LiteLlmProviderRequest.debugSummary(
+    protocol: String,
+    streamResponses: Boolean,
+  ): String {
+    val gatewayRequestId = request.requestId
+    val source = request.metadata["source"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: gatewayRequestId.substringBefore('-')
+    val sessionId = request.metadata["sessionId"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: "-"
+    val taskId = request.metadata["taskId"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: "-"
+    val runId = request.metadata["runId"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: gatewayRequestId
+        .takeIf { candidate -> candidate.startsWith("agent-") && "-turn-" in candidate }
+        ?.removePrefix("agent-")
+        ?.substringBefore("-turn-")
+      ?: "-"
+    val previousResponseId = request.previousResponseId
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.take(24)
+      ?: "-"
+    return buildString {
+      append("requestId=")
+      append(gatewayRequestId)
+      append(" source=")
+      append(source)
+      append(" session=")
+      append(sessionId)
+      append(" run=")
+      append(runId)
+      append(" task=")
+      append(taskId)
+      append(" protocol=")
+      append(protocol)
+      append(" stream=")
+      append(streamResponses)
+      append(" model=")
+      append(route.model)
+      append(" prev=")
+      append(previousResponseId)
+      append(" tools=")
+      append(request.tools.size)
+      append(" builtinTools=")
+      append(request.builtinTools.size)
+    }
+  }
+
+  private fun LiteLlmProviderResult.debugOutcome(): String = when (this) {
+    is LiteLlmProviderResult.Success -> buildString {
+      append("success")
+      providerResponseId?.trim()?.takeIf(String::isNotBlank)?.let { responseId ->
+        append(" providerResponseId=")
+        append(responseId)
+      }
+      finishReason?.trim()?.takeIf(String::isNotBlank)?.let { finish ->
+        append(" finish=")
+        append(finish)
+      }
+      append(" outputChars=")
+      append(outputText.length)
+    }
+
+    is LiteLlmProviderResult.Timeout -> buildString {
+      append("timeout")
+      metadata["statusCode"]?.trim()?.takeIf(String::isNotBlank)?.let { statusCode ->
+        append(" statusCode=")
+        append(statusCode)
+      }
+      append(" detail=")
+      append(errorMessage)
+    }
+
+    is LiteLlmProviderResult.RateLimited -> buildString {
+      append("rate_limited")
+      retryAfterMs?.let { retryAfter ->
+        append(" retryAfterMs=")
+        append(retryAfter)
+      }
+      append(" detail=")
+      append(errorMessage)
+    }
+
+    is LiteLlmProviderResult.Failure -> buildString {
+      append("failure")
+      append(" errorCode=")
+      append(errorCode)
+      providerResponseId?.trim()?.takeIf(String::isNotBlank)?.let { responseId ->
+        append(" providerResponseId=")
+        append(responseId)
+      }
+      append(" detail=")
+      append(errorMessage)
     }
   }
 
@@ -269,6 +517,30 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       }
     }
   }
+
+  private fun buildResponsesCompactEndpointUrl(baseUrl: String): String {
+    val trimmed = baseUrl.trimEnd('/')
+    return when {
+      trimmed.endsWith("/v1/responses/compact") -> trimmed
+      trimmed.endsWith("/v1/responses") -> "$trimmed/compact"
+      trimmed.endsWith("/v1") -> "$trimmed/responses/compact"
+      else -> "$trimmed/v1/responses/compact"
+    }
+  }
+
+  private fun buildOpenAiResponsesCompactRequestBody(request: LiteLlmProviderCompactRequest): String {
+    val payload = JSONObject(buildOpenAiResponsesRequestBody(request.toProviderRequestForPayload()))
+    payload.remove("stream")
+    payload.remove("previous_response_id")
+    return payload.toString()
+  }
+
+  private fun LiteLlmProviderCompactRequest.toProviderRequestForPayload(): LiteLlmProviderRequest =
+    LiteLlmProviderRequest(
+      route = route,
+      request = request.gatewayRequest,
+      selection = selection,
+    )
 
   private fun buildRequestBody(request: LiteLlmProviderRequest): String {
     val protocol = resolvedProtocol(request)
@@ -342,6 +614,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     openAiPromptCacheRetention(request)?.let { retention ->
       payload.put("prompt_cache_retention", retention)
     }
+    if (openAiStructuredFinalSchemaSupported(request)) {
+      payload.put("response_format", openAiStructuredFinalResponseFormat())
+    }
     if (streamResponses) {
       payload.put("stream", true)
     }
@@ -360,9 +635,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         request.route.metadata["max_tokens"]?.toIntOrNull() ?: DEFAULT_ANTHROPIC_MAX_TOKENS,
       )
 
-    if (request.request.tools.isNotEmpty() || request.request.builtinTools.isNotEmpty()) {
-      payload.put("tools", buildAnthropicToolsArray(request))
-    }
+    buildAnthropicToolsArray(request)
+      .takeIf { tools -> tools.length() > 0 }
+      ?.let { tools -> payload.put("tools", tools) }
 
     applyAnthropicToolControl(payload, request.request)
     request.request.systemPrompt?.takeIf { it.isNotBlank() }?.let { systemPrompt ->
@@ -439,11 +714,110 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     openAiPromptCacheRetention(request)?.let { retention ->
       payload.put("prompt_cache_retention", retention)
     }
+    if (openAiStructuredFinalSchemaSupported(request)) {
+      payload.put("text", openAiResponsesStructuredFinalTextFormat())
+    }
     if (streamResponses) {
       payload.put("stream", true)
     }
     return payload.toString()
   }
+
+  private fun openAiStructuredFinalResponseFormat(): JSONObject = JSONObject()
+    .put("type", "json_schema")
+    .put(
+      "json_schema",
+      JSONObject()
+        .put("name", STRUCTURED_FINAL_SCHEMA_NAME)
+        .put("strict", true)
+        .put("schema", structuredFinalSchema()),
+    )
+
+  private fun openAiResponsesStructuredFinalTextFormat(): JSONObject = JSONObject()
+    .put(
+      "format",
+      JSONObject()
+        .put("type", "json_schema")
+        .put("name", STRUCTURED_FINAL_SCHEMA_NAME)
+        .put("strict", true)
+        .put("schema", structuredFinalSchema()),
+    )
+
+  private fun structuredFinalSchema(): JSONObject = JSONObject()
+    .put("type", "object")
+    .put("additionalProperties", false)
+    .put(
+      "required",
+      JSONArray()
+        .put("type")
+        .put("answer")
+        .put("attachments"),
+    )
+    .put(
+      "properties",
+      JSONObject()
+        .put(
+          "type",
+          JSONObject()
+            .put("type", "string")
+            .put("enum", JSONArray().put("final")),
+        )
+        .put(
+          "answer",
+          JSONObject()
+            .put("type", "string"),
+        )
+        .put(
+          "attachments",
+          JSONObject()
+            .put("type", "array")
+            .put("items", structuredFinalAttachmentSchema()),
+        ),
+    )
+
+  private fun structuredFinalAttachmentSchema(): JSONObject = JSONObject()
+    .put("type", "object")
+    .put("additionalProperties", false)
+    .put(
+      "required",
+      JSONArray()
+        .put("kind")
+        .put("artifact_id")
+        .put("relative_path")
+        .put("path")
+        .put("chat_attachment_id")
+        .put("display_name")
+        .put("mime_type")
+        .put("duration_ms")
+        .put("waveform_bars")
+        .put("transcript_text"),
+    )
+    .put(
+      "properties",
+      JSONObject()
+        .put("kind", nullableStringSchema())
+        .put("artifact_id", nullableStringSchema())
+        .put("relative_path", nullableStringSchema())
+        .put("path", nullableStringSchema())
+        .put("chat_attachment_id", nullableStringSchema())
+        .put("display_name", nullableStringSchema())
+        .put("mime_type", nullableStringSchema())
+        .put(
+          "duration_ms",
+          JSONObject()
+            .put("type", JSONArray().put("integer").put("null")),
+        )
+        .put(
+          "waveform_bars",
+          JSONObject()
+            .put("type", "array")
+            .put("items", JSONObject().put("type", "integer")),
+        )
+        .put("transcript_text", nullableStringSchema()),
+    )
+
+  private fun nullableStringSchema(): JSONObject = JSONObject()
+    .put("type", JSONArray().put("string").put("null"))
 
   private fun extractMessageContent(
     payload: JSONObject,
@@ -607,19 +981,55 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   private fun responsesMessageTextSegments(payload: JSONObject): ResponsesTextSegments {
     val output = payload.optJSONArray("output") ?: return ResponsesTextSegments()
+    return responsesTextSegments(
+      buildList {
+        for (index in 0 until output.length()) {
+          output.optJSONObject(index)?.let(::add)
+        }
+      },
+    )
+  }
+
+  private fun responsesCompactionSummary(payload: JSONObject): ResponsesCompactionSummary {
+    val output = payload.optJSONArray("output") ?: JSONArray()
+    val outputItems = buildList {
+      for (index in 0 until output.length()) {
+        output.optJSONObject(index)?.let(::add)
+      }
+    }
+    val textSegments = responsesTextSegments(outputItems)
+    var compactionItemCount = 0
+    var encryptedContentCount = 0
+    outputItems.forEach { item ->
+      if (item.optString("type") == "compaction") {
+        compactionItemCount += 1
+      }
+      item.nonBlankString("encrypted_content")
+        ?.let { encryptedContentCount += 1 }
+    }
+    return ResponsesCompactionSummary(
+      summaryText = textSegments.ordered.joinToString(separator = "\n").trim(),
+      outputItemCount = outputItems.size,
+      compactionItemCount = compactionItemCount,
+      encryptedContentCount = encryptedContentCount,
+    )
+  }
+
+  private fun responsesTextSegments(
+    items: Iterable<JSONObject>,
+  ): ResponsesTextSegments {
     val commentary = mutableListOf<String>()
     val finalAnswer = mutableListOf<String>()
     val unphased = mutableListOf<String>()
     val ordered = mutableListOf<String>()
-    for (index in 0 until output.length()) {
-      val item = output.optJSONObject(index) ?: continue
+    items.forEach { item ->
       if (item.optString("type") != "message") {
-        continue
+        return@forEach
       }
       val text = extractResponsesMessageText(item)
         .trim()
         .takeIf(String::isNotBlank)
-        ?: continue
+        ?: return@forEach
       ordered += text
       when (item.optString("phase").trim().lowercase()) {
         "commentary" -> commentary += text
@@ -740,6 +1150,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     return parsed.optJSONArray("tool_calls") != null ||
       parsed.optString("tool_name").isNotBlank() ||
       parsed.optString("answer").isNotBlank() ||
+      (parsed.optJSONArray("attachments")?.length() ?: 0) > 0 ||
       type in setOf("tool_call", "tool", "final", "answer", "progress", "commentary", "status")
   }
 
@@ -841,10 +1252,13 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         message = message,
       )?.trim()?.takeIf(String::isNotBlank),
     )
+    val finalAttachmentPayload = protocolPayload?.toProtocolFinalPayloadOrNull()
+    val finalAttachments = finalAttachmentPayload?.structuredFinalAttachments().orEmpty()
     val commentaryText = textContent?.takeIf { toolCalls.isNotEmpty() }
-    val finalText = textContent?.takeUnless { text ->
-      toolCalls.isNotEmpty() || looksLikeProtocolPayload(text)
-    }
+    val finalText = finalAttachmentPayload?.nonBlankString("answer")
+      ?: textContent?.takeUnless { text ->
+        toolCalls.isNotEmpty() || looksLikeProtocolPayload(text)
+      }
     val reasoningText = extractOpenAiReasoningText(
       choice = choice,
       message = message,
@@ -860,6 +1274,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     return buildStructuredCompletion(
       toolCalls = toolCalls,
       finalText = finalText,
+      finalAttachments = finalAttachments,
       commentaryText = commentaryText,
       reasoningText = reasoningText,
       rawText = rawText,
@@ -927,19 +1342,30 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val toolCalls = toolCallParse.toolCalls
     val textSegments = responsesMessageTextSegments(payload)
     val orderedText = textSegments.ordered.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
-    val phasedCommentaryText = textSegments.commentary.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
     val finalPhaseText = textSegments.finalAnswer.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
     val unphasedText = textSegments.unphased.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
-    val commentaryText = buildList<String> {
-      phasedCommentaryText?.let(::add)
+    val commentaryTexts = buildList<String> {
+      addAll(
+        textSegments.commentary
+          .map(String::trim)
+          .filter(String::isNotBlank),
+      )
       if (toolCalls.isNotEmpty()) {
         unphasedText?.let(::add)
       }
-    }.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
+    }
+    val commentaryText = commentaryTexts.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
     val finalText = firstNonBlankString(
       finalPhaseText,
       unphasedText?.takeIf { toolCalls.isEmpty() },
     )?.takeUnless(::looksLikeProtocolPayload)
+    val finalAttachmentPayload = firstNonBlankString(
+      orderedText?.takeIf(::looksLikeProtocolPayload),
+      finalPhaseText?.takeIf(::looksLikeProtocolPayload),
+      unphasedText?.takeIf(::looksLikeProtocolPayload),
+    )?.toProtocolFinalPayloadOrNull()
+    val nativeFinalText = finalAttachmentPayload?.nonBlankString("answer") ?: finalText
+    val finalAttachments = finalAttachmentPayload?.structuredFinalAttachments().orEmpty()
     val reasoningText = extractResponsesReasoningText(payload)
     val rawText = when {
       orderedText != null && looksLikeProtocolPayload(orderedText) -> orderedText
@@ -949,8 +1375,10 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     }
     return buildStructuredCompletion(
       toolCalls = toolCalls,
-      finalText = finalText,
+      finalText = nativeFinalText,
+      finalAttachments = finalAttachments,
       commentaryText = commentaryText,
+      commentaryTexts = commentaryTexts,
       reasoningText = reasoningText,
       rawText = rawText,
       toolCallErrors = toolCallParse.errors,
@@ -1063,20 +1491,31 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       }
     }
     val textContent = textBlocks.joinToString(separator = "").trim().takeIf(String::isNotBlank)
-    val commentaryText = textContent?.takeIf { toolCalls.isNotEmpty() }
-    val finalText = textContent?.takeUnless { text ->
-      toolCalls.isNotEmpty() || looksLikeProtocolPayload(text)
+    val structuredFinalToolPayload = extractAnthropicStructuredFinalToolPayload(toolCalls)
+    val executableToolCalls = toolCalls.filterNot { toolCall ->
+      toolCall.toolName == ANTHROPIC_STRUCTURED_FINAL_TOOL_NAME
     }
+    val commentaryText = textContent?.takeIf { executableToolCalls.isNotEmpty() }
+    val finalText = textContent?.takeUnless { text ->
+      executableToolCalls.isNotEmpty() || looksLikeProtocolPayload(text)
+    }
+    val finalAttachmentPayload = textContent
+      ?.takeIf(::looksLikeProtocolPayload)
+      ?.toProtocolFinalPayloadOrNull()
+      ?: structuredFinalToolPayload
+    val nativeFinalText = finalAttachmentPayload?.nonBlankString("answer") ?: finalText
+    val finalAttachments = finalAttachmentPayload?.structuredFinalAttachments().orEmpty()
     val rawText = when {
       textContent != null && looksLikeProtocolPayload(textContent) -> textContent
       toolCallErrors.isNotEmpty() -> content.toString().trim().takeIf(String::isNotBlank)
-      toolCalls.isNotEmpty() -> null
+      executableToolCalls.isNotEmpty() -> null
       else -> finalText
     }
     val reasoningText = thinkingBlocks.joinToString(separator = "\n").trim().takeIf(String::isNotBlank)
     return buildStructuredCompletion(
-      toolCalls = toolCalls,
-      finalText = finalText,
+      toolCalls = executableToolCalls,
+      finalText = nativeFinalText,
+      finalAttachments = finalAttachments,
       commentaryText = commentaryText,
       reasoningText = reasoningText,
       rawText = rawText,
@@ -1084,23 +1523,45 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     )
   }
 
+  private fun extractAnthropicStructuredFinalToolPayload(
+    toolCalls: List<LiteLlmStructuredToolCall>,
+  ): JSONObject? {
+    val finalToolCall = toolCalls.firstOrNull { toolCall ->
+      toolCall.toolName == ANTHROPIC_STRUCTURED_FINAL_TOOL_NAME
+    } ?: return null
+    return runCatching { JSONObject(finalToolCall.arguments.toString()) }.getOrNull()
+  }
+
   private fun buildStructuredCompletion(
     toolCalls: List<LiteLlmStructuredToolCall>,
     finalText: String? = null,
+    finalAttachments: List<LiteLlmStructuredFinalAttachment> = emptyList(),
     commentaryText: String? = null,
+    commentaryTexts: List<String> = emptyList(),
     reasoningText: String? = null,
     rawText: String? = null,
     toolCallErrors: List<String> = emptyList(),
   ): LiteLlmStructuredCompletion? {
     val normalizedFinalText = finalText?.trim()?.takeIf(String::isNotBlank)
-    val normalizedCommentaryText = commentaryText?.trim()?.takeIf(String::isNotBlank)
+    val normalizedFinalAttachments = finalAttachments.map(::normalizeStructuredFinalAttachment)
+    val normalizedCommentaryTexts = commentaryTexts
+      .map(String::trim)
+      .filter(String::isNotBlank)
+      .ifEmpty {
+        commentaryText?.trim()?.takeIf(String::isNotBlank)?.let(::listOf) ?: emptyList()
+      }
+    val normalizedCommentaryText = normalizedCommentaryTexts
+      .joinToString(separator = "\n")
+      .trim()
+      .takeIf(String::isNotBlank)
     val normalizedReasoningText = reasoningText?.trim()?.takeIf(String::isNotBlank)
     val normalizedRawText = rawText?.trim()?.takeIf(String::isNotBlank)
     val normalizedToolCallErrors = toolCallErrors.map(String::trim).filter(String::isNotBlank)
     if (
       toolCalls.isEmpty() &&
       normalizedFinalText == null &&
-      normalizedCommentaryText == null &&
+      normalizedFinalAttachments.isEmpty() &&
+      normalizedCommentaryTexts.isEmpty() &&
       normalizedReasoningText == null &&
       normalizedRawText == null &&
       normalizedToolCallErrors.isEmpty()
@@ -1110,7 +1571,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     return LiteLlmStructuredCompletion(
       toolCalls = toolCalls,
       finalText = normalizedFinalText,
+      finalAttachments = normalizedFinalAttachments,
       commentaryText = normalizedCommentaryText,
+      commentaryTexts = normalizedCommentaryTexts,
       reasoningText = normalizedReasoningText,
       rawText = normalizedRawText,
       toolCallErrors = normalizedToolCallErrors,
@@ -1120,6 +1583,64 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   private fun jsonObjectFrom(payload: JSONObject): JsonObject = runCatching {
     JSON_CODEC.parseToJsonElement(payload.toString()) as? JsonObject
   }.getOrNull() ?: JsonObject(emptyMap())
+
+  private fun String.toProtocolFinalPayloadOrNull(): JSONObject? {
+    val candidate = extractEmbeddedJsonObject(this) ?: return null
+    val parsed = runCatching { JSONObject(candidate) }.getOrNull() ?: return null
+    val type = parsed.optString("type").trim().lowercase()
+      .ifBlank { parsed.optString("decision").trim().lowercase() }
+    val hasFinalShape = type in setOf("final", "answer") ||
+      parsed.optString("answer").isNotBlank() ||
+      (parsed.optJSONArray("attachments")?.length() ?: 0) > 0
+    return parsed.takeIf { hasFinalShape }
+  }
+
+  private fun JSONObject.structuredFinalAttachments(): List<LiteLlmStructuredFinalAttachment> {
+    val rawAttachments = optJSONArray("attachments") ?: return emptyList()
+    return buildList {
+      for (index in 0 until rawAttachments.length()) {
+        val attachment = rawAttachments.optJSONObject(index) ?: continue
+        add(
+          LiteLlmStructuredFinalAttachment(
+            kind = attachment.nonBlankString("kind"),
+            relativePath = attachment.nonBlankString("relative_path")
+              ?: attachment.nonBlankString("relativePath"),
+            path = attachment.nonBlankString("path"),
+            artifactId = attachment.nonBlankString("artifact_id")
+              ?: attachment.nonBlankString("artifactId"),
+            chatAttachmentId = attachment.nonBlankString("chat_attachment_id")
+              ?: attachment.nonBlankString("chatAttachmentId"),
+            displayName = attachment.nonBlankString("display_name")
+              ?: attachment.nonBlankString("displayName"),
+            mimeType = attachment.nonBlankString("mime_type")
+              ?: attachment.nonBlankString("mimeType"),
+            durationMs = attachment.optLongValue("duration_ms")
+              ?: attachment.optLongValue("durationMs"),
+            waveformBars = attachment.optIntArray("waveform_bars")
+              ?: attachment.optIntArray("waveformBars")
+              ?: emptyList(),
+            transcriptText = attachment.nonBlankString("transcript_text")
+              ?: attachment.nonBlankString("transcriptText"),
+          ),
+        )
+      }
+    }
+  }
+
+  private fun normalizeStructuredFinalAttachment(
+    attachment: LiteLlmStructuredFinalAttachment,
+  ): LiteLlmStructuredFinalAttachment = LiteLlmStructuredFinalAttachment(
+    kind = attachment.kind?.trim()?.takeIf(String::isNotBlank),
+    relativePath = attachment.relativePath?.trim()?.takeIf(String::isNotBlank),
+    path = attachment.path?.trim()?.takeIf(String::isNotBlank),
+    artifactId = attachment.artifactId?.trim()?.takeIf(String::isNotBlank),
+    chatAttachmentId = attachment.chatAttachmentId?.trim()?.takeIf(String::isNotBlank),
+    displayName = attachment.displayName?.trim()?.takeIf(String::isNotBlank),
+    mimeType = attachment.mimeType?.trim()?.takeIf(String::isNotBlank),
+    durationMs = attachment.durationMs,
+    waveformBars = attachment.waveformBars,
+    transcriptText = attachment.transcriptText?.trim()?.takeIf(String::isNotBlank),
+  )
 
   private fun finishReasonFor(
     payload: JSONObject,
@@ -1149,6 +1670,10 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   ): Map<String, String> = buildMap {
     put("statusCode", statusCode.toString())
     put(LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED, nativeToolCallRequested.toString())
+    put(
+      "conversationTransportMode",
+      if (request.request.messages.isNotEmpty()) "messages" else "prompt_projection",
+    )
     payload.optString("id")
       .takeIf { value -> value.isNotBlank() }
       ?.let { providerRequestId ->
@@ -1159,6 +1684,12 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       LiteLlmMetadataKeys.NATIVE_TOOL_CALL_OBSERVED,
       nativeToolCallObserved(payload, protocol).toString(),
     )
+    if (openAiStructuredFinalSchemaSupported(request)) {
+      put(LlmStructuredFinalMetadataKeys.STRUCTURED_FINAL_SCHEMA_SUPPORTED, "true")
+    }
+    if (anthropicStructuredFinalToolSupported(request)) {
+      put(LlmStructuredFinalMetadataKeys.ANTHROPIC_STRUCTURED_FINAL_TOOL_SUPPORTED, "true")
+    }
     val builtinWebSearchObservations = builtinWebSearchObservations(
       request = request,
       payload = payload,
@@ -1318,6 +1849,10 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     if (request.request.responseApiPreferred) {
       put("responseApiPreferred", "true")
     }
+    put(
+      "conversationTransportMode",
+      if (request.request.messages.isNotEmpty()) "messages" else "prompt_projection",
+    )
     putAll(promptCacheRequestMetadata(request))
   }
 
@@ -1479,14 +2014,72 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         else -> false
       }
     }
-    if (request.route.providerId.equals("openai", ignoreCase = true)) {
-      return true
+    return isOfficialOpenAiRoute(request)
+  }
+
+  private fun openAiStructuredFinalSchemaSupported(
+    request: LiteLlmProviderRequest,
+  ): Boolean {
+    if (resolvedProtocol(request) != LlmProviderProtocols.OPENAI &&
+      resolvedProtocol(request) != LlmProviderProtocols.OPENAI_RESPONSES
+    ) {
+      return false
     }
-    val host = runCatching {
-      URI(request.route.baseUrl?.trim().orEmpty()).host.orEmpty().lowercase()
-    }.getOrDefault("")
+    resolvedStructuredFinalMetadataValue(
+      request = request,
+      key = LlmStructuredFinalMetadataKeys.STRUCTURED_FINAL_SCHEMA_SUPPORTED,
+    )?.lowercase()?.let { rawValue ->
+      return when (rawValue) {
+        "true" -> true
+        "false" -> false
+        else -> false
+      }
+    }
+    return isOfficialOpenAiRoute(request)
+  }
+
+  private fun anthropicStructuredFinalToolSupported(
+    request: LiteLlmProviderRequest,
+  ): Boolean {
+    if (resolvedProtocol(request) != LlmProviderProtocols.ANTHROPIC) {
+      return false
+    }
+    resolvedStructuredFinalMetadataValue(
+      request = request,
+      key = LlmStructuredFinalMetadataKeys.ANTHROPIC_STRUCTURED_FINAL_TOOL_SUPPORTED,
+    )?.lowercase()?.let { rawValue ->
+      return when (rawValue) {
+        "true" -> true
+        "false" -> false
+        else -> false
+      }
+    }
+    return isOfficialAnthropicRoute(request)
+  }
+
+  private fun isOfficialOpenAiRoute(request: LiteLlmProviderRequest): Boolean {
+    val host = providerHost(request)
     return host == "api.openai.com" || host.endsWith(".openai.com")
   }
+
+  private fun isOfficialAnthropicRoute(request: LiteLlmProviderRequest): Boolean {
+    val host = providerHost(request)
+    return host == "api.anthropic.com" || host.endsWith(".anthropic.com")
+  }
+
+  private fun providerHost(request: LiteLlmProviderRequest): String = runCatching {
+    URI(request.route.baseUrl?.trim().orEmpty()).host.orEmpty().lowercase()
+  }.getOrDefault("")
+
+  private fun resolvedStructuredFinalMetadataValue(
+    request: LiteLlmProviderRequest,
+    key: String,
+  ): String? = request.request.metadata[key]
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: request.route.metadata[key]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
 
   private fun resolvedPromptCacheKeyStrategy(
     request: LiteLlmProviderRequest,
@@ -1530,6 +2123,20 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       is Number -> rawValue.toLong()
       is String -> rawValue.trim().toLongOrNull()
       else -> null
+    }
+  }
+
+  private fun JSONObject.optIntArray(
+    key: String,
+  ): List<Int>? {
+    val rawArray = optJSONArray(key) ?: return null
+    return buildList {
+      for (index in 0 until rawArray.length()) {
+        when (val rawValue = rawArray.opt(index)) {
+          is Number -> add(rawValue.toInt())
+          is String -> rawValue.trim().toIntOrNull()?.let(::add)
+        }
+      }
     }
   }
 
@@ -1739,6 +2346,15 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   private fun openAiConversationMessages(
     request: LiteLlmGatewayRequest,
+  ): List<LiteLlmGatewayMessage> = projectedConversationMessages(request)
+
+  private fun anthropicConversationMessages(
+    request: LiteLlmGatewayRequest,
+  ): List<LiteLlmGatewayMessage> = projectedConversationMessages(request)
+
+  // Keep provider encoding message-first even when a legacy caller still sends only `prompt`.
+  private fun projectedConversationMessages(
+    request: LiteLlmGatewayRequest,
   ): List<LiteLlmGatewayMessage> = if (request.messages.isNotEmpty()) {
     request.messages
   } else {
@@ -1750,9 +2366,31 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     )
   }
 
-  private fun anthropicConversationMessages(
-    request: LiteLlmGatewayRequest,
-  ): List<LiteLlmGatewayMessage> = openAiConversationMessages(request)
+  private fun builtinWebSearchFallbackQueries(
+    request: LiteLlmProviderRequest,
+  ): List<String> = request.request.messages
+    .asReversed()
+    .asSequence()
+    .filter { message -> message.role == LiteLlmGatewayMessageRole.USER }
+    .mapNotNull(::builtinWebSearchFallbackQueryText)
+    .firstOrNull()
+    ?.let(::listOf)
+    ?: listOf(request.request.prompt.trim()).filter(String::isNotBlank)
+
+  private fun builtinWebSearchFallbackQueryText(
+    message: LiteLlmGatewayMessage,
+  ): String? {
+    message.content?.trim()?.takeIf(String::isNotBlank)?.let { content ->
+      return content
+    }
+    return message.attachments
+      .asSequence()
+      .mapNotNull { attachment ->
+        attachment.transcriptText?.trim()?.takeIf(String::isNotBlank)
+          ?: attachment.displayName?.trim()?.takeIf(String::isNotBlank)
+      }
+      .firstOrNull()
+  }
 
   private fun mergeBuiltinWebSearchMetadata(
     metadata: Map<String, String>,
@@ -1849,12 +2487,54 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         ?.trim()
         ?.lowercase() == "true"
 
+  private fun resolvedProtocol(request: LiteLlmProviderCompactRequest): String =
+    LlmProviderProtocols.normalize(request.route.metadata["protocol"])
+
+  private fun responsesRemoteCompactionSupported(request: LiteLlmProviderCompactRequest): Boolean =
+    compactRequestMetadataBoolean(request, LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_REMOTE_COMPACTION) ||
+      request.route.metadata[LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_SUPPORTED]
+        ?.trim()
+        ?.lowercase() == "true" ||
+      request.route.metadata["responsesRemoteCompactionSupported"]
+        ?.trim()
+        ?.lowercase() == "true"
+
+  private fun compactDiagnosticsMetadata(
+    request: LiteLlmProviderCompactRequest,
+  ): Map<String, String> = buildMap {
+    put("providerId", request.route.providerId)
+    put("model", request.route.model)
+    put("routeId", request.route.id)
+    put("protocol", resolvedProtocol(request))
+    put(LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_REQUESTED, "true")
+    put(
+      LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_SUPPORTED,
+      responsesRemoteCompactionSupported(request).toString(),
+    )
+    request.request.triggerStage
+      .trim()
+      .takeIf(String::isNotBlank)
+      ?.let { triggerStage ->
+        put(LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_TRIGGER_STAGE, triggerStage)
+      }
+  }
+
   private fun requestMetadataBoolean(
     request: LiteLlmProviderRequest,
     key: String,
   ): Boolean = request.request.metadata[key]
     ?.trim()
     ?.lowercase() == "true"
+
+  private fun compactRequestMetadataBoolean(
+    request: LiteLlmProviderCompactRequest,
+    key: String,
+  ): Boolean = request.request.metadata[key]
+    ?.trim()
+    ?.lowercase() == "true" ||
+    request.request.gatewayRequest.metadata[key]
+      ?.trim()
+      ?.lowercase() == "true"
 
   private fun buildOpenAiToolsArray(request: LiteLlmProviderRequest): JSONArray = JSONArray().apply {
     val builtinWebSearchDialect = openAiBuiltinWebSearchDialect(request)
@@ -2009,6 +2689,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   }
 
   private fun buildOpenAiMessagesArray(request: LiteLlmProviderRequest): JSONArray = JSONArray().apply {
+    val conversationMessages = openAiConversationMessages(request.request)
     request.request.systemPrompt?.takeIf { it.isNotBlank() }?.let { systemPrompt ->
       put(
         JSONObject()
@@ -2016,15 +2697,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           .put("content", systemPrompt),
       )
     }
-    if (request.request.messages.isEmpty()) {
-      put(
-        JSONObject()
-          .put("role", "user")
-          .put("content", request.request.prompt),
-      )
-      return@apply
-    }
-    request.request.messages.forEach { message ->
+    conversationMessages.forEach { message ->
       when (message.role) {
         LiteLlmGatewayMessageRole.SYSTEM -> {
           message.content?.takeIf(String::isNotBlank)?.let { content ->
@@ -2075,11 +2748,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   private fun buildResponsesInputArray(request: LiteLlmProviderRequest): JSONArray = JSONArray().apply {
     val assistantPhasesSupported = responsesAssistantPhasesSupported(request)
-    if (request.request.messages.isEmpty()) {
-      put(buildResponsesTextMessage(role = "user", content = request.request.prompt))
-      return@apply
-    }
-    request.request.messages.forEach { message ->
+    openAiConversationMessages(request.request).forEach { message ->
       when (message.role) {
         LiteLlmGatewayMessageRole.SYSTEM -> {
           message.content?.takeIf(String::isNotBlank)?.let { content ->
@@ -2496,6 +3165,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           },
       )
     }
+    if (anthropicStructuredFinalToolSupported(request)) {
+      put(anthropicStructuredFinalTool())
+    }
   }
 
   private fun buildAnthropicBuiltinTool(
@@ -2536,6 +3208,14 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     }
   }
 
+  private fun anthropicStructuredFinalTool(): JSONObject = JSONObject()
+    .put("name", ANTHROPIC_STRUCTURED_FINAL_TOOL_NAME)
+    .put(
+      "description",
+      "Return the final user-facing answer, optionally referencing existing OpenCray media artifacts.",
+    )
+    .put("input_schema", structuredFinalSchema())
+
   private fun buildAnthropicToolChoice(
     toolChoice: LiteLlmToolChoice,
     parallelToolCalls: Boolean?,
@@ -2555,15 +3235,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   }
 
   private fun buildAnthropicMessagesArray(request: LiteLlmProviderRequest): JSONArray = JSONArray().apply {
-    if (request.request.messages.isEmpty()) {
-      put(
-        JSONObject()
-          .put("role", "user")
-          .put("content", request.request.prompt),
-      )
-      return@apply
-    }
-    val messages = request.request.messages
+    val messages = anthropicConversationMessages(request.request)
     var index = 0
     while (index < messages.size) {
       val message = messages[index]
@@ -2856,7 +3528,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         } else {
           for (index in 0 until content.length()) {
             val block = content.optJSONObject(index) ?: continue
-            if (block.optString("type") == "tool_use") {
+            if (isExecutableAnthropicToolUse(block)) {
               return true
             }
           }
@@ -2979,9 +3651,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     }
     return queriesByToolUseId.values
       .ifEmpty {
-        listOf(
-          listOf(request.request.prompt.trim()).filter(String::isNotBlank),
-        )
+        listOf(builtinWebSearchFallbackQueries(request))
       }
       .map { queries ->
         LiteLlmBuiltinWebSearchObservation(
@@ -3039,7 +3709,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         LiteLlmBuiltinWebSearchObservation(
           actionType = "search",
           status = "completed",
-          queries = listOf(request.request.prompt.trim()).filter(String::isNotBlank),
+          queries = builtinWebSearchFallbackQueries(request),
           domains = request.request.builtinTools
             .flatMap(LiteLlmBuiltinToolDefinition::domains)
             .distinct(),
@@ -3337,6 +4007,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val content = payload.optJSONArray("content") ?: return "anthropic_empty"
     var hasText = false
     var hasToolUse = false
+    var hasStructuredFinalTool = false
     val hasBuiltinWebSearch = builtinWebSearchObserved(
       request = request,
       payload = payload,
@@ -3352,10 +4023,18 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           hasText = true
         }
 
-        "tool_use" -> hasToolUse = true
+        "tool_use" -> if (isExecutableAnthropicToolUse(block)) {
+          hasToolUse = true
+        } else if (block.optString("name") == ANTHROPIC_STRUCTURED_FINAL_TOOL_NAME) {
+          hasStructuredFinalTool = true
+        }
       }
     }
     return when {
+      hasText && hasToolUse && hasStructuredFinalTool -> "anthropic_text_tool_use_and_structured_final_tool"
+      hasToolUse && hasStructuredFinalTool -> "anthropic_tool_use_and_structured_final_tool"
+      hasText && hasStructuredFinalTool -> "anthropic_text_and_structured_final_tool"
+      hasStructuredFinalTool -> "anthropic_structured_final_tool"
       hasText && hasToolUse && hasBuiltinWebSearch -> "anthropic_text_tool_use_and_builtin_web_search"
       hasText && hasBuiltinWebSearch -> "anthropic_text_and_builtin_web_search"
       hasBuiltinWebSearch -> "anthropic_builtin_web_search"
@@ -3366,6 +4045,10 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       else -> "anthropic_empty"
     }
   }
+
+  private fun isExecutableAnthropicToolUse(block: JSONObject): Boolean =
+    block.optString("type") == "tool_use" &&
+      block.optString("name") != ANTHROPIC_STRUCTURED_FINAL_TOOL_NAME
 
   private fun extractErrorMessage(responseText: String): String = runCatching {
     val errorObject = JSONObject(responseText).optJSONObject("error")
@@ -3385,26 +4068,70 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     streamObserver: LiteLlmVisibleTextObserver,
   ): String = when {
     input == null -> ""
-    streamResponses &&
-      contentType.orEmpty().contains("text/event-stream", ignoreCase = true) -> when (protocol) {
-      LlmProviderProtocols.ANTHROPIC -> readAnthropicStream(
-        input = input,
-        streamObserver = streamObserver,
-      )
-
-      LlmProviderProtocols.OPENAI_RESPONSES -> readOpenAiResponsesStream(
-        input = input,
-        streamObserver = streamObserver,
-      )
-
-      else -> readOpenAiChatCompletionsStream(
-        input = input,
-        streamObserver = streamObserver,
-      )
-    }
     else -> {
-      readStream(input)
+      val normalizedInput = if (input is BufferedInputStream) {
+        input
+      } else {
+        BufferedInputStream(input)
+      }
+      if (
+        streamResponses &&
+        shouldTreatSuccessResponseAsEventStream(
+          input = normalizedInput,
+          contentType = contentType,
+        )
+      ) {
+        streamDebug(
+          "provider.readSuccessResponse protocol=$protocol stream=true contentType=$contentType mode=event_stream",
+        )
+        when (protocol) {
+          LlmProviderProtocols.ANTHROPIC -> readAnthropicStream(
+            input = normalizedInput,
+            streamObserver = streamObserver,
+          )
+
+          LlmProviderProtocols.OPENAI_RESPONSES -> readOpenAiResponsesStream(
+            input = normalizedInput,
+            streamObserver = streamObserver,
+          )
+
+          else -> readOpenAiChatCompletionsStream(
+            input = normalizedInput,
+            streamObserver = streamObserver,
+          )
+        }
+      } else {
+        streamDebug(
+          "provider.readSuccessResponse protocol=$protocol stream=$streamResponses contentType=$contentType mode=plain_body",
+        )
+        readStream(normalizedInput)
+      }
     }
+  }
+
+  private fun shouldTreatSuccessResponseAsEventStream(
+    input: BufferedInputStream,
+    contentType: String?,
+  ): Boolean {
+    if (contentType.orEmpty().contains("text/event-stream", ignoreCase = true)) {
+      return true
+    }
+    input.mark(STREAM_SNIFF_LIMIT_BYTES)
+    val buffer = ByteArray(STREAM_SNIFF_LIMIT_BYTES)
+    val bytesRead = runCatching { input.read(buffer) }.getOrDefault(-1)
+    input.reset()
+    if (bytesRead <= 0) {
+      return false
+    }
+    val preview = String(buffer, 0, bytesRead, StandardCharsets.UTF_8)
+    val firstSignalLine = preview
+      .lineSequence()
+      .map(String::trimStart)
+      .firstOrNull { line -> line.isNotBlank() }
+      ?: return false
+    return firstSignalLine.startsWith("event:") ||
+      firstSignalLine.startsWith("data:") ||
+      firstSignalLine.startsWith(":")
   }
 
   private fun readAnthropicStream(
@@ -3417,6 +4144,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val visibleTextCoalescer = VisibleTextSnapshotCoalescer(
       observer = streamObserver,
       minIntervalMs = streamUpdateMinIntervalMs,
+      normalizer = ::visibleAssistantDraftText,
     )
     BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).use { reader ->
       var currentEvent = ""
@@ -3562,6 +4290,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val visibleTextCoalescer = VisibleTextSnapshotCoalescer(
       observer = streamObserver,
       minIntervalMs = streamUpdateMinIntervalMs,
+      normalizer = ::visibleAssistantDraftText,
     )
     BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).use { reader ->
       var currentEvent = ""
@@ -3742,6 +4471,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val visibleTextCoalescer = VisibleTextSnapshotCoalescer(
       observer = streamObserver,
       minIntervalMs = streamUpdateMinIntervalMs,
+      normalizer = ::visibleAssistantDraftText,
     )
     BufferedReader(InputStreamReader(input, StandardCharsets.UTF_8)).use { reader ->
       var currentEvent = ""
@@ -3894,6 +4624,50 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         visibleTextMayHaveChanged = true
       }
 
+      "response.function_call_arguments.delta" -> {
+        val outputIndex = resolveResponsesFunctionCallOutputIndex(
+          eventPayload = eventPayload,
+          outputItems = outputItems,
+          outputIndexByItemId = outputIndexByItemId,
+        )
+        val item = ensureResponsesFunctionCallItem(
+          outputItems = outputItems,
+          outputIndex = outputIndex,
+          eventPayload = eventPayload,
+        )
+        appendResponsesFunctionCallArgumentsDelta(
+          item = item,
+          delta = eventPayload.optString("delta"),
+        )
+        registerResponsesOutputItemIdentities(
+          outputIndexByItemId = outputIndexByItemId,
+          item = item,
+          outputIndex = outputIndex,
+        )
+      }
+
+      "response.function_call_arguments.done" -> {
+        val outputIndex = resolveResponsesFunctionCallOutputIndex(
+          eventPayload = eventPayload,
+          outputItems = outputItems,
+          outputIndexByItemId = outputIndexByItemId,
+        )
+        val item = ensureResponsesFunctionCallItem(
+          outputItems = outputItems,
+          outputIndex = outputIndex,
+          eventPayload = eventPayload,
+        )
+        setResponsesFunctionCallArgumentsValue(
+          item = item,
+          arguments = eventPayload.optString("arguments"),
+        )
+        registerResponsesOutputItemIdentities(
+          outputIndexByItemId = outputIndexByItemId,
+          item = item,
+          outputIndex = outputIndex,
+        )
+      }
+
       "response.output_item.done" -> {
         val item = eventPayload.optJSONObject("item") ?: return nextActiveAssistantMessageIndex
         val itemIndex = storeResponsesOutputItem(
@@ -3919,11 +4693,13 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         if (response != null) {
           mergeResponseObjectIntoPayload(payload, response)
           response.optJSONArray("output")?.let { output ->
-            replaceResponsesOutputItems(
-              outputItems = outputItems,
-              outputIndexByItemId = outputIndexByItemId,
-              output = output,
-            )
+            if (output.length() > 0) {
+              replaceResponsesOutputItems(
+                outputItems = outputItems,
+                outputIndexByItemId = outputIndexByItemId,
+                output = output,
+              )
+            }
           }
         }
         if (!payload.has("status")) {
@@ -3936,11 +4712,13 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         eventPayload.optJSONObject("response")?.let { response ->
           mergeResponseObjectIntoPayload(payload, response)
           response.optJSONArray("output")?.let { output ->
-            replaceResponsesOutputItems(
-              outputItems = outputItems,
-              outputIndexByItemId = outputIndexByItemId,
-              output = output,
-            )
+            if (output.length() > 0) {
+              replaceResponsesOutputItems(
+                outputItems = outputItems,
+                outputIndexByItemId = outputIndexByItemId,
+                output = output,
+              )
+            }
           }
         }
         if (!payload.has("status")) {
@@ -3957,6 +4735,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         throw IllegalStateException(message)
       }
     }
+    streamDebug(
+      "provider.responsesEvent type=$eventType activeOutputItems=${outputItems.size} visibleChanged=$visibleTextMayHaveChanged",
+    )
     if (visibleTextMayHaveChanged) {
       val visibleText = responsesVisibleText(outputItems)
       visibleTextCoalescer.update(visibleText)
@@ -3985,11 +4766,13 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     explicitIndex: Int?,
     replace: Boolean,
   ): Int {
-    val normalizedItem = JSONObject(item.toString())
-    val resolvedIndex = explicitIndex
-      ?: responsesOutputItemIdentity(normalizedItem)
-        ?.let(outputIndexByItemId::get)
-      ?: nextResponsesOutputIndex(outputItems)
+    val normalizedItem = sanitizeResponsesOutputItem(item)
+    val resolvedIndex = resolveResponsesStoredOutputIndex(
+      outputItems = outputItems,
+      outputIndexByItemId = outputIndexByItemId,
+      item = normalizedItem,
+      explicitIndex = explicitIndex,
+    )
     val storedItem = if (!replace) {
       outputItems[resolvedIndex]?.apply {
         mergeResponsesStreamItemSkeleton(this, normalizedItem)
@@ -3997,14 +4780,37 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         outputItems[resolvedIndex] = inserted
       }
     } else {
+      outputItems[resolvedIndex]?.let { existing ->
+        responsesOutputItemIdentities(existing).forEach(outputIndexByItemId::remove)
+      }
       normalizedItem.also { inserted ->
         outputItems[resolvedIndex] = inserted
       }
     }
-    responsesOutputItemIdentity(storedItem)?.let { itemId ->
-      outputIndexByItemId[itemId] = resolvedIndex
-    }
+    registerResponsesOutputItemIdentities(
+      outputIndexByItemId = outputIndexByItemId,
+      item = storedItem,
+      outputIndex = resolvedIndex,
+    )
     return resolvedIndex
+  }
+
+  private fun resolveResponsesStoredOutputIndex(
+    outputItems: Map<Int, JSONObject>,
+    outputIndexByItemId: Map<String, Int>,
+    item: JSONObject,
+    explicitIndex: Int?,
+  ): Int {
+    responsesOutputItemIdentities(item)
+      .firstNotNullOfOrNull(outputIndexByItemId::get)
+      ?.let { index -> return index }
+    explicitIndex?.let { index ->
+      if (shouldSplitResponsesOutputIndex(existing = outputItems[index], incoming = item)) {
+        return nextResponsesOutputIndex(outputItems)
+      }
+      return index
+    }
+    return nextResponsesOutputIndex(outputItems)
   }
 
   private fun mergeResponsesStreamItemSkeleton(
@@ -4032,15 +4838,54 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     outputIndexByItemId: MutableMap<String, Int>,
     output: JSONArray,
   ) {
+    val preservedWebSearchItems = outputItems.values
+      .filter { item -> item.optString("type") == "web_search_call" }
+      .map(::sanitizeResponsesWebSearchCallItem)
     outputItems.clear()
     outputIndexByItemId.clear()
+    val webSearchKeys = linkedSetOf<String>()
     for (index in 0 until output.length()) {
       val item = output.optJSONObject(index) ?: continue
-      val copiedItem = JSONObject(item.toString())
+      val copiedItem = sanitizeResponsesOutputItem(item)
       outputItems[index] = copiedItem
-      responsesOutputItemIdentity(copiedItem)?.let { itemId ->
-        outputIndexByItemId[itemId] = index
+      if (copiedItem.optString("type") == "web_search_call") {
+        webSearchKeys += responsesWebSearchItemPreservationKey(copiedItem)
       }
+      registerResponsesOutputItemIdentities(
+        outputIndexByItemId = outputIndexByItemId,
+        item = copiedItem,
+        outputIndex = index,
+      )
+    }
+    var nextIndex = output.length()
+    for (item in preservedWebSearchItems) {
+      if (!webSearchKeys.add(responsesWebSearchItemPreservationKey(item))) {
+        continue
+      }
+      outputItems[nextIndex] = item
+      registerResponsesOutputItemIdentities(
+        outputIndexByItemId = outputIndexByItemId,
+        item = item,
+        outputIndex = nextIndex,
+      )
+      nextIndex += 1
+    }
+  }
+
+  private fun responsesWebSearchItemPreservationKey(
+    item: JSONObject,
+  ): String = responsesOutputItemIdentities(item)
+    .takeIf(List<String>::isNotEmpty)
+    ?.joinToString(separator = "\u0001", prefix = "id:")
+    ?: "body:${item.toString()}"
+
+  private fun registerResponsesOutputItemIdentities(
+    outputIndexByItemId: MutableMap<String, Int>,
+    item: JSONObject,
+    outputIndex: Int,
+  ) {
+    responsesOutputItemIdentities(item).forEach { itemId ->
+      outputIndexByItemId[itemId] = outputIndex
     }
   }
 
@@ -4050,12 +4895,22 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     outputIndexByItemId: Map<String, Int>,
     activeAssistantMessageIndex: Int?,
   ): Int {
-    eventPayload.optInt("output_index", -1).takeIf { index -> index >= 0 }?.let { return it }
     firstNonBlankString(
       eventPayload.nonBlankString("item_id"),
       eventPayload.nonBlankString("output_item_id"),
     )?.let { itemId ->
       outputIndexByItemId[itemId]?.let { return it }
+    }
+    eventPayload.optInt("output_index", -1).takeIf { index -> index >= 0 }?.let { index ->
+      if (
+        shouldSplitResponsesOutputIndex(
+          existing = outputItems[index],
+          incoming = responsesMessageCandidateFrom(eventPayload),
+        )
+      ) {
+        return nextResponsesOutputIndex(outputItems)
+      }
+      return index
     }
     activeAssistantMessageIndex?.let { return it }
     outputItems.toSortedMap().entries.lastOrNull { (_, item) ->
@@ -4079,6 +4934,174 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     if (optString("role").isBlank()) {
       put("role", "assistant")
     }
+  }
+
+  private fun resolveResponsesFunctionCallOutputIndex(
+    eventPayload: JSONObject,
+    outputItems: Map<Int, JSONObject>,
+    outputIndexByItemId: Map<String, Int>,
+  ): Int {
+    firstNonBlankString(
+      eventPayload.nonBlankString("item_id"),
+      eventPayload.nonBlankString("output_item_id"),
+      eventPayload.nonBlankString("call_id"),
+      eventPayload.nonBlankString("id"),
+    )?.let { itemId ->
+      outputIndexByItemId[itemId]?.let { return it }
+    }
+    eventPayload.optInt("output_index", -1).takeIf { index -> index >= 0 }?.let { index ->
+      if (
+        shouldSplitResponsesOutputIndex(
+          existing = outputItems[index],
+          incoming = responsesFunctionCallCandidateFrom(eventPayload),
+        )
+      ) {
+        return nextResponsesOutputIndex(outputItems)
+      }
+      return index
+    }
+    return nextResponsesOutputIndex(outputItems)
+  }
+
+  private fun responsesMessageCandidateFrom(eventPayload: JSONObject): JSONObject = JSONObject()
+    .put("type", "message")
+    .put("role", "assistant")
+    .apply {
+      firstNonBlankString(
+        eventPayload.nonBlankString("item_id"),
+        eventPayload.nonBlankString("output_item_id"),
+      )?.let { itemId ->
+        put("id", itemId)
+      }
+    }
+
+  private fun responsesFunctionCallCandidateFrom(eventPayload: JSONObject): JSONObject = JSONObject()
+    .put("type", "function_call")
+    .apply {
+      firstNonBlankString(
+        eventPayload.nonBlankString("item_id"),
+        eventPayload.nonBlankString("output_item_id"),
+        eventPayload.nonBlankString("id"),
+      )?.let { itemId ->
+        put("id", itemId)
+      }
+      eventPayload.nonBlankString("call_id")?.let { callId ->
+        put("call_id", callId)
+      }
+      eventPayload.nonBlankString("name")?.let { toolName ->
+        put("name", toolName)
+      }
+    }
+
+  private fun shouldSplitResponsesOutputIndex(
+    existing: JSONObject?,
+    incoming: JSONObject,
+  ): Boolean {
+    val current = existing ?: return false
+    if (responsesItemsShareIdentity(current, incoming)) {
+      return false
+    }
+    val currentType = current.optString("type").trim().lowercase()
+    val incomingType = incoming.optString("type").trim().lowercase()
+    if (currentType.isBlank() || incomingType.isBlank()) {
+      return false
+    }
+    if (currentType != incomingType) {
+      return true
+    }
+    val currentIdentities = responsesOutputItemIdentities(current)
+    val incomingIdentities = responsesOutputItemIdentities(incoming)
+    if (currentIdentities.isNotEmpty() && incomingIdentities.isNotEmpty()) {
+      return true
+    }
+    return currentType == "message" && responsesMessageItemsConflict(current, incoming)
+  }
+
+  private fun responsesItemsShareIdentity(
+    left: JSONObject,
+    right: JSONObject,
+  ): Boolean {
+    val leftIdentities = responsesOutputItemIdentities(left)
+    if (leftIdentities.isEmpty()) {
+      return false
+    }
+    return responsesOutputItemIdentities(right).any(leftIdentities::contains)
+  }
+
+  private fun responsesMessageItemsConflict(
+    existing: JSONObject,
+    incoming: JSONObject,
+  ): Boolean {
+    val existingId = existing.nonBlankString("id")
+    val incomingId = incoming.nonBlankString("id")
+    if (
+      existingId != null &&
+      incomingId != null &&
+      !existingId.equals(incomingId, ignoreCase = true)
+    ) {
+      return true
+    }
+    val existingPhase = existing.nonBlankString("phase")
+      ?.trim()
+      ?.lowercase()
+    val incomingPhase = incoming.nonBlankString("phase")
+      ?.trim()
+      ?.lowercase()
+    return existingPhase != null &&
+      incomingPhase != null &&
+      existingPhase != incomingPhase
+  }
+
+  private fun ensureResponsesFunctionCallItem(
+    outputItems: MutableMap<Int, JSONObject>,
+    outputIndex: Int,
+    eventPayload: JSONObject,
+  ): JSONObject = outputItems.getOrPut(outputIndex) {
+    JSONObject()
+      .put("type", "function_call")
+      .put("arguments", "")
+  }.apply {
+    put("type", "function_call")
+    if (isMissingJsonValue(opt("arguments"))) {
+      put("arguments", "")
+    }
+    firstNonBlankString(
+      nonBlankString("id"),
+      eventPayload.nonBlankString("item_id"),
+      eventPayload.nonBlankString("output_item_id"),
+      eventPayload.nonBlankString("id"),
+    )?.let { itemId ->
+      put("id", itemId)
+    }
+    firstNonBlankString(
+      nonBlankString("call_id"),
+      eventPayload.nonBlankString("call_id"),
+    )?.let { callId ->
+      put("call_id", callId)
+    }
+    firstNonBlankString(
+      nonBlankString("name"),
+      eventPayload.nonBlankString("name"),
+    )?.let { toolName ->
+      put("name", toolName)
+    }
+  }
+
+  private fun appendResponsesFunctionCallArgumentsDelta(
+    item: JSONObject,
+    delta: String,
+  ) {
+    if (delta.isEmpty()) {
+      return
+    }
+    appendJsonStringField(item, "arguments", delta)
+  }
+
+  private fun setResponsesFunctionCallArgumentsValue(
+    item: JSONObject,
+    arguments: String,
+  ) {
+    item.put("arguments", arguments)
   }
 
   private fun appendResponsesOutputTextDelta(
@@ -4188,18 +5211,15 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   private fun responsesVisibleText(
     outputItems: Map<Int, JSONObject>,
-  ): String = outputItems.toSortedMap().values
-    .mapNotNull { item ->
-      if (!isResponsesAssistantMessage(item)) {
-        null
-      } else {
-        extractResponsesMessageText(item)
-          .trim()
-          .takeIf(String::isNotBlank)
-      }
-    }
-    .joinToString(separator = "\n")
-    .trim()
+  ): String {
+    val textSegments = responsesTextSegments(outputItems.toSortedMap().values)
+    return firstNonBlankString(
+      textSegments.finalAnswer.joinToString(separator = "\n").trim().takeIf(String::isNotBlank),
+      textSegments.unphased.joinToString(separator = "\n").trim().takeIf(String::isNotBlank),
+      textSegments.commentary.lastOrNull()?.trim()?.takeIf(String::isNotBlank),
+      textSegments.ordered.lastOrNull()?.trim()?.takeIf(String::isNotBlank),
+    ).orEmpty()
+  }
 
   private fun backfillResponsesVisibleTextOutput(
     outputItems: MutableMap<Int, JSONObject>,
@@ -4226,10 +5246,236 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     item?.optString("type") == "message" &&
       item.optString("role").trim().ifEmpty { "assistant" } == "assistant"
 
-  private fun responsesOutputItemIdentity(item: JSONObject): String? = firstNonBlankString(
-    item.nonBlankString("id"),
-    item.nonBlankString("call_id"),
-  )
+  private fun responsesOutputItemIdentities(item: JSONObject): List<String> = buildList {
+    item.nonBlankString("id")?.let(::add)
+    item.nonBlankString("call_id")
+      ?.takeIf { callId -> callId !in this }
+      ?.let(::add)
+  }
+
+  private fun sanitizeResponsesOutputItem(
+    item: JSONObject,
+  ): JSONObject = when (item.optString("type").trim().lowercase()) {
+    "message" -> sanitizeResponsesMessageItem(item)
+    "function_call" -> sanitizeResponsesFunctionCallItem(item)
+    "web_search_call" -> sanitizeResponsesWebSearchCallItem(item)
+    "reasoning" -> sanitizeResponsesReasoningItem(item)
+    else -> sanitizeResponsesGenericItem(item)
+  }
+
+  private fun sanitizeResponsesMessageItem(
+    item: JSONObject,
+  ): JSONObject = JSONObject().apply {
+    copyJsonScalarFieldIfPresent(item, this, "id")
+    copyJsonScalarFieldIfPresent(item, this, "type")
+    copyJsonScalarFieldIfPresent(item, this, "role")
+    copyJsonScalarFieldIfPresent(item, this, "status")
+    copyJsonScalarFieldIfPresent(item, this, "phase")
+    when (val content = item.opt("content")) {
+      is String -> put("content", content)
+      is JSONArray -> sanitizeResponsesContentArray(content)?.let { sanitized -> put("content", sanitized) }
+      is JSONObject -> sanitizeResponsesContentPart(content)?.let { sanitized ->
+        put("content", JSONArray().put(sanitized))
+      }
+    }
+    if (!has("content")) {
+      copyJsonScalarFieldIfPresent(item, this, "text")
+    }
+  }
+
+  private fun sanitizeResponsesFunctionCallItem(
+    item: JSONObject,
+  ): JSONObject = JSONObject().apply {
+    copyJsonScalarFieldIfPresent(item, this, "id")
+    copyJsonScalarFieldIfPresent(item, this, "type")
+    copyJsonScalarFieldIfPresent(item, this, "call_id")
+    copyJsonScalarFieldIfPresent(item, this, "name")
+    copyJsonScalarFieldIfPresent(item, this, "arguments")
+    copyJsonScalarFieldIfPresent(item, this, "status")
+  }
+
+  private fun sanitizeResponsesWebSearchCallItem(
+    item: JSONObject,
+  ): JSONObject = JSONObject().apply {
+    copyJsonScalarFieldIfPresent(item, this, "id")
+    copyJsonScalarFieldIfPresent(item, this, "type")
+    copyJsonScalarFieldIfPresent(item, this, "call_id")
+    copyJsonScalarFieldIfPresent(item, this, "status")
+    copyJsonScalarFieldIfPresent(item, this, "action_type")
+    copyJsonScalarFieldIfPresent(item, this, "query")
+    copyJsonScalarFieldIfPresent(item, this, "url")
+    copyJsonScalarFieldIfPresent(item, this, "page_url")
+    copyJsonScalarFieldIfPresent(item, this, "text")
+    copyJsonScalarFieldIfPresent(item, this, "pattern")
+    sanitizeJsonStringArray(item.optJSONArray("domains"))?.let { domains ->
+      put("domains", domains)
+    }
+    sanitizeResponsesWebSearchAction(item.optJSONObject("action"))?.let { action ->
+      put("action", action)
+    }
+    sanitizeResponsesWebSearchSources(item.optJSONArray("sources"))?.let { sources ->
+      put("sources", sources)
+    }
+  }
+
+  private fun sanitizeResponsesReasoningItem(
+    item: JSONObject,
+  ): JSONObject = JSONObject().apply {
+    copyJsonScalarFieldIfPresent(item, this, "id")
+    copyJsonScalarFieldIfPresent(item, this, "type")
+    copyJsonScalarFieldIfPresent(item, this, "status")
+    copyJsonScalarFieldIfPresent(item, this, "text")
+    sanitizeResponsesTextPayload(item.opt("summary"))?.let { summary ->
+      put("summary", summary)
+    }
+    sanitizeResponsesTextPayload(item.opt("content"))?.let { content ->
+      put("content", content)
+    }
+  }
+
+  private fun sanitizeResponsesGenericItem(
+    item: JSONObject,
+  ): JSONObject = JSONObject().apply {
+    copyJsonScalarFieldIfPresent(item, this, "id")
+    copyJsonScalarFieldIfPresent(item, this, "type")
+    copyJsonScalarFieldIfPresent(item, this, "call_id")
+    copyJsonScalarFieldIfPresent(item, this, "status")
+    copyJsonScalarFieldIfPresent(item, this, "name")
+    copyJsonScalarFieldIfPresent(item, this, "phase")
+    copyJsonScalarFieldIfPresent(item, this, "text")
+    sanitizeResponsesTextPayload(item.opt("content"))?.let { content ->
+      put("content", content)
+    }
+    sanitizeResponsesTextPayload(item.opt("summary"))?.let { summary ->
+      put("summary", summary)
+    }
+  }
+
+  private fun sanitizeResponsesTextPayload(
+    value: Any?,
+  ): Any? = when (value) {
+    null,
+    JSONObject.NULL,
+    -> null
+    is String -> value
+    is JSONObject -> sanitizeResponsesContentPart(value)
+    is JSONArray -> sanitizeResponsesContentArray(value)
+    else -> null
+  }
+
+  private fun sanitizeResponsesContentArray(
+    content: JSONArray,
+  ): JSONArray? {
+    val sanitized = JSONArray()
+    for (index in 0 until content.length()) {
+      when (val item = content.opt(index)) {
+        is String -> sanitized.put(item)
+        is JSONObject -> sanitizeResponsesContentPart(item)?.let(sanitized::put)
+      }
+    }
+    return sanitized.takeIf { it.length() > 0 }
+  }
+
+  private fun sanitizeResponsesContentPart(
+    content: JSONObject,
+  ): JSONObject? = JSONObject().apply {
+    copyJsonScalarFieldIfPresent(content, this, "type")
+    copyJsonScalarFieldIfPresent(content, this, "text")
+    copyJsonScalarFieldIfPresent(content, this, "output_text")
+    copyJsonScalarFieldIfPresent(content, this, "summary_text")
+    copyJsonScalarFieldIfPresent(content, this, "refusal")
+    copyJsonScalarFieldIfPresent(content, this, "content")
+    copyJsonScalarFieldIfPresent(content, this, "value")
+    sanitizeResponsesAnnotations(content.optJSONArray("annotations"))?.let { annotations ->
+      put("annotations", annotations)
+    }
+  }.takeIf { sanitized ->
+    sanitized.length() > 0
+  }
+
+  private fun sanitizeResponsesAnnotations(
+    annotations: JSONArray?,
+  ): JSONArray? {
+    if (annotations == null || annotations.length() == 0) {
+      return null
+    }
+    val sanitized = JSONArray()
+    for (index in 0 until annotations.length()) {
+      val annotation = annotations.optJSONObject(index) ?: continue
+      val normalized = JSONObject().apply {
+        copyJsonScalarFieldIfPresent(annotation, this, "type")
+        copyJsonScalarFieldIfPresent(annotation, this, "title")
+        copyJsonScalarFieldIfPresent(annotation, this, "url")
+        copyJsonScalarFieldIfPresent(annotation, this, "start_index")
+        copyJsonScalarFieldIfPresent(annotation, this, "end_index")
+      }
+      if (normalized.length() > 0) {
+        sanitized.put(normalized)
+      }
+    }
+    return sanitized.takeIf { it.length() > 0 }
+  }
+
+  private fun sanitizeResponsesWebSearchAction(
+    action: JSONObject?,
+  ): JSONObject? {
+    if (action == null) {
+      return null
+    }
+    return JSONObject().apply {
+      copyJsonScalarFieldIfPresent(action, this, "type")
+      copyJsonScalarFieldIfPresent(action, this, "query")
+      copyJsonScalarFieldIfPresent(action, this, "url")
+      copyJsonScalarFieldIfPresent(action, this, "page_url")
+      copyJsonScalarFieldIfPresent(action, this, "text")
+      copyJsonScalarFieldIfPresent(action, this, "pattern")
+      sanitizeJsonStringArray(action.optJSONArray("queries"))?.let { queries ->
+        put("queries", queries)
+      }
+      sanitizeJsonStringArray(action.optJSONArray("domains"))?.let { domains ->
+        put("domains", domains)
+      }
+      sanitizeResponsesWebSearchSources(action.optJSONArray("sources"))?.let { sources ->
+        put("sources", sources)
+      }
+    }.takeIf { sanitized -> sanitized.length() > 0 }
+  }
+
+  private fun sanitizeResponsesWebSearchSources(
+    sources: JSONArray?,
+  ): JSONArray? {
+    if (sources == null || sources.length() == 0) {
+      return null
+    }
+    val sanitized = JSONArray()
+    for (index in 0 until sources.length()) {
+      val source = sources.optJSONObject(index) ?: continue
+      val normalized = JSONObject().apply {
+        copyJsonScalarFieldIfPresent(source, this, "title")
+        copyJsonScalarFieldIfPresent(source, this, "url")
+      }
+      if (normalized.length() > 0) {
+        sanitized.put(normalized)
+      }
+    }
+    return sanitized.takeIf { it.length() > 0 }
+  }
+
+  private fun sanitizeJsonStringArray(
+    source: JSONArray?,
+  ): JSONArray? {
+    if (source == null || source.length() == 0) {
+      return null
+    }
+    val sanitized = JSONArray()
+    for (index in 0 until source.length()) {
+      val value = source.optString(index).trim()
+      if (value.isNotBlank()) {
+        sanitized.put(value)
+      }
+    }
+    return sanitized.takeIf { it.length() > 0 }
+  }
 
   private fun nextResponsesOutputIndex(
     outputItems: Map<Int, JSONObject>,
@@ -4243,6 +5489,22 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     val delta = value?.takeIf(String::isNotEmpty) ?: return
     val existing = target.optString(key)
     target.put(key, existing + delta)
+  }
+
+  private fun copyJsonScalarFieldIfPresent(
+    source: JSONObject,
+    target: JSONObject,
+    key: String,
+  ) {
+    if (!source.has(key)) {
+      return
+    }
+    when (val value = source.opt(key)) {
+      is String,
+      is Number,
+      is Boolean,
+      -> target.put(key, value)
+    }
   }
 
   private fun copyJsonFieldIfPresent(
@@ -4384,6 +5646,353 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   private fun firstNonBlankString(vararg values: String?): String? =
     values.firstOrNull { value -> !value.isNullOrBlank() }
 
+  private fun visibleAssistantDraftText(rawText: String): String? {
+    val normalized = rawText.trim().takeIf(String::isNotBlank) ?: return null
+    val startsLikeJson = normalized.startsWith('{') || normalized.startsWith('[')
+    val lowercase = normalized.lowercase()
+    val looksLikeStructuredProtocol =
+      startsLikeJson && (
+        "\"type\"" in lowercase ||
+          "\"decision\"" in lowercase ||
+          "\"actions\"" in lowercase ||
+          "\"tool_name\"" in lowercase ||
+          "\"tool_calls\"" in lowercase ||
+          "\"function_call\"" in lowercase ||
+          "\"call_id\"" in lowercase ||
+          "\"arguments\"" in lowercase
+        )
+    val looksLikeInternalSignal =
+      startsLikeJson && (
+        "\"is_task_bearing_request\"" in lowercase ||
+          "\"user_affect\"" in lowercase ||
+          "\"user_invites_playfulness\"" in lowercase ||
+          "\"user_requests_relational_support\"" in lowercase ||
+          "\"clarification_needed\"" in lowercase
+        )
+    if (!startsLikeJson) {
+      return normalized
+    }
+    extractStructuredAssistantDraftText(normalized)?.let { return it }
+    if (looksLikeStructuredProtocol || looksLikeInternalSignal) {
+      return null
+    }
+    if (!normalized.endsWith('}') && !normalized.endsWith(']')) {
+      return null
+    }
+    return normalized
+  }
+
+  private fun extractStructuredAssistantDraftText(rawText: String): String? {
+    val lowercase = rawText.lowercase()
+    val hasExplicitTypeField = "\"type\"" in lowercase || "\"decision\"" in lowercase
+    if ("\"actions\"" in lowercase) {
+      extractStructuredActionsDraftText(rawText)?.let { return it }
+    }
+    if (containsStructuredAssistantExecutionSignal(lowercase)) {
+      return null
+    }
+    val actionType = structuredAssistantDraftActionType(rawText)
+    return when (actionType) {
+      "final",
+      "answer",
+      -> firstNonBlankString(
+        partialJsonStringFieldValue(rawText, "answer"),
+        partialJsonStringFieldValue(rawText, "text"),
+        partialJsonStringFieldValue(rawText, "message"),
+        partialJsonStringFieldValue(rawText, "summary"),
+      )?.trim()?.takeIf(String::isNotBlank)
+
+      "progress",
+      "commentary",
+      "status",
+      -> firstNonBlankString(
+        partialJsonStringFieldValue(rawText, "text"),
+        partialJsonStringFieldValue(rawText, "summary"),
+        partialJsonStringFieldValue(rawText, "message"),
+      )?.trim()?.takeIf(String::isNotBlank)
+
+      null,
+      "",
+      -> if (hasExplicitTypeField) {
+        partialJsonStringFieldValue(rawText, "answer")
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+      } else {
+        null
+      }
+
+      else -> null
+    }
+  }
+
+  private fun extractStructuredActionsDraftText(rawText: String): String? {
+    val actions = partialJsonObjectFieldArrayElements(rawText, "actions")
+    if (actions.isEmpty()) {
+      return null
+    }
+    val hasExecutionAction = actions.any(::structuredAssistantActionSuppressesFinalDraft)
+    return actions
+      .mapNotNull { rawAction ->
+        val visibleText = extractStructuredAssistantDraftTextFromAction(rawAction) ?: return@mapNotNull null
+        if (hasExecutionAction && isStructuredAssistantFinalAction(rawAction)) {
+          return@mapNotNull null
+        }
+        visibleText
+      }
+      .lastOrNull()
+  }
+
+  private fun extractStructuredAssistantDraftTextFromAction(rawAction: String): String? {
+    val actionType = structuredAssistantDraftActionType(rawAction)
+    return when (actionType) {
+      "final",
+      "answer",
+      -> firstNonBlankString(
+        partialJsonStringFieldValue(rawAction, "answer"),
+        partialJsonStringFieldValue(rawAction, "text"),
+        partialJsonStringFieldValue(rawAction, "message"),
+        partialJsonStringFieldValue(rawAction, "summary"),
+      )?.trim()?.takeIf(String::isNotBlank)
+
+      "progress",
+      "commentary",
+      "status",
+      -> firstNonBlankString(
+        partialJsonStringFieldValue(rawAction, "text"),
+        partialJsonStringFieldValue(rawAction, "summary"),
+        partialJsonStringFieldValue(rawAction, "message"),
+      )?.trim()?.takeIf(String::isNotBlank)
+
+      else -> null
+    }
+  }
+
+  private fun structuredAssistantDraftActionType(rawText: String): String? = firstNonBlankString(
+    partialJsonStringFieldValue(rawText, "type")?.trim()?.lowercase()?.takeIf(String::isNotBlank),
+    partialJsonStringFieldValue(rawText, "decision")?.trim()?.lowercase()?.takeIf(String::isNotBlank),
+  )
+
+  private fun isStructuredAssistantFinalAction(rawText: String): Boolean =
+    structuredAssistantDraftActionType(rawText) in setOf("final", "answer")
+
+  private fun structuredAssistantActionSuppressesFinalDraft(rawAction: String): Boolean {
+    val lowercase = rawAction.lowercase()
+    if (containsStructuredAssistantExecutionSignal(lowercase)) {
+      return true
+    }
+    return when (structuredAssistantDraftActionType(rawAction)) {
+      null,
+      "",
+      "final",
+      "answer",
+      "progress",
+      "commentary",
+      "status",
+      -> false
+
+      else -> true
+    }
+  }
+
+  private fun containsStructuredAssistantExecutionSignal(lowercase: String): Boolean =
+    containsStructuredAssistantToolSignal(lowercase) ||
+      "\"is_task_bearing_request\"" in lowercase ||
+      "\"user_affect\"" in lowercase ||
+      "\"user_invites_playfulness\"" in lowercase ||
+      "\"user_requests_relational_support\"" in lowercase ||
+      "\"clarification_needed\"" in lowercase
+
+  private fun containsStructuredAssistantToolSignal(lowercase: String): Boolean =
+    "\"tool_name\"" in lowercase ||
+      "\"tool_calls\"" in lowercase ||
+      "\"function_call\"" in lowercase ||
+      "\"call_id\"" in lowercase ||
+      "\"arguments\"" in lowercase
+
+  private fun partialJsonObjectFieldArrayElements(
+    rawText: String,
+    fieldName: String,
+  ): List<String> {
+    val fieldPattern = "\"$fieldName\""
+    var searchFrom = 0
+    var keyIndex = -1
+    while (searchFrom < rawText.length) {
+      val candidateIndex = rawText.indexOf(fieldPattern, searchFrom)
+      if (candidateIndex < 0) {
+        return emptyList()
+      }
+      if (isTopLevelPartialJsonObjectKey(rawText = rawText, keyIndex = candidateIndex)) {
+        keyIndex = candidateIndex
+        break
+      }
+      searchFrom = candidateIndex + fieldPattern.length
+    }
+    var index = keyIndex + fieldPattern.length
+    while (index < rawText.length && rawText[index].isWhitespace()) {
+      index += 1
+    }
+    if (index >= rawText.length || rawText[index] != ':') {
+      return emptyList()
+    }
+    index += 1
+    while (index < rawText.length && rawText[index].isWhitespace()) {
+      index += 1
+    }
+    if (index >= rawText.length || rawText[index] != '[') {
+      return emptyList()
+    }
+    index += 1
+    val elements = mutableListOf<String>()
+    var objectStart = -1
+    var objectDepth = 0
+    var inString = false
+    var escaped = false
+    while (index < rawText.length) {
+      val character = rawText[index]
+      if (inString) {
+        if (escaped) {
+          escaped = false
+        } else {
+          when (character) {
+            '\\' -> escaped = true
+            '"' -> inString = false
+          }
+        }
+        index += 1
+        continue
+      }
+      when (character) {
+        '"' -> inString = true
+        '{' -> {
+          if (objectDepth == 0) {
+            objectStart = index
+          }
+          objectDepth += 1
+        }
+        '}' -> {
+          if (objectDepth > 0) {
+            objectDepth -= 1
+            if (objectDepth == 0 && objectStart >= 0) {
+              elements += rawText.substring(objectStart, index + 1)
+              objectStart = -1
+            }
+          }
+        }
+        ']' -> {
+          if (objectDepth == 0) {
+            return elements
+          }
+        }
+      }
+      index += 1
+    }
+    if (objectStart >= 0) {
+      elements += rawText.substring(objectStart)
+    }
+    return elements
+  }
+
+  private fun isTopLevelPartialJsonObjectKey(
+    rawText: String,
+    keyIndex: Int,
+  ): Boolean {
+    var objectDepth = 0
+    var arrayDepth = 0
+    var inString = false
+    var escaped = false
+    for (index in 0 until keyIndex) {
+      val character = rawText[index]
+      if (inString) {
+        if (escaped) {
+          escaped = false
+        } else {
+          when (character) {
+            '\\' -> escaped = true
+            '"' -> inString = false
+          }
+        }
+        continue
+      }
+      when (character) {
+        '"' -> inString = true
+        '{' -> objectDepth += 1
+        '}' -> if (objectDepth > 0) {
+          objectDepth -= 1
+        }
+        '[' -> arrayDepth += 1
+        ']' -> if (arrayDepth > 0) {
+          arrayDepth -= 1
+        }
+      }
+    }
+    return objectDepth == 1 && arrayDepth == 0 && !inString
+  }
+
+  private fun partialJsonStringFieldValue(
+    rawText: String,
+    fieldName: String,
+  ): String? {
+    val fieldPattern = "\"$fieldName\""
+    var searchStart = 0
+    while (true) {
+      val keyIndex = rawText.indexOf(fieldPattern, startIndex = searchStart)
+      if (keyIndex < 0) {
+        return null
+      }
+      var index = keyIndex + fieldPattern.length
+      while (index < rawText.length && rawText[index].isWhitespace()) {
+        index += 1
+      }
+      if (index >= rawText.length || rawText[index] != ':') {
+        searchStart = keyIndex + fieldPattern.length
+        continue
+      }
+      index += 1
+      while (index < rawText.length && rawText[index].isWhitespace()) {
+        index += 1
+      }
+      if (index >= rawText.length || rawText[index] != '"') {
+        return null
+      }
+      index += 1
+      val builder = StringBuilder()
+      var escaped = false
+      while (index < rawText.length) {
+        val character = rawText[index]
+        if (escaped) {
+          builder.append(
+            when (character) {
+              'n' -> '\n'
+              'r' -> '\r'
+              't' -> '\t'
+              '\\',
+              '"',
+              '/',
+              -> character
+              else -> character
+            },
+          )
+          escaped = false
+          index += 1
+          continue
+        }
+        when (character) {
+          '\\' -> {
+            escaped = true
+            index += 1
+          }
+
+          '"' -> return builder.toString()
+          else -> {
+            builder.append(character)
+            index += 1
+          }
+        }
+      }
+      return builder.toString()
+    }
+  }
+
   private data class ResponseTextSegments(
     val commentary: List<String> = emptyList(),
     val finalAnswer: List<String> = emptyList(),
@@ -4405,13 +6014,16 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   private class VisibleTextSnapshotCoalescer(
     private val observer: LiteLlmVisibleTextObserver,
     private val minIntervalMs: Long,
+    private val normalizer: (String) -> String? = { text ->
+      text.trim().takeIf(String::isNotBlank)
+    },
   ) {
     private var lastEmittedText: String? = null
     private var lastEmittedAtEpochMs: Long = 0L
     private var pendingText: String? = null
 
     fun update(text: String) {
-      val normalized = text.trim().takeIf(String::isNotBlank) ?: return
+      val normalized = normalizer(text) ?: return
       pendingText = normalized
       emitIfEligible(force = lastEmittedText == null)
     }
@@ -4430,6 +6042,12 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       if (!force && minIntervalMs > 0L && now - lastEmittedAtEpochMs < minIntervalMs) {
         return
       }
+      runCatching {
+        Log.d(
+          STREAM_DEBUG_TAG,
+          "provider.visibleDraft len=${text.length} preview=${text.take(STREAM_DEBUG_PREVIEW_CHARS).replace('\n', ' ')}",
+        )
+      }
       observer.onVisibleTextSnapshot(text)
       lastEmittedText = text
       lastEmittedAtEpochMs = now
@@ -4439,11 +6057,16 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   companion object {
     private const val DEFAULT_ANTHROPIC_MAX_TOKENS: Int = 4096
-    private const val DEFAULT_STREAM_UPDATE_MIN_INTERVAL_MS: Long = 0L
+    private const val DEFAULT_STREAM_UPDATE_MIN_INTERVAL_MS: Long = 24L
+    private const val STREAM_SNIFF_LIMIT_BYTES: Int = 2_048
+    private const val STREAM_DEBUG_PREVIEW_CHARS: Int = 80
+    private const val STREAM_DEBUG_TAG: String = "OpenCrayStream"
     private const val MAX_INLINE_IMAGE_BYTES: Long = 20L * 1024L * 1024L
     private const val MAX_INLINE_PDF_BYTES: Long = 32L * 1024L * 1024L
     private const val ANTHROPIC_WEB_SEARCH_TOOL_TYPE: String = "web_search_20250305"
     private const val ANTHROPIC_WEB_SEARCH_TOOL_NAME: String = "web_search"
+    private const val STRUCTURED_FINAL_SCHEMA_NAME: String = "opencray_final_response"
+    private const val ANTHROPIC_STRUCTURED_FINAL_TOOL_NAME: String = "OpenCrayFinalResponse"
     private const val DEFAULT_ANTHROPIC_WEB_SEARCH_MAX_USES: Int = 5
     private const val ANTHROPIC_SERVER_TOOL_CONTINUATION_CONTENT_KEY: String =
       "_host.anthropicServerToolContinuationContent"
@@ -4458,4 +6081,14 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     internal fun providerUserAgent(versionName: String): String =
       OpenCrayUserAgent.providerApi(versionName)
   }
+
+  private fun streamDebug(message: String) {
+    runCatching { Log.d(STREAM_DEBUG_TAG, message) }
+  }
+}
+
+private const val PROVIDER_FLOW_DEBUG_TAG: String = "OpenCrayDiag"
+
+private fun providerFlowDebug(message: String) {
+  runCatching { Log.d(PROVIDER_FLOW_DEBUG_TAG, message) }
 }

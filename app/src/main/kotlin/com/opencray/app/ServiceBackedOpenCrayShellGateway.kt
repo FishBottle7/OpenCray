@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import android.content.Context
+
 internal class ServiceBackedOpenCrayShellGateway(
   private val serviceClient: OpenCrayRuntimeServiceClient,
   fallbackGateway: OpenCrayShellGateway? = null,
@@ -21,12 +23,33 @@ internal class ServiceBackedOpenCrayShellGateway(
       listener = listener,
     )
 
+  override fun saveShellDestination(
+    selectedTab: String,
+    settingsSubpage: String?,
+  ) {
+    currentLoadGateway().saveShellDestination(
+      selectedTab = selectedTab,
+      settingsSubpage = settingsSubpage,
+    )
+  }
+
   private fun currentLoadGateway(): OpenCrayShellGateway =
     serviceClient.loadShellGateway() ?: resolvedFallbackGatewayProvider()
 
   private fun currentObservedGateway(): OpenCrayShellGateway =
     serviceClient.peekShellGateway() ?: resolvedFallbackGatewayProvider()
 }
+
+internal fun serviceBackedOpenCrayShellGateway(
+  context: Context,
+): OpenCrayShellGateway =
+  openCrayRuntimeServiceEnvironment(context)
+    .serviceBackedGatewayBundleFactory
+    .create(
+      context = context.applicationContext,
+      target = openCrayRuntimeServiceEnvironment(context).defaultClientRuntimeServiceTarget,
+    )
+    .shellGateway
 
 internal fun serviceBackedOpenCrayShellGateway(
   serviceClient: OpenCrayRuntimeServiceClient,
@@ -43,3 +66,18 @@ internal fun serviceBackedOpenCrayShellGateway(
   serviceClient = serviceClient,
   fallbackGatewayProvider = fallbackGatewayProvider,
 )
+
+internal fun serviceBackedOpenCrayShellGateway(
+  context: Context,
+  fallbackGateway: OpenCrayShellGateway,
+): OpenCrayShellGateway {
+  val appContext = context.applicationContext
+  val environment = openCrayRuntimeServiceEnvironment(appContext)
+  return serviceBackedOpenCrayShellGateway(
+    serviceClient = environment.runtimeServiceAccessGateway.ensureClient(
+      context = appContext,
+      target = environment.defaultClientRuntimeServiceTarget,
+    ),
+    fallbackGateway = fallbackGateway,
+  )
+}

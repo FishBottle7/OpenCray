@@ -2,6 +2,7 @@ package com.opencray.app
 
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import com.opencray.app.facade.llm.LlmConfigFacade
 import com.opencray.app.facade.llm.LocalLlmConfigFacade
 import com.opencray.app.facade.media.LocalMediaSpeechSettingsFacade
@@ -21,8 +22,16 @@ import com.opencray.app.facade.settings.SettingsFacade
 import com.opencray.app.facade.settings.SettingsRouteId
 import com.opencray.app.facade.skills.LocalSkillsFacade
 import com.opencray.app.facade.skills.SkillsFacade
+import com.opencray.app.shell.AppShellDestination
 import com.opencray.app.shell.AppShellStateStore
 import java.nio.file.Path
+
+private const val SERVICE_CHAT_DEBUG_TAG: String = "OpenCrayDiag"
+private const val SERVICE_OWNED_GATEWAY_POLL_INTERVAL_MS: Long = 350L
+
+private fun serviceChatDebug(message: String) {
+  runCatching { Log.d(SERVICE_CHAT_DEBUG_TAG, message) }
+}
 
 internal class OpenCrayRuntimeServiceGatewayBundle(
   val shellGateway: OpenCrayShellGateway,
@@ -71,6 +80,7 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
       runtimeServiceConnectionState: RuntimeServiceConnectionState =
         RuntimeServiceConnectionState.binderConnected(),
     ): OpenCrayRuntimeServiceGatewayBundle {
+      val chatSessionStore = ChatSessionLocalStore.fromContext(appContext)
       val chatUnreadMessageState = ChatUnreadMessageState()
       val pendingApprovalState = ChatPendingApprovalState()
       val runtimeEventState = ChatRuntimeEventState()
@@ -131,16 +141,38 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
         snapshotNotifier = {},
         mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
       )
+      var onWarmupStateChanged: (() -> Unit)? = null
+      val onDeviceWarmupAccess = SessionAwareOnDeviceLlmWarmupAccess(
+        activeSessionIdProvider = {
+          chatSessionStore.loadState().activeSession.sessionId
+        },
+        warmupSpecProvider = gatewayDependencies.onDeviceWarmupPlanner,
+        controller = AppOnDeviceLlmWarmupController(
+          runtime = LiteRtOnDeviceRuntime.fromContext(appContext),
+          onStateChanged = {
+            onWarmupStateChanged?.invoke()
+          },
+        ),
+      )
       val chatGateway = ServiceOwnedChatRuntimeGateway(
         readGateway = projectionChatGateway,
         snapshotNotifier = {},
+        runtimeHostAccess = runtimeServicePort.ownerObservationAccess,
+        onDeviceWarmupAccess = onDeviceWarmupAccess,
+        onDevicePreparingPlaceholder = strings.chatMessageOnDevicePreparing,
         chatSessionMutationAccess = ServiceOwnedChatSessionMutationAccess(
-          chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
+          chatSessionStore = chatSessionStore,
           runtimeHostAccess = runtimeServicePort.chatMutationAccess,
           chatUnreadMessageState = chatUnreadMessageState,
           pendingApprovalState = pendingApprovalState,
           runtimeEventState = runtimeEventState,
           terminalReplayRepairer = runtimeServicePort.replayAccess.terminalReplayRepairer,
+          mediaGc = {
+            AppAgentWorkspaceMediaGc.sweep(
+              workspaceRoot = gatewayDependencies.workspaceRootProvider(),
+              chatSessionStore = chatSessionStore,
+            )
+          },
         ),
         chatRunControlAccess = ServiceOwnedChatRunControlAccess(
           chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
@@ -162,7 +194,7 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
           rejectChatApprovalHandler = gatewayDependencies.approvalDecisionAccess::reject,
         ),
         chatSubmissionAccess = ServiceOwnedChatSubmissionAccess(
-          chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
+          chatSessionStore = chatSessionStore,
           runtimeHostAccess = runtimeServicePort.chatSubmissionHostAccess,
           safetySettingsFacade = gatewayDependencies.safetySettingsFacade,
           workspaceRootProvider = gatewayDependencies.workspaceRootProvider,
@@ -171,10 +203,7 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
           agentThinkingText = strings.agentThinking,
         ),
         refreshSandboxSessionInfoHandler = {
-          val activeSessionId = ChatSessionLocalStore.fromContext(appContext)
-            .loadState()
-            .activeSession
-            .sessionId
+          val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
           submitSandboxSessionInfoRefreshTask(
             sessionId = activeSessionId,
             runtimeHostAccess = runtimeServicePort.chatSubmissionHostAccess,
@@ -187,6 +216,8 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
         },
         mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
       )
+      onWarmupStateChanged = chatGateway::notifyChatSnapshotsChanged
+      onDeviceWarmupAccess.ensureWarmForActiveSession()
       lateinit var settingsGateway: ServiceOwnedSettingsGateway
       val refreshLocalizedGateways = {
         val refreshedStrings = localizedHostRuntimeStrings(
@@ -247,6 +278,7 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
         mcpSettingsFacade = LocalMcpSettingsFacade.fromContext(localizedContextProvider()),
         shellSnapshotNotifier = shellGateway::emitLocalizedSnapshotChanged,
         chatSnapshotNotifier = chatGateway::emitLocalizedSnapshotChanged,
+        onDeviceWarmupAccess = onDeviceWarmupAccess,
         settingsOverviewNotifier = {},
         skillsSnapshotNotifier = skillsGateway::emitLocalizedSnapshotChanged,
         skillsProjectionNotifier = skillsGateway::emitLocalizedSnapshotChanged,
@@ -279,6 +311,7 @@ internal data class RuntimeServiceGatewayBundleDependencies(
   val approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot,
   val approvalDecisionAccess: RuntimeServiceApprovalDecisionAccess,
   val runtimeServiceOwnerLeaseProvider: () -> RuntimeServiceOwnerLease? = { null },
+  val onDeviceWarmupPlanner: (String) -> OnDeviceLlmWarmupSpec? = { null },
 ) {
   val runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor
     get() = runtimeServicePort.lifecycleDescriptor
@@ -374,12 +407,14 @@ internal class ServiceOwnedShellGateway(
     val currentLocaleTag: String
     val currentHostLabel: String
     val currentHostSummary: String
+    val destination = stateStore.load()
     synchronized(lock) {
       currentLocaleTag = localeTag
       currentHostLabel = hostLabel
       currentHostSummary = hostSummary
     }
-    put("initialTab", stateStore.load().selectedTab.routeKey)
+    put("initialTab", destination.selectedTab.routeKey)
+    put("settingsSubpage", destination.settingsSubpage.routeKey)
     put("localeTag", currentLocaleTag)
     put("hostLabel", currentHostLabel)
     put("hostSummary", currentHostSummary)
@@ -410,6 +445,19 @@ internal class ServiceOwnedShellGateway(
         listeners -= listener
       }
     }
+  }
+
+  override fun saveShellDestination(
+    selectedTab: String,
+    settingsSubpage: String?,
+  ) {
+    stateStore.save(
+      AppShellDestination.fromRaw(
+        selectedTabRaw = selectedTab,
+        settingsSubpageRaw = settingsSubpage,
+      ),
+    )
+    emitShellSnapshot()
   }
 
   internal fun updateLocalizedResources(
@@ -458,6 +506,9 @@ internal class ServiceOwnedChatRuntimeGateway(
   private val delegate: OpenCrayChatRuntimeGateway? = null,
   private val readGateway: OpenCrayChatRuntimeGateway,
   private val snapshotNotifier: () -> Unit = {},
+  private val runtimeHostAccess: RuntimeOwnerObservationAccess? = null,
+  private val onDeviceWarmupAccess: OnDeviceLlmWarmupAccess = NoOpOnDeviceLlmWarmupAccess,
+  private val onDevicePreparingPlaceholder: String = "Preparing on-device model",
   private val chatSessionMutationAccess: ServiceOwnedChatSessionMutationAccess? = null,
   private val chatRunControlAccess: ServiceOwnedChatRunControlAccess? = null,
   private val chatApprovalAccess: ServiceOwnedChatApprovalAccess? = null,
@@ -469,20 +520,307 @@ internal class ServiceOwnedChatRuntimeGateway(
   private val chatListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private var disposed: Boolean = false
-  private var latestChatPayload: Map<String, Any?> = chatSnapshotGateway().loadChatSnapshot()
-  private var latestChatRuntimePayload: Map<String, Any?> =
-    runtimeSnapshotGateway().loadChatRuntimeSnapshot()
+  private val liveAssistantDraftEventListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  private val runtimeEventDeltaListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  private val runtimeEventDeltaSequencesBySession = linkedMapOf<String, Long>()
+  private var latestChatPayload: Map<String, Any?> = emptyMap()
+  private val liveAssistantDraftsBySession =
+    linkedMapOf<String, LinkedHashMap<String, ServiceOwnedLiveAssistantDraftSnapshot>>()
+  private var latestChatRuntimePayload: Map<String, Any?> = emptyMap()
 
-  private val chatObservationDisposer = chatSnapshotGateway().observeChat { payload ->
-    emitChatPayload(payload)
+  init {
+    latestChatPayload = currentChatPayload()
+    latestChatRuntimePayload =
+      decorateChatRuntimePayload(runtimeSnapshotGateway().loadChatRuntimeSnapshot())
   }
 
-  private val chatRuntimeObservationDisposer = runtimeSnapshotGateway().observeChatRuntime { payload ->
-    emitChatRuntimePayload(payload)
+  @Suppress("unused")
+  private val chatObservationDisposer = if (delegate == null) {
+    observeProjectionWithPollingSnapshot(
+      mainThreadPoster = mainThreadPoster,
+      payloadProvider = { readGateway.loadChatSnapshot() },
+      listener = { payload ->
+        emitChatPayload(chatPayloadForEmission(decorateChatPayload(payload)))
+      },
+      pollIntervalMs = SERVICE_OWNED_GATEWAY_POLL_INTERVAL_MS,
+    )
+  } else {
+    chatSnapshotGateway().observeChat { payload ->
+      emitChatPayload(chatPayloadForEmission(decorateChatPayload(payload)))
+    }
+  }
+
+  @Suppress("unused")
+  private val chatRuntimeObservationDisposer = if (delegate == null) {
+    observeProjectionWithPollingSnapshot(
+      mainThreadPoster = mainThreadPoster,
+      payloadProvider = { readGateway.loadChatRuntimeSnapshot() },
+      listener = { payload ->
+        emitChatRuntimePayload(decorateChatRuntimePayload(payload))
+      },
+      pollIntervalMs = SERVICE_OWNED_GATEWAY_POLL_INTERVAL_MS,
+    )
+  } else {
+    runtimeSnapshotGateway().observeChatRuntime { payload ->
+      emitChatRuntimePayload(decorateChatRuntimePayload(payload))
+    }
+  }
+
+  @Suppress("unused")
+  private val runtimeObservationDisposer = runtimeHostAccess?.observe(
+    object : AgentSessionRuntimeListener {
+      override fun onTaskStarted(sessionId: String, task: com.opencray.core.contracts.AgentTask) {
+        emitChatSnapshot()
+        if (!emitServiceOwnedRuntimeEventDeltaFromSnapshot()) {
+          emitChatRuntimeSnapshot()
+        }
+      }
+
+      override fun onRunEvent(
+        sessionId: String,
+        task: com.opencray.core.contracts.AgentTask,
+        event: com.opencray.runtime.OpenCrayAgentRunEvent,
+      ) {
+        emitChatSnapshot()
+        if (!emitServiceOwnedRuntimeEventDeltaFromSnapshot()) {
+          emitChatRuntimeSnapshot()
+        }
+      }
+
+      override fun onAssistantDraftUpdated(
+        sessionId: String,
+        task: com.opencray.core.contracts.AgentTask,
+        text: String,
+        emittedAtEpochMs: Long,
+      ) {
+        val draftEventPayload = synchronized(lock) {
+          if (
+            !updateLiveAssistantDraftLocked(
+              sessionId = sessionId,
+              task = task,
+              text = text,
+              emittedAtEpochMs = emittedAtEpochMs,
+            )
+          ) {
+            return@synchronized null
+          }
+          val pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: return@synchronized null
+          liveAssistantDraftsBySession[sessionId]
+            ?.get(pendingMessageId)
+            ?.toLiveAssistantDraftEventPayload(sessionId = sessionId, cleared = false)
+        }
+        if (draftEventPayload != null) {
+          serviceChatDebug(
+            "service.draftUpdated session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} len=${text.length} preview=${text.take(80).replace('\n', ' ')}",
+          )
+          emitLiveAssistantDraftEvent(draftEventPayload)
+          val hasRuntimeEventDeltaListeners = synchronized(lock) {
+            runtimeEventDeltaListeners.isNotEmpty()
+          }
+          val emittedRuntimeDelta = if (hasRuntimeEventDeltaListeners) {
+            emitServiceOwnedRuntimeEventDeltaFromSnapshot()
+          } else {
+            false
+          }
+          if (!hasRuntimeEventDeltaListeners && !emittedRuntimeDelta) {
+            emitChatRuntimeSnapshot()
+          }
+        }
+      }
+
+      override fun onAssistantDraftCleared(
+        sessionId: String,
+        task: com.opencray.core.contracts.AgentTask,
+        emittedAtEpochMs: Long,
+      ) {
+        val draftEventPayload = synchronized(lock) {
+          val pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: return@synchronized null
+          if (
+            !clearLiveAssistantDraftLocked(
+              sessionId = sessionId,
+              pendingMessageId = pendingMessageId,
+            )
+          ) {
+            return@synchronized null
+          }
+          liveAssistantDraftEventPayload(
+            sessionId = sessionId,
+            runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
+              ?.trim()
+              ?.takeIf(String::isNotBlank)
+              ?: "",
+            taskId = task.id,
+            pendingMessageId = pendingMessageId,
+            text = "",
+            updatedAtEpochMs = emittedAtEpochMs,
+            cleared = true,
+          )
+        }
+        if (draftEventPayload != null) {
+          serviceChatDebug(
+            "service.draftCleared session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"}",
+          )
+          emitLiveAssistantDraftEvent(draftEventPayload)
+          val hasRuntimeEventDeltaListeners = synchronized(lock) {
+            runtimeEventDeltaListeners.isNotEmpty()
+          }
+          val emittedRuntimeDelta = if (hasRuntimeEventDeltaListeners) {
+            emitServiceOwnedRuntimeEventDeltaFromSnapshot()
+          } else {
+            false
+          }
+          if (!hasRuntimeEventDeltaListeners && !emittedRuntimeDelta) {
+            emitChatRuntimeSnapshot()
+          }
+        }
+      }
+
+      override fun onTaskFinished(
+        sessionId: String,
+        task: com.opencray.core.contracts.AgentTask,
+        result: com.opencray.core.contracts.ExecutionResult,
+      ) {
+        val draftEventPayload = synchronized(lock) {
+          val pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: return@synchronized null
+          if (
+            !clearLiveAssistantDraftLocked(
+              sessionId = sessionId,
+              pendingMessageId = pendingMessageId,
+            )
+          ) {
+            return@synchronized null
+          }
+          liveAssistantDraftEventPayload(
+            sessionId = sessionId,
+            runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
+              ?.trim()
+              ?.takeIf(String::isNotBlank)
+              ?: "",
+            taskId = task.id,
+            pendingMessageId = pendingMessageId,
+            text = "",
+            updatedAtEpochMs = result.finishedAtEpochMs,
+            cleared = true,
+          )
+        }
+        if (draftEventPayload != null) {
+          serviceChatDebug(
+            "service.taskFinishedClearedDraft session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} status=${result.status} error=${result.errorCode ?: "-"}",
+          )
+          emitLiveAssistantDraftEvent(draftEventPayload)
+        }
+        emitChatSnapshot()
+        if (!emitServiceOwnedRuntimeEventDeltaFromSnapshot()) {
+          emitChatRuntimeSnapshot()
+        }
+        snapshotNotifier()
+      }
+    },
+  )
+
+  private data class ServiceOwnedLiveAssistantDraftSnapshot(
+    val runId: String,
+    val taskId: String,
+    val pendingMessageId: String,
+    val text: String,
+    val updatedAtEpochMs: Long,
+  )
+
+  private fun updateLiveAssistantDraftLocked(
+    sessionId: String,
+    task: com.opencray.core.contracts.AgentTask,
+    text: String,
+    emittedAtEpochMs: Long,
+  ): Boolean {
+    if (delegate != null) {
+      return false
+    }
+    val pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return false
+    val normalizedText = text.trim().takeIf(String::isNotBlank) ?: return false
+    val sessionDrafts = liveAssistantDraftsBySession.getOrPut(sessionId) { linkedMapOf() }
+    val updatedDraft = ServiceOwnedLiveAssistantDraftSnapshot(
+      runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: "",
+      taskId = task.id,
+      pendingMessageId = pendingMessageId,
+      text = normalizedText,
+      updatedAtEpochMs = emittedAtEpochMs,
+    )
+    val existing = sessionDrafts[pendingMessageId]
+    if (existing == updatedDraft) {
+      return false
+    }
+    sessionDrafts[pendingMessageId] = updatedDraft
+    return true
+  }
+
+  private fun clearLiveAssistantDraftLocked(
+    sessionId: String,
+    pendingMessageId: String?,
+  ): Boolean {
+    if (delegate != null) {
+      return false
+    }
+    val normalizedPendingMessageId = pendingMessageId
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return false
+    val sessionDrafts = liveAssistantDraftsBySession[sessionId] ?: return false
+    val removed = sessionDrafts.remove(normalizedPendingMessageId) != null
+    if (sessionDrafts.isEmpty()) {
+      liveAssistantDraftsBySession.remove(sessionId)
+    }
+    return removed
+  }
+
+  private fun decorateChatRuntimePayload(
+    payload: Map<String, Any?>,
+  ): Map<String, Any?> {
+    if (delegate != null) {
+      return payload
+    }
+    val sessionId = (payload["sessionId"] as? String)
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return payload
+    val liveDrafts = synchronized(lock) {
+      liveAssistantDraftsBySession[sessionId]
+        ?.values
+        ?.sortedBy(ServiceOwnedLiveAssistantDraftSnapshot::updatedAtEpochMs)
+        .orEmpty()
+    }
+    if (liveDrafts.isEmpty()) {
+      return ensureDecoratedRuntimePayloadVersionSignal(payload)
+    }
+    return ensureDecoratedRuntimePayloadVersionSignal(payload.toMutableMap().apply {
+      this["liveAssistantDrafts"] = liveDrafts.map { draft ->
+        mapOf(
+          "runId" to draft.runId,
+          "taskId" to draft.taskId,
+          "pendingMessageId" to draft.pendingMessageId,
+          "text" to draft.text,
+          "updatedAtEpochMs" to draft.updatedAtEpochMs,
+        )
+      }
+    })
   }
 
   override fun loadChatSnapshot(): Map<String, Any?> =
-    chatSnapshotGateway().loadChatSnapshot().also { payload ->
+    currentChatPayload().also { payload ->
       synchronized(lock) {
         latestChatPayload = payload
       }
@@ -504,7 +842,7 @@ internal class ServiceOwnedChatRuntimeGateway(
   }
 
   override fun loadChatRuntimeSnapshot(): Map<String, Any?> =
-    runtimeSnapshotGateway().loadChatRuntimeSnapshot().also { payload ->
+    currentDecoratedChatRuntimePayload().also { payload ->
       synchronized(lock) {
         latestChatRuntimePayload = payload
       }
@@ -529,6 +867,30 @@ internal class ServiceOwnedChatRuntimeGateway(
     return {
       synchronized(lock) {
         chatRuntimeListeners -= listener
+      }
+    }
+  }
+
+  override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit {
+    delegate?.let { return it.observeLiveAssistantDraftEvents(listener) }
+    synchronized(lock) {
+      liveAssistantDraftEventListeners += listener
+    }
+    return {
+      synchronized(lock) {
+        liveAssistantDraftEventListeners -= listener
+      }
+    }
+  }
+
+  override fun observeRuntimeEventDeltas(listener: (Map<String, Any?>) -> Unit): () -> Unit {
+    delegate?.let { return it.observeRuntimeEventDeltas(listener) }
+    synchronized(lock) {
+      runtimeEventDeltaListeners += listener
+    }
+    return {
+      synchronized(lock) {
+        runtimeEventDeltaListeners -= listener
       }
     }
   }
@@ -575,6 +937,7 @@ internal class ServiceOwnedChatRuntimeGateway(
       return
     }
     access.createChatSession()
+    onDeviceWarmupAccess.ensureWarmForActiveSession()
     notifyChatSnapshotsChanged()
   }
 
@@ -585,6 +948,7 @@ internal class ServiceOwnedChatRuntimeGateway(
       return
     }
     access.copyChatSession(sessionId)
+    onDeviceWarmupAccess.ensureWarmForActiveSession()
     notifyChatSnapshotsChanged()
   }
 
@@ -595,6 +959,7 @@ internal class ServiceOwnedChatRuntimeGateway(
       return
     }
     if (access.deleteChatSession(sessionId)) {
+      onDeviceWarmupAccess.ensureWarmForActiveSession()
       notifyChatSnapshotsChanged()
     }
   }
@@ -606,6 +971,7 @@ internal class ServiceOwnedChatRuntimeGateway(
       return
     }
     access.selectChatSession(sessionId)
+    onDeviceWarmupAccess.ensureWarmForActiveSession()
     notifyChatSnapshotsChanged()
   }
 
@@ -619,6 +985,7 @@ internal class ServiceOwnedChatRuntimeGateway(
       return
     }
     if (access.branchChatSessionFromMessage(sessionId, messageId)) {
+      onDeviceWarmupAccess.ensureWarmForActiveSession()
       notifyChatSnapshotsChanged()
     }
   }
@@ -659,6 +1026,13 @@ internal class ServiceOwnedChatRuntimeGateway(
     if (access == null) {
       return delegateFor("submitChatMessage").submitChatMessage(text, attachments)
     }
+    if (onDeviceWarmupAccess.ensureWarmForActiveSession().blocksChatInput()) {
+      notifyChatSnapshotsChanged()
+      return null
+    }
+    serviceChatDebug(
+      "service.submitChatMessage textLen=${text.trim().length} attachments=${attachments.size}",
+    )
     val result = access.submitChatMessage(text, attachments)
     if (result.didMutate) {
       notifyChatSnapshotsChanged()
@@ -718,7 +1092,9 @@ internal class ServiceOwnedChatRuntimeGateway(
 
   override fun notifyChatSnapshotsChanged() {
     emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    if (!emitServiceOwnedRuntimeEventDeltaFromSnapshot()) {
+      emitChatRuntimeSnapshot()
+    }
     snapshotNotifier()
   }
 
@@ -734,9 +1110,12 @@ internal class ServiceOwnedChatRuntimeGateway(
         disposed = true
         chatListeners.clear()
         chatRuntimeListeners.clear()
-        chatObservationDisposer to chatRuntimeObservationDisposer
+        liveAssistantDraftEventListeners.clear()
+        runtimeEventDeltaListeners.clear()
+        Triple(chatObservationDisposer, chatRuntimeObservationDisposer, runtimeObservationDisposer)
       }
     } ?: return
+    disposers.third?.invoke()
     disposers.second.invoke()
     disposers.first.invoke()
   }
@@ -746,7 +1125,71 @@ internal class ServiceOwnedChatRuntimeGateway(
   }
 
   private fun emitChatRuntimeSnapshot() {
-    emitChatRuntimePayload(loadChatRuntimeSnapshot())
+    emitChatRuntimePayload(currentDecoratedChatRuntimePayload())
+  }
+
+  private fun emitServiceOwnedRuntimeEventDeltaFromSnapshot(): Boolean {
+    if (delegate != null) {
+      return false
+    }
+    val hasListeners = synchronized(lock) { runtimeEventDeltaListeners.isNotEmpty() }
+    if (!hasListeners) {
+      return false
+    }
+    val nextPayload = decorateChatRuntimePayload(runtimeSnapshotGateway().loadChatRuntimeSnapshot())
+    val deltaPayload = synchronized(lock) {
+      runtimeEventDeltaPayloadFromRuntimePayloads(
+        previousPayload = latestChatRuntimePayload,
+        nextPayload = nextPayload,
+      ).also {
+        latestChatRuntimePayload = nextPayload
+      }
+    }
+    if (deltaPayload != null) {
+      emitRuntimeEventDelta(deltaPayload)
+      return true
+    }
+    return false
+  }
+
+  private fun emitServiceOwnedChatAndRuntimeSnapshots() {
+    if (delegate != null) {
+      return
+    }
+    emitChatPayload(loadChatSnapshot())
+    emitChatRuntimePayload(currentDecoratedChatRuntimePayload())
+  }
+
+  private fun currentChatPayload(): Map<String, Any?> =
+    chatPayloadForEmission(decorateChatPayload(chatSnapshotGateway().loadChatSnapshot()))
+
+  private fun currentDecoratedChatRuntimePayload(): Map<String, Any?> =
+    decorateChatRuntimePayload(runtimeSnapshotGateway().loadChatRuntimeSnapshot())
+
+  private fun emitLiveAssistantDraftEvent(payload: Map<String, Any?>) {
+    if (payload.isEmpty()) {
+      return
+    }
+    val listeners = synchronized(lock) { liveAssistantDraftEventListeners.toList() }
+    if (listeners.isEmpty()) {
+      return
+    }
+    mainThreadPoster.post {
+      listeners.forEach { listener -> listener(payload) }
+    }
+  }
+
+  private fun emitRuntimeEventDelta(payload: Map<String, Any?>) {
+    if (payload.isEmpty()) {
+      return
+    }
+    val listeners = synchronized(lock) { runtimeEventDeltaListeners.toList() }
+    if (listeners.isEmpty()) {
+      return
+    }
+    mainThreadPoster.post {
+      listeners.forEach { listener -> listener(payload) }
+    }
   }
 
   private fun emitChatPayload(payload: Map<String, Any?>) {
@@ -764,9 +1207,15 @@ internal class ServiceOwnedChatRuntimeGateway(
 
   private fun emitChatRuntimePayload(payload: Map<String, Any?>) {
     val listeners = synchronized(lock) {
+      if (delegate == null && payload == latestChatRuntimePayload) {
+        return
+      }
       latestChatRuntimePayload = payload
       chatRuntimeListeners.toList()
     }
+    serviceChatDebug(
+      "service.emitChatRuntimePayload listeners=${listeners.size} ${chatRuntimePayloadDebugSummary(payload)}",
+    )
     if (listeners.isEmpty()) {
       return
     }
@@ -775,10 +1224,288 @@ internal class ServiceOwnedChatRuntimeGateway(
     }
   }
 
+  private fun runtimeEventDeltaPayloadFromRuntimePayloads(
+    previousPayload: Map<String, Any?>,
+    nextPayload: Map<String, Any?>,
+  ): Map<String, Any?>? {
+    val sessionId = (nextPayload["sessionId"] as? String)
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return null
+    val previousSignaturesByKey = payloadRuntimeEvents(previousPayload)
+      .associateBy(
+        keySelector = ::runtimeEventPayloadMergeKey,
+        valueTransform = ::runtimeEventPayloadContentSignature,
+      )
+    val nextEvents = payloadRuntimeEvents(nextPayload)
+    val deltaEvents = nextEvents.filter { event ->
+      previousSignaturesByKey[runtimeEventPayloadMergeKey(event)] !=
+        runtimeEventPayloadContentSignature(event)
+    }
+    if (
+      deltaEvents.isEmpty() &&
+      payloadUpdatedAtEpochMs(nextPayload) <= payloadUpdatedAtEpochMs(previousPayload)
+    ) {
+      return null
+    }
+    val sequence = nextRuntimeEventDeltaSequenceLocked(sessionId)
+    return mapOf(
+      "sessionId" to sessionId,
+      "sequence" to sequence,
+      "events" to deltaEvents,
+      "totalLength" to nextEvents.size,
+      "runPatchMode" to "replace",
+      "activeRuns" to (nextPayload["activeRuns"] ?: emptyList<Any?>()),
+      "retainedRuns" to (nextPayload["retainedRuns"] ?: emptyList<Any?>()),
+      "subAgents" to (nextPayload["subAgents"] ?: emptyList<Any?>()),
+      "liveAssistantDrafts" to (nextPayload["liveAssistantDrafts"] ?: emptyList<Any?>()),
+      "updatedAtEpochMs" to (nextPayload["updatedAtEpochMs"] ?: 0L),
+    )
+  }
+
+  private fun nextRuntimeEventDeltaSequenceLocked(sessionId: String): Long {
+    val next = (runtimeEventDeltaSequencesBySession[sessionId] ?: 0L) + 1L
+    runtimeEventDeltaSequencesBySession[sessionId] = next
+    return next
+  }
+
+  private fun payloadRuntimeEvents(
+    payload: Map<String, Any?>,
+  ): List<Map<String, Any?>> = (payload["events"] as? List<*>)
+    ?.mapNotNull { item ->
+      @Suppress("UNCHECKED_CAST")
+      item as? Map<String, Any?>
+    }
+    .orEmpty()
+
+  private fun runtimeEventPayloadMergeKey(event: Map<String, Any?>): String = listOf(
+    event["kind"],
+    event["runId"],
+    event["taskId"],
+    event["executionId"],
+    event["executionOrdinal"],
+    event["executionKind"],
+    event["turn"],
+    event["phase"],
+    event["stage"],
+    event["toolName"],
+    event["entryId"],
+    event["childRunId"],
+    event["childTaskId"],
+    event["emittedAtEpochMs"],
+  ).joinToString(separator = "|") { value -> value?.toString().orEmpty() }
+
+  private fun runtimeEventPayloadContentSignature(event: Map<String, Any?>): String =
+    event.entries
+      .sortedBy(Map.Entry<String, Any?>::key)
+      .joinToString(separator = "|") { (key, value) ->
+        "$key=${runtimeEventPayloadSignatureValue(value)}"
+      }
+
+  private fun runtimeEventPayloadSignatureValue(value: Any?): String = when (value) {
+    null -> ""
+    is Map<*, *> -> value.entries
+      .sortedBy { entry -> entry.key?.toString().orEmpty() }
+      .joinToString(separator = ",", prefix = "{", postfix = "}") { entry ->
+        "${entry.key}=${runtimeEventPayloadSignatureValue(entry.value)}"
+      }
+    is Iterable<*> -> value.joinToString(separator = ",", prefix = "[", postfix = "]") { item ->
+      runtimeEventPayloadSignatureValue(item)
+    }
+    is Array<*> -> value.joinToString(separator = ",", prefix = "[", postfix = "]") { item ->
+      runtimeEventPayloadSignatureValue(item)
+    }
+    else -> value.toString()
+  }
+
+  private fun chatRuntimePayloadDebugSummary(payload: Map<String, Any?>): String {
+    val activeRuns = (payload["activeRuns"] as? List<*>)
+      .orEmpty()
+      .mapNotNull { item -> item as? Map<*, *> }
+    val runSummary = activeRuns.joinToString(separator = ";") { run ->
+      val runId = (run["runId"] as? String).orEmpty()
+      val taskId = (run["taskId"] as? String).orEmpty()
+      val managedProcessCount = (run["managedProcesses"] as? List<*>)?.size ?: 0
+      val managedProcessIds = (run["managedProcessIds"] as? List<*>)?.joinToString(",") ?: ""
+      val runningManagedProcessCount = run["runningManagedProcessCount"] ?: 0
+      val hasLiveManagedProcesses = run["hasLiveManagedProcesses"] ?: false
+      val lastEvent = run["lastEvent"] as? Map<*, *>
+      val lastKind = lastEvent?.get("kind") as? String ?: "-"
+      val lastTool = lastEvent?.get("toolName") as? String ?: "-"
+      "${runId.takeLast(12)} task=${taskId.takeLast(12)} mp=$managedProcessCount[$managedProcessIds] running=$runningManagedProcessCount live=$hasLiveManagedProcesses last=$lastKind/$lastTool"
+    }
+    return "session=${payload["sessionId"] ?: "-"} liveDrafts=${(payload["liveAssistantDrafts"] as? List<*>)?.size ?: 0} activeRuns=${activeRuns.size} retainedRuns=${(payload["retainedRuns"] as? List<*>)?.size ?: 0} events=${(payload["events"] as? List<*>)?.size ?: 0} runs=[$runSummary]"
+  }
+
+  private fun payloadUpdatedAtEpochMs(payload: Map<String, Any?>): Long =
+    (payload["updatedAtEpochMs"] as? Number)?.toLong() ?: 0L
+
+  private fun payloadSessionId(payload: Map<String, Any?>): String = (payload["sessionId"] as? String)
+    ?.trim()
+    .orEmpty()
+
+  private fun withPayloadUpdatedAtEpochMs(
+    payload: Map<String, Any?>,
+    updatedAtEpochMs: Long,
+  ): Map<String, Any?> {
+    if (payloadUpdatedAtEpochMs(payload) == updatedAtEpochMs) {
+      return payload
+    }
+    return payload.toMutableMap().apply {
+      this["updatedAtEpochMs"] = updatedAtEpochMs
+    }
+  }
+
+  private fun ensureDecoratedChatPayloadVersionSignal(
+    payload: Map<String, Any?>,
+  ): Map<String, Any?> {
+    val previousPayload = synchronized(lock) { latestChatPayload }
+    if (previousPayload.isEmpty()) {
+      return payload
+    }
+    val previousInputEnabled = previousPayload["isInputEnabled"] as? Boolean ?: true
+    val currentInputEnabled = payload["isInputEnabled"] as? Boolean ?: true
+    val previousPlaceholder = previousPayload["composerPlaceholder"] as? String ?: ""
+    val currentPlaceholder = payload["composerPlaceholder"] as? String ?: ""
+    if (
+      previousInputEnabled == currentInputEnabled &&
+      previousPlaceholder == currentPlaceholder
+    ) {
+      return withPayloadUpdatedAtEpochMs(
+        payload,
+        maxOf(
+          payloadUpdatedAtEpochMs(payload),
+          payloadUpdatedAtEpochMs(previousPayload),
+        ),
+      )
+    }
+    val updatedAtEpochMs = maxOf(
+      payloadUpdatedAtEpochMs(payload),
+      payloadUpdatedAtEpochMs(previousPayload) + 1L,
+      System.currentTimeMillis(),
+    )
+    return withPayloadUpdatedAtEpochMs(payload, updatedAtEpochMs)
+  }
+
+  private fun ensureDecoratedRuntimePayloadVersionSignal(
+    payload: Map<String, Any?>,
+  ): Map<String, Any?> {
+    val sessionId = payloadSessionId(payload)
+    if (sessionId.isEmpty()) {
+      return payload
+    }
+    val previousPayload = synchronized(lock) { latestChatRuntimePayload }
+    if (previousPayload.isEmpty() || payloadSessionId(previousPayload) != sessionId) {
+      return payload
+    }
+    val currentDisplayState = payloadRuntimeDisplayState(payload)
+    val previousDisplayState = payloadRuntimeDisplayState(previousPayload)
+    if (currentDisplayState == previousDisplayState) {
+      return withPayloadUpdatedAtEpochMs(
+        payload,
+        maxOf(
+          payloadUpdatedAtEpochMs(payload),
+          payloadUpdatedAtEpochMs(previousPayload),
+        ),
+      )
+    }
+    val updatedAtEpochMs = maxOf(
+      payloadUpdatedAtEpochMs(payload),
+      payloadUpdatedAtEpochMs(previousPayload) + 1L,
+      latestRuntimeDisplayEpochMs(payload),
+      System.currentTimeMillis(),
+    )
+    return withPayloadUpdatedAtEpochMs(payload, updatedAtEpochMs)
+  }
+
+  private fun payloadRuntimeDisplayState(payload: Map<String, Any?>): List<Any?> = listOf(
+    payload["activeRuns"],
+    payload["retainedRuns"],
+    payload["subAgents"],
+    payload["liveAssistantDrafts"],
+    payload["hostLifecycle"],
+  )
+
+  private fun latestRuntimeDisplayEpochMs(payload: Map<String, Any?>): Long {
+    fun collect(value: Any?): Long = when (value) {
+      is Map<*, *> -> {
+        val ownEpoch = (value["updatedAtEpochMs"] as? Number)?.toLong() ?: 0L
+        value.values.fold(ownEpoch) { latest, item -> maxOf(latest, collect(item)) }
+      }
+      is Iterable<*> -> value.fold(0L) { latest, item -> maxOf(latest, collect(item)) }
+      else -> 0L
+    }
+    return payloadRuntimeDisplayState(payload).fold(0L) { latest, item ->
+      maxOf(latest, collect(item))
+    }
+  }
+
+  private fun decorateChatPayload(
+    payload: Map<String, Any?>,
+  ): Map<String, Any?> {
+    val warmupState = onDeviceWarmupAccess.ensureWarmForActiveSession()
+    if (warmupState.phase == OnDeviceLlmWarmupPhase.FAILED) {
+      val failureMessage = warmupState.failureMessage
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: onDevicePreparingPlaceholder
+      return ensureDecoratedChatPayloadVersionSignal(payload.toMutableMap().apply {
+        this["composerPlaceholder"] = failureMessage
+      })
+    }
+    if (!warmupState.blocksChatInput()) {
+      return ensureDecoratedChatPayloadVersionSignal(payload)
+    }
+    return ensureDecoratedChatPayloadVersionSignal(payload.toMutableMap().apply {
+      this["isInputEnabled"] = false
+      this["composerPlaceholder"] = onDevicePreparingPlaceholder
+    })
+  }
+
+  private fun chatPayloadForEmission(payload: Map<String, Any?>): Map<String, Any?> =
+    if (payload["runtimeActivity"] == null) {
+      payload
+    } else {
+      payload.toMutableMap().apply {
+        this["runtimeActivity"] = null
+      }
+    }
+
   private fun delegateFor(operation: String): OpenCrayChatRuntimeGateway =
     requireNotNull(delegate) {
       "Service-owned chat gateway cannot '$operation' without a fallback delegate or service-owned access."
     }
+
+  private fun liveAssistantDraftEventPayload(
+    sessionId: String,
+    runId: String,
+    taskId: String,
+    pendingMessageId: String,
+    text: String,
+    updatedAtEpochMs: Long,
+    cleared: Boolean,
+  ): Map<String, Any?> = mapOf(
+    "sessionId" to sessionId,
+    "runId" to runId,
+    "taskId" to taskId,
+    "pendingMessageId" to pendingMessageId,
+    "text" to text,
+    "updatedAtEpochMs" to updatedAtEpochMs,
+    "cleared" to cleared,
+  )
+
+  private fun ServiceOwnedLiveAssistantDraftSnapshot.toLiveAssistantDraftEventPayload(
+    sessionId: String,
+    cleared: Boolean,
+  ): Map<String, Any?> = liveAssistantDraftEventPayload(
+    sessionId = sessionId,
+    runId = runId,
+    taskId = taskId,
+    pendingMessageId = pendingMessageId,
+    text = text,
+    updatedAtEpochMs = updatedAtEpochMs,
+    cleared = cleared,
+  )
 
   private fun chatSnapshotGateway(): OpenCrayChatRuntimeGateway = delegate ?: readGateway
 
@@ -1049,6 +1776,7 @@ internal class ServiceOwnedSettingsGateway(
   private var mcpSettingsFacade: McpSettingsFacade,
   private val shellSnapshotNotifier: () -> Unit = {},
   private val chatSnapshotNotifier: () -> Unit = {},
+  private val onDeviceWarmupAccess: OnDeviceLlmWarmupAccess = NoOpOnDeviceLlmWarmupAccess,
   private val settingsOverviewNotifier: () -> Unit = {},
   private val skillsSnapshotNotifier: () -> Unit = {},
   private val skillsProjectionNotifier: () -> Unit = {},
@@ -1278,6 +2006,7 @@ internal class ServiceOwnedSettingsGateway(
   override fun saveLlmConfig(
     enabled: Boolean,
     streamingEnabled: Boolean?,
+    providerMode: String,
     providerId: String,
     selectedProviderOptionId: String,
     protocol: String,
@@ -1292,10 +2021,24 @@ internal class ServiceOwnedSettingsGateway(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    contextBudgetPreset: String?,
+    contextBudgetReservedOutputTokens: Int?,
+    contextBudgetSafetyMarginTokens: Int?,
+    contextBudgetEffectiveInputPercent: Double?,
+    selectedOnDeviceModelId: String,
+    onDeviceMaxContextWindow: Int,
+    onDeviceMaxTokens: Int,
+    onDeviceTopK: Int,
+    onDeviceTopP: Double,
+    onDeviceTemperature: Double,
+    onDeviceAccelerator: String,
+    onDeviceThinkingEnabled: Boolean,
+    onDeviceLiteModeEnabled: Boolean,
   ): Map<String, Any?> = llmConfigFacade.save(
     com.opencray.app.facade.llm.SaveLlmConfigRequest(
       enabled = enabled,
       streamingEnabled = streamingEnabled,
+      providerMode = providerMode,
       providerId = providerId,
       selectedProviderOptionId = selectedProviderOptionId,
       protocol = protocol,
@@ -1310,8 +2053,24 @@ internal class ServiceOwnedSettingsGateway(
       openAiPromptCacheRetention = openAiPromptCacheRetention,
       anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl = anthropicPromptCacheTtl,
+      contextBudgetPreset = contextBudgetPreset,
+      contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
+      selectedOnDeviceModelId = selectedOnDeviceModelId,
+      onDeviceMaxContextWindow = onDeviceMaxContextWindow,
+      onDeviceMaxTokens = onDeviceMaxTokens,
+      onDeviceTopK = onDeviceTopK,
+      onDeviceTopP = onDeviceTopP,
+      onDeviceTemperature = onDeviceTemperature,
+      onDeviceAccelerator = onDeviceAccelerator,
+      onDeviceThinkingEnabled = onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled = onDeviceLiteModeEnabled,
     ),
-  ).toGatewayMap()
+  ).toGatewayMap().also {
+    onDeviceWarmupAccess.ensureWarmForActiveSession()
+    chatSnapshotNotifier()
+  }
 
   override fun saveCustomLlmProvider(
     selectedProviderOptionId: String,
@@ -1328,6 +2087,10 @@ internal class ServiceOwnedSettingsGateway(
     openAiPromptCacheRetention: String?,
     anthropicPromptCachingEnabled: Boolean?,
     anthropicPromptCacheTtl: String?,
+    contextBudgetPreset: String?,
+    contextBudgetReservedOutputTokens: Int?,
+    contextBudgetSafetyMarginTokens: Int?,
+    contextBudgetEffectiveInputPercent: Double?,
   ): Map<String, Any?> = llmConfigFacade.saveCustomProvider(
     com.opencray.app.facade.llm.SaveCustomLlmProviderRequest(
       selectedProviderOptionId = selectedProviderOptionId,
@@ -1348,6 +2111,10 @@ internal class ServiceOwnedSettingsGateway(
         ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
       anthropicPromptCacheTtl = anthropicPromptCacheTtl
         ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
+      contextBudgetPreset = contextBudgetPreset,
+      contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
     ),
   ).toGatewayMap()
 
@@ -1368,6 +2135,30 @@ internal class ServiceOwnedSettingsGateway(
       reasoningEffort = reasoningEffort,
     ),
   ).toGatewayMap()
+
+  override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> {
+    val snapshot = llmConfigFacade.downloadOnDeviceModel(modelId).toGatewayMap()
+    onDeviceWarmupAccess.ensureWarmForActiveSession()
+    notifySettingsOverviewChanged()
+    chatSnapshotNotifier()
+    return snapshot
+  }
+
+  override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> {
+    val snapshot = llmConfigFacade.cancelOnDeviceModelDownload(modelId).toGatewayMap()
+    onDeviceWarmupAccess.ensureWarmForActiveSession()
+    notifySettingsOverviewChanged()
+    chatSnapshotNotifier()
+    return snapshot
+  }
+
+  override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> {
+    val snapshot = llmConfigFacade.deleteOnDeviceModel(modelId).toGatewayMap()
+    onDeviceWarmupAccess.ensureWarmForActiveSession()
+    notifySettingsOverviewChanged()
+    chatSnapshotNotifier()
+    return snapshot
+  }
 
   override fun loadMcpSettings(): Map<String, Any?> =
     mcpSettingsFacade.load().toGatewayMap()

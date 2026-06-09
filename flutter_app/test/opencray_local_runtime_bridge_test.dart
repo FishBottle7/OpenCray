@@ -6,6 +6,7 @@ import 'package:opencray/core/bridge/opencray_host_bridge.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge_bootstrap.dart';
 import 'package:opencray/core/bridge/opencray_local_runtime_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
+import 'package:opencray/core/models/opencray_chat_draft_attachment.dart';
 import 'package:opencray/core/models/opencray_image_reference.dart';
 import 'package:opencray/core/models/opencray_notification_settings.dart';
 
@@ -348,6 +349,26 @@ void main() {
     expect(preview.height, 1);
     expect(preview.bytes, base64Decode(_tinyPngBase64));
   });
+
+  test(
+    'local runtime bridge reports attachment picking as unsupported',
+    () async {
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+
+      expect(
+        () => bridge.pickChatAttachments(
+          kind: OpenCrayChatDraftAttachmentKind.file,
+        ),
+        throwsA(
+          isA<UnsupportedError>().having(
+            (error) => error.message,
+            'message',
+            'Adding attachments is unavailable in local runtime mode.',
+          ),
+        ),
+      );
+    },
+  );
 
   test('local runtime bridge loads settings image assets over http', () async {
     requestHandler = (request) async {
@@ -711,7 +732,6 @@ void main() {
         'approvalReminderEnabled': true,
         'taskFinishedEnabled': false,
         'taskFailedEnabled': true,
-        'newUserMessageEnabled': false,
         'scheduledWakeEnabled': true,
         'backgroundTaskPausedEnabled': true,
         'serviceRecoveredEnabled': false,
@@ -730,7 +750,6 @@ void main() {
     expect(snapshot.approvalReminderEnabled, isTrue);
     expect(snapshot.taskFinishedEnabled, isFalse);
     expect(snapshot.taskFailedEnabled, isTrue);
-    expect(snapshot.newUserMessageEnabled, isFalse);
     expect(snapshot.scheduledWakeEnabled, isTrue);
     expect(snapshot.backgroundTaskPausedEnabled, isTrue);
     expect(snapshot.serviceRecoveredEnabled, isFalse);
@@ -748,7 +767,6 @@ void main() {
       approvalReminderEnabled: false,
       taskFinishedEnabled: true,
       taskFailedEnabled: true,
-      newUserMessageEnabled: true,
       scheduledWakeEnabled: true,
       backgroundTaskPausedEnabled: false,
       serviceRecoveredEnabled: true,
@@ -767,7 +785,6 @@ void main() {
         'approvalReminderEnabled': capturedBody['approvalReminderEnabled'],
         'taskFinishedEnabled': capturedBody['taskFinishedEnabled'],
         'taskFailedEnabled': capturedBody['taskFailedEnabled'],
-        'newUserMessageEnabled': capturedBody['newUserMessageEnabled'],
         'scheduledWakeEnabled': capturedBody['scheduledWakeEnabled'],
         'backgroundTaskPausedEnabled':
             capturedBody['backgroundTaskPausedEnabled'],
@@ -787,7 +804,6 @@ void main() {
     expect(capturedBody['approvalReminderEnabled'], isFalse);
     expect(capturedBody['taskFinishedEnabled'], isTrue);
     expect(capturedBody['taskFailedEnabled'], isTrue);
-    expect(capturedBody['newUserMessageEnabled'], isTrue);
     expect(capturedBody['scheduledWakeEnabled'], isTrue);
     expect(capturedBody['backgroundTaskPausedEnabled'], isFalse);
     expect(capturedBody['serviceRecoveredEnabled'], isTrue);
@@ -800,7 +816,6 @@ void main() {
     expect(snapshot.approvalReminderEnabled, isFalse);
     expect(snapshot.taskFinishedEnabled, isTrue);
     expect(snapshot.taskFailedEnabled, isTrue);
-    expect(snapshot.newUserMessageEnabled, isTrue);
     expect(snapshot.scheduledWakeEnabled, isTrue);
     expect(snapshot.backgroundTaskPausedEnabled, isFalse);
     expect(snapshot.serviceRecoveredEnabled, isTrue);
@@ -979,6 +994,35 @@ void main() {
     ]);
   });
 
+  test('local runtime bridge posts media save requests over http', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/save_workspace_media_attachment');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, <String, Object?>{
+        'displayName': 'voice-note.m4a',
+        'collection': 'recordings',
+        'uri': 'content://media/audio/42',
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final saved = await bridge.saveWorkspaceMediaAttachment(
+      relativePath: '.opencray/chat-media/session-1/hash/voice-note.m4a',
+      kind: 'voice',
+    );
+
+    expect(
+      capturedBody['relativePath'],
+      '.opencray/chat-media/session-1/hash/voice-note.m4a',
+    );
+    expect(capturedBody['kind'], 'voice');
+    expect(saved.displayName, 'voice-note.m4a');
+    expect(saved.collection, 'recordings');
+    expect(saved.uri, 'content://media/audio/42');
+  });
+
   test('local runtime bridge posts open file requests over http', () async {
     late Map<String, Object?> capturedBody;
     requestHandler = (request) async {
@@ -1013,6 +1057,61 @@ void main() {
 
     expect(capturedBody['uri'], 'https://opencray.dev/docs');
   });
+
+  test(
+    'local runtime bridge preserves attachment references when submitting chat messages',
+    () async {
+      late Map<String, Object?> capturedBody;
+      requestHandler = (request) async {
+        expect(request.method, 'POST');
+        expect(request.uri.path, '/v1/submit_chat_message');
+        capturedBody = await readJsonBody(request);
+        await writeJson(request, <String, Object?>{
+          'sessionId': 'session-1',
+          'runId': 'run-1',
+          'taskId': 'task-1',
+          'acceptedAtEpochMs': 123,
+        });
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+      await bridge.submitChatMessage(
+        'Reuse prior references',
+        attachments: const <OpenCrayChatDraftAttachment>[
+          OpenCrayChatDraftAttachment(
+            kind: OpenCrayChatDraftAttachmentKind.file,
+            displayName: 'diagram.png',
+            artifactId: 'artifact-diagram-1',
+          ),
+          OpenCrayChatDraftAttachment(
+            kind: OpenCrayChatDraftAttachmentKind.file,
+            displayName: 'report.pdf',
+            chatAttachmentId: 'chat-attachment-1',
+          ),
+        ],
+      );
+
+      expect(capturedBody['text'], 'Reuse prior references');
+      expect(capturedBody['attachments'], <Object?>[
+        <String, Object?>{
+          'kind': 'file',
+          'displayName': 'diagram.png',
+          'relativePath': '',
+          'artifactId': 'artifact-diagram-1',
+          'mimeType': null,
+          'sizeBytes': null,
+        },
+        <String, Object?>{
+          'kind': 'file',
+          'displayName': 'report.pdf',
+          'relativePath': '',
+          'chatAttachmentId': 'chat-attachment-1',
+          'mimeType': null,
+          'sizeBytes': null,
+        },
+      ]);
+    },
+  );
 
   test('local runtime bridge inspects skill sources over http', () async {
     late Map<String, Object?> capturedBody;
@@ -1109,6 +1208,12 @@ void main() {
               'isTerminal': false,
               'memoryFlush': <String, Object?>{
                 'outcome': 'written',
+                'triggerStage': 'pre_compaction',
+                'executionMode': 'inline',
+                'contextWindowTokens': 128000,
+                'autoCompactTokenLimit': 115200,
+                'estimatedReplayTokens': 116000,
+                'tokenThresholdTriggered': true,
                 'candidateCount': 2,
                 'writtenRecordCount': 1,
                 'writtenKinds': <Object?>['user_preference'],
@@ -1131,11 +1236,26 @@ void main() {
               },
               'durableCompaction': <String, Object?>{
                 'compactedThisRun': true,
+                'triggerStage': 'pre_compaction',
+                'executionMode': 'inline',
+                'contextWindowTokens': 128000,
+                'autoCompactTokenLimit': 115200,
+                'estimatedReplayTokens': 116000,
+                'tokenThresholdTriggered': true,
                 'sourceTranscriptMessageCount': 18,
                 'retainedTranscriptMessageCount': 12,
                 'latestCompactedMessageCount': 6,
                 'includedSummaryCount': 1,
                 'totalSummaryCount': 1,
+                'remoteCompaction': <String, Object?>{
+                  'requested': true,
+                  'supported': true,
+                  'used': true,
+                  'triggerStage': 'pre_compaction',
+                  'outputItemCount': 2,
+                  'compactionItemCount': 1,
+                  'encryptedContentCount': 1,
+                },
               },
               'skillInventory': <String, Object?>{
                 'visibleSkillCount': 2,
@@ -1155,6 +1275,7 @@ void main() {
                 'name': 'ui-ux-pro-max',
                 'relativePath': 'skills/ui-ux-pro-max/SKILL.md',
                 'activationSource': 'skill_read',
+                'pinned': true,
                 'toolRestrictionEnabled': true,
                 'allowedToolKeys': <Object?>['read', 'write'],
               },
@@ -1212,6 +1333,27 @@ void main() {
         'commitment-keep-1',
       ]);
       expect(snapshot.activeRuns.single.memoryFlush?.outcome, 'written');
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.triggerStage,
+        'pre_compaction',
+      );
+      expect(snapshot.activeRuns.single.memoryFlush?.executionMode, 'inline');
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.contextWindowTokens,
+        128000,
+      );
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.autoCompactTokenLimit,
+        115200,
+      );
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.estimatedReplayTokens,
+        116000,
+      );
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.tokenThresholdTriggered,
+        isTrue,
+      );
       expect(snapshot.activeRuns.single.bootstrap?.mode, 'full');
       expect(
         snapshot.activeRuns.single.bootstrap?.files.single.name,
@@ -1222,10 +1364,57 @@ void main() {
         isTrue,
       );
       expect(
+        snapshot.activeRuns.single.durableCompaction?.triggerStage,
+        'pre_compaction',
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.executionMode,
+        'inline',
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.contextWindowTokens,
+        128000,
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.autoCompactTokenLimit,
+        115200,
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.estimatedReplayTokens,
+        116000,
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.tokenThresholdTriggered,
+        isTrue,
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.remoteCompaction?.used,
+        isTrue,
+      );
+      expect(
+        snapshot
+            .activeRuns
+            .single
+            .durableCompaction
+            ?.remoteCompaction
+            ?.triggerStage,
+        'pre_compaction',
+      );
+      expect(
+        snapshot
+            .activeRuns
+            .single
+            .durableCompaction
+            ?.remoteCompaction
+            ?.outputItemCount,
+        2,
+      );
+      expect(
         snapshot.activeRuns.single.skillInventory?.skills.single.name,
         'ui-ux-pro-max',
       );
       expect(snapshot.activeRuns.single.activeSkill?.name, 'ui-ux-pro-max');
+      expect(snapshot.activeRuns.single.activeSkill?.pinned, isTrue);
       expect(snapshot.activeRuns.single.activeSkill?.allowedToolKeys, <String>[
         'read',
         'write',

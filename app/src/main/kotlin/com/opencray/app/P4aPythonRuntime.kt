@@ -211,6 +211,7 @@ internal class P4aPythonRuntime private constructor(
     val startupBudgetMs = startupTimeoutMs.coerceAtLeast(0L)
     val scriptBudgetMs = scriptTimeoutMs.coerceAtLeast(0L)
     val startupDeadline = startupWaitStartedAt + startupBudgetMs
+    val pollIntervalMs = resolvePollIntervalMs(maxOf(startupBudgetMs, scriptBudgetMs))
     var requestExecutionObservation: RequestExecutionObservation? = null
 
     while (true) {
@@ -234,10 +235,11 @@ internal class P4aPythonRuntime private constructor(
       val deadline = requestExecutionObservation?.executionStartedAtEpochMs
         ?.let { executionStartedAt -> executionStartedAt + scriptBudgetMs }
         ?: startupDeadline
-      if (now > deadline) {
+      val remainingMs = deadline - now
+      if (remainingMs <= 0L) {
         break
       }
-      Thread.sleep(resolvePollIntervalMs(maxOf(startupBudgetMs, scriptBudgetMs)))
+      Thread.sleep(minOf(pollIntervalMs, remainingMs))
     }
 
     val latestServiceMarker = findLatestServiceLifecycleMarker(
@@ -708,7 +710,7 @@ internal class P4aPythonRuntime private constructor(
 
   companion object {
     internal const val BRIDGE_SCHEMA_VERSION: Int = 1
-    private const val DEFAULT_POLL_INTERVAL_MS: Long = 25L
+    private const val DEFAULT_POLL_INTERVAL_MS: Long = 10L
     private const val MAX_POLL_INTERVAL_MS: Long = 250L
     private const val MIN_SERVICE_POLL_INTERVAL_MS: Long = 25L
     private const val MAX_SERVICE_POLL_INTERVAL_MS: Long = 100L

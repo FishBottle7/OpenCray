@@ -93,7 +93,9 @@ class LiteLlmSoulMemoryIntentInterpreterTest {
     assertEquals("low", providerClient.lastRequest?.route?.metadata?.get("reasoning_effort"))
     assertEquals("512", providerClient.lastRequest?.route?.metadata?.get("max_tokens"))
     assertEquals("0", providerClient.lastRequest?.route?.metadata?.get("temperature"))
-    val prompt = providerClient.lastRequest?.request?.prompt.orEmpty()
+    val gatewayRequest = providerClient.lastRequest?.request
+    val prompt = gatewayRequest?.prompt.orEmpty()
+    assertTrue(prompt.contains(gatewayRequest?.messages?.single()?.content?.trim().orEmpty()))
     assertTrue(prompt.contains("以后叫你小白"))
     assertTrue(prompt.contains("If the user tells the agent how to address them"))
     assertTrue(prompt.contains("A single message may yield multiple soul intents"))
@@ -205,6 +207,35 @@ class LiteLlmSoulMemoryIntentInterpreterTest {
 
     val unavailable = result as SoulMemoryIntentInterpretation.Unavailable
     assertEquals(false, unavailable.allowHeuristicFallback)
+  }
+
+  @Test
+  fun interpretReturnsUnavailableWhenOnDeviceModeIsSelected() {
+    val providerClient = RecordingProviderClient(
+      result = LiteLlmProviderResult.Success(outputText = """{"intents":[]}"""),
+    )
+    val interpreter = LiteLlmSoulMemoryIntentInterpreter(
+      llmSettingsProvider = {
+        LlmSettingsState(
+          enabled = true,
+          providerMode = LlmProviderModes.ON_DEVICE_MODEL,
+          selectedOnDeviceModelId = "gemma-4-e2b-it",
+        )
+      },
+      providerClient = providerClient,
+    )
+
+    val result = interpreter.interpret(
+      SoulMemoryIntentRequest(
+        sessionId = "session-on-device",
+        userInput = "以后叫你小白。",
+      ),
+    )
+
+    val unavailable = result as SoulMemoryIntentInterpretation.Unavailable
+    assertEquals(false, unavailable.allowHeuristicFallback)
+    assertTrue(unavailable.reason.orEmpty().contains("On-device LLM mode"))
+    assertTrue(providerClient.lastRequest == null)
   }
 
   @Test

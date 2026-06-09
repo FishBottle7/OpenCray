@@ -61,6 +61,8 @@ internal class OpenCrayFlutterHostBridge(
   private var skillsObserverDisposer: (() -> Unit)? = null
   private var chatObserverDisposer: (() -> Unit)? = null
   private var chatRuntimeObserverDisposer: (() -> Unit)? = null
+  private var liveAssistantDraftObserverDisposer: (() -> Unit)? = null
+  private var runtimeEventDeltaObserverDisposer: (() -> Unit)? = null
 
   fun attach(flutterEngine: FlutterEngine) {
     MethodChannel(flutterEngine.dartExecutor.binaryMessenger, METHOD_CHANNEL).setMethodCallHandler(::onMethodCall)
@@ -100,6 +102,24 @@ internal class OpenCrayFlutterHostBridge(
         payloadTransformer = ::attachBridgeLifecycleToRuntimeSnapshot,
       ),
     )
+    EventChannel(
+      flutterEngine.dartExecutor.binaryMessenger,
+      LIVE_ASSISTANT_DRAFT_CHANNEL,
+    ).setStreamHandler(
+      observerStreamHandler(
+        observe = chatRuntimeGateway::observeLiveAssistantDraftEvents,
+        onDisposeChanged = { disposer -> liveAssistantDraftObserverDisposer = disposer },
+      ),
+    )
+    EventChannel(
+      flutterEngine.dartExecutor.binaryMessenger,
+      RUNTIME_EVENT_DELTA_CHANNEL,
+    ).setStreamHandler(
+      observerStreamHandler(
+        observe = chatRuntimeGateway::observeRuntimeEventDeltas,
+        onDisposeChanged = { disposer -> runtimeEventDeltaObserverDisposer = disposer },
+      ),
+    )
   }
 
   fun detach(flutterEngine: FlutterEngine) {
@@ -109,16 +129,22 @@ internal class OpenCrayFlutterHostBridge(
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, SKILLS_SNAPSHOT_CHANNEL).setStreamHandler(null)
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_SNAPSHOT_CHANNEL).setStreamHandler(null)
     EventChannel(flutterEngine.dartExecutor.binaryMessenger, CHAT_RUNTIME_SNAPSHOT_CHANNEL).setStreamHandler(null)
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, LIVE_ASSISTANT_DRAFT_CHANNEL).setStreamHandler(null)
+    EventChannel(flutterEngine.dartExecutor.binaryMessenger, RUNTIME_EVENT_DELTA_CHANNEL).setStreamHandler(null)
     shellObserverDisposer?.invoke()
     settingsObserverDisposer?.invoke()
     skillsObserverDisposer?.invoke()
     chatObserverDisposer?.invoke()
     chatRuntimeObserverDisposer?.invoke()
+    liveAssistantDraftObserverDisposer?.invoke()
+    runtimeEventDeltaObserverDisposer?.invoke()
     shellObserverDisposer = null
     settingsObserverDisposer = null
     skillsObserverDisposer = null
     chatObserverDisposer = null
     chatRuntimeObserverDisposer = null
+    liveAssistantDraftObserverDisposer = null
+    runtimeEventDeltaObserverDisposer = null
   }
 
   fun selectChatSession(sessionId: String): Boolean =
@@ -150,6 +176,13 @@ internal class OpenCrayFlutterHostBridge(
     runCatching {
       when (call.method) {
         "loadShellSnapshot" -> shellGateway.loadShellSnapshot()
+        "saveShellDestination" -> {
+          shellGateway.saveShellDestination(
+            selectedTab = call.argument<String>("selectedTab").orEmpty(),
+            settingsSubpage = call.argument<String>("settingsSubpage"),
+          )
+          null
+        }
         "loadFilesSnapshot" -> localHostGateway.loadFilesSnapshot()
         "resolveSandboxPreviewEmbedConfig" -> localHostGateway.resolveSandboxPreviewEmbedConfig(
           previewUrl = call.argument<String>("previewUrl").orEmpty(),
@@ -184,18 +217,38 @@ internal class OpenCrayFlutterHostBridge(
           return
         }
         "loadSoulVisualIdentity" -> localHostGateway.loadSoulVisualIdentity()
-        "loadWorkspaceImagePreview" -> localHostGateway.loadWorkspaceImagePreview(
-          relativePath = call.argument<String>("relativePath").orEmpty(),
-        )
-        "loadWorkspaceTextPreview" -> localHostGateway.loadWorkspaceTextPreview(
-          relativePath = call.argument<String>("relativePath").orEmpty(),
-        )
-        "loadWorkspaceVoicePlaybackSource" -> localHostGateway.loadWorkspaceVoicePlaybackSource(
-          relativePath = call.argument<String>("relativePath").orEmpty(),
-        )
-        "loadWorkspaceTextDocument" -> localHostGateway.loadWorkspaceTextDocument(
-          relativePath = call.argument<String>("relativePath").orEmpty(),
-        )
+        "loadWorkspaceImagePreview" -> {
+          runAsync(result) {
+            localHostGateway.loadWorkspaceImagePreview(
+              relativePath = call.argument<String>("relativePath").orEmpty(),
+            )
+          }
+          return
+        }
+        "loadWorkspaceTextPreview" -> {
+          runAsync(result) {
+            localHostGateway.loadWorkspaceTextPreview(
+              relativePath = call.argument<String>("relativePath").orEmpty(),
+            )
+          }
+          return
+        }
+        "loadWorkspaceVoicePlaybackSource" -> {
+          runAsync(result) {
+            localHostGateway.loadWorkspaceVoicePlaybackSource(
+              relativePath = call.argument<String>("relativePath").orEmpty(),
+            )
+          }
+          return
+        }
+        "loadWorkspaceTextDocument" -> {
+          runAsync(result) {
+            localHostGateway.loadWorkspaceTextDocument(
+              relativePath = call.argument<String>("relativePath").orEmpty(),
+            )
+          }
+          return
+        }
         "openWorkspaceEntry" -> {
           localHostGateway.openWorkspaceEntry(
             relativePath = call.argument<String>("relativePath").orEmpty(),
@@ -245,6 +298,10 @@ internal class OpenCrayFlutterHostBridge(
           )
           null
         }
+        "saveWorkspaceMediaAttachment" -> localHostGateway.saveWorkspaceMediaAttachment(
+          relativePath = call.argument<String>("relativePath").orEmpty(),
+          kind = call.argument<String>("kind").orEmpty(),
+        )
         "showNativeToast" -> {
           localHostGateway.showNativeToast(
             message = call.argument<String>("message").orEmpty(),
@@ -309,6 +366,7 @@ internal class OpenCrayFlutterHostBridge(
             settingsGateway.saveLlmConfig(
               enabled = call.argument<Boolean>("enabled") == true,
               streamingEnabled = call.argument<Boolean>("streamingEnabled"),
+              providerMode = call.argument<String>("providerMode") ?: LlmProviderModes.CLOUD,
               providerId = call.argument<String>("providerId").orEmpty(),
               selectedProviderOptionId = call.argument<String>("selectedProviderOptionId").orEmpty(),
               protocol = call.argument<String>("protocol").orEmpty(),
@@ -324,6 +382,40 @@ internal class OpenCrayFlutterHostBridge(
               anthropicPromptCachingEnabled =
                 call.argument<Boolean>("anthropicPromptCachingEnabled"),
               anthropicPromptCacheTtl = call.argument<String>("anthropicPromptCacheTtl"),
+              contextBudgetPreset = call.argument<String>("contextBudgetPreset"),
+              contextBudgetReservedOutputTokens =
+                call.argument<Number>("contextBudgetReservedOutputTokens")?.toInt(),
+              contextBudgetSafetyMarginTokens =
+                call.argument<Number>("contextBudgetSafetyMarginTokens")?.toInt(),
+              contextBudgetEffectiveInputPercent =
+                call.argument<Number>("contextBudgetEffectiveInputPercent")?.toDouble(),
+              selectedOnDeviceModelId =
+                call.argument<String>("selectedOnDeviceModelId")
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_MODEL_ID,
+              onDeviceMaxContextWindow =
+                call.argument<Number>("onDeviceMaxContextWindow")?.toInt()
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_MAX_CONTEXT_WINDOW,
+              onDeviceMaxTokens =
+                call.argument<Number>("onDeviceMaxTokens")?.toInt()
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_MAX_TOKENS,
+              onDeviceTopK =
+                call.argument<Number>("onDeviceTopK")?.toInt()
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_TOP_K,
+              onDeviceTopP =
+                call.argument<Number>("onDeviceTopP")?.toDouble()
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_TOP_P,
+              onDeviceTemperature =
+                call.argument<Number>("onDeviceTemperature")?.toDouble()
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_TEMPERATURE,
+              onDeviceAccelerator =
+                call.argument<String>("onDeviceAccelerator")
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_ACCELERATOR,
+              onDeviceThinkingEnabled =
+                call.argument<Boolean>("onDeviceThinkingEnabled")
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_THINKING_ENABLED,
+              onDeviceLiteModeEnabled =
+                call.argument<Boolean>("onDeviceLiteModeEnabled")
+                  ?: LlmSettingsState.DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
             )
           }
           return
@@ -346,6 +438,13 @@ internal class OpenCrayFlutterHostBridge(
               anthropicPromptCachingEnabled =
                 call.argument<Boolean>("anthropicPromptCachingEnabled"),
               anthropicPromptCacheTtl = call.argument<String>("anthropicPromptCacheTtl"),
+              contextBudgetPreset = call.argument<String>("contextBudgetPreset"),
+              contextBudgetReservedOutputTokens =
+                call.argument<Number>("contextBudgetReservedOutputTokens")?.toInt(),
+              contextBudgetSafetyMarginTokens =
+                call.argument<Number>("contextBudgetSafetyMarginTokens")?.toInt(),
+              contextBudgetEffectiveInputPercent =
+                call.argument<Number>("contextBudgetEffectiveInputPercent")?.toDouble(),
             )
           }
           return
@@ -359,6 +458,30 @@ internal class OpenCrayFlutterHostBridge(
               apiKey = call.argument<String>("apiKey").orEmpty(),
               model = call.argument<String>("model").orEmpty(),
               reasoningEffort = call.argument<String>("reasoningEffort").orEmpty(),
+            )
+          }
+          return
+        }
+        "downloadOnDeviceLlmModel" -> {
+          runAsync(result) {
+            settingsGateway.downloadOnDeviceLlmModel(
+              modelId = call.argument<String>("modelId").orEmpty(),
+            )
+          }
+          return
+        }
+        "cancelOnDeviceLlmModelDownload" -> {
+          runAsync(result) {
+            settingsGateway.cancelOnDeviceLlmModelDownload(
+              modelId = call.argument<String>("modelId").orEmpty(),
+            )
+          }
+          return
+        }
+        "deleteOnDeviceLlmModel" -> {
+          runAsync(result) {
+            settingsGateway.deleteOnDeviceLlmModel(
+              modelId = call.argument<String>("modelId").orEmpty(),
             )
           }
           return
@@ -614,14 +737,44 @@ internal class OpenCrayFlutterHostBridge(
           return
         }
 
-        "loadChatSnapshot" -> chatRuntimeGateway.loadChatSnapshot()
-        "loadChatRuntimeSnapshot" -> chatRuntimeGateway.loadChatRuntimeSnapshot()
-        "loadChatRunSnapshot" -> chatRuntimeGateway.loadChatRunSnapshot(
-          call.argument<String>("runId").orEmpty(),
-        )
-        "loadMemoryDebugSnapshot" -> chatRuntimeGateway.loadMemoryDebugSnapshot()
-        "loadMemoryDebugLinksSnapshot" -> chatRuntimeGateway.loadMemoryDebugLinksSnapshot()
-        "loadSoulDebugSnapshot" -> chatRuntimeGateway.loadSoulDebugSnapshot()
+        "loadChatSnapshot" -> {
+          runAsync(result, method = call.method) {
+            chatRuntimeGateway.loadChatSnapshot()
+          }
+          return
+        }
+        "loadChatRuntimeSnapshot" -> {
+          runAsync(result, method = call.method) {
+            chatRuntimeGateway.loadChatRuntimeSnapshot()
+          }
+          return
+        }
+        "loadChatRunSnapshot" -> {
+          runAsync(result) {
+            chatRuntimeGateway.loadChatRunSnapshot(
+              call.argument<String>("runId").orEmpty(),
+            )
+          }
+          return
+        }
+        "loadMemoryDebugSnapshot" -> {
+          runAsync(result) {
+            chatRuntimeGateway.loadMemoryDebugSnapshot()
+          }
+          return
+        }
+        "loadMemoryDebugLinksSnapshot" -> {
+          runAsync(result) {
+            chatRuntimeGateway.loadMemoryDebugLinksSnapshot()
+          }
+          return
+        }
+        "loadSoulDebugSnapshot" -> {
+          runAsync(result) {
+            chatRuntimeGateway.loadSoulDebugSnapshot()
+          }
+          return
+        }
         "runDebugPythonScript" -> {
           runAsync(result) {
             debugPythonScriptRunner.runScript(
@@ -857,7 +1010,17 @@ internal class OpenCrayFlutterHostBridge(
         backgroundRunner {
           runCatching { importAction(pickedUris) }
             .onSuccess { payload ->
-              mainThreadPoster { result.success(payload) }
+              if (payload is List<*> && payload.isEmpty()) {
+                mainThreadPoster {
+                  result.error(
+                    "HOST_BRIDGE_ERROR",
+                    "Unable to import the selected attachments.",
+                    null,
+                  )
+                }
+              } else {
+                mainThreadPoster { result.success(payload) }
+              }
             }
             .onFailure { throwable ->
               mainThreadPoster {
@@ -880,7 +1043,13 @@ internal class OpenCrayFlutterHostBridge(
         val relativePath = payload["relativePath"] as String?
         val path = payload["path"] as String?
         val artifactId = payload["artifactId"] as String?
-        if (relativePath.isNullOrBlank() && path.isNullOrBlank() && artifactId.isNullOrBlank()) {
+        val chatAttachmentId = payload["chatAttachmentId"] as String?
+        if (
+          relativePath.isNullOrBlank() &&
+          path.isNullOrBlank() &&
+          artifactId.isNullOrBlank() &&
+          chatAttachmentId.isNullOrBlank()
+        ) {
           return@mapNotNull null
         }
         OpenCrayFinalAttachment(
@@ -888,6 +1057,7 @@ internal class OpenCrayFlutterHostBridge(
           relativePath = relativePath,
           path = path,
           artifactId = artifactId,
+          chatAttachmentId = chatAttachmentId,
           displayName = payload["displayName"] as String?,
           mimeType = payload["mimeType"] as String?,
           durationMs = (payload["durationMs"] as Number?)?.toLong(),
@@ -901,12 +1071,19 @@ internal class OpenCrayFlutterHostBridge(
 
   private fun runAsync(
     result: MethodChannel.Result,
+    method: String? = null,
     action: () -> Any?,
   ) {
     backgroundRunner {
       runCatching(action)
         .onSuccess { payload ->
-          mainThreadPoster { result.success(payload) }
+          mainThreadPoster {
+            result.success(
+              method?.let { methodName ->
+                transformMethodResultPayload(method = methodName, payload = payload)
+              } ?: payload,
+            )
+          }
         }
         .onFailure { throwable ->
           mainThreadPoster {
@@ -1016,5 +1193,7 @@ internal class OpenCrayFlutterHostBridge(
     private const val SKILLS_SNAPSHOT_CHANNEL = "com.opencray.host/skills_snapshot"
     private const val CHAT_SNAPSHOT_CHANNEL = "com.opencray.host/chat_snapshot"
     private const val CHAT_RUNTIME_SNAPSHOT_CHANNEL = "com.opencray.host/chat_runtime_snapshot"
+    private const val LIVE_ASSISTANT_DRAFT_CHANNEL = "com.opencray.host/live_assistant_draft"
+    private const val RUNTIME_EVENT_DELTA_CHANNEL = "com.opencray.host/runtime_event_delta"
   }
 }

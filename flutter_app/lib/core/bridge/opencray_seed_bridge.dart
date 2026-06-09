@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../../app/opencray_tabs.dart';
+import '../../features/settings/settings_models.dart';
 import '../models/opencray_chat_draft_attachment.dart';
 import '../models/opencray_chat_snapshot.dart';
 import '../models/opencray_agent_snapshot.dart';
@@ -85,6 +86,10 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
                  title: 'API Integrations',
                ),
                OpenCraySettingsHomeEntrySnapshot(
+                 routeId: 'privacy_telemetry',
+                 title: 'Privacy & Telemetry',
+               ),
+               OpenCraySettingsHomeEntrySnapshot(
                  routeId: 'safety_limits',
                  title: 'Safety & Limits',
                ),
@@ -107,6 +112,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
            const OpenCrayLlmConfigSnapshot(
              localeTag: 'en',
              enabled: false,
+             providerMode: 'cloud',
              providerId: 'openai',
              selectedProviderOptionId: 'openai',
              providerOptions: <OpenCrayLlmProviderOptionSnapshot>[
@@ -144,6 +150,35 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
              systemPrompt: '',
              helperText:
                  'Seed bridge stores LLM settings locally. Base URL and API key must be ready before chat can call a provider.',
+             onDeviceModels: <OpenCrayOnDeviceLlmModelOptionSnapshot>[
+               OpenCrayOnDeviceLlmModelOptionSnapshot(
+                 id: 'gemma-4-e2b-it',
+                 title: 'Gemma 4 E2B',
+                 subtitle: 'Instruction-tuned Gemma 4 E2B for LiteRT-LM.',
+                 sizeLabel: '2.58 GB',
+                 fileSizeBytes: 2583085056,
+                 installState: 'ready',
+                 downloadedBytes: 2583085056,
+                 downloadBytesPerSecond: 0,
+                 sha256Verified: true,
+               ),
+               OpenCrayOnDeviceLlmModelOptionSnapshot(
+                 id: 'gemma-4-e4b-it',
+                 title: 'Gemma 4 E4B',
+                 subtitle: 'Instruction-tuned Gemma 4 E4B for LiteRT-LM.',
+                 sizeLabel: '3.65 GB',
+                 fileSizeBytes: 3654467584,
+                 installState: 'not_downloaded',
+               ),
+             ],
+             selectedOnDeviceModelId: 'gemma-4-e2b-it',
+             onDeviceMaxContextWindow: 32768,
+             onDeviceMaxTokens: 4096,
+             onDeviceTopK: 40,
+             onDeviceTopP: 0.95,
+             onDeviceTemperature: 0.70,
+             onDeviceAccelerator: 'gpu',
+             onDeviceThinkingEnabled: false,
            ),
        _personalizationConfig =
            initialPersonalizationConfig ?? _buildSeedPersonalizationConfig(),
@@ -152,18 +187,17 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
            initialNotificationSettings ??
            const OpenCrayNotificationSettingsSnapshot(
              masterEnabled: true,
-             defaultDeliveryModeId: 'critical',
+             defaultDeliveryModeId: 'all',
              quietHoursEnabled: true,
              quietHoursStartMinutes: 1380,
              quietHoursEndMinutes: 480,
              approvalRequestsEnabled: true,
              approvalReminderEnabled: true,
-             taskFinishedEnabled: false,
+             taskFinishedEnabled: true,
              taskFailedEnabled: true,
-             newUserMessageEnabled: true,
-             scheduledWakeEnabled: false,
+             scheduledWakeEnabled: true,
              backgroundTaskPausedEnabled: true,
-             serviceRecoveredEnabled: false,
+             serviceRecoveredEnabled: true,
            ),
        _safetySettings =
            initialSafetySettings ??
@@ -452,6 +486,22 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<void> saveShellDestination({
+    required String selectedTab,
+    String? settingsSubpage,
+  }) async {
+    final tab = _parseTab(selectedTab);
+    final settingsPage = tab == OpenCrayTab.settings
+        ? settingsPageFromRouteId(settingsSubpage ?? 'home')
+        : SettingsPage.home;
+    _snapshot = _snapshot.copyWith(
+      initialTab: tab,
+      initialSettingsPage: settingsPage,
+    );
+    _controller.add(_snapshot);
+  }
+
+  @override
   Future<OpenCrayFilesSnapshot> loadFilesSnapshot() async => _filesSnapshot;
 
   @override
@@ -705,6 +755,14 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Future<OpenCraySavedWorkspaceMediaAttachment> saveWorkspaceMediaAttachment({
+    required String relativePath,
+    required String kind,
+  }) async {
+    throw StateError('Seed bridge does not support media saving.');
+  }
+
+  @override
   Future<void> showNativeToast(String message) async {
     final normalized = message.trim();
     if (normalized.isEmpty) {
@@ -920,6 +978,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   Future<OpenCrayLlmConfigSnapshot> saveLlmConfig({
     required bool enabled,
     bool? streamingEnabled,
+    String providerMode = 'cloud',
     required String providerId,
     required String selectedProviderOptionId,
     required String protocol,
@@ -934,15 +993,35 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    String selectedOnDeviceModelId = 'gemma-4-e2b-it',
+    int onDeviceMaxContextWindow = 32768,
+    int onDeviceMaxTokens = 4096,
+    int onDeviceTopK = 40,
+    double onDeviceTopP = 0.95,
+    double onDeviceTemperature = 0.70,
+    String onDeviceAccelerator = 'gpu',
+    bool onDeviceThinkingEnabled = false,
+    bool onDeviceLiteModeEnabled = false,
+    String? contextBudgetPreset,
+    int? contextBudgetReservedOutputTokens,
+    int? contextBudgetSafetyMarginTokens,
+    double? contextBudgetEffectiveInputPercent,
   }) async {
-    final isConfigured =
-        baseUrl.trim().isNotEmpty &&
-        apiKey.trim().isNotEmpty &&
-        model.trim().isNotEmpty;
+    final isConfigured = providerMode == 'on_device_model'
+        ? _llmConfig.onDeviceModels.any(
+            (option) =>
+                option.id == selectedOnDeviceModelId &&
+                option.installState.trim().toLowerCase() == 'ready',
+          )
+        : (baseUrl.trim().isNotEmpty &&
+              apiKey.trim().isNotEmpty &&
+              model.trim().isNotEmpty);
+    final hasExplicitContextBudgetPayload = contextBudgetPreset != null;
     _llmConfig = OpenCrayLlmConfigSnapshot(
       localeTag: _llmConfig.localeTag,
       enabled: isConfigured,
       streamingEnabled: streamingEnabled ?? _llmConfig.streamingEnabled,
+      providerMode: providerMode,
       providerId: providerId,
       selectedProviderOptionId: selectedProviderOptionId,
       protocol: protocol,
@@ -965,6 +1044,26 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
           _llmConfig.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl:
           anthropicPromptCacheTtl ?? _llmConfig.anthropicPromptCacheTtl,
+      onDeviceModels: _llmConfig.onDeviceModels,
+      selectedOnDeviceModelId: selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: onDeviceMaxContextWindow,
+      onDeviceMaxTokens: onDeviceMaxTokens,
+      onDeviceTopK: onDeviceTopK,
+      onDeviceTopP: onDeviceTopP,
+      onDeviceTemperature: onDeviceTemperature,
+      onDeviceAccelerator: onDeviceAccelerator,
+      onDeviceThinkingEnabled: onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
+      contextBudgetPreset: contextBudgetPreset ?? _llmConfig.contextBudgetPreset,
+      contextBudgetReservedOutputTokens: hasExplicitContextBudgetPayload
+          ? contextBudgetReservedOutputTokens
+          : _llmConfig.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens: hasExplicitContextBudgetPayload
+          ? contextBudgetSafetyMarginTokens
+          : _llmConfig.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent: hasExplicitContextBudgetPayload
+          ? contextBudgetEffectiveInputPercent
+          : _llmConfig.contextBudgetEffectiveInputPercent,
     );
     return _llmConfig;
   }
@@ -1016,6 +1115,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
           apiKey.trim().isNotEmpty &&
           model.trim().isNotEmpty,
       streamingEnabled: streamingEnabled ?? _llmConfig.streamingEnabled,
+      providerMode: 'cloud',
       providerId: 'custom',
       selectedProviderOptionId: providerOptionId,
       protocol: savedOption.protocol,
@@ -1038,6 +1138,23 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
           _llmConfig.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl:
           anthropicPromptCacheTtl ?? _llmConfig.anthropicPromptCacheTtl,
+      onDeviceModels: _llmConfig.onDeviceModels,
+      selectedOnDeviceModelId: _llmConfig.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: _llmConfig.onDeviceMaxContextWindow,
+      onDeviceMaxTokens: _llmConfig.onDeviceMaxTokens,
+      onDeviceTopK: _llmConfig.onDeviceTopK,
+      onDeviceTopP: _llmConfig.onDeviceTopP,
+      onDeviceTemperature: _llmConfig.onDeviceTemperature,
+      onDeviceAccelerator: _llmConfig.onDeviceAccelerator,
+      onDeviceThinkingEnabled: _llmConfig.onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: _llmConfig.onDeviceLiteModeEnabled,
+      contextBudgetPreset: _llmConfig.contextBudgetPreset,
+      contextBudgetReservedOutputTokens:
+          _llmConfig.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens:
+          _llmConfig.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent:
+          _llmConfig.contextBudgetEffectiveInputPercent,
     );
     return _llmConfig;
   }
@@ -1054,6 +1171,67 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     isSuccess: false,
     message: 'Seed bridge does not support live model validation.',
   );
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> downloadOnDeviceLlmModel(
+    String modelId,
+  ) async {
+    _llmConfig = _llmConfig.copyWith(
+      onDeviceModels: _llmConfig.onDeviceModels
+          .map(
+            (option) => option.id == modelId
+                ? OpenCrayOnDeviceLlmModelOptionSnapshot(
+                    id: option.id,
+                    title: option.title,
+                    subtitle: option.subtitle,
+                    sizeLabel: option.sizeLabel,
+                    fileSizeBytes: option.fileSizeBytes,
+                    installState: 'ready',
+                    downloadedBytes: option.fileSizeBytes,
+                    downloadBytesPerSecond: 0,
+                    sha256Verified: true,
+                    isSelected: option.isSelected,
+                    lastError: null,
+                  )
+                : option,
+          )
+          .toList(growable: false),
+    );
+    return _llmConfig;
+  }
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> cancelOnDeviceLlmModelDownload(
+    String modelId,
+  ) async => _llmConfig;
+
+  @override
+  Future<OpenCrayLlmConfigSnapshot> deleteOnDeviceLlmModel(
+    String modelId,
+  ) async {
+    _llmConfig = _llmConfig.copyWith(
+      onDeviceModels: _llmConfig.onDeviceModels
+          .map(
+            (option) => option.id == modelId
+                ? OpenCrayOnDeviceLlmModelOptionSnapshot(
+                    id: option.id,
+                    title: option.title,
+                    subtitle: option.subtitle,
+                    sizeLabel: option.sizeLabel,
+                    fileSizeBytes: option.fileSizeBytes,
+                    installState: 'not_downloaded',
+                    downloadedBytes: 0,
+                    downloadBytesPerSecond: 0,
+                    sha256Verified: false,
+                    isSelected: option.isSelected,
+                    lastError: null,
+                  )
+                : option,
+          )
+          .toList(growable: false),
+    );
+    return _llmConfig;
+  }
 
   @override
   Future<OpenCrayPersonalizationConfigSnapshot>
@@ -1100,6 +1278,28 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       reasoningEffort: _llmConfig.reasoningEffort,
       systemPrompt: _llmConfig.systemPrompt,
       helperText: _llmConfig.helperText,
+      openAiPromptCacheKeyStrategy: _llmConfig.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention: _llmConfig.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled:
+          _llmConfig.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl: _llmConfig.anthropicPromptCacheTtl,
+      onDeviceModels: _llmConfig.onDeviceModels,
+      selectedOnDeviceModelId: _llmConfig.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow: _llmConfig.onDeviceMaxContextWindow,
+      onDeviceMaxTokens: _llmConfig.onDeviceMaxTokens,
+      onDeviceTopK: _llmConfig.onDeviceTopK,
+      onDeviceTopP: _llmConfig.onDeviceTopP,
+      onDeviceTemperature: _llmConfig.onDeviceTemperature,
+      onDeviceAccelerator: _llmConfig.onDeviceAccelerator,
+      onDeviceThinkingEnabled: _llmConfig.onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled: _llmConfig.onDeviceLiteModeEnabled,
+      contextBudgetPreset: _llmConfig.contextBudgetPreset,
+      contextBudgetReservedOutputTokens:
+          _llmConfig.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens:
+          _llmConfig.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent:
+          _llmConfig.contextBudgetEffectiveInputPercent,
     );
     _snapshot = _snapshot.copyWith(localeTag: languageId);
     update(_snapshot);
@@ -1407,6 +1607,14 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }
 
   @override
+  Stream<OpenCrayChatLiveAssistantDraftEvent> watchLiveAssistantDraftEvents() =>
+      const Stream<OpenCrayChatLiveAssistantDraftEvent>.empty();
+
+  @override
+  Stream<OpenCrayChatRuntimeEventDelta> watchRuntimeEventDeltas() =>
+      const Stream<OpenCrayChatRuntimeEventDelta>.empty();
+
+  @override
   Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async =>
       null;
 
@@ -1685,7 +1893,13 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
         sessions: updatedSessions,
       ),
       isInputEnabled: _chatSnapshot.isInputEnabled,
+      todos: _chatSnapshot.todos,
+      todoState: _chatSnapshot.todoState,
+      todoHideDelayMs: _chatSnapshot.todoHideDelayMs,
+      todoCompletedAtEpochMs: _chatSnapshot.todoCompletedAtEpochMs,
       pendingApprovals: _chatSnapshot.pendingApprovals,
+      runtimeActivity: _chatSnapshot.runtimeActivity,
+      updatedAtEpochMs: _nextChatSnapshotUpdatedAt(),
     );
     _emitChatSnapshot();
   }
@@ -1713,7 +1927,13 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       messages: updatedMessages,
       drawer: _chatSnapshot.drawer,
       isInputEnabled: _chatSnapshot.isInputEnabled,
+      todos: _chatSnapshot.todos,
+      todoState: _chatSnapshot.todoState,
+      todoHideDelayMs: _chatSnapshot.todoHideDelayMs,
+      todoCompletedAtEpochMs: _chatSnapshot.todoCompletedAtEpochMs,
       pendingApprovals: _chatSnapshot.pendingApprovals,
+      runtimeActivity: _chatSnapshot.runtimeActivity,
+      updatedAtEpochMs: _nextChatSnapshotUpdatedAt(),
     );
     _emitChatSnapshot();
   }
@@ -1747,7 +1967,13 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
           .toList(growable: false),
       drawer: _chatSnapshot.drawer,
       isInputEnabled: _chatSnapshot.isInputEnabled,
+      todos: _chatSnapshot.todos,
+      todoState: _chatSnapshot.todoState,
+      todoHideDelayMs: _chatSnapshot.todoHideDelayMs,
+      todoCompletedAtEpochMs: _chatSnapshot.todoCompletedAtEpochMs,
       pendingApprovals: _chatSnapshot.pendingApprovals,
+      runtimeActivity: _chatSnapshot.runtimeActivity,
+      updatedAtEpochMs: _nextChatSnapshotUpdatedAt(),
     );
     _emitChatSnapshot();
   }
@@ -1758,10 +1984,12 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   }) async {
     final String fileName = switch (kind) {
       OpenCrayChatDraftAttachmentKind.image => 'workspace-shot.png',
+      OpenCrayChatDraftAttachmentKind.voice => 'voice-note.m4a',
       OpenCrayChatDraftAttachmentKind.file => 'mobile-ui-layout-spec.md',
     };
     final String mimeType = switch (kind) {
       OpenCrayChatDraftAttachmentKind.image => 'image/png',
+      OpenCrayChatDraftAttachmentKind.voice => 'audio/mp4',
       OpenCrayChatDraftAttachmentKind.file => 'text/markdown',
     };
     return <OpenCrayChatDraftAttachment>[
@@ -1818,7 +2046,13 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       ],
       drawer: _chatSnapshot.drawer,
       isInputEnabled: true,
+      todos: _chatSnapshot.todos,
+      todoState: _chatSnapshot.todoState,
+      todoHideDelayMs: _chatSnapshot.todoHideDelayMs,
+      todoCompletedAtEpochMs: _chatSnapshot.todoCompletedAtEpochMs,
       pendingApprovals: _chatSnapshot.pendingApprovals,
+      runtimeActivity: _chatSnapshot.runtimeActivity,
+      updatedAtEpochMs: _nextChatSnapshotUpdatedAt(),
     );
     _emitChatSnapshot();
     return const OpenCrayChatRunSubmission(
@@ -1937,7 +2171,13 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       messages: _chatSnapshot.messages,
       drawer: drawer,
       isInputEnabled: _chatSnapshot.isInputEnabled,
+      todos: _chatSnapshot.todos,
+      todoState: _chatSnapshot.todoState,
+      todoHideDelayMs: _chatSnapshot.todoHideDelayMs,
+      todoCompletedAtEpochMs: _chatSnapshot.todoCompletedAtEpochMs,
       pendingApprovals: _chatSnapshot.pendingApprovals,
+      runtimeActivity: _chatSnapshot.runtimeActivity,
+      updatedAtEpochMs: _nextChatSnapshotUpdatedAt(),
     );
   }
 
@@ -1957,9 +2197,21 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       messages: _chatSnapshot.messages,
       drawer: _chatSnapshot.drawer,
       isInputEnabled: _chatSnapshot.isInputEnabled,
+      todos: _chatSnapshot.todos,
+      todoState: _chatSnapshot.todoState,
+      todoHideDelayMs: _chatSnapshot.todoHideDelayMs,
+      todoCompletedAtEpochMs: _chatSnapshot.todoCompletedAtEpochMs,
       pendingApprovals: remainingApprovals,
+      runtimeActivity: _chatSnapshot.runtimeActivity,
+      updatedAtEpochMs: _nextChatSnapshotUpdatedAt(),
     );
     _emitChatSnapshot();
+  }
+
+  int _nextChatSnapshotUpdatedAt() {
+    final int now = DateTime.now().millisecondsSinceEpoch;
+    final int previous = _chatSnapshot.updatedAtEpochMs;
+    return now > previous ? now : previous + 1;
   }
 }
 
@@ -2181,8 +2433,37 @@ OpenCraySettingsDetailSnapshot _seedSettingsDetailFor(String routeId) {
           ),
         ],
       );
-    case 'network_search':
     case 'privacy_telemetry':
+      return const OpenCraySettingsDetailSnapshot(
+        routeId: 'privacy_telemetry',
+        title: 'Privacy & Telemetry',
+        subtitle:
+            'Review what stays on device, what can leave it, and how diagnostic signals are handled.',
+        sections: <OpenCraySettingsSectionSnapshot>[
+          OpenCraySettingsSectionSnapshot(
+            title: 'Diagnostics',
+            helperText:
+                'Crash details and lightweight diagnostics can help explain failures without exporting workspace content by default.',
+          ),
+          OpenCraySettingsSectionSnapshot(
+            title: 'Data handling',
+            rows: <OpenCraySettingsRowSnapshot>[
+              OpenCraySettingsRowSnapshot.toggle(
+                title: 'Share crash diagnostics',
+                subtitle: 'Include app and runtime failure summaries only.',
+                toggleValue: false,
+              ),
+              OpenCraySettingsRowSnapshot.toggle(
+                title: 'Share product telemetry',
+                subtitle:
+                    'Send anonymous usage counters for shell and settings flows.',
+                toggleValue: false,
+              ),
+            ],
+          ),
+        ],
+      );
+    case 'network_search':
       return const OpenCraySettingsDetailSnapshot(
         routeId: 'network_search',
         title: 'Network & Search',
@@ -3448,4 +3729,14 @@ OpenCrayMcpSettingsSnapshot _copySeedMcpSettings(
     masterDisabledBody: source.masterDisabledBody,
     servers: servers,
   );
+}
+
+OpenCrayTab _parseTab(String raw) {
+  final normalized = raw.trim().toLowerCase();
+  for (final tab in OpenCrayTab.values) {
+    if (tab.routeSegment.toLowerCase() == normalized) {
+      return tab;
+    }
+  }
+  return OpenCrayTab.chat;
 }

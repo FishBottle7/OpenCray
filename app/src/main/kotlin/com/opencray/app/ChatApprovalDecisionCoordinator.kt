@@ -154,14 +154,16 @@ internal class ChatApprovalDecisionCoordinator<TApproval>(
     if (!deferUntilManualResume && !detachedChildResumed) {
       markApprovalApproved(subject)
     }
-    upsertCheckpoint(
-      subject.sessionId,
-      subject.decisionRecord.decisionCheckpoint(
-        sessionId = subject.sessionId,
-        checkpointKind = PromptCheckpointKind.APPROVED_PENDING_RESUME,
-        nowEpochMs = nowEpochMs,
-      ),
-    )
+    if (!detachedChildResumed) {
+      upsertCheckpoint(
+        subject.sessionId,
+        subject.decisionRecord.decisionCheckpoint(
+          sessionId = subject.sessionId,
+          checkpointKind = PromptCheckpointKind.APPROVED_PENDING_RESUME,
+          nowEpochMs = nowEpochMs,
+        ),
+      )
+    }
     if (!deferUntilManualResume && !detachedChildResumed) {
       val resumed = requestResumeTask(subject.sessionId, subject.taskId)
       if (!resumed) {

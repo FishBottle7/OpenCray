@@ -68,6 +68,22 @@ ACCUSATION_KEYWORDS = ("你总是", "都是你", "你的问题", "your fault", "
 REPAIR_OFFER_KEYWORDS = ("以后", "下次", "补上", "回来", "再聊", "next time", "make it up", "later", "reach out again")
 SECOND_PERSON_KEYWORDS = ("你", "你们", "you", "your", "yours")
 THIRD_PARTY_REFERENCE_KEYWORDS = ("他", "她", "他们", "她们", "她的", "他的", "she", "he", "they", "them", "her", "his")
+TURN_OPENER_MARKERS = ("说实话", "其实", "我觉得", "我知道", "好", "那", "嗯", "okay", "well", "look", "honestly")
+TURN_CLOSER_MARKERS = ("先这样吧", "今天先这样", "晚点再聊", "回头说", "早点休息", "先休息", "that's it for now", "talk later")
+REPAIR_MARKERS = ("对不起", "抱歉", "下次", "补上", "以后", "sorry", "apologize", "make it up", "next time")
+REFUSAL_MARKERS = ("不要", "别", "不行", "不能", "算了", "先这样", "stop", "don't", "can't", "no")
+FEEDBACK_AXIS_ORDER = {
+    "warmth": ("low", "medium", "high"),
+    "distance": ("close", "medium", "guarded"),
+    "directness": ("low", "medium", "high"),
+    "explanation_density": ("low", "medium", "high"),
+    "opening_move": ("reassure", "clarify_feeling", "boundary_first"),
+    "closure_softness": ("firm", "balanced", "soft"),
+    "repair_softness": ("low", "medium", "high"),
+    "catchphrase_frequency": ("none", "low", "medium"),
+    "emoji_density": ("none", "low", "medium"),
+    "intimacy_calibration": ("low", "medium", "high"),
+}
 
 
 class ServiceError(RuntimeError):
@@ -374,6 +390,33 @@ def _require_list(payload: dict[str, Any], key: str) -> list[Any]:
     if not isinstance(value, list):
         raise ServiceError(f"Expected list field '{key}'.")
     return value
+
+
+def _require_object(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    value = payload.get(key)
+    if not isinstance(value, dict):
+        raise ServiceError(f"Expected object field '{key}'.")
+    return value
+
+
+def _resolve_object_input(
+    *,
+    path_value: str | None,
+    inline_value: Any,
+    label: str,
+) -> dict[str, Any]:
+    if path_value and inline_value is not None:
+        raise ServiceError(f"Provide either '{label}' path or '{label}_payload', not both.")
+    if inline_value is not None:
+        if not isinstance(inline_value, dict):
+            raise ServiceError(f"Expected object for '{label}_payload'.")
+        return inline_value
+    if not path_value:
+        raise ServiceError(f"Expected '{label}' path or '{label}_payload'.")
+    payload = _load_json(Path(path_value))
+    if not isinstance(payload, dict):
+        raise ServiceError(f"{label} JSON must be an object.")
+    return payload
 
 
 def _clip(value: float, minimum: float = 0.0, maximum: float = 1.0) -> float:
@@ -1793,6 +1836,167 @@ def _aggregate_value_tradeoffs(tradeoff_signals: list[dict[str, Any]]) -> list[d
     return value_tradeoffs
 
 
+def _top_marker_clusters(
+    *,
+    texts: list[str],
+    markers: tuple[str, ...],
+    kind: str,
+    max_items: int = 3,
+) -> list[dict[str, Any]]:
+    counts: Counter[str] = Counter()
+    example_by_marker: dict[str, str] = {}
+    for text in texts:
+        lower = text.lower()
+        for marker in markers:
+            hits = text.count(marker) if CJK_RE.search(marker) else lower.count(marker.lower())
+            if hits <= 0:
+                continue
+            counts[marker] += hits
+            example_by_marker.setdefault(marker, text[:120])
+
+    clusters: list[dict[str, Any]] = []
+    total_hits = sum(counts.values())
+    for marker, count in counts.most_common(max_items):
+        clusters.append({
+            "marker": marker,
+            "kind": kind,
+            "count": count,
+            "confidence": round(_clip(0.45 + 0.08 * min(count, 4) + 0.04 * (count / max(total_hits, 1))), 2),
+            "example_excerpt": example_by_marker.get(marker, "")[:120],
+        })
+    return clusters
+
+
+def _aggregate_idiolect_profile(signals: list[dict[str, Any]], speech_surface: dict[str, Any]) -> dict[str, Any]:
+    texts = [
+        str(signal.get("evidence_excerpt") or "").strip()
+        for signal in signals
+        if signal["signal_type"] == "speech_surface" and str(signal.get("evidence_excerpt") or "").strip()
+    ]
+    emoji_counter: Counter[str] = Counter()
+    for text in texts:
+        for char in text:
+            if char in EMOJI_CHARS:
+                emoji_counter[char] += 1
+
+    punctuation_rhythm = {
+        "dominant_style": str(speech_surface.get("punctuation_style") or "light"),
+        "ellipsis_frequency": round(_average([1.0 if ELLIPSIS_RE.search(text) else 0.0 for text in texts], 0.0), 2),
+        "question_frequency": round(_average([1.0 if "?" in text or "？" in text else 0.0 for text in texts], 0.0), 2),
+    }
+    function_word_tendencies = _top_marker_clusters(texts=texts, markers=SOFTENER_KEYWORDS + EXPLANATION_KEYWORDS, kind="function_word", max_items=4)
+    repair_markers = _top_marker_clusters(texts=texts, markers=REPAIR_MARKERS, kind="repair_marker")
+    refusal_markers = _top_marker_clusters(texts=texts, markers=REFUSAL_MARKERS, kind="refusal_marker")
+    affection_markers = _top_marker_clusters(texts=texts, markers=WARMTH_KEYWORDS + INTIMACY_KEYWORDS, kind="affection_marker")
+    profile = {
+        "turn_openers": _top_marker_clusters(texts=texts, markers=TURN_OPENER_MARKERS, kind="turn_opener"),
+        "turn_closers": _top_marker_clusters(texts=texts, markers=TURN_CLOSER_MARKERS, kind="turn_closer"),
+        "hedge_markers": _top_marker_clusters(texts=texts, markers=SOFTENER_KEYWORDS, kind="hedge_marker"),
+        "repair_markers": repair_markers,
+        "refusal_markers": refusal_markers,
+        "affection_markers": affection_markers,
+        "function_word_tendencies": function_word_tendencies,
+        "punctuation_rhythm": punctuation_rhythm,
+        "emoji_clusters": [
+            {
+                "marker": emoji,
+                "kind": "emoji",
+                "count": count,
+                "confidence": round(_clip(0.45 + 0.1 * min(count, 4)), 2),
+            }
+            for emoji, count in emoji_counter.most_common(3)
+        ],
+    }
+    signature_patterns = [str(pattern).strip() for pattern in (speech_surface.get("signature_patterns") or []) if str(pattern).strip()]
+    if signature_patterns:
+        profile["signature_patterns"] = signature_patterns[:3]
+    dominant_markers = repair_markers + refusal_markers + affection_markers
+    if dominant_markers:
+        profile["marker_clusters"] = sorted(dominant_markers, key=lambda row: (row["count"], row["confidence"]), reverse=True)[:5]
+    return profile
+
+
+def _bias_from_order(
+    value_order: list[str],
+    left_values: set[str],
+    right_values: set[str],
+    left_label: str,
+    right_label: str,
+    fallback: str,
+) -> str:
+    left_rank = min((index for index, value in enumerate(value_order) if value in left_values), default=None)
+    right_rank = min((index for index, value in enumerate(value_order) if value in right_values), default=None)
+    if left_rank is None and right_rank is None:
+        return fallback
+    if right_rank is None or (left_rank is not None and left_rank < right_rank):
+        return f"{left_label}_leaning"
+    if left_rank is None or (right_rank is not None and right_rank < left_rank):
+        return f"{right_label}_leaning"
+    return fallback
+
+
+def _aggregate_worldview_stack(
+    *,
+    value_order: list[str],
+    social_value_orientation: str,
+    tradeoffs: list[dict[str, Any]],
+    appraisal_tendencies: list[dict[str, Any]],
+) -> dict[str, Any]:
+    moral_foundations: list[dict[str, Any]] = []
+    sensitivity_counter: Counter[str] = Counter()
+    supporting_examples: defaultdict[str, list[str]] = defaultdict(list)
+
+    for tradeoff in tradeoffs:
+        pair = {str(item) for item in tradeoff.get("pair") or []}
+        favored = str(tradeoff.get("favored") or "")
+        if "fairness" in pair or favored == "fairness":
+            sensitivity_counter["fairness_breach"] += int(tradeoff.get("observations") or 1)
+            supporting_examples["fairness_breach"].append(str(tradeoff.get("resolution") or ""))
+        if "autonomy" in pair or favored == "autonomy":
+            sensitivity_counter["autonomy_pressure"] += int(tradeoff.get("observations") or 1)
+            supporting_examples["autonomy_pressure"].append(str(tradeoff.get("resolution") or ""))
+        if "harmony" in pair or favored == "harmony":
+            sensitivity_counter["relationship_friction"] += int(tradeoff.get("observations") or 1)
+            supporting_examples["relationship_friction"].append(str(tradeoff.get("resolution") or ""))
+
+    for appraisal in appraisal_tendencies:
+        other_appraisal = str(appraisal.get("other_appraisal") or "")
+        core_need = str(appraisal.get("core_need") or "")
+        weight = int(appraisal.get("observations") or 1)
+        if other_appraisal == "unreliable_or_inconsistent":
+            sensitivity_counter["follow_through_breaks"] += weight
+            supporting_examples["follow_through_breaks"].append(other_appraisal)
+        if core_need == "space_and_regulation":
+            sensitivity_counter["overload_without_space"] += weight
+            supporting_examples["overload_without_space"].append(core_need)
+        if core_need == "repair_and_follow_through":
+            sensitivity_counter["repair_without_proof"] += weight
+            supporting_examples["repair_without_proof"].append(core_need)
+
+    for label, count in sensitivity_counter.most_common(4):
+        moral_foundations.append({
+            "trigger": label,
+            "sensitivity": "high" if count >= 3 else "medium",
+            "observations": count,
+            "examples": _ordered_unique([item for item in supporting_examples[label] if item])[:3],
+        })
+
+    return {
+        "schwartz_value_order": value_order[:5],
+        "moral_foundation_sensitivities": moral_foundations,
+        "social_value_orientation": social_value_orientation,
+        "fairness_vs_loyalty_bias": _bias_from_order(
+            value_order, {"fairness", "truth"}, {"harmony", "care"}, "fairness", "loyalty", "balanced"
+        ),
+        "autonomy_vs_harmony_bias": _bias_from_order(
+            value_order, {"autonomy"}, {"harmony", "care"}, "autonomy", "harmony", "balanced"
+        ),
+        "truth_vs_face_saving_bias": _bias_from_order(
+            value_order, {"truth"}, {"harmony"}, "truth", "face_saving", "balanced"
+        ),
+    }
+
+
 def _narrative_theme(*, self_state: str, other_appraisal: str, core_need: str, favored_value: str) -> str:
     if other_appraisal == "unreliable_or_inconsistent" and favored_value == "fairness":
         return "steady accountability"
@@ -2130,18 +2334,24 @@ def _aggregate_soul_draft(*, twin_id: str, anchor_person_id: str, signals: list[
             provenance_by_field["conflict_policy.default"].append(signal["signal_id"])
         if signal["signal_type"] == "speech_surface":
             provenance_by_field["speech_surface"].append(signal["signal_id"])
+            provenance_by_field["idiolect"].append(signal["signal_id"])
         if signal["signal_type"] == "social_value_orientation_hint":
             provenance_by_field["social_value_orientation"].append(signal["signal_id"])
+            provenance_by_field["worldview_stack"].append(signal["signal_id"])
         if signal["signal_type"] == "appraisal_hint":
             provenance_by_field["appraisal_tendencies"].append(signal["signal_id"])
+            provenance_by_field["worldview_stack"].append(signal["signal_id"])
         if signal["signal_type"] == "value_tradeoff_hint":
             provenance_by_field["value_tradeoffs"].append(signal["signal_id"])
+            provenance_by_field["worldview_stack"].append(signal["signal_id"])
         if signal["signal_type"] == "conditioned_policy_hint":
             provenance_by_field["conditional_policies"].append(signal["signal_id"])
         if signal["signal_type"] == "rupture_repair_script_hint":
             provenance_by_field["relational_scripts"].append(signal["signal_id"])
         if signal["signal_type"] in {"self_view_hint", "appraisal_hint", "value_tradeoff_hint"}:
             provenance_by_field["narrative_tendencies"].append(signal["signal_id"])
+        if signal["signal_type"] in {"repair_move", "boundary_move", "affection_move"}:
+            provenance_by_field["idiolect"].append(signal["signal_id"])
 
     value_order = [item for item, _ in value_scores.most_common(3)] or ["truth", "care", "autonomy"]
     conflict_default = _most_common(conflict_moves, "explain_then_withdraw")
@@ -2159,6 +2369,14 @@ def _aggregate_soul_draft(*, twin_id: str, anchor_person_id: str, signals: list[
     narrative_tendencies = _aggregate_narrative_tendencies(signals)
     speech_surface = _aggregate_speech_surface(speech_signals)
     language_modes = _aggregate_language_modes(speech_signals)
+    social_value_orientation = _most_common(social_svo_labels, "prosocial_but_bounded")
+    worldview_stack = _aggregate_worldview_stack(
+        value_order=value_order,
+        social_value_orientation=social_value_orientation,
+        tradeoffs=value_tradeoffs,
+        appraisal_tendencies=appraisal_tendencies,
+    )
+    idiolect = _aggregate_idiolect_profile(signals, speech_surface)
     judgment_policy = {
         "fact_vs_feeling": _most_common(response_habits, "feeling_first_then_reason"),
         "certainty_style": uncertainty_style,
@@ -2178,7 +2396,6 @@ def _aggregate_soul_draft(*, twin_id: str, anchor_person_id: str, signals: list[
     affection_policy = {"mode": _most_common(affection_styles, "restrained_indirect")}
     identity_view = _build_identity_view(value_order, conflict_default, self_view_statements)
     anti_patterns = _derive_anti_patterns(speech_surface, uncertainty_style, conflict_default)
-    social_value_orientation = _most_common(social_svo_labels, "prosocial_but_bounded")
 
     provenance: list[dict[str, Any]] = []
     for field_path, signal_ids in provenance_by_field.items():
@@ -2210,6 +2427,8 @@ def _aggregate_soul_draft(*, twin_id: str, anchor_person_id: str, signals: list[
         "affection_policy": affection_policy,
         "value_order": value_order,
         "social_value_orientation": social_value_orientation,
+        "worldview_stack": worldview_stack,
+        "idiolect": idiolect,
         "conditional_policies": conditional_policies,
         "relational_scripts": relational_scripts,
         "anti_patterns": anti_patterns,
@@ -3075,14 +3294,13 @@ def _judge_one_candidate(
 
 
 
-def judge_candidates(*, service_root: str | None, draft: str, candidates: str, output_name: str | None = None) -> dict[str, Any]:
-    root = _service_root(service_root)
-    draft_payload = _load_json(Path(draft))
-    candidate_payload = _load_json(Path(candidates))
-    if not isinstance(draft_payload, dict):
-        raise ServiceError("Base soul draft JSON must be an object.")
-    if not isinstance(candidate_payload, dict):
-        raise ServiceError("Candidate batch JSON must be an object.")
+def _judge_candidates_payload(
+    *,
+    root: Path,
+    draft_payload: dict[str, Any],
+    candidate_payload: dict[str, Any],
+    output_name: str | None,
+) -> dict[str, Any]:
     candidate_rows = _require_list(candidate_payload, "candidates")
     scene_labels = [str(label) for label in (candidate_payload.get("scene_labels") or [])]
     relationship_scope = str(candidate_payload.get("relationship_scope") or "general")
@@ -3122,6 +3340,430 @@ def judge_candidates(*, service_root: str | None, draft: str, candidates: str, o
     payload["result_path"] = str(output_path)
     return payload
 
+
+def judge_candidates(
+    *,
+    service_root: str | None,
+    draft: str | None = None,
+    candidates: str | None = None,
+    output_name: str | None = None,
+    draft_payload: dict[str, Any] | None = None,
+    candidates_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    root = _service_root(service_root)
+    resolved_draft = _resolve_object_input(path_value=draft, inline_value=draft_payload, label="draft")
+    resolved_candidates = _resolve_object_input(path_value=candidates, inline_value=candidates_payload, label="candidates")
+    return _judge_candidates_payload(
+        root=root,
+        draft_payload=resolved_draft,
+        candidate_payload=resolved_candidates,
+        output_name=output_name,
+    )
+
+
+def _feedback_output_path(root: Path, twin_id: str, output_name: str | None, suffix: str) -> Path:
+    _ensure_service_dirs(root, twin_id)
+    stem = output_name or datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    return _soul_dir(root, twin_id) / f"{stem}.{suffix}.json"
+
+
+def _feedback_base_axes(draft_payload: dict[str, Any], context_payload: dict[str, Any]) -> dict[str, str]:
+    relationship_scope = str(context_payload.get("relationship_scope") or "general")
+    scene_labels = {str(item) for item in (context_payload.get("scene_labels") or [])}
+    speech_surface = draft_payload.get("speech_surface") or {}
+    conflict_policy = draft_payload.get("conflict_policy") or {}
+    affection_policy = draft_payload.get("affection_policy") or {}
+    judgment_policy = draft_payload.get("judgment_policy") or {}
+    signature_patterns = speech_surface.get("signature_patterns") or []
+    warmth = "high" if draft_payload.get("interpersonal_stance", {}).get("communion") == "high" else "medium"
+    if affection_policy.get("mode") == "restrained_indirect":
+        warmth = "medium"
+    distance = "close" if relationship_scope in {"close_relationship", "personal_relationship"} else "medium"
+    directness = "medium"
+    if speech_surface.get("directness_level") in {"direct", "firm"}:
+        directness = "high"
+    explanation_density = "medium" if conflict_policy.get("default") == "explain_then_withdraw" else "low"
+    opening_move = "clarify_feeling"
+    if "comfort" in scene_labels:
+        opening_move = "reassure"
+    elif "boundary" in scene_labels and "conflict" not in scene_labels:
+        opening_move = "boundary_first"
+    closure_softness = "soft" if conflict_policy.get("boundary_style") == "clear_but_not_hostile" else "balanced"
+    repair_softness = "medium" if conflict_policy.get("repair_style") == "returns_after_cooldown" else "low"
+    catchphrase_frequency = "low" if signature_patterns else "none"
+    emoji_density = str(speech_surface.get("emoji_density") or "low")
+    if emoji_density == "low":
+        emoji_density = "low"
+    elif emoji_density in {"high", "medium"}:
+        emoji_density = "medium"
+    else:
+        emoji_density = "none"
+    intimacy_calibration = "medium" if relationship_scope in {"close_relationship", "personal_relationship"} else "low"
+    if judgment_policy.get("dominant_appraisal", {}).get("core_need") == "space_and_regulation":
+        closure_softness = "balanced"
+    return {
+        "warmth": warmth,
+        "distance": distance,
+        "directness": directness,
+        "explanation_density": explanation_density,
+        "opening_move": opening_move,
+        "closure_softness": closure_softness,
+        "repair_softness": repair_softness,
+        "catchphrase_frequency": catchphrase_frequency,
+        "emoji_density": emoji_density,
+        "intimacy_calibration": intimacy_calibration,
+    }
+
+
+def _default_feedback_axes(scene_labels: list[str]) -> list[str]:
+    label_set = set(scene_labels)
+    if "comfort" in label_set:
+        return ["warmth", "emoji_density", "opening_move"]
+    if "repair" in label_set:
+        return ["repair_softness", "explanation_density", "warmth"]
+    if "boundary" in label_set or "conflict" in label_set:
+        return ["closure_softness", "directness", "distance"]
+    return ["warmth", "directness", "closure_softness"]
+
+
+def _shift_feedback_axis(axis: str, value: str, direction: int) -> str:
+    options = FEEDBACK_AXIS_ORDER.get(axis)
+    if not options:
+        return value
+    try:
+        index = options.index(value)
+    except ValueError:
+        index = 1 if len(options) >= 2 else 0
+    target = max(0, min(len(options) - 1, index + direction))
+    return options[target]
+
+
+def _candidate_label_for_axis(axis: str, direction: int) -> str:
+    if direction < 0:
+        return f"{axis}_down"
+    if direction > 0:
+        return f"{axis}_up"
+    return "baseline"
+
+
+def _build_feedback_variation_context(
+    *,
+    draft_payload: dict[str, Any],
+    context_payload: dict[str, Any],
+) -> dict[str, Any]:
+    base_axes = _feedback_base_axes(draft_payload, context_payload)
+    requested_axes = [str(item) for item in (context_payload.get("variation_axes") or []) if str(item) in FEEDBACK_AXIS_ORDER]
+    if not requested_axes:
+        requested_axes = _default_feedback_axes([str(item) for item in (context_payload.get("scene_labels") or [])])
+    candidate_count = int(context_payload.get("candidate_count") or 3)
+    candidate_count = max(2, min(candidate_count, 4))
+    candidate_specs: list[dict[str, Any]] = [
+        {
+            "candidate_id": "cand_base",
+            "label": "baseline",
+            "focus_axis": None,
+            "variation_axes": dict(base_axes),
+            "editorial_brief": "Keep the imported baseline calibration for this scene.",
+        }
+    ]
+    directions = [1, -1, 1]
+    for index in range(candidate_count - 1):
+        axis = requested_axes[index % len(requested_axes)]
+        varied_axes = dict(base_axes)
+        varied_axes[axis] = _shift_feedback_axis(axis, varied_axes[axis], directions[index % len(directions)])
+        candidate_specs.append({
+            "candidate_id": f"cand_{index + 1:02d}",
+            "label": _candidate_label_for_axis(axis, directions[index % len(directions)]),
+            "focus_axis": axis,
+            "variation_axes": varied_axes,
+            "editorial_brief": f"Push {axis} {'up' if directions[index % len(directions)] > 0 else 'down'} while keeping the rest close to baseline.",
+        })
+
+    variation_context = dict(context_payload)
+    variation_context["variation_axes"] = requested_axes
+    variation_context["base_axes"] = base_axes
+    variation_context["candidate_specs"] = candidate_specs
+    return variation_context
+
+
+def _normalize_feedback_context(
+    *,
+    draft_payload: dict[str, Any],
+    context_payload: dict[str, Any],
+) -> dict[str, Any]:
+    scene_labels = [str(item) for item in (context_payload.get("scene_labels") or [])]
+    if not scene_labels:
+        raise ServiceError("Feedback variation context must include non-empty 'scene_labels'.")
+    relationship_scope = str(context_payload.get("relationship_scope") or "").strip()
+    if not relationship_scope:
+        raise ServiceError("Feedback variation context must include 'relationship_scope'.")
+    source_mode = str(context_payload.get("source_mode") or "chat_history")
+    normalized = dict(context_payload)
+    normalized["scene_labels"] = scene_labels
+    normalized["relationship_scope"] = relationship_scope
+    normalized["source_mode"] = source_mode
+    if not isinstance(normalized.get("candidate_specs"), list):
+        normalized = _build_feedback_variation_context(draft_payload=draft_payload, context_payload=normalized)
+    return normalized
+
+
+def _feedback_appraisal_hint(draft_payload: dict[str, Any]) -> dict[str, str]:
+    appraisal = draft_payload.get("judgment_policy", {}).get("dominant_appraisal") or {}
+    return {
+        "self_state": str(appraisal.get("self_state") or ""),
+        "other_appraisal": str(appraisal.get("other_appraisal") or ""),
+        "core_need": str(appraisal.get("core_need") or ""),
+    }
+
+
+def _candidate_opening_line(
+    axes: dict[str, str],
+    context_payload: dict[str, Any],
+    appraisal: dict[str, str],
+) -> str:
+    scene_labels = set(context_payload.get("scene_labels") or [])
+    if axes.get("opening_move") == "reassure":
+        return "我知道你现在也不好受。"
+    if axes.get("opening_move") == "boundary_first":
+        return "这件事我现在不想继续拉扯。"
+    if "comfort" in scene_labels:
+        return "我知道你现在很难受。"
+    if appraisal.get("self_state") == "tired_overloaded":
+        return "我不是在生气，只是现在有点累。"
+    return "我想先把我的感受说清楚。"
+
+
+def _candidate_reason_line(axes: dict[str, str], appraisal: dict[str, str], context_payload: dict[str, Any]) -> str:
+    if axes.get("explanation_density") == "low":
+        return ""
+    scene_labels = set(context_payload.get("scene_labels") or [])
+    if appraisal.get("core_need") == "repair_and_follow_through":
+        return "你先把答应的事补上，我们再往下聊。"
+    if appraisal.get("core_need") == "space_and_regulation" or "boundary" in scene_labels:
+        return "我需要先缓一下，把状态收回来。"
+    if axes.get("warmth") == "high":
+        return "我知道你是想把事情处理好，只是我现在需要一点缓冲。"
+    return "我想先把节奏放慢一点。"
+
+
+def _candidate_closure_line(axes: dict[str, str], context_payload: dict[str, Any]) -> str:
+    if axes.get("distance") == "guarded":
+        return "今天先这样。"
+    if axes.get("closure_softness") == "soft":
+        return "你先休息，等你准备好了我们再聊。"
+    if axes.get("closure_softness") == "firm":
+        return "先到这里，晚点再说。"
+    if axes.get("intimacy_calibration") == "high":
+        return "等我们都冷静一点再聊。"
+    return "先这样吧。"
+
+
+def _apply_feedback_surface_adjustments(
+    text: str,
+    *,
+    axes: dict[str, str],
+    draft_payload: dict[str, Any],
+) -> str:
+    updated = text
+    if axes.get("directness") == "high":
+        updated = updated.replace("有点", "").replace("可能", "").replace("先这样吧", "先这样。")
+    elif axes.get("directness") == "low" and "有点" not in updated:
+        updated = updated.replace("我需要", "我可能需要", 1)
+    if axes.get("catchphrase_frequency") != "none":
+        signature_patterns = [str(item) for item in (draft_payload.get("speech_surface", {}).get("signature_patterns") or []) if str(item).strip()]
+        if signature_patterns and signature_patterns[0] == "不是...是..." and "不是" not in updated:
+            updated = updated.replace("我想先把我的感受说清楚。", "我不是要翻旧账，只是想先把感受说清楚。", 1)
+    if axes.get("emoji_density") == "medium" and not any(char in EMOJI_CHARS for char in updated):
+        updated = f"{updated} 🙂"
+    return updated
+
+
+def _render_feedback_candidate_text(
+    *,
+    draft_payload: dict[str, Any],
+    context_payload: dict[str, Any],
+    axes: dict[str, str],
+) -> str:
+    base_text = str(context_payload.get("draft_text") or "").strip()
+    appraisal = _feedback_appraisal_hint(draft_payload)
+    if base_text:
+        sentences = [sentence.strip() for sentence in SENTENCE_SPLIT_RE.split(base_text) if sentence.strip()]
+        if axes.get("explanation_density") == "low" and len(sentences) > 2:
+            sentences = [sentences[0], sentences[-1]]
+        text = "。".join(sentences[:3]).strip()
+        if text and not re.search(r"[。！？!?]$", text):
+            text += "。"
+    else:
+        lines = [
+            _candidate_opening_line(axes, context_payload, appraisal),
+            _candidate_reason_line(axes, appraisal, context_payload),
+            _candidate_closure_line(axes, context_payload),
+        ]
+        text = "".join(line for line in lines if line)
+
+    if axes.get("warmth") == "high" and "我知道" not in text:
+        text = f"我知道你现在也不好受。{text}"
+    elif axes.get("warmth") == "low":
+        text = text.replace("我知道你现在也不好受。", "", 1).replace("你先休息，", "", 1)
+    if axes.get("repair_softness") == "low":
+        text = text.replace("等你准备好了我们再聊。", "等事情处理完再聊。")
+    elif axes.get("repair_softness") == "high" and "我们再聊" not in text:
+        text = f"{text} 等你想清楚了我们再聊。"
+    text = _apply_feedback_surface_adjustments(text, axes=axes, draft_payload=draft_payload)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _feedback_candidate_batch(
+    *,
+    context_payload: dict[str, Any],
+    candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "scene_labels": [str(item) for item in (context_payload.get("scene_labels") or [])],
+        "relationship_scope": str(context_payload.get("relationship_scope") or "general"),
+        "source_mode": str(context_payload.get("source_mode") or "chat_history"),
+        "candidates": [{"candidate_id": row["candidate_id"], "text": row["text"]} for row in candidates],
+    }
+    for key in (
+        "selected_relationship_binding_id",
+        "counterpart_entity_id",
+        "overlay_key",
+        "relationship_state_hints",
+        "interaction_preference_hints",
+        "recent_script_hints",
+        "memory_hints",
+        "reference_quotes",
+    ):
+        if key in context_payload and context_payload.get(key) not in (None, "", []):
+            payload[key] = context_payload[key]
+    return payload
+
+
+def plan_feedback_variations(
+    *,
+    service_root: str | None,
+    draft: str | None = None,
+    context: str | None = None,
+    output_name: str | None = None,
+    draft_payload: dict[str, Any] | None = None,
+    context_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    root = _service_root(service_root)
+    resolved_draft = _resolve_object_input(path_value=draft, inline_value=draft_payload, label="draft")
+    resolved_context = _resolve_object_input(path_value=context, inline_value=context_payload, label="context")
+    variation_context = _normalize_feedback_context(draft_payload=resolved_draft, context_payload=resolved_context)
+    twin_id = str(resolved_draft.get("twin_id") or "ad_hoc")
+    output_path = _feedback_output_path(root, twin_id, output_name, "feedback_variation_plan")
+    payload = {
+        "status": "ok",
+        "mode": "plan_feedback_variations",
+        "twin_id": twin_id,
+        "variation_context": variation_context,
+    }
+    _write_json(output_path, payload)
+    payload["result_path"] = str(output_path)
+    return payload
+
+
+def sample_feedback_candidates(
+    *,
+    service_root: str | None,
+    draft: str | None = None,
+    context: str | None = None,
+    output_name: str | None = None,
+    draft_payload: dict[str, Any] | None = None,
+    context_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    root = _service_root(service_root)
+    resolved_draft = _resolve_object_input(path_value=draft, inline_value=draft_payload, label="draft")
+    resolved_context = _resolve_object_input(path_value=context, inline_value=context_payload, label="context")
+    variation_context = _normalize_feedback_context(draft_payload=resolved_draft, context_payload=resolved_context)
+    candidate_specs = _require_list(variation_context, "candidate_specs")
+    candidates: list[dict[str, Any]] = []
+    for row in candidate_specs:
+        if not isinstance(row, dict):
+            raise ServiceError("Each feedback candidate spec must be an object.")
+        axes = _require_object(row, "variation_axes")
+        candidates.append({
+            "candidate_id": _require_string(row, "candidate_id"),
+            "label": str(row.get("label") or row.get("candidate_id")),
+            "focus_axis": row.get("focus_axis"),
+            "editorial_brief": str(row.get("editorial_brief") or ""),
+            "variation_axes": axes,
+            "text": _render_feedback_candidate_text(
+                draft_payload=resolved_draft,
+                context_payload=variation_context,
+                axes={str(key): str(value) for key, value in axes.items()},
+            ),
+        })
+
+    twin_id = str(resolved_draft.get("twin_id") or "ad_hoc")
+    candidate_batch = _feedback_candidate_batch(context_payload=variation_context, candidates=candidates)
+    output_path = _feedback_output_path(root, twin_id, output_name, "feedback_candidates")
+    payload = {
+        "status": "ok",
+        "mode": "sample_feedback_candidates",
+        "twin_id": twin_id,
+        "variation_context": variation_context,
+        "candidates": candidates,
+        "candidate_batch": candidate_batch,
+    }
+    _write_json(output_path, payload)
+    payload["result_path"] = str(output_path)
+    return payload
+
+
+def prepare_feedback_review_candidates(
+    *,
+    service_root: str | None,
+    draft: str | None = None,
+    context: str | None = None,
+    output_name: str | None = None,
+    draft_payload: dict[str, Any] | None = None,
+    context_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    root = _service_root(service_root)
+    resolved_draft = _resolve_object_input(path_value=draft, inline_value=draft_payload, label="draft")
+    sampled = sample_feedback_candidates(
+        service_root=str(root),
+        draft_payload=resolved_draft,
+        context_payload=context_payload if context_payload is not None else _resolve_object_input(path_value=context, inline_value=None, label="context"),
+        output_name=output_name,
+    )
+    judge_payload = _judge_candidates_payload(
+        root=root,
+        draft_payload=resolved_draft,
+        candidate_payload=sampled["candidate_batch"],
+        output_name=f"{output_name}_judge" if output_name else None,
+    )
+    judge_by_id = {row["candidate_id"]: row for row in judge_payload["results"]}
+    cards = []
+    for candidate in sampled["candidates"]:
+        cards.append({
+            "candidate_id": candidate["candidate_id"],
+            "label": candidate["label"],
+            "text": candidate["text"],
+            "editorial_brief": candidate["editorial_brief"],
+            "focus_axis": candidate.get("focus_axis"),
+            "variation_axes": candidate["variation_axes"],
+            "judge": judge_by_id.get(candidate["candidate_id"]),
+        })
+
+    twin_id = str(resolved_draft.get("twin_id") or "ad_hoc")
+    output_path = _feedback_output_path(root, twin_id, output_name, "feedback_review_candidates")
+    payload = {
+        "status": "ok",
+        "mode": "prepare_feedback_review_candidates",
+        "twin_id": twin_id,
+        "best_candidate_id": judge_payload.get("best_candidate_id"),
+        "variation_context": sampled["variation_context"],
+        "candidates": cards,
+        "judge_results": judge_payload["results"],
+    }
+    _write_json(output_path, payload)
+    payload["result_path"] = str(output_path)
+    return payload
+
 def run_request_envelope(*, request_payload: dict[str, Any], service_root_override: str | None = None) -> dict[str, Any]:
     operation = _require_string(request_payload, "operation")
     params = request_payload.get("params") or {}
@@ -3148,9 +3790,38 @@ def run_request_envelope(*, request_payload: dict[str, Any], service_root_overri
     if operation == "judge_candidates":
         return judge_candidates(
             service_root=service_root,
-            draft=_require_string(params, "draft"),
-            candidates=_require_string(params, "candidates"),
+            draft=params.get("draft"),
+            candidates=params.get("candidates"),
             output_name=params.get("output_name"),
+            draft_payload=params.get("draft_payload"),
+            candidates_payload=params.get("candidates_payload"),
+        )
+    if operation == "plan_feedback_variations":
+        return plan_feedback_variations(
+            service_root=service_root,
+            draft=params.get("draft"),
+            context=params.get("context"),
+            output_name=params.get("output_name"),
+            draft_payload=params.get("draft_payload"),
+            context_payload=params.get("context_payload"),
+        )
+    if operation == "sample_feedback_candidates":
+        return sample_feedback_candidates(
+            service_root=service_root,
+            draft=params.get("draft"),
+            context=params.get("context"),
+            output_name=params.get("output_name"),
+            draft_payload=params.get("draft_payload"),
+            context_payload=params.get("context_payload"),
+        )
+    if operation == "prepare_feedback_review_candidates":
+        return prepare_feedback_review_candidates(
+            service_root=service_root,
+            draft=params.get("draft"),
+            context=params.get("context"),
+            output_name=params.get("output_name"),
+            draft_payload=params.get("draft_payload"),
+            context_payload=params.get("context_payload"),
         )
     raise ServiceError(f"Unsupported operation: {operation}")
 

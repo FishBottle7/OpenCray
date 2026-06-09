@@ -1,6 +1,8 @@
 package com.opencray.app
 
 import android.content.Context
+import com.opencray.app.agent.AgentPathResolver
+import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.persistence.PersistenceJson
@@ -21,16 +23,24 @@ import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
+import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.memory.MemoryStewardshipAction
+import com.opencray.runtime.memory.MemoryStewardshipPlanGraph
+import com.opencray.runtime.memory.MemoryStewardshipPlanGraphEdge
+import com.opencray.runtime.memory.MemoryStewardshipPlanGraphNode
+import com.opencray.runtime.memory.MemoryStewardshipPlanStep
+import com.opencray.runtime.memory.MemoryStewardshipPlanStepOutcome
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentLiveContextSnapshot
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
@@ -89,6 +99,24 @@ internal class FileBackedAgentRunRecordStoreFactory(
           FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
         ),
       )
+
+    fun fromAgent(
+      context: Context,
+      agentId: String,
+      pathResolver: AgentPathResolver = AgentPathResolver.fromContext(context),
+    ): FileBackedAgentRunRecordStoreFactory = fromAgent(pathResolver, agentId)
+
+    internal fun fromAgent(
+      pathResolver: AgentPathResolver,
+      agentId: String,
+    ): FileBackedAgentRunRecordStoreFactory = FileBackedAgentRunRecordStoreFactory(
+      runtimeRootDirectory = rootDirectoryForAgent(pathResolver, agentId),
+    )
+
+    internal fun rootDirectoryForAgent(
+      pathResolver: AgentPathResolver,
+      agentId: String,
+    ): File = pathResolver.resolve(agentId).runRecordsRoot.toFile()
   }
 }
 
@@ -99,6 +127,7 @@ internal data class PersistedAgentRunRecord(
   val acceptedAtEpochMs: Long,
   val pendingMessageId: String? = null,
   val managedProcessIds: List<String> = emptyList(),
+  val detachedTask: AgentTask? = null,
   val lastResult: ExecutionResult? = null,
   val lastEvent: PersistedAgentRunEvent? = null,
 ) {
@@ -166,8 +195,11 @@ internal data class PersistedAgentRunEvent(
   val writtenKinds: List<String> = emptyList(),
   val resolvedRecordIds: List<String> = emptyList(),
   val suppressedRecordIds: List<String> = emptyList(),
+  val reopenedRecordIds: List<String> = emptyList(),
   val reaffirmedRecordIds: List<String> = emptyList(),
   val expiredRecordIds: List<String> = emptyList(),
+  val stewardshipPlanSteps: List<PersistedMemoryStewardshipPlanStep> = emptyList(),
+  val stewardshipPlanGraph: PersistedMemoryStewardshipPlanGraph = PersistedMemoryStewardshipPlanGraph(),
 ) {
   init {
     require(runId.isNotBlank()) { "PersistedAgentRunEvent runId must not be blank." }
@@ -197,7 +229,7 @@ private class FileBackedAgentRunRecordStore(
   private val config: AgentRunRecordStoreConfig,
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) : AgentRunRecordStore {
-  private val lock = Any()
+  private val lock = lockFor(directory)
   private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
 
   override fun list(): List<PersistedAgentRunRecord> = synchronized(lock) {
@@ -279,12 +311,48 @@ private class FileBackedAgentRunRecordStore(
       )
       .forEach { run ->
         if (run.runId !in deduped) {
+          val normalizedLastResult = run.lastResult?.let { result ->
+            val normalizedMetadata = OpenCrayPromptResumeMetadata.normalizeMetadata(
+              metadata = result.metadata,
+              json = PersistenceJson.instance,
+            )
+            if (normalizedMetadata == result.metadata) {
+              result
+            } else {
+              result.copy(metadata = normalizedMetadata)
+            }
+          }
+          val normalizedLastEvent = run.lastEvent?.let { event ->
+            val normalizedMetadata = OpenCrayPromptResumeMetadata.normalizeMetadata(
+              metadata = event.resultMetadata,
+              json = PersistenceJson.instance,
+            )
+            if (normalizedMetadata == event.resultMetadata) {
+              event
+            } else {
+              event.copy(resultMetadata = normalizedMetadata)
+            }
+          }
           deduped[run.runId] = run.copy(
             pendingMessageId = run.pendingMessageId?.trim()?.takeIf(String::isNotBlank),
             managedProcessIds = run.managedProcessIds
               .map(String::trim)
               .filter(String::isNotBlank)
               .distinct(),
+            detachedTask = run.detachedTask?.let { detachedTask ->
+              detachedTask.copy(
+                input = detachedTask.input.trim(),
+                metadata = detachedTask.metadata.entries
+                  .mapNotNull { entry ->
+                    val normalizedKey = entry.key.trim().takeIf(String::isNotBlank)
+                      ?: return@mapNotNull null
+                    normalizedKey to entry.value
+                  }
+                  .toMap(),
+              )
+            },
+            lastResult = normalizedLastResult,
+            lastEvent = normalizedLastEvent,
           )
         }
       }
@@ -319,8 +387,49 @@ private class FileBackedAgentRunRecordStore(
 
   private companion object {
     private const val FILE_NAME: String = "runtime-runs.json"
+
+    private val FILE_LOCKS = ConcurrentHashMap<String, Any>()
+
+    private fun lockFor(directory: File): Any =
+      FILE_LOCKS.computeIfAbsent(File(directory, FILE_NAME).absolutePath) { Any() }
   }
 }
+
+@Serializable
+internal data class PersistedMemoryStewardshipPlanStep(
+  val action: String,
+  val outcome: String,
+  val recordId: String? = null,
+  val candidateIndex: Int? = null,
+  val producedRecordId: String? = null,
+  val reason: String? = null,
+)
+
+@Serializable
+internal data class PersistedMemoryStewardshipPlanGraph(
+  val nodes: List<PersistedMemoryStewardshipPlanGraphNode> = emptyList(),
+  val edges: List<PersistedMemoryStewardshipPlanGraphEdge> = emptyList(),
+)
+
+@Serializable
+internal data class PersistedMemoryStewardshipPlanGraphNode(
+  val id: String,
+  val kind: String,
+  val label: String,
+  val action: String? = null,
+  val outcome: String? = null,
+  val recordId: String? = null,
+  val candidateIndex: Int? = null,
+  val producedRecordId: String? = null,
+  val reason: String? = null,
+)
+
+@Serializable
+internal data class PersistedMemoryStewardshipPlanGraphEdge(
+  val from: String,
+  val to: String,
+  val kind: String,
+)
 
 internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent = when (this) {
   is OpenCrayLifecycleEvent -> PersistedAgentRunEvent(
@@ -434,7 +543,7 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     errorCode = result.errorCode,
     errorMessage = result.errorMessage,
     content = if (result.status == AgentToolResultStatus.SUCCESS) {
-      null
+      result.content.takeIf(String::isNotBlank)
     } else {
       result.content.take(MAX_PERSISTED_FAILURE_TOOL_CONTENT_CHARS)
     },
@@ -477,8 +586,11 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     writtenKinds = writtenKinds,
     resolvedRecordIds = resolvedRecordIds,
     suppressedRecordIds = suppressedRecordIds,
+    reopenedRecordIds = reopenedRecordIds,
     reaffirmedRecordIds = reaffirmedRecordIds,
     expiredRecordIds = expiredRecordIds,
+    stewardshipPlanSteps = stewardshipPlanSteps.map(MemoryStewardshipPlanStep::toPersisted),
+    stewardshipPlanGraph = stewardshipPlanGraph.toPersisted(),
   )
   is OpenCrayCancellationEvent -> PersistedAgentRunEvent(
     kind = PersistedAgentRunEventKind.CANCELLATION,
@@ -709,8 +821,11 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
     writtenKinds = writtenKinds,
     resolvedRecordIds = resolvedRecordIds,
     suppressedRecordIds = suppressedRecordIds,
+    reopenedRecordIds = reopenedRecordIds,
     reaffirmedRecordIds = reaffirmedRecordIds,
     expiredRecordIds = expiredRecordIds,
+    stewardshipPlanSteps = stewardshipPlanSteps.mapNotNull(PersistedMemoryStewardshipPlanStep::toRuntime),
+    stewardshipPlanGraph = stewardshipPlanGraph.toRuntime(),
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
   )
@@ -750,6 +865,81 @@ private fun parseArgumentsJson(argumentsJson: String?): JsonObject {
     PersistenceJson.instance.parseToJsonElement(encoded) as? JsonObject
   }.getOrNull() ?: JsonObject(emptyMap())
 }
+
+private fun MemoryStewardshipPlanStep.toPersisted(): PersistedMemoryStewardshipPlanStep =
+  PersistedMemoryStewardshipPlanStep(
+    action = action.wireValue,
+    outcome = outcome.wireValue,
+    recordId = recordId,
+    candidateIndex = candidateIndex,
+    producedRecordId = producedRecordId,
+    reason = reason,
+  )
+
+private fun PersistedMemoryStewardshipPlanStep.toRuntime(): MemoryStewardshipPlanStep? {
+  val parsedAction = MemoryStewardshipAction.fromWireValue(action) ?: return null
+  val parsedOutcome = MemoryStewardshipPlanStepOutcome.fromWireValue(outcome) ?: return null
+  return MemoryStewardshipPlanStep(
+    action = parsedAction,
+    outcome = parsedOutcome,
+    recordId = recordId,
+    candidateIndex = candidateIndex,
+    producedRecordId = producedRecordId,
+    reason = reason,
+  )
+}
+
+private fun MemoryStewardshipPlanGraph.toPersisted(): PersistedMemoryStewardshipPlanGraph =
+  PersistedMemoryStewardshipPlanGraph(
+    nodes = nodes.map(MemoryStewardshipPlanGraphNode::toPersisted),
+    edges = edges.map(MemoryStewardshipPlanGraphEdge::toPersisted),
+  )
+
+private fun MemoryStewardshipPlanGraphNode.toPersisted(): PersistedMemoryStewardshipPlanGraphNode =
+  PersistedMemoryStewardshipPlanGraphNode(
+    id = id,
+    kind = kind,
+    label = label,
+    action = action,
+    outcome = outcome,
+    recordId = recordId,
+    candidateIndex = candidateIndex,
+    producedRecordId = producedRecordId,
+    reason = reason,
+  )
+
+private fun MemoryStewardshipPlanGraphEdge.toPersisted(): PersistedMemoryStewardshipPlanGraphEdge =
+  PersistedMemoryStewardshipPlanGraphEdge(
+    from = from,
+    to = to,
+    kind = kind,
+  )
+
+private fun PersistedMemoryStewardshipPlanGraph.toRuntime(): MemoryStewardshipPlanGraph =
+  MemoryStewardshipPlanGraph(
+    nodes = nodes.map(PersistedMemoryStewardshipPlanGraphNode::toRuntime),
+    edges = edges.map(PersistedMemoryStewardshipPlanGraphEdge::toRuntime),
+  )
+
+private fun PersistedMemoryStewardshipPlanGraphNode.toRuntime(): MemoryStewardshipPlanGraphNode =
+  MemoryStewardshipPlanGraphNode(
+    id = id,
+    kind = kind,
+    label = label,
+    action = action,
+    outcome = outcome,
+    recordId = recordId,
+    candidateIndex = candidateIndex,
+    producedRecordId = producedRecordId,
+    reason = reason,
+  )
+
+private fun PersistedMemoryStewardshipPlanGraphEdge.toRuntime(): MemoryStewardshipPlanGraphEdge =
+  MemoryStewardshipPlanGraphEdge(
+    from = from,
+    to = to,
+    kind = kind,
+  )
 
 private const val MAX_PERSISTED_TOOL_CONTENT_CHARS: Int = 1_024
 private const val MAX_PERSISTED_FAILURE_TOOL_CONTENT_CHARS: Int = 16_384

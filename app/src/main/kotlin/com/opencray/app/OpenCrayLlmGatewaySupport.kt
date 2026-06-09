@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import com.opencray.app.facade.llm.LlmConfigSnapshot
+import com.opencray.app.facade.llm.OnDeviceLlmModelOptionSnapshot
 import com.opencray.app.facade.llm.LlmProviderOptionSnapshot
 import com.opencray.app.facade.llm.LlmValidationResult
 
@@ -8,6 +9,7 @@ internal fun LlmConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "localeTag" to localeTag,
   "enabled" to enabled,
   "streamingEnabled" to streamingEnabled,
+  "providerMode" to providerMode,
   "providerId" to providerId,
   "selectedProviderOptionId" to selectedProviderOptionId,
   "protocol" to protocol,
@@ -23,6 +25,20 @@ internal fun LlmConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "openAiPromptCacheRetention" to openAiPromptCacheRetention,
   "anthropicPromptCachingEnabled" to anthropicPromptCachingEnabled,
   "anthropicPromptCacheTtl" to anthropicPromptCacheTtl,
+  "contextBudgetPreset" to contextBudgetPreset,
+  "contextBudgetReservedOutputTokens" to contextBudgetReservedOutputTokens,
+  "contextBudgetSafetyMarginTokens" to contextBudgetSafetyMarginTokens,
+  "contextBudgetEffectiveInputPercent" to contextBudgetEffectiveInputPercent,
+  "onDeviceModels" to onDeviceModels.map { option -> option.toGatewayMap() },
+  "selectedOnDeviceModelId" to selectedOnDeviceModelId,
+  "onDeviceMaxContextWindow" to onDeviceMaxContextWindow,
+  "onDeviceMaxTokens" to onDeviceMaxTokens,
+  "onDeviceTopK" to onDeviceTopK,
+  "onDeviceTopP" to onDeviceTopP,
+  "onDeviceTemperature" to onDeviceTemperature,
+  "onDeviceAccelerator" to onDeviceAccelerator,
+  "onDeviceThinkingEnabled" to onDeviceThinkingEnabled,
+  "onDeviceLiteModeEnabled" to onDeviceLiteModeEnabled,
   "helperText" to helperText,
   "agentCapability" to agentCapability.toGatewayMap(),
 )
@@ -43,6 +59,21 @@ private fun LlmProviderOptionSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "protocol" to protocol,
   "apiKey" to apiKey,
   "isCustom" to isCustom,
+)
+
+private fun OnDeviceLlmModelOptionSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
+  "id" to id,
+  "title" to title,
+  "subtitle" to subtitle,
+  "sizeLabel" to sizeLabel,
+  "fileSizeBytes" to fileSizeBytes,
+  "installState" to installState,
+  "downloadState" to installState,
+  "downloadedBytes" to downloadedBytes,
+  "downloadBytesPerSecond" to downloadBytesPerSecond,
+  "sha256Verified" to sha256Verified,
+  "isSelected" to isSelected,
+  "lastError" to lastError,
 )
 
 private fun LlmAgentCapabilitySnapshot.toGatewayMap(): Map<String, Any?> = mapOf(

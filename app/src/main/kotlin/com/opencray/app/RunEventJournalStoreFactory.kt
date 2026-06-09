@@ -52,10 +52,20 @@ internal interface RunEventJournalStore {
 }
 
 internal fun List<PersistedRunJournalEntry>.latestRuntimeEventOrNull():
-  com.opencray.runtime.OpenCrayAgentRunEvent? = asReversed()
-  .asSequence()
-  .mapNotNull { entry -> entry.payload.toRuntimeEventOrNull() }
-  .firstOrNull()
+  com.opencray.runtime.OpenCrayAgentRunEvent? = asSequence()
+  .mapNotNull { entry ->
+    entry.payload.toRuntimeEventOrNull()?.let { runtimeEvent -> entry to runtimeEvent }
+  }
+  .maxWithOrNull(
+    compareBy<Pair<PersistedRunJournalEntry, com.opencray.runtime.OpenCrayAgentRunEvent>> {
+      it.first.persistedAtEpochMs
+    }
+      .thenBy { it.first.runId }
+      .thenBy { it.first.seq }
+      .thenBy { it.first.emittedAtEpochMs }
+      .thenBy { it.first.eventId },
+  )
+  ?.second
 
 internal fun inMemoryRunEventJournalStoreFactory(): RunEventJournalStoreFactory =
   InMemoryRunEventJournalStoreFactory()
@@ -154,7 +164,13 @@ private class InMemoryRunEventJournalStore(
 
   override fun append(event: com.opencray.runtime.OpenCrayAgentRunEvent): PersistedRunJournalEntry =
     synchronized(lock) {
-      appendPayloadLocked(event.toPersistedRecord())
+      val payload = event.toPersistedRecord()
+      entriesByRunId[payload.runId]
+        ?.firstOrNull { entry -> entry.payload == payload }
+        ?.let { existing ->
+          return@synchronized existing
+        }
+      appendPayloadLocked(payload)
     }
 
   override fun appendCheckpoint(
@@ -201,7 +217,7 @@ private class InMemoryRunEventJournalStore(
 
   override fun listForRun(runId: String): List<PersistedRunJournalEntry> = synchronized(lock) {
     entriesByRunId[runId]
-      ?.sortedWith(PERSISTED_JOURNAL_ENTRY_COMPARATOR)
+      ?.sortedWith(PERSISTED_RUN_JOURNAL_ENTRY_COMPARATOR)
       .orEmpty()
   }
 
@@ -243,7 +259,13 @@ private class FileBackedRunEventJournalStore(
 
   override fun append(event: com.opencray.runtime.OpenCrayAgentRunEvent): PersistedRunJournalEntry =
     withJournalLock {
-      appendPayloadLocked(event.toPersistedRecord())
+      val payload = event.toPersistedRecord()
+      val existing = listForRunLocked(payload.runId)
+        .firstOrNull { entry -> entry.payload == payload }
+      if (existing != null) {
+        return@withJournalLock existing
+      }
+      appendPayloadLocked(payload)
     }
 
   override fun appendCheckpoint(
@@ -297,16 +319,21 @@ private class FileBackedRunEventJournalStore(
       ?: false
   }
 
-  override fun listForRun(runId: String): List<PersistedRunJournalEntry> = withJournalLock {
+  override fun listForRun(runId: String): List<PersistedRunJournalEntry> =
+    withJournalLock {
+      listForRunLocked(runId)
+    }
+
+  private fun listForRunLocked(runId: String): List<PersistedRunJournalEntry> {
     val runDirectory = directoryForRun(runId)
     if (!runDirectory.exists()) {
-      return@withJournalLock emptyList()
+      return emptyList()
     }
-    runDirectory.listFiles()
+    return runDirectory.listFiles()
       ?.asSequence()
       ?.filter { file -> file.isFile && file.name.endsWith(FILE_SUFFIX) }
       ?.mapNotNull(::decodeJournalEntry)
-      ?.sortedWith(PERSISTED_JOURNAL_ENTRY_COMPARATOR)
+      ?.sortedWith(PERSISTED_RUN_JOURNAL_ENTRY_COMPARATOR)
       ?.toList()
       .orEmpty()
   }
@@ -374,10 +401,21 @@ private class FileBackedRunEventJournalStore(
   }
 
   private fun decodeJournalEntry(file: File): PersistedRunJournalEntry? = runCatching {
-    PersistenceJson.instance.decodeFromString(
+    val decoded = PersistenceJson.instance.decodeFromString(
       deserializer = PersistedRunJournalEntry.serializer(),
       string = file.readText(Charsets.UTF_8),
     )
+    val normalized = normalizeJournalEntry(decoded)
+    if (normalized != decoded) {
+      file.writeText(
+        PersistenceJson.instance.encodeToString(
+          serializer = PersistedRunJournalEntry.serializer(),
+          value = normalized,
+        ),
+        Charsets.UTF_8,
+      )
+    }
+    normalized
   }.getOrNull()
 
   private fun ensureDirectory(directory: File): File {
@@ -477,7 +515,7 @@ private fun checkpointPayload(
   resultMetadata = OpenCrayPromptResumeMetadata.encodeToMetadata(
     state = emission.state,
     json = PROMPT_CHECKPOINT_JSON,
-    checkpointBoundary = emission.boundary,
+      checkpointBoundary = emission.boundary,
   ),
 )
 
@@ -494,11 +532,35 @@ private fun recoveryPayload(
   resultMetadata = metadata.filterValues { value -> value.isNotBlank() },
 )
 
+private fun normalizeJournalEntry(
+  entry: PersistedRunJournalEntry,
+): PersistedRunJournalEntry {
+  val normalizedMetadata = OpenCrayPromptResumeMetadata.normalizeMetadata(
+    metadata = entry.payload.resultMetadata,
+    json = PROMPT_CHECKPOINT_JSON,
+  )
+  return if (normalizedMetadata == entry.payload.resultMetadata) {
+    entry
+  } else {
+    entry.copy(
+      payload = entry.payload.copy(resultMetadata = normalizedMetadata),
+    )
+  }
+}
+
 private val PERSISTED_JOURNAL_ENTRY_COMPARATOR = compareBy<PersistedRunJournalEntry>(
-  PersistedRunJournalEntry::emittedAtEpochMs,
   PersistedRunJournalEntry::persistedAtEpochMs,
   PersistedRunJournalEntry::runId,
   PersistedRunJournalEntry::seq,
+  PersistedRunJournalEntry::emittedAtEpochMs,
+  PersistedRunJournalEntry::eventId,
+)
+
+private val PERSISTED_RUN_JOURNAL_ENTRY_COMPARATOR = compareBy<PersistedRunJournalEntry>(
+  PersistedRunJournalEntry::persistedAtEpochMs,
+  PersistedRunJournalEntry::seq,
+  PersistedRunJournalEntry::emittedAtEpochMs,
+  PersistedRunJournalEntry::eventId,
 )
 
 private val PROMPT_CHECKPOINT_JSON: Json = Json { prettyPrint = false }

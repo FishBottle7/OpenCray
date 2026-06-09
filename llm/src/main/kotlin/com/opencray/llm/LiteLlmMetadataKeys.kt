@@ -1,8 +1,16 @@
 package com.opencray.llm
 
 object LiteLlmMetadataKeys {
+  const val CONTEXT_CACHE_CONTRACT_VERSION: String = "contextCacheContractVersion"
+  const val CONTEXT_CACHE_BREAK_REASON: String = "contextCacheBreakReason"
+  const val CONTEXT_CACHE_STABLE_ANCHOR_HASH: String = "contextCacheStableAnchorHash"
+  const val CONTEXT_CACHE_DURABLE_CONTEXT_HASH: String = "contextCacheDurableContextHash"
+  const val CONTEXT_CACHE_DYNAMIC_CONTEXT_HASH: String = "contextCacheDynamicContextHash"
+  const val CONTEXT_CACHE_FRONT_CONTEXT_ZONE_MASK: String = "contextCacheFrontContextZoneMask"
+  const val CONTEXT_CACHE_FRONT_CONTEXT_MESSAGE_COUNT: String = "contextCacheFrontContextMessageCount"
   const val RESPONSES_LINEAGE_ID: String = "responsesLineageId"
   const val VALIDATION_ENABLE_RESPONSES_CONTINUATION: String = "validationEnableResponsesContinuation"
+  const val VALIDATION_ENABLE_RESPONSES_REMOTE_COMPACTION: String = "validationEnableResponsesRemoteCompaction"
   const val VALIDATION_ENABLE_RESPONSES_ASSISTANT_PHASES: String = "validationEnableResponsesAssistantPhases"
   const val VALIDATION_ENABLE_RESPONSES_CITATION_INCLUDE: String = "validationEnableResponsesCitationInclude"
   const val NATIVE_TOOL_CALL_REQUESTED: String = "nativeToolCallRequested"
@@ -32,4 +40,13 @@ object LiteLlmMetadataKeys {
   const val PROVIDER_PROMPT_CACHE_CONTROL_PRESENT: String = "providerPromptCacheControlPresent"
   const val RESPONSES_COMMENTARY_PHASE_OBSERVED: String = "responsesCommentaryPhaseObserved"
   const val RESPONSES_FINAL_PHASE_OBSERVED: String = "responsesFinalPhaseObserved"
+  const val RESPONSES_REMOTE_COMPACTION_SUPPORTED: String = "responsesRemoteCompactionSupported"
+  const val RESPONSES_REMOTE_COMPACTION_REQUESTED: String = "responsesRemoteCompactionRequested"
+  const val RESPONSES_REMOTE_COMPACTION_USED: String = "responsesRemoteCompactionUsed"
+  const val RESPONSES_REMOTE_COMPACTION_TRIGGER_STAGE: String = "responsesRemoteCompactionTriggerStage"
+  const val RESPONSES_REMOTE_COMPACTION_FALLBACK_REASON: String = "responsesRemoteCompactionFallbackReason"
+  const val RESPONSES_REMOTE_COMPACTION_OUTPUT_ITEM_COUNT: String = "responsesRemoteCompactionOutputItemCount"
+  const val RESPONSES_REMOTE_COMPACTION_ITEM_COUNT: String = "responsesRemoteCompactionItemCount"
+  const val RESPONSES_REMOTE_COMPACTION_ENCRYPTED_CONTENT_COUNT: String =
+    "responsesRemoteCompactionEncryptedContentCount"
 }

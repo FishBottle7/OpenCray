@@ -42,7 +42,6 @@ internal class LiteLlmImageSummaryExtractor(
     val result = gateway.execute(
       LiteLlmGatewayRequest(
         requestId = "image-summary-${UUID.randomUUID()}",
-        prompt = buildPrompt(request.targetKind),
         systemPrompt = SYSTEM_PROMPT,
         messages = listOf(
           LiteLlmGatewayMessage(

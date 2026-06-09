@@ -26,6 +26,7 @@ import com.opencray.runtime.skills.SkillInventoryPromptLayerConfig
 import com.opencray.runtime.skills.VisibleSkill
 import com.opencray.skills.SkillExecutionContext
 import com.opencray.skills.SkillInvocationControl
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -114,6 +115,7 @@ class GlobalContextBudgetCoordinatorTest {
     assertTrue(memoryBudgetReport.reduced)
     assertFalse(memoryBudgetReport.omitted)
     assertTrue(memoryBudgetReport.appliedOperators.contains("reduce_retrieved_memory_compact"))
+    assertEquals(ContextBudgetLayerFinalState.COMPACT, memoryBudgetReport.finalState)
   }
 
   @Test
@@ -224,6 +226,7 @@ class GlobalContextBudgetCoordinatorTest {
       observationBudgetReport.appliedOperators.contains("reduce_recent_tool_observations_compact") ||
         observationBudgetReport.appliedOperators.contains("reduce_recent_tool_observations_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(observationBudgetReport)
   }
 
   @Test
@@ -325,6 +328,109 @@ class GlobalContextBudgetCoordinatorTest {
       activeSkillBudgetReport.appliedOperators.contains("reduce_active_skill_compact") ||
         activeSkillBudgetReport.appliedOperators.contains("reduce_active_skill_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(activeSkillBudgetReport)
+  }
+
+  @Test
+  fun rebalanceKeepsPinnedActiveSkillUnderBudgetPressure() {
+    val activeSkillPromptLayer = ActiveSkillPromptLayer(
+      config = ActiveSkillPromptLayerConfig(
+        maxBodyChars = 3_200,
+        maxPermissionEntries = 8,
+        maxCompactBodyChars = 480,
+        maxCompactPermissionEntries = 2,
+        maxMinimalBodyChars = 160,
+        maxMinimalPermissionEntries = 1,
+      ),
+    )
+    val activeSkillCapsule = ActiveSkillCapsule(
+      name = "ui-ux-pro-max",
+      description = "High-end UI review workflow.",
+      relativePath = ".codex/skills/ui-ux-pro-max/SKILL.md",
+      invocationControl = "explicit-only",
+      executionContext = "fork",
+      activationSource = "skill_read",
+      pinned = true,
+      markdownBody = """
+        # UI UX Pro Max
+
+        1. Audit the current interface in detail.
+        2. Produce a concrete design system.
+        3. Verify the implementation against the design system.
+        4. Document the remaining gaps clearly.
+        5. ${"Inspect typography, spacing, motion, hierarchy, and color direction carefully. ".repeat(24).trim()}
+      """.trimIndent(),
+      toolPermissionSummary = listOf("read:allow", "write:allow", "search:allow"),
+      allowedToolKeys = setOf("read", "write", "search"),
+    )
+    val input = ManagedPromptContext(
+      task = promptTask(),
+      baseSystemPrompt = "Base identity.",
+      activeSkillCapsule = activeSkillCapsule,
+      activeSkillText = activeSkillPromptLayer.render(activeSkillCapsule).text,
+      llmMetadata = budgetMetadata(
+        contextWindowTokens = 1_400,
+        reservedOutputTokens = 256,
+        safetyMarginTokens = 96,
+        effectiveInputPercent = "0.7",
+      ),
+    )
+    val layers = listOf(
+      PromptLayer(
+        id = PromptLayerId.IDENTITY,
+        name = "Identity",
+        kind = PromptLayerKind.SYSTEM,
+        content = "Base identity.",
+      ),
+      PromptLayer(
+        id = PromptLayerId.RUNTIME_RULES,
+        name = "Runtime Rules",
+        kind = PromptLayerKind.SYSTEM,
+        content = "Follow runtime rules.",
+      ),
+      PromptLayer(
+        id = PromptLayerId.TOOL_PROTOCOL,
+        name = "Tool Protocol",
+        kind = PromptLayerKind.PROTOCOL,
+        content = "Protocol ".repeat(8).trim(),
+      ),
+      PromptLayer(
+        id = PromptLayerId.TASK_METADATA,
+        name = "Task Metadata",
+        kind = PromptLayerKind.CONTEXT,
+        content = "Task metadata: task_id=task-context",
+      ),
+      PromptLayer(
+        id = PromptLayerId.ACTIVE_SKILL,
+        name = "Active Skill",
+        kind = PromptLayerKind.CONTEXT,
+        content = input.activeSkillText,
+      ),
+    )
+
+    val coordinated = GlobalContextBudgetCoordinator(
+      activeSkillPromptLayer = activeSkillPromptLayer,
+    ).rebalance(
+      input = input,
+      layers = layers,
+      estimateTokens = { text -> text.length },
+      renderConversationLayer = { window ->
+        window.messages.joinToString(separator = "\n") { message -> message.content }
+      },
+    )
+
+    val activeSkillLayer = coordinated.layers.first { layer -> layer.id == PromptLayerId.ACTIVE_SKILL }
+    val activeSkillBudgetReport = coordinated.report.layers.first { layer -> layer.id == PromptLayerId.ACTIVE_SKILL }
+
+    assertTrue(activeSkillLayer.content.contains("name=ui-ux-pro-max"))
+    assertTrue(activeSkillLayer.content.contains("pinned=true"))
+    assertTrue(activeSkillBudgetReport.reduced)
+    assertFalse(activeSkillBudgetReport.omitted)
+    assertTrue(
+      activeSkillBudgetReport.appliedOperators.contains("reduce_active_skill_compact") ||
+        activeSkillBudgetReport.appliedOperators.contains("reduce_active_skill_minimal"),
+    )
+    assertReducedLayerFinalStateMatchesOperators(activeSkillBudgetReport)
   }
 
   @Test
@@ -415,6 +521,7 @@ class GlobalContextBudgetCoordinatorTest {
       bootstrapBudgetReport.appliedOperators.contains("reduce_bootstrap_compact") ||
         bootstrapBudgetReport.appliedOperators.contains("reduce_bootstrap_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(bootstrapBudgetReport)
   }
 
   @Test
@@ -519,6 +626,7 @@ class GlobalContextBudgetCoordinatorTest {
       inventoryBudgetReport.appliedOperators.contains("reduce_skill_inventory_compact") ||
         inventoryBudgetReport.appliedOperators.contains("reduce_skill_inventory_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(inventoryBudgetReport)
   }
 
   @Test
@@ -616,6 +724,7 @@ class GlobalContextBudgetCoordinatorTest {
       durableCompactionBudgetReport.appliedOperators.contains("reduce_durable_compaction_compact") ||
         durableCompactionBudgetReport.appliedOperators.contains("reduce_durable_compaction_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(durableCompactionBudgetReport)
   }
 
   @Test
@@ -702,6 +811,7 @@ class GlobalContextBudgetCoordinatorTest {
       pruningBudgetReport.appliedOperators.contains("reduce_pruning_summary_compact") ||
         pruningBudgetReport.appliedOperators.contains("reduce_pruning_summary_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(pruningBudgetReport)
   }
 
   @Test
@@ -789,6 +899,7 @@ class GlobalContextBudgetCoordinatorTest {
       compactionBudgetReport.appliedOperators.contains("reduce_compaction_summary_compact") ||
         compactionBudgetReport.appliedOperators.contains("reduce_compaction_summary_minimal"),
     )
+    assertReducedLayerFinalStateMatchesOperators(compactionBudgetReport)
   }
 
   private fun promptTask(): AgentTask = AgentTask(
@@ -813,4 +924,17 @@ class GlobalContextBudgetCoordinatorTest {
     "prompt_safety_margin_tokens" to safetyMarginTokens.toString(),
     "effective_input_percent" to effectiveInputPercent,
   )
+
+  private fun assertReducedLayerFinalStateMatchesOperators(
+    report: ContextBudgetLayerReport,
+  ) {
+    val expectedFinalState = when {
+      report.appliedOperators.any { operator -> operator.endsWith("_minimal") } ->
+        ContextBudgetLayerFinalState.MINIMAL
+      report.appliedOperators.any { operator -> operator.endsWith("_compact") } ->
+        ContextBudgetLayerFinalState.COMPACT
+      else -> error("Expected a compact or minimal reduction operator for ${report.id}.")
+    }
+    assertEquals(expectedFinalState, report.finalState)
+  }
 }

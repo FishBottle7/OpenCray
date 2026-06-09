@@ -2,6 +2,7 @@ package com.opencray.app
 
 import android.content.Context
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
+import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
@@ -475,12 +476,26 @@ private class FileBackedPromptCheckpointStore(
       )
       .forEach { checkpoint ->
         if (checkpoint.taskId !in deduped) {
+          val normalizedPromptResumeState = checkpoint.promptResumeState?.let { state ->
+            OpenCrayPromptResumeMetadata.normalizeState(
+              state = state,
+              json = PersistenceJson.instance,
+            )
+          }
+          val normalizedSubAgentPromptResumeState = checkpoint.subAgentPromptResumeState?.let { state ->
+            OpenCrayPromptResumeMetadata.normalizeState(
+              state = state,
+              json = PersistenceJson.instance,
+            )
+          }
           deduped[checkpoint.taskId] = checkpoint.copy(
             toolName = checkpoint.toolName?.trim()?.takeIf(String::isNotBlank),
             pendingMessageId = checkpoint.pendingMessageId?.trim()?.takeIf(String::isNotBlank),
+            promptResumeState = normalizedPromptResumeState,
             subAgentApprovedToolName = checkpoint.subAgentApprovedToolName
               ?.trim()
               ?.takeIf(String::isNotBlank),
+            subAgentPromptResumeState = normalizedSubAgentPromptResumeState,
             subAgentAgentId = checkpoint.subAgentAgentId?.trim()?.takeIf(String::isNotBlank),
             subAgentChildRunId = checkpoint.subAgentChildRunId?.trim()?.takeIf(String::isNotBlank),
             subAgentChildTaskId = checkpoint.subAgentChildTaskId?.trim()?.takeIf(String::isNotBlank),

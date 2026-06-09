@@ -24,6 +24,8 @@
 /.android-home/
 /.android-sdk-linux/
 /.kotlin-tmp/
+/.kotlin/
+**/.kotlin/
 /.kotlin-daemon/
 /.p4a-generated/
 /.p4a-build-venv/
@@ -31,7 +33,9 @@
 /.p4a-storage/
 /.p4a-wsl-bin/
 /.pytest_cache/
+/.pytest_cache_repo/
 /.pytest-cache/
+/.pytest_temp/
 /.pytest-tmp/
 /.appdata/
 /.sandbox-appdata/
@@ -49,7 +53,12 @@
 /.pytest-temp-*/
 /.pytest-tmp-*/
 **/.pytest_cache/
+**/.pytest_cache_repo/
 **/.pytest-cache/
+**/.pytest_temp/
+**/.tmp_pytest*/
+**/pytest-cache-files-*/
+**/pytest-temp-run/
 **/.ruff_cache/
 **/.cache/
 **/.dart_tool/
@@ -57,13 +66,18 @@
 /%TEMP%/
 /tmp_refs/
 /tmp/
+/tmp-android-home/
 /tmp_pytest*/
 /tmp_manual_check/
+/.test-home/
+/review_selector_*/
 /.benchmarks/
 /.home/
 /.codex-home/
 /.codex-temp/
 /.codex-build/
+/.codex-worktrees/
+/_worktrees/
 /.opencray/
 /.pytest_local/
 /.pytest-temp/
@@ -98,11 +112,13 @@
 /tools/android_python_runtime_p4a/gradle/
 **/.tmp_fonts/
 /.tmp/
+/.tmp-litert/
 /tmp_*.patch
 /opencray-python-runtime-*.aar
 /flutter_app/.tmp_flutter_version_err.txt
 /flutter_app/.tmp_flutter_version_out.txt
 /log.txt
+/docs/diags/
 
 # Sisyphus local scratch files
 /.sisyphus/notepads/

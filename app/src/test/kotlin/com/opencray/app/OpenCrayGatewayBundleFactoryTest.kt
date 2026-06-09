@@ -130,7 +130,7 @@ class OpenCrayGatewayBundleFactoryTest {
         capturedProjectionContext = resolvedContext
         capturedProjectionClient = resolvedServiceClient
         OpenCrayProjectionGatewayBundle(
-          shellGateway = object : OpenCrayShellGateway {
+          shellGateway = object : NoOpShellGateway() {
             override fun loadShellSnapshot(): Map<String, Any?> = expectedShellSnapshot
 
             override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
@@ -176,7 +176,7 @@ class OpenCrayGatewayBundleFactoryTest {
   fun configurableServiceBackedGatewayBundleFactorySkipsProjectionBundleCreationWhenBinderGatewayHandlesRead() {
     val context = MinimalContext()
     val expectedShellSnapshot = mapOf("surface" to "binder-shell")
-    val binderShellGateway = object : OpenCrayShellGateway {
+    val binderShellGateway = object : NoOpShellGateway() {
       override fun loadShellSnapshot(): Map<String, Any?> = expectedShellSnapshot
 
       override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
@@ -200,7 +200,7 @@ class OpenCrayGatewayBundleFactoryTest {
       projectionGatewayBundleFactory = OpenCrayProjectionGatewayBundleFactory { _, _ ->
         projectionCreateCallCount += 1
         OpenCrayProjectionGatewayBundle(
-          shellGateway = object : OpenCrayShellGateway {
+          shellGateway = object : NoOpShellGateway() {
             override fun loadShellSnapshot(): Map<String, Any?> = mapOf("surface" to "fallback-shell")
 
             override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
@@ -245,7 +245,7 @@ class OpenCrayGatewayBundleFactoryTest {
       projectionGatewayBundleFactory = OpenCrayProjectionGatewayBundleFactory { _, _ ->
         projectionCreateCallCount += 1
         OpenCrayProjectionGatewayBundle(
-          shellGateway = object : OpenCrayShellGateway {
+          shellGateway = object : NoOpShellGateway() {
             override fun loadShellSnapshot(): Map<String, Any?> = mapOf("surface" to "fallback-shell")
 
             override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
@@ -295,7 +295,7 @@ class OpenCrayGatewayBundleFactoryTest {
       projectionGatewayBundleFactory = OpenCrayProjectionGatewayBundleFactory { _, _ ->
         projectionCreateCallCount += 1
         OpenCrayProjectionGatewayBundle(
-          shellGateway = object : OpenCrayShellGateway {
+          shellGateway = object : NoOpShellGateway() {
             override fun loadShellSnapshot(): Map<String, Any?> = mapOf("surface" to "fallback-shell")
 
             override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
@@ -345,7 +345,7 @@ class OpenCrayGatewayBundleFactoryTest {
       projectionGatewayBundleFactory = OpenCrayProjectionGatewayBundleFactory { _, _ ->
         projectionCreateCallCount += 1
         OpenCrayProjectionGatewayBundle(
-          shellGateway = object : OpenCrayShellGateway {
+          shellGateway = object : NoOpShellGateway() {
             override fun loadShellSnapshot(): Map<String, Any?> = mapOf("surface" to "fallback-shell")
 
             override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
@@ -381,7 +381,7 @@ class OpenCrayGatewayBundleFactoryTest {
       runtimeServiceClientProvider = { _, target -> clients.getValue(target) },
       projectionGatewayBundleFactory = OpenCrayProjectionGatewayBundleFactory { _, _ ->
         OpenCrayProjectionGatewayBundle(
-          shellGateway = object : OpenCrayShellGateway {
+          shellGateway = object : NoOpShellGateway() {
             override fun loadShellSnapshot(): Map<String, Any?> = emptyMap()
 
             override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
@@ -411,7 +411,7 @@ class OpenCrayGatewayBundleFactoryTest {
   fun configurableClientGatewayBundleFactoryUsesInjectedFactories() {
     val context = MinimalContext()
     val localGateway = object : NoOpLocalHostGateway() { }
-    val shellGateway = object : OpenCrayShellGateway {
+    val shellGateway = object : NoOpShellGateway() {
       override fun loadShellSnapshot(): Map<String, Any?> = mapOf("surface" to "shell")
 
       override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
@@ -470,7 +470,7 @@ class OpenCrayGatewayBundleFactoryTest {
         OpenCrayServiceBackedGatewayBundleFactory { _, target ->
           createdTargets += target
           OpenCrayServiceBackedGatewayBundle(
-            shellGateway = object : OpenCrayShellGateway {
+            shellGateway = object : NoOpShellGateway() {
               override fun loadShellSnapshot(): Map<String, Any?> = mapOf("target" to target.wireValue)
 
               override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
@@ -505,7 +505,7 @@ class OpenCrayGatewayBundleFactoryTest {
       serviceBackedGatewayBundleFactoryProvider = {
         OpenCrayServiceBackedGatewayBundleFactory { _, _ ->
           OpenCrayServiceBackedGatewayBundle(
-            shellGateway = object : OpenCrayShellGateway {
+            shellGateway = object : NoOpShellGateway() {
               override fun loadShellSnapshot(): Map<String, Any?> = emptyMap()
 
               override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
@@ -589,7 +589,7 @@ class OpenCrayGatewayBundleFactoryTest {
         OpenCrayProjectionGatewayBundleFactory { _, resolvedClient ->
           capturedProjectionClient = resolvedClient
           OpenCrayProjectionGatewayBundle(
-            shellGateway = object : OpenCrayShellGateway {
+            shellGateway = object : NoOpShellGateway() {
               override fun loadShellSnapshot(): Map<String, Any?> = emptyMap()
 
               override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
@@ -684,6 +684,9 @@ class OpenCrayGatewayBundleFactoryTest {
 
     override fun shareWorkspaceEntries(relativePaths: List<String>) = Unit
 
+    override fun saveWorkspaceMediaAttachment(relativePath: String, kind: String): Map<String, Any?> =
+      emptyMap()
+
     override fun showNativeToast(message: String) = Unit
 
     override fun importDraftChatAttachments(
@@ -694,12 +697,25 @@ class OpenCrayGatewayBundleFactoryTest {
     override fun probeTwinImportSource(filePath: String): Map<String, Any?> = emptyMap()
   }
 
+  private open class NoOpShellGateway : OpenCrayShellGateway {
+    override fun loadShellSnapshot(): Map<String, Any?> = emptyMap()
+
+    override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
+
+    override fun saveShellDestination(
+      selectedTab: String,
+      settingsSubpage: String?,
+    ) = Unit
+  }
+
   private open class NoOpChatRuntimeGateway : OpenCrayChatRuntimeGateway {
     override fun loadChatSnapshot(): Map<String, Any?> = emptyMap()
 
     override fun observeChat(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
 
     override fun loadChatRuntimeSnapshot(): Map<String, Any?> = emptyMap()
+
+    override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit = { }
 
     override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? = null
 
@@ -821,6 +837,7 @@ class OpenCrayGatewayBundleFactoryTest {
     override fun saveLlmConfig(
       enabled: Boolean,
       streamingEnabled: Boolean?,
+      providerMode: String,
       providerId: String,
       selectedProviderOptionId: String,
       protocol: String,
@@ -835,6 +852,19 @@ class OpenCrayGatewayBundleFactoryTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
+      selectedOnDeviceModelId: String,
+      onDeviceMaxContextWindow: Int,
+      onDeviceMaxTokens: Int,
+      onDeviceTopK: Int,
+      onDeviceTopP: Double,
+      onDeviceTemperature: Double,
+      onDeviceAccelerator: String,
+      onDeviceThinkingEnabled: Boolean,
+      onDeviceLiteModeEnabled: Boolean,
     ): Map<String, Any?> = emptyMap()
 
     override fun saveCustomLlmProvider(
@@ -852,6 +882,10 @@ class OpenCrayGatewayBundleFactoryTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
     ): Map<String, Any?> = emptyMap()
 
     override fun validateLlmConfig(
@@ -862,6 +896,12 @@ class OpenCrayGatewayBundleFactoryTest {
       model: String,
       reasoningEffort: String,
     ): Map<String, Any?> = emptyMap()
+
+    override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> = emptyMap()
+
+    override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> = emptyMap()
+
+    override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> = emptyMap()
 
     override fun loadPersonalizationConfig(): Map<String, Any?> = emptyMap()
 

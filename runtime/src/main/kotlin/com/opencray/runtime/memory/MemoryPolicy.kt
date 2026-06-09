@@ -192,9 +192,13 @@ object MemoryRecordExtensionKeys {
   const val RESOLVED_AT_EPOCH_MS: String = "resolved_at_epoch_ms"
   const val RESOLUTION_REASON: String = "resolution_reason"
   const val SUPERSEDED_BY: String = "superseded_by"
+  const val REOPENED_AT_EPOCH_MS: String = "reopened_at_epoch_ms"
+  const val REOPENED_BY_CANDIDATE: String = "reopened_by_candidate"
   const val PREFERENCE_KEY: String = "preference_key"
   const val PREFERENCE_VALUE: String = "preference_value"
   const val PREFERENCE_TEMPORALITY: String = "preference_temporality"
   const val MERGED_FROM_RECORD_IDS: String = "merged_from_record_ids"
   const val MERGE_STRATEGY: String = "merge_strategy"
+  const val STICKY_CAPSULE: String = "sticky_memory_capsule"
+  const val PINNED_MEMORY: String = "pinned_memory"
 }

@@ -654,13 +654,14 @@ The remaining Codex gap is product scope and detachment level:
 - OpenCray still runs through the app-owned runtime host rather than through a broader local/worktree/cloud execution product
 - scheduled/background execution is now real, but still narrower than Codex automations and environment isolation
 
-### 4.5 OpenCray compaction is real, but still mostly host-side summary compaction
+### 4.5 OpenCray compaction is real, with Responses-native remote compaction on supported routes
 
 OpenCray already does:
 
 - pre-compaction memory flush
 - durable compaction summaries
 - compacted transcript reinjection
+- Responses-native remote compaction when the selected route advertises support
 
 Evidence:
 
@@ -668,6 +669,8 @@ Evidence:
 - `runtime/src/main/kotlin/com/opencray/runtime/compaction/DurableCompaction.kt`
 
 This is much better than having no compaction.
+
+The remaining gap is not basic compaction anymore. It is narrower: model-switch pressure safeguards, background-safe maintenance jobs, and broader Codex-style execution isolation are still separate plan items.
 
 But compared with Codex / OpenAI Responses guidance, the gap is that OpenCray still primarily relies on host-rendered summary text rather than provider-native opaque compaction artifacts.
 
@@ -702,7 +705,7 @@ Recommended design direction:
 
 Design references:
 
-- `docs/global-context-budget-coordination-design.md`
+- `docs/codex-claude-balanced-context-management-plan.md`
 - `docs/working-state-layer-design.md`
 
 ### 4.6 Commentary-first behavior now has an explicit prompt contract, but runtime enforcement is still softer than Codex

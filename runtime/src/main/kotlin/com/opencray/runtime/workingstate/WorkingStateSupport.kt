@@ -55,12 +55,6 @@ class WorkingStateSupport(
   ): WorkingStateResolution {
     val normalizedSeeded = normalize(seededState)
     val todoProjection = deriveTodoProjection(todoSnapshot)
-    val objectiveResolution = resolveObjective(
-      task = task,
-      runId = runId,
-      seeded = normalizedSeeded.objective,
-      todoProjection = todoProjection,
-    )
     val resumeProjection = deriveResumeProjection(resumeContext)
     val derivedRecentActions = if (normalizedSeeded.recentActions.isEmpty()) {
       recentObservationLines
@@ -103,6 +97,21 @@ class WorkingStateSupport(
       else -> emptyList()
     }
     val effectiveNextActions = normalizedSeeded.nextActions.ifEmpty { todoProjection.nextActions }
+    val objectiveResolution = resolveObjective(
+      task = task,
+      runId = runId,
+      seeded = normalizedSeeded.objective,
+      todoProjection = todoProjection,
+      hasOperationalState = hasOperationalState(
+        seededState = normalizedSeeded,
+        resumeProjection = resumeProjection,
+        derivedRecentActions = derivedRecentActions,
+        recentActions = effectiveRecentActions,
+        decisions = effectiveDecisions,
+        blockers = effectiveBlockers,
+        nextActions = effectiveNextActions,
+      ),
+    )
     val resumeContextUsed = effectiveRecentActions.any { entry -> entry.sourceType == "resume_checkpoint" } ||
       effectiveDecisions.any { entry -> entry.sourceType == "resume_checkpoint" }
     val resolvedState = normalizedSeeded.copy(
@@ -175,18 +184,22 @@ class WorkingStateSupport(
     runId: String?,
     seeded: WorkingStateObjective?,
     todoProjection: TodoProjection,
+    hasOperationalState: Boolean,
   ): ObjectiveResolution {
     val normalizedTaskInput = task.input.trim().takeIf(String::isNotBlank)
     val normalizedTaskId = task.id.trim().takeIf(String::isNotBlank)
     val normalizedRunId = runId?.trim()?.takeIf(String::isNotBlank)
-    val synthesizedFromTaskInput = seeded?.primaryGoal.isNullOrBlank() && !normalizedTaskInput.isNullOrBlank()
-    val taskId = seeded?.taskId ?: normalizedTaskId?.let { value ->
+    val objectiveContextAvailable = !seeded.isNullOrEmpty || hasOperationalState
+    val synthesizedFromTaskInput = objectiveContextAvailable &&
+      seeded?.primaryGoal.isNullOrBlank() &&
+      !normalizedTaskInput.isNullOrBlank()
+    val taskId = seeded?.taskId ?: normalizedTaskId?.takeIf { objectiveContextAvailable }?.let { value ->
       truncate(value, config.maxIdentityChars)
     }
-    val resolvedRunId = seeded?.runId ?: normalizedRunId?.let { value ->
+    val resolvedRunId = seeded?.runId ?: normalizedRunId?.takeIf { objectiveContextAvailable }?.let { value ->
       truncate(value, config.maxIdentityChars)
     }
-    val primaryGoal = seeded?.primaryGoal ?: normalizedTaskInput?.let { input ->
+    val primaryGoal = seeded?.primaryGoal ?: normalizedTaskInput?.takeIf { objectiveContextAvailable }?.let { input ->
       truncate(input, config.maxPrimaryGoalChars)
     }
     val currentSubgoal = seeded?.currentSubgoal ?: todoProjection.currentSubgoal
@@ -304,6 +317,22 @@ class WorkingStateSupport(
     )
   }
 
+  private fun hasOperationalState(
+    seededState: WorkingState,
+    resumeProjection: ResumeProjection,
+    derivedRecentActions: List<WorkingStateEntry>,
+    recentActions: List<WorkingStateEntry>,
+    decisions: List<WorkingStateEntry>,
+    blockers: List<WorkingStateEntry>,
+    nextActions: List<WorkingStateEntry>,
+  ): Boolean = seededState.hasOperationalContent ||
+    resumeProjection.isNotEmpty ||
+    derivedRecentActions.isNotEmpty() ||
+    recentActions.isNotEmpty() ||
+    decisions.isNotEmpty() ||
+    blockers.isNotEmpty() ||
+    nextActions.isNotEmpty()
+
   private fun normalizeEntries(
     entries: List<WorkingStateEntry>,
     maxEntries: Int,
@@ -357,4 +386,22 @@ class WorkingStateSupport(
     val status: String? = null,
     val nextActions: List<WorkingStateEntry> = emptyList(),
   )
+
+  private val WorkingState.hasOperationalContent: Boolean
+    get() = findings.isNotEmpty() ||
+      recentActions.isNotEmpty() ||
+      decisions.isNotEmpty() ||
+      blockers.isNotEmpty() ||
+      nextActions.isNotEmpty() ||
+      objective.hasOperationalDetail
+
+  private val WorkingStateObjective?.isNullOrEmpty: Boolean
+    get() = this == null || isEmpty
+
+  private val WorkingStateObjective?.hasOperationalDetail: Boolean
+    get() = this != null &&
+      (
+        !currentSubgoal.isNullOrBlank() ||
+          (!status.isNullOrBlank() && status != DEFAULT_OBJECTIVE_STATUS)
+      )
 }

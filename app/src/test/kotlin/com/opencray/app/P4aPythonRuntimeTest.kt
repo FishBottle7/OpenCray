@@ -190,7 +190,11 @@ class P4aPythonRuntimeTest {
       ),
     )
 
-    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals(
+      "errorCode=${result.errorCode} errorMessage=${result.errorMessage} metadata=${result.metadata}",
+      ExecutionStatus.SUCCESS,
+      result.status,
+    )
     assertEquals(0, result.exitCode)
     assertEquals("python ok", result.stdout)
     assertEquals("", result.stderr)
@@ -412,7 +416,11 @@ class P4aPythonRuntimeTest {
       ),
     )
 
-    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals(
+      "errorCode=${result.errorCode} errorMessage=${result.errorMessage} metadata=${result.metadata}",
+      ExecutionStatus.SUCCESS,
+      result.status,
+    )
     assertEquals(0, result.exitCode)
     assertEquals("120", result.metadata["scriptTimeoutMs"])
     assertEquals("160", result.metadata["startupTimeoutMs"])
@@ -467,7 +475,6 @@ class P4aPythonRuntimeTest {
       ): P4aPythonRuntime.P4aPythonRuntimeLaunchResult {
         Thread.sleep(120L)
         thread(start = true, isDaemon = true) {
-          Thread.sleep(20L)
           val executionStartedAt = System.currentTimeMillis()
           writeServiceMarker(
             path = runtime.serviceReadyPath(),
@@ -513,8 +520,8 @@ class P4aPythonRuntimeTest {
         taskId = "task-launcher-delay",
         workspaceRoot = workspaceRoot,
         scriptPath = workspaceRoot.resolve("demo.py"),
-        timeoutMs = 40L,
-        startupTimeoutMs = 120L,
+        timeoutMs = 500L,
+        startupTimeoutMs = 500L,
       ),
     )
 

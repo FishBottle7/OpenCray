@@ -14,12 +14,15 @@ import com.opencray.runtime.memory.MemoryKind
 import com.opencray.runtime.memory.MemoryPreferenceKeys
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import com.opencray.runtime.memory.MemoryScope
+import com.opencray.runtime.memory.MemoryStewardshipPlanGraph
 import com.opencray.runtime.memory.MemoryStewardshipService
+import com.opencray.runtime.memory.MemoryStewardshipPlanStep
 import com.opencray.runtime.memory.MemoryStatus
 import com.opencray.runtime.memory.TaskCommitmentResolver
 import com.opencray.runtime.memory.MemoryTurnEvidence
 import com.opencray.runtime.memory.MemoryWriter
 import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import com.opencray.runtime.soul.InteractionPreferenceMemoryWritePlanner
 import com.opencray.runtime.soul.NoOpRelationshipEventInterpreter
 import com.opencray.runtime.soul.RelationshipEventInterpretation
@@ -31,14 +34,20 @@ import com.opencray.runtime.soul.SoulPlasticity
 internal data class MemoryIngestionSummary(
   val writtenRecords: List<MemoryRecord> = emptyList(),
   val resolvedRecords: List<MemoryRecord> = emptyList(),
+  val reopenedRecords: List<MemoryRecord> = emptyList(),
   val reaffirmedRecords: List<MemoryRecord> = emptyList(),
   val expiredRecordIds: List<String> = emptyList(),
+  val stewardshipPlanSteps: List<MemoryStewardshipPlanStep> = emptyList(),
+  val stewardshipPlanGraph: MemoryStewardshipPlanGraph = MemoryStewardshipPlanGraph(),
 ) {
   val isEmpty: Boolean
     get() = writtenRecords.isEmpty() &&
       resolvedRecords.isEmpty() &&
+      reopenedRecords.isEmpty() &&
       reaffirmedRecords.isEmpty() &&
-      expiredRecordIds.isEmpty()
+      expiredRecordIds.isEmpty() &&
+      stewardshipPlanSteps.isEmpty() &&
+      stewardshipPlanGraph.isEmpty
 }
 
 internal class ChatMemoryIngestionCoordinator(
@@ -57,6 +66,7 @@ internal class ChatMemoryIngestionCoordinator(
     candidateExtractor = candidateExtractor,
     writer = writer,
     existingRecordIdsProvider = { memoryStore.list().mapTo(linkedSetOf(), MemoryRecord::id) },
+    sourceBudgetPolicy = ContextSourceBudgetPolicy(),
   ),
 ) {
   fun flushBeforeCompaction(
@@ -65,6 +75,19 @@ internal class ChatMemoryIngestionCoordinator(
     llmMetadata: Map<String, String> = emptyMap(),
     taskId: String? = null,
   ): MemoryFlushSummary = flushCoordinator.flushBeforeCompaction(
+    sessionId = sessionId,
+    workspaceId = workspaceIdProvider(),
+    conversation = conversation,
+    llmMetadata = llmMetadata,
+    taskId = taskId,
+  )
+
+  fun flushMidTurn(
+    sessionId: String,
+    conversation: List<RuntimeConversationMessage>,
+    llmMetadata: Map<String, String> = emptyMap(),
+    taskId: String? = null,
+  ): MemoryFlushSummary = flushCoordinator.flushMidTurn(
     sessionId = sessionId,
     workspaceId = workspaceIdProvider(),
     conversation = conversation,
@@ -119,6 +142,7 @@ internal class ChatMemoryIngestionCoordinator(
       proposedCandidates = filteredWriteCandidates,
     )
     stewardshipPlan.resolvedRecords.forEach(memoryStore::upsert)
+    stewardshipPlan.reopenedRecords.forEach(memoryStore::upsert)
     stewardshipPlan.reaffirmedRecords.forEach(memoryStore::upsert)
     val writeSummary = writer.write(stewardshipPlan.acceptedCandidates)
     val plasticity = soulPlasticityProvider()
@@ -173,11 +197,14 @@ internal class ChatMemoryIngestionCoordinator(
     val summary = MemoryIngestionSummary(
       writtenRecords = writeSummary.writtenRecords + interactionPreferenceWriteSummary + relationshipWriteSummary,
       resolvedRecords = maintenance.resolvedRecords + stewardshipPlan.resolvedRecords,
+      reopenedRecords = stewardshipPlan.reopenedRecords,
       reaffirmedRecords = maintenance.reaffirmedRecords + stewardshipPlan.reaffirmedRecords,
       expiredRecordIds = maintenance.expiredRecordIds,
+      stewardshipPlanSteps = stewardshipPlan.planSteps,
+      stewardshipPlanGraph = stewardshipPlan.planGraph,
     )
     if (
-      (summary.writtenRecords + summary.resolvedRecords + summary.reaffirmedRecords)
+      (summary.writtenRecords + summary.resolvedRecords + summary.reopenedRecords + summary.reaffirmedRecords)
         .any(::isActiveSessionScopedRecord)
     ) {
       sessionScopedStateMarker(sessionId)

@@ -225,6 +225,51 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun savesWorkspaceMediaAttachmentOverLoopbackHttp() {
+    var capturedRelativePath: String? = null
+    var capturedKind: String? = null
+    val server = localRuntimeServerWithLocalGateway(
+      object : UnsupportedLocalGateway() {
+        override fun saveWorkspaceMediaAttachment(
+          relativePath: String,
+          kind: String,
+        ): Map<String, Any?> {
+          capturedRelativePath = relativePath
+          capturedKind = kind
+          return mapOf(
+            "displayName" to "voice-note.m4a",
+            "collection" to "recordings",
+            "uri" to "content://media/audio/42",
+          )
+        }
+      },
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/save_workspace_media_attachment",
+        body = JSONObject().apply {
+          put("relativePath", ".opencray/chat-media/session-1/hash/voice-note.m4a")
+          put("kind", "voice")
+        }.toString(),
+      )
+      val payload = JSONObject(response.body)
+
+      assertEquals(200, response.statusCode)
+      assertEquals(".opencray/chat-media/session-1/hash/voice-note.m4a", capturedRelativePath)
+      assertEquals("voice", capturedKind)
+      assertEquals("voice-note.m4a", payload.getString("displayName"))
+      assertEquals("recordings", payload.getString("collection"))
+      assertEquals("content://media/audio/42", payload.getString("uri"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun exposesSoulVisualIdentityOverLoopbackHttp() {
     val server = localRuntimeServerWithLocalGateway(
       object : UnsupportedLocalGateway() {
@@ -1072,6 +1117,39 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun submitChatMessageRoutePreservesArtifactAndChatAttachmentReferences() {
+    val chatGateway = RecordingChatRuntimeGateway()
+    val server = localRuntimeServer(chatRuntimeGatewayResolver = { chatGateway })
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/submit_chat_message",
+        body = JSONObject().apply {
+          put("text", "Reuse prior attachments")
+          put(
+            "attachments",
+            JSONArray().apply {
+              put(JSONObject().apply { put("artifactId", "artifact-diagram-1") })
+              put(JSONObject().apply { put("chatAttachmentId", "chat-attachment-1") })
+            },
+          )
+        }.toString(),
+      )
+
+      assertEquals(200, response.statusCode)
+      assertEquals("Reuse prior attachments", chatGateway.submittedText)
+      assertEquals(2, chatGateway.submittedAttachments.size)
+      assertEquals("artifact-diagram-1", chatGateway.submittedAttachments[0].artifactId)
+      assertEquals("chat-attachment-1", chatGateway.submittedAttachments[1].chatAttachmentId)
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun exposesChatRunSnapshotOverLoopbackHttp() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-route"))
     val activeSessionId = chatStore.loadState().activeSession.sessionId
@@ -1173,6 +1251,12 @@ class OpenCrayLocalRuntimeServerTest {
         finishedAtEpochMs = 1_001L,
         metadata = task.metadata + mapOf(
           "contextMemoryFlushOutcome" to "written",
+          "contextMemoryFlushTriggerStage" to "pre_compaction",
+          "contextMemoryFlushExecutionMode" to "inline",
+          "contextMemoryFlushContextWindowTokens" to "128000",
+          "contextMemoryFlushAutoCompactTokenLimit" to "115200",
+          "contextMemoryFlushEstimatedReplayTokens" to "116000",
+          "contextMemoryFlushTokenThresholdTriggered" to "true",
           "contextMemoryFlushOmittedMessageCount" to "4",
           "contextMemoryFlushOmittedCharCount" to "512",
           "contextMemoryFlushSignature" to "flush-signature-123",
@@ -1197,6 +1281,12 @@ class OpenCrayLocalRuntimeServerTest {
 
       assertEquals(200, response.statusCode)
       assertEquals("written", memoryFlush.getString("outcome"))
+      assertEquals("pre_compaction", memoryFlush.getString("triggerStage"))
+      assertEquals("inline", memoryFlush.getString("executionMode"))
+      assertEquals(128000, memoryFlush.getInt("contextWindowTokens"))
+      assertEquals(115200, memoryFlush.getInt("autoCompactTokenLimit"))
+      assertEquals(116000, memoryFlush.getInt("estimatedReplayTokens"))
+      assertTrue(memoryFlush.getBoolean("tokenThresholdTriggered"))
       assertEquals(4, memoryFlush.getInt("omittedMessageCount"))
       assertEquals(512, memoryFlush.getInt("omittedCharCount"))
       assertEquals("flush-signature-123", memoryFlush.getString("signature"))
@@ -1250,6 +1340,7 @@ class OpenCrayLocalRuntimeServerTest {
           "contextActiveSkillInvocationControl" to "explicit-only",
           "contextActiveSkillExecutionContext" to "inline",
           "contextActiveSkillActivationSource" to "skill_read",
+          "contextActiveSkillPinned" to "true",
           "contextActiveSkillToolRestrictionEnabled" to "true",
           "contextActiveSkillAllowedTools" to "read,write",
           "contextActiveSkillTruncated" to "false",
@@ -1285,6 +1376,7 @@ class OpenCrayLocalRuntimeServerTest {
       assertEquals("fork", skills.getJSONObject(1).getString("executionContext"))
       assertEquals("ui-ux-pro-max", activeSkill.getString("name"))
       assertEquals("skill_read", activeSkill.getString("activationSource"))
+      assertTrue(activeSkill.getBoolean("pinned"))
       assertTrue(activeSkill.getBoolean("toolRestrictionEnabled"))
       assertEquals("read", activeSkill.getJSONArray("allowedToolKeys").getString(0))
     } finally {
@@ -1323,6 +1415,12 @@ class OpenCrayLocalRuntimeServerTest {
         finishedAtEpochMs = 1_001L,
         metadata = task.metadata + mapOf(
           "contextDurableCompactionCompactedThisRun" to "true",
+          "contextDurableCompactionTriggerStage" to "pre_compaction",
+          "contextDurableCompactionExecutionMode" to "inline",
+          "contextDurableCompactionContextWindowTokens" to "128000",
+          "contextDurableCompactionAutoCompactTokenLimit" to "115200",
+          "contextDurableCompactionEstimatedReplayTokens" to "116000",
+          "contextDurableCompactionTokenThresholdTriggered" to "true",
           "contextDurableCompactionSourceTranscriptMessageCount" to "18",
           "contextDurableCompactionRetainedTranscriptMessageCount" to "12",
           "contextDurableCompactionLatestMessageCount" to "6",
@@ -1347,6 +1445,12 @@ class OpenCrayLocalRuntimeServerTest {
 
       assertEquals(200, response.statusCode)
       assertTrue(durableCompaction.getBoolean("compactedThisRun"))
+      assertEquals("pre_compaction", durableCompaction.getString("triggerStage"))
+      assertEquals("inline", durableCompaction.getString("executionMode"))
+      assertEquals(128000, durableCompaction.getInt("contextWindowTokens"))
+      assertEquals(115200, durableCompaction.getInt("autoCompactTokenLimit"))
+      assertEquals(116000, durableCompaction.getInt("estimatedReplayTokens"))
+      assertTrue(durableCompaction.getBoolean("tokenThresholdTriggered"))
       assertEquals(18, durableCompaction.getInt("sourceTranscriptMessageCount"))
       assertEquals(12, durableCompaction.getInt("retainedTranscriptMessageCount"))
       assertEquals(6, durableCompaction.getInt("latestCompactedMessageCount"))
@@ -2783,6 +2887,8 @@ class OpenCrayLocalRuntimeServerTest {
   private class RecordingChatRuntimeGateway : OpenCrayChatRuntimeGateway {
     var submittedText: String? = null
       private set
+    var submittedAttachments: List<com.opencray.runtime.OpenCrayFinalAttachment> = emptyList()
+      private set
 
     var refreshSandboxSessionInfoCallCount: Int = 0
       private set
@@ -2804,6 +2910,9 @@ class OpenCrayLocalRuntimeServerTest {
     }
 
     override fun loadChatRuntimeSnapshot(): Map<String, Any?> = mapOf("source" to "gateway")
+
+    override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit =
+      { }
 
     override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? = mapOf("runId" to runId)
 
@@ -2853,6 +2962,7 @@ class OpenCrayLocalRuntimeServerTest {
       attachments: List<com.opencray.runtime.OpenCrayFinalAttachment>,
     ): Map<String, Any?>? {
       submittedText = text
+      submittedAttachments = attachments
       return mapOf("submittedText" to text, "attachmentCount" to attachments.size)
     }
 
@@ -2880,6 +2990,11 @@ class OpenCrayLocalRuntimeServerTest {
       listener(loadShellSnapshot())
       return { }
     }
+
+    override fun saveShellDestination(
+      selectedTab: String,
+      settingsSubpage: String?,
+    ) = Unit
   }
 
   private class RecordingSkillsGateway : OpenCraySkillsGateway {
@@ -3009,6 +3124,7 @@ class OpenCrayLocalRuntimeServerTest {
     override fun saveLlmConfig(
       enabled: Boolean,
       streamingEnabled: Boolean?,
+      providerMode: String,
       providerId: String,
       selectedProviderOptionId: String,
       protocol: String,
@@ -3023,7 +3139,25 @@ class OpenCrayLocalRuntimeServerTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
-    ): Map<String, Any?> = mapOf("source" to "gateway-llm-save", "enabled" to enabled)
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
+      selectedOnDeviceModelId: String,
+      onDeviceMaxContextWindow: Int,
+      onDeviceMaxTokens: Int,
+      onDeviceTopK: Int,
+      onDeviceTopP: Double,
+      onDeviceTemperature: Double,
+      onDeviceAccelerator: String,
+      onDeviceThinkingEnabled: Boolean,
+      onDeviceLiteModeEnabled: Boolean,
+    ): Map<String, Any?> = mapOf(
+      "source" to "gateway-llm-save",
+      "enabled" to enabled,
+      "streamingEnabled" to streamingEnabled,
+      "providerMode" to providerMode,
+    )
 
     override fun saveCustomLlmProvider(
       selectedProviderOptionId: String,
@@ -3040,6 +3174,10 @@ class OpenCrayLocalRuntimeServerTest {
       openAiPromptCacheRetention: String?,
       anthropicPromptCachingEnabled: Boolean?,
       anthropicPromptCacheTtl: String?,
+      contextBudgetPreset: String?,
+      contextBudgetReservedOutputTokens: Int?,
+      contextBudgetSafetyMarginTokens: Int?,
+      contextBudgetEffectiveInputPercent: Double?,
     ): Map<String, Any?> = mapOf("source" to "gateway-custom-llm")
 
     override fun validateLlmConfig(
@@ -3050,6 +3188,15 @@ class OpenCrayLocalRuntimeServerTest {
       model: String,
       reasoningEffort: String,
     ): Map<String, Any?> = mapOf("source" to "gateway-llm-validate", "providerId" to providerId)
+
+    override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+      mapOf("source" to "gateway-on-device-download", "modelId" to modelId)
+
+    override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> =
+      mapOf("source" to "gateway-on-device-cancel", "modelId" to modelId)
+
+    override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+      mapOf("source" to "gateway-on-device-delete", "modelId" to modelId)
 
     override fun loadPersonalizationConfig(): Map<String, Any?> =
       mapOf("source" to "gateway-personalization")
@@ -3296,6 +3443,15 @@ class OpenCrayLocalRuntimeServerTest {
         message = "Validation succeeded.",
       )
     }
+
+    override fun downloadOnDeviceModel(modelId: String): LlmConfigSnapshot =
+      EmptyLlmConfigFacade.load()
+
+    override fun cancelOnDeviceModelDownload(modelId: String): LlmConfigSnapshot =
+      EmptyLlmConfigFacade.load()
+
+    override fun deleteOnDeviceModel(modelId: String): LlmConfigSnapshot =
+      EmptyLlmConfigFacade.load()
   }
 
   private class NoOpRuntimeManager : AgentSessionRuntimeManager {
@@ -3653,6 +3809,9 @@ private open class UnsupportedLocalGateway : OpenCrayLocalHostGateway {
   override fun shareWorkspaceEntries(relativePaths: List<String>) {
     throw UnsupportedOperationException()
   }
+
+  override fun saveWorkspaceMediaAttachment(relativePath: String, kind: String): Map<String, Any?> =
+    throw UnsupportedOperationException()
 
   override fun showNativeToast(message: String) {
     throw UnsupportedOperationException()

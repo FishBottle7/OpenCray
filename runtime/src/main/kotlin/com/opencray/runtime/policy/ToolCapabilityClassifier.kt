@@ -8,10 +8,14 @@ internal class ToolCapabilityClassifier {
     "Edit",
     "MultiEdit",
     "ImportFile",
+    "PublishMediaArtifact",
     "workspace_write_file",
     "workspace_import_file",
     "import_chat_attachment",
     "extract_workspace_package",
+    "ScheduledTaskCreate",
+    "ScheduledTaskDelete",
+    "ScheduledTaskUpdate",
     "SkillsAdd",
     "SkillsAddBatch",
     "SkillsUpdate",
@@ -32,7 +36,10 @@ internal class ToolCapabilityClassifier {
     "WebSearch",
     "WebFetch",
     "GenerateImage",
+    "GenerateVideo",
     "SynthesizeSpeech",
+    "PollMediaJob",
+    "CancelMediaJob",
     "sandbox_preview_open",
     "sandbox_session_close",
     -> PolicyToolClass.NETWORK_ACCESS
@@ -58,14 +65,28 @@ internal class ToolCapabilityClassifier {
     "SkillsInspect",
     "SkillsList",
     "SkillsCheck",
-    "sandbox_session_info",
+    "ScheduledTaskList",
+    "ScheduledTaskGet",
+    "session_search",
+    "session_get",
+    "past_session_search",
+    "past_session_get",
     -> PolicyToolClass.READ_FILE
+
+    "sandbox_session_info",
+    -> PolicyToolClass.NETWORK_ACCESS
 
     else -> error("No PolicyToolClass mapping is registered for tool '$toolName'.")
   }
 
   fun classifyCapabilityKind(toolName: String): String = when (toolName) {
     "TodoWrite" -> "todo_management"
+    "ScheduledTaskCreate",
+    "ScheduledTaskList",
+    "ScheduledTaskGet",
+    "ScheduledTaskUpdate",
+    "ScheduledTaskDelete",
+    -> "schedule_task"
 
     "Task",
     "spawn_agent",
@@ -76,8 +97,12 @@ internal class ToolCapabilityClassifier {
     -> "delegate_task"
 
     "GenerateImage",
+    "GenerateVideo",
     "SynthesizeSpeech",
+    "PollMediaJob",
+    "CancelMediaJob",
     "sandbox_session_close",
+    "sandbox_session_info",
     -> "network_access"
 
     "ProcessList",
@@ -90,8 +115,6 @@ internal class ToolCapabilityClassifier {
     -> "read_skill"
 
     "python_runtime_manifest" -> "read_python_runtime"
-
-    "sandbox_session_info" -> "read_sandbox_session"
 
     "SkillsFind",
     "SkillsInspect",
@@ -112,6 +135,10 @@ internal class ToolCapabilityClassifier {
 
     "memory_search",
     "memory_get",
+    "session_search",
+    "session_get",
+    "past_session_search",
+    "past_session_get",
     -> "read_memory"
 
     "ProcessTerminate" -> "process_control"

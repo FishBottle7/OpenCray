@@ -193,7 +193,7 @@ class ContextManagerTest {
   }
 
   @Test
-  fun prepareCarriesStructuredRecentToolObservationLayer() {
+  fun prepareKeepsControlPlaneObservationsInTranscriptReplayInsteadOfRecentObservationLayer() {
     val manager = ContextManager()
 
     val managed = manager.prepare(
@@ -206,22 +206,22 @@ class ContextManagerTest {
           RuntimeConversationMessage(RuntimeConversationRole.USER, "Inspect the repo."),
           RuntimeConversationMessage(
             role = RuntimeConversationRole.TOOL,
-            content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-1","tool_name":"Read","status":"success","content":"README intro","metadata":{"filePath":"README.md","offset":"1","returnedLineCount":"4","totalLineCount":"20","truncated":"false"}}""",
+            content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-1","tool_name":"Task","status":"success","content":"Subagent completed: README says hello.","metadata":{"delegationDescription":"inspect readme","delegationSubagentType":"researcher","delegationContextMode":"minimal","childExecutionState":"completed","childTurnCount":"1","childToolCallCount":"1","childSummaryHeadline":"README says hello."}}""",
             kind = RuntimeConversationMessageKind.TOOL_RESULT,
             toolResult = RuntimeConversationToolResult(
               toolCallId = "call-1",
-              toolName = "Read",
+              toolName = "Task",
               status = "success",
               isError = false,
             ),
           ),
           RuntimeConversationMessage(
             role = RuntimeConversationRole.TOOL,
-            content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-2","tool_name":"Grep","status":"success","content":"src/App.kt:12:needle","metadata":{"pattern":"needle","path":"src","matchCount":"1"}}""",
+            content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-2","tool_name":"SkillsFind","status":"success","content":"ui-ux-pro-max\tremote\tinstall_ref=ui-ux-pro-max\tsource=skills.sh","metadata":{"query":"ui","providerName":"skills.sh","remoteResultCount":"1","localResultCount":"0","resultCount":"1"}}""",
             kind = RuntimeConversationMessageKind.TOOL_RESULT,
             toolResult = RuntimeConversationToolResult(
               toolCallId = "call-2",
-              toolName = "Grep",
+              toolName = "SkillsFind",
               status = "success",
               isError = false,
             ),
@@ -230,15 +230,74 @@ class ContextManagerTest {
       ),
     )
 
-    val observationLayer = requireNotNull(managed.recentToolObservationLayer)
+    assertEquals(null, managed.recentToolObservationLayer)
+    assertTrue(managed.recentToolObservationsText.isBlank())
+    assertFalse(managed.report.recentToolObservationLayerIncluded)
+    assertEquals(0, managed.report.recentToolObservationCount)
+    assertTrue(
+      managed.transcriptWindow.messages.any { message ->
+        message.toolResult?.toolName == "Task" && message.content.contains("README says hello.")
+      },
+    )
+    assertTrue(
+      managed.transcriptWindow.messages.any { message ->
+        message.toolResult?.toolName == "SkillsFind" && message.content.contains("ui-ux-pro-max")
+      },
+    )
+  }
 
-    assertEquals(managed.recentToolObservationsText, observationLayer.text)
-    assertEquals(2, observationLayer.observationCount)
-    assertEquals(0, observationLayer.omittedObservationCount)
-    assertTrue(observationLayer.text.contains("Read file_path=README.md"))
-    assertTrue(observationLayer.text.contains("Grep pattern=needle path=src matches=1"))
-    assertTrue(managed.report.recentToolObservationLayerIncluded)
-    assertEquals(2, managed.report.recentToolObservationCount)
+  @Test
+  fun prepareKeepsWorkspaceDiscoveryInTranscriptReplayInsteadOfRecentObservationLayer() {
+    val manager = ContextManager()
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(),
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(),
+        toolDefinitions = emptyList(),
+        liveConversation = listOf(
+          RuntimeConversationMessage(RuntimeConversationRole.USER, "Inspect the repo."),
+          RuntimeConversationMessage(
+            role = RuntimeConversationRole.TOOL,
+            content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-read","tool_name":"Read","status":"success","content":"README intro","metadata":{"filePath":"README.md","offset":"1","returnedLineCount":"4","totalLineCount":"20","truncated":"false"}}""",
+            kind = RuntimeConversationMessageKind.TOOL_RESULT,
+            toolResult = RuntimeConversationToolResult(
+              toolCallId = "call-read",
+              toolName = "Read",
+              status = "success",
+              isError = false,
+            ),
+          ),
+          RuntimeConversationMessage(
+            role = RuntimeConversationRole.TOOL,
+            content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-list","tool_name":"LS","status":"success","content":"README.md","metadata":{"path":".","entryCount":"1"}}""",
+            kind = RuntimeConversationMessageKind.TOOL_RESULT,
+            toolResult = RuntimeConversationToolResult(
+              toolCallId = "call-list",
+              toolName = "LS",
+              status = "success",
+              isError = false,
+            ),
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(null, managed.recentToolObservationLayer)
+    assertTrue(managed.recentToolObservationsText.isBlank())
+    assertEquals(0, managed.report.recentToolObservationCount)
+    assertFalse(managed.report.recentToolObservationLayerIncluded)
+    assertTrue(
+      managed.transcriptWindow.messages.any { message ->
+        message.toolResult?.toolName == "Read" && message.content.contains("README intro")
+      },
+    )
+    assertTrue(
+      managed.transcriptWindow.messages.any { message ->
+        message.toolResult?.toolName == "LS" && message.content.contains("README.md")
+      },
+    )
   }
 
   @Test
@@ -275,6 +334,81 @@ class ContextManagerTest {
     assertEquals("skill_read", managed.activeSkillCapsule?.activationSource)
     assertTrue(managed.activeSkillText.contains("[Instructions]"))
     assertTrue(managed.activeSkillText.contains("Audit the current interface first"))
+  }
+
+  @Test
+  fun preparePromotesStickyMemoryIntoSeparateCapsule() {
+    val manager = ContextManager()
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(),
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(
+          recalledMemory = MemoryRecallResult(
+            memories = listOf(
+              RetrievedMemory(
+                id = "memory-sticky",
+                kind = MemoryKind.DURABLE_INSTRUCTION,
+                scope = MemoryScope.USER,
+                status = MemoryStatus.ACTIVE,
+                content = "Always keep the project safety checklist pinned.",
+                lastConfirmedAtEpochMs = 10L,
+                sticky = true,
+                score = 700,
+              ),
+              RetrievedMemory(
+                id = "memory-dynamic",
+                kind = MemoryKind.PROJECT_FACT,
+                scope = MemoryScope.WORKSPACE,
+                status = MemoryStatus.ACTIVE,
+                content = "Project tests use the Gradle wrapper.",
+                lastConfirmedAtEpochMs = 11L,
+                score = 650,
+              ),
+            ),
+            matchedRecordCount = 2,
+            trace = MemoryRecallTrace(
+              queryTerms = listOf("project", "safety"),
+              selected = listOf(
+                MemoryRecallSelectedTrace(
+                  id = "memory-sticky",
+                  kind = MemoryKind.DURABLE_INSTRUCTION,
+                  scope = MemoryScope.USER,
+                  score = 700,
+                  matchedTerms = listOf("safety"),
+                  contentPreview = "Always keep the project safety checklist pinned.",
+                ),
+                MemoryRecallSelectedTrace(
+                  id = "memory-dynamic",
+                  kind = MemoryKind.PROJECT_FACT,
+                  scope = MemoryScope.WORKSPACE,
+                  score = 650,
+                  matchedTerms = listOf("project"),
+                  contentPreview = "Project tests use the Gradle wrapper.",
+                ),
+              ),
+            ),
+          ),
+        ),
+        toolDefinitions = emptyList(),
+        liveConversation = emptyList(),
+      ),
+    )
+
+    assertEquals(listOf("memory-dynamic"), managed.selectedMemory.memories.map { memory -> memory.id })
+    assertFalse(managed.memoryText.contains("Always keep the project safety checklist pinned."))
+    assertTrue(managed.memoryText.contains("Project tests use the Gradle wrapper."))
+    assertEquals(listOf("memory-sticky"), managed.stickyMemoryCapsule.memories.map { memory -> memory.id })
+    assertTrue(managed.stickyMemoryText.contains("Always keep the project safety checklist pinned."))
+    assertFalse(managed.stickyMemoryText.contains("Project tests use the Gradle wrapper."))
+    assertEquals(2, managed.report.matchedMemoryRecordCount)
+    assertEquals(1, managed.report.injectedMemoryRecordCount)
+    assertEquals(1, managed.report.omittedMemoryRecordCount)
+    assertEquals(listOf("memory-dynamic"), managed.report.memoryRecallTrace.selected.map { trace -> trace.id })
+    assertEquals(1, managed.report.stickyMemoryTrace.injectedRecordCount)
+    assertEquals(0, managed.report.stickyMemoryTrace.omittedRecordCount)
+    assertEquals(listOf("memory-sticky"), managed.report.stickyMemoryTrace.selectedRecordIds)
   }
 
   @Test
@@ -431,7 +565,7 @@ class ContextManagerTest {
   }
 
   @Test
-  fun prepareSynthesizesWorkingStateFromTaskAndRecentObservations() {
+  fun prepareDoesNotBuildWorkingStateFromTaskInputAndReplayOwnedControlPlaneResultsAlone() {
     val manager = ContextManager()
 
     val managed = manager.prepare(
@@ -445,11 +579,11 @@ class ContextManagerTest {
           RuntimeConversationMessage(RuntimeConversationRole.USER, "Inspect the recent runtime context pipeline."),
           RuntimeConversationMessage(
             role = RuntimeConversationRole.TOOL,
-            content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-1","tool_name":"Read","status":"success","content":"intro","metadata":{"filePath":"runtime/context/PromptAssembler.kt","offset":"1","limit":"80","returnedLineCount":"40","totalLineCount":"420","truncated":"false"}}""",
+            content = """{"run_id":"run-1","task_id":"task-1","turn":1,"tool_call_id":"call-1","tool_name":"Task","status":"success","content":"Subagent completed: PromptAssembler was inspected.","metadata":{"delegationDescription":"inspect runtime pipeline","delegationSubagentType":"researcher","delegationContextMode":"minimal","childExecutionState":"completed","childTurnCount":"1","childToolCallCount":"1","childSummaryHeadline":"PromptAssembler was inspected."}}""",
             kind = RuntimeConversationMessageKind.TOOL_RESULT,
             toolResult = RuntimeConversationToolResult(
               toolCallId = "call-1",
-              toolName = "Read",
+              toolName = "Task",
               status = "success",
               isError = false,
             ),
@@ -458,16 +592,12 @@ class ContextManagerTest {
       ),
     )
 
-    assertTrue(managed.workingStateText.contains("task_id=task-context"))
-    assertTrue(managed.workingStateText.contains("run_id=run-context-1"))
-    assertTrue(managed.workingStateText.contains("primary_goal=Inspect the recent runtime context pipeline."))
-    assertTrue(managed.workingStateText.contains("[Recent Actions]"))
-    assertTrue(managed.workingStateText.contains("Read file_path=runtime/context/PromptAssembler.kt"))
-    assertTrue(managed.report.workingStateTrace.included)
-    assertTrue(managed.report.workingStateTrace.objectivePresent)
-    assertEquals(1, managed.report.workingStateTrace.recentActionCount)
-    assertTrue(managed.report.workingStateTrace.synthesizedFromTaskInput)
-    assertTrue(managed.report.workingStateTrace.synthesizedFromRecentObservations)
+    assertTrue(managed.workingStateText.isBlank())
+    assertFalse(managed.report.workingStateTrace.included)
+    assertFalse(managed.report.workingStateTrace.objectivePresent)
+    assertEquals(0, managed.report.workingStateTrace.recentActionCount)
+    assertFalse(managed.report.workingStateTrace.synthesizedFromTaskInput)
+    assertFalse(managed.report.workingStateTrace.synthesizedFromRecentObservations)
     assertFalse(managed.report.workingStateTrace.synthesizedFromTodoSnapshot)
   }
 

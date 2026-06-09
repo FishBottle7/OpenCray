@@ -22,6 +22,8 @@ In the current Codex sandbox environment, `flutter` tool commands such as `flutt
 
 ## Commit & Pull Request Guidelines
 Git history uses Conventional Commit prefixes such as `feat:` and `fix:`. In this repository, larger changes should be committed with a Chinese, standards-compliant summary, for example `feat: 重构文件工作台移动端布局`. Keep commits focused and include tests with the change when practical. Pull requests should describe the user-visible impact, list verification commands, link related issues, and include screenshots or recordings for UI updates.
+When Codex completes code or documentation changes for a user request, run the practical verification for that change and create a focused git commit before ending the turn, unless the user explicitly asks not to commit.
+When the user asks Codex to complete changes "in a branch", create or use a `.codex` worktree for that branch and do the work there. Do not check out feature branches in the repository root; keep the root checkout on `master`.
 
 ## Security & Configuration Notes
 Do not commit secrets, local SDK paths, or device-specific config. Treat workspace, policy, and credential flows as security-sensitive areas and preserve existing safeguards when editing them.
