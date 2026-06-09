@@ -434,15 +434,15 @@ Acceptance:
 
 ## Screens To Prioritize
 
-Current focus: Skills.
+Current focus: Chat main surface polish.
 
-1. Skills: segmented control, Manage/Install horizontal switching, search result
+1. Chat: message hierarchy, run trace status language, approval surface,
+   composer combinations, session drawer, attachment and preview surfaces.
+2. Skills: segmented control, Manage/Install horizontal switching, search result
    reveal, install/manage state changes.
-2. Chat: composer focus, add-menu expansion, action rail, drawer,
-   streaming/active work feedback.
-3. Settings: home-to-subpage navigation, option sheets, inline sections.
-4. Files: preview/create dialogs, editor/preview transitions, busy/selection
+3. Files: preview/create dialogs, editor/preview transitions, busy/selection
    states.
+4. Settings: home-to-subpage navigation, option sheets, inline sections.
 
 ## Current Revision Plan: Skills And Chat Composer
 
@@ -700,6 +700,444 @@ Current revision verification notes:
 - Debug APK rebuilt at `build/apk/OpenCray-debug.apk`.
 - APK SHA256:
   `C9B6B1DC8440E2582220ACF1D3111F1290236155E6A07CA01AC369D8FE6C048E`.
+
+## Next Revision Plan: Chat Main Surface Polish
+
+This plan focuses on Chat after the composer add-menu pass. The goal is not to
+add more animation everywhere. The goal is to make the Chat surface easier to
+scan while preserving the calm productivity tone: messages stay primary,
+runtime/tool state stays explanatory, approvals feel distinct and serious, and
+secondary surfaces return along the path they entered.
+
+Local UI guidance used for this pass:
+
+- Respect reduced motion for all spatial movement.
+- Animate only the important state changes in a view.
+- Keep motion in the 150-300ms range unless a longer active-work shimmer is
+  tied to real ongoing work.
+- Avoid generic bounce/pop treatments for routine productivity UI.
+
+### Chat Header And Summary Hierarchy
+
+Files:
+
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+
+Current behavior:
+
+- `_ChatScrollContent` renders the large title, summary card, then message list
+  with fixed vertical gaps.
+- `_SummaryCard` competes with the first messages when the thread is active,
+  especially after the user has already entered a conversation.
+- The top glass bar reacts to scroll, but the title/summary transition does not
+  yet help the user understand whether they are at the start of a thread or deep
+  in the transcript.
+
+Target behavior:
+
+- Empty/new thread: keep the title and summary more prominent.
+- Active thread: make the summary quieter so the message list owns attention.
+- When scrolling down, the header should visually settle into the top bar rather
+  than feeling like a separate large block above the transcript.
+
+Implementation details:
+
+- Add a header state model derived from scroll offset and thread content:
+  - empty thread
+  - active thread at top
+  - active thread scrolled
+- In active threads, reduce the summary card emphasis:
+  - smaller vertical gap before message list
+  - lighter card surface or border-only treatment
+  - optional collapse to one-line host/runtime status after scroll threshold
+- Use existing `OpenCrayMotion.micro` or `OpenCrayMotion.expand` for header
+  height/color transitions.
+- Keep the large title readable at 360dp and do not introduce a sticky hero.
+
+Acceptance:
+
+- First screenful still feels calm on a new chat.
+- In a populated chat, the first visible message is not pushed too far down by
+  repeated chrome.
+- Header changes do not cause scroll jumps.
+
+### Message List Insertions And Group Rhythm
+
+Files:
+
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+
+Current behavior:
+
+- `_MessageList` builds a static `Column`.
+- New messages, runtime traces, timestamps, and timeline pills appear as list
+  children without an explicit insertion motion.
+- Bubbles use fixed max widths (`252` inbound, `236` outbound), which can feel
+  narrow on larger phones while still being close to the spec on compact phones.
+
+Target behavior:
+
+- New assistant/user messages should appear as transcript insertions, not page
+  pops.
+- Runtime trace insertion should feel attached to the message or run that caused
+  it.
+- Message group spacing should stay consistent across plain text, attachments,
+  timeline pills, and traces.
+
+Implementation details:
+
+- Introduce a lightweight message-list item wrapper for message, trace, timeline,
+  and timestamp rows.
+- Add keyed insertion animation only for newly added rows:
+  - vertical reveal from the row's natural location
+  - small opacity change
+  - no horizontal slide for ordinary text bubbles
+- For messages with attachments, keep the bubble body stable and animate only
+  attachment preview loading/replacement.
+- Review bubble max-width calculation against the layout spec:
+  - compact width: preserve current readable width
+  - standard/large phone: allow up to about 78% of content width
+- Keep selection mode layout stable; selection controls should not resize the
+  bubble content column.
+
+Acceptance:
+
+- Streaming and final assistant messages do not flash or jump.
+- New run traces insert near their cause without stealing the whole viewport.
+- Message text and attachment rows do not overlap during insertion.
+
+### Run Trace Status Language
+
+Files:
+
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+
+Current behavior:
+
+- `_RunTraceBubble` is visually lightweight, but it mixes multiple concerns:
+  status line, inline interrupt/retry actions, sandbox session card, preview
+  card, and fullscreen inspector entry.
+- `_RunTraceStatusLine` uses a shimmer for active traces, but all active states
+  can read similarly even when they mean different things.
+- Inline trace cards can compete with agent messages when a run has many steps.
+
+Target behavior:
+
+- Runtime/tool state should read as a secondary process lane under the message
+  flow.
+- Active, waiting for approval, high-risk, retryable, terminal, and preview-ready
+  states should have distinct but restrained visual treatment.
+- Expanding to the fullscreen inspector should feel like drilling into a process,
+  not opening an unrelated dialog.
+
+Implementation details:
+
+- Create a compact run-trace visual grammar:
+  - active: subtle moving text or small progress line only while work is live
+  - waiting approval: amber/blue waiting capsule, no shimmer
+  - high risk: warm border/accent, no aggressive fill
+  - terminal: muted dot/check with calmer text
+  - retryable/error: restrained warning accent plus retry affordance
+- Split `_RunTraceBubble` into clearer internal sections:
+  - status row
+  - actions row
+  - optional session/preview cards
+- Animate run trace state changes with color/size only:
+  - live -> terminal: shimmer stops, dot settles, text fades to terminal color
+  - live -> approval: status row expands to expose approval-linked action
+  - retryable: retry action reveals vertically from the status row
+- Keep fullscreen inspector entry tied to the status row:
+  - tap row opens inspector
+  - dialog/sheet transition should originate from row context where practical
+  - reduced motion uses fade only
+- Ensure shimmer respects `OpenCrayMotion.reduce(context)`, not only
+  `MediaQuery.disableAnimations`.
+
+Acceptance:
+
+- Users can distinguish "thinking", "waiting for approval", "failed/retry", and
+  "done" without reading the full trace body.
+- Long runtime histories do not visually overpower assistant messages.
+- Reduced-motion mode has no active shimmer.
+
+### Approval Surface
+
+Files:
+
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+
+Current behavior:
+
+- `_PendingApprovalOverlaySurface` uses a glass surface with stacked queued
+  approval previews.
+- Approval action buttons are presented in one row, including reject,
+  approve-for-session, and approve.
+- High-risk state has different color, but approval severity and queue movement
+  could be clearer.
+
+Target behavior:
+
+- Approval should feel like a focused blocking decision anchored above the
+  composer.
+- Queued approvals should be visible but secondary.
+- High-risk approval should be visually serious without becoming loud.
+- Resolving one approval should move the next queued approval forward with a
+  clear stack-to-front motion.
+
+Implementation details:
+
+- Add approval state transitions:
+  - new approval enters from composer/top edge of composer stack
+  - active approval resolves by fading/sliding upward a small distance
+  - queued approval moves forward from the preview stack to active position
+- Tighten action hierarchy:
+  - destructive/reject remains secondary
+  - approve-for-session is outlined and clear
+  - approve is the only filled action
+- Keep button labels stable; if three buttons do not fit at 360dp, stack the
+  secondary action row above the primary approve row.
+- Add explicit busy state motion:
+  - button content fades to progress label/spinner
+  - card remains stable, no full surface pulse
+- For high-risk:
+  - warm border and small severity chip
+  - avoid a full orange card fill
+
+Acceptance:
+
+- User can tell which approval is active and how many are queued.
+- Approval card does not hide the composer state unexpectedly.
+- Three-action approval layouts do not clip labels on compact phones.
+
+### Composer Combination States
+
+Files:
+
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+
+Current behavior:
+
+- The recent pass improved add-menu expansion, surface material transition, and
+  plus-button active transition.
+- Composer can still combine TODO, attachments, command options, add menu,
+  interrupt confirm, focus outline, and disabled/busy send states.
+- These combinations may create dense stacked surfaces near the screen bottom.
+
+Target behavior:
+
+- Composer should keep one clear primary row: text field, plus, send/interrupt.
+- Secondary composer content should have an order that reflects causality:
+  TODO/command context above, attachments next, input row, add tray below input
+  row.
+- The bottom edge remains anchored in all combinations.
+
+Implementation details:
+
+- Define a single composer stack order:
+  1. TODO / active task context
+  2. command options
+  3. attachments
+  4. input row
+  5. add tray
+- Add focused state tests for combinations:
+  - add tray + attachment
+  - add tray + command options
+  - interrupt confirm replaces input row
+  - TODO surface plus attachment
+- Make attachment row insertion directional:
+  - first attachment reveals from the input row's top edge
+  - removal collapses the card without shifting the input row horizontally
+- Use one material progress source per composer state; avoid multiple surfaces
+  independently changing white/glass/background.
+
+Acceptance:
+
+- Composer never has two competing white cards stacked inside each other.
+- Text field bottom position stays stable when secondary content changes.
+- Add tray, attachments, and command options do not overlap on compact phones.
+
+### Attachments And Preview Surfaces
+
+Files:
+
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+
+Current behavior:
+
+- Chat supports inline image groups, file tiles, voice attachments, composer
+  attachments, and text/image preview dialogs.
+- Preview surfaces exist, but attachment-to-preview continuity is limited.
+
+Target behavior:
+
+- Attachment previews should feel connected to the item that opened them.
+- Inline attachments should be visibly secondary to the message text but still
+  easy to inspect.
+- Loading thumbnails should avoid layout shifts.
+
+Implementation details:
+
+- Give image/file/voice attachment tiles stable aspect/height constraints before
+  async preview data arrives.
+- Animate attachment preview readiness with opacity/content replacement only.
+- For text/image preview dialogs:
+  - keep modal behavior, but use shared route/dialog motion tokens
+  - reduce center scale where the preview is opened from a visible tile
+  - consider a tile-origin fade/expand only if it can be done without heavy
+    layout work
+- Keep markdown/text selection affordances visible in text preview.
+
+Acceptance:
+
+- Image thumbnails do not resize the bubble after data arrives.
+- Opening and closing previews does not feel like an unrelated center pop.
+- Voice waveform interaction remains stable while playback progress changes.
+
+### Session Drawer And Session List
+
+Files:
+
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+
+Current behavior:
+
+- Session drawer now opens/closes from the left.
+- Drawer uses a fixed white panel, a CTA, and a list of session tiles.
+- Current, unread, running, failed, and long-press action states can be more
+  legible.
+
+Target behavior:
+
+- Drawer should read as a session switcher with clear current/running/unread
+  status.
+- Selecting a session should show immediate local selection feedback before the
+  host snapshot arrives.
+- Closing the drawer should always return left, including after new-session or
+  session-select actions.
+
+Implementation details:
+
+- Add selected-session treatment:
+  - subtle background fill
+  - active left rail or dot
+  - stable text weight change
+- Distinguish status markers:
+  - unread dot/count
+  - running small progress dot or pill
+  - failed/retryable muted warning marker
+- Add row-level press feedback with `OpenCrayMotion.micro`; avoid scale changes
+  that shift list layout.
+- If session selection triggers a host-backed load, keep the drawer row selected
+  and close only after the local pending state is visible.
+
+Acceptance:
+
+- Current session is obvious in the drawer.
+- Running/unread state is scannable without reading every preview.
+- Fast session switching does not flash old thread seed content.
+
+### Selection And Message Menu
+
+Files:
+
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+- `flutter_app/test/chat_message_menu_test.dart`
+
+Current behavior:
+
+- Long press opens a message menu overlay.
+- Selection mode changes toolbar and adds selection controls.
+- Text selection and message selection are both present, so state transitions
+  must be especially clear.
+
+Target behavior:
+
+- Long-press menu should feel anchored to the pressed bubble.
+- Entering selection mode should explain that the user is now selecting whole
+  messages, not markdown text.
+- Exiting selection mode should restore normal bubble spacing without a jump.
+
+Implementation details:
+
+- Anchor menu transition to the message bubble rect:
+  - menu fades/slides from the bubble side
+  - dismissed menu returns to the same origin
+- Selection controls should reveal from the row side, not pop over text.
+- Toolbar transition:
+  - normal toolbar -> selection toolbar uses cross-fade plus slight vertical
+    settle
+  - no width changes in bottom nav or composer
+- Keep text selection highlight unchanged when markdown text is selected; only
+  whole-message selection shows row controls.
+
+Acceptance:
+
+- It is obvious whether the user is selecting text or whole messages.
+- Message menu does not obscure the selected text more than necessary.
+- Selection mode works on compact phones without horizontal clipping.
+
+### Next Chat Revision Checklist
+
+Planning:
+
+- [ ] Audit current Chat screenshots on compact phone width for header,
+  transcript, run trace, approval, drawer, composer, and attachments.
+- [ ] Choose which Chat sub-area to implement first after this plan.
+
+Header and transcript:
+
+- [ ] Add active-thread header/summary visual states.
+- [ ] Add keyed message/trace insertion wrappers.
+- [ ] Review bubble width behavior against 78% content-width target.
+
+Run trace:
+
+- [ ] Define compact run-trace state visual grammar.
+- [ ] Split run trace rendering into status, actions, and optional preview
+  sections.
+- [ ] Animate live -> terminal, live -> approval, and retryable transitions.
+- [ ] Ensure run trace shimmer uses shared reduced-motion helper.
+
+Approval:
+
+- [ ] Add approval stack transition for queued approvals moving forward.
+- [ ] Tighten approval action layout for 360dp.
+- [ ] Add explicit busy transition for approval actions.
+- [ ] Refine high-risk approval surface treatment.
+
+Composer:
+
+- [ ] Lock composer stack order across TODO, commands, attachments, input, and
+  add tray.
+- [ ] Add tests for mixed composer states.
+- [ ] Animate attachment insertion/removal from the input row edge.
+
+Attachments and preview:
+
+- [ ] Stabilize attachment preview dimensions before async data arrives.
+- [ ] Normalize text/image preview dialog motion with shared tokens.
+- [ ] Keep voice waveform progress from shifting tile layout.
+
+Session drawer:
+
+- [ ] Add current/running/unread/failed visual states to session rows.
+- [ ] Add row-level press/selection feedback.
+- [ ] Verify session selection never flashes seed content.
+
+Selection/menu:
+
+- [ ] Anchor message menu transition to the pressed bubble.
+- [ ] Clarify whole-message selection versus markdown text selection states.
+- [ ] Add focused widget tests for toolbar/menu transitions.
+
+Verification:
+
+- [ ] Run `dart analyze flutter_app`.
+- [ ] Run focused Chat widget tests for the sub-area changed.
+- [ ] Run message menu tests if selection/menu is changed.
+- [ ] Run shell tab state test if message list persistence or scroll state is
+  touched.
+- [ ] Build debug APK after implementation.
 
 ## Acceptance Criteria
 
