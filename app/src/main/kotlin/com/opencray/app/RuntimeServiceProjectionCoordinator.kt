@@ -27,6 +27,21 @@ internal interface RuntimeServiceProjectionCoordinator {
   fun onInterruptedRunRepairResult(result: RuntimeServiceInterruptedRunRepairResult) = Unit
 
   fun currentOwnerLease(): RuntimeServiceOwnerLease? = null
+
+  fun tryAcquireOwnerLease(): Boolean = true
+}
+
+internal object NoOpRuntimeServiceProjectionCoordinator : RuntimeServiceProjectionCoordinator {
+  override fun bindServiceLifecycle(serviceLifecycle: RuntimeServiceLifecycleDescriptor) = Unit
+
+  override fun start() = Unit
+
+  override fun persistProjectionSnapshot(
+    workState: RuntimeServiceWorkState?,
+    keepAliveState: RuntimeServiceKeepAliveState?,
+  ) = Unit
+
+  override fun onScheduledDispatchOutcome(outcome: ScheduledTaskDispatchOutcome) = Unit
 }
 
 internal class DefaultRuntimeServiceProjectionCoordinator(
@@ -245,6 +260,8 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
   override fun currentOwnerLease(): RuntimeServiceOwnerLease? = synchronized(lock) {
     currentOwnerLease
   }
+
+  override fun tryAcquireOwnerLease(): Boolean = writeOwnerLeaseHeartbeat() != null
 
   private fun onServiceWorkStateChanged(workState: RuntimeServiceWorkState) {
     persistProjectionSnapshot(workState = workState)

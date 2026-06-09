@@ -29,6 +29,8 @@ internal data class OpenCrayAgentRuntimeServiceBootstrap(
   val executionCoordinator: RuntimeServiceExecutionCoordinator,
   val wakeCommandDispatcher: RuntimeServiceWakeCommandDispatcher,
   override val binderEndpoint: RuntimeServiceBinderEndpoint,
+  val projectionCoordinator: RuntimeServiceProjectionCoordinator =
+    NoOpRuntimeServiceProjectionCoordinator,
 ) : RuntimeServiceShellAttachment {
   override fun resetRuntimeOwner() {
     resetRuntimeOwnerAction()
@@ -48,6 +50,9 @@ internal data class OpenCrayAgentRuntimeServiceBootstrap(
     intent: Intent?,
     startId: Int,
   ) {
+    if (!projectionCoordinator.tryAcquireOwnerLease()) {
+      return
+    }
     executionCoordinator.onStartCommand(startId)
     wakeCommandDispatcher.dispatch(intent)
   }
@@ -124,5 +129,6 @@ internal fun openCrayAgentRuntimeServiceBootstrap(
     executionCoordinator = executionCoordinator,
     wakeCommandDispatcher = wakeCommandDispatcher,
     binderEndpoint = binderEndpoint,
+    projectionCoordinator = bootstrapState.executionCoordinatorDependencies.projectionCoordinator,
   )
 }

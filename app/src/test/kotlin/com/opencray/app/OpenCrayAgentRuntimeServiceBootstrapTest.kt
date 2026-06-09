@@ -1468,6 +1468,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     val identityStore = FileBackedRuntimeControllerIdentityStore.fromRootDirectory(
       temporaryFolder.newFolder("execution-controller-durable-identity-store"),
     )
+    val runtimeManager = RecordingAgentSessionRuntimeManager()
     val provider = ProcessScopedRuntimeServiceExecutionControllerProvider(
       runtimeServiceProcessBootstrap = { },
       runtimeServiceRetainedShellControlFactory = { testRuntimeServiceRetainedShellControl() },
@@ -1482,6 +1483,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
               runtimeControllerId = runtimeControllerLifecycle.controllerInstanceId,
               durableRuntimeControllerId = runtimeControllerLifecycle.durableControllerId,
             ),
+            sessionRuntimeManager = runtimeManager,
           ),
         )
       },
@@ -1506,6 +1508,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
               runtimeControllerId = runtimeControllerLifecycle.controllerInstanceId,
               durableRuntimeControllerId = runtimeControllerLifecycle.durableControllerId,
             ),
+            sessionRuntimeManager = runtimeManager,
           ),
         )
       },
@@ -3176,6 +3179,31 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun runtimeServiceBootstrapSkipsStartCommandWhenOwnerLeaseIsNotHeld() {
+    val executionCoordinator = RecordingRuntimeServiceExecutionCoordinator()
+    val wakeDispatcher = RecordingRuntimeServiceWakeCommandDispatcher()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator(
+      ownerLeaseAcquired = false,
+    )
+    val bootstrap = OpenCrayAgentRuntimeServiceBootstrap(
+      shellControlBundle = defaultShellControlBundle(),
+      transportBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
+        gatewayBundle = testServiceGatewayBundle(),
+      ),
+      executionCoordinator = executionCoordinator,
+      wakeCommandDispatcher = wakeDispatcher,
+      binderEndpoint = RecordingRuntimeServiceBinderEndpoint(),
+      projectionCoordinator = projectionCoordinator,
+    )
+
+    bootstrap.onStartCommand(Intent("runtime-shell-start"), startId = 12)
+
+    assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
+    assertTrue(executionCoordinator.startIds.isEmpty())
+    assertEquals(0, wakeDispatcher.dispatchCallCount)
+  }
+
+  @Test
   fun runtimeServiceShellControllerAttachIsIdempotentWithinSingleShellInstance() {
     val context = MinimalContext()
     val mainHandler = Handler()
@@ -4412,6 +4440,43 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun defaultWakeDispatcherSkipsWriteWhenOwnerLeaseIsNotHeld() {
+    val context = MinimalContext()
+    var interruptedTaskIdOrRunId: String? = null
+    val gatewayBundle = testServiceGatewayBundle(
+      interruptChatRun = { identifier ->
+        interruptedTaskIdOrRunId = identifier
+      },
+    )
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator(
+      ownerLeaseAcquired = false,
+    )
+    val dispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
+      appContext = context,
+      dispatcherDependencies = testServiceHost(
+        temporaryFolder.newFolder("wake-dispatcher-non-owner"),
+      ).toRuntimeServiceBootstrapState().wakeCommandDispatcherDependencies,
+      gatewayBundle = gatewayBundle,
+      projectionCoordinator = projectionCoordinator,
+      wakeIntentParser = RuntimeServiceWakeIntentParser {
+        RuntimeServiceWakeIntentCommand.ChatWrite(
+          OpenCrayChatWriteCommand.InterruptChatRun("run-wake"),
+        )
+      },
+      approvalNotificationDismisser = { _, _ -> },
+    )
+
+    dispatcher.dispatch(null)
+
+    assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
+    assertNull(interruptedTaskIdOrRunId)
+    assertEquals(0, projectionCoordinator.persistCallCount)
+    assertTrue(projectionCoordinator.scheduledDispatchOutcomes.isEmpty())
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
   fun defaultWakeDispatcherNoOpsForUnknownWakeAction() {
     val context = MinimalContext()
     val fixture = pendingApprovalWakeDispatcherFixture(
@@ -4529,6 +4594,44 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(OpenCrayChatWriteDispatchResult.Completed, dispatch)
     assertEquals(1, refreshSandboxSessionInfoCallCount)
     assertEquals(1, projectionCoordinator.persistCallCount)
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
+  fun defaultBinderEndpointRejectsChatWriteWhenOwnerLeaseIsNotHeld() {
+    val serviceHost = testServiceHost(temporaryFolder.newFolder("binder-endpoint-non-owner-chat"))
+    var refreshSandboxSessionInfoCallCount = 0
+    val gatewayBundle = testServiceGatewayBundle(
+      refreshSandboxSessionInfo = { refreshSandboxSessionInfoCallCount += 1 },
+    )
+    val shellStateAccess = RecordingRuntimeServiceShellStateAccess()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator(
+      ownerLeaseAcquired = false,
+    )
+    val endpoint = DefaultRuntimeServiceBinderEndpoint(
+      binderEndpointDependencies = serviceHost.toRuntimeServiceBootstrapState().binderEndpointDependencies,
+      gatewayBundle = gatewayBundle,
+      shellStateAccess = shellStateAccess,
+      projectionCoordinator = projectionCoordinator,
+    )
+    var failureMessage: String? = null
+
+    try {
+      endpoint.dispatchChatWriteCommand(
+        OpenCrayChatWriteCommand.RefreshSandboxSessionInfo,
+      )
+    } catch (expected: IllegalStateException) {
+      failureMessage = expected.message
+    }
+
+    assertEquals(
+      "Runtime service target 'interactive' does not hold the active owner lease.",
+      failureMessage,
+    )
+    assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
+    assertEquals(0, refreshSandboxSessionInfoCallCount)
+    assertEquals(0, projectionCoordinator.persistCallCount)
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
   }
@@ -6783,12 +6886,16 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     override fun probeTwinImportSource(filePath: String): Map<String, Any?> = emptyMap()
   }
 
-  private class RecordingRuntimeServiceProjectionCoordinator : RuntimeServiceProjectionCoordinator {
+  private class RecordingRuntimeServiceProjectionCoordinator(
+    private val ownerLeaseAcquired: Boolean = true,
+  ) : RuntimeServiceProjectionCoordinator {
     var bindCallCount: Int = 0
       private set
     var startCallCount: Int = 0
       private set
     var persistCallCount: Int = 0
+      private set
+    var ownerLeaseAcquireCallCount: Int = 0
       private set
     val scheduledDispatchOutcomes = mutableListOf<ScheduledTaskDispatchOutcome>()
     val interruptedRunRepairResults = mutableListOf<RuntimeServiceInterruptedRunRepairResult>()
@@ -6814,6 +6921,11 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
 
     override fun onInterruptedRunRepairResult(result: RuntimeServiceInterruptedRunRepairResult) {
       interruptedRunRepairResults += result
+    }
+
+    override fun tryAcquireOwnerLease(): Boolean {
+      ownerLeaseAcquireCallCount += 1
+      return ownerLeaseAcquired
     }
   }
 

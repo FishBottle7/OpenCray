@@ -51,6 +51,9 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
   private val nowEpochMsProvider: () -> Long = System::currentTimeMillis,
 ) : RuntimeServiceWakeCommandDispatcher {
   override fun dispatch(intent: Intent?) {
+    if (!projectionCoordinator.tryAcquireOwnerLease()) {
+      return
+    }
     when (val command = wakeIntentParser.parse(intent)) {
       is RuntimeServiceWakeIntentCommand.ChatWrite -> {
         gatewayBundle.dispatchChatWriteCommand(command.command)

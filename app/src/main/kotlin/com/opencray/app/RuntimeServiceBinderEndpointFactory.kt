@@ -57,19 +57,22 @@ internal class DefaultRuntimeServiceBinderEndpoint(
 
   override fun dispatchChatWriteCommand(
     command: OpenCrayChatWriteCommand,
-  ): OpenCrayChatWriteDispatchResult = try {
-    val target = binderEndpointDependencies.chatWriteTargetResolver.targetFor(command)
-    if (target != binderEndpointDependencies.runtimeTarget) {
-      dispatchForwardedChatWriteCommand(
-        target = target,
-        command = command,
-      )
-    } else {
-      dispatchLocalChatWriteCommand(command)
+  ): OpenCrayChatWriteDispatchResult {
+    requireOwnerLease()
+    return try {
+      val target = binderEndpointDependencies.chatWriteTargetResolver.targetFor(command)
+      if (target != binderEndpointDependencies.runtimeTarget) {
+        dispatchForwardedChatWriteCommand(
+          target = target,
+          command = command,
+        )
+      } else {
+        dispatchLocalChatWriteCommand(command)
+      }
+    } finally {
+      refreshWorkState()
+      persistProjectionSnapshot()
     }
-  } finally {
-    refreshWorkState()
-    persistProjectionSnapshot()
   }
 
   private fun dispatchLocalChatWriteCommand(
@@ -110,20 +113,26 @@ internal class DefaultRuntimeServiceBinderEndpoint(
 
   override fun dispatchSkillsWriteCommand(
     command: OpenCraySkillsWriteCommand,
-  ): OpenCraySkillsWriteDispatchResult = try {
-    gatewayBundle.dispatchSkillsWriteCommand(command)
-  } finally {
-    refreshWorkState()
+  ): OpenCraySkillsWriteDispatchResult {
+    requireOwnerLease()
+    return try {
+      gatewayBundle.dispatchSkillsWriteCommand(command)
+    } finally {
+      refreshWorkState()
+    }
   }
 
   override fun loadSettingsGateway(): OpenCraySettingsGateway = gatewayBundle.settingsGateway
 
   override fun dispatchSettingsWriteCommand(
     command: OpenCraySettingsWriteCommand,
-  ): OpenCraySettingsWriteDispatchResult = try {
-    gatewayBundle.dispatchSettingsWriteCommand(command)
-  } finally {
-    refreshWorkState()
+  ): OpenCraySettingsWriteDispatchResult {
+    requireOwnerLease()
+    return try {
+      gatewayBundle.dispatchSettingsWriteCommand(command)
+    } finally {
+      refreshWorkState()
+    }
   }
 
   fun peekRuntimeOwnerLifecycle(): Map<String, Any?> =
@@ -155,5 +164,12 @@ internal class DefaultRuntimeServiceBinderEndpoint(
 
   private fun persistProjectionSnapshot() {
     projectionCoordinator.persistProjectionSnapshot()
+  }
+
+  private fun requireOwnerLease() {
+    check(projectionCoordinator.tryAcquireOwnerLease()) {
+      "Runtime service target '${binderEndpointDependencies.runtimeTarget.wireValue}' " +
+        "does not hold the active owner lease."
+    }
   }
 }
