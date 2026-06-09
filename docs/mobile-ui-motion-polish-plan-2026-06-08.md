@@ -1069,12 +1069,28 @@ Implementation details:
   - no width changes in bottom nav or composer
 - Keep text selection highlight unchanged when markdown text is selected; only
   whole-message selection shows row controls.
+- Message delete motion uses the restrained ownership slide-out pattern:
+  - keep the target message in local UI state for the exit motion instead of
+    removing it immediately
+  - inbound bubbles slide 18-24px toward the left; outbound bubbles slide 18-24px
+    toward the right
+  - opacity fades first, then row height collapses through a clipped height
+    factor so surrounding messages settle without overlap
+  - use one outer animation wrapper around the row; do not animate markdown,
+    image, or attachment internals independently
+  - commit the host/local deletion after the exit motion; failed host deletes
+    restore from the latest host snapshot
+  - reduced motion resolves the same path to immediate removal
 
 Acceptance:
 
 - It is obvious whether the user is selecting text or whole messages.
 - Message menu does not obscure the selected text more than necessary.
 - Selection mode works on compact phones without horizontal clipping.
+- Deleting a single inbound or outbound bubble gives directional feedback before
+  the row is removed.
+- Delete animation does not re-layout markdown or attachment contents during the
+  motion.
 
 ### Next Chat Revision Checklist
 
@@ -1088,6 +1104,7 @@ Header and transcript:
 
 - [ ] Add active-thread header/summary visual states.
 - [ ] Add keyed message/trace insertion wrappers.
+- [x] Add restrained directional delete exit motion for message bubbles.
 - [ ] Review bubble width behavior against 78% content-width target.
 
 Run trace:

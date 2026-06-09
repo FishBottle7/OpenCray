@@ -84,6 +84,60 @@ void main() {
   });
 
   testWidgets(
+    'delete action slides inbound bubbles toward the left before removal',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      await tester.pumpWidget(_buildHarness(copy));
+      await tester.pumpAndSettle();
+
+      final targetBubble = find.byKey(
+        const ValueKey<String>('chat-bubble-seed-main-inbound-2'),
+      );
+      final double beforeLeft = tester.getRect(targetBubble).left;
+
+      await _openMessageMenu(tester, targetBubble);
+      await tester.tap(find.text(copy.chatMessageDeleteAction));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 90));
+
+      expect(targetBubble, findsOneWidget);
+      expect(tester.getRect(targetBubble).left, lessThan(beforeLeft));
+
+      await tester.pumpAndSettle();
+
+      expect(targetBubble, findsNothing);
+    },
+  );
+
+  testWidgets(
+    'delete action slides outbound bubbles toward the right before removal',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      await tester.pumpWidget(_buildHarness(copy));
+      await tester.pumpAndSettle();
+
+      final targetBubble = find.byKey(
+        const ValueKey<String>('chat-bubble-seed-main-outbound-2'),
+      );
+      await tester.ensureVisible(targetBubble);
+      await tester.pumpAndSettle();
+      final double beforeRight = tester.getRect(targetBubble).right;
+
+      await _openMessageMenu(tester, targetBubble);
+      await tester.tap(find.text(copy.chatMessageDeleteAction));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 90));
+
+      expect(targetBubble, findsOneWidget);
+      expect(tester.getRect(targetBubble).right, greaterThan(beforeRight));
+
+      await tester.pumpAndSettle();
+
+      expect(targetBubble, findsNothing);
+    },
+  );
+
+  testWidgets(
     'select action enters multi-select mode and highlights the row behind the bubble',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('zh-CN');

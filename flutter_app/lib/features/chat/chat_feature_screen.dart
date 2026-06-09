@@ -2494,6 +2494,9 @@ const Duration chatSandboxSessionAutoRefreshDebounce = Duration(
   milliseconds: 900,
 );
 
+const Duration _chatMessageDeleteMotionDuration = OpenCrayMotion.panel;
+const double _chatMessageDeleteSlideDistance = 22;
+
 @immutable
 class _ActiveChatMessageMenu {
   const _ActiveChatMessageMenu({
@@ -2624,6 +2627,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   final Map<String, SelectedContentRange> _selectedTextRangeByMessageId =
       <String, SelectedContentRange>{};
   final Map<String, Set<String>> _locallyDeletedMessageIdsBySession =
+      <String, Set<String>>{};
+  final Map<String, Set<String>> _deletingMessageIdsBySession =
       <String, Set<String>>{};
   final Set<String> _locallyDeletedSessionIds = <String>{};
   _ActiveChatMessageMenu? _activeMessageMenu;
@@ -2765,6 +2770,100 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _locallyDeletedMessageIdsBySession
         .putIfAbsent(normalizedSessionId, () => <String>{})
         .addAll(messageIds);
+  }
+
+  Set<String> _deletingMessageIdsForSession(String sessionId) {
+    final String normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty) {
+      return const <String>{};
+    }
+    return _deletingMessageIdsBySession[normalizedSessionId] ??
+        const <String>{};
+  }
+
+  void _rememberDeletingMessageIds(
+    String sessionId,
+    Iterable<String> messageIds,
+  ) {
+    final String normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty) {
+      return;
+    }
+    final Set<String> normalizedIds = messageIds
+        .map((messageId) => messageId.trim())
+        .where((messageId) => messageId.isNotEmpty)
+        .toSet();
+    if (normalizedIds.isEmpty) {
+      return;
+    }
+    _deletingMessageIdsBySession
+        .putIfAbsent(normalizedSessionId, () => <String>{})
+        .addAll(normalizedIds);
+  }
+
+  void _forgetDeletingMessageIds(
+    String sessionId,
+    Iterable<String> messageIds,
+  ) {
+    final String normalizedSessionId = sessionId.trim();
+    final Set<String>? deletingIds =
+        _deletingMessageIdsBySession[normalizedSessionId];
+    if (deletingIds == null) {
+      return;
+    }
+    for (final String messageId in messageIds) {
+      deletingIds.remove(messageId.trim());
+    }
+    if (deletingIds.isEmpty) {
+      _deletingMessageIdsBySession.remove(normalizedSessionId);
+    }
+  }
+
+  Set<String> _stageMessageDeleteMotion(
+    String sessionId,
+    Iterable<String> messageIds,
+  ) {
+    final String normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty) {
+      return const <String>{};
+    }
+    final Set<String> visibleMessageIds = _state.messages
+        .map((message) => message.messageId.trim())
+        .where((messageId) => messageId.isNotEmpty)
+        .toSet();
+    final Set<String> alreadyDeleting = _deletingMessageIdsForSession(
+      normalizedSessionId,
+    );
+    final Set<String> deletingIds = messageIds
+        .map((messageId) => messageId.trim())
+        .where(
+          (messageId) =>
+              messageId.isNotEmpty &&
+              visibleMessageIds.contains(messageId) &&
+              !alreadyDeleting.contains(messageId),
+        )
+        .toSet();
+    if (deletingIds.isEmpty) {
+      return const <String>{};
+    }
+    setState(() {
+      _rememberDeletingMessageIds(normalizedSessionId, deletingIds);
+      _removeSelectionForMessages(deletingIds);
+      _suppressNextTransientUiDismiss = false;
+      _activeMessageMenu = null;
+    });
+    return deletingIds;
+  }
+
+  Future<void> _waitForMessageDeleteMotion() async {
+    final Duration duration = OpenCrayMotion.resolve(
+      context,
+      _chatMessageDeleteMotionDuration,
+    );
+    if (duration == Duration.zero) {
+      return;
+    }
+    await Future<void>.delayed(duration);
   }
 
   void _forgetLocallyDeletedMessages(
@@ -3304,18 +3403,31 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (selectedIds.isEmpty) {
       return;
     }
+    final String sessionId = _activeSessionId;
+    final Set<String> deletingIds = _stageMessageDeleteMotion(
+      sessionId,
+      selectedIds,
+    );
+    if (deletingIds.isEmpty) {
+      return;
+    }
+    await _waitForMessageDeleteMotion();
+    if (!mounted) {
+      return;
+    }
     final bridge = widget.bridge;
     if (bridge != null) {
-      final String sessionId = _activeSessionId;
-      final Set<String> deletedIds = selectedIds.toSet();
       setState(() {
-        _rememberLocallyDeletedMessages(sessionId, deletedIds);
-        _removeSelectionForMessages(deletedIds);
+        _forgetDeletingMessageIds(sessionId, deletingIds);
+        _rememberLocallyDeletedMessages(sessionId, deletingIds);
         _state = _applyLocalDeletionTombstones(_state);
       });
-      final Set<String> pendingIds = <String>{...deletedIds};
+      final Set<String> pendingIds = <String>{...deletingIds};
       final Set<String> failedOrUnsentIds = <String>{};
       for (final String messageId in selectedIds) {
+        if (!deletingIds.contains(messageId)) {
+          continue;
+        }
         try {
           await bridge.deleteChatMessage(
             sessionId: sessionId,
@@ -3340,12 +3452,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return;
     }
     setState(() {
+      _forgetDeletingMessageIds(sessionId, deletingIds);
       _state = _state.copyWith(
         messages: _state.messages
-            .where((message) => !selectedIds.contains(message.messageId))
+            .where((message) => !deletingIds.contains(message.messageId))
             .toList(growable: false),
       );
-      _removeSelectionForMessages(selectedIds);
     });
   }
 
@@ -3442,12 +3554,23 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (messageId.isEmpty) {
       return;
     }
+    final String sessionId = _activeSessionId;
+    final Set<String> deletingIds = _stageMessageDeleteMotion(
+      sessionId,
+      <String>{messageId},
+    );
+    if (deletingIds.isEmpty) {
+      return;
+    }
+    await _waitForMessageDeleteMotion();
+    if (!mounted) {
+      return;
+    }
     final bridge = widget.bridge;
     if (bridge != null) {
-      final String sessionId = _activeSessionId;
       setState(() {
-        _rememberLocallyDeletedMessages(sessionId, <String>{messageId});
-        _removeSelectionForMessages(<String>{messageId});
+        _forgetDeletingMessageIds(sessionId, deletingIds);
+        _rememberLocallyDeletedMessages(sessionId, deletingIds);
         _state = _applyLocalDeletionTombstones(_state);
       });
       try {
@@ -3466,12 +3589,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return;
     }
     setState(() {
+      _forgetDeletingMessageIds(sessionId, deletingIds);
       _state = _state.copyWith(
         messages: _state.messages
             .where((candidate) => candidate.messageId != messageId)
             .toList(growable: false),
       );
-      _removeSelectionForMessages(<String>{messageId});
     });
   }
 
@@ -3840,6 +3963,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                               voicePlaybackControllerFactory:
                                   widget.voicePlaybackControllerFactory,
                               selectedMessageIds: _selectedMessageIds,
+                              deletingMessageIds: _deletingMessageIdsForSession(
+                                _sessionIdForState(_state),
+                              ),
                               interruptConfirmRunId: _interruptConfirmRunId,
                               busyInterruptRunIds: _interruptRunIdsInFlight,
                               busyRetryRunIds: _retryRunIdsInFlight,
@@ -11437,6 +11563,7 @@ class _ChatScrollContent extends StatelessWidget {
     required this.showSandboxPreviewCards,
     required this.voicePlaybackControllerFactory,
     required this.selectedMessageIds,
+    required this.deletingMessageIds,
     required this.interruptConfirmRunId,
     required this.busyInterruptRunIds,
     required this.busyRetryRunIds,
@@ -11455,6 +11582,7 @@ class _ChatScrollContent extends StatelessWidget {
   final bool showSandboxPreviewCards;
   final ChatVoicePlaybackControllerFactory? voicePlaybackControllerFactory;
   final Set<String> selectedMessageIds;
+  final Set<String> deletingMessageIds;
   final String? interruptConfirmRunId;
   final Set<String> busyInterruptRunIds;
   final Set<String> busyRetryRunIds;
@@ -11489,6 +11617,7 @@ class _ChatScrollContent extends StatelessWidget {
             messages: state.messages,
             runTraces: state.runTraces,
             selectedMessageIds: selectedMessageIds,
+            deletingMessageIds: deletingMessageIds,
             interruptConfirmRunId: interruptConfirmRunId,
             busyInterruptRunIds: busyInterruptRunIds,
             busyRetryRunIds: busyRetryRunIds,
@@ -12570,6 +12699,7 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
     required this.maxWidth,
     required this.selectionMode,
     required this.isSelected,
+    required this.isDeleting,
     required this.onLongPress,
     required this.onSelectionToggle,
     required this.onTextSelectionChanged,
@@ -12593,6 +12723,7 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
   final double maxWidth;
   final bool selectionMode;
   final bool isSelected;
+  final bool isDeleting;
   final void Function(ChatMessageData, Rect, String?) onLongPress;
   final VoidCallback onSelectionToggle;
   final ValueChanged<OpenCrayMarkdownSelectionSnapshot?> onTextSelectionChanged;
@@ -12630,13 +12761,21 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
       onInterruptRunTrace: onInterruptRunTrace,
       onRetryRunTrace: onRetryRunTrace,
     );
+    final bool isOutgoing = message.kind == ChatMessageKind.outbound;
+    late final Widget row;
     if (!selectionMode) {
-      return Padding(
+      row = Padding(
         padding: const EdgeInsets.only(bottom: 12),
         child: Align(alignment: alignment, child: bubble),
       );
+      return _ChatMessageDeleteMotion(
+        messageId: message.messageId,
+        isDeleting: isDeleting,
+        isOutgoing: isOutgoing,
+        child: row,
+      );
     }
-    return Padding(
+    row = Padding(
       padding: const EdgeInsets.only(bottom: 12),
       child: LayoutBuilder(
         builder: (BuildContext context, BoxConstraints constraints) {
@@ -12694,6 +12833,121 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
         },
       ),
     );
+    return _ChatMessageDeleteMotion(
+      messageId: message.messageId,
+      isDeleting: isDeleting,
+      isOutgoing: isOutgoing,
+      child: row,
+    );
+  }
+}
+
+class _ChatMessageDeleteMotion extends StatefulWidget {
+  const _ChatMessageDeleteMotion({
+    required this.messageId,
+    required this.isDeleting,
+    required this.isOutgoing,
+    required this.child,
+  });
+
+  final String messageId;
+  final bool isDeleting;
+  final bool isOutgoing;
+  final Widget child;
+
+  @override
+  State<_ChatMessageDeleteMotion> createState() =>
+      _ChatMessageDeleteMotionState();
+}
+
+class _ChatMessageDeleteMotionState extends State<_ChatMessageDeleteMotion>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: _chatMessageDeleteMotionDuration,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.isDeleting) {
+      _controller.forward(from: 0);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _ChatMessageDeleteMotion oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isDeleting && !oldWidget.isDeleting) {
+      _startDeleteMotion();
+      return;
+    }
+    if (!widget.isDeleting && oldWidget.isDeleting) {
+      _controller.value = 0;
+    }
+  }
+
+  void _startDeleteMotion() {
+    final Duration duration = OpenCrayMotion.resolve(
+      context,
+      _chatMessageDeleteMotionDuration,
+    );
+    _controller.duration = duration;
+    if (duration == Duration.zero) {
+      _controller.value = 1;
+      return;
+    }
+    _controller.forward(from: 0);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.isDeleting && _controller.value == 0) {
+      return widget.child;
+    }
+    return AnimatedBuilder(
+      animation: _controller,
+      child: widget.child,
+      builder: (BuildContext context, Widget? child) {
+        final double rawT = _controller.value.clamp(0.0, 1.0);
+        final double moveT = OpenCrayMotion.enter.transform(rawT);
+        final double fadeT = Curves.easeIn.transform(
+          (rawT / 0.72).clamp(0.0, 1.0),
+        );
+        final double collapseT = OpenCrayMotion.expandCurve.transform(
+          ((rawT - 0.18) / 0.82).clamp(0.0, 1.0),
+        );
+        final double side = widget.isOutgoing ? 1 : -1;
+        final Offset offset = Offset(
+          side * _chatMessageDeleteSlideDistance * moveT,
+          2 * moveT,
+        );
+        return ClipRect(
+          key: ValueKey<String>(
+            'chat-message-delete-motion-${widget.messageId}',
+          ),
+          child: Align(
+            alignment: Alignment.topCenter,
+            heightFactor: (1 - collapseT).clamp(0.0, 1.0),
+            child: IgnorePointer(
+              ignoring: widget.isDeleting,
+              child: Opacity(
+                opacity: (1 - fadeT).clamp(0.0, 1.0),
+                child: RepaintBoundary(
+                  child: Transform.translate(offset: offset, child: child),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
   }
 }
 
@@ -12747,6 +13001,7 @@ class _MessageList extends StatelessWidget {
     required this.messages,
     required this.runTraces,
     required this.selectedMessageIds,
+    required this.deletingMessageIds,
     required this.interruptConfirmRunId,
     required this.busyInterruptRunIds,
     required this.busyRetryRunIds,
@@ -12766,6 +13021,7 @@ class _MessageList extends StatelessWidget {
   final List<ChatMessageData> messages;
   final List<ChatRunTraceData> runTraces;
   final Set<String> selectedMessageIds;
+  final Set<String> deletingMessageIds;
   final String? interruptConfirmRunId;
   final Set<String> busyInterruptRunIds;
   final Set<String> busyRetryRunIds;
@@ -12926,6 +13182,7 @@ class _MessageList extends StatelessWidget {
               maxWidth: 252,
               selectionMode: selectedMessageIds.isNotEmpty,
               isSelected: selectedMessageIds.contains(message.messageId),
+              isDeleting: deletingMessageIds.contains(message.messageId),
               onLongPress: onMessageLongPress,
               onSelectionToggle: () => onMessageSelectionToggle(message),
               onTextSelectionChanged: (selectedText) =>
@@ -12954,6 +13211,7 @@ class _MessageList extends StatelessWidget {
               maxWidth: 236,
               selectionMode: selectedMessageIds.isNotEmpty,
               isSelected: selectedMessageIds.contains(message.messageId),
+              isDeleting: deletingMessageIds.contains(message.messageId),
               onLongPress: onMessageLongPress,
               onSelectionToggle: () => onMessageSelectionToggle(message),
               onTextSelectionChanged: (selectedText) =>

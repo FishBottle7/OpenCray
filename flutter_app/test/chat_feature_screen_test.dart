@@ -11805,7 +11805,7 @@ void main() {
   });
 
   testWidgets(
-    'host-backed message delete hides immediately and ignores stale snapshots',
+    'host-backed message delete exits before removal and ignores stale snapshots',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
       final snapshots = StreamController<OpenCrayChatSnapshot>.broadcast();
