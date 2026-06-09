@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.ContextWrapper
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -129,6 +130,92 @@ class RuntimeServiceProjectionCoordinatorTest {
     assertEquals(10_090L, releasedLease.expiresAtEpochMs)
     assertEquals(10_090L, releasedLease.releasedAtEpochMs)
     assertTrue(heartbeatScheduler.tasks.last().cancelled)
+  }
+
+  @Test
+  fun projectionCoordinatorDoesNotPersistSnapshotWhenAnotherOwnerHoldsLease() {
+    var now = 10_000L
+    val projectionStore = inMemoryRuntimeServiceProjectionStore()
+    val ownerLeaseStore = inMemoryRuntimeServiceOwnerLeaseStore()
+    val heartbeatScheduler = RecordingRuntimeServiceDelayScheduler()
+    val existingOwnerLease = RuntimeServiceOwnerLease(
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      processStartId = "process-other-owner",
+      processStartedAtEpochMs = 9_000L,
+      controllerInstanceId = "runtime-controller-other",
+      durableControllerId = "runtime-controller-durable",
+      runtimeOwnerId = "runtime-owner-other",
+      runtimeControllerId = "runtime-controller-other",
+      durableRuntimeControllerId = "runtime-controller-durable",
+      serviceInstanceId = "runtime-service-other",
+      serviceProcessName = "org.opencray.app:runtime",
+      acquiredAtEpochMs = 9_500L,
+      heartbeatAtEpochMs = 9_900L,
+      expiresAtEpochMs = 20_000L,
+    )
+    ownerLeaseStore.save(existingOwnerLease)
+    val runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(
+      processStartId = "process-owner",
+      processStartedAtEpochMs = 9_000L,
+      runtimeOwnerId = "runtime-owner-a",
+      runtimeControllerId = "runtime-controller-a",
+      durableRuntimeControllerId = "runtime-controller-durable",
+    )
+    val ownerAccess = RecordingRuntimeNotificationHostAccess(runtimeOwnerLifecycle)
+    val coordinator = DefaultRuntimeServiceProjectionCoordinator(
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
+        processStartId = "process-controller",
+        processStartedAtEpochMs = 8_000L,
+        controllerInstanceId = "runtime-controller-a",
+        durableControllerId = "runtime-controller-durable",
+        controllerCreatedAtEpochMs = 8_500L,
+      ),
+      clock = { now },
+      ownerLeaseDurationMs = 100L,
+      ownerLeaseHeartbeatIntervalMs = 25L,
+      runtimeOwnerLifecycle = runtimeOwnerLifecycle,
+      ownerObservationAccess = ownerAccess,
+      notificationHostAccess = ownerAccess,
+      serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
+        workSummaryProvider = ownerAccess::activeWorkSummary,
+        clock = { now },
+      ),
+      appContext = ContextWrapper(null),
+      localizedContext = ContextWrapper(null),
+      chatSessionStore = ChatSessionLocalStore(
+        temporaryFolder.newFolder("chat-session-store-conflict"),
+      ),
+      scheduledTaskSpecStore = inMemoryScheduledTaskSpecStoreFactory().create(),
+      scheduledTaskRunRecordStore = inMemoryScheduledTaskRunRecordStoreFactory().create(),
+      runtimeServiceAccessGateway = NoOpRuntimeServiceAccessGateway,
+      projectionStore = projectionStore,
+      ownerLeaseStore = ownerLeaseStore,
+      ownerLeaseHeartbeatScheduler = heartbeatScheduler,
+      runtimeNotificationCoordinator = null,
+    )
+
+    coordinator.bindServiceLifecycle(
+      RuntimeServiceLifecycleDescriptor(
+        serviceInstanceId = "runtime-service-a",
+        serviceCreatedAtEpochMs = 9_500L,
+        serviceProcess = runtimeServiceProcessDescriptor(
+          packageName = "org.opencray.app",
+          processName = "org.opencray.app:runtime",
+        ),
+      ),
+    )
+
+    assertEquals(existingOwnerLease, ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+    assertNull(coordinator.currentOwnerLease())
+    assertNull(projectionStore.loadSnapshot())
+
+    now = 10_050L
+    heartbeatScheduler.runNext()
+
+    assertEquals(existingOwnerLease, ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+    assertNull(coordinator.currentOwnerLease())
+    assertNull(projectionStore.loadSnapshot())
   }
 
   private class RecordingRuntimeNotificationHostAccess(

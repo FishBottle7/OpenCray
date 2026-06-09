@@ -204,7 +204,7 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
     val resolvedRuntimeOwnerLifecycle: HostRuntimeLifecycleDescriptor
     val resolvedOwnerObservationAccess: RuntimeOwnerObservationAccess
     val resolvedInterruptedRunRepair: RuntimeServiceInterruptedRunRepairProjection?
-    val resolvedOwnerLease = writeOwnerLeaseHeartbeat()
+    val resolvedOwnerLease = writeOwnerLeaseHeartbeat() ?: return
     synchronized(lock) {
       if (keepAliveState != null) {
         currentKeepAliveState = keepAliveState
@@ -258,12 +258,11 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
       createOwnerLeaseLocked(clock())
     } ?: return null
     val savedLease = ownerLeaseStore.save(lease)
+    val ownsLease = savedLease.sameRuntimeServiceOwnerAs(lease)
     synchronized(lock) {
-      currentOwnerLease = savedLease.takeIf { persisted ->
-        persisted.sameRuntimeServiceOwnerAs(lease)
-      }
+      currentOwnerLease = savedLease.takeIf { ownsLease }
     }
-    return savedLease
+    return savedLease.takeIf { ownsLease }
   }
 
   private fun createOwnerLeaseLocked(nowEpochMs: Long): RuntimeServiceOwnerLease? {
