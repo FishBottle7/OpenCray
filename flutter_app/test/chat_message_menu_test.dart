@@ -652,6 +652,8 @@ void main() {
 
       await tester.tap(find.text(copy.chatMessageRedoAction));
       await tester.pumpAndSettle();
+      _jumpToChatEnd(tester);
+      await tester.pumpAndSettle();
 
       final snapshot = await bridge.loadChatSnapshot();
       final outboundMessage = snapshot.messages[snapshot.messages.length - 2];
@@ -891,4 +893,16 @@ Future<void> _openMessageMenu(WidgetTester tester, Finder bubble) async {
   await tester.pump(const Duration(milliseconds: 260));
   await gesture.up();
   await tester.pumpAndSettle();
+}
+
+void _jumpToChatEnd(WidgetTester tester) {
+  final scrollableState = tester.state<ScrollableState>(
+    find
+        .descendant(
+          of: find.byKey(const ValueKey<String>('chat-scroll-view')),
+          matching: find.byType(Scrollable),
+        )
+        .first,
+  );
+  scrollableState.position.jumpTo(scrollableState.position.maxScrollExtent);
 }

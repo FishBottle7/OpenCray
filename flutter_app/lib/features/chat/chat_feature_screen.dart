@@ -2504,12 +2504,14 @@ class _ActiveChatMessageMenu {
   const _ActiveChatMessageMenu({
     required this.message,
     required this.bubbleRect,
+    required this.selectionVersionAtOpen,
     this.redoPrompt,
     this.selectedText,
   });
 
   final ChatMessageData message;
   final Rect bubbleRect;
+  final int selectionVersionAtOpen;
   final ChatMessageData? redoPrompt;
   final String? selectedText;
 
@@ -2628,6 +2630,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   final Map<String, String> _selectedTextByMessageId = <String, String>{};
   final Map<String, SelectedContentRange> _selectedTextRangeByMessageId =
       <String, SelectedContentRange>{};
+  final Map<String, int> _selectedTextVersionByMessageId = <String, int>{};
   final Map<String, Set<String>> _locallyDeletedMessageIdsBySession =
       <String, Set<String>>{};
   final Map<String, Set<String>> _deletingMessageIdsBySession =
@@ -2897,6 +2900,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       _selectedMessageIds.remove(normalizedMessageId);
       _selectedTextByMessageId.remove(normalizedMessageId);
       _selectedTextRangeByMessageId.remove(normalizedMessageId);
+      _selectedTextVersionByMessageId.remove(normalizedMessageId);
     }
   }
 
@@ -3288,6 +3292,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (message.messageId.isEmpty) {
       return;
     }
+    _selectedTextVersionByMessageId[message.messageId] =
+        (_selectedTextVersionByMessageId[message.messageId] ?? 0) + 1;
     final String normalized = selection?.plainText.trim() ?? '';
     if (normalized.isEmpty) {
       _selectedTextByMessageId.remove(message.messageId);
@@ -3308,13 +3314,18 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   ) {
     final String liveSelectedText =
         _selectedTextByMessageId[menu.message.messageId]?.trim() ?? '';
-    if (liveSelectedText.isNotEmpty) {
+    final String fallbackSelectedText = menu.selectedText?.trim() ?? '';
+    final int liveSelectionVersion =
+        _selectedTextVersionByMessageId[menu.message.messageId] ?? 0;
+    final bool canUseLiveSelection =
+        fallbackSelectedText.isNotEmpty ||
+        liveSelectionVersion > menu.selectionVersionAtOpen;
+    if (canUseLiveSelection && liveSelectedText.isNotEmpty) {
       return OpenCrayMarkdownSelectionSnapshot(
         plainText: liveSelectedText,
         range: _selectedTextRangeByMessageId[menu.message.messageId],
       );
     }
-    final String fallbackSelectedText = menu.selectedText?.trim() ?? '';
     if (fallbackSelectedText.isEmpty) {
       return null;
     }
@@ -3547,6 +3558,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       _activeMessageMenu = _ActiveChatMessageMenu(
         message: message,
         bubbleRect: bubbleRect,
+        selectionVersionAtOpen:
+            _selectedTextVersionByMessageId[message.messageId] ?? 0,
         redoPrompt: _redoPromptForMessage(message),
         selectedText: selectedText,
       );
@@ -4002,41 +4015,48 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                         child: GestureDetector(
                           onTap: _dismissTransientUi,
                           behavior: HitTestBehavior.translucent,
-                          child: SingleChildScrollView(
+                          child: CustomScrollView(
+                            key: const ValueKey<String>('chat-scroll-view'),
                             controller: _chatScrollController,
-                            padding: EdgeInsets.fromLTRB(
-                              20,
-                              4,
-                              20,
-                              _composerScrollInset(),
-                            ),
-                            child: _ChatScrollContent(
-                              bridge: widget.bridge,
-                              copy: widget.copy,
-                              state: _state,
-                              scrollController: _chatScrollController,
-                              showSandboxPreviewCards:
-                                  _selectedRuntimeEnvironment ==
-                                  _ChatRuntimeEnvironment.cloud,
-                              voicePlaybackControllerFactory:
-                                  widget.voicePlaybackControllerFactory,
-                              selectedMessageIds: _selectedMessageIds,
-                              deletingMessageIds: _deletingMessageIdsForSession(
-                                _sessionIdForState(_state),
+                            slivers: <Widget>[
+                              SliverPadding(
+                                padding: EdgeInsets.fromLTRB(
+                                  20,
+                                  4,
+                                  20,
+                                  _composerScrollInset(),
+                                ),
+                                sliver: _ChatScrollContent(
+                                  bridge: widget.bridge,
+                                  copy: widget.copy,
+                                  state: _state,
+                                  scrollController: _chatScrollController,
+                                  showSandboxPreviewCards:
+                                      _selectedRuntimeEnvironment ==
+                                      _ChatRuntimeEnvironment.cloud,
+                                  voicePlaybackControllerFactory:
+                                      widget.voicePlaybackControllerFactory,
+                                  selectedMessageIds: _selectedMessageIds,
+                                  deletingMessageIds:
+                                      _deletingMessageIdsForSession(
+                                        _sessionIdForState(_state),
+                                      ),
+                                  interruptConfirmRunId: _interruptConfirmRunId,
+                                  busyInterruptRunIds: _interruptRunIdsInFlight,
+                                  busyRetryRunIds: _retryRunIdsInFlight,
+                                  onArmInterruptRunTrace: _armRunInterruptTrace,
+                                  onDismissInterruptRunTrace:
+                                      _dismissRunInterruptTrace,
+                                  onInterruptRunTrace: _interruptRunTrace,
+                                  onRetryRunTrace: _retryRunTrace,
+                                  onMessageLongPress: _handleMessageLongPress,
+                                  onMessageSelectionToggle:
+                                      _toggleMessageSelection,
+                                  onMessageTextSelectionChanged:
+                                      _handleMessageTextSelectionChanged,
+                                ),
                               ),
-                              interruptConfirmRunId: _interruptConfirmRunId,
-                              busyInterruptRunIds: _interruptRunIdsInFlight,
-                              busyRetryRunIds: _retryRunIdsInFlight,
-                              onArmInterruptRunTrace: _armRunInterruptTrace,
-                              onDismissInterruptRunTrace:
-                                  _dismissRunInterruptTrace,
-                              onInterruptRunTrace: _interruptRunTrace,
-                              onRetryRunTrace: _retryRunTrace,
-                              onMessageLongPress: _handleMessageLongPress,
-                              onMessageSelectionToggle: _toggleMessageSelection,
-                              onMessageTextSelectionChanged:
-                                  _handleMessageTextSelectionChanged,
-                            ),
+                            ],
                           ),
                         ),
                       ),
@@ -11659,19 +11679,20 @@ class _ChatScrollContent extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: <Widget>[
-        _ChatHeaderCluster(
-          bridge: bridge,
-          copy: copy,
-          state: state,
-          scrollController: scrollController,
+    return SliverMainAxisGroup(
+      slivers: <Widget>[
+        SliverToBoxAdapter(
+          child: _ChatHeaderCluster(
+            bridge: bridge,
+            copy: copy,
+            state: state,
+            scrollController: scrollController,
+          ),
         ),
         if (state.messages.isEmpty &&
             state.runTraces.isEmpty &&
             state.pendingApprovals.isEmpty)
-          SizedBox(height: state.emptyThreadHeight)
+          SliverToBoxAdapter(child: SizedBox(height: state.emptyThreadHeight))
         else
           _MessageList(
             bridge: bridge,
@@ -13464,14 +13485,20 @@ class _MessageListState extends State<_MessageList> {
   final Set<String> _knownTranscriptRowKeys = <String>{};
   bool _hasBuiltTranscriptOnce = false;
 
-  Widget _transcriptRow(String rowKey, Widget child) {
+  void _addTranscriptRow(
+    List<_ChatTranscriptRow> rows,
+    String rowKey,
+    WidgetBuilder builder,
+  ) {
     final bool shouldReveal =
         _hasBuiltTranscriptOnce && !_knownTranscriptRowKeys.contains(rowKey);
     _knownTranscriptRowKeys.add(rowKey);
-    return _ChatTranscriptRowMotion(
-      rowKey: rowKey,
-      reveal: shouldReveal,
-      child: child,
+    rows.add(
+      _ChatTranscriptRow(
+        rowKey: rowKey,
+        reveal: shouldReveal,
+        builder: builder,
+      ),
     );
   }
 
@@ -13515,7 +13542,7 @@ class _MessageListState extends State<_MessageList> {
       340,
       math.max(236, contentWidth * 0.76),
     );
-    final children = <Widget>[];
+    final rows = <_ChatTranscriptRow>[];
     int? previousTimestampEpochMs;
     final Map<String, List<ChatRunTraceData>> anchoredRunTracesByMessageId =
         <String, List<ChatRunTraceData>>{};
@@ -13548,44 +13575,42 @@ class _MessageListState extends State<_MessageList> {
       final bool canShowInterrupt = showInterruptAction && trace.canInterrupt;
       final bool canShowRetry = showRetryAction && trace.isRetryable;
       final String rowKey = 'trace-${_stableRunTraceKey(trace)}';
-      children.add(
-        _transcriptRow(
-          rowKey,
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: _RunTraceBubble(
-                key: ValueKey<String>(
-                  'chat-run-trace-${_stableRunTraceKey(trace)}',
-                ),
-                bridge: bridge,
-                copy: copy,
-                trace: trace,
-                showSandboxPreviewCard: showSandboxPreviewCards,
-                showRetryAction: canShowRetry,
-                showInterruptAction: canShowInterrupt,
-                showInterruptConfirm:
-                    canShowInterrupt &&
-                    interruptConfirmRunId == trace.interruptId,
-                isInterruptBusy:
-                    canShowInterrupt &&
-                    busyInterruptRunIds.contains(trace.interruptId),
-                onInterruptRequest: canShowInterrupt
-                    ? () => onArmInterruptRunTrace(trace)
-                    : null,
-                onInterruptDismiss:
-                    canShowInterrupt &&
-                        interruptConfirmRunId == trace.interruptId
-                    ? () => onDismissInterruptRunTrace(trace)
-                    : null,
-                onInterruptConfirm: canShowInterrupt
-                    ? () => onInterruptRunTrace(trace)
-                    : null,
-                isRetryBusy:
-                    canShowRetry && busyRetryRunIds.contains(trace.retryId),
-                onRetry: canShowRetry ? () => onRetryRunTrace(trace) : null,
+      _addTranscriptRow(
+        rows,
+        rowKey,
+        (context) => Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: _RunTraceBubble(
+              key: ValueKey<String>(
+                'chat-run-trace-${_stableRunTraceKey(trace)}',
               ),
+              bridge: bridge,
+              copy: copy,
+              trace: trace,
+              showSandboxPreviewCard: showSandboxPreviewCards,
+              showRetryAction: canShowRetry,
+              showInterruptAction: canShowInterrupt,
+              showInterruptConfirm:
+                  canShowInterrupt &&
+                  interruptConfirmRunId == trace.interruptId,
+              isInterruptBusy:
+                  canShowInterrupt &&
+                  busyInterruptRunIds.contains(trace.interruptId),
+              onInterruptRequest: canShowInterrupt
+                  ? () => onArmInterruptRunTrace(trace)
+                  : null,
+              onInterruptDismiss:
+                  canShowInterrupt && interruptConfirmRunId == trace.interruptId
+                  ? () => onDismissInterruptRunTrace(trace)
+                  : null,
+              onInterruptConfirm: canShowInterrupt
+                  ? () => onInterruptRunTrace(trace)
+                  : null,
+              isRetryBusy:
+                  canShowRetry && busyRetryRunIds.contains(trace.retryId),
+              onRetry: canShowRetry ? () => onRetryRunTrace(trace) : null,
             ),
           ),
         ),
@@ -13618,111 +13643,104 @@ class _MessageListState extends State<_MessageList> {
             currentTimestampEpochMs,
             previousTimestampEpochMs,
           )) {
-        children.add(
-          _transcriptRow(
-            'divider-${message.messageId}',
-            _ChatTimestampDivider(
-              messageId: message.messageId,
-              label: _formatChatDividerLabel(
-                copy,
-                DateTime.fromMillisecondsSinceEpoch(
-                  currentTimestampEpochMs,
-                ).toLocal(),
-              ),
+        _addTranscriptRow(
+          rows,
+          'divider-${message.messageId}',
+          (context) => _ChatTimestampDivider(
+            messageId: message.messageId,
+            label: _formatChatDividerLabel(
+              copy,
+              DateTime.fromMillisecondsSinceEpoch(
+                currentTimestampEpochMs,
+              ).toLocal(),
             ),
           ),
         );
       }
       switch (message.kind) {
         case ChatMessageKind.timeline:
-          children.add(
-            _transcriptRow(
-              _chatMessageListItemKey(message),
-              Padding(
-                padding: const EdgeInsets.only(bottom: 12),
-                child: Center(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFE9E9ED),
-                      borderRadius: BorderRadius.circular(999),
+          _addTranscriptRow(
+            rows,
+            _chatMessageListItemKey(message),
+            (context) => Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Center(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE9E9ED),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
                     ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 5,
-                      ),
-                      child: Text(
-                        message.text,
-                        style: _ChatTextStyles.timeline,
-                      ),
-                    ),
+                    child: Text(message.text, style: _ChatTextStyles.timeline),
                   ),
                 ),
               ),
             ),
           );
         case ChatMessageKind.inbound:
-          children.add(
-            _transcriptRow(
-              _chatMessageListItemKey(message),
-              _ChatMessageWithTimestamp(
-                key: ValueKey<String>(_chatMessageListItemKey(message)),
-                bridge: bridge,
-                copy: copy,
-                message: message,
-                voicePlaybackControllerFactory: voicePlaybackControllerFactory,
-                alignment: Alignment.centerLeft,
-                backgroundColor: Colors.white,
-                textColor: _ChatPalette.textPrimary,
-                maxWidth: inboundBubbleMaxWidth,
-                selectionMode: selectedMessageIds.isNotEmpty,
-                isSelected: selectedMessageIds.contains(message.messageId),
-                isDeleting: deletingMessageIds.contains(message.messageId),
-                onLongPress: onMessageLongPress,
-                onSelectionToggle: () => onMessageSelectionToggle(message),
-                onTextSelectionChanged: (selectedText) =>
-                    onMessageTextSelectionChanged(message, selectedText),
-                attachedRunTraces: anchoredTraces,
-                interruptConfirmRunId: interruptConfirmRunId,
-                busyInterruptRunIds: busyInterruptRunIds,
-                busyRetryRunIds: busyRetryRunIds,
-                onArmInterruptRunTrace: onArmInterruptRunTrace,
-                onDismissInterruptRunTrace: onDismissInterruptRunTrace,
-                onInterruptRunTrace: onInterruptRunTrace,
-                onRetryRunTrace: onRetryRunTrace,
-              ),
+          _addTranscriptRow(
+            rows,
+            _chatMessageListItemKey(message),
+            (context) => _ChatMessageWithTimestamp(
+              key: ValueKey<String>(_chatMessageListItemKey(message)),
+              bridge: bridge,
+              copy: copy,
+              message: message,
+              voicePlaybackControllerFactory: voicePlaybackControllerFactory,
+              alignment: Alignment.centerLeft,
+              backgroundColor: Colors.white,
+              textColor: _ChatPalette.textPrimary,
+              maxWidth: inboundBubbleMaxWidth,
+              selectionMode: selectedMessageIds.isNotEmpty,
+              isSelected: selectedMessageIds.contains(message.messageId),
+              isDeleting: deletingMessageIds.contains(message.messageId),
+              onLongPress: onMessageLongPress,
+              onSelectionToggle: () => onMessageSelectionToggle(message),
+              onTextSelectionChanged: (selectedText) =>
+                  onMessageTextSelectionChanged(message, selectedText),
+              attachedRunTraces: anchoredTraces,
+              interruptConfirmRunId: interruptConfirmRunId,
+              busyInterruptRunIds: busyInterruptRunIds,
+              busyRetryRunIds: busyRetryRunIds,
+              onArmInterruptRunTrace: onArmInterruptRunTrace,
+              onDismissInterruptRunTrace: onDismissInterruptRunTrace,
+              onInterruptRunTrace: onInterruptRunTrace,
+              onRetryRunTrace: onRetryRunTrace,
             ),
           );
         case ChatMessageKind.outbound:
-          children.add(
-            _transcriptRow(
-              _chatMessageListItemKey(message),
-              _ChatMessageWithTimestamp(
-                key: ValueKey<String>(_chatMessageListItemKey(message)),
-                bridge: bridge,
-                copy: copy,
-                message: message,
-                voicePlaybackControllerFactory: voicePlaybackControllerFactory,
-                alignment: Alignment.centerRight,
-                backgroundColor: _ChatPalette.accent,
-                textColor: Colors.white,
-                maxWidth: outboundBubbleMaxWidth,
-                selectionMode: selectedMessageIds.isNotEmpty,
-                isSelected: selectedMessageIds.contains(message.messageId),
-                isDeleting: deletingMessageIds.contains(message.messageId),
-                onLongPress: onMessageLongPress,
-                onSelectionToggle: () => onMessageSelectionToggle(message),
-                onTextSelectionChanged: (selectedText) =>
-                    onMessageTextSelectionChanged(message, selectedText),
-                attachedRunTraces: anchoredTraces,
-                interruptConfirmRunId: interruptConfirmRunId,
-                busyInterruptRunIds: busyInterruptRunIds,
-                busyRetryRunIds: busyRetryRunIds,
-                onArmInterruptRunTrace: onArmInterruptRunTrace,
-                onDismissInterruptRunTrace: onDismissInterruptRunTrace,
-                onInterruptRunTrace: onInterruptRunTrace,
-                onRetryRunTrace: onRetryRunTrace,
-              ),
+          _addTranscriptRow(
+            rows,
+            _chatMessageListItemKey(message),
+            (context) => _ChatMessageWithTimestamp(
+              key: ValueKey<String>(_chatMessageListItemKey(message)),
+              bridge: bridge,
+              copy: copy,
+              message: message,
+              voicePlaybackControllerFactory: voicePlaybackControllerFactory,
+              alignment: Alignment.centerRight,
+              backgroundColor: _ChatPalette.accent,
+              textColor: Colors.white,
+              maxWidth: outboundBubbleMaxWidth,
+              selectionMode: selectedMessageIds.isNotEmpty,
+              isSelected: selectedMessageIds.contains(message.messageId),
+              isDeleting: deletingMessageIds.contains(message.messageId),
+              onLongPress: onMessageLongPress,
+              onSelectionToggle: () => onMessageSelectionToggle(message),
+              onTextSelectionChanged: (selectedText) =>
+                  onMessageTextSelectionChanged(message, selectedText),
+              attachedRunTraces: anchoredTraces,
+              interruptConfirmRunId: interruptConfirmRunId,
+              busyInterruptRunIds: busyInterruptRunIds,
+              busyRetryRunIds: busyRetryRunIds,
+              onArmInterruptRunTrace: onArmInterruptRunTrace,
+              onDismissInterruptRunTrace: onDismissInterruptRunTrace,
+              onInterruptRunTrace: onInterruptRunTrace,
+              onRetryRunTrace: onRetryRunTrace,
             ),
           );
       }
@@ -13751,10 +13769,34 @@ class _MessageListState extends State<_MessageList> {
         _hasBuiltTranscriptOnce = true;
       });
     }
-    return LayoutBuilder(
-      builder: (BuildContext context, BoxConstraints constraints) {
-        return Column(children: children);
-      },
+    return SliverList(
+      delegate: SliverChildBuilderDelegate(
+        (BuildContext context, int index) {
+          return rows[index].build(context);
+        },
+        childCount: rows.length,
+        addSemanticIndexes: false,
+      ),
+    );
+  }
+}
+
+class _ChatTranscriptRow {
+  const _ChatTranscriptRow({
+    required this.rowKey,
+    required this.reveal,
+    required this.builder,
+  });
+
+  final String rowKey;
+  final bool reveal;
+  final WidgetBuilder builder;
+
+  Widget build(BuildContext context) {
+    return _ChatTranscriptRowMotion(
+      rowKey: rowKey,
+      reveal: reveal,
+      child: builder(context),
     );
   }
 }
@@ -17297,7 +17339,7 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
     widget.onLongPress(
       widget.message,
       renderObject.localToGlobal(Offset.zero) & renderObject.size,
-      _selectedTextAtPointerDown ?? _selectedText,
+      _selectedTextAtPointerDown,
     );
   }
 
@@ -17357,6 +17399,9 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
                   contentMaxWidth: widget.maxWidth - 28,
                   selectionTheme: selectionTheme,
                   onSelectionChanged: (selection) {
+                    if (_didOpenMenu && _pointerDownGlobalPosition != null) {
+                      return;
+                    }
                     _selectedText = selection?.plainText;
                     widget.onTextSelectionChanged(selection);
                   },
@@ -21145,16 +21190,21 @@ class _SessionsDrawerOverlayState extends State<_SessionsDrawerOverlay> {
                         const SizedBox(height: 16),
                         Expanded(
                           child: ListView.separated(
+                            key: const ValueKey<String>('chat-session-list'),
                             itemBuilder: (BuildContext context, int index) {
+                              final ChatSessionListItemData session =
+                                  widget.drawer.sessions[index];
                               return _SessionListTile(
-                                copy: widget.copy,
-                                session: widget.drawer.sessions[index],
-                                onPressed: () => widget.onSessionPressed(
-                                  widget.drawer.sessions[index],
+                                key: ValueKey<String>(
+                                  'chat-session-row-${session.sessionId}',
                                 ),
+                                copy: widget.copy,
+                                session: session,
+                                onPressed: () =>
+                                    widget.onSessionPressed(session),
                                 onLongPressStart: (details) =>
                                     widget.onSessionLongPress(
-                                      widget.drawer.sessions[index],
+                                      session,
                                       details.globalPosition,
                                     ),
                               );
@@ -21211,6 +21261,7 @@ class _SessionsDrawerOverlayState extends State<_SessionsDrawerOverlay> {
 
 class _SessionListTile extends StatefulWidget {
   const _SessionListTile({
+    super.key,
     required this.copy,
     required this.session,
     required this.onPressed,

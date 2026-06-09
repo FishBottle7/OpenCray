@@ -1286,6 +1286,24 @@ Implementation details:
 - Treat this as a separate implementation slice because it touches scroll
   physics, overlays, message menu anchoring, and delete motion.
 
+Completed implementation:
+
+- `OpenCrayChatFeature` now uses a keyed `CustomScrollView` for the
+  transcript surface instead of an eager `SingleChildScrollView`.
+- `_ChatScrollContent` now emits slivers, keeping the header and empty-state
+  spacer as box adapters while delegating populated transcripts to `_MessageList`.
+- `_MessageList` now builds stable transcript row descriptors first, then uses
+  `SliverList` with `SliverChildBuilderDelegate` so message bubbles, timestamp
+  dividers, and run-trace rows are built only when the sliver asks for them.
+- The sliver delegate keeps Flutter's default automatic keep-alive behavior so
+  visible rows can preserve local state while offscreen historical rows avoid
+  initial widget construction.
+- Existing bubble keys remain the test and automation surface; the scroll view
+  exposes `chat-scroll-view`.
+- Message-menu copy now ignores text selection produced by the same long-press
+  gesture that opened the menu, while still allowing an existing or explicitly
+  updated text selection to be copied.
+
 Acceptance:
 
 - Long transcripts do not build all historical rows during a normal frame.
@@ -1325,6 +1343,19 @@ Implementation details:
 - Keep row selection feedback immediate and independent from page loads.
 - Do not block opening the drawer on older-page loading.
 
+Completed implementation:
+
+- The drawer continues to use `ListView.separated`, which is the correct lazy
+  rendering layer for visible session rows.
+- The drawer list now has the stable key `chat-session-list`, and each row has a
+  stable `chat-session-row-<sessionId>` key for large-list tests and automation.
+- `ChatSessionsDrawerState` and `OpenCrayChatDrawerSnapshot` still expose a
+  plain `sessions` list only. There is no `hasMore`, `nextCursor`, or
+  `oldestLoadedAt` field yet, so data paging remains deferred until the
+  host/runtime snapshot contract is extended.
+- Added widget coverage proving a large drawer does not build the last session
+  row until the drawer list scrolls to the bottom.
+
 Acceptance:
 
 - Opening the drawer remains fast even with a large session history.
@@ -1339,9 +1370,18 @@ Acceptance:
 - [x] Add or update Files widget coverage for large-directory virtualization.
 - [x] Keep Session drawer rendering as `ListView.separated`; defer data paging
   until a host cursor contract exists.
+- [x] Add stable Session drawer list and row keys.
+- [x] Add Session drawer widget coverage for large-history lazy rendering.
 - [x] Plan Chat transcript row-model migration as a separate high-risk slice.
+- [x] Convert Chat transcript surface to `CustomScrollView` and slivers.
+- [x] Convert Chat transcript rows to a builder-backed `SliverList`.
+- [x] Preserve message insertion, delete motion, selection mode, and message menu
+  anchoring under transcript virtualization.
+- [x] Add Chat transcript widget coverage for large-history lazy rendering.
 - [x] Run `dart analyze flutter_app`.
 - [x] Run focused Files tests after the Files slice.
+- [x] Run focused Chat transcript and Session drawer lazy-rendering tests.
+- [x] Run message menu tests after transcript virtualization.
 
 ## Acceptance Criteria
 

@@ -2139,6 +2139,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      _jumpToScrollEnd(tester, _chatScrollView());
+      await tester.pumpAndSettle();
 
       final String projectedBubbleMessageId =
           'runtime-assistant-commentary-task-progress-1--1-Planning-2200-${javaStringHashCode('Inspecting the project layout.')}';
@@ -11205,10 +11207,7 @@ void main() {
         );
         int scrollAttempts = 0;
         while (bubbleFinder.evaluate().isEmpty && scrollAttempts < 12) {
-          await tester.drag(
-            find.byType(SingleChildScrollView).first,
-            const Offset(0, -240),
-          );
+          await tester.drag(_chatScrollView(), const Offset(0, -240));
           await tester.pumpAndSettle();
           scrollAttempts += 1;
         }
@@ -12138,6 +12137,53 @@ void main() {
     expect(find.text('3'), findsOneWidget);
   });
 
+  testWidgets('session drawer rows are lazily built while scrolling', (
+    tester,
+  ) async {
+    final sessions = List<ChatSessionListItemData>.generate(
+      80,
+      (index) => ChatSessionListItemData(
+        sessionId: 'session-lazy-$index',
+        title: 'Session $index',
+        preview: 'Preview for lazy session $index',
+        meta: '$index messages',
+        isSelected: index == 0,
+      ),
+    );
+
+    await tester.pumpWidget(
+      _buildChatHarness(
+        drawerOpen: true,
+        drawer: ChatSessionsDrawerState(
+          eyebrow: 'Recent sessions',
+          title: 'Recent sessions',
+          ctaLabel: 'New session',
+          sessions: sessions,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final firstRow = find.byKey(
+      const ValueKey<String>('chat-session-row-session-lazy-0'),
+    );
+    final lastRow = find.byKey(
+      const ValueKey<String>('chat-session-row-session-lazy-79'),
+    );
+
+    expect(firstRow, findsOneWidget);
+    expect(lastRow, findsNothing);
+
+    final scrollableState = _scrollableStateFor(
+      tester,
+      find.byKey(const ValueKey<String>('chat-session-list')),
+    );
+    scrollableState.position.jumpTo(scrollableState.position.maxScrollExtent);
+    await tester.pumpAndSettle();
+
+    expect(lastRow, findsOneWidget);
+  });
+
   testWidgets('host-backed chat does not show seed content while loading', (
     tester,
   ) async {
@@ -12889,6 +12935,42 @@ void main() {
       ),
       findsOneWidget,
     );
+  });
+
+  testWidgets('chat transcript rows are lazily built while scrolling', (
+    tester,
+  ) async {
+    final messages = List<ChatMessageData>.generate(
+      120,
+      (index) => ChatMessageData(
+        messageId: 'lazy-message-$index',
+        kind: index.isEven ? ChatMessageKind.inbound : ChatMessageKind.outbound,
+        text: 'Transcript message $index',
+      ),
+    );
+
+    await tester.pumpWidget(_buildChatHarness(messages: messages));
+    await tester.pumpAndSettle();
+
+    final firstBubble = find.byKey(
+      const ValueKey<String>('chat-bubble-lazy-message-0'),
+    );
+    final lastBubble = find.byKey(
+      const ValueKey<String>('chat-bubble-lazy-message-119'),
+    );
+
+    final scrollView = _chatScrollView();
+    final scrollableState = _scrollableStateFor(tester, scrollView);
+    scrollableState.position.jumpTo(0);
+    await tester.pumpAndSettle();
+
+    expect(firstBubble, findsOneWidget);
+    expect(lastBubble, findsNothing);
+
+    scrollableState.position.jumpTo(scrollableState.position.maxScrollExtent);
+    await tester.pumpAndSettle();
+
+    expect(lastBubble, findsOneWidget);
   });
 
   testWidgets(
@@ -15097,6 +15179,23 @@ Finder _findRichTextWithPlainText(String text) =>
 
 Finder _chatSessionsButton() =>
     find.byKey(const ValueKey<String>('chat-sessions-button'));
+
+Finder _chatScrollView() =>
+    find.byKey(const ValueKey<String>('chat-scroll-view'));
+
+ScrollableState _scrollableStateFor(WidgetTester tester, Finder scrollHost) {
+  return tester.state<ScrollableState>(
+    find.descendant(of: scrollHost, matching: find.byType(Scrollable)).first,
+  );
+}
+
+void _jumpToScrollEnd(WidgetTester tester, Finder scrollHost) {
+  final ScrollableState scrollableState = _scrollableStateFor(
+    tester,
+    scrollHost,
+  );
+  scrollableState.position.jumpTo(scrollableState.position.maxScrollExtent);
+}
 
 void _activateRichTextLink(WidgetTester tester, Finder richTextFinder) {
   final RichText richText = tester.widget<RichText>(richTextFinder);
