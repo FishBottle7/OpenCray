@@ -1383,6 +1383,257 @@ Acceptance:
 - [x] Run focused Chat transcript and Session drawer lazy-rendering tests.
 - [x] Run message menu tests after transcript virtualization.
 
+## Next Revision Plan: Files And Skills High-Frequency Polish
+
+This revision shifts attention away from major Chat motion and toward the
+surfaces users will repeatedly operate under pressure: Files first, Skills
+second, and only small global feedback refinements after that. The guiding rule
+is workbench clarity: state changes should be obvious without becoming louder
+than the content.
+
+Priority order:
+
+1. Files selection mode and operation toolbar.
+2. Files breadcrumb and search/filter state.
+3. Skills search results and install lifecycle.
+4. Small Chat run-trace density cleanup only if it stays local.
+5. Bottom navigation selected-state feedback.
+
+### Files Selection Mode And Operation Toolbar
+
+Files:
+
+- `flutter_app/lib/features/files/files_feature.dart`
+- `flutter_app/test/files_feature_test.dart`
+
+Current behavior:
+
+- Long press enters selection mode and changes the page title to selected count.
+- The selection toolbar is a flat bottom row with Share, Move, Copy/Paste,
+  Rename, and Delete at equal visual weight.
+- Delete uses the danger color, but it still occupies the same action group as
+  reversible or lower-risk actions.
+- Selection mode appears as a toolbar overlay rather than a temporary working
+  mode attached to the list state.
+
+Target behavior:
+
+- Treat selection as a temporary file-operation mode:
+  - entering selection mode lightly lifts the operation surface from the bottom
+  - leaving selection mode lets it settle back down
+  - the list retains spatial continuity and does not jump
+- Group actions by risk and frequency:
+  - primary/reversible group: Share, Move, Copy/Paste, Rename
+  - destructive group: Delete, visually separated and lower-emphasis until
+    enabled
+- Keep existing action semantics and keys where tests already rely on them.
+- Keep touch targets stable on 360dp screens.
+
+Implementation details:
+
+- Replace the full-width hard-edged toolbar treatment with a bottom workbench
+  surface:
+  - rounded top corners
+  - subtle top divider/shadow only when needed for separation
+  - safe-area padding preserved
+  - no card nested inside a card
+- Add an `AnimatedSlide`/`AnimatedOpacity` wrapper on toolbar presentation using
+  shared `OpenCrayMotion` tokens.
+- Split `_SelectionToolbar` into two internal groups:
+  - `_SelectionActionGroup` for ordinary actions
+  - `_SelectionDangerAction` for delete
+- Add stable keys for the ordinary and danger groups.
+- Preserve `files-selection-toolbar`, `files-toolbar-action-copy`,
+  `files-toolbar-action-paste`, and existing action behavior.
+
+Acceptance:
+
+- Entering and exiting selection mode reads as a temporary work mode, not a
+  generic pop-in.
+- Delete is visibly separated from reversible file operations.
+- Toolbar remains pinned above the shell tab bar and short-directory cases still
+  work.
+- Existing copy/move/paste/delete tests keep passing.
+
+### Files Breadcrumb And Search/Filter State
+
+Files:
+
+- `flutter_app/lib/features/files/files_feature.dart`
+- `flutter_app/test/files_feature_test.dart`
+
+Current behavior:
+
+- Search is a plain field above the location card.
+- The directory card changes empty text for no matches, but the page does not
+  make the filtered state explicit.
+- Breadcrumb chips use similar weight for parent/current path segments.
+
+Target behavior:
+
+- Make the location area read more like a file workbench:
+  - current directory is the strongest label
+  - parent breadcrumb segments are lighter
+  - current segment is clearly non-clickable/current
+- Search focus and active query should create an explicit filtered state:
+  - search field border/background subtly changes while focused or filtered
+  - directory list header/empty state says the list is filtered
+  - no-result state is compact and actionable, not a large error card
+- Do not hide the current path while filtering.
+
+Implementation details:
+
+- Convert `_SearchBar` to a small stateful/focus-aware widget, or pass focus
+  state from the parent only if tests need it.
+- Add `isFiltered` to `_DirectoryCard` and surface a compact filter status row
+  above entries when query is non-empty.
+- Update `_BreadcrumbChip` styling so the current segment has stronger text and
+  parents are lighter.
+- Keep breadcrumb keys unchanged.
+
+Acceptance:
+
+- Typing a query visibly moves the file list into filtered mode.
+- Empty search results explain the active query without looking like a load
+  failure.
+- Breadcrumb navigation remains available outside selection mode and disabled
+  during selection mode.
+
+### Skills Search Results And Install Lifecycle
+
+Files:
+
+- `flutter_app/lib/features/skills/skills_feature.dart`
+- `flutter_app/test/skills_feature_test.dart`
+
+Current behavior:
+
+- Manage/Install page switching and segmented tab motion are already fixed.
+- Search uses debounce and a top linear progress indicator.
+- Suggested skill rows remain in place while installing, but the install button
+  only changes to `...`.
+- Success/failure is mostly communicated through reload/toast behavior.
+
+Target behavior:
+
+- Keep each result card in place through preview/install/install-complete states.
+- Replace `...` with an explicit compact progress state in the install button.
+- After a successful install, show an inline installed state on the original
+  result row until the next snapshot removes or reclassifies the row.
+- On failure, show a restrained inline failed state while keeping the retry
+  action available.
+- Search loading should feel connected to results, not like a global page load.
+
+Implementation details:
+
+- Track pending install source ref as today, plus a short-lived
+  `_recentlyInstalledSourceRefs` and `_failedInstallSourceRefs` set.
+- Extend `_SuggestedRow` with `installState` rather than a bool-only installing
+  flag.
+- Use stable keys for install button states:
+  - installing
+  - installed
+  - failed/retry
+- Keep direct install card behavior aligned with suggested result behavior where
+  practical.
+
+Acceptance:
+
+- Installing a suggested skill keeps the row in place.
+- Button state changes from Install -> Installing -> Installed or Retry without
+  requiring the user to find the row again.
+- Search result ordering and preview behavior remain unchanged.
+
+### Chat Run Trace Minor Density Pass
+
+Files:
+
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+- `flutter_app/test/chat_feature_screen_test.dart`
+
+Scope:
+
+- No large Chat motion changes in this revision.
+- Only adjust small visual hierarchy if it is local to run trace state language:
+  running, waiting approval, failed, done.
+- Avoid changing runtime projection or snapshot logic in this UI polish branch.
+
+Potential follow-up:
+
+- Normalize state dot size/color and action text weight.
+- Keep run trace cards subordinate to message bubbles unless action is required.
+
+### Bottom Navigation Selected-State Feedback
+
+Files:
+
+- `flutter_app/lib/core/design/opencray_widgets.dart`
+- shell/navigation widget tests if present
+
+Current behavior:
+
+- Bottom navigation already has a selected capsule and text weight transition.
+- The selected icon also applies a tiny scale animation.
+
+Target behavior:
+
+- Keep the selected feedback precise and non-bouncy:
+  - retain color/capsule/text-weight transition
+  - remove or reduce icon scaling so the nav feels calmer
+  - preserve item dimensions and hit targets
+
+Acceptance:
+
+- Selecting a tab has clear feedback without a spring/bounce feel.
+- No layout shift in the bottom bar.
+
+### Additional Polish Notes For Later
+
+These are worth tracking, but they are outside the current Files/Skills polish
+goal so this branch does not keep expanding.
+
+- Files row density and metadata hierarchy: if users keep very large project
+  folders open, row secondary text could be tightened further, with modified
+  time/size shown only where it helps scanning.
+- Files sort/view controls: a compact sort menu for name/date/type could help
+  large directories, but it should be introduced as a real file-management
+  feature rather than a decorative UI tweak.
+- Files transfer/progress states: copy, move, and paste could later gain inline
+  progress or per-row pending affordances when the host provides operation
+  progress.
+- Skills search loading continuity: the current pass keeps result rows stable
+  during install. A later pass could keep previous search results visible under
+  a compact in-results loading strip while the next query is resolving.
+- Skills installed-card actions: update/delete/disable actions could use the
+  same inline pending/success/failure language now used by install buttons.
+- Chat run trace density: running, waiting approval, failed, and done can still
+  get a small visual-language audit, but Chat should stay stable unless that
+  cleanup is local.
+- Global reduced-motion tests: shared motion helpers already support reduced
+  motion, but a targeted widget test pass could prove major shells degrade to
+  opacity/instant transitions consistently.
+
+### High-Frequency Polish Checklist
+
+- [x] Write Files/Skills/global polish plan before implementation.
+- [x] Convert Files selection toolbar into a grouped temporary workbench surface.
+- [x] Separate destructive Files delete action from reversible actions.
+- [x] Add/adjust focused Files tests for toolbar grouping and selection mode.
+- [x] Add explicit Files filtered state in search/list UI.
+- [x] Lighten parent breadcrumbs and emphasize current directory.
+- [x] Add/adjust focused Files tests for filtered state and breadcrumb hierarchy.
+- [x] Replace Skills install `...` with explicit installing/installed/failed row
+  states.
+- [x] Add focused Skills tests for inline install state.
+- [x] Remove or reduce bottom-nav icon scaling while preserving selected feedback.
+- [x] Keep Chat changes limited to run-trace density only if a local cleanup is
+  needed.
+- [x] Run `dart analyze flutter_app`.
+- [x] Run focused Files tests.
+- [x] Run focused Skills tests.
+- [x] Run shell navigation tests if bottom navigation changes.
+- [x] Create a focused Conventional Commit in Chinese.
+
 ## Acceptance Criteria
 
 - Navigation direction is consistent: things return along the path they used to

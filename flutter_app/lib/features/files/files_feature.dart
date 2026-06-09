@@ -207,6 +207,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
                             _SearchBar(
                               controller: _searchController,
                               hint: widget.copy.filesSearchHint,
+                              clearLabel: widget.copy.filesSearchClearAction,
                             ),
                             const SizedBox(height: 12),
                             _LocationCard(
@@ -232,6 +233,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
                     _DirectoryCard(
                       copy: widget.copy,
                       query: _query,
+                      isFiltered: _query.trim().isNotEmpty,
                       snapshot: snapshot,
                       entries: currentEntries,
                       isLoading: _isLoading,
@@ -265,14 +267,15 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
                     isBusy: _isLoading || _isMutating,
                   ),
                 ),
-              if (_showsSelectionToolbar)
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: IgnorePointer(
+                  ignoring: !_showsSelectionToolbar,
                   child: _SelectionToolbar(
-                    key: const ValueKey<String>('files-selection-toolbar'),
                     copy: widget.copy,
+                    isVisible: _showsSelectionToolbar,
                     isPendingTransfer: _hasPendingTransfer,
                     canShare: _isSelectionMode && _selectedPaths.isNotEmpty,
                     canMove: _isSelectionMode && _selectedPaths.isNotEmpty,
@@ -297,6 +300,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
                         : null,
                   ),
                 ),
+              ),
             ],
           ),
         ),
@@ -1229,40 +1233,115 @@ class _TitleRow extends StatelessWidget {
   }
 }
 
-class _SearchBar extends StatelessWidget {
-  const _SearchBar({required this.controller, required this.hint});
+class _SearchBar extends StatefulWidget {
+  const _SearchBar({
+    required this.controller,
+    required this.hint,
+    required this.clearLabel,
+  });
 
   final TextEditingController controller;
   final String hint;
+  final String clearLabel;
+
+  @override
+  State<_SearchBar> createState() => _SearchBarState();
+}
+
+class _SearchBarState extends State<_SearchBar> {
+  late final FocusNode _focusNode = FocusNode()
+    ..addListener(_handleSearchStateChanged);
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_handleSearchStateChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _SearchBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller == widget.controller) {
+      return;
+    }
+    oldWidget.controller.removeListener(_handleSearchStateChanged);
+    widget.controller.addListener(_handleSearchStateChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_handleSearchStateChanged);
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _handleSearchStateChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
+    final bool hasQuery = widget.controller.text.trim().isNotEmpty;
+    final bool isActive = hasQuery || _focusNode.hasFocus;
+    return AnimatedContainer(
+      key: const ValueKey<String>('files-search-surface'),
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isActive ? const Color(0xFFF9FBFF) : Colors.white,
         borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isActive
+              ? FilesFeatureScreen.accent.withValues(alpha: 0.28)
+              : Colors.transparent,
+        ),
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+        padding: const EdgeInsets.fromLTRB(12, 2, 8, 2),
         child: Row(
           children: [
-            const Icon(
+            Icon(
               CupertinoIcons.search,
               size: 18,
-              color: FilesFeatureScreen.textTertiary,
+              color: isActive
+                  ? FilesFeatureScreen.accent
+                  : FilesFeatureScreen.textTertiary,
             ),
             const SizedBox(width: 10),
             Expanded(
               child: TextField(
                 key: const ValueKey<String>('files-search-field'),
-                controller: controller,
+                controller: widget.controller,
+                focusNode: _focusNode,
                 decoration: InputDecoration(
                   border: InputBorder.none,
-                  hintText: hint,
+                  hintText: widget.hint,
                   hintStyle: const TextStyle(
                     fontSize: 14,
                     height: 1.2,
                     color: FilesFeatureScreen.textTertiary,
+                  ),
+                ),
+              ),
+            ),
+            AnimatedOpacity(
+              opacity: hasQuery ? 1 : 0,
+              duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+              curve: OpenCrayMotion.enter,
+              child: IgnorePointer(
+                ignoring: !hasQuery,
+                child: IconButton(
+                  key: const ValueKey<String>('files-search-clear'),
+                  tooltip: widget.clearLabel,
+                  onPressed: () => widget.controller.clear(),
+                  icon: const Icon(CupertinoIcons.xmark_circle_fill, size: 18),
+                  color: FilesFeatureScreen.textTertiary,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 32,
+                    height: 32,
                   ),
                 ),
               ),
@@ -1545,8 +1624,10 @@ class _BreadcrumbTrail extends StatelessWidget {
               ),
             _BreadcrumbChip(
               segment: breadcrumbs[index],
+              isCurrent: index == breadcrumbs.length - 1,
               onTap:
-                  breadcrumbs[index].relativePath == null ||
+                  index == breadcrumbs.length - 1 ||
+                      breadcrumbs[index].relativePath == null ||
                       onBreadcrumbTap == null
                   ? null
                   : () => onBreadcrumbTap!(breadcrumbs[index].relativePath!),
@@ -1559,16 +1640,21 @@ class _BreadcrumbTrail extends StatelessWidget {
 }
 
 class _BreadcrumbChip extends StatelessWidget {
-  const _BreadcrumbChip({required this.segment, required this.onTap});
+  const _BreadcrumbChip({
+    required this.segment,
+    required this.isCurrent,
+    required this.onTap,
+  });
 
   final _BreadcrumbSegment segment;
+  final bool isCurrent;
   final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    final color = segment.relativePath == null
-        ? FilesFeatureScreen.textTertiary
-        : FilesFeatureScreen.textSecondary;
+    final color = isCurrent
+        ? FilesFeatureScreen.textPrimary
+        : FilesFeatureScreen.textTertiary;
     return InkWell(
       key: segment.relativePath == null
           ? null
@@ -1584,9 +1670,7 @@ class _BreadcrumbChip extends StatelessWidget {
           style: TextStyle(
             fontSize: 13,
             height: 1.2,
-            fontWeight: segment.relativePath == null
-                ? FontWeight.w500
-                : FontWeight.w600,
+            fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
             color: color,
           ),
         ),
@@ -1599,6 +1683,7 @@ class _DirectoryCard extends StatelessWidget {
   const _DirectoryCard({
     required this.copy,
     required this.query,
+    required this.isFiltered,
     required this.snapshot,
     required this.entries,
     required this.isLoading,
@@ -1612,6 +1697,7 @@ class _DirectoryCard extends StatelessWidget {
 
   final OpenCrayUiCopy copy;
   final String query;
+  final bool isFiltered;
   final OpenCrayFilesSnapshot? snapshot;
   final List<OpenCrayFileTreeNodeSnapshot> entries;
   final bool isLoading;
@@ -1713,6 +1799,8 @@ class _DirectoryCard extends StatelessWidget {
       );
     }
 
+    final int headerChildCount = isFiltered ? 2 : 0;
+    final int entryChildCount = entries.length * 2 - 1;
     return SliverPadding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
       sliver: DecoratedSliver(
@@ -1725,13 +1813,28 @@ class _DirectoryCard extends StatelessWidget {
           sliver: SliverList(
             delegate: SliverChildBuilderDelegate(
               (context, index) {
-                if (index.isOdd) {
+                if (isFiltered && index == 0) {
+                  return _DirectoryFilterStatus(
+                    label: copy.filesFilteredStatus(
+                      query.trim(),
+                      entries.length,
+                    ),
+                  );
+                }
+                if (isFiltered && index == 1) {
+                  return const Divider(
+                    height: 16,
+                    color: FilesFeatureScreen.divider,
+                  );
+                }
+                final adjustedIndex = index - headerChildCount;
+                if (adjustedIndex.isOdd) {
                   return const Divider(
                     height: 1,
                     color: FilesFeatureScreen.divider,
                   );
                 }
-                final entry = entries[index ~/ 2];
+                final entry = entries[adjustedIndex ~/ 2];
                 return _DirectoryEntryTile(
                   entry: entry,
                   copy: copy,
@@ -1746,12 +1849,49 @@ class _DirectoryCard extends StatelessWidget {
                   onLongPress: () => onEntryLongPress(entry),
                 );
               },
-              childCount: entries.length * 2 - 1,
+              childCount: headerChildCount + entryChildCount,
               addAutomaticKeepAlives: false,
               addSemanticIndexes: false,
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _DirectoryFilterStatus extends StatelessWidget {
+  const _DirectoryFilterStatus({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Row(
+        key: const ValueKey<String>('files-filter-status'),
+        children: [
+          const Icon(
+            CupertinoIcons.line_horizontal_3_decrease_circle,
+            size: 16,
+            color: FilesFeatureScreen.accent,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 12,
+                height: 1.2,
+                fontWeight: FontWeight.w600,
+                color: FilesFeatureScreen.textSecondary,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1860,8 +2000,8 @@ class _DirectoryEntryTile extends StatelessWidget {
 
 class _SelectionToolbar extends StatelessWidget {
   const _SelectionToolbar({
-    super.key,
     required this.copy,
+    required this.isVisible,
     required this.isPendingTransfer,
     required this.canShare,
     required this.canMove,
@@ -1877,6 +2017,7 @@ class _SelectionToolbar extends StatelessWidget {
   });
 
   final OpenCrayUiCopy copy;
+  final bool isVisible;
   final bool isPendingTransfer;
   final bool canShare;
   final bool canMove;
@@ -1892,67 +2033,172 @@ class _SelectionToolbar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: const BoxDecoration(
-        color: FilesFeatureScreen.surface,
-        border: Border(top: BorderSide(color: FilesFeatureScreen.divider)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-        child: Row(
-          children: [
-            Expanded(
-              child: _ToolbarItem(
-                icon: CupertinoIcons.share,
-                label: copy.filesShareAction,
-                enabled: canShare,
-                onTap: onShare,
+    final Duration duration = OpenCrayMotion.resolve(
+      context,
+      OpenCrayMotion.panel,
+    );
+    final bool reduce = OpenCrayMotion.reduce(context);
+    return AnimatedSlide(
+      offset: reduce || isVisible ? Offset.zero : const Offset(0, 1),
+      duration: duration,
+      curve: isVisible ? OpenCrayMotion.enter : OpenCrayMotion.exit,
+      child: AnimatedOpacity(
+        opacity: isVisible ? 1 : 0,
+        duration: duration,
+        curve: isVisible ? OpenCrayMotion.enter : OpenCrayMotion.exit,
+        child: DecoratedBox(
+          key: isVisible
+              ? const ValueKey<String>('files-selection-toolbar')
+              : null,
+          decoration: const BoxDecoration(
+            color: FilesFeatureScreen.surface,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+            border: Border(top: BorderSide(color: FilesFeatureScreen.divider)),
+            boxShadow: [
+              BoxShadow(
+                color: Color(0x12000000),
+                blurRadius: 18,
+                offset: Offset(0, -6),
               ),
-            ),
-            Expanded(
-              child: _ToolbarItem(
-                icon: CupertinoIcons.folder,
-                label: copy.filesMoveAction,
-                enabled: canMove,
-                onTap: onMove,
-              ),
-            ),
-            Expanded(
-              child: _ToolbarItem(
-                key: ValueKey<String>(
-                  isPendingTransfer
-                      ? 'files-toolbar-action-paste'
-                      : 'files-toolbar-action-copy',
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: _SelectionActionGroup(
+                    semanticsLabel: copy.filesSelectionStandardActions,
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: _ToolbarItem(
+                            key: const ValueKey<String>(
+                              'files-toolbar-action-share',
+                            ),
+                            icon: CupertinoIcons.share,
+                            label: copy.filesShareAction,
+                            enabled: canShare,
+                            onTap: onShare,
+                          ),
+                        ),
+                        Expanded(
+                          child: _ToolbarItem(
+                            key: const ValueKey<String>(
+                              'files-toolbar-action-move',
+                            ),
+                            icon: CupertinoIcons.folder,
+                            label: copy.filesMoveAction,
+                            enabled: canMove,
+                            onTap: onMove,
+                          ),
+                        ),
+                        Expanded(
+                          child: _ToolbarItem(
+                            key: ValueKey<String>(
+                              isPendingTransfer
+                                  ? 'files-toolbar-action-paste'
+                                  : 'files-toolbar-action-copy',
+                            ),
+                            icon: isPendingTransfer
+                                ? CupertinoIcons.doc_on_clipboard
+                                : CupertinoIcons.doc_on_doc,
+                            label: isPendingTransfer
+                                ? copy.filesPasteAction
+                                : copy.filesCopyAction,
+                            enabled: isPendingTransfer ? canPaste : canCopy,
+                            onTap: onCopyOrPaste,
+                          ),
+                        ),
+                        Expanded(
+                          child: _ToolbarItem(
+                            key: const ValueKey<String>(
+                              'files-toolbar-action-rename',
+                            ),
+                            icon: CupertinoIcons.pencil,
+                            label: copy.filesRenameAction,
+                            enabled: canRename,
+                            onTap: onRename,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-                icon: isPendingTransfer
-                    ? CupertinoIcons.doc_on_clipboard
-                    : CupertinoIcons.doc_on_doc,
-                label: isPendingTransfer
-                    ? copy.filesPasteAction
-                    : copy.filesCopyAction,
-                enabled: isPendingTransfer ? canPaste : canCopy,
-                onTap: onCopyOrPaste,
-              ),
+                const SizedBox(width: 8),
+                _SelectionDangerAction(
+                  semanticsLabel: copy.filesSelectionDangerActions,
+                  child: _ToolbarItem(
+                    key: const ValueKey<String>('files-toolbar-action-delete'),
+                    icon: CupertinoIcons.delete,
+                    label: copy.filesDeleteAction,
+                    enabled: canDelete,
+                    accentColor: FilesFeatureScreen.danger,
+                    onTap: onDelete,
+                  ),
+                ),
+              ],
             ),
-            Expanded(
-              child: _ToolbarItem(
-                icon: CupertinoIcons.pencil,
-                label: copy.filesRenameAction,
-                enabled: canRename,
-                onTap: onRename,
-              ),
-            ),
-            Expanded(
-              child: _ToolbarItem(
-                icon: CupertinoIcons.delete,
-                label: copy.filesDeleteAction,
-                enabled: canDelete,
-                accentColor: FilesFeatureScreen.danger,
-                onTap: onDelete,
-              ),
-            ),
-          ],
+          ),
         ),
+      ),
+    );
+  }
+}
+
+class _SelectionActionGroup extends StatelessWidget {
+  const _SelectionActionGroup({
+    required this.semanticsLabel,
+    required this.child,
+  });
+
+  final String semanticsLabel;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: semanticsLabel,
+      container: true,
+      child: DecoratedBox(
+        key: const ValueKey<String>('files-toolbar-standard-group'),
+        decoration: BoxDecoration(
+          color: FilesFeatureScreen.surfaceMuted,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
+class _SelectionDangerAction extends StatelessWidget {
+  const _SelectionDangerAction({
+    required this.semanticsLabel,
+    required this.child,
+  });
+
+  final String semanticsLabel;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: semanticsLabel,
+      container: true,
+      child: DecoratedBox(
+        key: const ValueKey<String>('files-toolbar-danger-group'),
+        decoration: BoxDecoration(
+          color: FilesFeatureScreen.danger.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: FilesFeatureScreen.danger.withValues(alpha: 0.18),
+          ),
+        ),
+        child: SizedBox(width: 64, child: child),
       ),
     );
   }

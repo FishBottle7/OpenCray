@@ -355,6 +355,23 @@ void main() {
     expect(find.text('Copy'), findsOneWidget);
     expect(find.text('Rename'), findsOneWidget);
     expect(find.text('Delete'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('files-toolbar-standard-group')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('files-toolbar-danger-group')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey<String>('files-toolbar-standard-group')),
+        matching: find.byKey(
+          const ValueKey<String>('files-toolbar-action-delete'),
+        ),
+      ),
+      findsNothing,
+    );
     expect(find.text('New'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey<String>('files-row-todo.txt')));
@@ -371,6 +388,89 @@ void main() {
     expect(
       find.byKey(const ValueKey<String>('files-selection-toolbar')),
       findsNothing,
+    );
+  });
+
+  testWidgets('search shows an explicit filtered file list state', (
+    tester,
+  ) async {
+    final bridge = OpenCraySeedBridge(
+      initialFilesSnapshot: const OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 1,
+        fileCount: 2,
+        entryCount: 3,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'docs',
+            relativePath: 'docs',
+            isDirectory: true,
+            childCount: 1,
+            sizeBytes: null,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[],
+          ),
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'todo.txt',
+            relativePath: 'todo.txt',
+            isDirectory: false,
+            childCount: 0,
+            sizeBytes: 128,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[],
+          ),
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'notes.md',
+            relativePath: 'notes.md',
+            isDirectory: false,
+            childCount: 0,
+            sizeBytes: 256,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[],
+          ),
+        ],
+      ),
+    );
+
+    await _pumpFilesScreen(tester, bridge: bridge);
+
+    await tester.enterText(
+      find.byKey(const ValueKey<String>('files-search-field')),
+      'todo',
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('files-search-surface')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('files-filter-status')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Filtering "todo"'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('files-row-todo.txt')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('files-row-notes.md')),
+      findsNothing,
+    );
+
+    await tester.tap(find.byKey(const ValueKey<String>('files-search-clear')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('files-filter-status')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('files-row-notes.md')),
+      findsOneWidget,
     );
   });
 

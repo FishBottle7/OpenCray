@@ -302,18 +302,10 @@ class _BottomNavItem extends StatelessWidget {
                   borderRadius: const BorderRadius.all(OpenCrayRadii.pill),
                 ),
                 alignment: Alignment.center,
-                child: TweenAnimationBuilder<double>(
-                  tween: Tween<double>(begin: 1, end: selected ? 1.04 : 1),
-                  duration: duration,
-                  curve: OpenCrayMotion.enter,
-                  builder: (context, scale, child) {
-                    return Transform.scale(scale: scale, child: child);
-                  },
-                  child: Icon(
-                    _iconFor(tab),
-                    size: OpenCraySizes.bottomNavIconSize,
-                    color: color,
-                  ),
+                child: Icon(
+                  _iconFor(tab),
+                  size: OpenCraySizes.bottomNavIconSize,
+                  color: color,
                 ),
               ),
               const SizedBox(height: OpenCraySizes.bottomNavItemGap),
@@ -322,16 +314,14 @@ class _BottomNavItem extends StatelessWidget {
                 curve: OpenCrayMotion.enter,
                 style:
                     Theme.of(context).textTheme.labelMedium?.copyWith(
-                  color: color,
-                  fontSize: 10,
-                  fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                      color: color,
+                      fontSize: 10,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                     ) ??
                     TextStyle(
                       color: color,
                       fontSize: 10,
-                      fontWeight: selected
-                          ? FontWeight.w600
-                          : FontWeight.w500,
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                     ),
                 child: Text(copy.tabLabel(tab).toUpperCase()),
               ),

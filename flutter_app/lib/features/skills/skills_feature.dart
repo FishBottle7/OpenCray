@@ -10,6 +10,8 @@ import '../../core/models/opencray_skills_snapshot.dart';
 
 enum SkillsPage { manage, install }
 
+enum _SkillInstallVisualState { idle, installing, installed, failed }
+
 const _shellBackground = Color(0xFFF5F5F7);
 const _surface = Colors.white;
 const _surfaceRaised = Color(0xFFF8F8FB);
@@ -65,6 +67,8 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
   bool _isSearching = false;
   bool _hasOpenedInitialActions = false;
   String? _pendingInstallSourceRef;
+  final Set<String> _recentlyInstalledSourceRefs = <String>{};
+  final Set<String> _failedInstallSourceRefs = <String>{};
   String _query = '';
   int _searchResultLimit = _initialSearchResultLimit;
   int _skillsRequestEpoch = 0;
@@ -306,8 +310,11 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
             _DirectInstallCard(
               title: widget.copy.skillsDirectInstallTitle,
               body: widget.copy.skillsDirectInstallBody(trimmedQuery),
-              buttonLabel: widget.copy.skillsInstallButton,
-              isInstalling: _pendingInstallSourceRef == trimmedQuery,
+              installLabel: widget.copy.skillsInstallButton,
+              installingLabel: widget.copy.skillsInstallingButton,
+              installedLabel: widget.copy.skillsInstalledButton,
+              retryLabel: widget.copy.skillsRetryInstallButton,
+              installState: _installVisualStateFor(trimmedQuery),
               onInstall: () => _installFromSource(trimmedQuery),
             ),
           ],
@@ -421,9 +428,12 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                           ),
                     previewLabel: widget.copy.skillsPreviewButton,
                     installLabel: widget.copy.skillsInstallButton,
-                    isInstalling:
-                        _pendingInstallSourceRef ==
-                        availableSkills[index].sourceRef,
+                    installingLabel: widget.copy.skillsInstallingButton,
+                    installedLabel: widget.copy.skillsInstalledButton,
+                    retryLabel: widget.copy.skillsRetryInstallButton,
+                    installState: _installVisualStateFor(
+                      availableSkills[index].sourceRef,
+                    ),
                     onPreview: () =>
                         _previewSuggestedSkill(availableSkills[index]),
                     onInstall: () =>
@@ -671,6 +681,23 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
     await _installFromSource(skill.sourceRef, fallbackName: skill.name);
   }
 
+  _SkillInstallVisualState _installVisualStateFor(String sourceRef) {
+    final normalizedSourceRef = sourceRef.trim();
+    if (normalizedSourceRef.isEmpty) {
+      return _SkillInstallVisualState.idle;
+    }
+    if (_pendingInstallSourceRef == normalizedSourceRef) {
+      return _SkillInstallVisualState.installing;
+    }
+    if (_failedInstallSourceRefs.contains(normalizedSourceRef)) {
+      return _SkillInstallVisualState.failed;
+    }
+    if (_recentlyInstalledSourceRefs.contains(normalizedSourceRef)) {
+      return _SkillInstallVisualState.installed;
+    }
+    return _SkillInstallVisualState.idle;
+  }
+
   Future<void> _loadMoreSearchResults() async {
     if (_searchResultLimit >= _expandedSearchResultLimit) {
       return;
@@ -697,6 +724,8 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
     }
     setState(() {
       _pendingInstallSourceRef = normalizedSourceRef;
+      _failedInstallSourceRefs.remove(normalizedSourceRef);
+      _recentlyInstalledSourceRefs.remove(normalizedSourceRef);
     });
     try {
       final message = await widget.bridge.installSkillSource(
@@ -706,11 +735,18 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
       if (mounted && showMessage && message != null && message.isNotEmpty) {
         _showMessage(message);
       }
-      if (mounted && _query.trim() == normalizedSourceRef) {
-        _searchController.clear();
+      if (mounted) {
+        setState(() {
+          _recentlyInstalledSourceRefs.add(normalizedSourceRef);
+        });
       }
       return;
     } catch (error) {
+      if (mounted) {
+        setState(() {
+          _failedInstallSourceRefs.add(normalizedSourceRef);
+        });
+      }
       if (mounted && showMessage) {
         _showMessage(
           _errorMessage(error) ??
@@ -722,7 +758,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
               ),
         );
       }
-      rethrow;
+      return;
     } finally {
       if (mounted && _pendingInstallSourceRef == normalizedSourceRef) {
         setState(() {
@@ -1602,7 +1638,10 @@ class _SuggestedRow extends StatelessWidget {
     required this.installsLabel,
     required this.previewLabel,
     required this.installLabel,
-    required this.isInstalling,
+    required this.installingLabel,
+    required this.installedLabel,
+    required this.retryLabel,
+    required this.installState,
     required this.onPreview,
     required this.onInstall,
   });
@@ -1611,12 +1650,37 @@ class _SuggestedRow extends StatelessWidget {
   final String? installsLabel;
   final String previewLabel;
   final String installLabel;
-  final bool isInstalling;
+  final String installingLabel;
+  final String installedLabel;
+  final String retryLabel;
+  final _SkillInstallVisualState installState;
   final VoidCallback onPreview;
   final VoidCallback onInstall;
 
   @override
   Widget build(BuildContext context) {
+    final bool isInstalling =
+        installState == _SkillInstallVisualState.installing;
+    final bool isInstalled = installState == _SkillInstallVisualState.installed;
+    final bool didFail = installState == _SkillInstallVisualState.failed;
+    final String resolvedInstallLabel = switch (installState) {
+      _SkillInstallVisualState.installing => installingLabel,
+      _SkillInstallVisualState.installed => installedLabel,
+      _SkillInstallVisualState.failed => retryLabel,
+      _SkillInstallVisualState.idle => installLabel,
+    };
+    final Color installBackground = switch (installState) {
+      _SkillInstallVisualState.installing => const Color(0xFFF1F2F6),
+      _SkillInstallVisualState.installed => const Color(0xFFEAF7EF),
+      _SkillInstallVisualState.failed => const Color(0xFFFFF0F0),
+      _SkillInstallVisualState.idle => const Color(0xFFEEF5FF),
+    };
+    final Color installTextColor = switch (installState) {
+      _SkillInstallVisualState.installing => _textSecondary,
+      _SkillInstallVisualState.installed => const Color(0xFF248A3D),
+      _SkillInstallVisualState.failed => const Color(0xFFFF3B30),
+      _SkillInstallVisualState.idle => _accent,
+    };
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
       child: Row(
@@ -1723,25 +1787,49 @@ class _SuggestedRow extends StatelessWidget {
               const SizedBox(height: 8),
               InkWell(
                 borderRadius: BorderRadius.circular(999),
-                onTap: isInstalling ? null : onInstall,
-                child: Container(
+                onTap: isInstalling || isInstalled ? null : onInstall,
+                child: AnimatedContainer(
+                  key: ValueKey<String>(
+                    'skills-install-action-${item.sourceRef}-${installState.name}',
+                  ),
+                  duration: OpenCrayMotion.resolve(
+                    context,
+                    OpenCrayMotion.micro,
+                  ),
+                  curve: OpenCrayMotion.enter,
+                  constraints: const BoxConstraints(minWidth: 76),
                   padding: const EdgeInsets.symmetric(
                     horizontal: 10,
                     vertical: 6,
                   ),
                   decoration: BoxDecoration(
-                    color: isInstalling
-                        ? const Color(0xFFF1F2F6)
-                        : const Color(0xFFEEF5FF),
+                    color: installBackground,
                     borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: didFail
+                          ? const Color(0xFFFF3B30).withValues(alpha: 0.22)
+                          : Colors.transparent,
+                    ),
                   ),
-                  child: Text(
-                    isInstalling ? '...' : installLabel,
-                    style: TextStyle(
-                      fontSize: 12,
-                      height: 1.1,
-                      fontWeight: FontWeight.w600,
-                      color: isInstalling ? _textSecondary : _accent,
+                  child: AnimatedSwitcher(
+                    duration: OpenCrayMotion.resolve(
+                      context,
+                      OpenCrayMotion.micro,
+                    ),
+                    switchInCurve: OpenCrayMotion.enter,
+                    switchOutCurve: OpenCrayMotion.exit,
+                    child: Text(
+                      resolvedInstallLabel,
+                      key: ValueKey<String>(
+                        'skills-install-label-${item.sourceRef}-${installState.name}',
+                      ),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 12,
+                        height: 1.1,
+                        fontWeight: FontWeight.w600,
+                        color: installTextColor,
+                      ),
                     ),
                   ),
                 ),
@@ -1758,19 +1846,47 @@ class _DirectInstallCard extends StatelessWidget {
   const _DirectInstallCard({
     required this.title,
     required this.body,
-    required this.buttonLabel,
-    required this.isInstalling,
+    required this.installLabel,
+    required this.installingLabel,
+    required this.installedLabel,
+    required this.retryLabel,
+    required this.installState,
     required this.onInstall,
   });
 
   final String title;
   final String body;
-  final String buttonLabel;
-  final bool isInstalling;
+  final String installLabel;
+  final String installingLabel;
+  final String installedLabel;
+  final String retryLabel;
+  final _SkillInstallVisualState installState;
   final VoidCallback onInstall;
 
   @override
   Widget build(BuildContext context) {
+    final bool isInstalling =
+        installState == _SkillInstallVisualState.installing;
+    final bool isInstalled = installState == _SkillInstallVisualState.installed;
+    final bool didFail = installState == _SkillInstallVisualState.failed;
+    final String resolvedInstallLabel = switch (installState) {
+      _SkillInstallVisualState.installing => installingLabel,
+      _SkillInstallVisualState.installed => installedLabel,
+      _SkillInstallVisualState.failed => retryLabel,
+      _SkillInstallVisualState.idle => installLabel,
+    };
+    final Color installBackground = switch (installState) {
+      _SkillInstallVisualState.installing => const Color(0xFFF1F2F6),
+      _SkillInstallVisualState.installed => const Color(0xFFEAF7EF),
+      _SkillInstallVisualState.failed => const Color(0xFFFFF0F0),
+      _SkillInstallVisualState.idle => const Color(0xFFEEF5FF),
+    };
+    final Color installTextColor = switch (installState) {
+      _SkillInstallVisualState.installing => _textSecondary,
+      _SkillInstallVisualState.installed => const Color(0xFF248A3D),
+      _SkillInstallVisualState.failed => const Color(0xFFFF3B30),
+      _SkillInstallVisualState.idle => _accent,
+    };
     return DecoratedBox(
       decoration: const BoxDecoration(
         color: _surface,
@@ -1811,25 +1927,46 @@ class _DirectInstallCard extends StatelessWidget {
             const SizedBox(width: 12),
             InkWell(
               borderRadius: BorderRadius.circular(999),
-              onTap: isInstalling ? null : onInstall,
-              child: Container(
+              onTap: isInstalling || isInstalled ? null : onInstall,
+              child: AnimatedContainer(
+                key: ValueKey<String>(
+                  'skills-direct-install-action-${installState.name}',
+                ),
+                duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+                curve: OpenCrayMotion.enter,
+                constraints: const BoxConstraints(minWidth: 76),
                 padding: const EdgeInsets.symmetric(
                   horizontal: 10,
                   vertical: 6,
                 ),
                 decoration: BoxDecoration(
-                  color: isInstalling
-                      ? const Color(0xFFF1F2F6)
-                      : const Color(0xFFEEF5FF),
+                  color: installBackground,
                   borderRadius: BorderRadius.circular(999),
+                  border: Border.all(
+                    color: didFail
+                        ? const Color(0xFFFF3B30).withValues(alpha: 0.22)
+                        : Colors.transparent,
+                  ),
                 ),
-                child: Text(
-                  isInstalling ? '...' : buttonLabel,
-                  style: TextStyle(
-                    fontSize: 12,
-                    height: 1.1,
-                    fontWeight: FontWeight.w600,
-                    color: isInstalling ? _textSecondary : _accent,
+                child: AnimatedSwitcher(
+                  duration: OpenCrayMotion.resolve(
+                    context,
+                    OpenCrayMotion.micro,
+                  ),
+                  switchInCurve: OpenCrayMotion.enter,
+                  switchOutCurve: OpenCrayMotion.exit,
+                  child: Text(
+                    resolvedInstallLabel,
+                    key: ValueKey<String>(
+                      'skills-direct-install-label-${installState.name}',
+                    ),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 12,
+                      height: 1.1,
+                      fontWeight: FontWeight.w600,
+                      color: installTextColor,
+                    ),
                   ),
                 ),
               ),

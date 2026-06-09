@@ -33,6 +33,14 @@ class OpenCrayUiCopy {
       isChinese ? '再按一次返回即可退出' : 'Press back again to exit';
   String get filesSearchHint =>
       isChinese ? '搜索文件和文件夹' : 'Search files and folders';
+  String get filesSearchClearAction => isChinese ? '清空搜索' : 'Clear search';
+  String filesFilteredStatus(String query, int count) => isChinese
+      ? '正在筛选“$query” · 显示 $count 项'
+      : 'Filtering "$query" · $count shown';
+  String get filesSelectionStandardActions =>
+      isChinese ? '文件操作' : 'File actions';
+  String get filesSelectionDangerActions =>
+      isChinese ? '危险操作' : 'Destructive actions';
   String get filesLocationTitle => isChinese ? '位置' : 'Location';
   String get filesNewAction => isChinese ? '新建' : 'New';
   String get filesDoneAction => isChinese ? '完成' : 'Done';
@@ -167,6 +175,9 @@ class OpenCrayUiCopy {
   String get skillsManageTab => isChinese ? '管理' : 'Manage';
   String get skillsInstallTab => isChinese ? '安装' : 'Install';
   String get skillsInstallButton => isChinese ? '安装' : 'Install';
+  String get skillsInstallingButton => isChinese ? '安装中' : 'Installing';
+  String get skillsInstalledButton => isChinese ? '已安装' : 'Installed';
+  String get skillsRetryInstallButton => isChinese ? '重试' : 'Retry';
   String get skillsPreviewButton => isChinese ? '查看内容' : 'Preview';
   String get skillsInspectButton => isChinese ? '检查' : 'Inspect';
   String get skillsCancelAction => isChinese ? '取消' : 'Cancel';
