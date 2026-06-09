@@ -1025,9 +1025,7 @@ class OpenCrayChatRunDurableCompactionSnapshot {
       totalCompactedMessageCount: map['totalCompactedMessageCount'] as int?,
       latestCompactedAtEpochMs: map['latestCompactedAtEpochMs'] as int?,
       remoteCompaction: rawRemoteCompaction is Map<Object?, Object?>
-          ? OpenCrayChatRunRemoteCompactionSnapshot.fromMap(
-              rawRemoteCompaction,
-            )
+          ? OpenCrayChatRunRemoteCompactionSnapshot.fromMap(rawRemoteCompaction)
           : null,
     );
   }
@@ -1764,6 +1762,7 @@ class OpenCrayChatRuntimeEventDelta {
     this.hasSubAgentsPatch = false,
     this.hasLiveAssistantDraftsPatch = false,
     this.hostLifecycle,
+    this.runPatchMode = 'replace',
     this.updatedAtEpochMs = 0,
   });
 
@@ -1780,6 +1779,7 @@ class OpenCrayChatRuntimeEventDelta {
   final bool hasSubAgentsPatch;
   final bool hasLiveAssistantDraftsPatch;
   final OpenCrayHostLifecycleSnapshot? hostLifecycle;
+  final String runPatchMode;
   final int updatedAtEpochMs;
 
   factory OpenCrayChatRuntimeEventDelta.fromMap(Map<Object?, Object?> map) {
@@ -1828,6 +1828,7 @@ class OpenCrayChatRuntimeEventDelta {
       hostLifecycle: rawHostLifecycle is Map<Object?, Object?>
           ? OpenCrayHostLifecycleSnapshot.fromMap(rawHostLifecycle)
           : null,
+      runPatchMode: map['runPatchMode'] as String? ?? 'replace',
       updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
     );
   }

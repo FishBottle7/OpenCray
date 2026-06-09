@@ -241,6 +241,42 @@ OpenCrayChatRuntimeSnapshot _mergeRuntimeDeltaSnapshot(
   );
 }
 
+bool _runtimeRunListPatchCanReplace(
+  List<OpenCrayChatRunSnapshot> currentRuns,
+  List<OpenCrayChatRunSnapshot> patchRuns,
+) {
+  for (final currentRun in currentRuns) {
+    if (!_isRuntimeRunActiveForProjection(currentRun)) {
+      continue;
+    }
+    if (_findRuntimeRun(patchRuns, currentRun) == null) {
+      return false;
+    }
+  }
+  for (final patchRun in patchRuns) {
+    final OpenCrayChatRunSnapshot? currentRun = _findRuntimeRun(
+      currentRuns,
+      patchRun,
+    );
+    if (currentRun == null) {
+      continue;
+    }
+    final OpenCrayChatRunSnapshot preferred = _preferRuntimeRunSnapshot(
+      currentRun,
+      patchRun,
+    );
+    if (identical(preferred, currentRun) &&
+        _runtimeRunStateSignature(currentRun) !=
+            _runtimeRunStateSignature(patchRun)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+String _runtimeRunStateSignature(OpenCrayChatRunSnapshot run) =>
+    jsonEncode(_runtimeRunDisplaySignature(run));
+
 List<OpenCrayChatRunSnapshot> _mergeRuntimeRuns(
   List<OpenCrayChatRunSnapshot> left,
   List<OpenCrayChatRunSnapshot> right,
@@ -673,6 +709,7 @@ String _runtimeManagedProcessMergeKey(
   return <String>[
     process.command,
     process.args.join('\u0001'),
+    process.workingDirectory?.trim() ?? '',
     process.startedAtEpochMs.toString(),
   ].join('\u0001');
 }
@@ -856,8 +893,6 @@ int _runtimeEventDetailWeight(OpenCrayChatRuntimeEventSnapshot event) =>
     (event.totalLineCount == null ? 0 : 4);
 
 String _runtimeEventMergeKey(OpenCrayChatRuntimeEventSnapshot event) {
-  final bool mergeAssistantPhaseText =
-      event.kind.trim().toLowerCase() == 'assistant_phase';
   return <String>[
     event.kind,
     event.runId,
@@ -865,14 +900,14 @@ String _runtimeEventMergeKey(OpenCrayChatRuntimeEventSnapshot event) {
     event.executionId ?? '',
     event.executionOrdinal?.toString() ?? '',
     event.executionKind ?? '',
-    event.emittedAtEpochMs.toString(),
+    event.turn?.toString() ?? '',
     event.phase ?? '',
     event.stage ?? '',
     event.toolName ?? '',
+    event.entryId ?? '',
     event.childRunId ?? '',
     event.childTaskId ?? '',
-    event.entryId ?? '',
-    mergeAssistantPhaseText ? '' : event.text ?? '',
+    event.emittedAtEpochMs.toString(),
   ].join('\u0001');
 }
 
@@ -4449,8 +4484,20 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         : _mergeRuntimeDeltaSnapshot(
             currentSnapshot,
             deltaSnapshot,
-            hasActiveRunsPatch: delta.hasActiveRunsPatch,
-            hasRetainedRunsPatch: delta.hasRetainedRunsPatch,
+            hasActiveRunsPatch:
+                delta.runPatchMode.trim().toLowerCase() == 'replace' &&
+                delta.hasActiveRunsPatch &&
+                _runtimeRunListPatchCanReplace(
+                  currentSnapshot.activeRuns,
+                  deltaSnapshot.activeRuns,
+                ),
+            hasRetainedRunsPatch:
+                delta.runPatchMode.trim().toLowerCase() == 'replace' &&
+                delta.hasRetainedRunsPatch &&
+                _runtimeRunListPatchCanReplace(
+                  currentSnapshot.retainedRuns,
+                  deltaSnapshot.retainedRuns,
+                ),
             hasSubAgentsPatch: delta.hasSubAgentsPatch,
             hasLiveAssistantDraftsPatch: delta.hasLiveAssistantDraftsPatch,
           );

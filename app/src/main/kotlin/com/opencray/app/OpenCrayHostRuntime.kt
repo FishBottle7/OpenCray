@@ -2749,6 +2749,7 @@ internal class OpenCrayHostRuntime private constructor(
       put("sessionId", sessionId)
       put("sequence", sequence)
       put("updatedAtEpochMs", updatedAtEpochMs)
+      put("runPatchMode", "merge")
       put("events", visibleEvent?.let(::runtimeEventToMap)?.let(::listOf) ?: emptyList<Map<String, Any?>>())
       if (visibleRun != null) {
         put("activeRuns", activeRuns)

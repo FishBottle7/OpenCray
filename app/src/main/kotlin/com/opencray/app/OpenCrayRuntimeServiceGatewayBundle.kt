@@ -1152,6 +1152,7 @@ internal class ServiceOwnedChatRuntimeGateway(
       "sequence" to sequence,
       "events" to deltaEvents,
       "totalLength" to nextEvents.size,
+      "runPatchMode" to "replace",
       "activeRuns" to (nextPayload["activeRuns"] ?: emptyList<Any?>()),
       "retainedRuns" to (nextPayload["retainedRuns"] ?: emptyList<Any?>()),
       "subAgents" to (nextPayload["subAgents"] ?: emptyList<Any?>()),

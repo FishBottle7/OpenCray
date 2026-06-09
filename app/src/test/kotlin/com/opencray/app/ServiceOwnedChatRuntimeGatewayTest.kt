@@ -1066,6 +1066,7 @@ class ServiceOwnedChatRuntimeGatewayTest {
       gateway.notifyChatSnapshotsChanged()
 
       assertEquals(1, observedDeltas.size)
+      assertEquals("replace", observedDeltas.single()["runPatchMode"])
       val events = observedDeltas.single()["events"] as List<*>
       val event = events.single() as Map<*, *>
       assertEquals("Found 3 results.", event["contentPreview"])
