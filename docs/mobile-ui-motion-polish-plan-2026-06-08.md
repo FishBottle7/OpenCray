@@ -653,41 +653,53 @@ Acceptance:
 
 Skills first:
 
-- [ ] Replace Skills Manage/Install `AnimatedSwitcher`-style transition with a
+- [x] Replace Skills Manage/Install `AnimatedSwitcher`-style transition with a
   clipped horizontal viewport.
-- [ ] Make Manage -> Install slide left and Install -> Manage slide right.
-- [ ] Prevent old/new page centered overlap during the transition.
-- [ ] Keep only the selected Skills page interactive during motion.
-- [ ] Refactor Skills segmented control to a single sliding capsule indicator.
-- [ ] Keep Skills tab label layout and hit targets stable.
-- [ ] Add or update focused Skills widget tests.
+- [x] Make Manage -> Install slide left and Install -> Manage slide right.
+- [x] Prevent old/new page centered overlap during the transition.
+- [x] Keep only the selected Skills page interactive during motion.
+- [x] Refactor Skills segmented control to a single sliding capsule indicator.
+- [x] Keep Skills tab label layout and hit targets stable.
+- [x] Add or update focused Skills widget tests.
 
 Chat composer next:
 
-- [ ] Replace Chat composer add-menu switcher with a tray that expands downward
+- [x] Replace Chat composer add-menu switcher with a tray that expands downward
   from the input row.
-- [ ] Keep composer bottom anchored while expanded height pushes the composer
+- [x] Keep composer bottom anchored while expanded height pushes the composer
   upward.
-- [ ] Animate composer material, border, and plus-button colors with the open
+- [x] Animate composer material, border, and plus-button colors with the open
   progress.
-- [ ] Keep focus outline behavior distinct from add-menu active behavior.
-- [ ] Add or update focused Chat composer widget tests.
+- [x] Keep focus outline behavior distinct from add-menu active behavior.
+- [x] Add or update focused Chat composer widget tests.
 
 Shared motion:
 
-- [ ] Tune page spatial curve so right-to-left and left-to-right movement feel
+- [x] Tune page spatial curve so right-to-left and left-to-right movement feel
   symmetric.
-- [ ] Use spatial movement curves for page translation and keep exit curves for
+- [x] Use spatial movement curves for page translation and keep exit curves for
   opacity/close affordances.
-- [ ] Verify reduced-motion fallbacks for Skills and Chat composer.
+- [x] Verify reduced-motion fallbacks for Skills and Chat composer.
 
 Verification:
 
-- [ ] Run `dart analyze flutter_app`.
-- [ ] Run focused Skills tests.
-- [ ] Run focused Chat composer tests.
-- [ ] Rebuild debug APK after implementation.
-- [ ] Create a focused Conventional Commit in Chinese.
+- [x] Run `dart analyze flutter_app`.
+- [x] Run focused Skills tests.
+- [x] Run focused Chat composer tests.
+- [x] Rebuild debug APK after implementation.
+- [x] Create a focused Conventional Commit in Chinese.
+
+Current revision verification notes:
+
+- `dart analyze flutter_app` passes.
+- `flutter test test/skills_feature_test.dart` passes outside the sandbox.
+- Focused tests passing outside the sandbox:
+  - `test/chat_feature_screen_test.dart --plain-name "plus menu expands inside animated composer surface"`
+  - `test/settings_feature_test.dart --plain-name "home settings opens API integrations entry"`
+  - `test/opencray_app_shell_test.dart --plain-name "shell tab transition preserves chat widget state"`
+- Debug APK rebuilt at `build/apk/OpenCray-debug.apk`.
+- APK SHA256:
+  `C9B6B1DC8440E2582220ACF1D3111F1290236155E6A07CA01AC369D8FE6C048E`.
 
 ## Acceptance Criteria
 

@@ -1317,31 +1317,67 @@ class _SegmentedControl extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFFECEEF3),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(4),
-        child: Row(
-          children: [
-            Expanded(
-              child: _SegmentButton(
-                label: copy.skillsManageTab,
-                selected: selectedPage == SkillsPage.manage,
-                onTap: () => onChanged(SkillsPage.manage),
-              ),
-            ),
-            const SizedBox(width: 4),
-            Expanded(
-              child: _SegmentButton(
-                label: copy.skillsInstallTab,
-                selected: selectedPage == SkillsPage.install,
-                onTap: () => onChanged(SkillsPage.install),
-              ),
-            ),
-          ],
+    final bool installSelected = selectedPage == SkillsPage.install;
+    return SizedBox(
+      height: 36,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFFECEEF3),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              const double segmentGap = 4;
+              final double indicatorWidth =
+                  (constraints.maxWidth - segmentGap) / 2;
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  AnimatedPositioned(
+                    key: const ValueKey<String>('skills-segment-indicator'),
+                    duration: OpenCrayMotion.resolve(
+                      context,
+                      OpenCrayMotion.expand,
+                    ),
+                    curve: OpenCrayMotion.spatial,
+                    left: installSelected ? indicatorWidth + segmentGap : 0,
+                    top: 0,
+                    bottom: 0,
+                    width: indicatorWidth,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _SegmentButton(
+                          key: const ValueKey<String>('skills-segment-manage'),
+                          label: copy.skillsManageTab,
+                          selected: selectedPage == SkillsPage.manage,
+                          onTap: () => onChanged(SkillsPage.manage),
+                        ),
+                      ),
+                      const SizedBox(width: segmentGap),
+                      Expanded(
+                        child: _SegmentButton(
+                          key: const ValueKey<String>('skills-segment-install'),
+                          label: copy.skillsInstallTab,
+                          selected: installSelected,
+                          onTap: () => onChanged(SkillsPage.install),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              );
+            },
+          ),
         ),
       ),
     );
@@ -1350,6 +1386,7 @@ class _SegmentedControl extends StatelessWidget {
 
 class _SegmentButton extends StatelessWidget {
   const _SegmentButton({
+    super.key,
     required this.label,
     required this.selected,
     required this.onTap,
@@ -1364,24 +1401,21 @@ class _SegmentButton extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(999),
       onTap: onTap,
-      child: AnimatedContainer(
-        duration: OpenCrayMotion.resolve(context, OpenCrayMotion.quick),
-        curve: OpenCrayMotion.enter,
+      child: SizedBox(
         height: 28,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: selected ? Colors.white : Colors.transparent,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 14,
-            height: 1.1,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-            color: const Color(
-              0xFF111111,
-            ).withValues(alpha: selected ? 1 : 0.72),
+        child: Center(
+          child: AnimatedDefaultTextStyle(
+            duration: OpenCrayMotion.resolve(context, OpenCrayMotion.quick),
+            curve: OpenCrayMotion.enter,
+            style: TextStyle(
+              fontSize: 14,
+              height: 1.1,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              color: const Color(
+                0xFF111111,
+              ).withValues(alpha: selected ? 1 : 0.72),
+            ),
+            child: Text(label),
           ),
         ),
       ),

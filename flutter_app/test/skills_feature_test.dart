@@ -376,13 +376,20 @@ void main() {
 
     await _pumpSkillsScreen(tester, bridge: bridge);
 
+    AnimatedPositioned indicator = tester.widget<AnimatedPositioned>(
+      find.byKey(const ValueKey<String>('skills-segment-indicator')),
+    );
+    expect(indicator.left, 0);
+
     OpenCrayDirectionalSwitcher switcher = tester
         .widget<OpenCrayDirectionalSwitcher>(
           find.byType(OpenCrayDirectionalSwitcher),
         );
     expect(switcher.direction, -1);
 
-    await tester.tap(find.text('Install'));
+    await tester.tap(
+      find.byKey(const ValueKey<String>('skills-segment-install')),
+    );
     await tester.pump();
 
     switcher = tester.widget<OpenCrayDirectionalSwitcher>(
@@ -390,6 +397,48 @@ void main() {
     );
     expect(switcher.direction, 1);
     expect(find.text('GitHub URL'), findsOneWidget);
+
+    indicator = tester.widget<AnimatedPositioned>(
+      find.byKey(const ValueKey<String>('skills-segment-indicator')),
+    );
+    expect(indicator.left, greaterThan(0));
+
+    FractionalTranslation currentLayer = tester.widget<FractionalTranslation>(
+      find.byKey(
+        const ValueKey<String>('opencray-directional-switcher-current'),
+      ),
+    );
+    FractionalTranslation previousLayer = tester.widget<FractionalTranslation>(
+      find.byKey(
+        const ValueKey<String>('opencray-directional-switcher-previous'),
+      ),
+    );
+    expect(currentLayer.translation.dx, 1);
+    expect(previousLayer.translation.dx, 0);
+
+    await tester.pump(const Duration(milliseconds: 90));
+
+    currentLayer = tester.widget<FractionalTranslation>(
+      find.byKey(
+        const ValueKey<String>('opencray-directional-switcher-current'),
+      ),
+    );
+    previousLayer = tester.widget<FractionalTranslation>(
+      find.byKey(
+        const ValueKey<String>('opencray-directional-switcher-previous'),
+      ),
+    );
+    expect(currentLayer.translation.dx, greaterThan(0));
+    expect(currentLayer.translation.dx, lessThan(1));
+    expect(previousLayer.translation.dx, lessThan(0));
+
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(
+        const ValueKey<String>('opencray-directional-switcher-previous'),
+      ),
+      findsNothing,
+    );
   });
 
   testWidgets('install page can preview suggested skill contents', (

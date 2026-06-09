@@ -11,7 +11,8 @@ final class OpenCrayMotion {
 
   static const Curve enter = Curves.easeOutCubic;
   static const Curve exit = Curves.easeInCubic;
-  static const Curve spatial = Curves.easeOutCubic;
+  static const Curve spatial = Cubic(0.2, 0.0, 0.0, 1.0);
+  static const Curve spatialExit = Curves.easeInCubic;
   static const Curve expandCurve = Curves.easeInOutCubic;
 
   static bool reduce(BuildContext context) {
@@ -48,25 +49,30 @@ PageRoute<T> openCrayHorizontalPageRoute<T>({
     reverseTransitionDuration: OpenCrayMotion.pageExit,
     pageBuilder: (context, animation, secondaryAnimation) => builder(context),
     transitionsBuilder: (context, animation, secondaryAnimation, child) {
-      final curved = CurvedAnimation(
+      final move = CurvedAnimation(
+        parent: animation,
+        curve: OpenCrayMotion.spatial,
+        reverseCurve: OpenCrayMotion.spatialExit,
+      );
+      final fade = CurvedAnimation(
         parent: animation,
         curve: OpenCrayMotion.enter,
         reverseCurve: OpenCrayMotion.exit,
       );
       if (OpenCrayMotion.reduce(context)) {
-        return FadeTransition(opacity: curved, child: child);
+        return FadeTransition(opacity: fade, child: child);
       }
       final double startX = switch (direction) {
         OpenCrayRouteDirection.fromRight => 1,
         OpenCrayRouteDirection.fromLeft => -1,
       };
       return FadeTransition(
-        opacity: Tween<double>(begin: 0.94, end: 1).animate(curved),
+        opacity: Tween<double>(begin: 0.98, end: 1).animate(fade),
         child: SlideTransition(
           position: Tween<Offset>(
             begin: Offset(startX, 0),
             end: Offset.zero,
-          ).animate(curved),
+          ).animate(move),
           child: child,
         ),
       );
@@ -191,7 +197,7 @@ class _OpenCrayDirectionalIndexedStackState
   }
 }
 
-class OpenCrayDirectionalSwitcher extends StatelessWidget {
+class OpenCrayDirectionalSwitcher extends StatefulWidget {
   const OpenCrayDirectionalSwitcher({
     super.key,
     required this.activeKey,
@@ -204,34 +210,121 @@ class OpenCrayDirectionalSwitcher extends StatelessWidget {
   final Widget child;
 
   @override
+  State<OpenCrayDirectionalSwitcher> createState() =>
+      _OpenCrayDirectionalSwitcherState();
+}
+
+class _OpenCrayDirectionalSwitcherState
+    extends State<OpenCrayDirectionalSwitcher>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: OpenCrayMotion.page,
+  )..value = 1;
+  late Key _currentKey = widget.activeKey;
+  Widget? _previousChild;
+  int _direction = 1;
+
+  @override
+  void didUpdateWidget(covariant OpenCrayDirectionalSwitcher oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.activeKey == _currentKey) {
+      return;
+    }
+    _direction = widget.direction == 0 ? 1 : widget.direction.sign;
+    _previousChild = KeyedSubtree(
+      key: oldWidget.activeKey,
+      child: oldWidget.child,
+    );
+    _currentKey = widget.activeKey;
+    if (OpenCrayMotion.reduce(context)) {
+      _clearPrevious();
+      _controller.value = 1;
+      return;
+    }
+    _controller
+      ..duration = OpenCrayMotion.page
+      ..forward(from: 0);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addStatusListener((status) {
+      if (status == AnimationStatus.completed && mounted) {
+        setState(_clearPrevious);
+      }
+    });
+  }
+
+  void _clearPrevious() {
+    _previousChild = null;
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final reduce = OpenCrayMotion.reduce(context);
-    return AnimatedSwitcher(
+    if (OpenCrayMotion.reduce(context) || _previousChild == null) {
+      return KeyedSubtree(key: widget.activeKey, child: widget.child);
+    }
+    final currentChild = KeyedSubtree(
+      key: widget.activeKey,
+      child: widget.child,
+    );
+    return AnimatedSize(
       duration: OpenCrayMotion.resolve(context, OpenCrayMotion.page),
-      reverseDuration: OpenCrayMotion.resolve(context, OpenCrayMotion.pageExit),
-      switchInCurve: OpenCrayMotion.enter,
-      switchOutCurve: OpenCrayMotion.exit,
-      transitionBuilder: (child, animation) {
-        if (reduce) {
-          return FadeTransition(opacity: animation, child: child);
-        }
-        final bool incoming = child.key == activeKey;
-        final double startX = incoming ? direction * 0.10 : -direction * 0.055;
-        return FadeTransition(
-          opacity: Tween<double>(
-            begin: incoming ? 0.94 : 0.84,
-            end: 1,
-          ).animate(animation),
-          child: SlideTransition(
-            position: Tween<Offset>(
-              begin: Offset(startX, 0),
-              end: Offset.zero,
-            ).animate(animation),
-            child: child,
-          ),
-        );
-      },
-      child: KeyedSubtree(key: activeKey, child: child),
+      curve: OpenCrayMotion.expandCurve,
+      alignment: Alignment.topCenter,
+      child: ClipRect(
+        key: const ValueKey<String>('opencray-directional-switcher-viewport'),
+        child: AnimatedBuilder(
+          animation: _controller,
+          child: currentChild,
+          builder: (context, child) {
+            final double t = OpenCrayMotion.spatial.transform(
+              _controller.value,
+            );
+            return Stack(
+              clipBehavior: Clip.hardEdge,
+              children: [
+                if (_previousChild != null)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    top: 0,
+                    child: IgnorePointer(
+                      child: TickerMode(
+                        enabled: false,
+                        child: FractionalTranslation(
+                          key: const ValueKey<String>(
+                            'opencray-directional-switcher-previous',
+                          ),
+                          translation: Offset(-_direction * t, 0),
+                          child: _previousChild,
+                        ),
+                      ),
+                    ),
+                  ),
+                IgnorePointer(
+                  ignoring: false,
+                  child: FractionalTranslation(
+                    key: const ValueKey<String>(
+                      'opencray-directional-switcher-current',
+                    ),
+                    translation: Offset(_direction * (1 - t), 0),
+                    child: child,
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
     );
   }
 }

@@ -12186,15 +12186,37 @@ void main() {
     final addMenuFinder = find.byKey(
       const ValueKey<String>('chat-composer-add-menu'),
     );
+    final addTrayFinder = find.byKey(
+      const ValueKey<String>('chat-composer-add-tray'),
+    );
     expect(addMenuFinder, findsOneWidget);
+    expect(addTrayFinder, findsOneWidget);
+    expect(
+      find.descendant(of: addTrayFinder, matching: addMenuFinder),
+      findsOneWidget,
+    );
     expect(
       find.ancestor(of: addMenuFinder, matching: find.byType(AnimatedSwitcher)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: addTrayFinder, matching: find.byType(Align)),
       findsOneWidget,
     );
     expect(
       find.ancestor(of: addMenuFinder, matching: find.byType(AnimatedSize)),
       findsWidgets,
     );
+
+    await tester.pumpAndSettle();
+
+    final plusIcon = tester.widget<Icon>(
+      find.descendant(
+        of: find.byKey(const ValueKey<String>('chat-composer-plus-button')),
+        matching: find.byIcon(Icons.add_rounded),
+      ),
+    );
+    expect(plusIcon.color, const Color(0xFF007AFF));
   });
 
   testWidgets('session drawer opens from the left edge', (tester) async {

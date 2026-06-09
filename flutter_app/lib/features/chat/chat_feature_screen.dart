@@ -18551,169 +18551,234 @@ class _ComposerCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool hasTodos = state.composer.todos.isNotEmpty;
-    final bool hasIntegratedSurface =
+    final bool hasPersistentIntegratedSurface =
         state.composer.commandOptions.isNotEmpty ||
-        state.composer.attachments.isNotEmpty ||
-        state.composer.showAddMenu;
+        state.composer.attachments.isNotEmpty;
 
-    final Widget content = Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: <Widget>[
-        if (hasTodos) ...<Widget>[
-          _TodoListPanel(todos: state.composer.todos),
-          const SizedBox(height: 12),
-        ],
-        if (state.composer.commandOptions.isNotEmpty) ...<Widget>[
-          Container(
-            decoration: BoxDecoration(
-              color: _ChatPalette.subtleSurface,
-              borderRadius: BorderRadius.circular(14),
-            ),
-            padding: const EdgeInsets.all(12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                Text(copy.chatCommands, style: _ChatTextStyles.commandsLabel),
-                const SizedBox(height: 8),
-                ...state.composer.commandOptions.map(
-                  (ChatCommandOptionData option) => _CommandOptionTile(
-                    option: option,
-                    onPressed: onCommandSelected,
-                  ),
+    return TweenAnimationBuilder<double>(
+      tween: Tween<double>(end: state.composer.showAddMenu ? 1 : 0),
+      duration: OpenCrayMotion.resolve(
+        context,
+        state.composer.showAddMenu
+            ? OpenCrayMotion.expand
+            : OpenCrayMotion.quick,
+      ),
+      curve: OpenCrayMotion.expandCurve,
+      builder: (context, addMenuProgress, child) {
+        final double surfaceProgress = hasPersistentIntegratedSurface
+            ? 1
+            : addMenuProgress;
+        final Widget content = Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            if (hasTodos) ...<Widget>[
+              _TodoListPanel(todos: state.composer.todos),
+              const SizedBox(height: 12),
+            ],
+            if (state.composer.commandOptions.isNotEmpty) ...<Widget>[
+              Container(
+                decoration: BoxDecoration(
+                  color: _ChatPalette.subtleSurface,
+                  borderRadius: BorderRadius.circular(14),
                 ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 10),
-        ],
-        if (state.composer.attachments.isNotEmpty) ...<Widget>[
-          SizedBox(
-            height: 68,
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              itemBuilder: (BuildContext context, int index) {
-                return _AttachmentCard(
-                  attachment: state.composer.attachments[index],
-                  bridge: bridge,
-                  onRemove: () =>
-                      onAttachmentRemoved(state.composer.attachments[index]),
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Text(
+                      copy.chatCommands,
+                      style: _ChatTextStyles.commandsLabel,
+                    ),
+                    const SizedBox(height: 8),
+                    ...state.composer.commandOptions.map(
+                      (ChatCommandOptionData option) => _CommandOptionTile(
+                        option: option,
+                        onPressed: onCommandSelected,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+            if (state.composer.attachments.isNotEmpty) ...<Widget>[
+              SizedBox(
+                height: 68,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemBuilder: (BuildContext context, int index) {
+                    return _AttachmentCard(
+                      attachment: state.composer.attachments[index],
+                      bridge: bridge,
+                      onRemove: () => onAttachmentRemoved(
+                        state.composer.attachments[index],
+                      ),
+                    );
+                  },
+                  separatorBuilder: (BuildContext context, int index) {
+                    return const SizedBox(width: 8);
+                  },
+                  itemCount: state.composer.attachments.length,
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
+            AnimatedBuilder(
+              animation: controller,
+              builder: (BuildContext context, Widget? child) {
+                final bool hasSendableContent =
+                    controller.text.trim().isNotEmpty ||
+                    state.composer.attachments.isNotEmpty;
+                final ChatRunTraceData? effectiveInterruptTrace =
+                    state.isInputEnabled && !hasSendableContent
+                    ? interruptTrace
+                    : null;
+                final bool showInterruptConfirm =
+                    effectiveInterruptTrace != null &&
+                    interruptConfirmRunId ==
+                        effectiveInterruptTrace.interruptId;
+                if (showInterruptConfirm) {
+                  return _ComposerInterruptConfirmSurface(
+                    copy: copy,
+                    trace: effectiveInterruptTrace,
+                    isBusy: busyInterruptRunIds.contains(
+                      effectiveInterruptTrace.interruptId,
+                    ),
+                    onDismiss: () =>
+                        onDismissInterruptRunTrace(effectiveInterruptTrace),
+                    onConfirmed: () =>
+                        onInterruptRunTrace(effectiveInterruptTrace),
+                  );
+                }
+                return _InputRow(
+                  placeholder: state.composer.placeholder,
+                  controller: controller,
+                  focusNode: focusNode,
+                  enabled: state.isInputEnabled,
+                  surfaceProgress: surfaceProgress,
+                  defaultGlassProgress: hasTodos ? 0 : 1 - surfaceProgress,
+                  plusProgress: addMenuProgress,
+                  interruptTrace: effectiveInterruptTrace,
+                  isInterruptBusy:
+                      effectiveInterruptTrace != null &&
+                      busyInterruptRunIds.contains(
+                        effectiveInterruptTrace.interruptId,
+                      ),
+                  onInterruptPressed: effectiveInterruptTrace == null
+                      ? null
+                      : () => onArmInterruptRunTrace(effectiveInterruptTrace),
+                  onPlusPressed: onPlusPressed,
+                  onSendPressed: onSendPressed,
                 );
               },
-              separatorBuilder: (BuildContext context, int index) {
-                return const SizedBox(width: 8);
-              },
-              itemCount: state.composer.attachments.length,
             ),
-          ),
-          const SizedBox(height: 10),
-        ],
-        AnimatedBuilder(
-          animation: controller,
-          builder: (BuildContext context, Widget? child) {
-            final bool hasSendableContent =
-                controller.text.trim().isNotEmpty ||
-                state.composer.attachments.isNotEmpty;
-            final ChatRunTraceData? effectiveInterruptTrace =
-                state.isInputEnabled && !hasSendableContent
-                ? interruptTrace
-                : null;
-            final bool showInterruptConfirm =
-                effectiveInterruptTrace != null &&
-                interruptConfirmRunId == effectiveInterruptTrace.interruptId;
-            if (showInterruptConfirm) {
-              return _ComposerInterruptConfirmSurface(
-                copy: copy,
-                trace: effectiveInterruptTrace,
-                isBusy: busyInterruptRunIds.contains(
-                  effectiveInterruptTrace.interruptId,
-                ),
-                onDismiss: () =>
-                    onDismissInterruptRunTrace(effectiveInterruptTrace),
-                onConfirmed: () => onInterruptRunTrace(effectiveInterruptTrace),
-              );
-            }
-            return _InputRow(
-              placeholder: state.composer.placeholder,
-              controller: controller,
-              focusNode: focusNode,
-              enabled: state.isInputEnabled,
-              hasIntegratedSurface: hasIntegratedSurface,
-              showDefaultGlass: !hasIntegratedSurface && !hasTodos,
-              plusHighlighted: hasIntegratedSurface,
-              interruptTrace: effectiveInterruptTrace,
-              isInterruptBusy:
-                  effectiveInterruptTrace != null &&
-                  busyInterruptRunIds.contains(
-                    effectiveInterruptTrace.interruptId,
-                  ),
-              onInterruptPressed: effectiveInterruptTrace == null
-                  ? null
-                  : () => onArmInterruptRunTrace(effectiveInterruptTrace),
-              onPlusPressed: onPlusPressed,
-              onSendPressed: onSendPressed,
-            );
-          },
-        ),
-        AnimatedSwitcher(
-          duration: OpenCrayMotion.resolve(context, OpenCrayMotion.expand),
-          reverseDuration: OpenCrayMotion.resolve(
-            context,
-            OpenCrayMotion.quick,
-          ),
-          switchInCurve: OpenCrayMotion.expandCurve,
-          switchOutCurve: OpenCrayMotion.exit,
-          transitionBuilder: (child, animation) {
-            if (OpenCrayMotion.reduce(context)) {
-              return FadeTransition(opacity: animation, child: child);
-            }
-            final curved = CurvedAnimation(
-              parent: animation,
-              curve: OpenCrayMotion.expandCurve,
-              reverseCurve: OpenCrayMotion.exit,
-            );
-            return FadeTransition(
-              opacity: curved,
-              child: SizeTransition(
-                sizeFactor: curved,
-                axisAlignment: -1,
-                child: child,
-              ),
-            );
-          },
-          child: state.composer.showAddMenu
-              ? _ComposerAddMenu(
-                  key: const ValueKey<String>('chat-composer-add-menu'),
-                  copy: copy,
-                  actions: state.composer.addActions,
-                  onAddActionSelected: onAddActionSelected,
-                )
-              : const SizedBox.shrink(
-                  key: ValueKey<String>('chat-composer-add-menu-empty'),
-                ),
-        ),
-      ],
-    );
+            _ComposerAddTray(
+              progress: addMenuProgress,
+              isOpen: state.composer.showAddMenu,
+              copy: copy,
+              actions: state.composer.addActions,
+              onAddActionSelected: onAddActionSelected,
+            ),
+          ],
+        );
 
-    final Widget surface;
-    if (hasTodos) {
-      surface = _ComposerGlassSurface(
-        child: Padding(padding: const EdgeInsets.all(12), child: content),
-      );
-    } else if (!hasIntegratedSurface) {
-      surface = content;
-    } else {
-      surface = DecoratedBox(
-        decoration: _ChatDecorations.card(),
-        child: Padding(padding: const EdgeInsets.all(10), child: content),
+        final Widget surface;
+        if (hasTodos) {
+          surface = _ComposerGlassSurface(
+            child: Padding(padding: const EdgeInsets.all(12), child: content),
+          );
+        } else {
+          surface = _ComposerMaterialSurface(
+            progress: surfaceProgress,
+            child: content,
+          );
+        }
+
+        return AnimatedSize(
+          duration: OpenCrayMotion.resolve(context, OpenCrayMotion.expand),
+          curve: OpenCrayMotion.expandCurve,
+          alignment: Alignment.bottomCenter,
+          child: surface,
+        );
+      },
+    );
+  }
+}
+
+class _ComposerMaterialSurface extends StatelessWidget {
+  const _ComposerMaterialSurface({required this.progress, required this.child});
+
+  final double progress;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final double t = progress.clamp(0.0, 1.0).toDouble();
+    return DecoratedBox(
+      key: const ValueKey<String>('chat-composer-material-surface'),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: t),
+        borderRadius: BorderRadius.circular(16 + (8 * t)),
+        border: Border.all(color: _ChatPalette.border.withValues(alpha: t)),
+        boxShadow: t == 0
+            ? const <BoxShadow>[]
+            : <BoxShadow>[
+                BoxShadow(
+                  color: const Color(0xFF0D1B2A).withValues(alpha: 0.05 * t),
+                  blurRadius: 18 * t,
+                  offset: Offset(0, 5 * t),
+                ),
+              ],
+      ),
+      child: Padding(padding: EdgeInsets.all(10 * t), child: child),
+    );
+  }
+}
+
+class _ComposerAddTray extends StatelessWidget {
+  const _ComposerAddTray({
+    required this.progress,
+    required this.isOpen,
+    required this.copy,
+    required this.actions,
+    required this.onAddActionSelected,
+  });
+
+  final double progress;
+  final bool isOpen;
+  final OpenCrayUiCopy copy;
+  final List<ChatAddActionData> actions;
+  final ValueChanged<ChatAddActionData> onAddActionSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!isOpen && progress <= 0) {
+      return const SizedBox.shrink(
+        key: ValueKey<String>('chat-composer-add-menu-empty'),
       );
     }
-
-    return AnimatedSize(
-      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.expand),
-      curve: OpenCrayMotion.expandCurve,
-      alignment: Alignment.bottomCenter,
-      child: surface,
+    final double t = progress.clamp(0.0, 1.0).toDouble();
+    return ClipRect(
+      key: const ValueKey<String>('chat-composer-add-tray'),
+      child: Align(
+        alignment: Alignment.topCenter,
+        heightFactor: OpenCrayMotion.reduce(context) ? (isOpen ? 1 : 0) : t,
+        child: Opacity(
+          opacity: OpenCrayMotion.reduce(context)
+              ? (isOpen ? 1 : 0)
+              : (t * 1.2).clamp(0.0, 1.0).toDouble(),
+          child: IgnorePointer(
+            ignoring: !isOpen,
+            child: _ComposerAddMenu(
+              key: const ValueKey<String>('chat-composer-add-menu'),
+              copy: copy,
+              actions: actions,
+              onAddActionSelected: onAddActionSelected,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -19046,9 +19111,9 @@ class _InputRow extends StatelessWidget {
     required this.controller,
     required this.focusNode,
     required this.enabled,
-    required this.hasIntegratedSurface,
-    required this.showDefaultGlass,
-    required this.plusHighlighted,
+    required this.surfaceProgress,
+    required this.defaultGlassProgress,
+    required this.plusProgress,
     required this.interruptTrace,
     required this.isInterruptBusy,
     required this.onInterruptPressed,
@@ -19060,9 +19125,9 @@ class _InputRow extends StatelessWidget {
   final TextEditingController controller;
   final FocusNode focusNode;
   final bool enabled;
-  final bool hasIntegratedSurface;
-  final bool showDefaultGlass;
-  final bool plusHighlighted;
+  final double surfaceProgress;
+  final double defaultGlassProgress;
+  final double plusProgress;
   final ChatRunTraceData? interruptTrace;
   final bool isInterruptBusy;
   final VoidCallback? onInterruptPressed;
@@ -19090,8 +19155,10 @@ class _InputRow extends StatelessWidget {
             child: AnimatedBuilder(
               animation: focusNode,
               builder: (BuildContext context, Widget? child) {
-                final bool showOutline =
-                    hasIntegratedSurface || focusNode.hasFocus;
+                final double surfaceT = surfaceProgress
+                    .clamp(0.0, 1.0)
+                    .toDouble();
+                final double outlineT = focusNode.hasFocus ? 1 : surfaceT;
                 final Color fieldOutlineColor = focusNode.hasFocus
                     ? _ChatPalette.accent
                     : _ChatPalette.composerStroke;
@@ -19110,15 +19177,21 @@ class _InputRow extends StatelessWidget {
                     ),
                     child: DecoratedBox(
                       decoration: BoxDecoration(
-                        color: showOutline ? fieldOutlineColor : Colors.white,
+                        color: Color.lerp(
+                          Colors.white,
+                          fieldOutlineColor,
+                          outlineT,
+                        ),
                         borderRadius: messageFieldRadius,
                       ),
                       child: Padding(
-                        padding: EdgeInsets.all(showOutline ? 1 : 0),
+                        padding: EdgeInsets.all(outlineT),
                         child: ClipRRect(
-                          borderRadius: showOutline
-                              ? messageFieldInnerRadius
-                              : messageFieldRadius,
+                          borderRadius: BorderRadius.lerp(
+                            messageFieldRadius,
+                            messageFieldInnerRadius,
+                            outlineT,
+                          )!,
                           child: ColoredBox(
                             color: Colors.white,
                             child: Padding(
@@ -19169,12 +19242,16 @@ class _InputRow extends StatelessWidget {
         const SizedBox(width: 10),
         _CircleButton(
           key: const ValueKey<String>('chat-composer-plus-button'),
-          backgroundColor: plusHighlighted
-              ? _ChatPalette.plusActiveSurface
-              : Colors.white,
-          foregroundColor: plusHighlighted
-              ? _ChatPalette.accent
-              : _ChatPalette.textSecondary,
+          backgroundColor: Color.lerp(
+            Colors.white,
+            _ChatPalette.plusActiveSurface,
+            plusProgress.clamp(0.0, 1.0).toDouble(),
+          )!,
+          foregroundColor: Color.lerp(
+            _ChatPalette.textSecondary,
+            _ChatPalette.accent,
+            plusProgress.clamp(0.0, 1.0).toDouble(),
+          )!,
           icon: Icons.add_rounded,
           onPressed: enabled ? onPlusPressed : null,
         ),
@@ -19207,7 +19284,8 @@ class _InputRow extends StatelessWidget {
       ],
     );
 
-    if (!showDefaultGlass) {
+    final double glassT = defaultGlassProgress.clamp(0.0, 1.0).toDouble();
+    if (glassT <= 0) {
       return inputRow;
     }
 
@@ -19224,22 +19302,25 @@ class _InputRow extends StatelessWidget {
               borderRadius: messageFieldRadius,
               child: BackdropFilter(
                 filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
-                child: const DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter,
-                      end: Alignment.bottomCenter,
-                      colors: <Color>[
-                        Color(0x00FFFFFF),
-                        Color(0x73FFFFFF),
-                        Color(0x61F0F5FF),
-                        Color(0x00F0F5FF),
-                      ],
-                      stops: <double>[0, 0.32, 0.72, 1],
+                child: Opacity(
+                  opacity: glassT,
+                  child: const DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: <Color>[
+                          Color(0x00FFFFFF),
+                          Color(0x73FFFFFF),
+                          Color(0x61F0F5FF),
+                          Color(0x00F0F5FF),
+                        ],
+                        stops: <double>[0, 0.32, 0.72, 1],
+                      ),
+                      borderRadius: messageFieldRadius,
                     ),
-                    borderRadius: messageFieldRadius,
+                    child: SizedBox.expand(),
                   ),
-                  child: SizedBox.expand(),
                 ),
               ),
             ),
