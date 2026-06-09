@@ -2679,7 +2679,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     var capturedContext: Context? = null
     var capturedScheduledTaskDispatcherDependencies: ScheduledTaskDispatcherDependencies? = null
     var capturedScheduledTaskRepairDependencies: ScheduledTaskRepairDependencies? = null
-    var capturedResumeInterruptedRuns: (() -> Unit)? = null
+    var capturedResumeInterruptedRuns: (() -> RuntimeServiceInterruptedRunRepairResult)? = null
     var capturedGatewayBundle: OpenCrayRuntimeServiceGatewayBundle? = null
     var capturedProjectionCoordinator: RuntimeServiceProjectionCoordinator? = null
     val bootstrapResolver = testRuntimeServiceBootstrapDependencies(
@@ -4192,6 +4192,10 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     dispatcher.dispatch(null)
 
     assertEquals(listOf(fixture.sessionId), fixture.resumedSessionIds)
+    assertEquals(
+      listOf(fixture.sessionId),
+      projectionCoordinator.interruptedRunRepairResults.single().resumedSessionIds,
+    )
     assertEquals(1, projectionCoordinator.persistCallCount)
     assertTrue(projectionCoordinator.scheduledDispatchOutcomes.isEmpty())
     assertTrue(fixture.handle.cancelledTaskIds.isEmpty())
@@ -6787,6 +6791,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     var persistCallCount: Int = 0
       private set
     val scheduledDispatchOutcomes = mutableListOf<ScheduledTaskDispatchOutcome>()
+    val interruptedRunRepairResults = mutableListOf<RuntimeServiceInterruptedRunRepairResult>()
 
     override fun bindServiceLifecycle(serviceLifecycle: RuntimeServiceLifecycleDescriptor) {
       bindCallCount += 1
@@ -6805,6 +6810,10 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
 
     override fun onScheduledDispatchOutcome(outcome: ScheduledTaskDispatchOutcome) {
       scheduledDispatchOutcomes += outcome
+    }
+
+    override fun onInterruptedRunRepairResult(result: RuntimeServiceInterruptedRunRepairResult) {
+      interruptedRunRepairResults += result
     }
   }
 

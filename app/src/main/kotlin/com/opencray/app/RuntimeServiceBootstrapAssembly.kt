@@ -146,6 +146,8 @@ internal fun createRuntimeServiceBootstrapAssembly(
     runtimeTarget = runtimeTarget,
     localRuntimeServerStateProvider = transportCoordinator::currentLocalRuntimeServerState,
     runtimeControllerLifecycle = runtimeControllerLifecycle,
+    initialInterruptedRunRepairProjection =
+      bootstrapResult.toInterruptedRunRepairProjection(),
     runtimeOwnerLifecycle = initialRuntimePort.lifecycleDescriptor,
     ownerObservationAccess = initialRuntimePort.ownerObservationAccess,
     notificationHostAccess = initialRuntimePort.notificationHostAccess,

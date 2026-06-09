@@ -33,6 +33,8 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertEquals(null, snapshot["runtimeServiceWorkState"])
     assertTrue(snapshot.containsKey("runtimeServiceKeepAliveState"))
     assertEquals(null, snapshot["runtimeServiceKeepAliveState"])
+    assertTrue(snapshot.containsKey("runtimeServiceInterruptedRunRepair"))
+    assertEquals(null, snapshot["runtimeServiceInterruptedRunRepair"])
     assertTrue(snapshot.containsKey("runtimeServiceConnectionState"))
     assertEquals(null, snapshot["runtimeServiceConnectionState"])
     assertEquals("host-a", (snapshot["hostLifecycle"] as Map<*, *>)["hostInstanceId"])
@@ -70,7 +72,45 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertFalse(snapshot.containsKey("runtimeServiceLifecycle"))
     assertFalse(snapshot.containsKey("runtimeServiceWorkState"))
     assertFalse(snapshot.containsKey("runtimeServiceKeepAliveState"))
+    assertFalse(snapshot.containsKey("runtimeServiceInterruptedRunRepair"))
     assertEquals("host-b", (snapshot["hostLifecycle"] as Map<*, *>)["hostInstanceId"])
+  }
+
+  @Test
+  fun includesInterruptedRunRepairProjectionWhenProvided() {
+    val snapshot = buildMap<String, Any?> {
+      putRuntimeServiceDiagnosticsSnapshot(
+        hostLifecycle = HostRuntimeLifecycleDescriptor(hostInstanceId = "host-repair"),
+        runtimeServiceInterruptedRunRepair = RuntimeServiceInterruptedRunRepairProjection(
+          scannedSessionIds = listOf("session-a"),
+          resumedSessionIds = listOf("session-a"),
+          repairedSessionIds = listOf("session-a"),
+          repairEvidenceBySession = mapOf(
+            "session-a" to listOf(
+              InterruptedRunRepairEvidence(
+                sessionId = "session-a",
+                kind = InterruptedRunRepairEvidenceKind.PROMPT_CHECKPOINT,
+                target = RuntimeServiceTarget.INTERACTIVE,
+                runId = "run-a",
+                taskId = "task-a",
+                detailId = "checkpoint-a",
+              ),
+            ),
+          ),
+          recordedAtEpochMs = 9_000L,
+        ),
+      )
+    }
+
+    val repair = snapshot["runtimeServiceInterruptedRunRepair"] as Map<*, *>
+    assertEquals(9_000L, repair["recordedAtEpochMs"])
+    assertEquals(listOf("session-a"), repair["scannedSessionIds"])
+    assertEquals(listOf("session-a"), repair["resumedSessionIds"])
+    val evidenceBySession = repair["repairEvidenceBySession"] as Map<*, *>
+    val evidence = (evidenceBySession["session-a"] as List<*>).single() as Map<*, *>
+    assertEquals("prompt_checkpoint", evidence["kind"])
+    assertEquals("interactive", evidence["target"])
+    assertEquals("checkpoint-a", evidence["detailId"])
   }
 
   @Test

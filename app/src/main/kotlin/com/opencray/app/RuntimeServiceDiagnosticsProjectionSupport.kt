@@ -8,6 +8,7 @@ internal fun MutableMap<String, Any?>.putRuntimeServiceDiagnosticsSnapshot(
   runtimeServiceLifecycle: RuntimeServiceLifecycleDescriptor? = null,
   runtimeServiceWorkState: RuntimeServiceWorkState? = null,
   runtimeServiceKeepAliveState: RuntimeServiceKeepAliveState? = null,
+  runtimeServiceInterruptedRunRepair: RuntimeServiceInterruptedRunRepairProjection? = null,
   runtimeServiceConnectionState: RuntimeServiceConnectionState? = null,
   localRuntimeServerState: LocalRuntimeServerState? = null,
   includeNullRuntimeServiceFields: Boolean = false,
@@ -38,6 +39,11 @@ internal fun MutableMap<String, Any?>.putRuntimeServiceDiagnosticsSnapshot(
   putRuntimeServiceField(
     key = "runtimeServiceKeepAliveState",
     value = runtimeServiceKeepAliveState?.snapshotMap(),
+    includeNullField = includeNullRuntimeServiceFields,
+  )
+  putRuntimeServiceField(
+    key = "runtimeServiceInterruptedRunRepair",
+    value = runtimeServiceInterruptedRunRepair?.snapshotMap(),
     includeNullField = includeNullRuntimeServiceFields,
   )
   putRuntimeServiceField(

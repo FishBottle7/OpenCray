@@ -21,12 +21,16 @@ internal interface RuntimeServiceProjectionCoordinator {
   )
 
   fun onScheduledDispatchOutcome(outcome: ScheduledTaskDispatchOutcome)
+
+  fun onInterruptedRunRepairResult(result: RuntimeServiceInterruptedRunRepairResult) = Unit
 }
 
 internal class DefaultRuntimeServiceProjectionCoordinator(
   private val runtimeTarget: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
   private val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? = { null },
   private val runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor? = null,
+  initialInterruptedRunRepairProjection: RuntimeServiceInterruptedRunRepairProjection? = null,
+  private val clock: () -> Long = System::currentTimeMillis,
   runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor,
   ownerObservationAccess: RuntimeOwnerObservationAccess,
   notificationHostAccess: RuntimeNotificationHostAccess,
@@ -62,6 +66,8 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
   private var disposed: Boolean = false
   private var serviceLifecycle: RuntimeServiceLifecycleDescriptor? = null
   private var currentKeepAliveState: RuntimeServiceKeepAliveState = RuntimeServiceKeepAliveState()
+  private var lastInterruptedRunRepair: RuntimeServiceInterruptedRunRepairProjection? =
+    initialInterruptedRunRepairProjection
   private var runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor = runtimeOwnerLifecycle
   private var ownerObservationAccess: RuntimeOwnerObservationAccess = ownerObservationAccess
   private var serviceWorkStateObservationDisposer: (() -> Unit)? = null
@@ -165,6 +171,7 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
     val resolvedKeepAliveState: RuntimeServiceKeepAliveState
     val resolvedRuntimeOwnerLifecycle: HostRuntimeLifecycleDescriptor
     val resolvedOwnerObservationAccess: RuntimeOwnerObservationAccess
+    val resolvedInterruptedRunRepair: RuntimeServiceInterruptedRunRepairProjection?
     synchronized(lock) {
       if (keepAliveState != null) {
         currentKeepAliveState = keepAliveState
@@ -173,6 +180,7 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
       resolvedKeepAliveState = currentKeepAliveState
       resolvedRuntimeOwnerLifecycle = runtimeOwnerLifecycle
       resolvedOwnerObservationAccess = ownerObservationAccess
+      resolvedInterruptedRunRepair = lastInterruptedRunRepair
     }
     projectionStore.saveSnapshot(
       RuntimeServiceProjectionSnapshot(
@@ -183,12 +191,21 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
         serviceLifecycle = resolvedServiceLifecycle,
         serviceWorkState = workState ?: serviceWorkStateTracker.currentState(),
         serviceKeepAliveState = resolvedKeepAliveState,
+        lastInterruptedRunRepair = resolvedInterruptedRunRepair,
       ),
     )
   }
 
   override fun onScheduledDispatchOutcome(outcome: ScheduledTaskDispatchOutcome) {
     runtimeNotificationCoordinator?.onScheduledDispatchOutcome(outcome)
+  }
+
+  override fun onInterruptedRunRepairResult(result: RuntimeServiceInterruptedRunRepairResult) {
+    synchronized(lock) {
+      lastInterruptedRunRepair = result.toInterruptedRunRepairProjection(
+        recordedAtEpochMs = clock(),
+      )
+    }
   }
 
   private fun onServiceWorkStateChanged(workState: RuntimeServiceWorkState) {

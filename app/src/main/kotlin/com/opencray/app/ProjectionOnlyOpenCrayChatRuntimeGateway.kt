@@ -86,6 +86,7 @@ internal data class ProjectionOnlyChatRuntimeDiagnosticsSource(
   val serviceLifecycleProvider: () -> RuntimeServiceLifecycleDescriptor? = { null },
   val serviceWorkStateProvider: () -> RuntimeServiceWorkState? = { null },
   val serviceKeepAliveStateProvider: () -> RuntimeServiceKeepAliveState? = { null },
+  val interruptedRunRepairProvider: () -> RuntimeServiceInterruptedRunRepairProjection? = { null },
 )
 
 internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
@@ -113,6 +114,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private val serviceLifecycleProvider: () -> RuntimeServiceLifecycleDescriptor? = { null },
   private val serviceWorkStateProvider: () -> RuntimeServiceWorkState? = { null },
   private val serviceKeepAliveStateProvider: () -> RuntimeServiceKeepAliveState? = { null },
+  private val interruptedRunRepairProvider: () -> RuntimeServiceInterruptedRunRepairProjection? = {
+    null
+  },
   private val sessionUnreadCountProvider: ((String, String) -> Int)? = null,
   private val clock: () -> Long = System::currentTimeMillis,
   private val pollIntervalMs: Long = DEFAULT_PROJECTION_POLL_INTERVAL_MS,
@@ -422,6 +426,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
           runtimeServiceLifecycle = serviceLifecycleProvider(),
           runtimeServiceWorkState = serviceWorkStateProvider(),
           runtimeServiceKeepAliveState = serviceKeepAliveStateProvider(),
+          runtimeServiceInterruptedRunRepair = interruptedRunRepairProvider(),
           runtimeServiceConnectionState = connectionStateProvider(),
         )
         put("activeRuns", visibleRuns.filter(AgentRunSnapshot::isActive).map(::runSnapshotToMap))
@@ -1643,6 +1648,9 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
     serviceKeepAliveStateProvider = {
       projectionSnapshotProvider()?.serviceKeepAliveState
     },
+    interruptedRunRepairProvider = {
+      projectionSnapshotProvider()?.lastInterruptedRunRepair
+    },
   )
   return projectionOnlyOpenCrayChatRuntimeGateway(
     context = context,
@@ -1688,6 +1696,7 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
     serviceLifecycleProvider = diagnosticsSource.serviceLifecycleProvider,
     serviceWorkStateProvider = diagnosticsSource.serviceWorkStateProvider,
     serviceKeepAliveStateProvider = diagnosticsSource.serviceKeepAliveStateProvider,
+    interruptedRunRepairProvider = diagnosticsSource.interruptedRunRepairProvider,
     sessionUnreadCountProvider = sessionUnreadCountProvider,
   )
 }

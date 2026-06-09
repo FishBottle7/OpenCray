@@ -84,6 +84,38 @@ class RuntimeServiceProjectionStoreTest {
     assertEquals(expected, store.loadSnapshot())
   }
 
+  @Test
+  fun fileBackedProjectionStorePreservesInterruptedRunRepairProjection() {
+    val store = FileBackedRuntimeServiceProjectionStoreFactory(
+      runtimeRootDirectory = temporaryFolder.newFolder("runtime-projection-repair"),
+    ).create(RuntimeServiceTarget.DETACHED_BACKGROUND)
+    val expectedRepair = RuntimeServiceInterruptedRunRepairProjection(
+      scannedSessionIds = listOf("session-repair"),
+      resumedSessionIds = listOf("session-repair"),
+      repairedSessionIds = listOf("session-repair"),
+      repairEvidenceBySession = mapOf(
+        "session-repair" to listOf(
+          InterruptedRunRepairEvidence(
+            sessionId = "session-repair",
+            kind = InterruptedRunRepairEvidenceKind.JOURNAL_TAIL,
+            target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+            runId = "run-repair",
+            taskId = "task-repair",
+            detailId = "journal-tail-repair",
+          ),
+        ),
+      ),
+      recordedAtEpochMs = 4_200L,
+    )
+    val expected = projectionSnapshot(activeRunCount = 1).copy(
+      lastInterruptedRunRepair = expectedRepair,
+    )
+
+    store.saveSnapshot(expected)
+
+    assertEquals(expected, store.loadSnapshot())
+  }
+
   private fun projectionSnapshot(
     activeRunCount: Int,
   ): RuntimeServiceProjectionSnapshot = RuntimeServiceProjectionSnapshot(

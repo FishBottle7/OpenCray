@@ -66,6 +66,7 @@ internal class ProjectionOnlyOpenCrayShellGateway(
       runtimeServiceLifecycle = projectionSnapshot?.serviceLifecycle,
       runtimeServiceWorkState = projectionSnapshot?.serviceWorkState,
       runtimeServiceKeepAliveState = projectionSnapshot?.serviceKeepAliveState,
+      runtimeServiceInterruptedRunRepair = projectionSnapshot?.lastInterruptedRunRepair,
       runtimeServiceConnectionState = connectionStateProvider(),
     )
   }
