@@ -430,13 +430,20 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
   taskSnapshots
     .filter(::isPotentialRunRepairQueueTask)
     .forEach { taskSnapshot ->
-      evidence += InterruptedRunRepairEvidence(
+      managedProcessReconnectRepairEvidenceForQueueTask(
         sessionId = sessionId,
-        kind = InterruptedRunRepairEvidenceKind.QUEUE_TASK,
-        target = runtimeServiceTargetForTask(taskSnapshot.task),
-        runId = runIdForTask(taskSnapshot),
-        taskId = taskSnapshot.task.id,
+        taskSnapshot = taskSnapshot,
       )
+        ?.let { reconnectEvidence -> evidence += reconnectEvidence }
+        ?: run {
+          evidence += InterruptedRunRepairEvidence(
+            sessionId = sessionId,
+            kind = InterruptedRunRepairEvidenceKind.QUEUE_TASK,
+            target = runtimeServiceTargetForTask(taskSnapshot.task),
+            runId = runIdForTask(taskSnapshot),
+            taskId = taskSnapshot.task.id,
+          )
+        }
     }
   promptCheckpointStoreFactory.forChatSession(sessionId)
     .list()
@@ -577,6 +584,53 @@ internal fun startInterruptedRunRepairTargets(
 private fun isPotentialRunRepairQueueTask(
   taskSnapshot: SessionQueueTaskSnapshot,
 ): Boolean = taskSnapshot.lifecycleState !in TERMINAL_QUEUE_TASK_LIFECYCLES
+
+private fun managedProcessReconnectRepairEvidenceForQueueTask(
+  sessionId: String,
+  taskSnapshot: SessionQueueTaskSnapshot,
+): List<InterruptedRunRepairEvidence>? {
+  val metadata = taskSnapshot.task.metadata
+  val recoveryAction = metadata[RunLifecycleMetadataKeys.RECOVERY_ACTION]
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+  if (!recoveryAction.equals(MANAGED_PROCESS_RECONNECT_RECOVERY_ACTION, ignoreCase = true)) {
+    return null
+  }
+  val target = runtimeServiceTargetForTask(taskSnapshot.task)
+  val runId = runIdForTask(taskSnapshot)
+  val processIds = managedProcessReconnectProcessIdsForTask(taskSnapshot)
+  val repairAfterEpochMs = managedProcessReconnectRetryAfterEpochMsForTask(taskSnapshot)
+  val processDetailIds: List<String?> = processIds.takeIf { ids -> ids.isNotEmpty() }
+    ?: listOf(null)
+  return processDetailIds.map { processId ->
+    InterruptedRunRepairEvidence(
+      sessionId = sessionId,
+      kind = InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+      target = target,
+      runId = runId,
+      taskId = taskSnapshot.task.id,
+      detailId = processId,
+      repairAfterEpochMs = repairAfterEpochMs,
+    )
+  }
+}
+
+private fun managedProcessReconnectProcessIdsForTask(
+  taskSnapshot: SessionQueueTaskSnapshot,
+): List<String> = taskSnapshot.task.metadata[
+  RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS
+]
+  ?.split(",")
+  ?.mapNotNull { processId -> processId.trim().takeIf(String::isNotBlank) }
+  .orEmpty()
+
+private fun managedProcessReconnectRetryAfterEpochMsForTask(
+  taskSnapshot: SessionQueueTaskSnapshot,
+): Long? = taskSnapshot.task.metadata[
+  RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS
+]
+  ?.trim()
+  ?.toLongOrNull()
 
 private fun isPotentialRunRepairRecord(record: PersistedAgentRunRecord): Boolean {
   if (record.lastResult != null) {
@@ -728,6 +782,7 @@ private val TERMINAL_JOURNAL_LIFECYCLE_PHASES: Set<String> = setOf(
 )
 
 private const val FINAL_ASSISTANT_PHASE: String = "FINAL_ANSWER"
+private const val MANAGED_PROCESS_RECONNECT_RECOVERY_ACTION: String = "resume_reconnect_process"
 private const val MANAGED_PROCESS_RECONNECT_RECOVERY_STATE_RETRY_SCHEDULED: String = "retry_scheduled"
 private const val MANAGED_PROCESS_RECONNECT_STATUS_CONNECTING: String = "connecting"
 

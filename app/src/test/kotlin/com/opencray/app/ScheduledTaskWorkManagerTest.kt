@@ -191,6 +191,70 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun potentialInterruptedRunRepairEvidenceClassifiesQueueStoredManagedProcessReconnectHold() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-evidence-queue-reconnect")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = "task-reconnect-hold",
+          runId = "run-reconnect-hold",
+          lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+          taskState = AgentTaskState.SUSPENDED,
+          metadata = mapOf(
+            ScheduledTaskMetadataKeys.SCHEDULE_ID to "schedule-reconnect-hold",
+            RunLifecycleMetadataKeys.RECOVERY_ACTION to "resume_reconnect_process",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS to
+              "process-from-queue",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RECOVERY_STATE to
+              "retry_scheduled",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS to
+              "2500",
+          ),
+        ),
+      ),
+    )
+
+    val evidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+    )
+
+    assertEquals(1, evidence.size)
+    val item = evidence.single()
+    assertEquals(sessionId, item.sessionId)
+    assertEquals(InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT, item.kind)
+    assertEquals(RuntimeServiceTarget.DETACHED_BACKGROUND, item.target)
+    assertEquals("run-reconnect-hold", item.runId)
+    assertEquals("task-reconnect-hold", item.taskId)
+    assertEquals("process-from-queue", item.detailId)
+    assertEquals(2_500L, item.repairAfterEpochMs)
+    assertEquals(
+      emptySet<RuntimeServiceTarget>(),
+      dueInterruptedRunRepairTargets(
+        evidence = evidence,
+        nowEpochMs = 2_000L,
+      ),
+    )
+    assertEquals(
+      500L,
+      nextInterruptedRunRepairDelayMs(
+        evidence = evidence,
+        nowEpochMs = 2_000L,
+      ),
+    )
+  }
+
+  @Test
   fun potentialInterruptedRunRepairEvidenceClassifiesManagedProcessReconnectAndRoutesTaskTarget() {
     val root = temporaryFolder.newFolder("scheduled-task-repair-evidence-managed-process")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
