@@ -300,6 +300,67 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun delayedRepairWorkNameIsPartitionedByReason() {
+    assertEquals(
+      delayedRepairWorkName(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT),
+      delayedRepairWorkName(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT),
+    )
+    assertFalse(
+      delayedRepairWorkName(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT) ==
+        delayedRepairWorkName(ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED),
+    )
+  }
+
+  @Test
+  fun scheduleRuntimeOwnerLeaseExpiryRepairEnqueuesRepairAtHeldLeaseExpiry() {
+    val ownerLeaseStore = inMemoryRuntimeServiceOwnerLeaseStore()
+    val workScheduler = RecordingScheduledWorkScheduler()
+    ownerLeaseStore.save(
+      runtimeServiceOwnerLease(
+        target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+        runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
+          processStartId = "process-lease",
+          processStartedAtEpochMs = 1_000L,
+          controllerInstanceId = "controller-lease",
+          durableControllerId = "durable-controller-lease",
+          controllerCreatedAtEpochMs = 1_200L,
+        ),
+        runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(
+          processStartId = "process-lease",
+          processStartedAtEpochMs = 1_000L,
+          hostInstanceId = "host-lease",
+          runtimeOwnerId = "owner-lease",
+          runtimeControllerId = "controller-lease",
+          hostCreatedAtEpochMs = 1_200L,
+          durableRuntimeControllerId = "durable-controller-lease",
+        ),
+        serviceLifecycle = RuntimeServiceLifecycleDescriptor(
+          processStartId = "process-lease",
+          processStartedAtEpochMs = 1_000L,
+          serviceInstanceId = "service-lease",
+          serviceCreatedAtEpochMs = 1_300L,
+        ),
+        acquiredAtEpochMs = 2_000L,
+        heartbeatAtEpochMs = 2_500L,
+        leaseDurationMs = 5_000L,
+      ),
+    )
+
+    val scheduled = scheduleRuntimeOwnerLeaseExpiryRepair(
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      nowEpochMs = 4_000L,
+      ownerLeaseStore = ownerLeaseStore,
+      workScheduler = workScheduler,
+    )
+
+    assertTrue(scheduled)
+    assertEquals(
+      listOf(ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED to 3_500L),
+      workScheduler.repairRequests,
+    )
+  }
+
+  @Test
   fun potentialInterruptedRunRepairTargetsRoutesDetachedControlQueueTaskToDetachedBackground() {
     val root = temporaryFolder.newFolder("scheduled-task-repair-target-detached-control")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
@@ -1033,6 +1094,26 @@ class ScheduledTaskWorkManagerTest {
       processId: String,
       deliveredObservationState: ManagedProcessDeliveredObservationState?,
     ) = Unit
+  }
+
+  private class RecordingScheduledWorkScheduler : ScheduledWorkScheduler {
+    val repairRequests = mutableListOf<Pair<String, Long>>()
+
+    override fun scheduleWake(
+      scheduleId: String,
+      triggerAtEpochMs: Long,
+    ) = Unit
+
+    override fun cancel(scheduleId: String) = Unit
+
+    override fun enqueueRepair(
+      reason: String,
+      initialDelayMs: Long,
+    ) {
+      repairRequests += reason to initialDelayMs
+    }
+
+    override fun ensurePeriodicRepair() = Unit
   }
 
   private class InMemoryAgentRunRecordStoreFactory : AgentRunRecordStoreFactory {

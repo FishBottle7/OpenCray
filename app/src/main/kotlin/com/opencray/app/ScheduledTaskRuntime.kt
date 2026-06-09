@@ -40,6 +40,7 @@ internal object ScheduledTaskRepairReasons {
   const val PERIODIC: String = "periodic"
   const val BROADCAST: String = "broadcast"
   const val MANAGED_PROCESS_RECONNECT: String = "managed_process_reconnect"
+  const val OWNER_LEASE_EXPIRED: String = "owner_lease_expired"
 }
 
 internal const val SCHEDULED_TASK_NOTIFICATION_SNOOZE_DELAY_MS: Long = 15L * 60L * 1_000L
@@ -746,6 +747,7 @@ internal fun scheduledTaskTriggerReasonForRepair(
   ScheduledTaskRepairReasons.PERIODIC,
   ScheduledTaskRepairReasons.BROADCAST,
   ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+  ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED,
   -> ScheduledTaskTriggerReasons.REPAIR
   else -> ScheduledTaskTriggerReasons.REPAIR
 }

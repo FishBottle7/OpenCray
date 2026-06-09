@@ -28,6 +28,9 @@ internal class OpenCrayAgentRuntimeService : Service() {
       appContext = applicationContext,
       mainHandler = mainHandler,
       bootstrapDependencies = runtimeEnvironment.runtimeServiceBootstrapDependencies,
+      ownerLeaseRetryScheduler = { target ->
+        scheduleRuntimeOwnerLeaseExpiryRepair(applicationContext, target)
+      },
     )
   }
 

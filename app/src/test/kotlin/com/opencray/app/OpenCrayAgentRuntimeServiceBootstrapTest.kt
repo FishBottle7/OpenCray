@@ -3209,6 +3209,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     val mainHandler = Handler()
     val service = TestRuntimeService()
     val steps = mutableListOf<String>()
+    val retryTargets = mutableListOf<RuntimeServiceTarget>()
     val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator(
       ownerLeaseAcquired = false,
     )
@@ -3251,6 +3252,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           projectionCoordinator = projectionCoordinator,
         )
       },
+      ownerLeaseRetryScheduler = { target -> retryTargets += target },
     )
 
     val attached = controller.attach()
@@ -3263,6 +3265,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
 
     assertFalse(attached)
     assertEquals(listOf("assemble_bootstrap"), steps)
+    assertEquals(listOf(RuntimeServiceTarget.DETACHED_BACKGROUND), retryTargets)
     assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
     assertTrue(startFailure is IllegalStateException)
     assertTrue(bindFailure is IllegalStateException)

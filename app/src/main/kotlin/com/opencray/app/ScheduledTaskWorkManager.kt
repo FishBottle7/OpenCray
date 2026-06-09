@@ -88,7 +88,7 @@ internal class WorkManagerScheduledWorkScheduler(
       .addTag(REPAIR_WORK_NAME)
       .build()
     workManager.enqueueUniqueWork(
-      if (normalizedDelayMs > 0L) DELAYED_REPAIR_WORK_NAME else REPAIR_WORK_NAME,
+      if (normalizedDelayMs > 0L) delayedRepairWorkName(reason) else REPAIR_WORK_NAME,
       if (normalizedDelayMs > 0L) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
       request,
     )
@@ -738,6 +738,12 @@ private val INTERRUPTED_RUN_REPAIR_TARGET_WAKE_ORDER: List<RuntimeServiceTarget>
 
 private fun scheduleWakeWorkName(scheduleId: String): String =
   "scheduled-task-wake-${FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(scheduleId)}"
+
+internal fun delayedRepairWorkName(reason: String): String {
+  val normalizedReason = reason.trim().ifBlank { ScheduledTaskRepairReasons.WORK_MANAGER }
+  return "$DELAYED_REPAIR_WORK_NAME-" +
+    FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(normalizedReason)
+}
 
 internal const val REPAIR_WORK_NAME: String = "scheduled-task-repair"
 internal const val DELAYED_REPAIR_WORK_NAME: String = "scheduled-task-delayed-repair"

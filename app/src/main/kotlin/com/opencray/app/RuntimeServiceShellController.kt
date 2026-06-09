@@ -45,6 +45,7 @@ internal fun runtimeServiceShellController(
     { intent -> intentRequestsRuntimeReset(intent) },
   bootstrapForegroundRequested: (Intent?) -> Boolean =
     { intent -> intentRequiresBootstrapForeground(intent) },
+  ownerLeaseRetryScheduler: (RuntimeServiceTarget) -> Unit = {},
 ): RuntimeServiceShellController = DefaultRuntimeServiceShellController(
   service = service,
   appContext = appContext.applicationContext,
@@ -53,6 +54,7 @@ internal fun runtimeServiceShellController(
   runtimeTargetReader = runtimeTargetReader,
   runtimeResetRequested = runtimeResetRequested,
   bootstrapForegroundRequested = bootstrapForegroundRequested,
+  ownerLeaseRetryScheduler = ownerLeaseRetryScheduler,
 )
 
 private class DefaultRuntimeServiceShellController(
@@ -68,6 +70,7 @@ private class DefaultRuntimeServiceShellController(
   private val runtimeTargetReader: (Intent?) -> RuntimeServiceTarget,
   private val runtimeResetRequested: (Intent?) -> Boolean,
   private val bootstrapForegroundRequested: (Intent?) -> Boolean,
+  private val ownerLeaseRetryScheduler: (RuntimeServiceTarget) -> Unit,
 ) : RuntimeServiceShellController {
   private val serviceBootstraps =
     linkedMapOf<RuntimeServiceTarget, RuntimeServiceShellAttachment>()
@@ -88,6 +91,7 @@ private class DefaultRuntimeServiceShellController(
       serviceBootstraps[target] = bootstrap
       true
     } else {
+      ownerLeaseRetryScheduler(target)
       false
     }
   }
