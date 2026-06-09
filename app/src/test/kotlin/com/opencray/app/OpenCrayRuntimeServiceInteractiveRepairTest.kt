@@ -236,6 +236,152 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
   }
 
   @Test
+  fun resumeInterruptedRuntimeServiceRunsDefersFutureManagedProcessReconnectEvidence() {
+    val root = temporaryFolder.newFolder("runtime-service-interactive-repair-reconnect-delay")
+    val runtimeRoot = root.resolve("runtime")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val reconnectSessionId = chatSessionStore.copySession(activeSessionId).activeSession.sessionId
+    chatSessionStore.selectSession(activeSessionId)
+    val snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory(runtimeRoot)
+
+    snapshotStoreFactory.forChatSession(reconnectSessionId).save(
+      queueSnapshot(
+        sessionId = reconnectSessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = reconnectSessionId,
+          taskId = "task-reconnect-delay",
+          runId = "run-reconnect-delay",
+          lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+          taskState = AgentTaskState.SUSPENDED,
+          metadata = mapOf(
+            RunLifecycleMetadataKeys.RECOVERY_ACTION to "resume_reconnect_process",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS to
+              "process-reconnect-delay",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS to
+              "2500",
+          ),
+        ),
+      ),
+    )
+
+    val activeSession = RecordingRuntimeSessionAccess(activeSessionId, runs = emptyList())
+    val reconnectSession = RecordingRuntimeSessionAccess(reconnectSessionId, runs = emptyList())
+    val runtimeAccess = OpenCrayRuntimeOwnerAccess(
+      lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      hostAccess = RecordingRuntimeHostAccess(
+        sessions = mapOf(
+          activeSessionId to activeSession,
+          reconnectSessionId to reconnectSession,
+        ),
+      ),
+      transcriptMessagesProvider = { emptyList<RuntimeConversationMessage>() },
+      memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
+        memoryStore = InMemoryMemoryStore(),
+      ),
+      replayAccess = OpenCrayRuntimeReplayAccess(
+        approvalRejectionRecorder = { _, _, _, _, _, _ -> },
+        approvalApprovedRecorder = { _, _, _, _, _, _ -> },
+        subAgentReplayRecorder = { _, _ -> },
+        runCancellationRecorder = { _, _, _, _, _ -> },
+        terminalReplayRepairer = { _, _ -> },
+      ),
+    )
+
+    val result = resumeInterruptedRuntimeServiceRuns(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+      runtimeReplayAccess = runtimeAccess.replayAccess,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      nowEpochMs = 2_000L,
+    )
+
+    assertTrue(reconnectSessionId in result.scannedSessionIds)
+    assertEquals(emptyList<String>(), result.resumedSessionIds)
+    assertEquals(0, reconnectSession.resumeCallCount)
+    val evidence = result.repairEvidenceBySession.getValue(reconnectSessionId)
+    assertEquals(listOf(InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT), evidence.map { it.kind })
+    assertEquals(2_500L, evidence.single().repairAfterEpochMs)
+  }
+
+  @Test
+  fun bootstrapRuntimeServiceSessionsDefersFutureManagedProcessReconnectEvidence() {
+    val root = temporaryFolder.newFolder("runtime-service-bootstrap-reconnect-delay")
+    val runtimeRoot = root.resolve("runtime")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val reconnectSessionId = chatSessionStore.copySession(activeSessionId).activeSession.sessionId
+    chatSessionStore.selectSession(activeSessionId)
+    val snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory(runtimeRoot)
+
+    snapshotStoreFactory.forChatSession(reconnectSessionId).save(
+      queueSnapshot(
+        sessionId = reconnectSessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = reconnectSessionId,
+          taskId = "task-bootstrap-reconnect-delay",
+          runId = "run-bootstrap-reconnect-delay",
+          lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+          taskState = AgentTaskState.SUSPENDED,
+          metadata = mapOf(
+            RunLifecycleMetadataKeys.RECOVERY_ACTION to "resume_reconnect_process",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS to
+              "process-bootstrap-reconnect-delay",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS to
+              "2500",
+          ),
+        ),
+      ),
+    )
+
+    val activeSession = RecordingRuntimeSessionAccess(activeSessionId, runs = emptyList())
+    val reconnectSession = RecordingRuntimeSessionAccess(reconnectSessionId, runs = emptyList())
+    val runtimeAccess = OpenCrayRuntimeOwnerAccess(
+      lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      hostAccess = RecordingRuntimeHostAccess(
+        sessions = mapOf(
+          activeSessionId to activeSession,
+          reconnectSessionId to reconnectSession,
+        ),
+      ),
+      transcriptMessagesProvider = { emptyList<RuntimeConversationMessage>() },
+      memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
+        memoryStore = InMemoryMemoryStore(),
+      ),
+      replayAccess = OpenCrayRuntimeReplayAccess(
+        approvalRejectionRecorder = { _, _, _, _, _, _ -> },
+        approvalApprovedRecorder = { _, _, _, _, _, _ -> },
+        subAgentReplayRecorder = { _, _ -> },
+        runCancellationRecorder = { _, _, _, _, _ -> },
+        terminalReplayRepairer = { _, _ -> },
+      ),
+    )
+
+    val result = bootstrapRuntimeServiceSessions(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+      runtimeReplayAccess = runtimeAccess.replayAccess,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      nowEpochMs = 2_000L,
+    )
+
+    assertTrue(reconnectSessionId in result.scannedSessionIds)
+    assertEquals(emptyList<String>(), result.resumedSessionIds)
+    assertEquals(0, reconnectSession.resumeCallCount)
+    val evidence = result.repairEvidenceBySession.getValue(reconnectSessionId)
+    assertEquals(listOf(InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT), evidence.map { it.kind })
+    assertEquals(2_500L, evidence.single().repairAfterEpochMs)
+  }
+
+  @Test
   fun resumeInterruptedRuntimeServiceRunsScansDurableRunRecordOnlySessions() {
     val root = temporaryFolder.newFolder("runtime-service-interactive-repair-run-record")
     val runtimeRoot = root.resolve("runtime")
@@ -689,6 +835,46 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
       return resumableHandles.size
     }
   }
+
+  private fun queueSnapshot(
+    sessionId: String,
+    taskSnapshot: SessionQueueTaskSnapshot,
+  ): SessionQueueSnapshot = SessionQueueSnapshot(
+    sessionId = sessionId,
+    agentId = "test-agent",
+    lifecycleState = SessionLifecycleState.IDLE,
+    nextEnqueueOrder = 2L,
+    tasks = listOf(taskSnapshot),
+    updatedAtEpochMs = 1_000L,
+  )
+
+  private fun queueTaskSnapshot(
+    sessionId: String,
+    taskId: String,
+    runId: String,
+    lifecycleState: QueueTaskLifecycleState,
+    taskState: AgentTaskState,
+    metadata: Map<String, String> = emptyMap(),
+  ): SessionQueueTaskSnapshot = SessionQueueTaskSnapshot(
+    enqueueOrder = 1L,
+    task = AgentTask(
+      id = taskId,
+      type = AgentTaskType.PROMPT,
+      input = "Test reconnect repair.",
+      state = taskState,
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "test",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_000L,
+      metadata = mapOf(
+        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+        AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to sessionId,
+      ) + metadata,
+    ),
+    lifecycleState = lifecycleState,
+  )
 
   private fun backgroundSubAgentHandle(agentId: String): SubAgentHandleState = SubAgentHandleState(
     agentId = agentId,

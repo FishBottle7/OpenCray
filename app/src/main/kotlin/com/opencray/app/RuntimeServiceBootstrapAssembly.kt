@@ -417,6 +417,7 @@ internal fun bootstrapRuntimeServiceSessions(
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
   processRegistryFactory: AgentProcessRegistryFactory? = null,
+  nowEpochMs: Long = System.currentTimeMillis(),
 ): RuntimeServiceBootstrapResult {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
@@ -442,15 +443,19 @@ internal fun bootstrapRuntimeServiceSessions(
       runEventJournalStoreFactory = runEventJournalStoreFactory,
       processRegistryFactory = processRegistryFactory,
     )
+    val dueDurableRepairEvidence = dueInterruptedRunRepairEvidence(
+      evidence = durableRepairEvidence,
+      nowEpochMs = nowEpochMs,
+    )
+    if (durableRepairEvidence.isNotEmpty()) {
+      repairEvidenceBySession[sessionId] = durableRepairEvidence
+    }
     val shouldResume = session.hasPendingWork() ||
       session.hasLiveManagedProcesses() ||
       session.hasLiveSubAgentWork() ||
-      durableRepairEvidence.isNotEmpty()
+      dueDurableRepairEvidence.isNotEmpty()
     if (!shouldResume) {
       return@forEach
-    }
-    if (durableRepairEvidence.isNotEmpty()) {
-      repairEvidenceBySession[sessionId] = durableRepairEvidence
     }
     session.resume()
     resumedSessionIds += sessionId
@@ -482,6 +487,7 @@ internal fun resumeInterruptedRuntimeServiceRuns(
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
   processRegistryFactory: AgentProcessRegistryFactory? = null,
+  nowEpochMs: Long = System.currentTimeMillis(),
 ): RuntimeServiceInterruptedRunRepairResult {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
@@ -508,14 +514,18 @@ internal fun resumeInterruptedRuntimeServiceRuns(
       runEventJournalStoreFactory = runEventJournalStoreFactory,
       processRegistryFactory = processRegistryFactory,
     )
-    val shouldResume = runs.any(AgentRunSnapshot::isActive) ||
-      session.hasLiveSubAgentWork() ||
-      durableRepairEvidence.isNotEmpty()
-    if (!shouldResume) {
-      return@forEach
-    }
+    val dueDurableRepairEvidence = dueInterruptedRunRepairEvidence(
+      evidence = durableRepairEvidence,
+      nowEpochMs = nowEpochMs,
+    )
     if (durableRepairEvidence.isNotEmpty()) {
       repairEvidenceBySession[sessionId] = durableRepairEvidence
+    }
+    val shouldResume = runs.any(AgentRunSnapshot::isActive) ||
+      session.hasLiveSubAgentWork() ||
+      dueDurableRepairEvidence.isNotEmpty()
+    if (!shouldResume) {
+      return@forEach
     }
     session.resume()
     resumedSessionIds += sessionId

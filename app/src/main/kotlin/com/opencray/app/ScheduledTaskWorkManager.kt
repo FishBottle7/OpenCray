@@ -532,7 +532,7 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
         repairAfterEpochMs = managedProcessReconnectRetryAfterEpochMs(process),
       )
     }
-  return evidence
+  return evidence.withManagedProcessReconnectBackoff()
 }
 
 internal fun potentialInterruptedRunRepairEvidence(
@@ -556,9 +556,17 @@ internal fun potentialInterruptedRunRepairEvidence(
 internal fun dueInterruptedRunRepairTargets(
   evidence: List<InterruptedRunRepairEvidence>,
   nowEpochMs: Long,
-): Set<RuntimeServiceTarget> = evidence
-  .filter { item -> item.repairAfterEpochMs == null || item.repairAfterEpochMs <= nowEpochMs }
+): Set<RuntimeServiceTarget> = dueInterruptedRunRepairEvidence(
+  evidence = evidence,
+  nowEpochMs = nowEpochMs,
+)
   .mapTo(linkedSetOf(), InterruptedRunRepairEvidence::target)
+
+internal fun dueInterruptedRunRepairEvidence(
+  evidence: List<InterruptedRunRepairEvidence>,
+  nowEpochMs: Long,
+): List<InterruptedRunRepairEvidence> = evidence
+  .filter { item -> item.repairAfterEpochMs == null || item.repairAfterEpochMs <= nowEpochMs }
 
 internal fun nextInterruptedRunRepairDelayMs(
   evidence: List<InterruptedRunRepairEvidence>,
@@ -631,6 +639,55 @@ private fun managedProcessReconnectRetryAfterEpochMsForTask(
 ]
   ?.trim()
   ?.toLongOrNull()
+
+private fun List<InterruptedRunRepairEvidence>.withManagedProcessReconnectBackoff():
+  List<InterruptedRunRepairEvidence> {
+  val reconnectEvidence = filter { evidence ->
+    evidence.kind == InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT &&
+      evidence.repairAfterEpochMs != null
+  }
+  if (reconnectEvidence.isEmpty()) {
+    return this
+  }
+  return map { evidence ->
+    if (evidence.kind == InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT) {
+      evidence
+    } else {
+      reconnectBackoffForEvidence(
+        evidence = evidence,
+        reconnectEvidence = reconnectEvidence,
+      )?.let { repairAfterEpochMs ->
+        evidence.copy(repairAfterEpochMs = repairAfterEpochMs)
+      } ?: evidence
+    }
+  }
+}
+
+private fun reconnectBackoffForEvidence(
+  evidence: InterruptedRunRepairEvidence,
+  reconnectEvidence: List<InterruptedRunRepairEvidence>,
+): Long? = reconnectEvidence
+  .filter { reconnect -> reconnect.sharesRunOrTaskIdentityWith(evidence) }
+  .mapNotNull(InterruptedRunRepairEvidence::repairAfterEpochMs)
+  .minOrNull()
+  ?.let { reconnectRepairAfterEpochMs ->
+    maxOf(evidence.repairAfterEpochMs ?: 0L, reconnectRepairAfterEpochMs)
+  }
+
+private fun InterruptedRunRepairEvidence.sharesRunOrTaskIdentityWith(
+  other: InterruptedRunRepairEvidence,
+): Boolean {
+  if (sessionId != other.sessionId) {
+    return false
+  }
+  val sameRunId = runId != null &&
+    other.runId != null &&
+    runId == other.runId
+  val sameTaskId = taskId != null &&
+    other.taskId != null &&
+    taskId == other.taskId
+  return sameRunId || sameTaskId
+}
 
 private fun isPotentialRunRepairRecord(record: PersistedAgentRunRecord): Boolean {
   if (record.lastResult != null) {

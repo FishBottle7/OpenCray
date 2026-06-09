@@ -255,6 +255,90 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun potentialInterruptedRunRepairEvidenceDefersMatchingRunRecordDuringReconnectBackoff() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-evidence-reconnect-run-record")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val runRecordStoreFactory = InMemoryAgentRunRecordStoreFactory()
+
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = "task-reconnect-record",
+          runId = "run-reconnect-record",
+          lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+          taskState = AgentTaskState.SUSPENDED,
+          metadata = mapOf(
+            ScheduledTaskMetadataKeys.SCHEDULE_ID to "schedule-reconnect-record",
+            RunLifecycleMetadataKeys.RECOVERY_ACTION to "resume_reconnect_process",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS to
+              "process-reconnect-record",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS to
+              "2500",
+          ),
+        ),
+      ),
+    )
+    runRecordStoreFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = "run-reconnect-record",
+        taskId = "task-reconnect-record",
+        acceptedAtEpochMs = 1_000L,
+        lastEvent = OpenCrayAssistantEvent(
+          runId = "run-reconnect-record",
+          taskId = "task-reconnect-record",
+          turn = 0,
+          text = "Waiting for process reconnect.",
+          isFinal = false,
+          emittedAtEpochMs = 1_100L,
+        ).toPersistedRecord(),
+      ),
+    )
+
+    val evidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runRecordStoreFactory = runRecordStoreFactory,
+    )
+
+    assertEquals(2, evidence.size)
+    assertEquals(
+      listOf(
+        InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+        InterruptedRunRepairEvidenceKind.RUN_RECORD,
+      ),
+      evidence.map(InterruptedRunRepairEvidence::kind),
+    )
+    evidence.forEach { item ->
+      assertEquals(RuntimeServiceTarget.DETACHED_BACKGROUND, item.target)
+      assertEquals("run-reconnect-record", item.runId)
+      assertEquals("task-reconnect-record", item.taskId)
+      assertEquals(2_500L, item.repairAfterEpochMs)
+    }
+    assertEquals(
+      emptySet<RuntimeServiceTarget>(),
+      dueInterruptedRunRepairTargets(
+        evidence = evidence,
+        nowEpochMs = 2_000L,
+      ),
+    )
+    assertEquals(
+      500L,
+      nextInterruptedRunRepairDelayMs(
+        evidence = evidence,
+        nowEpochMs = 2_000L,
+      ),
+    )
+  }
+
+  @Test
   fun potentialInterruptedRunRepairEvidenceClassifiesManagedProcessReconnectAndRoutesTaskTarget() {
     val root = temporaryFolder.newFolder("scheduled-task-repair-evidence-managed-process")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
