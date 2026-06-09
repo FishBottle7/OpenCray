@@ -1587,69 +1587,278 @@ Acceptance:
 - Selecting a tab has clear feedback without a spring/bounce feel.
 - No layout shift in the bottom bar.
 
-### Additional Polish Notes For Later
+### Additional Polish Plan For Later
 
-These are worth tracking, but they are outside the current Files/Skills polish
-goal so this branch does not keep expanding.
+These are the next five polish candidates to track after the current
+Files/Skills pass. They are intentionally written as implementation-ready plans,
+but they are outside the current completed goal so this branch does not keep
+expanding without a new implementation decision.
 
-- Approval surface risk-decision polish: the current implementation already
-  distinguishes high risk with color, a side accent bar, a severity chip, and
-  filled/outline action hierarchy. The next pass should not simply make the card
-  warmer or louder. It should make the approval feel more trustworthy by adding
-  structure around the decision:
-  - split the active approval card into four readable zones:
-    - decision headline: "what is being requested" in one strong line
-    - impact scope: affected path, working directory, tool, or session scope as
-      compact key-value rows
-    - reason/evidence: why the agent needs it, secondary in weight
-    - decision bar: Reject, Approve for session, Approve with the existing
-      hierarchy
-  - keep the existing color system as an auxiliary signal:
-    - normal approval keeps blue/accent treatment
-    - high-risk approval keeps the warm side bar and chip
-    - do not use a full orange/red card fill because it makes reading harder and
-      can make every high-risk request feel equally severe
-  - add non-color risk cues so severity is not carried by color alone:
-    - small risk label/chip remains near the title
-    - impacted scope rows get stable icons or labels such as Path, Tool, Reason
-    - destructive or broad-scope approvals can show a short "will affect" line
-      before the action buttons
-  - make queued approvals quieter but more legible:
-    - active card shows full structure
-    - queued cards show title, risk chip, and one impact line only
-    - queue count stays visible without competing with the active decision
-  - refine decision completion:
-    - button enters a compact pending state in place
-    - approved/rejected state resolves on the same card for a brief beat
-    - the card then collapses upward and the next queued approval advances from
-      the stack, preserving ownership of the decision
-  - add focused tests around:
-    - high-risk approval exposes both color and text/icon risk signals
-    - compact phone layouts do not clip the action labels
-    - approving/rejecting shows a local pending/resolved state before the queue
-      advances
-    - reduced-motion mode avoids stack travel and keeps state changes visible
-      with opacity/color only
-- Files row density and metadata hierarchy: if users keep very large project
-  folders open, row secondary text could be tightened further, with modified
-  time/size shown only where it helps scanning.
-- Files sort/view controls: a compact sort menu for name/date/type could help
-  large directories, but it should be introduced as a real file-management
-  feature rather than a decorative UI tweak.
-- Files transfer/progress states: copy, move, and paste could later gain inline
-  progress or per-row pending affordances when the host provides operation
-  progress.
-- Skills search loading continuity: the current pass keeps result rows stable
-  during install. A later pass could keep previous search results visible under
-  a compact in-results loading strip while the next query is resolving.
-- Skills installed-card actions: update/delete/disable actions could use the
-  same inline pending/success/failure language now used by install buttons.
-- Chat run trace density: running, waiting approval, failed, and done can still
-  get a small visual-language audit, but Chat should stay stable unless that
-  cleanup is local.
-- Global reduced-motion tests: shared motion helpers already support reduced
-  motion, but a targeted widget test pass could prove major shells degrade to
-  opacity/instant transitions consistently.
+#### 1. Approval Surface Risk-Decision Card
+
+Files:
+
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+- `flutter_app/lib/core/copy/opencray_ui_copy.dart`
+- `flutter_app/test/chat_feature_screen_test.dart`
+
+Current behavior:
+
+- The approval surface already distinguishes high risk with color, a side accent
+  bar, a severity chip, and filled/outline action hierarchy.
+- The remaining problem is not color. The remaining problem is that the user
+  still has to read a mixed body to understand what is requested, what will be
+  affected, why it is needed, and what happens after the decision.
+
+Target behavior:
+
+- Treat the active approval as a compact risk-decision card, not as a generic
+  alert.
+- Keep the existing color system as an auxiliary signal:
+  - normal approval keeps blue/accent treatment
+  - high-risk approval keeps the warm side bar and chip
+  - no full orange/red card fill, because it makes dense command/path text
+    harder to read and makes all high-risk requests feel equally severe
+- Add non-color risk cues so severity is not carried by color alone.
+
+Implementation details:
+
+- Split the active approval card into four readable zones:
+  - decision headline: one strong line for what is being requested
+  - impact scope: affected path, working directory, tool, or session scope as
+    compact key-value rows
+  - reason/evidence: why the agent needs it, secondary in weight
+  - decision bar: Reject, Approve for session, Approve using the current
+    hierarchy
+- Add stable labels or icons for impact rows such as Path, Tool, Scope, and
+  Reason.
+- For destructive or broad-scope approvals, show one short "will affect" line
+  before the action buttons.
+- Make queued approvals quieter:
+  - active card shows the full structure
+  - queued cards show title, risk chip, and one impact line only
+  - queue count stays visible without competing with the active decision
+- Refine decision completion:
+  - pressed button enters a compact pending state in place
+  - approved/rejected state resolves on the same card for a brief beat
+  - the card then collapses upward and the next queued approval advances from
+    the stack
+
+Acceptance:
+
+- A high-risk approval is distinguishable by text/structure even without color.
+- The user can identify request, impact scope, and reason before reaching the
+  action buttons.
+- Compact phone layouts do not clip the three-action approval layout.
+- Reduced-motion mode avoids stack travel and keeps state changes visible with
+  opacity/color only.
+
+#### 2. Settings And Agent Configuration State
+
+Files:
+
+- `flutter_app/lib/features/settings/settings_feature.dart`
+- `flutter_app/lib/features/settings/agent_settings_pages.dart`
+- `flutter_app/lib/features/settings/safety_settings_pages.dart`
+- focused settings widget tests
+
+Current behavior:
+
+- Settings already has section grouping and danger tone support, but dense
+  configuration pages can still read like stacked forms.
+- Save/update/error feedback is often page-level or message-level rather than
+  attached to the field or section that changed.
+
+Target behavior:
+
+- Make Settings feel more like a quiet control console:
+  - current values are easy to scan
+  - edited sections show pending/saved/failed state locally
+  - destructive or security-sensitive settings remain visually distinct without
+    becoming louder than normal controls
+
+Implementation details:
+
+- Add a section-level state language:
+  - unchanged: flat surface, regular title
+  - edited/pending: subtle accent divider or compact "Unsaved" label
+  - saving: inline spinner or progress text in the section header
+  - saved: short-lived check/state label in the same header position
+  - failed: compact error row under the affected control
+- For Agent configuration:
+  - make risk tolerance, escalation rules, and allowed tools read as summary
+    rows before deeper editing
+  - keep advanced controls behind existing navigation instead of expanding the
+    main page into a long form
+  - preserve current save semantics and bridge contracts
+- For Safety settings:
+  - use danger tone only for genuinely destructive/security-sensitive sections
+  - add concise impact text for settings that broaden permissions
+
+Acceptance:
+
+- Users can see which setting changed and whether it saved without scanning for
+  a toast.
+- Field-level errors are visible near the field or section that caused them.
+- Section height stays stable during short pending/saved transitions.
+
+#### 3. Skills Manage Installed-Card Lifecycle
+
+Files:
+
+- `flutter_app/lib/features/skills/skills_feature.dart`
+- `flutter_app/test/skills_feature_test.dart`
+
+Current behavior:
+
+- Install search results now keep rows in place and show
+  Installing/Installed/Retry inline.
+- Manage page actions such as update, disable/enable, and delete still rely more
+  on action sheets, reloads, and messages.
+
+Target behavior:
+
+- Bring installed skill cards into the same lifecycle language as install
+  results:
+  - Update becomes Updating -> Updated or Retry in place
+  - Enable/Disable becomes Changing -> Enabled/Disabled or Retry in place
+  - Delete starts from the owning card, then exits with a restrained collapse
+    only after success
+
+Implementation details:
+
+- Add per-skill pending action state keyed by skill id and action type.
+- Keep the card in place while the operation is pending.
+- Convert primary card action labels to stable-width animated labels using
+  shared motion tokens.
+- For delete:
+  - confirmation remains explicit
+  - card enters deleting state after confirmation
+  - successful deletion collapses/removes the card from its list position
+  - failure restores the card with a Retry affordance
+- Keep action sheet behavior for secondary operations, but reflect the chosen
+  action back on the originating card.
+
+Acceptance:
+
+- Users do not need to find the affected skill again after update/delete.
+- Failed operations leave a visible retry path on the same card.
+- Manage list ordering does not jump during pending operations.
+
+#### 4. Files Operation Execution Feedback
+
+Files:
+
+- `flutter_app/lib/features/files/files_feature.dart`
+- `flutter_app/test/files_feature_test.dart`
+- host bridge files only if operation progress becomes available
+
+Current behavior:
+
+- Selection mode and the operation toolbar now communicate browsing vs
+  temporary work mode.
+- Copy, move, paste, and delete execution feedback is still mostly immediate
+  state/message driven. The operation surface does not yet show a clear
+  in-progress or completed operation lifecycle.
+
+Target behavior:
+
+- Show file operations as concrete work attached to the file list:
+  - Copy/Move selection enters a pending transfer state
+  - Paste/Delete shows a local operation state
+  - Success/failure is visible near the operation source or bottom workbench
+    instead of relying only on transient messages
+
+Implementation details:
+
+- If the host exposes progress later:
+  - add a compact bottom task strip above the shell tab bar
+  - show operation type, item count, destination/source, and progress
+  - keep the strip dismissible only after terminal success/failure
+- If only bounded async completion exists:
+  - show local pending labels on the toolbar action that was tapped
+  - keep selected rows subtly marked while the operation is pending
+  - on success, collapse selection mode after a brief resolved state
+  - on failure, keep selection and show a compact retry/error row
+- For delete:
+  - keep delete separated from reversible actions
+  - after confirmation, selected rows can fade/collapse toward their list
+    origin only after host success
+
+Acceptance:
+
+- Users can tell whether a file operation is pending, succeeded, or failed.
+- Failed operations do not silently clear selection.
+- No new long-running animation is introduced for operations without progress.
+
+#### 5. Global Empty, Loading, And Error States
+
+Files:
+
+- `flutter_app/lib/core/design/opencray_widgets.dart`
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+- `flutter_app/lib/features/files/files_feature.dart`
+- `flutter_app/lib/features/skills/skills_feature.dart`
+- `flutter_app/lib/features/settings/settings_feature.dart`
+- focused widget tests for updated state components
+
+Current behavior:
+
+- Each feature has local empty/loading/error treatments.
+- Some states are compact and useful, while others can still read as generic
+  blank space, page failure, or unrelated message text.
+
+Target behavior:
+
+- Create a shared quiet state language for high-frequency pages:
+  - empty: what is empty and one next action
+  - filtered empty: the active filter/search term and a clear/reset action
+  - loading: preserves surrounding layout and avoids full-page flashes
+  - error: compact reason plus Retry or relevant recovery action
+- Keep states dense and operational, not marketing-like.
+
+Implementation details:
+
+- Add or consolidate a small shared state widget only if it removes real
+  duplication across pages.
+- Keep feature-specific copy where context matters, but normalize:
+  - icon size
+  - title/body text scale
+  - action button hierarchy
+  - spacing from page chrome
+- For Chat:
+  - avoid showing seed/placeholder content during real host loading
+  - keep empty state subordinate to the composer
+- For Files:
+  - keep current path visible in empty and filtered-empty states
+  - keep clear-search available for filtered empty
+- For Skills:
+  - search loading should keep previous results stable where possible
+  - no-results should offer query refinement or direct install when applicable
+- For Settings:
+  - failed section loads should show Retry inside the section, not a whole-page
+    dead end when other sections remain usable
+
+Acceptance:
+
+- Empty/error/loading states across major tabs feel like one system.
+- Search no-results states are actionable, not dead ends.
+- Loading states do not flash unrelated placeholder/seed content.
+
+#### Future Polish Checklist
+
+- [ ] Plan and implement Approval risk-decision card structure.
+- [ ] Add Approval focused tests for non-color risk cues, queue advancement, and
+  compact action layout.
+- [ ] Plan and implement Settings/Agent section-level pending/saved/failed
+  states.
+- [ ] Add Settings focused tests for local save/error feedback.
+- [ ] Plan and implement Skills Manage installed-card action lifecycle.
+- [ ] Add Skills Manage tests for update/delete retry and stable card position.
+- [ ] Plan and implement Files operation execution feedback.
+- [ ] Add Files tests for pending/success/failure operation states.
+- [ ] Plan and normalize global empty/loading/error states.
+- [ ] Add focused tests for shared or normalized state components.
 
 ### High-Frequency Polish Checklist
 
