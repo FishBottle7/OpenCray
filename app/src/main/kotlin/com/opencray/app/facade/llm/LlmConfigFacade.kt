@@ -330,6 +330,7 @@ internal class LocalLlmConfigFacade private constructor(
       metadata = validationMetadataFor(
         providerId = providerPreset.id,
         protocol = protocol,
+        baseUrl = baseUrl,
         model = model,
         reasoningEffort = request.reasoningEffort,
       ),
@@ -435,23 +436,27 @@ internal class LocalLlmConfigFacade private constructor(
       } else {
         CapabilityProbeOutcome.unsupported()
       }
-      val builtinWebSearchProbe = when (protocol) {
-        LlmProviderProtocols.OPENAI_RESPONSES -> executeResponsesBuiltinWebSearchProbe(
-          gateway = gateway,
-          authHeaders = authHeaders,
-        )
+      val builtinWebSearchProbe = if (shouldProbeProviderBuiltinWebSearch(protocol, baseUrl)) {
+        when (protocol) {
+          LlmProviderProtocols.OPENAI_RESPONSES -> executeResponsesBuiltinWebSearchProbe(
+            gateway = gateway,
+            authHeaders = authHeaders,
+          )
 
-        LlmProviderProtocols.OPENAI -> executeOpenAiBuiltinWebSearchProbe(
-          gateway = gateway,
-          authHeaders = authHeaders,
-        )
+          LlmProviderProtocols.OPENAI -> executeOpenAiBuiltinWebSearchProbe(
+            gateway = gateway,
+            authHeaders = authHeaders,
+          )
 
-        LlmProviderProtocols.ANTHROPIC -> executeAnthropicBuiltinWebSearchProbe(
-          gateway = gateway,
-          authHeaders = authHeaders,
-        )
+          LlmProviderProtocols.ANTHROPIC -> executeAnthropicBuiltinWebSearchProbe(
+            gateway = gateway,
+            authHeaders = authHeaders,
+          )
 
-        else -> CapabilityProbeOutcome.unsupported()
+          else -> CapabilityProbeOutcome.unsupported()
+        }
+      } else {
+        CapabilityProbeOutcome.unsupported()
       }
       val responsesAssistantPhaseProbeSupported = if (protocol == LlmProviderProtocols.OPENAI_RESPONSES) {
         executeResponsesAssistantPhaseProbe(
@@ -682,6 +687,7 @@ internal class LocalLlmConfigFacade private constructor(
   private fun validationMetadataFor(
     providerId: String,
     protocol: String,
+    baseUrl: String,
     model: String,
     reasoningEffort: String,
   ): Map<String, String> = effectiveLlmRouteMetadata(
@@ -689,13 +695,41 @@ internal class LocalLlmConfigFacade private constructor(
     protocol = protocol,
     model = model,
     reasoningEffort = reasoningEffort,
+    baseUrl = baseUrl,
     streamingEnabled = llmSettingsStore.load().streamingEnabled,
     agentCapability = LlmAgentCapabilitySnapshot.unknown(
       protocol = protocol,
-      baseUrl = "",
+      baseUrl = baseUrl,
       model = model,
     ),
   )
+
+  private fun shouldProbeProviderBuiltinWebSearch(
+    protocol: String,
+    baseUrl: String,
+  ): Boolean = when (protocol) {
+    LlmProviderProtocols.OPENAI,
+    LlmProviderProtocols.OPENAI_RESPONSES -> isOfficialOpenAiRoute(baseUrl)
+
+    LlmProviderProtocols.ANTHROPIC -> isOfficialAnthropicRoute(baseUrl)
+
+    else -> false
+  }
+
+  private fun isOfficialOpenAiRoute(baseUrl: String): Boolean {
+    val host = routeHost(baseUrl) ?: return false
+    return host == "api.openai.com" || host.endsWith(".openai.com")
+  }
+
+  private fun isOfficialAnthropicRoute(baseUrl: String): Boolean {
+    val host = routeHost(baseUrl) ?: return false
+    return host == "api.anthropic.com" || host.endsWith(".anthropic.com")
+  }
+
+  private fun routeHost(baseUrl: String): String? =
+    runCatching { URI(baseUrl.trim()).host.orEmpty().lowercase() }
+      .getOrDefault("")
+      .takeIf(String::isNotBlank)
 
   private fun resolvedProtocol(
     providerPreset: LlmProviderPreset,

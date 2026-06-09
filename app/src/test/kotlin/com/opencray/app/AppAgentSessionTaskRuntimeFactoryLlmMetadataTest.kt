@@ -24,6 +24,7 @@ class AppAgentSessionTaskRuntimeFactoryLlmMetadataTest {
       nativeWebSearchSessionApproved = true,
       llmSettings = LlmSettingsState(
         providerId = "openai",
+        baseUrl = "https://api.openai.com/v1",
         contextBudgetPreset = "expanded",
         contextBudgetReservedOutputTokens = 3072,
         contextBudgetSafetyMarginTokens = 1536,
@@ -35,6 +36,7 @@ class AppAgentSessionTaskRuntimeFactoryLlmMetadataTest {
     assertEquals("chat", metadata["source"])
     assertEquals("session-budget", metadata["sessionId"])
     assertEquals("openai", metadata["_host.providerId"])
+    assertEquals("https://api.openai.com/v1", metadata["_host.baseUrl"])
     assertEquals("expanded", metadata["context_budget_preset"])
     assertEquals("3072", metadata["reserved_output_tokens"])
     assertEquals("1536", metadata["prompt_safety_margin_tokens"])

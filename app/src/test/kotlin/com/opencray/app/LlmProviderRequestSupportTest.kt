@@ -58,6 +58,62 @@ class LlmProviderRequestSupportTest {
   }
 
   @Test
+  fun routeMetadataOmitsOfficialFieldsWhenBaseUrlIsMissing() {
+    val openAiMetadata = LlmProviderProtocols.routeMetadata(
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5",
+      reasoningEffort = "medium",
+    )
+    val anthropicMetadata = LlmProviderProtocols.routeMetadata(
+      protocol = LlmProviderProtocols.ANTHROPIC,
+      model = "claude-3-7-sonnet",
+      reasoningEffort = "high",
+    )
+
+    assertFalse(openAiMetadata.containsKey("reasoning_effort"))
+    assertFalse(anthropicMetadata.containsKey("thinking_budget_tokens"))
+  }
+
+  @Test
+  fun openAiResponsesRouteMetadataIncludesReasoningEffortForOfficialBaseUrl() {
+    val metadata = LlmProviderProtocols.routeMetadata(
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5",
+      reasoningEffort = "medium",
+      baseUrl = "https://api.openai.com/v1",
+    )
+
+    assertEquals("medium", metadata["reasoning_effort"])
+  }
+
+  @Test
+  fun openAiResponsesRouteMetadataOmitsReasoningEffortForCustomBaseUrl() {
+    val metadata = LlmProviderProtocols.routeMetadata(
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5",
+      reasoningEffort = "medium",
+      baseUrl = "https://third-party.example/v1",
+    )
+
+    assertEquals("openai_responses", metadata["protocol"])
+    assertEquals("true", metadata["responseApiPreferred"])
+    assertFalse(metadata.containsKey("reasoning_effort"))
+  }
+
+  @Test
+  fun anthropicRouteMetadataOmitsThinkingBudgetForCustomBaseUrl() {
+    val metadata = LlmProviderProtocols.routeMetadata(
+      protocol = LlmProviderProtocols.ANTHROPIC,
+      model = "claude-3-7-sonnet",
+      reasoningEffort = "high",
+      baseUrl = "https://third-party.example/anthropic",
+    )
+
+    assertEquals("anthropic", metadata["protocol"])
+    assertFalse(metadata.containsKey("thinking_budget_tokens"))
+  }
+
+  @Test
   fun openAiResponsesRouteMetadataIncludesPromptCacheHintsWhenConfigured() {
     val metadata = LlmProviderProtocols.routeMetadata(
       protocol = LlmProviderProtocols.OPENAI_RESPONSES,
@@ -85,6 +141,7 @@ class LlmProviderRequestSupportTest {
       protocol = LlmProviderProtocols.ANTHROPIC,
       model = "claude-3-7-sonnet",
       reasoningEffort = "high",
+      baseUrl = "https://api.anthropic.com",
       anthropicPromptCachingEnabled = true,
       anthropicPromptCacheTtl = AnthropicPromptCacheTtlPolicies.HOUR_1,
     )

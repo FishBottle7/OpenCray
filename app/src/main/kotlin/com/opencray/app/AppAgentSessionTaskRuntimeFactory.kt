@@ -1694,6 +1694,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
         nativeWebSearchSessionApproved.toString(),
       )
       put(HOST_METADATA_PROVIDER_ID, llmSettings.providerId)
+      put(HOST_METADATA_BASE_URL, llmSettings.baseUrl)
       putAll(routeMetadata)
       putAll(llmSettings.contextBudgetRuntimeMetadataOverrides())
       putAll(llmSettings.agentCapability.runtimeMetadataOverrides())
@@ -3087,6 +3088,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     const val ERROR_CODE_ON_DEVICE_LLM_NOT_SUPPORTED: String = "ON_DEVICE_LLM_NOT_SUPPORTED"
     const val METADATA_HOST_PREFIX: String = "_host."
     const val HOST_METADATA_PROVIDER_ID: String = "${METADATA_HOST_PREFIX}providerId"
+    const val HOST_METADATA_BASE_URL: String = "${METADATA_HOST_PREFIX}baseUrl"
     const val METADATA_RUN_ID: String = "${METADATA_HOST_PREFIX}runId"
     const val METADATA_HOST_SESSION_ID: String = "${METADATA_HOST_PREFIX}sessionId"
     const val METADATA_PENDING_MESSAGE_ID: String = "${METADATA_HOST_PREFIX}pendingMessageId"

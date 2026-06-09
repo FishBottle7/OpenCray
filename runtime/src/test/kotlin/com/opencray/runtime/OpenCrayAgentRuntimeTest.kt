@@ -4344,7 +4344,7 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
-  fun runPromptTaskUsesResponsesBuiltinWebSearchForCustomResponsesProviderByDefault() {
+  fun runPromptTaskKeepsHostWebSearchForCustomResponsesProviderByDefault() {
     val workspaceRoot = temporaryFolder.newFolder("agent-host-web-search-workspace")
     val requests = mutableListOf<LiteLlmGatewayRequest>()
     val selection = LiteLlmRouteSelectionMetadata(
@@ -4390,6 +4390,7 @@ class OpenCrayAgentRuntimeTest {
           "protocol" to "openai_responses",
           "responsesContinuationSupported" to "true",
           "_host.providerId" to "custom",
+          "_host.baseUrl" to "https://third-party.example/v1",
         ),
       ),
       clock = IncrementingClock(start = 22_500L)::next,
@@ -4402,8 +4403,8 @@ class OpenCrayAgentRuntimeTest {
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals(1, requests.size)
-    assertEquals(LiteLlmBuiltinToolType.WEB_SEARCH, requests.single().builtinTools.single().type)
-    assertFalse(requests.single().tools.any { tool -> tool.name == "WebSearch" })
+    assertTrue(requests.single().builtinTools.isEmpty())
+    assertTrue(requests.single().tools.any { tool -> tool.name == "WebSearch" })
   }
 
   @Test

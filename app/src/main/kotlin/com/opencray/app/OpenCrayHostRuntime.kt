@@ -6739,7 +6739,10 @@ internal class OpenCrayHostRuntime private constructor(
       )
     }
     return AttachmentMarkdownCompatibility(
-      rewrittenText = text,
+      rewrittenText = rewriteAttachmentMarkdownText(
+        text = text,
+        resolvedReferences = resolvedReferences,
+      ),
       attachments = dedupeFinalAttachments(
         resolvedReferences.mapNotNull { resolved ->
           resolved.attachment?.toFinalAttachment(

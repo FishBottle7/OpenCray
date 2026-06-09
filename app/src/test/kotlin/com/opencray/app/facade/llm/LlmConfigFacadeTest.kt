@@ -416,6 +416,55 @@ class LlmConfigFacadeTest {
   }
 
   @Test
+  fun validateOmitsOfficialOpenAiMetadataAndBuiltinWebSearchForPresetWithCustomBaseUrl() {
+    val providerClient = RecordingProviderClient(
+      LiteLlmProviderResult.Success(outputText = "OK"),
+      capabilityProbeResult(expectedEcho = "native_tool_probe"),
+      capabilityProbeResult(expectedEcho = "tool_choice_probe"),
+      capabilityProbeResult(expectedEcho = "strict_schema_probe"),
+      parallelCapabilityProbeResult(),
+      LiteLlmProviderResult.Success(
+        outputText = "READY",
+        providerResponseId = "resp_seed",
+      ),
+      LiteLlmProviderResult.Success(
+        outputText = "responses_continuation_probe_token",
+      ),
+      LiteLlmProviderResult.Success(
+        outputText = "OK",
+        metadata = mapOf(
+          LiteLlmMetadataKeys.RESPONSES_COMMENTARY_PHASE_OBSERVED to "true",
+          LiteLlmMetadataKeys.RESPONSES_FINAL_PHASE_OBSERVED to "true",
+        ),
+      ),
+    )
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
+      providerClient = providerClient,
+    )
+
+    val result = facade.validate(
+      ValidateLlmConfigRequest(
+        providerId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://third-party.example/v1",
+        apiKey = "test-key",
+        model = "gpt-5-mini",
+        reasoningEffort = "medium",
+      ),
+    )
+
+    assertTrue(result.isSuccess)
+    assertTrue(result.agentCapability?.responsesContinuationSupported == true)
+    assertTrue(result.agentCapability?.assistantPhaseSupported == true)
+    assertFalse(result.agentCapability?.builtinWebSearchSupported == true)
+    assertEquals(8, providerClient.requests.size)
+    assertEquals("openai_responses", providerClient.requests.first().route.metadata["protocol"])
+    assertNull(providerClient.requests.first().route.metadata["reasoning_effort"])
+    assertTrue(providerClient.requests.none { request -> request.request.builtinTools.isNotEmpty() })
+  }
+
+  @Test
   fun validateFailsWhenNativeToolCallingCannotBeVerified() {
     val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
     val providerClient = RecordingProviderClient(
@@ -529,7 +578,39 @@ class LlmConfigFacadeTest {
   }
 
   @Test
-  fun validateOpenAiProtocolCapturesBuiltinWebSearchCapability() {
+  fun validateSkipsBuiltinWebSearchProbeForCustomAnthropicBaseUrl() {
+    val providerClient = RecordingProviderClient(
+      LiteLlmProviderResult.Success(outputText = "OK"),
+      capabilityProbeResult(expectedEcho = "native_tool_probe"),
+      capabilityProbeResult(expectedEcho = "tool_choice_probe"),
+      capabilityProbeResult(expectedEcho = "strict_schema_probe"),
+      parallelCapabilityProbeResult(),
+    )
+    val facade = LocalLlmConfigFacade.createForTest(
+      llmSettingsStore = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore()),
+      providerClient = providerClient,
+    )
+
+    val result = facade.validate(
+      ValidateLlmConfigRequest(
+        providerId = "custom",
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://third-party.example/anthropic",
+        apiKey = "anthropic-secret",
+        model = "claude-3-7-sonnet",
+        reasoningEffort = "high",
+      ),
+    )
+
+    assertTrue(result.isSuccess)
+    assertFalse(result.agentCapability?.builtinWebSearchSupported == true)
+    assertEquals(5, providerClient.requests.size)
+    assertNull(providerClient.requests.first().route.metadata["thinking_budget_tokens"])
+    assertTrue(providerClient.requests.none { request -> request.request.builtinTools.isNotEmpty() })
+  }
+
+  @Test
+  fun validateOpenAiProtocolCapturesOfficialBuiltinWebSearchCapability() {
     val providerClient = RecordingProviderClient(
       LiteLlmProviderResult.Success(outputText = "OK"),
       capabilityProbeResult(expectedEcho = "native_tool_probe"),
@@ -552,11 +633,11 @@ class LlmConfigFacadeTest {
 
     val result = facade.validate(
       ValidateLlmConfigRequest(
-        providerId = "custom",
+        providerId = "openai",
         protocol = LlmProviderProtocols.OPENAI,
-        baseUrl = "https://open.bigmodel.cn/api/paas/v4",
+        baseUrl = "https://api.openai.com/v1",
         apiKey = "test-key",
-        model = "glm-4.6",
+        model = "gpt-4o-mini",
         reasoningEffort = "medium",
       ),
     )
@@ -573,8 +654,8 @@ class LlmConfigFacadeTest {
       store.load(
         defaults = LlmSettingsState(
           protocol = LlmProviderProtocols.OPENAI,
-          baseUrl = "https://open.bigmodel.cn/api/paas/v4",
-          model = "glm-4.6",
+          baseUrl = "https://api.openai.com/v1",
+          model = "gpt-4o-mini",
         ),
       ).agentCapability.builtinWebSearchSupported,
     )

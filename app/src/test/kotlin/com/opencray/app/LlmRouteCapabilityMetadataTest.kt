@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class LlmRouteCapabilityMetadataTest {
@@ -146,6 +147,35 @@ class LlmRouteCapabilityMetadataTest {
       metadata[LlmPromptCachingMetadataKeys.PROMPT_CACHE_RETENTION],
     )
     assertEquals("true", metadata["stream"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataFromSettingsOmitsOfficialFieldsForCustomBaseUrl() {
+    val openAiMetadata = effectiveLlmRouteMetadata(
+      settings = LlmSettingsState(
+        providerId = "openai",
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://third-party.example/v1",
+        apiKey = "token",
+        model = "gpt-5-mini",
+        reasoningEffort = "medium",
+      ),
+    )
+    val anthropicMetadata = effectiveLlmRouteMetadata(
+      settings = LlmSettingsState(
+        providerId = "anthropic",
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://third-party.example/anthropic",
+        apiKey = "token",
+        model = "claude-3-7-sonnet",
+        reasoningEffort = "high",
+      ),
+    )
+
+    assertEquals("openai_responses", openAiMetadata["protocol"])
+    assertFalse(openAiMetadata.containsKey("reasoning_effort"))
+    assertEquals("anthropic", anthropicMetadata["protocol"])
+    assertFalse(anthropicMetadata.containsKey("thinking_budget_tokens"))
   }
 
   @Test

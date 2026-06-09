@@ -88,6 +88,7 @@ import com.opencray.runtime.workingstate.InMemoryWorkingStateStore
 import com.opencray.runtime.workingstate.WorkingStateResumeContext
 import com.opencray.runtime.workingstate.WorkingStateSupport
 import com.opencray.runtime.workingstate.WorkingStateStore
+import java.net.URI
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ExecutorService
@@ -2111,7 +2112,22 @@ class OpenCrayAgentRuntime(
           return rawValue.toBoolean()
         }
       }
-    return isResponsesProtocol()
+    return isResponsesProtocol() && officialOpenAiRouteForHostMetadata()
+  }
+
+  private fun officialOpenAiRouteForHostMetadata(): Boolean {
+    val hostBaseUrl = config.llmMetadata[HOST_METADATA_BASE_URL]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    if (hostBaseUrl != null) {
+      val host = runCatching {
+        URI(hostBaseUrl).host.orEmpty().lowercase()
+      }.getOrDefault("")
+      return host == "api.openai.com" || host.endsWith(".openai.com")
+    }
+    return config.llmMetadata[HOST_PROVIDER_ID_METADATA_KEY]
+      ?.trim()
+      .equals("openai", ignoreCase = true)
   }
 
   private fun webSearchEnabledForTurn(): Boolean =
@@ -9288,6 +9304,7 @@ class OpenCrayAgentRuntime(
     const val NON_RESPONSES_CONTEXT_CACHE_CONTRACT_VERSION: String = "non_responses_front_zone_v1"
     const val RESPONSES_PROTOCOL: String = "openai_responses"
     const val HIDDEN_METADATA_PREFIX: String = "_host."
+    private const val HOST_METADATA_BASE_URL: String = "${HIDDEN_METADATA_PREFIX}baseUrl"
     const val HOST_PROVIDER_ID_METADATA_KEY: String = "${HIDDEN_METADATA_PREFIX}providerId"
     const val RUN_ID_METADATA_KEY: String = "${HIDDEN_METADATA_PREFIX}runId"
     const val PROMPT_USER_TEXT_METADATA_KEY: String = "${HIDDEN_METADATA_PREFIX}promptUserText"

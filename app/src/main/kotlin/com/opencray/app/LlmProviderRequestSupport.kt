@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import java.net.URI
+
 internal object LlmProviderProtocols {
   const val OPENAI: String = "openai"
   const val OPENAI_RESPONSES: String = "openai_responses"
@@ -26,6 +28,7 @@ internal object LlmProviderProtocols {
     protocol: String,
     model: String,
     reasoningEffort: String,
+    baseUrl: String? = null,
     streamingEnabled: Boolean = LlmSettingsState.DEFAULT_STREAMING_ENABLED,
     openAiPromptCacheKeyStrategy: String = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY,
     openAiPromptCacheRetention: String = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
@@ -36,6 +39,7 @@ internal object LlmProviderProtocols {
     ANTHROPIC -> anthropicRouteMetadata(
       model = model,
       reasoningEffort = reasoningEffort,
+      officialRoute = officialAnthropicRouteByDefault(baseUrl),
       streamingEnabled = streamingEnabled,
       promptCachingEnabled = anthropicPromptCachingEnabled,
       promptCacheTtl = anthropicPromptCacheTtl,
@@ -44,6 +48,7 @@ internal object LlmProviderProtocols {
     OPENAI_RESPONSES -> openAiResponsesRouteMetadata(
       model = model,
       reasoningEffort = reasoningEffort,
+      officialRoute = officialOpenAiRouteByDefault(baseUrl),
       streamingEnabled = streamingEnabled,
       promptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
       promptCacheRetention = openAiPromptCacheRetention,
@@ -52,6 +57,7 @@ internal object LlmProviderProtocols {
     else -> openAiRouteMetadata(
       model = model,
       reasoningEffort = reasoningEffort,
+      officialRoute = officialOpenAiRouteByDefault(baseUrl),
       streamingEnabled = streamingEnabled,
       promptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
       promptCacheRetention = openAiPromptCacheRetention,
@@ -61,6 +67,7 @@ internal object LlmProviderProtocols {
   private fun openAiRouteMetadata(
     model: String,
     reasoningEffort: String,
+    officialRoute: Boolean,
     streamingEnabled: Boolean,
     promptCacheKeyStrategy: String,
     promptCacheRetention: String,
@@ -69,7 +76,8 @@ internal object LlmProviderProtocols {
     return buildMap {
       put("protocol", OPENAI)
       put("stream", streamingEnabled.toString())
-      if (model.contains("gpt", ignoreCase = true) &&
+      if (officialRoute &&
+        model.contains("gpt", ignoreCase = true) &&
         normalizedEffort != REASONING_EFFORT_OFF
       ) {
         put("reasoning_effort", normalizedEffort)
@@ -86,6 +94,7 @@ internal object LlmProviderProtocols {
   private fun openAiResponsesRouteMetadata(
     model: String,
     reasoningEffort: String,
+    officialRoute: Boolean,
     streamingEnabled: Boolean,
     promptCacheKeyStrategy: String,
     promptCacheRetention: String,
@@ -95,7 +104,8 @@ internal object LlmProviderProtocols {
       put("protocol", OPENAI_RESPONSES)
       put("stream", streamingEnabled.toString())
       put("responseApiPreferred", "true")
-      if (model.contains("gpt", ignoreCase = true) &&
+      if (officialRoute &&
+        model.contains("gpt", ignoreCase = true) &&
         normalizedEffort != REASONING_EFFORT_OFF
       ) {
         put("reasoning_effort", normalizedEffort)
@@ -112,6 +122,7 @@ internal object LlmProviderProtocols {
   private fun anthropicRouteMetadata(
     model: String,
     reasoningEffort: String,
+    officialRoute: Boolean,
     streamingEnabled: Boolean,
     promptCachingEnabled: Boolean,
     promptCacheTtl: String,
@@ -119,7 +130,7 @@ internal object LlmProviderProtocols {
     return buildMap {
       put("protocol", ANTHROPIC)
       put("stream", streamingEnabled.toString())
-      if (!shouldDisableAnthropicThinkingForModel(model)) {
+      if (officialRoute && !shouldDisableAnthropicThinkingForModel(model)) {
         val normalizedEffort = normalizedReasoningEffort(reasoningEffort)
         if (normalizedEffort != REASONING_EFFORT_OFF) {
           val thinkingBudget = when (normalizedEffort) {
@@ -156,6 +167,26 @@ internal object LlmProviderProtocols {
     reasoningEffort.trim().ifBlank {
       LlmSettingsState.DEFAULT_REASONING_EFFORT
     }
+
+  private fun officialOpenAiRouteByDefault(baseUrl: String?): Boolean {
+    val host = routeHost(baseUrl) ?: return false
+    return host == "api.openai.com" || host.endsWith(".openai.com")
+  }
+
+  private fun officialAnthropicRouteByDefault(baseUrl: String?): Boolean {
+    val host = routeHost(baseUrl) ?: return false
+    return host == "api.anthropic.com" || host.endsWith(".anthropic.com")
+  }
+
+  private fun routeHost(baseUrl: String?): String? {
+    val trimmed = baseUrl?.trim() ?: return null
+    if (trimmed.isBlank()) {
+      return null
+    }
+    return runCatching {
+      URI(trimmed).host.orEmpty().lowercase()
+    }.getOrDefault("").takeIf(String::isNotBlank)
+  }
 
   private fun openAiPromptCacheMetadata(
     promptCacheKeyStrategy: String,

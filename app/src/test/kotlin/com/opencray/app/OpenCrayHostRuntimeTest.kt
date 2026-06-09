@@ -3011,9 +3011,7 @@ class OpenCrayHostRuntimeTest {
       """
       Here they are:
 
-      ![camera_first.jpg](attachment:artifact)
-
-      [report.pdf](attachment:artifact)
+      report.pdf
       """.trimIndent(),
       assistantMessage.text,
     )
@@ -3093,7 +3091,7 @@ class OpenCrayHostRuntimeTest {
       .last()
     val attachment = assistantMessage.attachments.single()
 
-    assertEquals("![diagram.png](attachment:artifact)", assistantMessage.text)
+    assertNull(assistantMessage.text)
     assertEquals(ChatAttachmentKind.IMAGE, attachment.kind)
     assertEquals("diagram.png", attachment.displayName)
     assertTrue(attachment.localPath.startsWith(".opencray/chat-media/$activeSessionId/"))
@@ -3179,7 +3177,7 @@ class OpenCrayHostRuntimeTest {
       .last()
     val attachment = assistantMessage.attachments.single()
 
-    assertEquals("![diagram.png](attachment:artifact)", assistantMessage.text)
+    assertNull(assistantMessage.text)
     assertEquals(ChatAttachmentKind.IMAGE, attachment.kind)
     assertEquals("diagram.png", attachment.displayName)
     assertTrue(attachment.localPath.startsWith(".opencray/chat-media/$activeSessionId/"))

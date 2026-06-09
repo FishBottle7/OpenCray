@@ -1850,13 +1850,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
         else -> false
       }
     }
-    if (request.route.providerId.equals("openai", ignoreCase = true)) {
-      return true
-    }
-    val host = runCatching {
-      URI(request.route.baseUrl?.trim().orEmpty()).host.orEmpty().lowercase()
-    }.getOrDefault("")
-    return host == "api.openai.com" || host.endsWith(".openai.com")
+    return isOfficialOpenAiRoute(request)
   }
 
   private fun openAiStructuredFinalSchemaSupported(
