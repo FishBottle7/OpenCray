@@ -154,6 +154,7 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
                 runId = "run-a",
                 taskId = "task-a",
                 detailId = "checkpoint-a",
+                repairAfterEpochMs = 9_500L,
               ),
             ),
           ),
@@ -171,6 +172,7 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertEquals("prompt_checkpoint", evidence["kind"])
     assertEquals("interactive", evidence["target"])
     assertEquals("checkpoint-a", evidence["detailId"])
+    assertEquals(9_500L, evidence["repairAfterEpochMs"])
   }
 
   @Test

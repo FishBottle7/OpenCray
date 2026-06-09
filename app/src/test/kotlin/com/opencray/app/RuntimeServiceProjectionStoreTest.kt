@@ -97,11 +97,12 @@ class RuntimeServiceProjectionStoreTest {
         "session-repair" to listOf(
           InterruptedRunRepairEvidence(
             sessionId = "session-repair",
-            kind = InterruptedRunRepairEvidenceKind.JOURNAL_TAIL,
+            kind = InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
             target = RuntimeServiceTarget.DETACHED_BACKGROUND,
             runId = "run-repair",
             taskId = "task-repair",
-            detailId = "journal-tail-repair",
+            detailId = "managed-process-repair",
+            repairAfterEpochMs = 4_500L,
           ),
         ),
       ),

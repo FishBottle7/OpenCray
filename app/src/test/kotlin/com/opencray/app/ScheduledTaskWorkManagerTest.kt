@@ -15,6 +15,12 @@ import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.runtime.OpenCrayAssistantEvent
+import com.opencray.runtime.process.AgentProcessRegistry
+import com.opencray.runtime.process.ManagedProcessDeliveredObservationState
+import com.opencray.runtime.process.ManagedProcessReconnectState
+import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessStartRequest
+import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
 import com.opencray.runtime.subagent.SubAgentExecutionState
@@ -182,6 +188,115 @@ class ScheduledTaskWorkManagerTest {
     assertEquals(RuntimeServiceTarget.DETACHED_BACKGROUND, item.target)
     assertEquals("run-scheduled-evidence", item.runId)
     assertEquals("task-scheduled-evidence", item.taskId)
+  }
+
+  @Test
+  fun potentialInterruptedRunRepairEvidenceClassifiesManagedProcessReconnectAndRoutesTaskTarget() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-evidence-managed-process")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val processRegistryFactory = FixedAgentProcessRegistryFactory(
+      sessionId to listOf(
+        reconnectingManagedProcessSnapshot(
+          processId = "process-reconnect",
+          taskId = "task-managed-reconnect",
+        ),
+      ),
+    )
+
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = "task-managed-reconnect",
+          runId = "run-managed-reconnect",
+          lifecycleState = QueueTaskLifecycleState.COMPLETED,
+          taskState = AgentTaskState.COMPLETED,
+          metadata = mapOf(ScheduledTaskMetadataKeys.SCHEDULE_ID to "schedule-managed"),
+        ),
+      ),
+    )
+
+    val evidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      processRegistryFactory = processRegistryFactory,
+    )
+
+    assertEquals(1, evidence.size)
+    val item = evidence.single()
+    assertEquals(sessionId, item.sessionId)
+    assertEquals(InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT, item.kind)
+    assertEquals(RuntimeServiceTarget.DETACHED_BACKGROUND, item.target)
+    assertEquals("run-managed-reconnect", item.runId)
+    assertEquals("task-managed-reconnect", item.taskId)
+    assertEquals("process-reconnect", item.detailId)
+  }
+
+  @Test
+  fun dueInterruptedRunRepairTargetsDefersFutureManagedProcessReconnectUntilRetryAfter() {
+    val evidence = listOf(
+      InterruptedRunRepairEvidence(
+        sessionId = "session-managed-delay",
+        kind = InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+        target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+        runId = "run-managed-delay",
+        taskId = "task-managed-delay",
+        detailId = "process-managed-delay",
+        repairAfterEpochMs = 2_500L,
+      ),
+    )
+
+    assertEquals(
+      emptySet<RuntimeServiceTarget>(),
+      dueInterruptedRunRepairTargets(
+        evidence = evidence,
+        nowEpochMs = 2_000L,
+      ),
+    )
+    assertEquals(
+      500L,
+      nextInterruptedRunRepairDelayMs(
+        evidence = evidence,
+        nowEpochMs = 2_000L,
+      ),
+    )
+  }
+
+  @Test
+  fun dueInterruptedRunRepairTargetsRoutesManagedProcessReconnectWhenRetryAfterDue() {
+    val evidence = listOf(
+      InterruptedRunRepairEvidence(
+        sessionId = "session-managed-due",
+        kind = InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+        target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+        runId = "run-managed-due",
+        taskId = "task-managed-due",
+        detailId = "process-managed-due",
+        repairAfterEpochMs = 2_500L,
+      ),
+    )
+
+    assertEquals(
+      setOf(RuntimeServiceTarget.DETACHED_BACKGROUND),
+      dueInterruptedRunRepairTargets(
+        evidence = evidence,
+        nowEpochMs = 2_500L,
+      ),
+    )
+    assertEquals(
+      null,
+      nextInterruptedRunRepairDelayMs(
+        evidence = evidence,
+        nowEpochMs = 2_500L,
+      ),
+    )
   }
 
   @Test
@@ -781,6 +896,28 @@ class ScheduledTaskWorkManagerTest {
     )
   }
 
+  private fun reconnectingManagedProcessSnapshot(
+    processId: String,
+    taskId: String,
+    retryAfterEpochMs: Long? = null,
+  ): ManagedProcessSnapshot = ManagedProcessSnapshot(
+    processId = processId,
+    taskId = taskId,
+    command = "python",
+    args = listOf("-m", "opencray.worker"),
+    status = ManagedProcessStatus.RUNNING,
+    processStarted = true,
+    timeoutMs = 30_000L,
+    startedAtEpochMs = 1_000L,
+    updatedAtEpochMs = 1_100L,
+    reconnectState = ManagedProcessReconnectState(
+      status = "connecting",
+      recoveryState = "retry_scheduled",
+      retryable = true,
+      retryAfterEpochMs = retryAfterEpochMs,
+    ),
+  )
+
   private fun queueSnapshot(
     sessionId: String,
     taskSnapshot: SessionQueueTaskSnapshot,
@@ -861,6 +998,41 @@ class ScheduledTaskWorkManagerTest {
       stores.getOrPut(sessionId) { InMemorySessionQueueSnapshotStore() }
 
     override fun knownSessionIds(): List<String> = stores.keys.toList()
+  }
+
+  private class FixedAgentProcessRegistryFactory(
+    vararg entries: Pair<String, List<ManagedProcessSnapshot>>,
+  ) : AgentProcessRegistryFactory {
+    private val snapshotsBySession = linkedMapOf(*entries)
+
+    override fun forChatSession(sessionId: String): AgentProcessRegistry =
+      FixedAgentProcessRegistry(snapshotsBySession[sessionId].orEmpty())
+
+    override fun knownSessionIds(): List<String> = snapshotsBySession.keys.toList()
+  }
+
+  private class FixedAgentProcessRegistry(
+    private val snapshots: List<ManagedProcessSnapshot>,
+  ) : AgentProcessRegistry {
+    override fun start(request: ManagedProcessStartRequest): ManagedProcessSnapshot =
+      error("FixedAgentProcessRegistry does not start processes.")
+
+    override fun list(): List<ManagedProcessSnapshot> = snapshots
+
+    override fun read(processId: String): ManagedProcessSnapshot? =
+      snapshots.firstOrNull { snapshot -> snapshot.processId == processId }
+
+    override fun wait(
+      processId: String,
+      timeoutMs: Long,
+    ): ManagedProcessSnapshot? = read(processId)
+
+    override fun terminate(processId: String): ManagedProcessSnapshot? = read(processId)
+
+    override fun recordObservationDelivery(
+      processId: String,
+      deliveredObservationState: ManagedProcessDeliveredObservationState?,
+    ) = Unit
   }
 
   private class InMemoryAgentRunRecordStoreFactory : AgentRunRecordStoreFactory {

@@ -50,6 +50,7 @@ internal fun InterruptedRunRepairEvidence.snapshotMap(): Map<String, Any?> = bui
   runId?.let { put("runId", it) }
   taskId?.let { put("taskId", it) }
   detailId?.let { put("detailId", it) }
+  repairAfterEpochMs?.let { put("repairAfterEpochMs", it) }
 }
 
 internal val InterruptedRunRepairEvidenceKind.wireValue: String
@@ -59,6 +60,7 @@ internal val InterruptedRunRepairEvidenceKind.wireValue: String
     InterruptedRunRepairEvidenceKind.DETACHED_SUBAGENT_HANDLE -> "detached_subagent_handle"
     InterruptedRunRepairEvidenceKind.RUN_RECORD -> "run_record"
     InterruptedRunRepairEvidenceKind.JOURNAL_TAIL -> "journal_tail"
+    InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT -> "managed_process_reconnect"
   }
 
 internal fun interruptedRunRepairEvidenceKindFromWireValue(

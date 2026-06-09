@@ -14,6 +14,9 @@ import androidx.work.Worker
 import androidx.work.WorkerParameters
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
+import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.process.ManagedProcessRestoreMode
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
 import java.util.concurrent.TimeUnit
@@ -26,7 +29,14 @@ internal interface ScheduledWorkScheduler {
 
   fun cancel(scheduleId: String)
 
-  fun enqueueRepair(reason: String)
+  fun enqueueRepair(reason: String) {
+    enqueueRepair(reason, initialDelayMs = 0L)
+  }
+
+  fun enqueueRepair(
+    reason: String,
+    initialDelayMs: Long,
+  )
 
   fun ensurePeriodicRepair()
 }
@@ -62,7 +72,11 @@ internal class WorkManagerScheduledWorkScheduler(
     workManager.cancelUniqueWork(scheduleWakeWorkName(scheduleId))
   }
 
-  override fun enqueueRepair(reason: String) {
+  override fun enqueueRepair(
+    reason: String,
+    initialDelayMs: Long,
+  ) {
+    val normalizedDelayMs = initialDelayMs.coerceAtLeast(0L)
     val request = OneTimeWorkRequestBuilder<ScheduledTaskRepairWorker>()
       .setInputData(
         Data.Builder()
@@ -70,11 +84,12 @@ internal class WorkManagerScheduledWorkScheduler(
           .build(),
       )
       .setConstraints(defaultConstraints())
+      .setInitialDelay(normalizedDelayMs, TimeUnit.MILLISECONDS)
       .addTag(REPAIR_WORK_NAME)
       .build()
     workManager.enqueueUniqueWork(
-      REPAIR_WORK_NAME,
-      ExistingWorkPolicy.KEEP,
+      if (normalizedDelayMs > 0L) DELAYED_REPAIR_WORK_NAME else REPAIR_WORK_NAME,
+      if (normalizedDelayMs > 0L) ExistingWorkPolicy.REPLACE else ExistingWorkPolicy.KEEP,
       request,
     )
   }
@@ -162,15 +177,29 @@ internal class ScheduledTaskRepairWorker(
       ?: ScheduledTaskRepairReasons.WORK_MANAGER
     return runCatching {
       resyncEnabledScheduledTasksFromContext(applicationContext)
+      val nowEpochMs = System.currentTimeMillis()
       val hasDueCommands = plannedRepairWakeCommands(
         enabledSpecs = FileBackedScheduledTaskSpecStoreFactory
           .fromContext(applicationContext)
           .create()
           .listEnabled(),
-        nowEpochMs = System.currentTimeMillis(),
+        nowEpochMs = nowEpochMs,
         repairReason = reason,
       ).isNotEmpty()
-      val interruptedRunRepairTargets = potentialInterruptedRunRepairTargets(applicationContext)
+      val interruptedRunRepairEvidence = potentialInterruptedRunRepairEvidence(applicationContext)
+      val interruptedRunRepairTargets = dueInterruptedRunRepairTargets(
+        evidence = interruptedRunRepairEvidence,
+        nowEpochMs = nowEpochMs,
+      )
+      nextInterruptedRunRepairDelayMs(
+        evidence = interruptedRunRepairEvidence,
+        nowEpochMs = nowEpochMs,
+      )?.let { delayMs ->
+        WorkManagerScheduledWorkScheduler.fromContext(applicationContext).enqueueRepair(
+          reason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+          initialDelayMs = delayMs,
+        )
+      }
       val scheduledRepairStarted = when {
         !hasDueCommands -> true
         else -> runtimeEnvironment.runtimeServiceAccessGateway.repairSchedules(
@@ -263,6 +292,7 @@ internal data class InterruptedRunRepairEvidence(
   val runId: String? = null,
   val taskId: String? = null,
   val detailId: String? = null,
+  val repairAfterEpochMs: Long? = null,
 ) {
   init {
     require(sessionId.isNotBlank()) { "InterruptedRunRepairEvidence sessionId must not be blank." }
@@ -275,6 +305,9 @@ internal data class InterruptedRunRepairEvidence(
     require(detailId == null || detailId.isNotBlank()) {
       "InterruptedRunRepairEvidence detailId must not be blank."
     }
+    require(repairAfterEpochMs == null || repairAfterEpochMs >= 0L) {
+      "InterruptedRunRepairEvidence repairAfterEpochMs must be >= 0."
+    }
   }
 }
 
@@ -284,6 +317,7 @@ internal enum class InterruptedRunRepairEvidenceKind {
   DETACHED_SUBAGENT_HANDLE,
   RUN_RECORD,
   JOURNAL_TAIL,
+  MANAGED_PROCESS_RECONNECT,
 }
 
 internal fun potentialInterruptedRunRepairTargets(
@@ -299,6 +333,7 @@ internal fun potentialInterruptedRunRepairTargets(
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
+  processRegistryFactory: AgentProcessRegistryFactory? = null,
 ): Set<RuntimeServiceTarget> = potentialInterruptedRunRepairEvidence(
   chatSessionStore = chatSessionStore,
   snapshotStoreFactory = snapshotStoreFactory,
@@ -306,6 +341,7 @@ internal fun potentialInterruptedRunRepairTargets(
   subAgentHandleStoreFactory = subAgentHandleStoreFactory,
   runRecordStoreFactory = runRecordStoreFactory,
   runEventJournalStoreFactory = runEventJournalStoreFactory,
+  processRegistryFactory = processRegistryFactory,
 ).mapTo(linkedSetOf(), InterruptedRunRepairEvidence::target)
 
 internal fun potentialInterruptedRunRepairEvidence(
@@ -315,6 +351,7 @@ internal fun potentialInterruptedRunRepairEvidence(
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
+  processRegistryFactory: AgentProcessRegistryFactory? = null,
 ): List<InterruptedRunRepairEvidence> {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
@@ -323,6 +360,7 @@ internal fun potentialInterruptedRunRepairEvidence(
     subAgentHandleStoreFactory = subAgentHandleStoreFactory,
     runRecordStoreFactory = runRecordStoreFactory,
     runEventJournalStoreFactory = runEventJournalStoreFactory,
+    processRegistryFactory = processRegistryFactory,
   )
   val evidence = mutableListOf<InterruptedRunRepairEvidence>()
   knownSessionIds.forEach { sessionId ->
@@ -333,6 +371,7 @@ internal fun potentialInterruptedRunRepairEvidence(
       subAgentHandleStoreFactory = subAgentHandleStoreFactory,
       runRecordStoreFactory = runRecordStoreFactory,
       runEventJournalStoreFactory = runEventJournalStoreFactory,
+      processRegistryFactory = processRegistryFactory,
     )
   }
   return evidence
@@ -345,6 +384,7 @@ internal fun hasPotentialInteractiveRunRepairWorkForSession(
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
+  processRegistryFactory: AgentProcessRegistryFactory? = null,
 ): Boolean = potentialInterruptedRunRepairEvidenceForSession(
   sessionId = sessionId,
   snapshotStoreFactory = snapshotStoreFactory,
@@ -352,6 +392,7 @@ internal fun hasPotentialInteractiveRunRepairWorkForSession(
   subAgentHandleStoreFactory = subAgentHandleStoreFactory,
   runRecordStoreFactory = runRecordStoreFactory,
   runEventJournalStoreFactory = runEventJournalStoreFactory,
+  processRegistryFactory = processRegistryFactory,
 ).isNotEmpty()
 
 internal fun potentialInterruptedRunRepairTargetsForSession(
@@ -361,6 +402,7 @@ internal fun potentialInterruptedRunRepairTargetsForSession(
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
+  processRegistryFactory: AgentProcessRegistryFactory? = null,
 ): Set<RuntimeServiceTarget> = potentialInterruptedRunRepairEvidenceForSession(
   sessionId = sessionId,
   snapshotStoreFactory = snapshotStoreFactory,
@@ -368,6 +410,7 @@ internal fun potentialInterruptedRunRepairTargetsForSession(
   subAgentHandleStoreFactory = subAgentHandleStoreFactory,
   runRecordStoreFactory = runRecordStoreFactory,
   runEventJournalStoreFactory = runEventJournalStoreFactory,
+  processRegistryFactory = processRegistryFactory,
 ).mapTo(linkedSetOf(), InterruptedRunRepairEvidence::target)
 
 internal fun potentialInterruptedRunRepairEvidenceForSession(
@@ -377,6 +420,7 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
+  processRegistryFactory: AgentProcessRegistryFactory? = null,
 ): List<InterruptedRunRepairEvidence> {
   val taskSnapshots = snapshotStoreFactory.forChatSession(sessionId)
     .load()
@@ -458,6 +502,29 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
       detailId = entry.eventId,
     )
   }
+  processRegistryFactory?.forChatSession(sessionId)
+    ?.list()
+    .orEmpty()
+    .filter(::isPotentialManagedProcessReconnectRepair)
+    .forEach { process ->
+      evidence += InterruptedRunRepairEvidence(
+        sessionId = sessionId,
+        kind = InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+        target = runtimeServiceTargetForManagedProcess(
+          process = process,
+          taskSnapshots = taskSnapshots,
+          runRecords = runRecords,
+        ),
+        runId = runIdForManagedProcess(
+          process = process,
+          taskSnapshots = taskSnapshots,
+          runRecords = runRecords,
+        ),
+        taskId = process.taskId,
+        detailId = process.processId,
+        repairAfterEpochMs = managedProcessReconnectRetryAfterEpochMs(process),
+      )
+    }
   return evidence
 }
 
@@ -472,8 +539,28 @@ internal fun potentialInterruptedRunRepairEvidence(
     subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
     runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
     runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext),
+    processRegistryFactory = FileBackedAgentProcessRegistryFactory.fromContext(
+      context = appContext,
+      restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
+    ),
   )
 }
+
+internal fun dueInterruptedRunRepairTargets(
+  evidence: List<InterruptedRunRepairEvidence>,
+  nowEpochMs: Long,
+): Set<RuntimeServiceTarget> = evidence
+  .filter { item -> item.repairAfterEpochMs == null || item.repairAfterEpochMs <= nowEpochMs }
+  .mapTo(linkedSetOf(), InterruptedRunRepairEvidence::target)
+
+internal fun nextInterruptedRunRepairDelayMs(
+  evidence: List<InterruptedRunRepairEvidence>,
+  nowEpochMs: Long,
+): Long? = evidence
+  .mapNotNull(InterruptedRunRepairEvidence::repairAfterEpochMs)
+  .filter { repairAfterEpochMs -> repairAfterEpochMs > nowEpochMs }
+  .minOrNull()
+  ?.let { repairAfterEpochMs -> repairAfterEpochMs - nowEpochMs }
 
 internal fun startInterruptedRunRepairTargets(
   targets: Set<RuntimeServiceTarget>,
@@ -496,6 +583,24 @@ private fun isPotentialRunRepairRecord(record: PersistedAgentRunRecord): Boolean
     return false
   }
   return record.lastEvent != null || record.managedProcessIds.isNotEmpty()
+}
+
+private fun isPotentialManagedProcessReconnectRepair(
+  process: ManagedProcessSnapshot,
+): Boolean {
+  if (process.status != ManagedProcessStatus.RUNNING) {
+    return false
+  }
+  val reconnectState = process.reconnectState
+  val recoveryState = reconnectState?.recoveryState
+    ?: process.metadata["sandboxCommandReconnectRecoveryState"]
+  val retryable = reconnectState?.retryable
+    ?: process.metadata["sandboxCommandReconnectRetryable"]?.toBooleanStrictOrNull()
+  return recoveryState == MANAGED_PROCESS_RECONNECT_RECOVERY_STATE_RETRY_SCHEDULED ||
+    (
+      reconnectState?.status == MANAGED_PROCESS_RECONNECT_STATUS_CONNECTING &&
+        retryable == true
+      )
 }
 
 private fun isPotentialRunRepairCheckpoint(
@@ -555,6 +660,51 @@ private fun runtimeServiceTargetForRunId(
   .firstOrNull { taskSnapshot -> runIdForTask(taskSnapshot) == runId }
   ?.let { taskSnapshot -> runtimeServiceTargetForTask(taskSnapshot.task) }
 
+private fun runtimeServiceTargetForTaskId(
+  taskId: String,
+  taskSnapshots: List<SessionQueueTaskSnapshot>,
+): RuntimeServiceTarget? = taskSnapshots
+  .firstOrNull { taskSnapshot -> taskSnapshot.task.id == taskId }
+  ?.let { taskSnapshot -> runtimeServiceTargetForTask(taskSnapshot.task) }
+
+private fun runtimeServiceTargetForManagedProcess(
+  process: ManagedProcessSnapshot,
+  taskSnapshots: List<SessionQueueTaskSnapshot>,
+  runRecords: List<PersistedAgentRunRecord>,
+): RuntimeServiceTarget =
+  runtimeServiceTargetForTaskId(
+    taskId = process.taskId,
+    taskSnapshots = taskSnapshots,
+  )
+    ?: runRecords
+      .firstOrNull { record -> process.processId in record.managedProcessIds }
+      ?.let { record ->
+        runtimeServiceTargetForRunId(
+          runId = record.runId,
+          taskSnapshots = taskSnapshots,
+        )
+      }
+    ?: RuntimeServiceTarget.INTERACTIVE
+
+private fun runIdForManagedProcess(
+  process: ManagedProcessSnapshot,
+  taskSnapshots: List<SessionQueueTaskSnapshot>,
+  runRecords: List<PersistedAgentRunRecord>,
+): String? =
+  taskSnapshots
+    .firstOrNull { taskSnapshot -> taskSnapshot.task.id == process.taskId }
+    ?.let(::runIdForTask)
+    ?: runRecords
+      .firstOrNull { record ->
+        record.taskId == process.taskId || process.processId in record.managedProcessIds
+      }
+      ?.runId
+
+private fun managedProcessReconnectRetryAfterEpochMs(
+  process: ManagedProcessSnapshot,
+): Long? = process.reconnectState?.retryAfterEpochMs
+  ?: process.metadata["sandboxCommandReconnectRetryAfterEpochMs"]?.toLongOrNull()
+
 private fun runIdForTask(
   taskSnapshot: SessionQueueTaskSnapshot,
 ): String = taskSnapshot.task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
@@ -578,6 +728,8 @@ private val TERMINAL_JOURNAL_LIFECYCLE_PHASES: Set<String> = setOf(
 )
 
 private const val FINAL_ASSISTANT_PHASE: String = "FINAL_ANSWER"
+private const val MANAGED_PROCESS_RECONNECT_RECOVERY_STATE_RETRY_SCHEDULED: String = "retry_scheduled"
+private const val MANAGED_PROCESS_RECONNECT_STATUS_CONNECTING: String = "connecting"
 
 private val INTERRUPTED_RUN_REPAIR_TARGET_WAKE_ORDER: List<RuntimeServiceTarget> = listOf(
   RuntimeServiceTarget.DETACHED_BACKGROUND,
@@ -588,6 +740,7 @@ private fun scheduleWakeWorkName(scheduleId: String): String =
   "scheduled-task-wake-${FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(scheduleId)}"
 
 internal const val REPAIR_WORK_NAME: String = "scheduled-task-repair"
+internal const val DELAYED_REPAIR_WORK_NAME: String = "scheduled-task-delayed-repair"
 internal const val PERIODIC_REPAIR_WORK_NAME: String = "scheduled-task-periodic-repair"
 internal const val PERIODIC_REPAIR_INTERVAL_HOURS: Long = 1L
 internal const val WORK_DATA_SCHEDULE_ID: String = "schedule_id"

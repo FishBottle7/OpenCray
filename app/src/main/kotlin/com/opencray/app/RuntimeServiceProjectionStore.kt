@@ -437,6 +437,7 @@ private data class PersistedInterruptedRunRepairEvidence(
   val runId: String? = null,
   val taskId: String? = null,
   val detailId: String? = null,
+  val repairAfterEpochMs: Long? = null,
 )
 
 private fun LocalRuntimeServerState.toPersistedRecord(): PersistedLocalRuntimeServerState =
@@ -523,6 +524,7 @@ private fun InterruptedRunRepairEvidence.toPersistedRecord():
     runId = runId,
     taskId = taskId,
     detailId = detailId,
+    repairAfterEpochMs = repairAfterEpochMs,
   )
 
 private fun PersistedRuntimeServiceInterruptedRunRepairProjection.toSnapshot():
@@ -614,6 +616,7 @@ private fun PersistedInterruptedRunRepairEvidence.toSnapshot(
       runId = runId,
       taskId = taskId,
       detailId = detailId,
+      repairAfterEpochMs = repairAfterEpochMs,
     )
   }.getOrNull()
 }

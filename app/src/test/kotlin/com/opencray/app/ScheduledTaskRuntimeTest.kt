@@ -873,6 +873,7 @@ class ScheduledTaskRuntimeTest {
     val scheduledWakeRequests = mutableListOf<Pair<String, Long>>()
     val cancelledScheduleIds = mutableListOf<String>()
     val repairReasons = mutableListOf<String>()
+    val repairRequests = mutableListOf<Pair<String, Long>>()
     var periodicRepairEnsured = false
 
     override fun scheduleWake(
@@ -886,8 +887,12 @@ class ScheduledTaskRuntimeTest {
       cancelledScheduleIds += scheduleId
     }
 
-    override fun enqueueRepair(reason: String) {
+    override fun enqueueRepair(
+      reason: String,
+      initialDelayMs: Long,
+    ) {
       repairReasons += reason
+      repairRequests += reason to initialDelayMs
     }
 
     override fun ensurePeriodicRepair() {

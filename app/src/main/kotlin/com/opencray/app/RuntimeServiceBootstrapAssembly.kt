@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.Context
+import com.opencray.runtime.process.ManagedProcessRestoreMode
 import java.nio.file.Path
 
 internal data class RuntimeServiceBootstrapContext(
@@ -126,6 +127,10 @@ internal fun createRuntimeServiceBootstrapAssembly(
     subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
     runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory.fromContext(appContext),
     runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext),
+    processRegistryFactory = FileBackedAgentProcessRegistryFactory.fromContext(
+      context = appContext,
+      restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
+    ),
   )
   resyncEnabledScheduledTasks(
     specStore = bootstrap.scheduledTaskSpecStore,
@@ -350,6 +355,10 @@ private fun RuntimeServiceBootstrapAssembly.toWakeCommandDispatcherDependencies(
         runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(
           bootstrapContext.localizedContext.applicationContext,
         ),
+        processRegistryFactory = FileBackedAgentProcessRegistryFactory.fromContext(
+          context = bootstrapContext.localizedContext.applicationContext,
+          restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
+        ),
       )
     },
     approvalDecisionAccess = approvalDecisionAccess,
@@ -407,6 +416,7 @@ internal fun bootstrapRuntimeServiceSessions(
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory? = null,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
+  processRegistryFactory: AgentProcessRegistryFactory? = null,
 ): RuntimeServiceBootstrapResult {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
@@ -415,6 +425,7 @@ internal fun bootstrapRuntimeServiceSessions(
     subAgentHandleStoreFactory = subAgentHandleStoreFactory,
     runRecordStoreFactory = runRecordStoreFactory,
     runEventJournalStoreFactory = runEventJournalStoreFactory,
+    processRegistryFactory = processRegistryFactory,
   )
   val resumedSessionIds = mutableListOf<String>()
   val repairedSessionIds = mutableListOf<String>()
@@ -429,6 +440,7 @@ internal fun bootstrapRuntimeServiceSessions(
       subAgentHandleStoreFactory = subAgentHandleStoreFactory,
       runRecordStoreFactory = runRecordStoreFactory,
       runEventJournalStoreFactory = runEventJournalStoreFactory,
+      processRegistryFactory = processRegistryFactory,
     )
     val shouldResume = session.hasPendingWork() ||
       session.hasLiveManagedProcesses() ||
@@ -469,6 +481,7 @@ internal fun resumeInterruptedRuntimeServiceRuns(
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory? = null,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
+  processRegistryFactory: AgentProcessRegistryFactory? = null,
 ): RuntimeServiceInterruptedRunRepairResult {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
@@ -477,6 +490,7 @@ internal fun resumeInterruptedRuntimeServiceRuns(
     subAgentHandleStoreFactory = subAgentHandleStoreFactory,
     runRecordStoreFactory = runRecordStoreFactory,
     runEventJournalStoreFactory = runEventJournalStoreFactory,
+    processRegistryFactory = processRegistryFactory,
   )
   val resumedSessionIds = mutableListOf<String>()
   val repairedSessionIds = mutableListOf<String>()
@@ -492,6 +506,7 @@ internal fun resumeInterruptedRuntimeServiceRuns(
       subAgentHandleStoreFactory = subAgentHandleStoreFactory,
       runRecordStoreFactory = runRecordStoreFactory,
       runEventJournalStoreFactory = runEventJournalStoreFactory,
+      processRegistryFactory = processRegistryFactory,
     )
     val shouldResume = runs.any(AgentRunSnapshot::isActive) ||
       session.hasLiveSubAgentWork() ||
@@ -529,6 +544,7 @@ private fun durableInteractiveRepairEvidenceForSession(
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory?,
   runRecordStoreFactory: AgentRunRecordStoreFactory?,
   runEventJournalStoreFactory: RunEventJournalStoreFactory?,
+  processRegistryFactory: AgentProcessRegistryFactory?,
 ): List<InterruptedRunRepairEvidence> {
   if (
     snapshotStoreFactory == null ||
@@ -544,6 +560,7 @@ private fun durableInteractiveRepairEvidenceForSession(
     subAgentHandleStoreFactory = subAgentHandleStoreFactory,
     runRecordStoreFactory = runRecordStoreFactory,
     runEventJournalStoreFactory = runEventJournalStoreFactory,
+    processRegistryFactory = processRegistryFactory,
   )
 }
 
@@ -554,6 +571,7 @@ internal fun recoveryCandidateSessionIds(
   subAgentHandleStoreFactory: SubAgentHandleStoreFactory?,
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
+  processRegistryFactory: AgentProcessRegistryFactory? = null,
 ): List<String> = buildSet {
   addAll(knownChatSessionIds(chatSessionStore))
   snapshotStoreFactory?.knownSessionIds()?.let(::addAll)
@@ -561,4 +579,5 @@ internal fun recoveryCandidateSessionIds(
   subAgentHandleStoreFactory?.knownSessionIds()?.let(::addAll)
   runRecordStoreFactory?.knownSessionIds()?.let(::addAll)
   runEventJournalStoreFactory?.knownSessionIds()?.let(::addAll)
+  processRegistryFactory?.knownSessionIds()?.let(::addAll)
 }.toList()

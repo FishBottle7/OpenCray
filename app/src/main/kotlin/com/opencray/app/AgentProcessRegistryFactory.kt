@@ -13,6 +13,8 @@ import java.io.File
 
 internal interface AgentProcessRegistryFactory {
   fun forChatSession(sessionId: String): AgentProcessRegistry
+
+  fun knownSessionIds(): List<String> = emptyList()
 }
 
 internal class FileBackedAgentProcessRegistryFactory(
@@ -39,6 +41,11 @@ internal class FileBackedAgentProcessRegistryFactory(
 
   internal fun directoryForSession(sessionId: String): File =
     File(runtimeRootDirectory, FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(sessionId))
+
+  override fun knownSessionIds(): List<String> = runtimeRootDirectory.listFiles()
+    .orEmpty()
+    .filter(File::isDirectory)
+    .mapNotNull { directory -> FileBackedAgentQueueSnapshotStoreFactory.decodeSessionId(directory.name) }
 
   companion object {
     fun fromContext(
