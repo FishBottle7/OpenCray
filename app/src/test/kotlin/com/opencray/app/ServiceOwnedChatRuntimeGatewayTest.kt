@@ -14,6 +14,7 @@ import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.persistence.model.ChatTranscriptMessageEntry
+import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.OpenCrayFinalAttachment
 import com.opencray.runtime.OpenCrayCancellationEvent
@@ -318,6 +319,83 @@ class ServiceOwnedChatRuntimeGatewayTest {
     assertTrue(assistantAfterRecallId !in remainingMessageIds)
     assertEquals(listOf(sessionId, sessionId), repairEvents.map(RepairEvent::sessionId))
     assertEquals(listOf(0, 0), repairEvents.map(RepairEvent::resumeCallCountAtRepair))
+  }
+
+  @Test
+  fun deleteChatMessageCascadesFinalAgentBubbleButNotProcessBubble() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("service-owned-chat-delete-cascade-store"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val finalMessageId = "assistant-final-delete"
+    val processMessageId = "runtime-process-task-delete-proc-1"
+    val commentaryMessageId = "runtime-assistant-commentary-run-delete-1-Plan-100-42"
+    chatStore.appendSubmittedTurn(
+      sessionId = sessionId,
+      userText = "Run the build",
+      assistantMessageId = finalMessageId,
+      assistantPlaceholderText = "Thinking",
+    )
+    chatStore.insertMessageBefore(
+      sessionId = sessionId,
+      anchorMessageId = finalMessageId,
+      role = ChatTranscriptRole.ASSISTANT,
+      text = "Process proc-1\n\nRunning: ./gradlew test",
+      messageId = processMessageId,
+    )
+    chatStore.insertMessageBefore(
+      sessionId = sessionId,
+      anchorMessageId = finalMessageId,
+      role = ChatTranscriptRole.ASSISTANT,
+      text = "Plan\n\nChecking the failing test.",
+      messageId = commentaryMessageId,
+    )
+    val runtimeHostAccess = RecordingRuntimeHostAccess()
+    val delegate = RecordingChatGateway("delegate")
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      delegate = delegate,
+      readGateway = RecordingChatGateway("projection"),
+      snapshotNotifier = delegate::notifyChatSnapshotsChanged,
+      chatSessionMutationAccess = ServiceOwnedChatSessionMutationAccess(
+        chatSessionStore = chatStore,
+        runtimeHostAccess = runtimeHostAccess,
+        chatUnreadMessageState = ChatUnreadMessageState(),
+      ),
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+
+    gateway.deleteChatMessage(sessionId, finalMessageId)
+
+    val remainingAfterFinalDelete = chatStore.loadSession(sessionId)
+      ?.messages
+      ?.map(ChatTranscriptMessageEntry::messageId)
+      .orEmpty()
+    assertTrue(finalMessageId !in remainingAfterFinalDelete)
+    assertTrue(processMessageId !in remainingAfterFinalDelete)
+    assertTrue(commentaryMessageId !in remainingAfterFinalDelete)
+
+    val keptFinalMessageId = "assistant-final-keep"
+    val deletedProcessMessageId = "runtime-process-task-keep-proc-2"
+    chatStore.appendSubmittedTurn(
+      sessionId = sessionId,
+      userText = "Run a second command",
+      assistantMessageId = keptFinalMessageId,
+      assistantPlaceholderText = "Thinking",
+    )
+    chatStore.insertMessageBefore(
+      sessionId = sessionId,
+      anchorMessageId = keptFinalMessageId,
+      role = ChatTranscriptRole.ASSISTANT,
+      text = "Process proc-2\n\nRunning: npm test",
+      messageId = deletedProcessMessageId,
+    )
+
+    gateway.deleteChatMessage(sessionId, deletedProcessMessageId)
+
+    val remainingAfterProcessDelete = chatStore.loadSession(sessionId)
+      ?.messages
+      ?.map(ChatTranscriptMessageEntry::messageId)
+      .orEmpty()
+    assertTrue(deletedProcessMessageId !in remainingAfterProcessDelete)
+    assertTrue(keptFinalMessageId in remainingAfterProcessDelete)
   }
 
   @Test

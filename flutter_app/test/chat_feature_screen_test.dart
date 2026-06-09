@@ -12427,6 +12427,256 @@ void main() {
     },
   );
 
+  testWidgets(
+    'deleting a final agent bubble hides its process bubble and status line',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final snapshots = StreamController<OpenCrayChatSnapshot>.broadcast();
+      final runtimeSnapshots =
+          StreamController<OpenCrayChatRuntimeSnapshot>.broadcast();
+      addTearDown(snapshots.close);
+      addTearDown(runtimeSnapshots.close);
+      const processMessageId = 'runtime-process-task-delete-final-proc-final';
+      const runtimeSnapshot = OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        updatedAtEpochMs: 1500,
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-delete-final',
+            taskId: 'task-delete-final',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 1500,
+            attempt: 1,
+            pendingMessageId: 'assistant-final-delete',
+            managedProcessIds: <String>['proc-final'],
+            managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+              OpenCrayChatManagedProcessSnapshot(
+                processId: 'proc-final',
+                status: 'running',
+                command: 'npm',
+                args: <String>['test'],
+                processStarted: true,
+                startedAtEpochMs: 1200,
+                updatedAtEpochMs: 1500,
+                stdoutPreview: 'running tests',
+              ),
+            ],
+            runningManagedProcessCount: 1,
+            hasLiveManagedProcesses: true,
+            isTerminal: false,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      );
+      OpenCrayChatSnapshot snapshotWithTurn({required int updatedAtEpochMs}) {
+        return _hostChatSnapshot(
+          updatedAtEpochMs: updatedAtEpochMs,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              messageId: 'user-delete-final',
+              kind: 'outbound',
+              text: 'Run npm test',
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'assistant-final-delete',
+              kind: 'inbound',
+              text: 'Tests are still running.',
+            ),
+          ],
+        );
+      }
+
+      final bridge = _FakeChatBridge(
+        chatSnapshot: snapshotWithTurn(updatedAtEpochMs: 1000),
+        runtimeSnapshot: runtimeSnapshot,
+        chatSnapshotStream: snapshots.stream,
+        runtimeSnapshotStream: runtimeSnapshots.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('chat-bubble-$processMessageId')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('chat-run-trace-run-delete-final')),
+        findsOneWidget,
+      );
+
+      await tester.longPress(
+        find.byKey(
+          const ValueKey<String>('chat-bubble-assistant-final-delete'),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey<String>('chat-message-menu-action-delete')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(bridge.deletedMessageIds, <String>[
+        'assistant-final-delete',
+        processMessageId,
+      ]);
+      expect(
+        find.byKey(const ValueKey<String>('chat-bubble-$processMessageId')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(
+          const ValueKey<String>('chat-bubble-assistant-final-delete'),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('chat-run-trace-run-delete-final')),
+        findsNothing,
+      );
+
+      snapshots.add(snapshotWithTurn(updatedAtEpochMs: 2000));
+      runtimeSnapshots.add(runtimeSnapshot);
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('chat-bubble-$processMessageId')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('chat-run-trace-run-delete-final')),
+        findsNothing,
+      );
+    },
+  );
+
+  testWidgets(
+    'deleting a process bubble keeps its final bubble and status line',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final snapshots = StreamController<OpenCrayChatSnapshot>.broadcast();
+      final runtimeSnapshots =
+          StreamController<OpenCrayChatRuntimeSnapshot>.broadcast();
+      addTearDown(snapshots.close);
+      addTearDown(runtimeSnapshots.close);
+      const processMessageId = 'runtime-process-task-delete-process-proc-only';
+      const runtimeSnapshot = OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        updatedAtEpochMs: 1500,
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-delete-process',
+            taskId: 'task-delete-process',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 1500,
+            attempt: 1,
+            pendingMessageId: 'assistant-final-keep',
+            managedProcessIds: <String>['proc-only'],
+            managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+              OpenCrayChatManagedProcessSnapshot(
+                processId: 'proc-only',
+                status: 'running',
+                command: 'npm',
+                args: <String>['run', 'dev'],
+                processStarted: true,
+                startedAtEpochMs: 1200,
+                updatedAtEpochMs: 1500,
+                stdoutPreview: 'ready',
+              ),
+            ],
+            runningManagedProcessCount: 1,
+            hasLiveManagedProcesses: true,
+            isTerminal: false,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      );
+      OpenCrayChatSnapshot snapshotWithTurn({required int updatedAtEpochMs}) {
+        return _hostChatSnapshot(
+          updatedAtEpochMs: updatedAtEpochMs,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              messageId: 'user-delete-process',
+              kind: 'outbound',
+              text: 'Start the dev server',
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'assistant-final-keep',
+              kind: 'inbound',
+              text: 'The server is starting.',
+            ),
+          ],
+        );
+      }
+
+      final bridge = _FakeChatBridge(
+        chatSnapshot: snapshotWithTurn(updatedAtEpochMs: 1000),
+        runtimeSnapshot: runtimeSnapshot,
+        chatSnapshotStream: snapshots.stream,
+        runtimeSnapshotStream: runtimeSnapshots.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.longPress(
+        find.byKey(const ValueKey<String>('chat-bubble-$processMessageId')),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.byKey(const ValueKey<String>('chat-message-menu-action-delete')),
+      );
+      await tester.pumpAndSettle();
+
+      expect(bridge.deletedMessageIds, <String>[processMessageId]);
+      expect(
+        find.byKey(const ValueKey<String>('chat-bubble-$processMessageId')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('chat-bubble-assistant-final-keep')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('chat-run-trace-run-delete-process')),
+        findsOneWidget,
+      );
+
+      snapshots.add(snapshotWithTurn(updatedAtEpochMs: 2000));
+      runtimeSnapshots.add(runtimeSnapshot);
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('chat-bubble-$processMessageId')),
+        findsNothing,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('chat-bubble-assistant-final-keep')),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(const ValueKey<String>('chat-run-trace-run-delete-process')),
+        findsOneWidget,
+      );
+    },
+  );
+
   testWidgets('selection mode preserves outbound bubble right edge', (
     tester,
   ) async {
