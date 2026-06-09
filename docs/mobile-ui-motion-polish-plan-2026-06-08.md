@@ -1592,6 +1592,44 @@ Acceptance:
 These are worth tracking, but they are outside the current Files/Skills polish
 goal so this branch does not keep expanding.
 
+- Approval surface risk-decision polish: the current implementation already
+  distinguishes high risk with color, a side accent bar, a severity chip, and
+  filled/outline action hierarchy. The next pass should not simply make the card
+  warmer or louder. It should make the approval feel more trustworthy by adding
+  structure around the decision:
+  - split the active approval card into four readable zones:
+    - decision headline: "what is being requested" in one strong line
+    - impact scope: affected path, working directory, tool, or session scope as
+      compact key-value rows
+    - reason/evidence: why the agent needs it, secondary in weight
+    - decision bar: Reject, Approve for session, Approve with the existing
+      hierarchy
+  - keep the existing color system as an auxiliary signal:
+    - normal approval keeps blue/accent treatment
+    - high-risk approval keeps the warm side bar and chip
+    - do not use a full orange/red card fill because it makes reading harder and
+      can make every high-risk request feel equally severe
+  - add non-color risk cues so severity is not carried by color alone:
+    - small risk label/chip remains near the title
+    - impacted scope rows get stable icons or labels such as Path, Tool, Reason
+    - destructive or broad-scope approvals can show a short "will affect" line
+      before the action buttons
+  - make queued approvals quieter but more legible:
+    - active card shows full structure
+    - queued cards show title, risk chip, and one impact line only
+    - queue count stays visible without competing with the active decision
+  - refine decision completion:
+    - button enters a compact pending state in place
+    - approved/rejected state resolves on the same card for a brief beat
+    - the card then collapses upward and the next queued approval advances from
+      the stack, preserving ownership of the decision
+  - add focused tests around:
+    - high-risk approval exposes both color and text/icon risk signals
+    - compact phone layouts do not clip the action labels
+    - approving/rejecting shows a local pending/resolved state before the queue
+      advances
+    - reduced-motion mode avoids stack travel and keeps state changes visible
+      with opacity/color only
 - Files row density and metadata hierarchy: if users keep very large project
   folders open, row secondary text could be tightened further, with modified
   time/size shown only where it helps scanning.
