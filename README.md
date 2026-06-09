@@ -1,5 +1,7 @@
 <div align="center">
-  <h1>OpenCray</h1>
+  <p>
+    <img src="assets/branding/readme_header.png" alt="OpenCray - 移动端 AI Agent 工作台" width="100%">
+  </p>
   <p><strong>把移动设备变成一个可控、可审计、可扩展的 AI Agent 工作台。</strong></p>
   <p>
     <a href="#快速开始">快速开始</a>
