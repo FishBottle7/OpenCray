@@ -44,9 +44,12 @@ internal data class RuntimeServiceOwnerLease(
   val isHeld: Boolean
     get() = phase == PHASE_HELD
 
+  fun isExpiredAt(epochMs: Long): Boolean = epochMs >= expiresAtEpochMs
+
   fun snapshotMap(): Map<String, Any?> = buildMap {
     put("target", target.wireValue)
     put("phase", phase)
+    put("isHeld", isHeld)
     put("processStartId", processStartId)
     put("processStartedAtEpochMs", processStartedAtEpochMs)
     put("controllerInstanceId", controllerInstanceId)
@@ -104,6 +107,15 @@ internal fun RuntimeServiceOwnerLease.released(
   releasedAtEpochMs = releasedAtEpochMs,
 )
 
+internal fun RuntimeServiceOwnerLease.sameRuntimeServiceOwnerAs(
+  other: RuntimeServiceOwnerLease,
+): Boolean =
+  target == other.target &&
+    processStartId == other.processStartId &&
+    runtimeOwnerId == other.runtimeOwnerId &&
+    controllerInstanceId == other.controllerInstanceId &&
+    durableControllerId == other.durableControllerId
+
 internal interface RuntimeServiceOwnerLeaseStore {
   fun load(target: RuntimeServiceTarget): RuntimeServiceOwnerLease?
 
@@ -148,7 +160,7 @@ internal class FileBackedRuntimeServiceOwnerLeaseStore(
       val released = lease.takeUnless { it.phase == RuntimeServiceOwnerLease.PHASE_RELEASED }
         ?.released(lease.heartbeatAtEpochMs)
         ?: lease
-      if (current == null || current.sameOwnerAs(lease)) {
+      if (current == null || current.sameRuntimeServiceOwnerAs(lease)) {
         DurableTextUpdate(
           text = encodeLease(released),
           result = released,
@@ -184,18 +196,14 @@ internal class FileBackedRuntimeServiceOwnerLeaseStore(
   private fun RuntimeServiceOwnerLease.canBeReplacedBy(
     next: RuntimeServiceOwnerLease,
   ): Boolean =
-    sameOwnerAs(next) ||
-      phase == RuntimeServiceOwnerLease.PHASE_RELEASED ||
-      acquiredAtEpochMs <= next.acquiredAtEpochMs
-
-  private fun RuntimeServiceOwnerLease.sameOwnerAs(
-    other: RuntimeServiceOwnerLease,
-  ): Boolean =
-    target == other.target &&
-      processStartId == other.processStartId &&
-      runtimeOwnerId == other.runtimeOwnerId &&
-      controllerInstanceId == other.controllerInstanceId &&
-      durableControllerId == other.durableControllerId
+    sameRuntimeServiceOwnerAs(next) ||
+      (
+        acquiredAtEpochMs <= next.acquiredAtEpochMs &&
+          (
+            phase == RuntimeServiceOwnerLease.PHASE_RELEASED ||
+              isExpiredAt(next.heartbeatAtEpochMs)
+            )
+        )
 
   private fun decodeLeaseOrNull(encoded: String): RuntimeServiceOwnerLease? = runCatching {
     PersistenceJson.instance.decodeFromString(
@@ -256,7 +264,7 @@ private class InMemoryRuntimeServiceOwnerLeaseStore : RuntimeServiceOwnerLeaseSt
       ?.released(lease.heartbeatAtEpochMs)
       ?: lease
     val current = leases[lease.target]
-    if (current == null || current.sameOwnerAs(lease)) {
+    if (current == null || current.sameRuntimeServiceOwnerAs(lease)) {
       leases[lease.target] = released
       released
     } else {
@@ -273,18 +281,14 @@ private class InMemoryRuntimeServiceOwnerLeaseStore : RuntimeServiceOwnerLeaseSt
   private fun RuntimeServiceOwnerLease.canBeReplacedBy(
     next: RuntimeServiceOwnerLease,
   ): Boolean =
-    sameOwnerAs(next) ||
-      phase == RuntimeServiceOwnerLease.PHASE_RELEASED ||
-      acquiredAtEpochMs <= next.acquiredAtEpochMs
-
-  private fun RuntimeServiceOwnerLease.sameOwnerAs(
-    other: RuntimeServiceOwnerLease,
-  ): Boolean =
-    target == other.target &&
-      processStartId == other.processStartId &&
-      runtimeOwnerId == other.runtimeOwnerId &&
-      controllerInstanceId == other.controllerInstanceId &&
-      durableControllerId == other.durableControllerId
+    sameRuntimeServiceOwnerAs(next) ||
+      (
+        acquiredAtEpochMs <= next.acquiredAtEpochMs &&
+          (
+            phase == RuntimeServiceOwnerLease.PHASE_RELEASED ||
+              isExpiredAt(next.heartbeatAtEpochMs)
+            )
+        )
 }
 
 @Serializable

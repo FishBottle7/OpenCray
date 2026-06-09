@@ -95,15 +95,39 @@ class RuntimeServiceProjectionCoordinatorTest {
     assertEquals(2, heartbeatScheduler.tasks.size)
 
     now = 10_075L
+    val replacementOwnerLifecycle = runtimeOwnerLifecycle.copy(
+      runtimeOwnerId = "runtime-owner-b",
+      runtimeControllerId = "runtime-controller-b",
+    )
+    val replacementOwnerAccess = RecordingRuntimeNotificationHostAccess(replacementOwnerLifecycle)
+
+    coordinator.replaceRuntimeOwner(
+      runtimeOwnerLifecycle = replacementOwnerLifecycle,
+      ownerObservationAccess = replacementOwnerAccess,
+      notificationHostAccess = replacementOwnerAccess,
+    )
+
+    val replacementLease = checkNotNull(
+      ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND),
+    )
+    assertEquals(RuntimeServiceOwnerLease.PHASE_HELD, replacementLease.phase)
+    assertEquals("runtime-owner-b", replacementLease.runtimeOwnerId)
+    assertEquals(10_075L, replacementLease.acquiredAtEpochMs)
+    assertEquals(10_075L, replacementLease.heartbeatAtEpochMs)
+    assertEquals(10_175L, replacementLease.expiresAtEpochMs)
+    assertEquals(replacementLease, projectionStore.loadSnapshot()?.runtimeServiceOwnerLease)
+
+    now = 10_090L
     coordinator.dispose()
 
     val releasedLease = checkNotNull(
       ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND),
     )
     assertEquals(RuntimeServiceOwnerLease.PHASE_RELEASED, releasedLease.phase)
-    assertEquals(10_075L, releasedLease.heartbeatAtEpochMs)
-    assertEquals(10_075L, releasedLease.expiresAtEpochMs)
-    assertEquals(10_075L, releasedLease.releasedAtEpochMs)
+    assertEquals("runtime-owner-b", releasedLease.runtimeOwnerId)
+    assertEquals(10_090L, releasedLease.heartbeatAtEpochMs)
+    assertEquals(10_090L, releasedLease.expiresAtEpochMs)
+    assertEquals(10_090L, releasedLease.releasedAtEpochMs)
     assertTrue(heartbeatScheduler.tasks.last().cancelled)
   }
 

@@ -137,7 +137,7 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
   override fun dispose() {
     val workStateDisposer: (() -> Unit)?
     val runtimeOwnerDisposer: (() -> Unit)?
-    var ownerLeaseToRelease: RuntimeServiceOwnerLease? = null
+    val ownerLeaseToRelease: RuntimeServiceOwnerLease?
     synchronized(lock) {
       if (disposed) {
         return
@@ -168,13 +168,16 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
     notificationHostAccess: RuntimeNotificationHostAccess,
   ) {
     val previousDisposer: (() -> Unit)?
+    val ownerLeaseToRelease: RuntimeServiceOwnerLease?
     synchronized(lock) {
       if (disposed) {
         return
       }
+      val now = clock()
+      ownerLeaseToRelease = currentOwnerLease?.released(now)
       this.runtimeOwnerLifecycle = runtimeOwnerLifecycle
       this.ownerObservationAccess = ownerObservationAccess
-      ownerLeaseAcquiredAtEpochMs = clock()
+      ownerLeaseAcquiredAtEpochMs = now
       currentOwnerLease = null
       previousDisposer = if (started) {
         runtimeOwnerProjectionObservationDisposer.also {
@@ -186,6 +189,7 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
         null
       }
     }
+    ownerLeaseToRelease?.let(ownerLeaseStore::release)
     runtimeNotificationCoordinator?.replaceHostAccess(notificationHostAccess)
     previousDisposer?.invoke()
     persistProjectionSnapshot()
@@ -255,7 +259,9 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
     } ?: return null
     val savedLease = ownerLeaseStore.save(lease)
     synchronized(lock) {
-      currentOwnerLease = savedLease
+      currentOwnerLease = savedLease.takeIf { persisted ->
+        persisted.sameRuntimeServiceOwnerAs(lease)
+      }
     }
     return savedLease
   }

@@ -63,6 +63,59 @@ class RuntimeServiceOwnerLeaseStoreTest {
     assertEquals(newerLease, store.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
   }
 
+  @Test
+  fun fileBackedOwnerLeaseStoreRejectsDifferentOwnerUntilLeaseExpiresOrReleases() {
+    val store = FileBackedRuntimeServiceOwnerLeaseStore.fromRootDirectory(
+      temporaryFolder.newFolder("runtime-owner-lease-expiry"),
+    )
+    val activeLease = ownerLease(
+      runtimeOwnerId = "owner-active",
+      acquiredAtEpochMs = 1_000L,
+      heartbeatAtEpochMs = 1_100L,
+    )
+    val competingLeaseBeforeExpiry = ownerLease(
+      runtimeOwnerId = "owner-competing",
+      acquiredAtEpochMs = 1_200L,
+      heartbeatAtEpochMs = 1_500L,
+    )
+    val competingLeaseAfterExpiry = ownerLease(
+      runtimeOwnerId = "owner-competing",
+      acquiredAtEpochMs = 2_200L,
+      heartbeatAtEpochMs = 2_200L,
+    )
+
+    store.save(activeLease)
+
+    assertEquals(activeLease, store.save(competingLeaseBeforeExpiry))
+    assertEquals(activeLease, store.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+
+    assertEquals(competingLeaseAfterExpiry, store.save(competingLeaseAfterExpiry))
+    assertEquals(competingLeaseAfterExpiry, store.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+  }
+
+  @Test
+  fun fileBackedOwnerLeaseStoreAllowsReplacementAfterRelease() {
+    val store = FileBackedRuntimeServiceOwnerLeaseStore.fromRootDirectory(
+      temporaryFolder.newFolder("runtime-owner-lease-release"),
+    )
+    val activeLease = ownerLease(
+      runtimeOwnerId = "owner-active",
+      acquiredAtEpochMs = 1_000L,
+      heartbeatAtEpochMs = 1_100L,
+    )
+    val replacementLease = ownerLease(
+      runtimeOwnerId = "owner-replacement",
+      acquiredAtEpochMs = 1_200L,
+      heartbeatAtEpochMs = 1_200L,
+    )
+
+    store.save(activeLease)
+    store.release(activeLease.released(1_150L))
+
+    assertEquals(replacementLease, store.save(replacementLease))
+    assertEquals(replacementLease, store.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+  }
+
   private fun ownerLease(
     target: RuntimeServiceTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
     runtimeOwnerId: String,
