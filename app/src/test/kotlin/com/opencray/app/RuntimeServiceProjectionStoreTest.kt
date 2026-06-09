@@ -106,6 +106,7 @@ class RuntimeServiceProjectionStoreTest {
           ),
         ),
       ),
+      nextRepairAfterEpochMs = 4_500L,
       recordedAtEpochMs = 4_200L,
     )
     val expected = projectionSnapshot(activeRunCount = 1).copy(

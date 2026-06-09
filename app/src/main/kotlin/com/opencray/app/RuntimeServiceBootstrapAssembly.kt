@@ -79,6 +79,7 @@ internal data class RuntimeServiceBootstrapResult(
   val resumedSessionIds: List<String>,
   val repairedSessionIds: List<String>,
   val repairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
+  val nextRepairAfterEpochMs: Long? = null,
 )
 
 internal data class RuntimeServiceInterruptedRunRepairResult(
@@ -86,6 +87,7 @@ internal data class RuntimeServiceInterruptedRunRepairResult(
   val resumedSessionIds: List<String>,
   val repairedSessionIds: List<String>,
   val repairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
+  val nextRepairAfterEpochMs: Long? = null,
 )
 
 internal fun RuntimeServiceBootstrapAssembly.toRuntimeServiceBootstrapState(
@@ -474,6 +476,10 @@ internal fun bootstrapRuntimeServiceSessions(
     resumedSessionIds = resumedSessionIds,
     repairedSessionIds = repairedSessionIds,
     repairEvidenceBySession = repairEvidenceBySession,
+    nextRepairAfterEpochMs = nextInterruptedRunRepairAfterEpochMs(
+      evidence = repairEvidenceBySession.values.flatten(),
+      nowEpochMs = nowEpochMs,
+    ),
   )
 }
 
@@ -544,6 +550,10 @@ internal fun resumeInterruptedRuntimeServiceRuns(
     resumedSessionIds = resumedSessionIds,
     repairedSessionIds = repairedSessionIds,
     repairEvidenceBySession = repairEvidenceBySession,
+    nextRepairAfterEpochMs = nextInterruptedRunRepairAfterEpochMs(
+      evidence = repairEvidenceBySession.values.flatten(),
+      nowEpochMs = nowEpochMs,
+    ),
   )
 }
 

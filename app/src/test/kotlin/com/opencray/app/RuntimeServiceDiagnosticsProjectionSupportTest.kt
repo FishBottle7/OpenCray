@@ -158,6 +158,7 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
               ),
             ),
           ),
+          nextRepairAfterEpochMs = 9_500L,
           recordedAtEpochMs = 9_000L,
         ),
       )
@@ -167,6 +168,7 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertEquals(9_000L, repair["recordedAtEpochMs"])
     assertEquals(listOf("session-a"), repair["scannedSessionIds"])
     assertEquals(listOf("session-a"), repair["resumedSessionIds"])
+    assertEquals(9_500L, repair["nextRepairAfterEpochMs"])
     val evidenceBySession = repair["repairEvidenceBySession"] as Map<*, *>
     val evidence = (evidenceBySession["session-a"] as List<*>).single() as Map<*, *>
     assertEquals("prompt_checkpoint", evidence["kind"])

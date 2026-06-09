@@ -571,11 +571,18 @@ internal fun dueInterruptedRunRepairEvidence(
 internal fun nextInterruptedRunRepairDelayMs(
   evidence: List<InterruptedRunRepairEvidence>,
   nowEpochMs: Long,
+): Long? = nextInterruptedRunRepairAfterEpochMs(
+  evidence = evidence,
+  nowEpochMs = nowEpochMs,
+)?.let { repairAfterEpochMs -> repairAfterEpochMs - nowEpochMs }
+
+internal fun nextInterruptedRunRepairAfterEpochMs(
+  evidence: List<InterruptedRunRepairEvidence>,
+  nowEpochMs: Long,
 ): Long? = evidence
   .mapNotNull(InterruptedRunRepairEvidence::repairAfterEpochMs)
   .filter { repairAfterEpochMs -> repairAfterEpochMs > nowEpochMs }
   .minOrNull()
-  ?.let { repairAfterEpochMs -> repairAfterEpochMs - nowEpochMs }
 
 internal fun startInterruptedRunRepairTargets(
   targets: Set<RuntimeServiceTarget>,
