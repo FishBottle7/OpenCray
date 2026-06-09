@@ -107,6 +107,35 @@ data class MemoryStewardshipPlanStep(
   val reason: String? = null,
 )
 
+@Serializable
+data class MemoryStewardshipPlanGraph(
+  val nodes: List<MemoryStewardshipPlanGraphNode> = emptyList(),
+  val edges: List<MemoryStewardshipPlanGraphEdge> = emptyList(),
+) {
+  val isEmpty: Boolean
+    get() = nodes.isEmpty() && edges.isEmpty()
+}
+
+@Serializable
+data class MemoryStewardshipPlanGraphNode(
+  val id: String,
+  val kind: String,
+  val label: String,
+  val action: String? = null,
+  val outcome: String? = null,
+  val recordId: String? = null,
+  val candidateIndex: Int? = null,
+  val producedRecordId: String? = null,
+  val reason: String? = null,
+)
+
+@Serializable
+data class MemoryStewardshipPlanGraphEdge(
+  val from: String,
+  val to: String,
+  val kind: String,
+)
+
 data class MemoryStewardshipDecision(
   val action: MemoryStewardshipAction,
   val recordId: String? = null,

@@ -475,6 +475,10 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     String onDeviceAccelerator = 'gpu',
     bool onDeviceThinkingEnabled = false,
     bool onDeviceLiteModeEnabled = false,
+    String? contextBudgetPreset,
+    int? contextBudgetReservedOutputTokens,
+    int? contextBudgetSafetyMarginTokens,
+    double? contextBudgetEffectiveInputPercent,
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _postMap('v1/save_llm_config', <String, Object?>{
       'enabled': enabled,
@@ -507,6 +511,10 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       'onDeviceAccelerator': onDeviceAccelerator,
       'onDeviceThinkingEnabled': onDeviceThinkingEnabled,
       'onDeviceLiteModeEnabled': onDeviceLiteModeEnabled,
+      'contextBudgetPreset': contextBudgetPreset,
+      'contextBudgetReservedOutputTokens': contextBudgetReservedOutputTokens,
+      'contextBudgetSafetyMarginTokens': contextBudgetSafetyMarginTokens,
+      'contextBudgetEffectiveInputPercent': contextBudgetEffectiveInputPercent,
     }),
   );
 

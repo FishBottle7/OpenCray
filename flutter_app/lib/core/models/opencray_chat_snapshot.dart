@@ -640,6 +640,34 @@ class OpenCrayChatRunMemoryFlushSnapshot {
   }
 }
 
+class OpenCrayChatRunStickyMemorySnapshot {
+  const OpenCrayChatRunStickyMemorySnapshot({
+    this.injectedRecordCount,
+    this.omittedRecordCount,
+    this.recordIds = const <String>[],
+  });
+
+  final int? injectedRecordCount;
+  final int? omittedRecordCount;
+  final List<String> recordIds;
+
+  factory OpenCrayChatRunStickyMemorySnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    final rawRecordIds =
+        map['recordIds'] as List<Object?>? ?? const <Object?>[];
+    return OpenCrayChatRunStickyMemorySnapshot(
+      injectedRecordCount: map['injectedRecordCount'] as int?,
+      omittedRecordCount: map['omittedRecordCount'] as int?,
+      recordIds: rawRecordIds
+          .whereType<String>()
+          .map((value) => value.trim())
+          .where((value) => value.isNotEmpty)
+          .toList(growable: false),
+    );
+  }
+}
+
 class OpenCrayChatRunLiveContextSnapshot {
   const OpenCrayChatRunLiveContextSnapshot({
     this.mode,
@@ -1261,6 +1289,7 @@ class OpenCrayChatRunSnapshot {
     this.liveContext,
     this.contextBudget,
     this.memoryTrace,
+    this.stickyMemory,
     this.memoryFlush,
     this.bootstrap,
     this.durableCompaction,
@@ -1298,6 +1327,7 @@ class OpenCrayChatRunSnapshot {
   final OpenCrayChatRunLiveContextSnapshot? liveContext;
   final OpenCrayChatRunContextBudgetSnapshot? contextBudget;
   final OpenCrayChatRunMemoryTraceSnapshot? memoryTrace;
+  final OpenCrayChatRunStickyMemorySnapshot? stickyMemory;
   final OpenCrayChatRunMemoryFlushSnapshot? memoryFlush;
   final OpenCrayChatRunBootstrapSnapshot? bootstrap;
   final OpenCrayChatRunDurableCompactionSnapshot? durableCompaction;
@@ -1312,6 +1342,7 @@ class OpenCrayChatRunSnapshot {
     final rawLiveContext = map['liveContext'];
     final rawContextBudget = map['contextBudget'];
     final rawMemoryTrace = map['memoryTrace'];
+    final rawStickyMemory = map['stickyMemory'];
     final rawMemoryFlush = map['memoryFlush'];
     final rawBootstrap = map['bootstrap'];
     final rawDurableCompaction = map['durableCompaction'];
@@ -1372,6 +1403,9 @@ class OpenCrayChatRunSnapshot {
           : null,
       memoryTrace: rawMemoryTrace is Map<Object?, Object?>
           ? OpenCrayChatRunMemoryTraceSnapshot.fromMap(rawMemoryTrace)
+          : null,
+      stickyMemory: rawStickyMemory is Map<Object?, Object?>
+          ? OpenCrayChatRunStickyMemorySnapshot.fromMap(rawStickyMemory)
           : null,
       memoryFlush: rawMemoryFlush is Map<Object?, Object?>
           ? OpenCrayChatRunMemoryFlushSnapshot.fromMap(rawMemoryFlush)
@@ -1487,7 +1521,7 @@ extension OpenCrayChatRunExecutionScope on OpenCrayChatRunSnapshot {
     Iterable<OpenCrayChatRuntimeEventSnapshot> events,
   ) {
     final List<OpenCrayChatRuntimeEventSnapshot> runEvents = events
-        .where((event) => event.runId == runId)
+        .where(_matchesRuntimeEventIdentity)
         .toList(growable: false);
     final bool preserveHistoryAcrossExecutions =
         _preservesHistoryAcrossExecutions(executionKind) ||
@@ -1547,7 +1581,7 @@ extension OpenCrayChatRunExecutionScope on OpenCrayChatRunSnapshot {
   }
 
   bool matchesRuntimeEvent(OpenCrayChatRuntimeEventSnapshot event) {
-    if (event.runId != runId) {
+    if (!_matchesRuntimeEventIdentity(event)) {
       return false;
     }
     final String? currentExecutionId = _normalizedExecutionValue(executionId);
@@ -1559,6 +1593,17 @@ extension OpenCrayChatRunExecutionScope on OpenCrayChatRunSnapshot {
       return true;
     }
     return _normalizedExecutionValue(event.executionId) == currentExecutionId;
+  }
+
+  bool _matchesRuntimeEventIdentity(OpenCrayChatRuntimeEventSnapshot event) {
+    final String normalizedRunId = runId.trim();
+    final String eventRunId = event.runId.trim();
+    if (normalizedRunId.isNotEmpty && eventRunId == normalizedRunId) {
+      return true;
+    }
+    final String normalizedTaskId = taskId.trim();
+    final String eventTaskId = event.taskId.trim();
+    return normalizedTaskId.isNotEmpty && eventTaskId == normalizedTaskId;
   }
 }
 
@@ -1655,6 +1700,10 @@ class OpenCrayChatRuntimeEventDelta {
     this.retainedRuns = const <OpenCrayChatRunSnapshot>[],
     this.subAgents = const <OpenCrayChatSubAgentSnapshot>[],
     this.liveAssistantDrafts = const <OpenCrayChatLiveAssistantDraftSnapshot>[],
+    this.hasActiveRunsPatch = false,
+    this.hasRetainedRunsPatch = false,
+    this.hasSubAgentsPatch = false,
+    this.hasLiveAssistantDraftsPatch = false,
     this.hostLifecycle,
     this.updatedAtEpochMs = 0,
   });
@@ -1667,17 +1716,25 @@ class OpenCrayChatRuntimeEventDelta {
   final List<OpenCrayChatRunSnapshot> retainedRuns;
   final List<OpenCrayChatSubAgentSnapshot> subAgents;
   final List<OpenCrayChatLiveAssistantDraftSnapshot> liveAssistantDrafts;
+  final bool hasActiveRunsPatch;
+  final bool hasRetainedRunsPatch;
+  final bool hasSubAgentsPatch;
+  final bool hasLiveAssistantDraftsPatch;
   final OpenCrayHostLifecycleSnapshot? hostLifecycle;
   final int updatedAtEpochMs;
 
   factory OpenCrayChatRuntimeEventDelta.fromMap(Map<Object?, Object?> map) {
     final rawEvents = map['events'] as List<Object?>? ?? const <Object?>[];
+    final hasActiveRunsPatch = map.containsKey('activeRuns');
     final rawActiveRuns =
         map['activeRuns'] as List<Object?>? ?? const <Object?>[];
+    final hasRetainedRunsPatch = map.containsKey('retainedRuns');
     final rawRetainedRuns =
         map['retainedRuns'] as List<Object?>? ?? const <Object?>[];
+    final hasSubAgentsPatch = map.containsKey('subAgents');
     final rawSubAgents =
         map['subAgents'] as List<Object?>? ?? const <Object?>[];
+    final hasLiveAssistantDraftsPatch = map.containsKey('liveAssistantDrafts');
     final rawLiveAssistantDrafts =
         map['liveAssistantDrafts'] as List<Object?>? ?? const <Object?>[];
     final rawHostLifecycle = map['hostLifecycle'];
@@ -1705,6 +1762,10 @@ class OpenCrayChatRuntimeEventDelta {
           .whereType<Map<Object?, Object?>>()
           .map(OpenCrayChatLiveAssistantDraftSnapshot.fromMap)
           .toList(growable: false),
+      hasActiveRunsPatch: hasActiveRunsPatch,
+      hasRetainedRunsPatch: hasRetainedRunsPatch,
+      hasSubAgentsPatch: hasSubAgentsPatch,
+      hasLiveAssistantDraftsPatch: hasLiveAssistantDraftsPatch,
       hostLifecycle: rawHostLifecycle is Map<Object?, Object?>
           ? OpenCrayHostLifecycleSnapshot.fromMap(rawHostLifecycle)
           : null,
@@ -1714,9 +1775,13 @@ class OpenCrayChatRuntimeEventDelta {
 
   bool get hasRuntimeActivityPatch =>
       events.isNotEmpty ||
+      hasActiveRunsPatch ||
       activeRuns.isNotEmpty ||
+      hasRetainedRunsPatch ||
       retainedRuns.isNotEmpty ||
+      hasSubAgentsPatch ||
       subAgents.isNotEmpty ||
+      hasLiveAssistantDraftsPatch ||
       liveAssistantDrafts.isNotEmpty ||
       hostLifecycle != null ||
       updatedAtEpochMs > 0;

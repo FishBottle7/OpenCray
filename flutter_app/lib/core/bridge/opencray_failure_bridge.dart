@@ -432,6 +432,10 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     String onDeviceAccelerator = 'gpu',
     bool onDeviceThinkingEnabled = false,
     bool onDeviceLiteModeEnabled = false,
+    String? contextBudgetPreset,
+    int? contextBudgetReservedOutputTokens,
+    int? contextBudgetSafetyMarginTokens,
+    double? contextBudgetEffectiveInputPercent,
   }) async => throw StateError(_failureMessage);
 
   @override

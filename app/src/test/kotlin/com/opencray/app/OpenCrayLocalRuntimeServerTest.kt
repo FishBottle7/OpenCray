@@ -1251,6 +1251,11 @@ class OpenCrayLocalRuntimeServerTest {
         finishedAtEpochMs = 1_001L,
         metadata = task.metadata + mapOf(
           "contextMemoryFlushOutcome" to "written",
+          "contextMemoryFlushTriggerStage" to "pre_compaction",
+          "contextMemoryFlushContextWindowTokens" to "128000",
+          "contextMemoryFlushAutoCompactTokenLimit" to "115200",
+          "contextMemoryFlushEstimatedReplayTokens" to "116000",
+          "contextMemoryFlushTokenThresholdTriggered" to "true",
           "contextMemoryFlushOmittedMessageCount" to "4",
           "contextMemoryFlushOmittedCharCount" to "512",
           "contextMemoryFlushSignature" to "flush-signature-123",
@@ -1275,6 +1280,11 @@ class OpenCrayLocalRuntimeServerTest {
 
       assertEquals(200, response.statusCode)
       assertEquals("written", memoryFlush.getString("outcome"))
+      assertEquals("pre_compaction", memoryFlush.getString("triggerStage"))
+      assertEquals(128000, memoryFlush.getInt("contextWindowTokens"))
+      assertEquals(115200, memoryFlush.getInt("autoCompactTokenLimit"))
+      assertEquals(116000, memoryFlush.getInt("estimatedReplayTokens"))
+      assertTrue(memoryFlush.getBoolean("tokenThresholdTriggered"))
       assertEquals(4, memoryFlush.getInt("omittedMessageCount"))
       assertEquals(512, memoryFlush.getInt("omittedCharCount"))
       assertEquals("flush-signature-123", memoryFlush.getString("signature"))
@@ -1328,6 +1338,7 @@ class OpenCrayLocalRuntimeServerTest {
           "contextActiveSkillInvocationControl" to "explicit-only",
           "contextActiveSkillExecutionContext" to "inline",
           "contextActiveSkillActivationSource" to "skill_read",
+          "contextActiveSkillPinned" to "true",
           "contextActiveSkillToolRestrictionEnabled" to "true",
           "contextActiveSkillAllowedTools" to "read,write",
           "contextActiveSkillTruncated" to "false",
@@ -1363,6 +1374,7 @@ class OpenCrayLocalRuntimeServerTest {
       assertEquals("fork", skills.getJSONObject(1).getString("executionContext"))
       assertEquals("ui-ux-pro-max", activeSkill.getString("name"))
       assertEquals("skill_read", activeSkill.getString("activationSource"))
+      assertTrue(activeSkill.getBoolean("pinned"))
       assertTrue(activeSkill.getBoolean("toolRestrictionEnabled"))
       assertEquals("read", activeSkill.getJSONArray("allowedToolKeys").getString(0))
     } finally {
@@ -1401,6 +1413,11 @@ class OpenCrayLocalRuntimeServerTest {
         finishedAtEpochMs = 1_001L,
         metadata = task.metadata + mapOf(
           "contextDurableCompactionCompactedThisRun" to "true",
+          "contextDurableCompactionTriggerStage" to "pre_compaction",
+          "contextDurableCompactionContextWindowTokens" to "128000",
+          "contextDurableCompactionAutoCompactTokenLimit" to "115200",
+          "contextDurableCompactionEstimatedReplayTokens" to "116000",
+          "contextDurableCompactionTokenThresholdTriggered" to "true",
           "contextDurableCompactionSourceTranscriptMessageCount" to "18",
           "contextDurableCompactionRetainedTranscriptMessageCount" to "12",
           "contextDurableCompactionLatestMessageCount" to "6",
@@ -1425,6 +1442,11 @@ class OpenCrayLocalRuntimeServerTest {
 
       assertEquals(200, response.statusCode)
       assertTrue(durableCompaction.getBoolean("compactedThisRun"))
+      assertEquals("pre_compaction", durableCompaction.getString("triggerStage"))
+      assertEquals(128000, durableCompaction.getInt("contextWindowTokens"))
+      assertEquals(115200, durableCompaction.getInt("autoCompactTokenLimit"))
+      assertEquals(116000, durableCompaction.getInt("estimatedReplayTokens"))
+      assertTrue(durableCompaction.getBoolean("tokenThresholdTriggered"))
       assertEquals(18, durableCompaction.getInt("sourceTranscriptMessageCount"))
       assertEquals(12, durableCompaction.getInt("retainedTranscriptMessageCount"))
       assertEquals(6, durableCompaction.getInt("latestCompactedMessageCount"))

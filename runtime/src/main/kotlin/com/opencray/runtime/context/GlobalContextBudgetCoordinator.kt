@@ -80,6 +80,16 @@ class GlobalContextBudgetCoordinator(
               )
             }
 
+            state.originalLayer.id == PromptLayerId.STICKY_MEMORY -> {
+              reduceStickyMemoryLayer(
+                state = state,
+                recalledMemory = MemoryRecallResult(memories = input.stickyMemoryCapsule.memories),
+                estimatedTotalTokens = states.sumOf(LayerBudgetState::estimatedTokensAfter),
+                targetInputBudgetTokens = envelope.targetInputBudgetTokens,
+                estimateTokens = estimateTokens,
+              )
+            }
+
             state.originalLayer.id == PromptLayerId.ACTIVE_SKILL -> {
               reduceActiveSkillLayer(
                 state = state,
@@ -293,6 +303,13 @@ class GlobalContextBudgetCoordinator(
         ),
       )
 
+      PromptLayerId.STICKY_MEMORY -> estimateTokens(
+        memoryPromptLayer.render(
+          MemoryRecallResult(memories = input.stickyMemoryCapsule.memories),
+          MemoryPromptDetailMode.COMPACT,
+        ),
+      )
+
       else -> 0
     }
     val compactRecentToolObservationTokens = when (layer.id) {
@@ -404,6 +421,16 @@ class GlobalContextBudgetCoordinator(
         retentionPriority = 40,
         mayDrop = true,
         minTokens = 0,
+        targetTokens = compactMemoryTokens,
+        maxTokens = estimatedTokens,
+      )
+
+      PromptLayerId.STICKY_MEMORY -> LayerBudgetSpec(
+        id = layer.id,
+        priorityClass = PromptLayerBudgetClass.PROTECTED_PROCEDURAL_CONTINUITY,
+        retentionPriority = 30,
+        mayDrop = false,
+        minTokens = compactMemoryTokens,
         targetTokens = compactMemoryTokens,
         maxTokens = estimatedTokens,
       )
@@ -1007,6 +1034,50 @@ class GlobalContextBudgetCoordinator(
     state.appliedOperators += OPERATOR_OMIT_LAYER
   }
 
+  private fun reduceStickyMemoryLayer(
+    state: LayerBudgetState,
+    recalledMemory: MemoryRecallResult,
+    estimatedTotalTokens: Int,
+    targetInputBudgetTokens: Int,
+    estimateTokens: (String) -> Int,
+  ) {
+    val layer = state.currentLayer ?: return
+    if (recalledMemory.memories.isEmpty()) {
+      return
+    }
+    val overflowTokens = estimatedTotalTokens - targetInputBudgetTokens
+    if (overflowTokens <= 0) {
+      return
+    }
+    val availableTokens = max(state.spec.minTokens, state.estimatedTokensAfter - overflowTokens)
+    val compact = memoryPromptLayer.render(
+      recalledMemory,
+      MemoryPromptDetailMode.COMPACT,
+    )
+    val minimal = memoryPromptLayer.render(
+      recalledMemory,
+      MemoryPromptDetailMode.MINIMAL,
+    )
+    val reduction = when {
+      compact != layer.content && estimateTokens(compact) <= availableTokens -> ReducedLayerContent(
+        text = compact,
+        operator = OPERATOR_REDUCE_STICKY_MEMORY_COMPACT,
+      )
+
+      minimal != layer.content && estimateTokens(minimal) <= availableTokens -> ReducedLayerContent(
+        text = minimal,
+        operator = OPERATOR_REDUCE_STICKY_MEMORY_MINIMAL,
+      )
+
+      else -> null
+    }
+    if (reduction != null) {
+      state.currentLayer = layer.copy(content = reduction.text)
+      state.estimatedTokensAfter = estimateTokens(reduction.text)
+      state.appliedOperators += reduction.operator
+    }
+  }
+
   private fun renderRecentToolObservationLayer(
     layer: RecentToolObservationLayer?,
     detailMode: RecentToolObservationDetailMode,
@@ -1137,6 +1208,8 @@ class GlobalContextBudgetCoordinator(
       "reduce_recent_tool_observations_minimal"
     const val OPERATOR_REDUCE_RETRIEVED_MEMORY_COMPACT: String = "reduce_retrieved_memory_compact"
     const val OPERATOR_REDUCE_RETRIEVED_MEMORY_MINIMAL: String = "reduce_retrieved_memory_minimal"
+    const val OPERATOR_REDUCE_STICKY_MEMORY_COMPACT: String = "reduce_sticky_memory_compact"
+    const val OPERATOR_REDUCE_STICKY_MEMORY_MINIMAL: String = "reduce_sticky_memory_minimal"
     const val OPERATOR_REDUCE_SKILL_INVENTORY_COMPACT: String = "reduce_skill_inventory_compact"
     const val OPERATOR_REDUCE_SKILL_INVENTORY_MINIMAL: String = "reduce_skill_inventory_minimal"
     const val OPERATOR_REDUCE_WORKING_STATE_COMPACT: String = "reduce_working_state_compact"

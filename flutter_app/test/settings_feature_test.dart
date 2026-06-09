@@ -177,6 +177,83 @@ void main() {
     },
   );
 
+  testWidgets('standalone llm page saves context budget preset and raw overrides', (
+    tester,
+  ) async {
+    final facade = _buildSettingsFacade();
+    facade.llmConfig = const LlmConfigSnapshot(
+      localeTag: 'en',
+      enabled: true,
+      providerId: 'openai',
+      selectedProviderOptionId: 'openai',
+      protocol: 'openai',
+      providerOptions: <LlmProviderOption>[
+        LlmProviderOption(
+          id: 'openai',
+          providerId: 'openai',
+          title: 'OpenAI',
+          subtitle: 'Official OpenAI-compatible endpoint.',
+          defaultBaseUrl: 'https://api.openai.com/v1',
+          defaultModel: 'gpt-4o-mini',
+          protocol: 'openai',
+          apiKey: 'secret',
+          isCustom: false,
+        ),
+      ],
+      providerName: 'OpenAI',
+      providerNotes: '',
+      baseUrl: 'https://api.openai.com/v1',
+      apiKey: 'secret',
+      model: 'gpt-4o-mini',
+      reasoningEffort: 'medium',
+      systemPrompt: '',
+      helperText: 'Helper text',
+      contextBudgetPreset: 'balanced',
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.llm,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.ensureVisible(find.text('Context budget'));
+    await tester.tap(find.text('Expanded'));
+    await tester.pumpAndSettle();
+
+    expect(facade.llmConfig.contextBudgetPreset, 'expanded');
+
+    final reservedOutputField = find.byKey(
+      const ValueKey<String>('settings-llm-context-budget-reserved-output'),
+    );
+    await tester.enterText(reservedOutputField, '3072');
+    await tester.tap(find.text('Safety margin'));
+    await tester.pumpAndSettle();
+
+    final safetyMarginField = find.byKey(
+      const ValueKey<String>('settings-llm-context-budget-safety-margin'),
+    );
+    await tester.enterText(safetyMarginField, '1536');
+    await tester.tap(find.text('Effective input'));
+    await tester.pumpAndSettle();
+
+    final effectiveInputField = find.byKey(
+      const ValueKey<String>('settings-llm-context-budget-effective-input'),
+    );
+    await tester.enterText(effectiveInputField, '0.92');
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pumpAndSettle();
+
+    expect(facade.llmConfig.contextBudgetReservedOutputTokens, 3072);
+    expect(facade.llmConfig.contextBudgetSafetyMarginTokens, 1536);
+    expect(facade.llmConfig.contextBudgetEffectiveInputPercent, 0.92);
+  });
+
   testWidgets(
     'standalone llm page clears input focus when the keyboard closes',
     (tester) async {
@@ -4990,9 +5067,14 @@ class _FakeSettingsFacade implements SettingsFacade {
     String onDeviceAccelerator = 'gpu',
     bool onDeviceThinkingEnabled = false,
     bool onDeviceLiteModeEnabled = false,
+    String? contextBudgetPreset,
+    int? contextBudgetReservedOutputTokens,
+    int? contextBudgetSafetyMarginTokens,
+    double? contextBudgetEffectiveInputPercent,
   }) async {
     saveCallCount += 1;
     await onSaveLlmConfig?.call();
+    final hasExplicitContextBudgetPayload = contextBudgetPreset != null;
     llmConfig = LlmConfigSnapshot(
       localeTag: llmConfig.localeTag,
       enabled: enabled,
@@ -5030,6 +5112,16 @@ class _FakeSettingsFacade implements SettingsFacade {
       onDeviceAccelerator: onDeviceAccelerator,
       onDeviceThinkingEnabled: onDeviceThinkingEnabled,
       onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
+      contextBudgetPreset: contextBudgetPreset ?? llmConfig.contextBudgetPreset,
+      contextBudgetReservedOutputTokens: hasExplicitContextBudgetPayload
+          ? contextBudgetReservedOutputTokens
+          : llmConfig.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens: hasExplicitContextBudgetPayload
+          ? contextBudgetSafetyMarginTokens
+          : llmConfig.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent: hasExplicitContextBudgetPayload
+          ? contextBudgetEffectiveInputPercent
+          : llmConfig.contextBudgetEffectiveInputPercent,
     );
     return llmConfig;
   }
@@ -5113,6 +5205,12 @@ class _FakeSettingsFacade implements SettingsFacade {
       onDeviceAccelerator: llmConfig.onDeviceAccelerator,
       onDeviceThinkingEnabled: llmConfig.onDeviceThinkingEnabled,
       onDeviceLiteModeEnabled: llmConfig.onDeviceLiteModeEnabled,
+      contextBudgetPreset: llmConfig.contextBudgetPreset,
+      contextBudgetReservedOutputTokens:
+          llmConfig.contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens: llmConfig.contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent:
+          llmConfig.contextBudgetEffectiveInputPercent,
     );
     return llmConfig;
   }

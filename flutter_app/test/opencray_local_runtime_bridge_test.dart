@@ -1186,6 +1186,11 @@ void main() {
               'isTerminal': false,
               'memoryFlush': <String, Object?>{
                 'outcome': 'written',
+                'triggerStage': 'pre_compaction',
+                'contextWindowTokens': 128000,
+                'autoCompactTokenLimit': 115200,
+                'estimatedReplayTokens': 116000,
+                'tokenThresholdTriggered': true,
                 'candidateCount': 2,
                 'writtenRecordCount': 1,
                 'writtenKinds': <Object?>['user_preference'],
@@ -1208,6 +1213,11 @@ void main() {
               },
               'durableCompaction': <String, Object?>{
                 'compactedThisRun': true,
+                'triggerStage': 'pre_compaction',
+                'contextWindowTokens': 128000,
+                'autoCompactTokenLimit': 115200,
+                'estimatedReplayTokens': 116000,
+                'tokenThresholdTriggered': true,
                 'sourceTranscriptMessageCount': 18,
                 'retainedTranscriptMessageCount': 12,
                 'latestCompactedMessageCount': 6,
@@ -1232,6 +1242,7 @@ void main() {
                 'name': 'ui-ux-pro-max',
                 'relativePath': 'skills/ui-ux-pro-max/SKILL.md',
                 'activationSource': 'skill_read',
+                'pinned': true,
                 'toolRestrictionEnabled': true,
                 'allowedToolKeys': <Object?>['read', 'write'],
               },
@@ -1289,6 +1300,26 @@ void main() {
         'commitment-keep-1',
       ]);
       expect(snapshot.activeRuns.single.memoryFlush?.outcome, 'written');
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.triggerStage,
+        'pre_compaction',
+      );
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.contextWindowTokens,
+        128000,
+      );
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.autoCompactTokenLimit,
+        115200,
+      );
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.estimatedReplayTokens,
+        116000,
+      );
+      expect(
+        snapshot.activeRuns.single.memoryFlush?.tokenThresholdTriggered,
+        isTrue,
+      );
       expect(snapshot.activeRuns.single.bootstrap?.mode, 'full');
       expect(
         snapshot.activeRuns.single.bootstrap?.files.single.name,
@@ -1299,10 +1330,31 @@ void main() {
         isTrue,
       );
       expect(
+        snapshot.activeRuns.single.durableCompaction?.triggerStage,
+        'pre_compaction',
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.contextWindowTokens,
+        128000,
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.autoCompactTokenLimit,
+        115200,
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.estimatedReplayTokens,
+        116000,
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.tokenThresholdTriggered,
+        isTrue,
+      );
+      expect(
         snapshot.activeRuns.single.skillInventory?.skills.single.name,
         'ui-ux-pro-max',
       );
       expect(snapshot.activeRuns.single.activeSkill?.name, 'ui-ux-pro-max');
+      expect(snapshot.activeRuns.single.activeSkill?.pinned, isTrue);
       expect(snapshot.activeRuns.single.activeSkill?.allowedToolKeys, <String>[
         'read',
         'write',

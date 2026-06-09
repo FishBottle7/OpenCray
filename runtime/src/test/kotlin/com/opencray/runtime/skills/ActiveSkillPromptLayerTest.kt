@@ -15,6 +15,7 @@ class ActiveSkillPromptLayerTest {
       invocationControl = "explicit-only",
       executionContext = "fork",
       activationSource = "skill_read",
+      pinned = true,
       markdownBody = """
         # UI UX Pro Max
 
@@ -34,10 +35,12 @@ class ActiveSkillPromptLayerTest {
 
     assertTrue(rendered.text.contains("name=ui-ux-pro-max"))
     assertTrue(rendered.text.contains("activation_source=skill_read"))
+    assertTrue(rendered.text.contains("pinned=true"))
     assertTrue(rendered.text.contains("allowed_tools=read,search,write"))
     assertTrue(rendered.text.contains("[Instructions]"))
     assertFalse(rendered.text.contains("- description="))
     assertFalse(rendered.text.contains("tool_permissions=read:allow,write:allow,search:allow"))
+    assertTrue(rendered.trace.pinned)
     assertTrue(rendered.trace.truncated)
   }
 }

@@ -199,4 +199,6 @@ object MemoryRecordExtensionKeys {
   const val PREFERENCE_TEMPORALITY: String = "preference_temporality"
   const val MERGED_FROM_RECORD_IDS: String = "merged_from_record_ids"
   const val MERGE_STRATEGY: String = "merge_strategy"
+  const val STICKY_CAPSULE: String = "sticky_memory_capsule"
+  const val PINNED_MEMORY: String = "pinned_memory"
 }

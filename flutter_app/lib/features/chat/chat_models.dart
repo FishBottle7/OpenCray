@@ -87,6 +87,7 @@ class ChatRunTraceData {
     this.isHighRisk = false,
     this.isTerminal = false,
     this.canInterrupt = false,
+    this.isWritingAssistantDraft = false,
     this.retryLabel,
     this.previewCard,
     this.sessionCard,
@@ -101,6 +102,7 @@ class ChatRunTraceData {
   final bool isHighRisk;
   final bool isTerminal;
   final bool canInterrupt;
+  final bool isWritingAssistantDraft;
   final String? retryLabel;
   final ChatRunTracePreviewCardData? previewCard;
   final ChatRunTraceSandboxSessionCardData? sessionCard;
@@ -263,6 +265,7 @@ class ChatMessageData {
     this.runtimeAnchorMessageId = '',
     this.createdAtEpochMs,
     this.isEphemeral = false,
+    this.isStreaming = false,
     this.attachments = const <ChatMessageAttachmentData>[],
   });
 
@@ -273,6 +276,7 @@ class ChatMessageData {
   final String runtimeAnchorMessageId;
   final int? createdAtEpochMs;
   final bool isEphemeral;
+  final bool isStreaming;
   final List<ChatMessageAttachmentData> attachments;
 }
 

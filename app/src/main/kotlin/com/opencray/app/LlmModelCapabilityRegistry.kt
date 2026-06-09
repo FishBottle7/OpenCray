@@ -1029,7 +1029,28 @@ internal fun effectiveLlmCapabilityMetadata(
       mapOf("pdfInputSupported" to resolution.pdfInputSupported.toString())
     } ?: emptyMap()
   }
-  return resolvedContextWindowMetadata + resolvedVisionMetadata + resolvedPdfMetadata + persistedMetadata
+  val resolvedResponsesRemoteCompactionMetadata = if (
+    supportsResponsesRemoteCompactionByDefault(providerId = providerId, protocol = protocol)
+  ) {
+    mapOf("responsesRemoteCompactionSupported" to "true")
+  } else {
+    emptyMap()
+  }
+  return resolvedContextWindowMetadata +
+    resolvedVisionMetadata +
+    resolvedPdfMetadata +
+    persistedMetadata +
+    resolvedResponsesRemoteCompactionMetadata
+}
+
+private fun supportsResponsesRemoteCompactionByDefault(
+  providerId: String,
+  protocol: String,
+): Boolean {
+  if (LlmProviderProtocols.normalize(protocol) != LlmProviderProtocols.OPENAI_RESPONSES) {
+    return false
+  }
+  return providerId.trim().equals("openai", ignoreCase = true)
 }
 
 internal fun effectiveLlmRouteMetadata(

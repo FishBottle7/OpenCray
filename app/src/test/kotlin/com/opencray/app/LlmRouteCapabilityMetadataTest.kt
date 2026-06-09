@@ -72,6 +72,114 @@ class LlmRouteCapabilityMetadataTest {
   }
 
   @Test
+  fun effectiveLlmRouteMetadataDoesNotDisableResponsesNativeSearchFromUnobservedProbe() {
+    val metadata = effectiveLlmRouteMetadata(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot(
+        routeFingerprint = llmRouteFingerprint(
+          protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+          baseUrl = "https://api.openai.com/v1",
+          model = "gpt-5-mini",
+        ),
+        verifiedAtEpochMs = 123L,
+        nativeToolCallingAvailable = true,
+        builtinWebSearchSupported = false,
+      ),
+    )
+
+    assertEquals("openai_responses", metadata["protocol"])
+    assertEquals(null, metadata["nativeWebSearchEnabled"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataEnablesRemoteCompactionOnlyForOpenAiResponsesByDefault() {
+    val responsesMetadata = effectiveLlmRouteMetadata(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot.unknown(
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://api.openai.com/v1",
+        model = "gpt-5-mini",
+      ),
+    )
+    val chatMetadata = effectiveLlmRouteMetadata(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI,
+      model = "gpt-4o-mini",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot.unknown(
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://api.openai.com/v1",
+        model = "gpt-4o-mini",
+      ),
+    )
+    val anthropicMetadata = effectiveLlmRouteMetadata(
+      providerId = "anthropic",
+      protocol = LlmProviderProtocols.ANTHROPIC,
+      model = "claude-sonnet-4-5",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot.unknown(
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://api.anthropic.com/v1",
+        model = "claude-sonnet-4-5",
+      ),
+    )
+
+    assertEquals("true", responsesMetadata["responsesRemoteCompactionSupported"])
+    assertEquals(null, chatMetadata["responsesRemoteCompactionSupported"])
+    assertEquals(null, anthropicMetadata["responsesRemoteCompactionSupported"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataKeepsOpenAiResponsesRemoteCompactionWhenVerifiedSnapshotDidNotProbeIt() {
+    val metadata = effectiveLlmRouteMetadata(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot(
+        routeFingerprint = llmRouteFingerprint(
+          protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+          baseUrl = "https://api.openai.com/v1",
+          model = "gpt-5-mini",
+        ),
+        verifiedAtEpochMs = 123L,
+        nativeToolCallingAvailable = true,
+        responsesRemoteCompactionSupported = false,
+      ),
+    )
+
+    assertEquals("true", metadata["responsesRemoteCompactionSupported"])
+  }
+
+  @Test
+  fun effectiveLlmRouteMetadataEnablesNativeSearchWhenVerifiedSupported() {
+    val metadata = effectiveLlmRouteMetadata(
+      providerId = "openai",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      model = "gpt-5-mini",
+      reasoningEffort = "medium",
+      agentCapability = LlmAgentCapabilitySnapshot(
+        routeFingerprint = llmRouteFingerprint(
+          protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+          baseUrl = "https://api.openai.com/v1",
+          model = "gpt-5-mini",
+        ),
+        verifiedAtEpochMs = 123L,
+        nativeToolCallingAvailable = true,
+        builtinWebSearchSupported = true,
+      ),
+    )
+
+    assertEquals("true", metadata["nativeWebSearchEnabled"])
+  }
+
+  @Test
   fun effectiveLlmCapabilityMetadataUsesProviderDeclaredOverrideFromRouteMetadata() {
     val metadata = effectiveLlmCapabilityMetadata(
       providerId = "custom",

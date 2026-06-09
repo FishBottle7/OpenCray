@@ -345,4 +345,4 @@ The recommended structural fix for the short-term procedural gap is:
 See:
 
 - `docs/working-state-layer-design.md`
-- `docs/global-context-budget-coordination-design.md`
+- `docs/codex-claude-balanced-context-management-plan.md`

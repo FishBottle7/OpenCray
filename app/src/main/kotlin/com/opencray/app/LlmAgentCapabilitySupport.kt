@@ -16,6 +16,7 @@ data class LlmAgentCapabilitySnapshot(
   val builtinWebSearchSupported: Boolean = false,
   val assistantPhaseSupported: Boolean = false,
   val citationIncludeSupported: Boolean = false,
+  val responsesRemoteCompactionSupported: Boolean = false,
 ) {
   val wasVerified: Boolean
     get() = verifiedAtEpochMs != null
@@ -65,6 +66,7 @@ data class LlmAgentCapabilitySnapshot(
     .put("builtinWebSearchSupported", builtinWebSearchSupported)
     .put("assistantPhaseSupported", assistantPhaseSupported)
     .put("citationIncludeSupported", citationIncludeSupported)
+    .put("responsesRemoteCompactionSupported", responsesRemoteCompactionSupported)
 
   companion object {
     fun unknown(
@@ -100,6 +102,7 @@ data class LlmAgentCapabilitySnapshot(
         builtinWebSearchSupported = payload.optBoolean("builtinWebSearchSupported", false),
         assistantPhaseSupported = payload.optBoolean("assistantPhaseSupported", false),
         citationIncludeSupported = payload.optBoolean("citationIncludeSupported", false),
+        responsesRemoteCompactionSupported = payload.optBoolean("responsesRemoteCompactionSupported", false),
       )
     }
   }
@@ -147,8 +150,11 @@ internal fun LlmAgentCapabilitySnapshot.runtimeMetadataOverrides(): Map<String, 
   }
   if (wasVerified) {
     put("responsesContinuationSupported", responsesContinuationSupported.toString())
-    put("nativeWebSearchEnabled", builtinWebSearchSupported.toString())
+    if (builtinWebSearchSupported) {
+      put("nativeWebSearchEnabled", "true")
+    }
     put("assistantPhaseSupported", assistantPhaseSupported.toString())
     put("citationIncludeSupported", citationIncludeSupported.toString())
+    put("responsesRemoteCompactionSupported", responsesRemoteCompactionSupported.toString())
   }
 }

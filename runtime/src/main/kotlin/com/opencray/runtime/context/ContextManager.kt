@@ -6,6 +6,8 @@ import com.opencray.runtime.memory.MemoryRecallOmittedTrace
 import com.opencray.runtime.memory.MemoryRecallResult
 import com.opencray.runtime.memory.MemoryRecallSelectedTrace
 import com.opencray.runtime.memory.RetrievedMemory
+import com.opencray.runtime.memory.StickyMemoryCapsuleSelector
+import com.opencray.runtime.memory.StickyMemoryCapsulePromptLayer
 import com.opencray.runtime.compaction.DurableCompactionPromptLayer
 import com.opencray.runtime.skills.ActiveSkillPromptLayer
 import com.opencray.runtime.skills.SkillInventoryPromptLayer
@@ -31,6 +33,8 @@ class ContextManager(
   private val soulPromptComposer: RuntimeSoulPromptComposer = RuntimeSoulPromptComposer(),
   private val soulTurnPolicyComposer: RuntimeSoulTurnPolicyComposer = RuntimeSoulTurnPolicyComposer(),
   private val memoryPromptLayer: MemoryPromptLayer = MemoryPromptLayer(),
+  private val stickyMemoryCapsuleSelector: StickyMemoryCapsuleSelector = StickyMemoryCapsuleSelector(),
+  private val stickyMemoryCapsulePromptLayer: StickyMemoryCapsulePromptLayer = StickyMemoryCapsulePromptLayer(),
   private val durableCompactionPromptLayer: DurableCompactionPromptLayer = DurableCompactionPromptLayer(),
   private val workingStateSupport: WorkingStateSupport = WorkingStateSupport(),
   private val workingStatePromptLayer: WorkingStatePromptLayer = WorkingStatePromptLayer(),
@@ -70,6 +74,9 @@ class ContextManager(
     } else {
       MemoryRecallResult()
     }
+    val stickyMemoryCapsule = stickyMemoryCapsuleSelector.select(selectedMemory)
+    val dynamicSelectedMemory = selectedMemory.withoutStickyMemory()
+    val renderedStickyMemory = stickyMemoryCapsulePromptLayer.render(stickyMemoryCapsule)
     val renderedSkillInventory = skillInventoryPromptLayer.render(input.sessionContext.skillInventory)
     val renderedActiveSkill = activeSkillPromptLayer.render(input.activeSkillCapsule)
     val compactionSummary = compactionPolicy.summarize(transcriptSelection.omittedMessages)
@@ -93,13 +100,15 @@ class ContextManager(
       },
       bootstrapFiles = input.sessionContext.bootstrapContext.files,
       workingState = workingStateResolution.state,
-      selectedMemory = selectedMemory,
+      selectedMemory = dynamicSelectedMemory,
+      stickyMemoryCapsule = stickyMemoryCapsule,
       durableCompaction = input.sessionContext.durableCompaction,
       skillInventory = input.sessionContext.skillInventory,
       activeSkillCapsule = input.activeSkillCapsule,
       recentToolObservationLayer = recentToolObservationLayer,
       workingStateText = workingStatePromptLayer.render(workingStateResolution.state),
-      memoryText = memoryPromptLayer.render(selectedMemory),
+      memoryText = memoryPromptLayer.render(dynamicSelectedMemory),
+      stickyMemoryText = renderedStickyMemory.text,
       durableCompactionText = durableCompactionPromptLayer.render(input.sessionContext.durableCompaction),
       skillInventoryText = renderedSkillInventory.text,
       activeSkillText = renderedActiveSkill.text,
@@ -126,9 +135,10 @@ class ContextManager(
         compactedTranscriptMessageCount = compactionSummary?.compactedMessageCount ?: 0,
         compactionSummaryIncluded = compactionSummary != null,
         matchedMemoryRecordCount = selectedMemory.matchedRecordCount,
-        injectedMemoryRecordCount = selectedMemory.memories.size,
-        omittedMemoryRecordCount = selectedMemory.omittedRecordCount,
-        memoryRecallTrace = selectedMemory.trace,
+        injectedMemoryRecordCount = dynamicSelectedMemory.memories.size,
+        omittedMemoryRecordCount = dynamicSelectedMemory.omittedRecordCount,
+        memoryRecallTrace = dynamicSelectedMemory.trace,
+        stickyMemoryTrace = renderedStickyMemory.trace,
         memoryFlushTrace = input.sessionContext.memoryFlushTrace,
         durableCompactionTrace = input.sessionContext.durableCompaction.trace,
         workingStateTrace = workingStateResolution.trace,
@@ -167,6 +177,23 @@ class ContextManager(
       trace = result.trace.copy(
         selected = keptSelected,
         omitted = omitted.take(MAX_OMITTED_TRACE_ENTRIES),
+      ),
+    )
+  }
+
+  private fun MemoryRecallResult.withoutStickyMemory(): MemoryRecallResult {
+    val stickyIds = memories
+      .filter(RetrievedMemory::sticky)
+      .mapTo(linkedSetOf(), RetrievedMemory::id)
+    if (stickyIds.isEmpty()) {
+      return this
+    }
+    val dynamicMemories = memories.filterNot { memory -> memory.id in stickyIds }
+    return copy(
+      memories = dynamicMemories,
+      omittedRecordCount = omittedRecordCount + (memories.size - dynamicMemories.size),
+      trace = trace.copy(
+        selected = trace.selected.filterNot { selected -> selected.id in stickyIds },
       ),
     )
   }

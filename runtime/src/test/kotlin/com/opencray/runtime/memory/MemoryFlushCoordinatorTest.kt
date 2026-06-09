@@ -78,6 +78,53 @@ class MemoryFlushCoordinatorTest {
   }
 
   @Test
+  fun flushMidTurnUsesMidTurnTraceAndCandidateIds() {
+    val store = InMemoryMemoryStore()
+    val coordinator = MemoryFlushCoordinator(
+      contextPruner = ContextPruner(),
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 1,
+          maxCharsPerMessage = 240,
+        ),
+      ),
+      policy = MemoryFlushPolicy(
+        minOmittedMessages = 1,
+        minOmittedChars = 120,
+      ),
+      writer = MemoryWriter(store = store),
+    )
+
+    val summary = coordinator.flushMidTurn(
+      sessionId = "session-mid",
+      workspaceId = "workspace-main",
+      conversation = listOf(
+        RuntimeConversationMessage(RuntimeConversationRole.USER, "Capture the project fact."),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.TOOL,
+          content = """{"run_id":"run-1","task_id":"task-1","turn":0,"tool_call_id":"call-1","tool_name":"Read","status":"success","content":"Project uses mid-turn durable memory","metadata":{"filePath":"README.md"}}""",
+          kind = RuntimeConversationMessageKind.TOOL_RESULT,
+          toolResult = RuntimeConversationToolResult(
+            toolCallId = "call-1",
+            toolName = "Read",
+            status = "success",
+            isError = false,
+          ),
+        ),
+        RuntimeConversationMessage(RuntimeConversationRole.USER, "Latest live turn."),
+      ),
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+      taskId = "task-1",
+    )
+
+    assertTrue(summary.wasWritten)
+    assertEquals("mid_turn", summary.trace.triggerStage)
+    assertEquals("memory_flush:mid_turn", summary.trace.maintenanceTask)
+    assertEquals(summary.writtenRecords.map(MemoryRecord::id), summary.trace.candidateRecordIds)
+    assertEquals("Project uses mid-turn durable memory", summary.writtenRecords.single().content)
+  }
+
+  @Test
   fun flushBeforeCompactionWaitsForReplayTokenPressure() {
     val store = InMemoryMemoryStore()
     val coordinator = MemoryFlushCoordinator(

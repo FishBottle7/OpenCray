@@ -457,6 +457,51 @@ void main() {
     },
   );
 
+  test(
+    'chat run snapshot scopes events by stable task id when run id drifts',
+    () {
+      const run = OpenCrayChatRunSnapshot(
+        sessionId: 'session-1',
+        runId: 'run-current-1',
+        taskId: 'task-stable-1',
+        acceptedAtEpochMs: 1000,
+        updatedAtEpochMs: 2200,
+        attempt: 1,
+        isTerminal: false,
+      );
+      const taskOnlyEvent = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'tool_result',
+        runId: '',
+        taskId: 'task-stable-1',
+        emittedAtEpochMs: 2100,
+        toolName: 'Read',
+        contentPreview: 'Task-only event should stay visible.',
+      );
+      const shiftedRunEvent = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'tool_result',
+        runId: 'run-old-1',
+        taskId: 'task-stable-1',
+        emittedAtEpochMs: 2200,
+        toolName: 'Read',
+        contentPreview: 'Shifted run id event should stay visible.',
+      );
+
+      final scoped = run.scopeRuntimeEvents(
+        const <OpenCrayChatRuntimeEventSnapshot>[
+          taskOnlyEvent,
+          shiftedRunEvent,
+        ],
+      );
+
+      expect(scoped, <OpenCrayChatRuntimeEventSnapshot>[
+        taskOnlyEvent,
+        shiftedRunEvent,
+      ]);
+      expect(run.matchesRuntimeEvent(taskOnlyEvent), isTrue);
+      expect(run.matchesRuntimeEvent(shiftedRunEvent), isTrue);
+    },
+  );
+
   test('chat run submission parses lifecycle diagnostics from map payload', () {
     final submission = OpenCrayChatRunSubmission.fromMap(<Object?, Object?>{
       'sessionId': 'session-1',

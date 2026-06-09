@@ -63,6 +63,48 @@ class DurableCompactionCoordinatorTest {
   }
 
   @Test
+  fun compactMidTurnStoresSummaryWithMaintenanceTaskAndEntryTrace() {
+    val transcriptStore = InMemorySessionTranscriptStore()
+    transcriptStore.seedIfEmpty(
+      listOf(
+        user("User request 1"),
+        assistant("Assistant reply 1"),
+        user("User request 2"),
+        assistant("Assistant reply 2"),
+        user("User request 3"),
+        assistant("Assistant reply 3"),
+        user("User request 4"),
+        assistant("Assistant reply 4"),
+      ),
+    )
+    val compactionStore = InMemorySessionCompactionStore()
+    val coordinator = DurableCompactionCoordinator(
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 4,
+          maxCharsPerMessage = 200,
+        ),
+      ),
+      clock = { 5_100L },
+    )
+
+    val context = coordinator.compactMidTurn(
+      transcriptStore = transcriptStore,
+      compactionStore = compactionStore,
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+    )
+
+    assertTrue(context.trace.compactedThisRun)
+    assertEquals("mid_turn", context.trace.triggerStage)
+    assertEquals("durable_compaction:mid_turn", context.trace.maintenanceTask)
+    assertEquals(4, transcriptStore.snapshot().size)
+    assertEquals(1, context.trace.entryTraces.size)
+    assertEquals(4, context.trace.entryTraces.single().compactedMessageCount)
+    assertEquals(2, context.trace.entryTraces.single().omittedUserMessageCount)
+    assertEquals(2, context.trace.entryTraces.single().omittedAssistantMessageCount)
+  }
+
+  @Test
   fun compactIfNeededReturnsStoredContextWhenNoNewRewriteIsNeeded() {
     val transcriptStore = InMemorySessionTranscriptStore()
     transcriptStore.seedIfEmpty(

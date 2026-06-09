@@ -20,7 +20,7 @@ The target is to finish and strengthen OpenCray's own richer `memory` and `soul`
 - `docs/multi-agent-runtime-design.md`
 - `docs/memory-soul-image-reference-design.md`
 - `docs/working-state-layer-design.md`
-- `docs/context-management-remaining-work-checklist.md`
+- `docs/done/context-management-remaining-work-checklist.md`
 - `docs/subagent-runtime-plan.md`
 
 ## Hermes local source reviewed

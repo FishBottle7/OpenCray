@@ -1005,6 +1005,18 @@ class OpenCrayToolDispatcher(
         description = "Read one discovered skill's metadata and markdown body.",
         parameters = listOf(
           AgentToolParameter("name", "string", required = true, description = "Exact skill name."),
+          AgentToolParameter("pin", "boolean", required = false, description = "When true, promote the active skill capsule into durable front context. Defaults to false."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "skill_execute",
+        description = "Activate and execute a discovered skill. Inline skills activate a run-local skill capsule; fork skills delegate the skill workflow to a child runtime.",
+        parameters = listOf(
+          AgentToolParameter("name", "string", required = true, description = "Exact skill name."),
+          AgentToolParameter("prompt", "string", required = false, description = "Task prompt for a forked skill child runtime, or optional inline activation note."),
+          AgentToolParameter("pin", "boolean", required = false, description = "When true, promote the active skill capsule into durable front context. Defaults to false."),
+          AgentToolParameter("context_mode", "string", required = false, description = "Optional child context mode for fork skills. Supported public values: minimal, delegated."),
+          AgentToolParameter("subagent_type", "string", required = false, description = "Optional child subagent type for fork skills. Defaults to general-purpose."),
         ),
       ),
       AgentToolDefinition(
@@ -7730,6 +7742,7 @@ class OpenCrayToolDispatcher(
 
   private fun readSkill(arguments: JsonObject): AgentToolResult {
     val skillName = arguments.requiredString("name")
+    val pinned = arguments.optionalBoolean("pin") ?: false
     val report = loadSkillsReport()
     val loadedSkill = report?.registry?.get(skillName)
       ?: return AgentToolResult(
@@ -7762,6 +7775,8 @@ class OpenCrayToolDispatcher(
       ) + mapOf(
         "skillName" to loadedSkill.name,
         "relativePath" to loadedSkill.source.relativePath,
+        "activationSource" to "skill_read",
+        "pinned" to pinned.toString(),
       ),
     )
   }

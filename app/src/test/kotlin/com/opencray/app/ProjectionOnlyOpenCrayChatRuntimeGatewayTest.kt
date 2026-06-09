@@ -1107,10 +1107,28 @@ class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
             "contextBudgetApplied" to "true",
             "contextMatchedMemoryCount" to "1",
             "contextMemoryFlushOutcome" to "written",
+            "contextMemoryFlushTriggerStage" to "pre_compaction",
+            "contextMemoryFlushContextWindowTokens" to "128000",
+            "contextMemoryFlushAutoCompactTokenLimit" to "115200",
+            "contextMemoryFlushEstimatedReplayTokens" to "116000",
+            "contextMemoryFlushTokenThresholdTriggered" to "true",
             "contextBootstrapMode" to "workspace",
             "contextDurableCompactionCompactedThisRun" to "true",
+            "contextDurableCompactionTriggerStage" to "pre_compaction",
+            "contextDurableCompactionContextWindowTokens" to "128000",
+            "contextDurableCompactionAutoCompactTokenLimit" to "115200",
+            "contextDurableCompactionEstimatedReplayTokens" to "116000",
+            "contextDurableCompactionTokenThresholdTriggered" to "true",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_REQUESTED to "true",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_SUPPORTED to "true",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_USED to "true",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_TRIGGER_STAGE to "pre_compaction",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_OUTPUT_ITEM_COUNT to "2",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_ITEM_COUNT to "1",
+            LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_ENCRYPTED_CONTENT_COUNT to "1",
             "contextVisibleSkillCount" to "1",
             "contextActiveSkillName" to "ui-ux-pro-max",
+            "contextActiveSkillPinned" to "true",
           ),
         ),
       ),
@@ -1149,10 +1167,29 @@ class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
     assertEquals(true, contextBudget["applied"])
     assertEquals(1, memoryTrace["matchedRecordCount"])
     assertEquals("written", memoryFlush["outcome"])
+    assertEquals("pre_compaction", memoryFlush["triggerStage"])
+    assertEquals(128000, memoryFlush["contextWindowTokens"])
+    assertEquals(115200, memoryFlush["autoCompactTokenLimit"])
+    assertEquals(116000, memoryFlush["estimatedReplayTokens"])
+    assertEquals(true, memoryFlush["tokenThresholdTriggered"])
     assertEquals("workspace", bootstrap["mode"])
     assertEquals(true, durableCompaction["compactedThisRun"])
+    assertEquals("pre_compaction", durableCompaction["triggerStage"])
+    assertEquals(128000, durableCompaction["contextWindowTokens"])
+    assertEquals(115200, durableCompaction["autoCompactTokenLimit"])
+    assertEquals(116000, durableCompaction["estimatedReplayTokens"])
+    assertEquals(true, durableCompaction["tokenThresholdTriggered"])
+    val remoteCompaction = durableCompaction["remoteCompaction"] as Map<*, *>
+    assertEquals(true, remoteCompaction["requested"])
+    assertEquals(true, remoteCompaction["supported"])
+    assertEquals(true, remoteCompaction["used"])
+    assertEquals("pre_compaction", remoteCompaction["triggerStage"])
+    assertEquals(2, remoteCompaction["outputItemCount"])
+    assertEquals(1, remoteCompaction["compactionItemCount"])
+    assertEquals(1, remoteCompaction["encryptedContentCount"])
     assertEquals(1, skillInventory["visibleSkillCount"])
     assertEquals("ui-ux-pro-max", activeSkill["name"])
+    assertEquals(true, activeSkill["pinned"])
   }
 
   private fun projectionTestStrings(): ProjectionOnlyChatStrings = ProjectionOnlyChatStrings(

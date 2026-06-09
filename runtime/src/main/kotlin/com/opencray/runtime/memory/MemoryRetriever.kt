@@ -26,6 +26,7 @@ data class RetrievedMemory(
   val workspaceId: String? = null,
   val lastConfirmedAtEpochMs: Long,
   val matchedTerms: List<String> = emptyList(),
+  val sticky: Boolean = false,
   val score: Int,
 )
 
@@ -219,6 +220,7 @@ class MemoryRetriever(
         workspaceId = metadata.workspaceId,
         lastConfirmedAtEpochMs = metadata.lastConfirmedAtEpochMs ?: record.updatedAtEpochMs,
         matchedTerms = matchedTerms.sorted(),
+        sticky = record.isStickyMemoryRecord(),
         score = score(
           metadata = metadata,
           updatedAtEpochMs = record.updatedAtEpochMs,
@@ -300,4 +302,19 @@ class MemoryRetriever(
     const val MAX_TRACE_CONTENT_CHARS: Int = 96
     const val MAX_OMITTED_TRACE_ENTRIES: Int = 8
   }
+}
+
+fun MemoryRecord.isStickyMemoryRecord(): Boolean =
+  extensions[MemoryRecordExtensionKeys.STICKY_CAPSULE].toBooleanLenient() ||
+    extensions[MemoryRecordExtensionKeys.PINNED_MEMORY].toBooleanLenient()
+
+private fun String?.toBooleanLenient(): Boolean = when (this?.trim()?.lowercase(Locale.US)) {
+  "true",
+  "1",
+  "yes",
+  "y",
+  "on",
+  -> true
+
+  else -> false
 }

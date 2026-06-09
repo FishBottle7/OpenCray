@@ -35,6 +35,7 @@ import com.opencray.llm.LiteLlmToolChoice
 import com.opencray.llm.LiteLlmToolChoiceMode
 import com.opencray.llm.LiteLlmVisibleTextObserver
 import com.opencray.runtime.context.AgentRuntimeSessionContext
+import com.opencray.runtime.compaction.DurableCompactionEntryTrace
 import com.opencray.runtime.context.ContextBudgetReport
 import com.opencray.runtime.context.ContextManager
 import com.opencray.runtime.context.ContextAssemblyReport
@@ -84,6 +85,7 @@ import com.opencray.runtime.subagent.withClearedChildPromptCheckpoint
 import com.opencray.runtime.subagent.withUpdatedChildPromptCheckpoint
 import com.opencray.runtime.skills.ActiveSkillCapsule
 import com.opencray.runtime.skills.ActiveSkillCapsuleResolver
+import com.opencray.runtime.skills.VisibleSkill
 import com.opencray.runtime.workingstate.InMemoryWorkingStateStore
 import com.opencray.runtime.workingstate.WorkingStateResumeContext
 import com.opencray.runtime.workingstate.WorkingStateSupport
@@ -138,6 +140,12 @@ data class OpenCrayAgentRuntimeConfig(
   val subAgentExecutionCoordinator: SubAgentExecutionCoordinator =
     InMemorySubAgentExecutionCoordinator(),
   val seededSubAgentHandles: List<SubAgentHandleState> = emptyList(),
+  val midTurnMaintenance: (OpenCrayMidTurnMaintenanceRequest) -> OpenCrayMidTurnMaintenanceResult = { request ->
+    OpenCrayMidTurnMaintenanceResult(
+      sessionContext = request.sessionContext,
+      conversation = request.conversation,
+    )
+  },
   val maxSubAgentDepth: Int = 1,
   val json: Json = Json { ignoreUnknownKeys = true; prettyPrint = true },
   val sleep: (Long) -> Unit = { durationMs -> Thread.sleep(durationMs) },
@@ -166,6 +174,20 @@ data class OpenCrayAgentRuntimeConfig(
         "Always prefer tools over guessing when the answer depends on files or local execution."
   }
 }
+
+data class OpenCrayMidTurnMaintenanceRequest(
+  val task: AgentTask,
+  val runId: String,
+  val turn: Int,
+  val conversation: List<RuntimeConversationMessage>,
+  val sessionContext: AgentRuntimeSessionContext,
+  val llmMetadata: Map<String, String>,
+)
+
+data class OpenCrayMidTurnMaintenanceResult(
+  val sessionContext: AgentRuntimeSessionContext? = null,
+  val conversation: List<RuntimeConversationMessage>? = null,
+)
 
 class OpenCrayAgentRuntime(
   private val gateway: LiteLlmGateway,
@@ -308,6 +330,7 @@ class OpenCrayAgentRuntime(
     )
     val cursor = PromptTurnCursor(
       transcript = executionTranscript.toMutableList(),
+      sessionContext = config.sessionContext.copy(conversation = executionTranscript),
       turn = config.promptResumeState?.turnIndex ?: 0,
       toolCallCount = config.promptResumeState?.toolCallCount ?: 0,
       todoWriteUsed = executionTranscript.any { entry ->
@@ -359,6 +382,13 @@ class OpenCrayAgentRuntime(
       subAgentHandles = seededSubAgentHandles(parentRunId),
       subAgentExecutionLock = Any(),
     )
+    maybeSelectImplicitInlineSkill(task.input)?.let { implicitSkill ->
+      if (cursor.activeSkillName.isNullOrBlank()) {
+        cursor.activeSkillName = implicitSkill.name
+        cursor.activeSkillActivationSource = ACTIVATION_SOURCE_IMPLICIT_SKILL
+        cursor.activeSkillPinned = false
+      }
+    }
     var lastGatewayResult: LiteLlmGatewayResult? = null
     var lastContextReport: ContextAssemblyReport? = null
     var protocolErrorCount = 0
@@ -382,7 +412,7 @@ class OpenCrayAgentRuntime(
         val visibleToolDefinitions = visibleToolDefinitionsForTurn(
           allDefinitions = toolDispatcher.definitions(),
           activeSkillCapsule = activeSkillCapsule,
-          memoryToolsEnabled = config.sessionContext.memoryToolsEnabled,
+          memoryToolsEnabled = cursor.sessionContext.memoryToolsEnabled,
         )
         val requestedBuiltinTools = providerBuiltinToolsForTurn(
           visibleToolDefinitions = visibleToolDefinitions,
@@ -452,7 +482,7 @@ class OpenCrayAgentRuntime(
         val visibleToolDefinitions = visibleToolDefinitionsForTurn(
           allDefinitions = toolDispatcher.definitions(),
           activeSkillCapsule = activeSkillCapsule,
-          memoryToolsEnabled = config.sessionContext.memoryToolsEnabled,
+          memoryToolsEnabled = cursor.sessionContext.memoryToolsEnabled,
         )
         val requestedBuiltinTools = providerBuiltinToolsForTurn(
           visibleToolDefinitions = visibleToolDefinitions,
@@ -504,7 +534,7 @@ class OpenCrayAgentRuntime(
             task = task,
             runId = parentRunId,
             baseSystemPrompt = config.systemPrompt,
-            sessionContext = config.sessionContext,
+            sessionContext = cursor.sessionContext,
             activeSkillCapsule = activeSkillCapsule,
             nativeToolCallingEnabled = nativeToolCallingEnabled,
             parallelToolCallsEnabled = requestedParallelToolCallsOverride == true,
@@ -1053,6 +1083,14 @@ class OpenCrayAgentRuntime(
     val toolResult = gateDisabledSessionToolCall(
       call = toolCall,
       memoryToolsEnabled = config.sessionContext.memoryToolsEnabled,
+    ) ?: maybeExecuteSkillCall(
+      task = task,
+      turn = 0,
+      call = toolCall,
+      transcript = config.sessionContext.conversation,
+      hooks = hooks,
+      activeSkillCapsule = activeSkillCapsule,
+      cursor = null,
     ) ?: gateActiveSkillToolCall(
       call = toolCall,
       activeSkillCapsule = activeSkillCapsule,
@@ -1174,6 +1212,7 @@ class OpenCrayAgentRuntime(
       task = task,
       turn = 0,
       transcript = config.sessionContext.conversation,
+      parentSessionContext = config.sessionContext,
       hooks = hooks,
       activeSkillCapsule = activeSkillCapsule,
       handle = restoredHandle,
@@ -2955,6 +2994,21 @@ class OpenCrayAgentRuntime(
     }
     ?: emptyMap()
 
+  private fun durableCompactionEntryTraceSummary(
+    entries: List<DurableCompactionEntryTrace>,
+  ): String? = entries
+    .takeIf(List<DurableCompactionEntryTrace>::isNotEmpty)
+    ?.joinToString(separator = ";") { entry ->
+      listOf(
+        entry.compactedMessageCount,
+        entry.omittedUserMessageCount,
+        entry.omittedAssistantMessageCount,
+        entry.omittedToolMessageCount,
+        entry.omittedSystemMessageCount,
+        entry.compactedAtEpochMs ?: 0L,
+      ).joinToString(separator = "|")
+    }
+
   private fun buildResultMetadata(
     gatewayResult: LiteLlmGatewayResult?,
     turn: Int,
@@ -3037,6 +3091,15 @@ class OpenCrayAgentRuntime(
             },
           )
         }
+      if (!report.stickyMemoryTrace.isEmpty) {
+        put("contextStickyMemoryInjectedRecordCount", report.stickyMemoryTrace.injectedRecordCount.toString())
+        put("contextStickyMemoryOmittedRecordCount", report.stickyMemoryTrace.omittedRecordCount.toString())
+        report.stickyMemoryTrace.selectedRecordIds
+          .takeIf { recordIds -> recordIds.isNotEmpty() }
+          ?.let { recordIds ->
+            put("contextStickyMemoryRecordIds", recordIds.joinToString(separator = ","))
+          }
+      }
       if (!report.memoryFlushTrace.isEmpty) {
         report.memoryFlushTrace.outcome?.let { outcome ->
           put("contextMemoryFlushOutcome", outcome.name.lowercase())
@@ -3044,6 +3107,9 @@ class OpenCrayAgentRuntime(
         report.memoryFlushTrace.triggerStage
           .takeIf(String::isNotBlank)
           ?.let { triggerStage -> put("contextMemoryFlushTriggerStage", triggerStage) }
+        report.memoryFlushTrace.maintenanceTask
+          .takeIf(String::isNotBlank)
+          ?.let { maintenanceTask -> put("contextMemoryFlushMaintenanceTask", maintenanceTask) }
         put("contextMemoryFlushContextWindowTokens", report.memoryFlushTrace.contextWindowTokens.toString())
         put("contextMemoryFlushAutoCompactTokenLimit", report.memoryFlushTrace.autoCompactTokenLimit.toString())
         put("contextMemoryFlushEstimatedReplayTokens", report.memoryFlushTrace.estimatedReplayTokens.toString())
@@ -3065,6 +3131,11 @@ class OpenCrayAgentRuntime(
           ?.let { writtenRecordIds ->
             put("contextMemoryFlushWrittenRecordIds", writtenRecordIds.joinToString(separator = ","))
           }
+        report.memoryFlushTrace.candidateRecordIds
+          .takeIf { candidateRecordIds -> candidateRecordIds.isNotEmpty() }
+          ?.let { candidateRecordIds ->
+            put("contextMemoryFlushCandidateRecordIds", candidateRecordIds.joinToString(separator = ","))
+          }
       }
       if (!report.durableCompactionTrace.isEmpty) {
         put(
@@ -3074,6 +3145,9 @@ class OpenCrayAgentRuntime(
         report.durableCompactionTrace.triggerStage
           .takeIf(String::isNotBlank)
           ?.let { triggerStage -> put("contextDurableCompactionTriggerStage", triggerStage) }
+        report.durableCompactionTrace.maintenanceTask
+          .takeIf(String::isNotBlank)
+          ?.let { maintenanceTask -> put("contextDurableCompactionMaintenanceTask", maintenanceTask) }
         put(
           "contextDurableCompactionContextWindowTokens",
           report.durableCompactionTrace.contextWindowTokens.toString(),
@@ -3118,6 +3192,15 @@ class OpenCrayAgentRuntime(
           ?.let { latestCompactedAtEpochMs ->
             put("contextDurableCompactionLatestAtEpochMs", latestCompactedAtEpochMs.toString())
           }
+        durableCompactionEntryTraceSummary(report.durableCompactionTrace.entryTraces)
+          ?.let { entryTraceSummary ->
+            put("contextDurableCompactionEntryTraceSummary", entryTraceSummary)
+          }
+        report.durableCompactionTrace.remoteCompactionMetadata.forEach { (key, value) ->
+          if (key.isNotBlank() && value.isNotBlank()) {
+            put(key, value)
+          }
+        }
       }
       if (!report.liveContextTrace.isEmpty) {
         report.liveContextTrace.mode?.let { mode ->
@@ -3129,6 +3212,33 @@ class OpenCrayAgentRuntime(
         report.liveContextTrace.memoryRecallEnabled?.let { memoryRecallEnabled ->
           put("contextLiveMemoryRecallEnabled", memoryRecallEnabled.toString())
         }
+        report.liveContextTrace.replaySource
+          ?.takeIf(String::isNotBlank)
+          ?.let { replaySource -> put("contextLiveReplaySource", replaySource) }
+        report.liveContextTrace.replayMessageCount?.let { replayMessageCount ->
+          put("contextLiveReplayMessageCount", replayMessageCount.toString())
+        }
+        report.liveContextTrace.canonicalSource
+          ?.takeIf(String::isNotBlank)
+          ?.let { canonicalSource -> put("contextLiveCanonicalSource", canonicalSource) }
+        report.liveContextTrace.canonicalMessageCount?.let { canonicalMessageCount ->
+          put("contextLiveCanonicalMessageCount", canonicalMessageCount.toString())
+        }
+        report.liveContextTrace.canonicalHistoryPreserved?.let { canonicalHistoryPreserved ->
+          put("contextLiveCanonicalHistoryPreserved", canonicalHistoryPreserved.toString())
+        }
+        report.liveContextTrace.inheritanceSource
+          ?.takeIf(String::isNotBlank)
+          ?.let { inheritanceSource -> put("contextLiveInheritanceSource", inheritanceSource) }
+        report.liveContextTrace.parentMode
+          ?.takeIf(String::isNotBlank)
+          ?.let { parentMode -> put("contextLiveParentMode", parentMode) }
+        report.liveContextTrace.parentReplayMessageCount?.let { parentReplayMessageCount ->
+          put("contextLiveParentReplayMessageCount", parentReplayMessageCount.toString())
+        }
+        report.liveContextTrace.budgetPreset
+          ?.takeIf(String::isNotBlank)
+          ?.let { budgetPreset -> put("contextLiveBudgetPreset", budgetPreset) }
       }
       if (!report.bootstrapTrace.isEmpty) {
         put("contextBootstrapMode", report.bootstrapTrace.mode)
@@ -3492,13 +3602,27 @@ class OpenCrayAgentRuntime(
     call: AgentToolCall,
     result: AgentToolResult,
   ): String? {
-    if (toolPolicyKey(call.toolName) != "skill_read") {
+    if (toolPolicyKey(call.toolName) !in setOf("skill_read", "skill_execute")) {
       return null
     }
     return result.metadata["skillName"]
       ?.trim()
       ?.takeIf(String::isNotBlank)
   }
+
+  private fun activeSkillActivationSourceFrom(
+    result: AgentToolResult,
+  ): String = result.metadata["activationSource"]
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: ACTIVATION_SOURCE_SKILL_READ
+
+  private fun activeSkillPinnedFrom(
+    result: AgentToolResult,
+  ): Boolean = result.metadata["pinned"]
+    ?.trim()
+    ?.toBooleanStrictOrNull()
+    ?: false
 
   private fun resolveActiveSkillCapsule(
     activeSkillName: String?,
@@ -3519,6 +3643,62 @@ class OpenCrayAgentRuntime(
     return inherited.takeIf { capsule ->
       capsule.name == normalizedName && capsule.activationSource == normalizedSource
     }?.copy(pinned = pinned ?: inherited.pinned)
+  }
+
+  private fun maybeSelectImplicitInlineSkill(
+    userInput: String,
+  ): ActiveSkillCapsule? {
+    val queryTerms = implicitSkillTerms(userInput)
+    if (queryTerms.isEmpty()) {
+      return null
+    }
+    val candidate = config.sessionContext.skillInventory.skills
+      .asSequence()
+      .filter { skill ->
+        skill.invocationControl.name == "EXPLICIT_AND_IMPLICIT" &&
+          skill.executionContext.name == "INLINE"
+      }
+      .mapNotNull { skill ->
+        val score = implicitSkillScore(skill.name, skill.description, queryTerms)
+        if (score > 0) skill to score else null
+      }
+      .sortedWith(
+        compareByDescending<Pair<VisibleSkill, Int>> { it.second }
+          .thenBy { it.first.name },
+      )
+      .firstOrNull()
+      ?.first
+      ?: return null
+    return resolveActiveSkillCapsule(
+      activeSkillName = candidate.name,
+      activationSource = ACTIVATION_SOURCE_IMPLICIT_SKILL,
+      pinned = false,
+    )
+  }
+
+  private fun implicitSkillTerms(text: String): Set<String> =
+    text
+      .lowercase()
+      .split(Regex("[^a-z0-9_\\-]+"))
+      .map(String::trim)
+      .filter { term -> term.length >= 3 }
+      .toSet()
+
+  private fun implicitSkillScore(
+    name: String,
+    description: String,
+    queryTerms: Set<String>,
+  ): Int {
+    val normalizedName = name.lowercase()
+    val normalizedDescription = description.lowercase()
+    return queryTerms.sumOf { term ->
+      when {
+        normalizedName == term -> 100
+        normalizedName.contains(term) -> 40
+        normalizedDescription.contains(term) -> 10
+        else -> 0
+      }
+    }
   }
 
   private fun normalizedAllowedToolKeys(
@@ -3910,6 +4090,13 @@ class OpenCrayAgentRuntime(
   private fun JsonObject.primitiveContent(key: String): String? =
     (this[key] as? JsonPrimitive)?.content
 
+  private fun JsonObject.booleanContent(key: String): Boolean? =
+    (this[key] as? JsonPrimitive)
+      ?.content
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.toBooleanStrictOrNull()
+
   private fun JsonObject.longContent(key: String): Long? =
     (this[key] as? JsonPrimitive)
       ?.content
@@ -4277,8 +4464,54 @@ class OpenCrayAgentRuntime(
         ),
       )
     }
+    if (containsToolAction) {
+      applyMidTurnMaintenance(
+        task = task,
+        cursor = cursor,
+      )
+    }
     cursor.turn += 1
     return PromptBatchExecutionOutcome.Continue
+  }
+
+  private fun applyMidTurnMaintenance(
+    task: AgentTask,
+    cursor: PromptTurnCursor,
+  ) {
+    val beforeSessionContext = cursor.sessionContext
+    val beforeConversation = cursor.transcript.toList()
+    val result = runCatching {
+      config.midTurnMaintenance(
+        OpenCrayMidTurnMaintenanceRequest(
+          task = task,
+          runId = runIdFor(task),
+          turn = cursor.turn,
+          conversation = beforeConversation,
+          sessionContext = beforeSessionContext,
+          llmMetadata = config.llmMetadata,
+        ),
+      )
+    }.getOrElse {
+      return
+    }
+    val requestedSessionContext = result.sessionContext ?: beforeSessionContext
+    val requestedConversation = result.conversation
+      ?: requestedSessionContext.conversation.takeIf { conversation -> conversation.isNotEmpty() }
+      ?: beforeConversation
+    val nextSessionContext = requestedSessionContext.copy(conversation = requestedConversation)
+    val changed = requestedConversation != beforeConversation ||
+      nextSessionContext.memoryFlushTrace != beforeSessionContext.memoryFlushTrace ||
+      nextSessionContext.durableCompaction.trace != beforeSessionContext.durableCompaction.trace ||
+      nextSessionContext.recalledMemory != beforeSessionContext.recalledMemory
+    cursor.sessionContext = nextSessionContext
+    if (requestedConversation != beforeConversation) {
+      cursor.transcript.clear()
+      cursor.transcript += requestedConversation
+    }
+    if (changed) {
+      invalidateResponsesLineage(cursor)
+      invalidateLocalContinuation(cursor)
+    }
   }
 
   private fun collectParallelToolActionGroup(
@@ -4302,14 +4535,15 @@ class OpenCrayAgentRuntime(
     var index = startIndex
     while (index < actions.size && group.size < remainingToolBudget) {
       val action = actions[index] as? AgentModelAction.ToolCall ?: break
-      if (
-        !canExecutePromptToolCallInParallel(
-          task = task,
-          call = action.call,
-          transcript = transcriptSnapshot,
-          activeSkillCapsule = activeSkillCapsule,
-        )
-      ) {
+    if (
+      !canExecutePromptToolCallInParallel(
+        task = task,
+        call = action.call,
+        transcript = transcriptSnapshot,
+        memoryToolsEnabled = cursor.sessionContext.memoryToolsEnabled,
+        activeSkillCapsule = activeSkillCapsule,
+      )
+    ) {
         break
       }
       val duplicateSignature = recentToolObservationSupport.duplicateDiscoverySignature(action.call)
@@ -4329,6 +4563,7 @@ class OpenCrayAgentRuntime(
     task: AgentTask,
     call: AgentToolCall,
     transcript: List<RuntimeConversationMessage>,
+    memoryToolsEnabled: Boolean,
     activeSkillCapsule: ActiveSkillCapsule?,
   ): Boolean {
     if (
@@ -4342,7 +4577,7 @@ class OpenCrayAgentRuntime(
     if (
       gateDisabledSessionToolCall(
         call = call,
-        memoryToolsEnabled = config.sessionContext.memoryToolsEnabled,
+        memoryToolsEnabled = memoryToolsEnabled,
       ) != null
     ) {
       return false
@@ -4649,8 +4884,8 @@ class OpenCrayAgentRuntime(
       )
       if (!activatedSkillName.isNullOrBlank()) {
         cursor.activeSkillName = activatedSkillName
-        cursor.activeSkillActivationSource = ACTIVATION_SOURCE_SKILL_READ
-        cursor.activeSkillPinned = true
+        cursor.activeSkillActivationSource = activeSkillActivationSourceFrom(toolResult)
+        cursor.activeSkillPinned = activeSkillPinnedFrom(toolResult)
       }
     }
     val transcriptEntry = transcriptWithToolResult(
@@ -4830,12 +5065,20 @@ class OpenCrayAgentRuntime(
     hooks: RuntimeExecutionHooks,
     activeSkillCapsule: ActiveSkillCapsule?,
     allowDuplicateShortCircuit: Boolean,
-  ): AgentToolResult = gateActiveSkillToolCall(
+  ): AgentToolResult = maybeExecuteSkillCall(
+    task = task,
+    turn = turn,
+    call = call,
+    transcript = transcript,
+    hooks = hooks,
+    activeSkillCapsule = activeSkillCapsule,
+    cursor = cursor,
+  ) ?: gateActiveSkillToolCall(
     call = call,
     activeSkillCapsule = activeSkillCapsule,
   ) ?: gateDisabledSessionToolCall(
     call = call,
-    memoryToolsEnabled = config.sessionContext.memoryToolsEnabled,
+    memoryToolsEnabled = cursor.sessionContext.memoryToolsEnabled,
   ) ?: maybeExecuteSubAgentCall(
     task = task,
     turn = turn,
@@ -4852,6 +5095,196 @@ class OpenCrayAgentRuntime(
   } else {
     null
   } ?: toolDispatcher.dispatch(task = task, call = call, hooks = hooks)
+
+  private fun maybeExecuteSkillCall(
+    task: AgentTask,
+    turn: Int,
+    call: AgentToolCall,
+    transcript: List<RuntimeConversationMessage>,
+    hooks: RuntimeExecutionHooks,
+    activeSkillCapsule: ActiveSkillCapsule?,
+    cursor: PromptTurnCursor?,
+  ): AgentToolResult? {
+    return when (toolPolicyKey(call.toolName)) {
+      "skill_read" -> null
+      "skill_execute" -> executeSkillCall(
+        task = task,
+        turn = turn,
+        call = call,
+        transcript = transcript,
+        hooks = hooks,
+        activeSkillCapsule = activeSkillCapsule,
+        cursor = cursor,
+      )
+
+      else -> null
+    }
+  }
+
+  private fun executeSkillCall(
+    task: AgentTask,
+    turn: Int,
+    call: AgentToolCall,
+    transcript: List<RuntimeConversationMessage>,
+    hooks: RuntimeExecutionHooks,
+    activeSkillCapsule: ActiveSkillCapsule?,
+    cursor: PromptTurnCursor?,
+  ): AgentToolResult {
+    val skillName = call.arguments.primitiveContent("name")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return invalidSkillExecuteResult(call, "skill_execute name must not be blank.")
+    val requestedPin = call.arguments.booleanContent("pin") ?: false
+    val capsule = resolveActiveSkillCapsule(
+      activeSkillName = skillName,
+      activationSource = ACTIVATION_SOURCE_SKILL_EXECUTE,
+      pinned = requestedPin,
+    ) ?: return AgentToolResult(
+      toolName = call.toolName,
+      status = AgentToolResultStatus.FAILED,
+      content = "Skill '$skillName' was not found.",
+      errorCode = "SKILL_NOT_FOUND",
+      errorMessage = "Skill '$skillName' was not found.",
+      metadata = mapOf(
+        "skillName" to skillName,
+        "activationSource" to ACTIVATION_SOURCE_SKILL_EXECUTE,
+        "pinned" to requestedPin.toString(),
+      ),
+    )
+    return if (capsule.executionContext == "fork") {
+      executeForkSkillCall(
+        task = task,
+        turn = turn,
+        call = call,
+        transcript = transcript,
+        hooks = hooks,
+        activeSkillCapsule = capsule,
+        cursor = cursor,
+      )
+    } else {
+      AgentToolResult(
+        toolName = call.toolName,
+        status = AgentToolResultStatus.SUCCESS,
+        content = "Activated inline skill '${capsule.name}'. Its capsule will be injected into subsequent prompt context.",
+        metadata = skillActivationMetadata(capsule),
+      )
+    }
+  }
+
+  private fun executeForkSkillCall(
+    task: AgentTask,
+    turn: Int,
+    call: AgentToolCall,
+    transcript: List<RuntimeConversationMessage>,
+    hooks: RuntimeExecutionHooks,
+    activeSkillCapsule: ActiveSkillCapsule,
+    cursor: PromptTurnCursor?,
+  ): AgentToolResult {
+    val prompt = call.arguments.primitiveContent("prompt")
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: "Execute the ${activeSkillCapsule.name} skill workflow for the current parent task."
+    val forkCall = AgentToolCall(
+      id = call.id,
+      toolName = "Task",
+      arguments = buildJsonObject {
+        put("description", "Skill ${activeSkillCapsule.name}")
+        put(
+          "prompt",
+          buildString {
+            appendLine("Use the active skill capsule '${activeSkillCapsule.name}' as the controlling workflow.")
+            appendLine()
+            append(prompt)
+          }.trim(),
+        )
+        put("subagent_type", call.arguments.primitiveContent("subagent_type")?.trim()?.takeIf(String::isNotBlank) ?: "general-purpose")
+        put("context_mode", call.arguments.primitiveContent("context_mode")?.trim()?.takeIf(String::isNotBlank) ?: "delegated")
+      },
+      reason = call.reason,
+    )
+    val prepared = when (
+      val result = prepareSubAgentDelegation(
+        task = task,
+        turn = turn,
+        call = forkCall,
+        activeSkillCapsule = activeSkillCapsule,
+        toolName = "skill_execute",
+      )
+    ) {
+      is PreparedSubAgentDelegationResult.Invalid -> return result.result.copy(
+        toolName = call.toolName,
+        metadata = result.result.metadata + skillActivationMetadata(activeSkillCapsule),
+      )
+
+      is PreparedSubAgentDelegationResult.Ready -> result.delegation
+    }
+    val handles = subAgentHandleRegistry(cursor)
+    val handle = createSubAgentHandle(
+      task = task,
+      prepared = prepared,
+      agentId = call.arguments.primitiveContent("agent_id")?.trim()?.takeIf(String::isNotBlank),
+    ).also { createdHandle ->
+      handles[createdHandle.agentId] = createdHandle
+      config.subAgentExecutionCoordinator.upsertHandle(createdHandle)
+    }
+    emitSubAgentEvent(
+      task = task,
+      turn = turn,
+      phase = OpenCraySubAgentPhase.STARTED,
+      childTask = prepared.childTask,
+      childRunId = handle.childRunId,
+      childTaskId = handle.childTaskId,
+      summary = null,
+      snapshot = SubAgentExecutionSnapshot.running(),
+      liveContext = handle.childLiveContext,
+    )
+    val execution = executeSubAgentHandleLifecycle(
+      task = task,
+      turn = turn,
+      transcript = transcript,
+      parentSessionContext = cursor?.sessionContext ?: config.sessionContext,
+      hooks = hooks,
+      activeSkillCapsule = activeSkillCapsule,
+      handle = handle,
+      profile = prepared.profile,
+      handles = handles,
+      approvalContinuation = takePendingApprovalContinuation(handle, handles),
+      emitResumedPhaseWithoutApproval = false,
+      retainTerminalHandle = cursor != null,
+    )
+    val childToolResult = childResultToTaskToolResult(
+      call = forkCall,
+      handle = execution.handle,
+      delegationPlan = prepared.delegationPlan,
+      childResult = execution.childResult,
+      compressedChildResult = execution.handle.snapshot,
+    )
+    return childToolResult.copy(
+      toolName = call.toolName,
+      metadata = childToolResult.metadata + skillActivationMetadata(activeSkillCapsule),
+    )
+  }
+
+  private fun invalidSkillExecuteResult(
+    call: AgentToolCall,
+    message: String,
+  ): AgentToolResult = AgentToolResult(
+    toolName = call.toolName,
+    status = AgentToolResultStatus.FAILED,
+    content = message,
+    errorCode = "INVALID_SKILL_EXECUTE",
+    errorMessage = message,
+  )
+
+  private fun skillActivationMetadata(
+    capsule: ActiveSkillCapsule,
+  ): Map<String, String> = buildMap {
+    put("skillName", capsule.name)
+    put("relativePath", capsule.relativePath)
+    put("executionContext", capsule.executionContext)
+    put("activationSource", capsule.activationSource)
+    put("pinned", capsule.pinned.toString())
+  }
 
   private fun normalizeToolCallIds(
     actions: List<AgentModelAction>,
@@ -6281,6 +6714,7 @@ class OpenCrayAgentRuntime(
       task = task,
       turn = turn,
       transcript = transcript,
+      parentSessionContext = cursor?.sessionContext ?: config.sessionContext,
       hooks = hooks,
       activeSkillCapsule = activeSkillCapsule,
       handle = handle,
@@ -6439,6 +6873,7 @@ class OpenCrayAgentRuntime(
         task = task,
         turn = turn,
         transcript = transcript,
+        parentSessionContext = cursor.sessionContext,
         hooks = hooks,
         activeSkillCapsule = activeSkillCapsule,
         cursor = cursor,
@@ -6475,6 +6910,7 @@ class OpenCrayAgentRuntime(
       task = task,
       turn = turn,
       transcript = transcript,
+      parentSessionContext = cursor?.sessionContext ?: config.sessionContext,
       hooks = hooks,
       activeSkillCapsule = activeSkillCapsule,
       handle = handle,
@@ -6643,6 +7079,7 @@ class OpenCrayAgentRuntime(
         task = task,
         turn = turn,
         transcript = transcript,
+        parentSessionContext = cursor.sessionContext,
         hooks = hooks,
         activeSkillCapsule = activeSkillCapsule,
         cursor = cursor,
@@ -6672,6 +7109,7 @@ class OpenCrayAgentRuntime(
       task = task,
       turn = turn,
       transcript = transcript,
+      parentSessionContext = cursor?.sessionContext ?: config.sessionContext,
       hooks = hooks,
       activeSkillCapsule = activeSkillCapsule,
       handle = handle,
@@ -6695,6 +7133,7 @@ class OpenCrayAgentRuntime(
     task: AgentTask,
     turn: Int,
     transcript: List<RuntimeConversationMessage>,
+    parentSessionContext: AgentRuntimeSessionContext,
     hooks: RuntimeExecutionHooks,
     activeSkillCapsule: ActiveSkillCapsule?,
     handle: SubAgentHandleState,
@@ -6725,6 +7164,7 @@ class OpenCrayAgentRuntime(
       task = task,
       turn = turn,
       transcript = transcript,
+      parentSessionContext = parentSessionContext,
       hooks = hooks,
       activeSkillCapsule = activeSkillCapsule,
       handle = normalizedHandle,
@@ -6773,6 +7213,7 @@ class OpenCrayAgentRuntime(
     task: AgentTask,
     turn: Int,
     transcript: List<RuntimeConversationMessage>,
+    parentSessionContext: AgentRuntimeSessionContext,
     hooks: RuntimeExecutionHooks,
     activeSkillCapsule: ActiveSkillCapsule?,
     handle: SubAgentHandleState,
@@ -6822,6 +7263,7 @@ class OpenCrayAgentRuntime(
     val childResult = executeSubAgentHandleRuntime(
       parentTask = task,
       transcript = transcript,
+      parentSessionContext = parentSessionContext,
       hooks = hooks,
       activeSkillCapsule = activeSkillCapsule,
       handle = runningHandle,
@@ -6884,6 +7326,7 @@ class OpenCrayAgentRuntime(
     task: AgentTask,
     turn: Int,
     transcript: List<RuntimeConversationMessage>,
+    parentSessionContext: AgentRuntimeSessionContext,
     hooks: RuntimeExecutionHooks,
     activeSkillCapsule: ActiveSkillCapsule?,
     cursor: PromptTurnCursor,
@@ -6914,6 +7357,7 @@ class OpenCrayAgentRuntime(
         executeSubAgentHandleRuntime(
           parentTask = task,
           transcript = transcript,
+          parentSessionContext = parentSessionContext,
           hooks = RuntimeExecutionHooks(
             isCancellationRequested = {
               cancelRequested.get() || hooks.isCancellationRequested()
@@ -7131,6 +7575,7 @@ class OpenCrayAgentRuntime(
     task: AgentTask,
     turn: Int,
     transcript: List<RuntimeConversationMessage>,
+    parentSessionContext: AgentRuntimeSessionContext,
     hooks: RuntimeExecutionHooks,
     activeSkillCapsule: ActiveSkillCapsule?,
     handle: SubAgentHandleState,
@@ -7163,6 +7608,7 @@ class OpenCrayAgentRuntime(
         executeSubAgentHandleRuntime(
           parentTask = task,
           transcript = transcript,
+          parentSessionContext = parentSessionContext,
           hooks = RuntimeExecutionHooks(
             isCancellationRequested = {
               cancelRequested.get() || hooks.isCancellationRequested()
@@ -7836,6 +8282,7 @@ class OpenCrayAgentRuntime(
   private fun executeSubAgentHandleRuntime(
     parentTask: AgentTask,
     transcript: List<RuntimeConversationMessage>,
+    parentSessionContext: AgentRuntimeSessionContext,
     hooks: RuntimeExecutionHooks,
     activeSkillCapsule: ActiveSkillCapsule?,
     handle: SubAgentHandleState,
@@ -7853,7 +8300,7 @@ class OpenCrayAgentRuntime(
     )
     val childContext = config.subAgentContextBuilder.build(
       SubAgentContextBuildRequest(
-        parentSessionContext = config.sessionContext,
+        parentSessionContext = parentSessionContext,
         childTask = childTask,
         parentGoalSummary = parentTask.input.trim(),
         parentObservationLines = recentToolObservationSupport.summaryLines(transcript),
@@ -9043,6 +9490,7 @@ class OpenCrayAgentRuntime(
 
   private data class PromptTurnCursor(
     val transcript: MutableList<RuntimeConversationMessage>,
+    var sessionContext: AgentRuntimeSessionContext,
     var turn: Int,
     var toolCallCount: Int,
     var todoWriteUsed: Boolean,
@@ -9320,6 +9768,8 @@ class OpenCrayAgentRuntime(
     const val RECOVERABLE_LLM_RETRY_SLEEP_CHUNK_MS: Long = 250L
     val TERMINAL_PROVIDER_TIMEOUT_STATUS_CODES: Set<String> = setOf("449", "499")
     const val ACTIVATION_SOURCE_SKILL_READ: String = "skill_read"
+    const val ACTIVATION_SOURCE_SKILL_EXECUTE: String = "skill_execute"
+    const val ACTIVATION_SOURCE_IMPLICIT_SKILL: String = "implicit_skill"
     const val PENULTIMATE_TURN_SYSTEM_PROMPT_APPENDIX: String =
       "[Turn Budget]\nYou have two model turns left including this one. If another tool is still necessary, use at most one more tool now and be ready to answer on the next turn."
     val CHILD_APPROVAL_METADATA_KEYS: Set<String> = setOf(
@@ -9345,7 +9795,7 @@ class OpenCrayAgentRuntime(
       "policyReasonCode",
       "approvalRisk",
     )
-    val DEFAULT_ACTIVE_SKILL_EXEMPT_TOOL_KEYS: Set<String> = setOf("skills_list", "skill_read")
+    val DEFAULT_ACTIVE_SKILL_EXEMPT_TOOL_KEYS: Set<String> = setOf("skills_list", "skill_read", "skill_execute")
   }
 }
 

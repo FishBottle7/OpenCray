@@ -337,6 +337,81 @@ class ContextManagerTest {
   }
 
   @Test
+  fun preparePromotesStickyMemoryIntoSeparateCapsule() {
+    val manager = ContextManager()
+
+    val managed = manager.prepare(
+      PromptAssemblyInput(
+        task = promptTask(),
+        baseSystemPrompt = "You are OpenCray for testing.",
+        sessionContext = AgentRuntimeSessionContext(
+          recalledMemory = MemoryRecallResult(
+            memories = listOf(
+              RetrievedMemory(
+                id = "memory-sticky",
+                kind = MemoryKind.DURABLE_INSTRUCTION,
+                scope = MemoryScope.USER,
+                status = MemoryStatus.ACTIVE,
+                content = "Always keep the project safety checklist pinned.",
+                lastConfirmedAtEpochMs = 10L,
+                sticky = true,
+                score = 700,
+              ),
+              RetrievedMemory(
+                id = "memory-dynamic",
+                kind = MemoryKind.PROJECT_FACT,
+                scope = MemoryScope.WORKSPACE,
+                status = MemoryStatus.ACTIVE,
+                content = "Project tests use the Gradle wrapper.",
+                lastConfirmedAtEpochMs = 11L,
+                score = 650,
+              ),
+            ),
+            matchedRecordCount = 2,
+            trace = MemoryRecallTrace(
+              queryTerms = listOf("project", "safety"),
+              selected = listOf(
+                MemoryRecallSelectedTrace(
+                  id = "memory-sticky",
+                  kind = MemoryKind.DURABLE_INSTRUCTION,
+                  scope = MemoryScope.USER,
+                  score = 700,
+                  matchedTerms = listOf("safety"),
+                  contentPreview = "Always keep the project safety checklist pinned.",
+                ),
+                MemoryRecallSelectedTrace(
+                  id = "memory-dynamic",
+                  kind = MemoryKind.PROJECT_FACT,
+                  scope = MemoryScope.WORKSPACE,
+                  score = 650,
+                  matchedTerms = listOf("project"),
+                  contentPreview = "Project tests use the Gradle wrapper.",
+                ),
+              ),
+            ),
+          ),
+        ),
+        toolDefinitions = emptyList(),
+        liveConversation = emptyList(),
+      ),
+    )
+
+    assertEquals(listOf("memory-dynamic"), managed.selectedMemory.memories.map { memory -> memory.id })
+    assertFalse(managed.memoryText.contains("Always keep the project safety checklist pinned."))
+    assertTrue(managed.memoryText.contains("Project tests use the Gradle wrapper."))
+    assertEquals(listOf("memory-sticky"), managed.stickyMemoryCapsule.memories.map { memory -> memory.id })
+    assertTrue(managed.stickyMemoryText.contains("Always keep the project safety checklist pinned."))
+    assertFalse(managed.stickyMemoryText.contains("Project tests use the Gradle wrapper."))
+    assertEquals(2, managed.report.matchedMemoryRecordCount)
+    assertEquals(1, managed.report.injectedMemoryRecordCount)
+    assertEquals(1, managed.report.omittedMemoryRecordCount)
+    assertEquals(listOf("memory-dynamic"), managed.report.memoryRecallTrace.selected.map { trace -> trace.id })
+    assertEquals(1, managed.report.stickyMemoryTrace.injectedRecordCount)
+    assertEquals(0, managed.report.stickyMemoryTrace.omittedRecordCount)
+    assertEquals(listOf("memory-sticky"), managed.report.stickyMemoryTrace.selectedRecordIds)
+  }
+
+  @Test
   fun prepareBuildsPruningSummaryBeforeWindowing() {
     val manager = ContextManager(
       contextPruner = ContextPruner(

@@ -29,6 +29,9 @@ import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.memory.MemoryStewardshipAction
+import com.opencray.runtime.memory.MemoryStewardshipPlanGraph
+import com.opencray.runtime.memory.MemoryStewardshipPlanGraphEdge
+import com.opencray.runtime.memory.MemoryStewardshipPlanGraphNode
 import com.opencray.runtime.memory.MemoryStewardshipPlanStep
 import com.opencray.runtime.memory.MemoryStewardshipPlanStepOutcome
 import com.opencray.runtime.subagent.SubAgentContinuationKind
@@ -184,6 +187,7 @@ internal data class PersistedAgentRunEvent(
   val reaffirmedRecordIds: List<String> = emptyList(),
   val expiredRecordIds: List<String> = emptyList(),
   val stewardshipPlanSteps: List<PersistedMemoryStewardshipPlanStep> = emptyList(),
+  val stewardshipPlanGraph: PersistedMemoryStewardshipPlanGraph = PersistedMemoryStewardshipPlanGraph(),
 ) {
   init {
     require(runId.isNotBlank()) { "PersistedAgentRunEvent runId must not be blank." }
@@ -364,6 +368,32 @@ internal data class PersistedMemoryStewardshipPlanStep(
   val reason: String? = null,
 )
 
+@Serializable
+internal data class PersistedMemoryStewardshipPlanGraph(
+  val nodes: List<PersistedMemoryStewardshipPlanGraphNode> = emptyList(),
+  val edges: List<PersistedMemoryStewardshipPlanGraphEdge> = emptyList(),
+)
+
+@Serializable
+internal data class PersistedMemoryStewardshipPlanGraphNode(
+  val id: String,
+  val kind: String,
+  val label: String,
+  val action: String? = null,
+  val outcome: String? = null,
+  val recordId: String? = null,
+  val candidateIndex: Int? = null,
+  val producedRecordId: String? = null,
+  val reason: String? = null,
+)
+
+@Serializable
+internal data class PersistedMemoryStewardshipPlanGraphEdge(
+  val from: String,
+  val to: String,
+  val kind: String,
+)
+
 internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent = when (this) {
   is OpenCrayLifecycleEvent -> PersistedAgentRunEvent(
     kind = PersistedAgentRunEventKind.LIFECYCLE,
@@ -523,6 +553,7 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     reaffirmedRecordIds = reaffirmedRecordIds,
     expiredRecordIds = expiredRecordIds,
     stewardshipPlanSteps = stewardshipPlanSteps.map(MemoryStewardshipPlanStep::toPersisted),
+    stewardshipPlanGraph = stewardshipPlanGraph.toPersisted(),
   )
   is OpenCrayCancellationEvent -> PersistedAgentRunEvent(
     kind = PersistedAgentRunEventKind.CANCELLATION,
@@ -751,6 +782,7 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
     reaffirmedRecordIds = reaffirmedRecordIds,
     expiredRecordIds = expiredRecordIds,
     stewardshipPlanSteps = stewardshipPlanSteps.mapNotNull(PersistedMemoryStewardshipPlanStep::toRuntime),
+    stewardshipPlanGraph = stewardshipPlanGraph.toRuntime(),
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
   )
@@ -813,6 +845,58 @@ private fun PersistedMemoryStewardshipPlanStep.toRuntime(): MemoryStewardshipPla
     reason = reason,
   )
 }
+
+private fun MemoryStewardshipPlanGraph.toPersisted(): PersistedMemoryStewardshipPlanGraph =
+  PersistedMemoryStewardshipPlanGraph(
+    nodes = nodes.map(MemoryStewardshipPlanGraphNode::toPersisted),
+    edges = edges.map(MemoryStewardshipPlanGraphEdge::toPersisted),
+  )
+
+private fun MemoryStewardshipPlanGraphNode.toPersisted(): PersistedMemoryStewardshipPlanGraphNode =
+  PersistedMemoryStewardshipPlanGraphNode(
+    id = id,
+    kind = kind,
+    label = label,
+    action = action,
+    outcome = outcome,
+    recordId = recordId,
+    candidateIndex = candidateIndex,
+    producedRecordId = producedRecordId,
+    reason = reason,
+  )
+
+private fun MemoryStewardshipPlanGraphEdge.toPersisted(): PersistedMemoryStewardshipPlanGraphEdge =
+  PersistedMemoryStewardshipPlanGraphEdge(
+    from = from,
+    to = to,
+    kind = kind,
+  )
+
+private fun PersistedMemoryStewardshipPlanGraph.toRuntime(): MemoryStewardshipPlanGraph =
+  MemoryStewardshipPlanGraph(
+    nodes = nodes.map(PersistedMemoryStewardshipPlanGraphNode::toRuntime),
+    edges = edges.map(PersistedMemoryStewardshipPlanGraphEdge::toRuntime),
+  )
+
+private fun PersistedMemoryStewardshipPlanGraphNode.toRuntime(): MemoryStewardshipPlanGraphNode =
+  MemoryStewardshipPlanGraphNode(
+    id = id,
+    kind = kind,
+    label = label,
+    action = action,
+    outcome = outcome,
+    recordId = recordId,
+    candidateIndex = candidateIndex,
+    producedRecordId = producedRecordId,
+    reason = reason,
+  )
+
+private fun PersistedMemoryStewardshipPlanGraphEdge.toRuntime(): MemoryStewardshipPlanGraphEdge =
+  MemoryStewardshipPlanGraphEdge(
+    from = from,
+    to = to,
+    kind = kind,
+  )
 
 private const val MAX_PERSISTED_TOOL_CONTENT_CHARS: Int = 1_024
 private const val MAX_PERSISTED_FAILURE_TOOL_CONTENT_CHARS: Int = 16_384

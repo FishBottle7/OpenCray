@@ -7,17 +7,25 @@ import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.core.orchestrator.SessionTaskRuntime
+import com.opencray.llm.LiteLlmAssistantPhase
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
 import com.opencray.llm.LiteLlmBuiltinToolDefinition
+import com.opencray.llm.LiteLlmCompactRequest
+import com.opencray.llm.LiteLlmCompactResult
 import com.opencray.llm.LiteLlmGateway
+import com.opencray.llm.LiteLlmGatewayAttachment
+import com.opencray.llm.LiteLlmGatewayAttachmentKind
 import com.opencray.llm.LiteLlmGatewayMessage
 import com.opencray.llm.LiteLlmGatewayMessageRole
 import com.opencray.llm.LiteLlmGatewayRequest
+import com.opencray.llm.LiteLlmGatewayToolResult
+import com.opencray.llm.LiteLlmMetadataKeys
 import com.opencray.llm.LiteLlmProviderClient
 import com.opencray.llm.ModelProfile
 import com.opencray.llm.ProviderRoute
 import com.opencray.llm.ProviderRouting
+import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.mcp.McpClientExposureReport
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.AgentToolParameter
@@ -41,6 +49,8 @@ import com.opencray.runtime.OpenCrayAssistantPhaseEvent
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayExecutionMetadataKeys
 import com.opencray.runtime.OpenCrayFinalAttachment
+import com.opencray.runtime.OpenCrayMidTurnMaintenanceRequest
+import com.opencray.runtime.OpenCrayMidTurnMaintenanceResult
 import com.opencray.runtime.OpenCrayImageGenerationClient
 import com.opencray.runtime.OpenCrayMediaArtifactRegistry
 import com.opencray.runtime.OpenCrayMediaToolSettings
@@ -70,7 +80,12 @@ import com.opencray.runtime.bootstrap.BootstrapMode
 import com.opencray.runtime.PythonScriptRuntime
 import com.opencray.runtime.compaction.DurableCompactionCoordinator
 import com.opencray.runtime.compaction.InMemorySessionCompactionStore
+import com.opencray.runtime.compaction.NoOpRemoteCompactionProvider
+import com.opencray.runtime.compaction.RemoteCompactionProvider
+import com.opencray.runtime.compaction.RemoteCompactionRequest
+import com.opencray.runtime.compaction.RemoteCompactionResult
 import com.opencray.runtime.compaction.SessionCompactionStore
+import com.opencray.runtime.context.CompactionSummary
 import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.context.ContextManager
 import com.opencray.runtime.context.ContextSourceBudgetPolicy
@@ -455,6 +470,14 @@ internal class AppAgentSessionTaskRuntimeFactory(
       llmSettings = llmSettings,
       routeMetadata = routeMetadata,
     )
+    val llmAuthHeaders = if (requiresLlmConfig) {
+      LlmProviderProtocols.authHeaders(
+        protocol = llmSettings.protocol,
+        apiKey = llmSettings.apiKey,
+      )
+    } else {
+      emptyMap()
+    }
     val sourceBudgetProfile = contextSourceBudgetPolicy.resolve(llmMetadata)
     val effectiveLiveContextMode = effectiveLiveContextMode(
       configuredMode = liveContextModeProvider(),
@@ -482,6 +505,11 @@ internal class AppAgentSessionTaskRuntimeFactory(
       sourceBudgetProfile = sourceBudgetProfile,
       liveContextMode = effectiveLiveContextMode,
       memoryToolsEnabled = effectiveMemoryToolsEnabled,
+      remoteCompactionProvider = remoteCompactionProviderFor(
+        gateway = gateway,
+        llmMetadata = llmMetadata,
+        authHeaders = llmAuthHeaders,
+      ),
     )
     val sessionContext = preparedContext.sessionContext
     val effectiveMemoryRecords = preparedContext.effectiveMemoryRecords
@@ -578,18 +606,31 @@ internal class AppAgentSessionTaskRuntimeFactory(
             emission = emission,
           )
         },
+        midTurnMaintenance = { request ->
+          runMidTurnContextMaintenance(
+            sessionId = sessionId,
+            workspaceId = workspaceId,
+            request = request,
+            transcriptStore = transcriptStore,
+            llmMetadata = llmMetadata,
+            remoteCompactionProvider = remoteCompactionProviderFor(
+              gateway = gateway,
+              llmMetadata = llmMetadata,
+              authHeaders = llmAuthHeaders,
+            ),
+            sourceBudgetProfile = sourceBudgetProfile,
+            liveContextMode = effectiveLiveContextMode,
+            liveContextPolicy = liveContextPolicyFor(effectiveLiveContextMode),
+            memoryToolsEnabled = effectiveMemoryToolsEnabled,
+            enabled = task.type == com.opencray.core.contracts.AgentTaskType.PROMPT &&
+              detachedControlTask == null,
+          )
+        },
         contextManager = contextManagerFor(sourceBudgetProfile),
         promptAssembler = promptAssemblerFor(sourceBudgetProfile),
         llmMetadata = llmMetadata,
         contextSourceBudgetProfile = sourceBudgetProfile,
-        llmAuthHeaders = if (requiresLlmConfig) {
-          LlmProviderProtocols.authHeaders(
-            protocol = llmSettings.protocol,
-            apiKey = llmSettings.apiKey,
-          )
-        } else {
-          emptyMap()
-        },
+        llmAuthHeaders = llmAuthHeaders,
         subAgentContextPolicy = safetySettings.toRuntimeSubAgentContextPolicy(),
       ),
       eventSink = transcriptAwareEventSink(
@@ -1408,7 +1449,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
           "false" -> false
           else -> null
         }
-      } ?: false
+      } ?: (llmMetadata["protocol"]?.trim()?.lowercase() == LlmProviderProtocols.OPENAI_RESPONSES)
     if (!nativeProviderWebSearchEnabled) {
       return emptyList()
     }
@@ -1756,6 +1797,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     sourceBudgetProfile: ContextSourceBudgetProfile = contextSourceBudgetPolicy.resolve(llmMetadata),
     liveContextMode: LiveContextMode = LiveContextMode.FULL,
     memoryToolsEnabled: Boolean = safetySettingsProvider().sanitized().memoryToolsEnabled,
+    remoteCompactionProvider: RemoteCompactionProvider = NoOpRemoteCompactionProvider,
   ): PreparedSessionContext {
     val prepareStartedAtEpochMs = System.currentTimeMillis()
     val liveContextPolicy = liveContextPolicyFor(liveContextMode)
@@ -1816,6 +1858,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
         transcriptStore = transcriptStore,
         compactionStore = compactionStoreForSession(sessionId),
         llmMetadata = llmMetadata,
+        remoteCompactionProvider = remoteCompactionProvider,
       )
     } else {
       durableCompactionCoordinator.currentContext(compactionStoreForSession(sessionId))
@@ -1886,6 +1929,8 @@ internal class AppAgentSessionTaskRuntimeFactory(
           mode = liveContextMode.wireValue,
           soulEnabled = liveContextPolicy.soulEnabled,
           memoryRecallEnabled = liveContextPolicy.memoryRecallEnabled,
+          budgetPreset = llmMetadata["contextBudgetPreset"]
+            ?: llmMetadata["context_budget_preset"],
         ),
         recalledMemory = if (liveContextPolicy.memoryRecallEnabled) {
           recalledMemoryFor(
@@ -1912,6 +1957,317 @@ internal class AppAgentSessionTaskRuntimeFactory(
       "context.prepareDone session=$sessionId task=$taskId durationMs=${System.currentTimeMillis() - prepareStartedAtEpochMs} turnSemanticSignal=${if (preparedContext.sessionContext.turnSemanticSignal != null) "present" else "absent"} durableMemoryCount=${preparedContext.effectiveMemoryRecords.size}",
     )
     return preparedContext
+  }
+
+  private fun runMidTurnContextMaintenance(
+    sessionId: String,
+    workspaceId: String?,
+    request: OpenCrayMidTurnMaintenanceRequest,
+    transcriptStore: SessionTranscriptStore,
+    llmMetadata: Map<String, String>,
+    remoteCompactionProvider: RemoteCompactionProvider,
+    sourceBudgetProfile: ContextSourceBudgetProfile,
+    liveContextMode: LiveContextMode,
+    liveContextPolicy: LiveContextPolicy,
+    memoryToolsEnabled: Boolean,
+    enabled: Boolean,
+  ): OpenCrayMidTurnMaintenanceResult {
+    if (!enabled) {
+      return OpenCrayMidTurnMaintenanceResult(
+        sessionContext = request.sessionContext,
+        conversation = request.conversation,
+      )
+    }
+    val maintenanceStartedAtEpochMs = System.currentTimeMillis()
+    transcriptStore.replace(request.conversation)
+    val memoryFlushSummary = memoryIngestionCoordinator?.flushMidTurn(
+      sessionId = sessionId,
+      conversation = transcriptStore.snapshot(),
+      llmMetadata = llmMetadata,
+      taskId = request.task.id,
+    )
+    val effectiveMemoryRecords = if (memoryFlushSummary?.wasWritten == true) {
+      memoryRecordsProvider()
+    } else {
+      memoryRecordsProvider()
+    }
+    val durableCompaction = durableCompactionCoordinator.compactMidTurn(
+      transcriptStore = transcriptStore,
+      compactionStore = compactionStoreForSession(sessionId),
+      llmMetadata = llmMetadata,
+      remoteCompactionProvider = remoteCompactionProvider,
+    )
+    val updatedConversation = transcriptStore.snapshot()
+    val updatedContext = request.sessionContext.copy(
+      soulProfile = if (liveContextPolicy.soulEnabled) {
+        memoryBackedSoulResolver.overlay(
+          baseProfile = request.sessionContext.soulProfile,
+          records = effectiveMemoryRecords,
+          sessionId = sessionId,
+          workspaceId = workspaceId,
+        )
+      } else {
+        request.sessionContext.soulProfile
+      },
+      injectionPolicy = liveContextPolicy.injectionPolicy,
+      memoryToolsEnabled = memoryToolsEnabled,
+      liveContextTrace = request.sessionContext.liveContextTrace.copy(
+        mode = liveContextMode.wireValue,
+        soulEnabled = liveContextPolicy.soulEnabled,
+        memoryRecallEnabled = liveContextPolicy.memoryRecallEnabled,
+        budgetPreset = llmMetadata["contextBudgetPreset"]
+          ?: llmMetadata["context_budget_preset"],
+      ),
+      recalledMemory = if (liveContextPolicy.memoryRecallEnabled) {
+        recalledMemoryFor(
+          sessionId = sessionId,
+          taskInput = request.task.input,
+          memoryRecords = effectiveMemoryRecords,
+          workspaceId = workspaceId,
+          sourceBudgetProfile = sourceBudgetProfile,
+        )
+      } else {
+        MemoryRecallResult()
+      },
+      memoryFlushTrace = memoryFlushSummary?.trace ?: request.sessionContext.memoryFlushTrace,
+      durableCompaction = durableCompaction,
+      conversation = updatedConversation,
+    )
+    sessionContextDebug(
+      "context.midTurnMaintenance session=$sessionId task=${request.task.id} turn=${request.turn} durationMs=${System.currentTimeMillis() - maintenanceStartedAtEpochMs} flush=${memoryFlushSummary?.trace?.outcome ?: "skipped"} compacted=${durableCompaction.trace.compactedThisRun} messages=${updatedConversation.size}",
+    )
+    return OpenCrayMidTurnMaintenanceResult(
+      sessionContext = updatedContext,
+      conversation = updatedConversation,
+    )
+  }
+
+  private fun remoteCompactionProviderFor(
+    gateway: LiteLlmGateway,
+    llmMetadata: Map<String, String>,
+    authHeaders: Map<String, String>,
+  ): RemoteCompactionProvider {
+    if (!responsesRemoteCompactionAvailable(llmMetadata)) {
+      return NoOpRemoteCompactionProvider
+    }
+    return RemoteCompactionProvider { request ->
+      val messages = request.omittedMessages.toRemoteCompactionGatewayMessages()
+      if (messages.isEmpty()) {
+        return@RemoteCompactionProvider RemoteCompactionResult.Unavailable(
+          reason = "responses_remote_compaction_no_omitted_messages",
+          metadata = remoteCompactionFallbackMetadata("responses_remote_compaction_no_omitted_messages"),
+        )
+      }
+      val compactResult = gateway.compactConversation(
+        LiteLlmCompactRequest(
+          gatewayRequest = LiteLlmGatewayRequest(
+            messages = messages,
+            metadata = llmMetadata + mapOf(
+              LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_REMOTE_COMPACTION to "true",
+            ),
+            authHeaders = authHeaders,
+          ),
+          triggerStage = request.triggerStage,
+          metadata = request.llmMetadata + mapOf(
+            LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_REMOTE_COMPACTION to "true",
+          ),
+        ),
+      )
+      when (compactResult) {
+        is LiteLlmCompactResult.Success -> {
+          val summaryText = compactResult.summaryText.trim()
+          if (summaryText.isBlank()) {
+            RemoteCompactionResult.Unavailable(
+              reason = "responses_remote_compaction_no_text_summary",
+              metadata = remoteCompactionFallbackMetadata(
+                reason = "responses_remote_compaction_no_text_summary",
+                metadata = compactResult.metadata,
+              ),
+            )
+          } else {
+            RemoteCompactionResult.Success(
+              summary = CompactionSummary(
+                text = summaryText,
+                compactedMessageCount = request.omittedMessages.size,
+                omittedUserMessageCount = request.omittedMessages.count {
+                  it.role == RuntimeConversationRole.USER
+                },
+                omittedAssistantMessageCount = request.omittedMessages.count {
+                  it.role == RuntimeConversationRole.ASSISTANT
+                },
+                omittedToolMessageCount = request.omittedMessages.count {
+                  it.role == RuntimeConversationRole.TOOL
+                },
+                omittedSystemMessageCount = request.omittedMessages.count {
+                  it.role == RuntimeConversationRole.SYSTEM
+                },
+              ),
+              metadata = compactResult.metadata,
+            )
+          }
+        }
+
+        is LiteLlmCompactResult.Unavailable -> RemoteCompactionResult.Unavailable(
+          reason = compactResult.reason,
+          metadata = remoteCompactionFallbackMetadata(
+            reason = compactResult.reason,
+            metadata = compactResult.metadata,
+          ),
+        )
+
+        is LiteLlmCompactResult.Failure -> RemoteCompactionResult.Failure(
+          errorCode = compactResult.errorCode,
+          errorMessage = compactResult.errorMessage,
+          metadata = remoteCompactionFallbackMetadata(
+            reason = compactResult.errorCode,
+            metadata = compactResult.metadata,
+          ),
+        )
+      }
+    }
+  }
+
+  private fun responsesRemoteCompactionAvailable(llmMetadata: Map<String, String>): Boolean {
+    if (LlmProviderProtocols.normalize(llmMetadata["protocol"]) != LlmProviderProtocols.OPENAI_RESPONSES) {
+      return false
+    }
+    return metadataBoolean(llmMetadata, LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_SUPPORTED) ||
+      metadataBoolean(llmMetadata, LiteLlmMetadataKeys.VALIDATION_ENABLE_RESPONSES_REMOTE_COMPACTION)
+  }
+
+  private fun metadataBoolean(
+    metadata: Map<String, String>,
+    key: String,
+  ): Boolean = metadata[key]
+    ?.trim()
+    ?.lowercase() == "true"
+
+  private fun remoteCompactionFallbackMetadata(
+    reason: String,
+    metadata: Map<String, String> = emptyMap(),
+  ): Map<String, String> = metadata + mapOf(
+    LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_REQUESTED to "true",
+    LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_USED to "false",
+    LiteLlmMetadataKeys.RESPONSES_REMOTE_COMPACTION_FALLBACK_REASON to reason,
+  )
+
+  private fun List<RuntimeConversationMessage>.toRemoteCompactionGatewayMessages(): List<LiteLlmGatewayMessage> {
+    val messages = mutableListOf<LiteLlmGatewayMessage>()
+    var syntheticToolCallIndex = 0
+    var pendingToolCallId: String? = null
+    forEach { entry ->
+      when (entry.role) {
+        RuntimeConversationRole.SYSTEM -> {
+          entry.content.trim().takeIf(String::isNotBlank)?.let { content ->
+            messages += LiteLlmGatewayMessage(
+              role = LiteLlmGatewayMessageRole.USER,
+              content = "[system]\n$content",
+            )
+          }
+        }
+
+        RuntimeConversationRole.USER -> {
+          val content = entry.content.trim().takeIf(String::isNotBlank)
+          val attachments = entry.attachments.map { attachment ->
+            attachment.toLiteLlmGatewayAttachment()
+          }
+          if (content != null || attachments.isNotEmpty()) {
+            messages += LiteLlmGatewayMessage(
+              role = LiteLlmGatewayMessageRole.USER,
+              content = content,
+              attachments = attachments,
+            )
+          }
+        }
+
+        RuntimeConversationRole.ASSISTANT -> {
+          val toolCall = entry.toolCall
+          if (entry.kind == RuntimeConversationMessageKind.TOOL_CALL && toolCall != null) {
+            val toolCallId = toolCall.id
+              ?.trim()
+              ?.takeIf(String::isNotBlank)
+              ?: "remote-compact-call-${++syntheticToolCallIndex}"
+            pendingToolCallId = toolCallId
+            messages += LiteLlmGatewayMessage(
+              role = LiteLlmGatewayMessageRole.ASSISTANT,
+              content = entry.content.trim().takeIf(String::isNotBlank),
+              toolCalls = listOf(
+                LiteLlmStructuredToolCall(
+                  id = toolCallId,
+                  toolName = toolCall.toolName,
+                  arguments = toolCall.arguments,
+                  reason = toolCall.reason,
+                ),
+              ),
+              assistantPhase = entry.assistantPhase?.toLiteLlmAssistantPhase(),
+            )
+          } else {
+            entry.content.trim().takeIf(String::isNotBlank)?.let { content ->
+              messages += LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.ASSISTANT,
+                content = content,
+                assistantPhase = entry.assistantPhase?.toLiteLlmAssistantPhase()
+                  ?: if (entry.kind == RuntimeConversationMessageKind.COMMENTARY) {
+                    LiteLlmAssistantPhase.COMMENTARY
+                  } else {
+                    null
+                  },
+              )
+            }
+          }
+        }
+
+        RuntimeConversationRole.TOOL -> {
+          val toolResult = entry.toolResult
+          val toolCallId = toolResult?.toolCallId
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?: pendingToolCallId
+          if (entry.kind == RuntimeConversationMessageKind.TOOL_RESULT && toolResult != null && toolCallId != null) {
+            messages += LiteLlmGatewayMessage(
+              role = LiteLlmGatewayMessageRole.TOOL,
+              toolResult = LiteLlmGatewayToolResult(
+                toolCallId = toolCallId,
+                toolName = toolResult.toolName,
+                content = entry.content.trim().takeIf(String::isNotBlank) ?: "{}",
+                isError = toolResult.isError ?: toolResult.status
+                  ?.equals("success", ignoreCase = true)
+                  ?.not(),
+              ),
+            )
+            pendingToolCallId = null
+          } else {
+            entry.content.trim().takeIf(String::isNotBlank)?.let { content ->
+              messages += LiteLlmGatewayMessage(
+                role = LiteLlmGatewayMessageRole.USER,
+                content = "[tool]\n$content",
+              )
+            }
+          }
+        }
+      }
+    }
+    return messages
+  }
+
+  private fun RuntimeConversationAttachment.toLiteLlmGatewayAttachment(): LiteLlmGatewayAttachment =
+    LiteLlmGatewayAttachment(
+      attachmentId = attachmentId,
+      kind = when (kind) {
+        RuntimeConversationAttachmentKind.IMAGE -> LiteLlmGatewayAttachmentKind.IMAGE
+        RuntimeConversationAttachmentKind.VOICE -> LiteLlmGatewayAttachmentKind.VOICE
+        RuntimeConversationAttachmentKind.AUDIO -> LiteLlmGatewayAttachmentKind.AUDIO
+        RuntimeConversationAttachmentKind.FILE -> LiteLlmGatewayAttachmentKind.FILE
+      },
+      displayName = displayName,
+      filePath = filePath,
+      mimeType = mimeType,
+      transcriptText = transcriptText,
+    )
+
+  private fun RuntimeConversationAssistantPhase.toLiteLlmAssistantPhase(): LiteLlmAssistantPhase = when (this) {
+    RuntimeConversationAssistantPhase.COMMENTARY -> LiteLlmAssistantPhase.COMMENTARY
+    RuntimeConversationAssistantPhase.FINAL_ANSWER -> LiteLlmAssistantPhase.FINAL_ANSWER
   }
 
   private fun transcriptAwareEventSink(

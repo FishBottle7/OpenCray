@@ -30,6 +30,10 @@ class OpenCrayLlmConfigSnapshot {
     this.onDeviceAccelerator = 'gpu',
     this.onDeviceThinkingEnabled = false,
     this.onDeviceLiteModeEnabled = false,
+    this.contextBudgetPreset = 'balanced',
+    this.contextBudgetReservedOutputTokens,
+    this.contextBudgetSafetyMarginTokens,
+    this.contextBudgetEffectiveInputPercent,
   });
 
   final String localeTag;
@@ -62,6 +66,10 @@ class OpenCrayLlmConfigSnapshot {
   final String onDeviceAccelerator;
   final bool onDeviceThinkingEnabled;
   final bool onDeviceLiteModeEnabled;
+  final String contextBudgetPreset;
+  final int? contextBudgetReservedOutputTokens;
+  final int? contextBudgetSafetyMarginTokens;
+  final double? contextBudgetEffectiveInputPercent;
 
   OpenCrayLlmConfigSnapshot copyWith({
     List<OpenCrayOnDeviceLlmModelOptionSnapshot>? onDeviceModels,
@@ -99,6 +107,10 @@ class OpenCrayLlmConfigSnapshot {
       onDeviceAccelerator: onDeviceAccelerator,
       onDeviceThinkingEnabled: onDeviceThinkingEnabled,
       onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
+      contextBudgetPreset: contextBudgetPreset,
+      contextBudgetReservedOutputTokens: contextBudgetReservedOutputTokens,
+      contextBudgetSafetyMarginTokens: contextBudgetSafetyMarginTokens,
+      contextBudgetEffectiveInputPercent: contextBudgetEffectiveInputPercent,
     );
   }
 
@@ -152,6 +164,14 @@ class OpenCrayLlmConfigSnapshot {
           payload['onDeviceThinkingEnabled'] as bool? ?? false,
       onDeviceLiteModeEnabled:
           payload['onDeviceLiteModeEnabled'] as bool? ?? false,
+      contextBudgetPreset:
+          payload['contextBudgetPreset'] as String? ?? 'balanced',
+      contextBudgetReservedOutputTokens:
+          (payload['contextBudgetReservedOutputTokens'] as num?)?.toInt(),
+      contextBudgetSafetyMarginTokens:
+          (payload['contextBudgetSafetyMarginTokens'] as num?)?.toInt(),
+      contextBudgetEffectiveInputPercent:
+          (payload['contextBudgetEffectiveInputPercent'] as num?)?.toDouble(),
     );
   }
 }

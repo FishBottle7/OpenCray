@@ -62,7 +62,7 @@ The layer should behave like a small, high-value "work panel" for the model.
 
 Related design:
 
-- `docs/global-context-budget-coordination-design.md`
+- `docs/codex-claude-balanced-context-management-plan.md`
 
 ## Conceptual model
 
@@ -526,7 +526,7 @@ This hybrid keeps:
 
 Related design:
 
-- `docs/global-context-budget-coordination-design.md`
+- `docs/codex-claude-balanced-context-management-plan.md`
 
 ## Bottom line
 

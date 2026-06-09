@@ -89,7 +89,59 @@ class OpenCrayToolDispatcherSkillToolTest {
     assertEquals("none", result.metadata["workspaceRelation"])
     assertEquals("ui-ux-pro-max/SKILL.md", result.metadata["primaryTargetPath"])
     assertEquals("ui-ux-pro-max", result.metadata["skillName"])
+    assertEquals("skill_read", result.metadata["activationSource"])
+    assertEquals("false", result.metadata["pinned"])
     assertTrue(result.content.contains("Audit the current interface first."))
+  }
+
+  @Test
+  fun skillReadReportsPinnedMetadataWhenRequested() {
+    val skillsRoot = temporaryFolder.newFolder("dispatcher-skill-read-pinned-root")
+    writeSkill(
+      root = skillsRoot,
+      relativeDirectory = "ui-ux-pro-max",
+      frontMatter = """
+        name: ui-ux-pro-max
+        description: High-end UI review workflow.
+        invocation-control: explicit-only
+        user-invocable: true
+      """.trimIndent(),
+      body = "# UI UX Pro Max",
+    )
+    val dispatcher = dispatcher(skillsRoot)
+
+    val result = dispatcher.dispatch(
+      task = task(),
+      call = AgentToolCall(
+        toolName = "skill_read",
+        arguments = buildJsonObject {
+          put("name", "ui-ux-pro-max")
+          put("pin", true)
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("true", result.metadata["pinned"])
+  }
+
+  @Test
+  fun skillExecuteIsNotEligibleForParallelDispatch() {
+    val skillsRoot = temporaryFolder.newFolder("dispatcher-skill-execute-parallel-root")
+    val dispatcher = dispatcher(skillsRoot)
+
+    val canExecute = dispatcher.canExecuteInParallel(
+      task = task(),
+      call = AgentToolCall(
+        toolName = "skill_execute",
+        arguments = buildJsonObject {
+          put("name", "ui-ux-pro-max")
+        },
+      ),
+    )
+
+    assertEquals(false, canExecute)
   }
 
   private fun dispatcher(skillsRoot: File): OpenCrayToolDispatcher {
