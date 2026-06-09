@@ -104,7 +104,10 @@ class _NotificationsBackgroundSettingsPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(copy.backgroundProfileTitle, style: _SettingsTextStyles.cardTitle),
+          Text(
+            copy.backgroundProfileTitle,
+            style: _SettingsTextStyles.cardTitle,
+          ),
           const SizedBox(height: 8),
           Text(
             copy.backgroundProfileSummary(profile),
@@ -156,9 +159,8 @@ class _NotificationsBackgroundSettingsPageState
             title: copy.allowNotificationsTitle,
             subtitle: copy.allowNotificationsSubtitle,
             value: settings.masterEnabled,
-            onChanged: (value) => _updateSettings(
-              settings.copyWith(masterEnabled: value),
-            ),
+            onChanged: (value) =>
+                _updateSettings(settings.copyWith(masterEnabled: value)),
           ),
           const Divider(height: 1, color: OpenCrayColors.divider),
           _NotificationActionRow(
@@ -192,7 +194,9 @@ class _NotificationsBackgroundSettingsPageState
           const SizedBox(height: 8),
           _NotificationActionRow(
             title: copy.defaultDeliveryRowTitle,
-            subtitle: copy.defaultDeliveryRowSubtitle(settings.defaultDeliveryMode),
+            subtitle: copy.defaultDeliveryRowSubtitle(
+              settings.defaultDeliveryMode,
+            ),
             valueLabel: copy.deliveryModeLabel(settings.defaultDeliveryMode),
             onTap: _openDeliveryModeSheet,
           ),
@@ -205,9 +209,8 @@ class _NotificationsBackgroundSettingsPageState
               endLabel: _formatMinutesOfDay(settings.quietHoursEndMinutes),
             ),
             value: settings.quietHoursEnabled,
-            onChanged: (value) => _updateSettings(
-              settings.copyWith(quietHoursEnabled: value),
-            ),
+            onChanged: (value) =>
+                _updateSettings(settings.copyWith(quietHoursEnabled: value)),
           ),
           if (settings.quietHoursEnabled) ...[
             const Divider(height: 1, color: OpenCrayColors.divider),
@@ -232,8 +235,9 @@ class _NotificationsBackgroundSettingsPageState
     _NotificationSettingsCopy copy,
     StrongBackgroundSnapshot strongBackground,
   ) {
-    final notificationAction =
-        strongBackground.action(StrongBackgroundActionId.openNotificationSettings);
+    final notificationAction = strongBackground.action(
+      StrongBackgroundActionId.openNotificationSettings,
+    );
     final supportAction = _preferredSupportAction(strongBackground);
     return _SettingsCard(
       child: Column(
@@ -253,7 +257,8 @@ class _NotificationsBackgroundSettingsPageState
                   )
                 : null,
             isBusy:
-                _activeActionId == StrongBackgroundActionId.openNotificationSettings,
+                _activeActionId ==
+                StrongBackgroundActionId.openNotificationSettings,
           ),
           const Divider(height: 1, color: OpenCrayColors.divider),
           _NotificationActionRow(
@@ -279,7 +284,8 @@ class _NotificationsBackgroundSettingsPageState
         SettingsPage.notificationsBackground,
       );
       final settings = await widget.facade.loadNotificationSettings();
-      final strongBackground = await widget.facade.loadStrongBackgroundSnapshot();
+      final strongBackground = await widget.facade
+          .loadStrongBackgroundSnapshot();
       if (!mounted) {
         return;
       }
@@ -368,6 +374,7 @@ class _NotificationsBackgroundSettingsPageState
     final selected = await showModalBottomSheet<NotificationDeliveryMode>(
       context: context,
       backgroundColor: Colors.transparent,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
       builder: (context) {
         return SafeArea(
           top: false,
@@ -461,7 +468,9 @@ class _NotificationsBackgroundSettingsPageState
       return;
     }
     _updateSettings(
-      settings.copyWith(quietHoursStartMinutes: _minutesFromTimeOfDay(selected)),
+      settings.copyWith(
+        quietHoursStartMinutes: _minutesFromTimeOfDay(selected),
+      ),
     );
   }
 
@@ -492,7 +501,9 @@ class _NotificationsBackgroundSettingsPageState
       _activeActionId = actionId;
     });
     try {
-      final result = await widget.facade.performStrongBackgroundAction(actionId);
+      final result = await widget.facade.performStrongBackgroundAction(
+        actionId,
+      );
       if (mounted && !result.launched && result.reason != null) {
         _showMessage(result.reason!);
       } else if (mounted && !result.launched) {
@@ -528,8 +539,9 @@ class _NotificationsBackgroundSettingsPageState
     StrongBackgroundSnapshot strongBackground,
   ) {
     if (!_exactAlarmsReady(strongBackground)) {
-      final action =
-          strongBackground.action(StrongBackgroundActionId.openExactAlarmSettings);
+      final action = strongBackground.action(
+        StrongBackgroundActionId.openExactAlarmSettings,
+      );
       if (action?.available == true) {
         return StrongBackgroundActionId.openExactAlarmSettings;
       }
@@ -569,7 +581,8 @@ class _NotificationsBackgroundSettingsPageState
     _NotificationSettingsCopy copy,
     StrongBackgroundSnapshot strongBackground,
   ) {
-    return _exactAlarmsReady(strongBackground) && _batteryReady(strongBackground)
+    return _exactAlarmsReady(strongBackground) &&
+            _batteryReady(strongBackground)
         ? copy.systemReadyStatus
         : copy.systemReviewStatus;
   }
@@ -604,9 +617,9 @@ class _NotificationsBackgroundSettingsPageState
   int _minutesFromTimeOfDay(TimeOfDay time) => (time.hour * 60) + time.minute;
 
   void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
 
@@ -773,9 +786,9 @@ class _NotificationChannelsSettingsPageState
   }
 
   void _showMessage(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
 
@@ -951,8 +964,7 @@ List<_NotificationChannelDescriptor> _notificationChannelDescriptors(
       title: copy.taskFailedTitle,
       subtitle: copy.taskFailedSubtitle,
       valueOf: (snapshot) => snapshot.taskFailedEnabled,
-      update: (snapshot, value) =>
-          snapshot.copyWith(taskFailedEnabled: value),
+      update: (snapshot, value) => snapshot.copyWith(taskFailedEnabled: value),
     ),
     _NotificationChannelDescriptor(
       title: copy.scheduledWakeTitle,
@@ -1270,11 +1282,19 @@ class _NotificationSettingsCopy {
     required bool batteryReady,
   }) {
     final exactLabel = exactAlarmsReady
-        ? (foregroundServiceNoticeStatus == '系统必需' ? '精确闹钟已就绪' : 'Exact alarms ready')
-        : (foregroundServiceNoticeStatus == '系统必需' ? '精确闹钟待处理' : 'Exact alarms pending');
+        ? (foregroundServiceNoticeStatus == '系统必需'
+              ? '精确闹钟已就绪'
+              : 'Exact alarms ready')
+        : (foregroundServiceNoticeStatus == '系统必需'
+              ? '精确闹钟待处理'
+              : 'Exact alarms pending');
     final batteryLabel = batteryReady
-        ? (foregroundServiceNoticeStatus == '系统必需' ? '电池优化已处理' : 'Battery ready')
-        : (foregroundServiceNoticeStatus == '系统必需' ? '电池限制待处理' : 'Battery review needed');
+        ? (foregroundServiceNoticeStatus == '系统必需'
+              ? '电池优化已处理'
+              : 'Battery ready')
+        : (foregroundServiceNoticeStatus == '系统必需'
+              ? '电池限制待处理'
+              : 'Battery review needed');
     return '$exactLabel · $batteryLabel';
   }
 }

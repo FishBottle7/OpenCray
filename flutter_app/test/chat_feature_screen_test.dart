@@ -2139,6 +2139,8 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
+      _jumpToScrollEnd(tester, _chatScrollView());
+      await tester.pumpAndSettle();
 
       final String projectedBubbleMessageId =
           'runtime-assistant-commentary-task-progress-1--1-Planning-2200';
@@ -11887,10 +11889,7 @@ void main() {
         );
         int scrollAttempts = 0;
         while (bubbleFinder.evaluate().isEmpty && scrollAttempts < 12) {
-          await tester.drag(
-            find.byType(SingleChildScrollView).first,
-            const Offset(0, -240),
-          );
+          await tester.drag(_chatScrollView(), const Offset(0, -240));
           await tester.pumpAndSettle();
           scrollAttempts += 1;
         }
@@ -12126,19 +12125,103 @@ void main() {
       expect(find.text('Approval required'), findsOneWidget);
       expect(find.text(copy.chatComposerPlaceholder), findsNothing);
       expect(find.text('git status --short'), findsOneWidget);
-      expect(find.text('Working directory  .'), findsOneWidget);
+      expect(find.text(copy.chatApprovalToolLabel), findsOneWidget);
+      expect(find.text('Bash'), findsOneWidget);
+      expect(find.text(copy.chatApprovalWorkingDirectoryLabel), findsOneWidget);
+      expect(find.text(copy.chatApprovalReasonLabel), findsOneWidget);
       expect(
-        find.text('Reason  Check repository state before editing.'),
+        find.text('Check repository state before editing.'),
         findsOneWidget,
       );
 
       await tester.ensureVisible(find.text('Approve'));
       await tester.tap(find.text('Approve'));
+      await tester.pump();
+
+      expect(find.text(copy.chatApprovalDecisionApproved), findsOneWidget);
+
       await tester.pumpAndSettle();
 
       expect(bridge.approvedApprovalIds, <String>['run-approval-1']);
     },
   );
+
+  testWidgets('high-risk approval exposes structured non-color risk cues', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        pendingApprovals: const <OpenCrayChatPendingApprovalSnapshot>[
+          OpenCrayChatPendingApprovalSnapshot(
+            runId: 'run-approval-risk-1',
+            taskId: 'task-approval-risk-1',
+            title: 'High-risk approval required',
+            body: 'Edit src/main.dart',
+            approveLabel: 'Approve',
+            rejectLabel: 'Reject',
+            isHighRisk: true,
+            toolName: 'Edit',
+            requestSummary: 'Edit src/main.dart',
+            pathDetails: <String>['src/main.dart'],
+            workingDirectory: '.',
+            reason: 'Apply the requested UI change.',
+          ),
+        ],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final riskCard = find.byKey(
+      const ValueKey<String>('chat-approval-card-run-approval-risk-1'),
+    );
+    expect(riskCard, findsOneWidget);
+    expect(
+      find.descendant(
+        of: riskCard,
+        matching: find.text(copy.chatHighRiskApproval),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: riskCard,
+        matching: find.text(copy.chatApprovalToolLabel),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: riskCard,
+        matching: find.text(copy.chatApprovalPathsLabel),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: riskCard, matching: find.text('src/main.dart')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: riskCard,
+        matching: find.text(copy.chatApprovalReasonLabel),
+      ),
+      findsOneWidget,
+    );
+  });
 
   testWidgets(
     'host-backed approval surface appears as soon as a pending approval snapshot arrives',
@@ -12282,10 +12365,26 @@ void main() {
 
       await tester.ensureVisible(find.text('Approve'));
       await tester.tap(find.text('Approve'));
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(bridge.approvedApprovalIds, <String>['run-approval-stack-1']);
       expect(bridge.rejectedApprovalIds, isEmpty);
+      expect(find.text('Approved'), findsOneWidget);
+
+      await tester.pump(const Duration(milliseconds: 800));
+
+      expect(
+        find.byKey(
+          const ValueKey<String>('chat-approval-card-run-approval-stack-1'),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.byKey(
+          const ValueKey<String>('chat-approval-card-run-approval-stack-2'),
+        ),
+        findsOneWidget,
+      );
     },
   );
 
@@ -12487,7 +12586,7 @@ void main() {
   });
 
   testWidgets(
-    'host-backed message delete hides immediately and ignores stale snapshots',
+    'host-backed message delete exits before removal and ignores stale snapshots',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
       final snapshots = StreamController<OpenCrayChatSnapshot>.broadcast();
@@ -13070,6 +13169,235 @@ void main() {
     expect(find.text('3'), findsOneWidget);
   });
 
+  testWidgets('session drawer rows are lazily built while scrolling', (
+    tester,
+  ) async {
+    final sessions = List<ChatSessionListItemData>.generate(
+      80,
+      (index) => ChatSessionListItemData(
+        sessionId: 'session-lazy-$index',
+        title: 'Session $index',
+        preview: 'Preview for lazy session $index',
+        meta: '$index messages',
+        isSelected: index == 0,
+      ),
+    );
+
+    await tester.pumpWidget(
+      _buildChatHarness(
+        drawerOpen: true,
+        drawer: ChatSessionsDrawerState(
+          eyebrow: 'Recent sessions',
+          title: 'Recent sessions',
+          ctaLabel: 'New session',
+          sessions: sessions,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final firstRow = find.byKey(
+      const ValueKey<String>('chat-session-row-session-lazy-0'),
+    );
+    final lastRow = find.byKey(
+      const ValueKey<String>('chat-session-row-session-lazy-79'),
+    );
+
+    expect(firstRow, findsOneWidget);
+    expect(lastRow, findsNothing);
+
+    final scrollableState = _scrollableStateFor(
+      tester,
+      find.byKey(const ValueKey<String>('chat-session-list')),
+    );
+    scrollableState.position.jumpTo(scrollableState.position.maxScrollExtent);
+    await tester.pumpAndSettle();
+
+    expect(lastRow, findsOneWidget);
+  });
+
+  testWidgets('host-backed chat does not show seed content while loading', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+    );
+    bridge.loadChatSnapshotCompleter = Completer<OpenCrayChatSnapshot>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text(copy.chatSeedWorkspaceReady), findsNothing);
+    expect(find.text(copy.chatSeedSafeModeAsks), findsNothing);
+    expect(find.text('Inspect the workspace.'), findsNothing);
+    expect(find.text(copy.chatSeedEmptyTitle), findsOneWidget);
+
+    bridge.loadChatSnapshotCompleter!.complete(bridge.chatSnapshot);
+    await tester.pumpAndSettle();
+
+    expect(find.text('Inspect the workspace.'), findsOneWidget);
+  });
+
+  testWidgets('plus menu expands inside animated composer surface', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_buildChatHarness());
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('chat-composer-plus-button')),
+    );
+    await tester.pump();
+
+    final addMenuFinder = find.byKey(
+      const ValueKey<String>('chat-composer-add-menu'),
+    );
+    final addTrayFinder = find.byKey(
+      const ValueKey<String>('chat-composer-add-tray'),
+    );
+    expect(addMenuFinder, findsOneWidget);
+    expect(addTrayFinder, findsOneWidget);
+    expect(
+      find.descendant(of: addTrayFinder, matching: addMenuFinder),
+      findsOneWidget,
+    );
+    expect(
+      find.ancestor(of: addMenuFinder, matching: find.byType(AnimatedSwitcher)),
+      findsNothing,
+    );
+    expect(
+      find.descendant(of: addTrayFinder, matching: find.byType(Align)),
+      findsOneWidget,
+    );
+    expect(
+      find.ancestor(of: addMenuFinder, matching: find.byType(AnimatedSize)),
+      findsWidgets,
+    );
+
+    await tester.pumpAndSettle();
+
+    final plusIcon = tester.widget<Icon>(
+      find.descendant(
+        of: find.byKey(const ValueKey<String>('chat-composer-plus-button')),
+        matching: find.byIcon(Icons.add_rounded),
+      ),
+    );
+    expect(plusIcon.color, const Color(0xFF007AFF));
+  });
+
+  testWidgets('composer keeps mixed sections in a stable vertical order', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    await tester.pumpWidget(
+      _buildChatHarness(
+        composer: ChatComposerState(
+          placeholder: copy.chatComposerPlaceholder,
+          todos: const <ChatTodoItemData>[
+            ChatTodoItemData(
+              content: 'Review composer stack',
+              status: ChatTodoStatus.inProgress,
+            ),
+          ],
+          commandOptions: const <ChatCommandOptionData>[
+            ChatCommandOptionData(label: '/plan', description: 'Plan the work'),
+          ],
+          attachments: <ChatAttachmentData>[
+            ChatAttachmentData(
+              id: 'draft-mixed-1',
+              kind: ChatAttachmentKind.file,
+              label: 'notes.md',
+              detail: '4 KB',
+              accentColor: Colors.blue,
+              draftAttachment: const OpenCrayChatDraftAttachment(
+                kind: OpenCrayChatDraftAttachmentKind.file,
+                displayName: 'notes.md',
+                relativePath: 'docs/notes.md',
+                mimeType: 'text/markdown',
+                sizeBytes: 4096,
+              ),
+            ),
+          ],
+          addActions: const <ChatAddActionData>[
+            ChatAddActionData(label: 'Attach file', icon: Icons.attach_file),
+            ChatAddActionData(label: 'Command', icon: Icons.terminal_rounded),
+          ],
+          showAddMenu: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final double todoY = tester
+        .getTopLeft(
+          find.byKey(const ValueKey<String>('chat-composer-todo-list')),
+        )
+        .dy;
+    final double commandY = tester.getTopLeft(find.text(copy.chatCommands)).dy;
+    final double attachmentY = tester
+        .getTopLeft(
+          find.byKey(const ValueKey<String>('chat-composer-attachments')),
+        )
+        .dy;
+    final double inputY = tester.getTopLeft(find.byType(TextField)).dy;
+    final double trayY = tester
+        .getTopLeft(
+          find.byKey(const ValueKey<String>('chat-composer-add-tray')),
+        )
+        .dy;
+
+    expect(todoY, lessThan(commandY));
+    expect(commandY, lessThan(attachmentY));
+    expect(attachmentY, lessThan(inputY));
+    expect(inputY, lessThan(trayY));
+  });
+
+  testWidgets('session drawer opens from the left edge', (tester) async {
+    await tester.pumpWidget(
+      _buildChatHarness(
+        drawer: const ChatSessionsDrawerState(
+          eyebrow: 'Recent sessions',
+          title: 'Recent sessions',
+          ctaLabel: 'New session',
+          sessions: <ChatSessionListItemData>[
+            ChatSessionListItemData(
+              sessionId: 'session-motion',
+              title: 'Motion session',
+              preview: 'Drawer should enter from the left.',
+              meta: '1 message',
+            ),
+          ],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(_chatSessionsButton());
+    await tester.pump();
+
+    AnimatedSlide slide = tester.widget<AnimatedSlide>(
+      find.byType(AnimatedSlide),
+    );
+    expect(slide.offset, const Offset(-1, 0));
+
+    await tester.pumpAndSettle();
+    slide = tester.widget<AnimatedSlide>(find.byType(AnimatedSlide));
+    expect(slide.offset, Offset.zero);
+    expect(find.text('Motion session'), findsOneWidget);
+  });
+
   testWidgets('host-backed session drawer shows recent message time labels', (
     tester,
   ) async {
@@ -13139,7 +13467,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Sessions'));
+    await tester.tap(_chatSessionsButton());
     await tester.pumpAndSettle();
 
     expect(find.text('14:32'), findsOneWidget);
@@ -13253,7 +13581,7 @@ void main() {
         findsOneWidget,
       );
 
-      await tester.tap(find.text('Sessions'));
+      await tester.tap(_chatSessionsButton());
       await tester.pumpAndSettle();
       expect(find.text('Delete session'), findsOneWidget);
       expect(find.text('Keep session'), findsOneWidget);
@@ -13344,7 +13672,7 @@ void main() {
 
       expect(find.text('Old selected session text'), findsOneWidget);
 
-      await tester.tap(find.text('Sessions'));
+      await tester.tap(_chatSessionsButton());
       await tester.pumpAndSettle();
       await tester.tap(find.text('Next session'));
       await tester.pump();
@@ -13353,7 +13681,7 @@ void main() {
       expect(find.text('Old selected session text'), findsNothing);
       expect(find.text(copy.chatComposerPlaceholder), findsOneWidget);
 
-      await tester.tap(find.text('Sessions'));
+      await tester.tap(_chatSessionsButton());
       await tester.pumpAndSettle();
       expect(find.text('Next session'), findsOneWidget);
       expect(find.text('Old session'), findsOneWidget);
@@ -13416,7 +13744,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Sessions'));
+      await tester.tap(_chatSessionsButton());
       await tester.pumpAndSettle();
       await tester.tap(find.text('Next session'));
       await tester.pump();
@@ -13713,7 +14041,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Sessions'));
+      await tester.tap(_chatSessionsButton());
       await tester.pumpAndSettle();
       expect(find.text('New session'), findsOneWidget);
 
@@ -13731,6 +14059,76 @@ void main() {
       expect(find.text('New session'), findsNothing);
     },
   );
+
+  testWidgets('chat top utility bar keeps frequent controls visually quiet', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_buildChatHarness());
+    await tester.pumpAndSettle();
+
+    final Finder sessionsButton = _chatSessionsButton();
+    final Finder statusPill = find.byKey(
+      const ValueKey<String>('chat-runtime-status-pill'),
+    );
+
+    expect(sessionsButton, findsOneWidget);
+    expect(statusPill, findsOneWidget);
+    expect(find.text('Sessions'), findsNothing);
+    expect(find.text('Local'), findsOneWidget);
+    expect(find.text('SAFE'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: statusPill,
+        matching: find.byKey(
+          const ValueKey<String>('chat-runtime-selector-label'),
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: statusPill,
+        matching: find.byKey(const ValueKey<String>('chat-runtime-mode-label')),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('chat transcript rows are lazily built while scrolling', (
+    tester,
+  ) async {
+    final messages = List<ChatMessageData>.generate(
+      120,
+      (index) => ChatMessageData(
+        messageId: 'lazy-message-$index',
+        kind: index.isEven ? ChatMessageKind.inbound : ChatMessageKind.outbound,
+        text: 'Transcript message $index',
+      ),
+    );
+
+    await tester.pumpWidget(_buildChatHarness(messages: messages));
+    await tester.pumpAndSettle();
+
+    final firstBubble = find.byKey(
+      const ValueKey<String>('chat-bubble-lazy-message-0'),
+    );
+    final lastBubble = find.byKey(
+      const ValueKey<String>('chat-bubble-lazy-message-119'),
+    );
+
+    final scrollView = _chatScrollView();
+    final scrollableState = _scrollableStateFor(tester, scrollView);
+    scrollableState.position.jumpTo(0);
+    await tester.pumpAndSettle();
+
+    expect(firstBubble, findsOneWidget);
+    expect(lastBubble, findsNothing);
+
+    scrollableState.position.jumpTo(scrollableState.position.maxScrollExtent);
+    await tester.pumpAndSettle();
+
+    expect(lastBubble, findsOneWidget);
+  });
 
   testWidgets(
     'runtime environment selector uses English labels, shows icons, and saves cloud selection',
@@ -16054,6 +16452,26 @@ Finder _findRichTextWithPlainText(String text) =>
       return widget.text.toPlainText() == text;
     });
 
+Finder _chatSessionsButton() =>
+    find.byKey(const ValueKey<String>('chat-sessions-button'));
+
+Finder _chatScrollView() =>
+    find.byKey(const ValueKey<String>('chat-scroll-view'));
+
+ScrollableState _scrollableStateFor(WidgetTester tester, Finder scrollHost) {
+  return tester.state<ScrollableState>(
+    find.descendant(of: scrollHost, matching: find.byType(Scrollable)).first,
+  );
+}
+
+void _jumpToScrollEnd(WidgetTester tester, Finder scrollHost) {
+  final ScrollableState scrollableState = _scrollableStateFor(
+    tester,
+    scrollHost,
+  );
+  scrollableState.position.jumpTo(scrollableState.position.maxScrollExtent);
+}
+
 void _activateRichTextLink(WidgetTester tester, Finder richTextFinder) {
   final RichText richText = tester.widget<RichText>(richTextFinder);
   final TapGestureRecognizer recognizer = _collectLeafTextSpans(
@@ -16066,6 +16484,7 @@ Widget _buildChatHarness({
   List<ChatPendingApprovalData> pendingApprovals =
       const <ChatPendingApprovalData>[],
   List<ChatTodoItemData> todos = const <ChatTodoItemData>[],
+  ChatComposerState? composer,
   List<ChatMessageData>? messages,
   List<ChatRunTraceData>? runTraces,
   ChatSessionsDrawerState? drawer,
@@ -16136,10 +16555,12 @@ Widget _buildChatHarness({
                 ),
               ],
           pendingApprovals: pendingApprovals,
-          composer: ChatComposerState(
-            placeholder: copy.chatComposerPlaceholder,
-            todos: todos,
-          ),
+          composer:
+              composer ??
+              ChatComposerState(
+                placeholder: copy.chatComposerPlaceholder,
+                todos: todos,
+              ),
           drawer:
               drawer ??
               const ChatSessionsDrawerState(

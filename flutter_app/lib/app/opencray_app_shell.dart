@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../core/bridge/opencray_host_bridge.dart';
 import '../core/copy/opencray_ui_copy.dart';
+import '../core/design/opencray_motion.dart';
 import '../core/models/opencray_shell_snapshot.dart';
 import '../core/design/opencray_widgets.dart';
 import '../features/chat/chat_feature.dart';
@@ -105,7 +106,7 @@ class _OpenCrayAppShellState extends State<OpenCrayAppShell> {
         );
       },
       child: Scaffold(
-        body: IndexedStack(
+        body: OpenCrayDirectionalIndexedStack(
           index: OpenCrayTab.values.indexOf(_selectedTab),
           children: [
             for (final tab in OpenCrayTab.values)

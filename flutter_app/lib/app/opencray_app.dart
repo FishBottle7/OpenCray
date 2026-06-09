@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/bridge/opencray_host_bridge.dart';
 import '../core/bridge/opencray_seed_bridge.dart';
 import '../core/copy/opencray_ui_copy.dart';
+import '../core/design/opencray_motion.dart';
 import '../core/models/opencray_shell_snapshot.dart';
 import '../core/design/opencray_theme.dart';
 import '../features/chat/chat_feature.dart';
@@ -48,7 +49,7 @@ class _OpenCrayAppState extends State<OpenCrayApp> {
         }
         if (entry.tab == OpenCrayTab.settings &&
             entry.settingsInitialPage != SettingsPage.home) {
-          return MaterialPageRoute<void>(
+          return openCrayHorizontalPageRoute<void>(
             settings: settings,
             builder: (context) => SettingsFeatureScreen(
               initialPage: entry.settingsInitialPage,
@@ -58,7 +59,7 @@ class _OpenCrayAppState extends State<OpenCrayApp> {
             ),
           );
         }
-        return MaterialPageRoute<void>(
+        return openCrayHorizontalPageRoute<void>(
           settings: settings,
           builder: (context) => _ShellEntry(
             tab: entry.tab,
