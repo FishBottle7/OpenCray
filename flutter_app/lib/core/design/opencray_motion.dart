@@ -152,10 +152,18 @@ class _OpenCrayDirectionalIndexedStackState
     if (OpenCrayMotion.reduce(context)) {
       return IndexedStack(index: safeIndex, children: widget.children);
     }
+    final List<int> paintOrder = <int>[
+      for (int index = 0; index < widget.children.length; index += 1)
+        if (index != _previousIndex && index != safeIndex) index,
+      if (_previousIndex != null && _previousIndex != safeIndex)
+        _previousIndex!,
+      safeIndex,
+    ];
     return Stack(
+      key: const ValueKey<String>('opencray-indexed-stack-paint-stack'),
       fit: StackFit.expand,
       children: [
-        for (int index = 0; index < widget.children.length; index += 1)
+        for (final int index in paintOrder)
           _buildLayer(index, safeIndex, widget.children[index]),
       ],
     );
@@ -165,6 +173,7 @@ class _OpenCrayDirectionalIndexedStackState
     final bool isCurrent = index == safeIndex;
     final bool isPrevious = index == _previousIndex;
     return Positioned.fill(
+      key: ValueKey<String>('opencray-indexed-stack-layer-$index'),
       child: Offstage(
         offstage: !isCurrent && !isPrevious,
         child: IgnorePointer(
