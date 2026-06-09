@@ -884,6 +884,7 @@ class _WorkspaceAccessSettingsPageState
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
       builder: (context) {
         final maxHeight = MediaQuery.sizeOf(context).height * 0.85;
         return SafeArea(
@@ -1276,8 +1277,11 @@ class _EnumSegmentedSelector<T> extends StatelessWidget {
                   borderRadius: BorderRadius.circular(999),
                   onTap: onChanged == null ? null : () => onChanged!(value),
                   child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 160),
-                    curve: Curves.easeOutCubic,
+                    duration: OpenCrayMotion.resolve(
+                      context,
+                      OpenCrayMotion.micro,
+                    ),
+                    curve: OpenCrayMotion.enter,
                     decoration: BoxDecoration(
                       color: value == currentValue
                           ? Colors.white

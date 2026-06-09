@@ -5,9 +5,25 @@ import 'package:flutter/services.dart';
 
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/copy/opencray_ui_copy.dart';
+import '../../core/design/opencray_motion.dart';
+import '../../core/design/opencray_widgets.dart';
 import '../../core/models/opencray_skills_snapshot.dart';
 
 enum SkillsPage { manage, install }
+
+enum _SkillInstallVisualState { idle, installing, installed, failed }
+
+enum _InstalledSkillLifecycleState {
+  updating,
+  updated,
+  deleting,
+  deleted,
+  enabling,
+  enabled,
+  disabling,
+  disabled,
+  failed,
+}
 
 const _shellBackground = Color(0xFFF5F5F7);
 const _surface = Colors.white;
@@ -64,6 +80,11 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
   bool _isSearching = false;
   bool _hasOpenedInitialActions = false;
   String? _pendingInstallSourceRef;
+  final Set<String> _recentlyInstalledSourceRefs = <String>{};
+  final Set<String> _failedInstallSourceRefs = <String>{};
+  final Map<String, _InstalledSkillLifecycleState>
+  _installedSkillLifecycleById = <String, _InstalledSkillLifecycleState>{};
+  final Set<String> _locallyRemovedInstalledSkillIds = <String>{};
   String _query = '';
   int _searchResultLimit = _initialSearchResultLimit;
   int _skillsRequestEpoch = 0;
@@ -199,10 +220,15 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                 onChanged: (page) => setState(() => _selectedPage = page),
               ),
               const SizedBox(height: 16),
-              if (_selectedPage == SkillsPage.manage)
-                _buildManagePage(installedSkills)
-              else
-                _buildInstallPage(availableSkills),
+              OpenCrayDirectionalSwitcher(
+                activeKey: ValueKey<String>(
+                  'skills-page-${_selectedPage.name}',
+                ),
+                direction: _selectedPage == SkillsPage.install ? 1 : -1,
+                child: _selectedPage == SkillsPage.manage
+                    ? _buildManagePage(installedSkills)
+                    : _buildInstallPage(availableSkills),
+              ),
             ],
           ),
         ),
@@ -213,10 +239,16 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
   Widget _buildManagePage(
     List<OpenCrayInstalledSkillSnapshot> installedSkills,
   ) {
+    final List<OpenCrayInstalledSkillSnapshot> visibleInstalledSkills =
+        installedSkills
+            .where(
+              (skill) => !_locallyRemovedInstalledSkillIds.contains(skill.id),
+            )
+            .toList(growable: false);
     if (!_isLoaded) {
       return const _LoadingCard();
     }
-    if (installedSkills.isEmpty) {
+    if (visibleInstalledSkills.isEmpty) {
       return _EmptyCard(
         title: widget.copy.skillsNoInstalledTitle,
         body: widget.copy.skillsNoInstalledBody,
@@ -242,14 +274,23 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
           ),
           child: Column(
             children: [
-              for (var index = 0; index < installedSkills.length; index++) ...[
+              for (
+                var index = 0;
+                index < visibleInstalledSkills.length;
+                index++
+              ) ...[
                 _SkillRow(
-                  skill: installedSkills[index],
+                  skill: visibleInstalledSkills[index],
+                  lifecycleState:
+                      _installedSkillLifecycleById[visibleInstalledSkills[index]
+                          .id],
+                  copy: widget.copy,
                   onToggle: (enabled) =>
-                      _setSkillEnabled(installedSkills[index], enabled),
-                  onMore: () => _openActionsSheet(installedSkills[index]),
+                      _setSkillEnabled(visibleInstalledSkills[index], enabled),
+                  onMore: () =>
+                      _openActionsSheet(visibleInstalledSkills[index]),
                 ),
-                if (index < installedSkills.length - 1)
+                if (index < visibleInstalledSkills.length - 1)
                   const Divider(
                     height: 1,
                     color: _border,
@@ -300,8 +341,11 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
             _DirectInstallCard(
               title: widget.copy.skillsDirectInstallTitle,
               body: widget.copy.skillsDirectInstallBody(trimmedQuery),
-              buttonLabel: widget.copy.skillsInstallButton,
-              isInstalling: _pendingInstallSourceRef == trimmedQuery,
+              installLabel: widget.copy.skillsInstallButton,
+              installingLabel: widget.copy.skillsInstallingButton,
+              installedLabel: widget.copy.skillsInstalledButton,
+              retryLabel: widget.copy.skillsRetryInstallButton,
+              installState: _installVisualStateFor(trimmedQuery),
               onInstall: () => _installFromSource(trimmedQuery),
             ),
           ],
@@ -415,9 +459,12 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                           ),
                     previewLabel: widget.copy.skillsPreviewButton,
                     installLabel: widget.copy.skillsInstallButton,
-                    isInstalling:
-                        _pendingInstallSourceRef ==
-                        availableSkills[index].sourceRef,
+                    installingLabel: widget.copy.skillsInstallingButton,
+                    installedLabel: widget.copy.skillsInstalledButton,
+                    retryLabel: widget.copy.skillsRetryInstallButton,
+                    installState: _installVisualStateFor(
+                      availableSkills[index].sourceRef,
+                    ),
                     onPreview: () =>
                         _previewSuggestedSkill(availableSkills[index]),
                     onInstall: () =>
@@ -607,6 +654,12 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
     bool enabled,
   ) async {
     final previous = skill.isEnabled;
+    _setInstalledSkillLifecycle(
+      skill.id,
+      enabled
+          ? _InstalledSkillLifecycleState.enabling
+          : _InstalledSkillLifecycleState.disabling,
+    );
     setState(() {
       _snapshot = OpenCraySkillsSnapshot(
         installedSkills: _snapshot.installedSkills
@@ -630,6 +683,15 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
     });
     try {
       await widget.bridge.setSkillEnabled(skill.id, enabled);
+      if (mounted) {
+        _setInstalledSkillLifecycle(
+          skill.id,
+          enabled
+              ? _InstalledSkillLifecycleState.enabled
+              : _InstalledSkillLifecycleState.disabled,
+        );
+        _scheduleInstalledSkillLifecycleClear(skill.id);
+      }
     } catch (_) {
       if (!mounted) {
         return;
@@ -654,15 +716,75 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
           suggestedSkills: _snapshot.suggestedSkills,
           suggestedSkillsMayHaveMore: _snapshot.suggestedSkillsMayHaveMore,
         );
+        _installedSkillLifecycleById[skill.id] =
+            _InstalledSkillLifecycleState.failed;
       });
       _showMessage(widget.copy.skillsUpdateFailed(skill.name));
     }
+  }
+
+  void _setInstalledSkillLifecycle(
+    String skillId,
+    _InstalledSkillLifecycleState state,
+  ) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _installedSkillLifecycleById[skillId] = state;
+    });
+  }
+
+  void _scheduleInstalledSkillLifecycleClear(String skillId) {
+    Future<void>.delayed(
+      OpenCrayMotion.resolve(context, OpenCrayMotion.panel),
+      () {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _installedSkillLifecycleById.remove(skillId);
+        });
+      },
+    );
+  }
+
+  void _scheduleInstalledSkillRemoval(String skillId) {
+    Future<void>.delayed(
+      OpenCrayMotion.resolve(context, OpenCrayMotion.panel),
+      () {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _installedSkillLifecycleById.remove(skillId);
+          _locallyRemovedInstalledSkillIds.add(skillId);
+        });
+      },
+    );
   }
 
   Future<void> _installSuggestedSkill(
     OpenCraySuggestedSkillSnapshot skill,
   ) async {
     await _installFromSource(skill.sourceRef, fallbackName: skill.name);
+  }
+
+  _SkillInstallVisualState _installVisualStateFor(String sourceRef) {
+    final normalizedSourceRef = sourceRef.trim();
+    if (normalizedSourceRef.isEmpty) {
+      return _SkillInstallVisualState.idle;
+    }
+    if (_pendingInstallSourceRef == normalizedSourceRef) {
+      return _SkillInstallVisualState.installing;
+    }
+    if (_failedInstallSourceRefs.contains(normalizedSourceRef)) {
+      return _SkillInstallVisualState.failed;
+    }
+    if (_recentlyInstalledSourceRefs.contains(normalizedSourceRef)) {
+      return _SkillInstallVisualState.installed;
+    }
+    return _SkillInstallVisualState.idle;
   }
 
   Future<void> _loadMoreSearchResults() async {
@@ -691,6 +813,8 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
     }
     setState(() {
       _pendingInstallSourceRef = normalizedSourceRef;
+      _failedInstallSourceRefs.remove(normalizedSourceRef);
+      _recentlyInstalledSourceRefs.remove(normalizedSourceRef);
     });
     try {
       final message = await widget.bridge.installSkillSource(
@@ -700,11 +824,18 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
       if (mounted && showMessage && message != null && message.isNotEmpty) {
         _showMessage(message);
       }
-      if (mounted && _query.trim() == normalizedSourceRef) {
-        _searchController.clear();
+      if (mounted) {
+        setState(() {
+          _recentlyInstalledSourceRefs.add(normalizedSourceRef);
+        });
       }
       return;
     } catch (error) {
+      if (mounted) {
+        setState(() {
+          _failedInstallSourceRefs.add(normalizedSourceRef);
+        });
+      }
       if (mounted && showMessage) {
         _showMessage(
           _errorMessage(error) ??
@@ -716,7 +847,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
               ),
         );
       }
-      rethrow;
+      return;
     } finally {
       if (mounted && _pendingInstallSourceRef == normalizedSourceRef) {
         setState(() {
@@ -1013,6 +1144,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
     await showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
       builder: (context) {
         return SafeArea(
           top: false,
@@ -1200,13 +1332,28 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
   Future<void> _updateInstalledSkill(
     OpenCrayInstalledSkillSnapshot skill,
   ) async {
+    _setInstalledSkillLifecycle(
+      skill.id,
+      _InstalledSkillLifecycleState.updating,
+    );
     try {
       final message = await widget.bridge.updateInstalledSkill(skill.id);
       if (mounted && message != null && message.isNotEmpty) {
         _showMessage(message);
       }
+      if (mounted) {
+        _setInstalledSkillLifecycle(
+          skill.id,
+          _InstalledSkillLifecycleState.updated,
+        );
+        _scheduleInstalledSkillLifecycleClear(skill.id);
+      }
     } catch (error) {
       if (mounted) {
+        _setInstalledSkillLifecycle(
+          skill.id,
+          _InstalledSkillLifecycleState.failed,
+        );
         _showMessage(
           _errorMessage(error) ?? widget.copy.skillsUpdateFailed(skill.name),
         );
@@ -1217,13 +1364,28 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
   Future<void> _deleteInstalledSkill(
     OpenCrayInstalledSkillSnapshot skill,
   ) async {
+    _setInstalledSkillLifecycle(
+      skill.id,
+      _InstalledSkillLifecycleState.deleting,
+    );
     try {
       final message = await widget.bridge.deleteInstalledSkill(skill.id);
       if (mounted && message != null && message.isNotEmpty) {
         _showMessage(message);
       }
+      if (mounted) {
+        _setInstalledSkillLifecycle(
+          skill.id,
+          _InstalledSkillLifecycleState.deleted,
+        );
+        _scheduleInstalledSkillRemoval(skill.id);
+      }
     } catch (_) {
       if (mounted) {
+        _setInstalledSkillLifecycle(
+          skill.id,
+          _InstalledSkillLifecycleState.failed,
+        );
         _showMessage(widget.copy.skillsRemoveFailed(skill.name));
       }
     }
@@ -1310,31 +1472,67 @@ class _SegmentedControl extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: const Color(0xFFECEEF3),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(4),
-        child: Row(
-          children: [
-            Expanded(
-              child: _SegmentButton(
-                label: copy.skillsManageTab,
-                selected: selectedPage == SkillsPage.manage,
-                onTap: () => onChanged(SkillsPage.manage),
-              ),
-            ),
-            const SizedBox(width: 4),
-            Expanded(
-              child: _SegmentButton(
-                label: copy.skillsInstallTab,
-                selected: selectedPage == SkillsPage.install,
-                onTap: () => onChanged(SkillsPage.install),
-              ),
-            ),
-          ],
+    final bool installSelected = selectedPage == SkillsPage.install;
+    return SizedBox(
+      height: 36,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: const Color(0xFFECEEF3),
+          borderRadius: BorderRadius.circular(999),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              const double segmentGap = 4;
+              final double indicatorWidth =
+                  (constraints.maxWidth - segmentGap) / 2;
+              return Stack(
+                fit: StackFit.expand,
+                children: [
+                  AnimatedPositioned(
+                    key: const ValueKey<String>('skills-segment-indicator'),
+                    duration: OpenCrayMotion.resolve(
+                      context,
+                      OpenCrayMotion.expand,
+                    ),
+                    curve: OpenCrayMotion.spatial,
+                    left: installSelected ? indicatorWidth + segmentGap : 0,
+                    top: 0,
+                    bottom: 0,
+                    width: indicatorWidth,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    ),
+                  ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _SegmentButton(
+                          key: const ValueKey<String>('skills-segment-manage'),
+                          label: copy.skillsManageTab,
+                          selected: selectedPage == SkillsPage.manage,
+                          onTap: () => onChanged(SkillsPage.manage),
+                        ),
+                      ),
+                      const SizedBox(width: segmentGap),
+                      Expanded(
+                        child: _SegmentButton(
+                          key: const ValueKey<String>('skills-segment-install'),
+                          label: copy.skillsInstallTab,
+                          selected: installSelected,
+                          onTap: () => onChanged(SkillsPage.install),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              );
+            },
+          ),
         ),
       ),
     );
@@ -1343,6 +1541,7 @@ class _SegmentedControl extends StatelessWidget {
 
 class _SegmentButton extends StatelessWidget {
   const _SegmentButton({
+    super.key,
     required this.label,
     required this.selected,
     required this.onTap,
@@ -1357,24 +1556,21 @@ class _SegmentButton extends StatelessWidget {
     return InkWell(
       borderRadius: BorderRadius.circular(999),
       onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutCubic,
+      child: SizedBox(
         height: 28,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: selected ? Colors.white : Colors.transparent,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 14,
-            height: 1.1,
-            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-            color: const Color(
-              0xFF111111,
-            ).withValues(alpha: selected ? 1 : 0.72),
+        child: Center(
+          child: AnimatedDefaultTextStyle(
+            duration: OpenCrayMotion.resolve(context, OpenCrayMotion.quick),
+            curve: OpenCrayMotion.enter,
+            style: TextStyle(
+              fontSize: 14,
+              height: 1.1,
+              fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              color: const Color(
+                0xFF111111,
+              ).withValues(alpha: selected ? 1 : 0.72),
+            ),
+            child: Text(label),
           ),
         ),
       ),
@@ -1385,11 +1581,15 @@ class _SegmentButton extends StatelessWidget {
 class _SkillRow extends StatelessWidget {
   const _SkillRow({
     required this.skill,
+    required this.copy,
+    required this.lifecycleState,
     required this.onToggle,
     required this.onMore,
   });
 
   final OpenCrayInstalledSkillSnapshot skill;
+  final OpenCrayUiCopy copy;
+  final _InstalledSkillLifecycleState? lifecycleState;
   final ValueChanged<bool> onToggle;
   final VoidCallback onMore;
 
@@ -1424,6 +1624,14 @@ class _SkillRow extends StatelessWidget {
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
                 ),
+                if (lifecycleState != null) ...[
+                  const SizedBox(height: 8),
+                  _InstalledSkillLifecyclePill(
+                    skillId: skill.id,
+                    state: lifecycleState!,
+                    copy: copy,
+                  ),
+                ],
               ],
             ),
           ),
@@ -1440,31 +1648,121 @@ class _SkillRow extends StatelessWidget {
               splashRadius: 18,
               icon: const Icon(Icons.more_horiz_rounded, size: 16),
               color: const Color(0xFF8E8E93),
-              onPressed: onMore,
+              onPressed: lifecycleState == null ? onMore : null,
             ),
           ),
           const SizedBox(width: 12),
-          _SkillToggle(value: skill.isEnabled, onChanged: onToggle),
+          _SkillToggle(
+            value: skill.isEnabled,
+            onChanged: lifecycleState == null ? onToggle : null,
+          ),
         ],
       ),
     );
   }
 }
 
+class _InstalledSkillLifecyclePill extends StatelessWidget {
+  const _InstalledSkillLifecyclePill({
+    required this.skillId,
+    required this.state,
+    required this.copy,
+  });
+
+  final String skillId;
+  final _InstalledSkillLifecycleState state;
+  final OpenCrayUiCopy copy;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isFailed = state == _InstalledSkillLifecycleState.failed;
+    final bool isDone =
+        state == _InstalledSkillLifecycleState.updated ||
+        state == _InstalledSkillLifecycleState.deleted ||
+        state == _InstalledSkillLifecycleState.enabled ||
+        state == _InstalledSkillLifecycleState.disabled;
+    final bool isPending =
+        state == _InstalledSkillLifecycleState.updating ||
+        state == _InstalledSkillLifecycleState.deleting ||
+        state == _InstalledSkillLifecycleState.enabling ||
+        state == _InstalledSkillLifecycleState.disabling;
+    final Color textColor = isFailed
+        ? _danger
+        : isDone
+        ? const Color(0xFF248A3D)
+        : _textSecondary;
+    final Color surfaceColor = isFailed
+        ? const Color(0xFFFFF0F0)
+        : isDone
+        ? const Color(0xFFEAF7EF)
+        : const Color(0xFFF1F2F6);
+    return AnimatedContainer(
+      key: ValueKey<String>('skills-manage-lifecycle-$skillId-${state.name}'),
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: textColor.withValues(alpha: 0.14)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isPending) ...[
+            SizedBox.square(
+              dimension: 12,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.5,
+                color: textColor,
+              ),
+            ),
+            const SizedBox(width: 6),
+          ],
+          Text(
+            _installedSkillLifecycleLabel(copy, state),
+            style: TextStyle(
+              fontSize: 12,
+              height: 1.1,
+              fontWeight: FontWeight.w700,
+              color: textColor,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _installedSkillLifecycleLabel(
+  OpenCrayUiCopy copy,
+  _InstalledSkillLifecycleState state,
+) => switch (state) {
+  _InstalledSkillLifecycleState.updating => copy.skillsUpdatingButton,
+  _InstalledSkillLifecycleState.updated => copy.skillsUpdatedButton,
+  _InstalledSkillLifecycleState.deleting => copy.skillsDeletingButton,
+  _InstalledSkillLifecycleState.deleted => copy.skillsDeletedButton,
+  _InstalledSkillLifecycleState.enabling => copy.skillsEnablingButton,
+  _InstalledSkillLifecycleState.enabled => copy.skillsEnabledButton,
+  _InstalledSkillLifecycleState.disabling => copy.skillsDisablingButton,
+  _InstalledSkillLifecycleState.disabled => copy.skillsDisabledButton,
+  _InstalledSkillLifecycleState.failed => copy.skillsActionFailedButton,
+};
+
 class _SkillToggle extends StatelessWidget {
   const _SkillToggle({required this.value, required this.onChanged});
 
   final bool value;
-  final ValueChanged<bool> onChanged;
+  final ValueChanged<bool>? onChanged;
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: () => onChanged(!value),
+      onTap: onChanged == null ? null : () => onChanged!(!value),
       behavior: HitTestBehavior.opaque,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 160),
-        curve: Curves.easeOutCubic,
+        duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+        curve: OpenCrayMotion.enter,
         width: 50,
         height: 30,
         decoration: BoxDecoration(
@@ -1561,7 +1859,10 @@ class _SuggestedRow extends StatelessWidget {
     required this.installsLabel,
     required this.previewLabel,
     required this.installLabel,
-    required this.isInstalling,
+    required this.installingLabel,
+    required this.installedLabel,
+    required this.retryLabel,
+    required this.installState,
     required this.onPreview,
     required this.onInstall,
   });
@@ -1570,12 +1871,37 @@ class _SuggestedRow extends StatelessWidget {
   final String? installsLabel;
   final String previewLabel;
   final String installLabel;
-  final bool isInstalling;
+  final String installingLabel;
+  final String installedLabel;
+  final String retryLabel;
+  final _SkillInstallVisualState installState;
   final VoidCallback onPreview;
   final VoidCallback onInstall;
 
   @override
   Widget build(BuildContext context) {
+    final bool isInstalling =
+        installState == _SkillInstallVisualState.installing;
+    final bool isInstalled = installState == _SkillInstallVisualState.installed;
+    final bool didFail = installState == _SkillInstallVisualState.failed;
+    final String resolvedInstallLabel = switch (installState) {
+      _SkillInstallVisualState.installing => installingLabel,
+      _SkillInstallVisualState.installed => installedLabel,
+      _SkillInstallVisualState.failed => retryLabel,
+      _SkillInstallVisualState.idle => installLabel,
+    };
+    final Color installBackground = switch (installState) {
+      _SkillInstallVisualState.installing => const Color(0xFFF1F2F6),
+      _SkillInstallVisualState.installed => const Color(0xFFEAF7EF),
+      _SkillInstallVisualState.failed => const Color(0xFFFFF0F0),
+      _SkillInstallVisualState.idle => const Color(0xFFEEF5FF),
+    };
+    final Color installTextColor = switch (installState) {
+      _SkillInstallVisualState.installing => _textSecondary,
+      _SkillInstallVisualState.installed => const Color(0xFF248A3D),
+      _SkillInstallVisualState.failed => const Color(0xFFFF3B30),
+      _SkillInstallVisualState.idle => _accent,
+    };
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
       child: Row(
@@ -1682,25 +2008,49 @@ class _SuggestedRow extends StatelessWidget {
               const SizedBox(height: 8),
               InkWell(
                 borderRadius: BorderRadius.circular(999),
-                onTap: isInstalling ? null : onInstall,
-                child: Container(
+                onTap: isInstalling || isInstalled ? null : onInstall,
+                child: AnimatedContainer(
+                  key: ValueKey<String>(
+                    'skills-install-action-${item.sourceRef}-${installState.name}',
+                  ),
+                  duration: OpenCrayMotion.resolve(
+                    context,
+                    OpenCrayMotion.micro,
+                  ),
+                  curve: OpenCrayMotion.enter,
+                  constraints: const BoxConstraints(minWidth: 76),
                   padding: const EdgeInsets.symmetric(
                     horizontal: 10,
                     vertical: 6,
                   ),
                   decoration: BoxDecoration(
-                    color: isInstalling
-                        ? const Color(0xFFF1F2F6)
-                        : const Color(0xFFEEF5FF),
+                    color: installBackground,
                     borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: didFail
+                          ? const Color(0xFFFF3B30).withValues(alpha: 0.22)
+                          : Colors.transparent,
+                    ),
                   ),
-                  child: Text(
-                    isInstalling ? '...' : installLabel,
-                    style: TextStyle(
-                      fontSize: 12,
-                      height: 1.1,
-                      fontWeight: FontWeight.w600,
-                      color: isInstalling ? _textSecondary : _accent,
+                  child: AnimatedSwitcher(
+                    duration: OpenCrayMotion.resolve(
+                      context,
+                      OpenCrayMotion.micro,
+                    ),
+                    switchInCurve: OpenCrayMotion.enter,
+                    switchOutCurve: OpenCrayMotion.exit,
+                    child: Text(
+                      resolvedInstallLabel,
+                      key: ValueKey<String>(
+                        'skills-install-label-${item.sourceRef}-${installState.name}',
+                      ),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 12,
+                        height: 1.1,
+                        fontWeight: FontWeight.w600,
+                        color: installTextColor,
+                      ),
                     ),
                   ),
                 ),
@@ -1717,19 +2067,47 @@ class _DirectInstallCard extends StatelessWidget {
   const _DirectInstallCard({
     required this.title,
     required this.body,
-    required this.buttonLabel,
-    required this.isInstalling,
+    required this.installLabel,
+    required this.installingLabel,
+    required this.installedLabel,
+    required this.retryLabel,
+    required this.installState,
     required this.onInstall,
   });
 
   final String title;
   final String body;
-  final String buttonLabel;
-  final bool isInstalling;
+  final String installLabel;
+  final String installingLabel;
+  final String installedLabel;
+  final String retryLabel;
+  final _SkillInstallVisualState installState;
   final VoidCallback onInstall;
 
   @override
   Widget build(BuildContext context) {
+    final bool isInstalling =
+        installState == _SkillInstallVisualState.installing;
+    final bool isInstalled = installState == _SkillInstallVisualState.installed;
+    final bool didFail = installState == _SkillInstallVisualState.failed;
+    final String resolvedInstallLabel = switch (installState) {
+      _SkillInstallVisualState.installing => installingLabel,
+      _SkillInstallVisualState.installed => installedLabel,
+      _SkillInstallVisualState.failed => retryLabel,
+      _SkillInstallVisualState.idle => installLabel,
+    };
+    final Color installBackground = switch (installState) {
+      _SkillInstallVisualState.installing => const Color(0xFFF1F2F6),
+      _SkillInstallVisualState.installed => const Color(0xFFEAF7EF),
+      _SkillInstallVisualState.failed => const Color(0xFFFFF0F0),
+      _SkillInstallVisualState.idle => const Color(0xFFEEF5FF),
+    };
+    final Color installTextColor = switch (installState) {
+      _SkillInstallVisualState.installing => _textSecondary,
+      _SkillInstallVisualState.installed => const Color(0xFF248A3D),
+      _SkillInstallVisualState.failed => const Color(0xFFFF3B30),
+      _SkillInstallVisualState.idle => _accent,
+    };
     return DecoratedBox(
       decoration: const BoxDecoration(
         color: _surface,
@@ -1770,25 +2148,46 @@ class _DirectInstallCard extends StatelessWidget {
             const SizedBox(width: 12),
             InkWell(
               borderRadius: BorderRadius.circular(999),
-              onTap: isInstalling ? null : onInstall,
-              child: Container(
+              onTap: isInstalling || isInstalled ? null : onInstall,
+              child: AnimatedContainer(
+                key: ValueKey<String>(
+                  'skills-direct-install-action-${installState.name}',
+                ),
+                duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+                curve: OpenCrayMotion.enter,
+                constraints: const BoxConstraints(minWidth: 76),
                 padding: const EdgeInsets.symmetric(
                   horizontal: 10,
                   vertical: 6,
                 ),
                 decoration: BoxDecoration(
-                  color: isInstalling
-                      ? const Color(0xFFF1F2F6)
-                      : const Color(0xFFEEF5FF),
+                  color: installBackground,
                   borderRadius: BorderRadius.circular(999),
+                  border: Border.all(
+                    color: didFail
+                        ? const Color(0xFFFF3B30).withValues(alpha: 0.22)
+                        : Colors.transparent,
+                  ),
                 ),
-                child: Text(
-                  isInstalling ? '...' : buttonLabel,
-                  style: TextStyle(
-                    fontSize: 12,
-                    height: 1.1,
-                    fontWeight: FontWeight.w600,
-                    color: isInstalling ? _textSecondary : _accent,
+                child: AnimatedSwitcher(
+                  duration: OpenCrayMotion.resolve(
+                    context,
+                    OpenCrayMotion.micro,
+                  ),
+                  switchInCurve: OpenCrayMotion.enter,
+                  switchOutCurve: OpenCrayMotion.exit,
+                  child: Text(
+                    resolvedInstallLabel,
+                    key: ValueKey<String>(
+                      'skills-direct-install-label-${installState.name}',
+                    ),
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 12,
+                      height: 1.1,
+                      fontWeight: FontWeight.w600,
+                      color: installTextColor,
+                    ),
                   ),
                 ),
               ),
@@ -1889,15 +2288,10 @@ class _LoadingCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const DecoratedBox(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.all(Radius.circular(16)),
-      ),
-      child: Padding(
-        padding: EdgeInsets.all(20),
-        child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-      ),
+    return const OpenCrayStateCard(
+      key: ValueKey<String>('skills-state-loading'),
+      isLoading: true,
+      padding: EdgeInsets.all(20),
     );
   }
 }
@@ -1910,37 +2304,11 @@ class _EmptyCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.all(Radius.circular(16)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              title,
-              style: const TextStyle(
-                fontSize: 16,
-                height: 1.2,
-                fontWeight: FontWeight.w600,
-                color: _textPrimary,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              body,
-              style: const TextStyle(
-                fontSize: 14,
-                height: 1.35,
-                color: _textSecondary,
-              ),
-            ),
-          ],
-        ),
-      ),
+    return OpenCrayStateCard(
+      key: const ValueKey<String>('skills-state-empty'),
+      leadingIcon: Icons.extension_outlined,
+      title: title,
+      body: body,
     );
   }
 }

@@ -355,6 +355,23 @@ void main() {
     expect(find.text('Copy'), findsOneWidget);
     expect(find.text('Rename'), findsOneWidget);
     expect(find.text('Delete'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('files-toolbar-standard-group')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('files-toolbar-danger-group')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey<String>('files-toolbar-standard-group')),
+        matching: find.byKey(
+          const ValueKey<String>('files-toolbar-action-delete'),
+        ),
+      ),
+      findsNothing,
+    );
     expect(find.text('New'), findsOneWidget);
 
     await tester.tap(find.byKey(const ValueKey<String>('files-row-todo.txt')));
@@ -371,6 +388,89 @@ void main() {
     expect(
       find.byKey(const ValueKey<String>('files-selection-toolbar')),
       findsNothing,
+    );
+  });
+
+  testWidgets('search shows an explicit filtered file list state', (
+    tester,
+  ) async {
+    final bridge = OpenCraySeedBridge(
+      initialFilesSnapshot: const OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 1,
+        fileCount: 2,
+        entryCount: 3,
+        isTruncated: false,
+        children: <OpenCrayFileTreeNodeSnapshot>[
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'docs',
+            relativePath: 'docs',
+            isDirectory: true,
+            childCount: 1,
+            sizeBytes: null,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[],
+          ),
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'todo.txt',
+            relativePath: 'todo.txt',
+            isDirectory: false,
+            childCount: 0,
+            sizeBytes: 128,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[],
+          ),
+          OpenCrayFileTreeNodeSnapshot(
+            name: 'notes.md',
+            relativePath: 'notes.md',
+            isDirectory: false,
+            childCount: 0,
+            sizeBytes: 256,
+            isTruncated: false,
+            children: <OpenCrayFileTreeNodeSnapshot>[],
+          ),
+        ],
+      ),
+    );
+
+    await _pumpFilesScreen(tester, bridge: bridge);
+
+    await tester.enterText(
+      find.byKey(const ValueKey<String>('files-search-field')),
+      'todo',
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('files-search-surface')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('files-filter-status')),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Filtering "todo"'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('files-row-todo.txt')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('files-row-notes.md')),
+      findsNothing,
+    );
+
+    await tester.tap(find.byKey(const ValueKey<String>('files-search-clear')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('files-filter-status')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('files-row-notes.md')),
+      findsOneWidget,
     );
   });
 
@@ -479,6 +579,11 @@ void main() {
       find.byKey(const ValueKey<String>('files-toolbar-action-paste')),
       findsOneWidget,
     );
+    expect(
+      find.byKey(const ValueKey<String>('files-operation-status-moveReady')),
+      findsOneWidget,
+    );
+    expect(find.text('Move ready'), findsOneWidget);
 
     final opacity = tester.widget<AnimatedOpacity>(
       find.ancestor(
@@ -494,9 +599,16 @@ void main() {
     await tester.tap(
       find.byKey(const ValueKey<String>('files-toolbar-action-paste')),
     );
-    await tester.pumpAndSettle();
+    await tester.pump();
 
     expect(find.text('todo.txt'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('files-operation-status-done')),
+      findsOneWidget,
+    );
+    expect(find.text('Done'), findsOneWidget);
+
+    await tester.pump(const Duration(milliseconds: 700));
     expect(
       find.byKey(const ValueKey<String>('files-toolbar-action-paste')),
       findsNothing,
@@ -752,7 +864,7 @@ void main() {
 
     await tester.drag(
       find.byKey(const ValueKey<String>('files-scroll-view')),
-      const Offset(0, -260),
+      const Offset(0, -520),
     );
     await tester.pumpAndSettle();
 
@@ -764,6 +876,55 @@ void main() {
       find.byKey(const ValueKey<String>('files-sticky-new')),
       findsOneWidget,
     );
+  });
+
+  testWidgets('large directory rows are lazily built while scrolling', (
+    tester,
+  ) async {
+    final children = List<OpenCrayFileTreeNodeSnapshot>.generate(
+      90,
+      (index) => OpenCrayFileTreeNodeSnapshot(
+        name: 'entry-$index.txt',
+        relativePath: 'entry-$index.txt',
+        isDirectory: false,
+        childCount: 0,
+        sizeBytes: 256 + index,
+        isTruncated: false,
+        children: const <OpenCrayFileTreeNodeSnapshot>[],
+      ),
+    );
+    final bridge = OpenCraySeedBridge(
+      initialFilesSnapshot: OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 0,
+        fileCount: children.length,
+        entryCount: children.length,
+        isTruncated: false,
+        children: children,
+      ),
+    );
+
+    await _pumpFilesScreen(tester, bridge: bridge);
+
+    final firstRow = find.byKey(
+      const ValueKey<String>('files-row-entry-0.txt'),
+    );
+    final lastRow = find.byKey(
+      const ValueKey<String>('files-row-entry-89.txt'),
+    );
+
+    expect(firstRow, findsOneWidget);
+    expect(lastRow, findsNothing);
+
+    final scrollView = find.byKey(const ValueKey<String>('files-scroll-view'));
+    for (var attempt = 0; attempt < 14 && !tester.any(lastRow); attempt++) {
+      await tester.drag(scrollView, const Offset(0, -520));
+      await tester.pumpAndSettle();
+    }
+
+    expect(lastRow, findsOneWidget);
   });
 
   testWidgets('new creates supported text files and opens the editor', (

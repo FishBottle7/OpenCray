@@ -12,6 +12,8 @@ import '../../core/models/opencray_file_image_preview.dart';
 import '../../core/models/opencray_file_text_preview.dart';
 import '../../core/models/opencray_files_snapshot.dart';
 import '../../core/models/opencray_workspace_text_document.dart';
+import '../../core/design/opencray_motion.dart';
+import '../../core/design/opencray_widgets.dart';
 import '../../core/widgets/opencray_image_bytes_view.dart';
 import '../../core/widgets/opencray_markdown.dart';
 
@@ -39,6 +41,17 @@ class _NewEntryIntent {
 }
 
 enum _TextPreviewDialogResult { edit }
+
+enum _FilesOperationState {
+  copyReady,
+  moveReady,
+  pasting,
+  deleting,
+  done,
+  failed,
+}
+
+const double _fallbackStickyBrowseBarTriggerScrollOffset = 200;
 
 class FilesFeatureScreen extends StatefulWidget {
   const FilesFeatureScreen({
@@ -87,8 +100,10 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
   bool _isMutating = false;
   bool _isSelectionMode = false;
   bool _showStickyBrowseBar = false;
+  double? _stickyBrowseBarTriggerScrollOffset;
   Set<String> _selectedPaths = <String>{};
   _PendingTransfer? _pendingTransfer;
+  _FilesOperationState? _operationState;
   Timer? _autoRefreshTimer;
   late AppLifecycleState _appLifecycleState;
   bool _isSnapshotLoadInFlight = false;
@@ -96,8 +111,10 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
   bool _queuedSnapshotLoadShowBusyIndicator = false;
 
   bool get _hasPendingTransfer => _pendingTransfer != null;
-  bool get _handlesBackPress => _isSelectionMode || _hasPendingTransfer;
-  bool get _showsSelectionToolbar => _isSelectionMode || _hasPendingTransfer;
+  bool get _handlesBackPress =>
+      _isSelectionMode || _hasPendingTransfer || _operationState != null;
+  bool get _showsSelectionToolbar =>
+      _isSelectionMode || _hasPendingTransfer || _operationState != null;
 
   @override
   void initState() {
@@ -119,11 +136,12 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
     }
     if (oldWidget.isTabActive &&
         !widget.isTabActive &&
-        (_isSelectionMode || _hasPendingTransfer)) {
+        (_isSelectionMode || _hasPendingTransfer || _operationState != null)) {
       setState(() {
         _isSelectionMode = false;
         _selectedPaths = <String>{};
         _pendingTransfer = null;
+        _operationState = null;
       });
     }
     if (!oldWidget.isTabActive &&
@@ -181,61 +199,73 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
             children: [
               AbsorbPointer(
                 absorbing: _isMutating,
-                child: SingleChildScrollView(
+                child: CustomScrollView(
                   key: const ValueKey<String>('files-scroll-view'),
                   controller: _scrollController,
-                  padding: EdgeInsets.fromLTRB(
-                    20,
-                    8,
-                    20,
-                    _showsSelectionToolbar ? 118 : 28,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _TitleRow(
-                        copy: widget.copy,
-                        isSelectionMode: _isSelectionMode,
-                        selectedCount: _selectedPaths.length,
-                        onDone: _isSelectionMode ? _exitSelectionMode : null,
+                  slivers: [
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _TitleRow(
+                              copy: widget.copy,
+                              isSelectionMode: _isSelectionMode,
+                              selectedCount: _selectedPaths.length,
+                              onDone: _isSelectionMode
+                                  ? _exitSelectionMode
+                                  : null,
+                            ),
+                            const SizedBox(height: 16),
+                            _SearchBar(
+                              controller: _searchController,
+                              hint: widget.copy.filesSearchHint,
+                              clearLabel: widget.copy.filesSearchClearAction,
+                            ),
+                            const SizedBox(height: 12),
+                            _LocationCard(
+                              copy: widget.copy,
+                              snapshot: snapshot,
+                              directoryName: _currentDirectoryName(snapshot),
+                              absolutePath: _currentAbsolutePath(snapshot),
+                              visibleItemCount: currentEntries.length,
+                              isLoading: _isLoading,
+                              isMutating: _isMutating,
+                              actionRowKey: _locationActionRowKey,
+                              breadcrumbs: _visibleBreadcrumbs(),
+                              breadcrumbsEnabled: !_isSelectionMode,
+                              onRefresh: _handleManualRefresh,
+                              onCreateFolder: _handleCreateFolder,
+                              onBreadcrumbTap: _handleBreadcrumbTap,
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                        ),
                       ),
-                      const SizedBox(height: 16),
-                      _SearchBar(
-                        controller: _searchController,
-                        hint: widget.copy.filesSearchHint,
+                    ),
+                    _DirectoryCard(
+                      copy: widget.copy,
+                      query: _query,
+                      isFiltered: _query.trim().isNotEmpty,
+                      snapshot: snapshot,
+                      entries: currentEntries,
+                      isLoading: _isLoading,
+                      errorMessage: _errorMessage,
+                      isSelectionMode: _isSelectionMode,
+                      selectedPaths: _selectedPaths,
+                      pendingTransfer: _pendingTransfer,
+                      onEntryTap: _handleEntryTap,
+                      onEntryLongPress: _handleEntryLongPress,
+                    ),
+                    SliverToBoxAdapter(
+                      child: SizedBox(
+                        height: _showsSelectionToolbar
+                            ? (_operationState == null ? 118 : 154)
+                            : 28,
                       ),
-                      const SizedBox(height: 12),
-                      _LocationCard(
-                        copy: widget.copy,
-                        snapshot: snapshot,
-                        directoryName: _currentDirectoryName(snapshot),
-                        absolutePath: _currentAbsolutePath(snapshot),
-                        visibleItemCount: currentEntries.length,
-                        isLoading: _isLoading,
-                        isMutating: _isMutating,
-                        actionRowKey: _locationActionRowKey,
-                        breadcrumbs: _visibleBreadcrumbs(),
-                        breadcrumbsEnabled: !_isSelectionMode,
-                        onRefresh: _handleManualRefresh,
-                        onCreateFolder: _handleCreateFolder,
-                        onBreadcrumbTap: _handleBreadcrumbTap,
-                      ),
-                      const SizedBox(height: 12),
-                      _DirectoryCard(
-                        copy: widget.copy,
-                        query: _query,
-                        snapshot: snapshot,
-                        entries: currentEntries,
-                        isLoading: _isLoading,
-                        errorMessage: _errorMessage,
-                        isSelectionMode: _isSelectionMode,
-                        selectedPaths: _selectedPaths,
-                        pendingTransfer: _pendingTransfer,
-                        onEntryTap: _handleEntryTap,
-                        onEntryLongPress: _handleEntryLongPress,
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
               if (_showStickyBrowseBar && snapshot != null)
@@ -253,15 +283,17 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
                     isBusy: _isLoading || _isMutating,
                   ),
                 ),
-              if (_showsSelectionToolbar)
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 0,
+                child: IgnorePointer(
+                  ignoring: !_showsSelectionToolbar,
                   child: _SelectionToolbar(
-                    key: const ValueKey<String>('files-selection-toolbar'),
                     copy: widget.copy,
+                    isVisible: _showsSelectionToolbar,
                     isPendingTransfer: _hasPendingTransfer,
+                    operationState: _operationState,
                     canShare: _isSelectionMode && _selectedPaths.isNotEmpty,
                     canMove: _isSelectionMode && _selectedPaths.isNotEmpty,
                     canCopy: _isSelectionMode && _selectedPaths.isNotEmpty,
@@ -285,6 +317,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
                         : null,
                   ),
                 ),
+              ),
             ],
           ),
         ),
@@ -364,21 +397,47 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
 
   void _syncStickyBarVisibility() {
     final actionContext = _locationActionRowKey.currentContext;
-    if (actionContext == null) {
-      return;
+    bool? shouldShow;
+    if (actionContext != null) {
+      final renderObject = actionContext.findRenderObject();
+      if (renderObject is RenderBox && renderObject.hasSize) {
+        final actionTop = renderObject.localToGlobal(Offset.zero).dy;
+        final threshold = MediaQuery.of(context).padding.top + 18;
+        final scrollOffset = _scrollController.hasClients
+            ? _scrollController.offset
+            : 0.0;
+        final measuredTriggerOffset = (scrollOffset + actionTop - threshold)
+            .clamp(0.0, double.infinity)
+            .toDouble();
+        final previousTriggerOffset = _stickyBrowseBarTriggerScrollOffset;
+        final triggerOffset =
+            previousTriggerOffset == null ||
+                measuredTriggerOffset < previousTriggerOffset
+            ? measuredTriggerOffset
+            : previousTriggerOffset;
+        _stickyBrowseBarTriggerScrollOffset = triggerOffset;
+        shouldShow = actionTop <= threshold || scrollOffset >= triggerOffset;
+      }
     }
-    final renderObject = actionContext.findRenderObject();
-    if (renderObject is! RenderBox || !renderObject.hasSize) {
-      return;
+
+    final bool nextShouldShow;
+    if (shouldShow == null) {
+      if (!_scrollController.hasClients) {
+        return;
+      }
+      final triggerOffset =
+          _stickyBrowseBarTriggerScrollOffset ??
+          _fallbackStickyBrowseBarTriggerScrollOffset;
+      nextShouldShow = _scrollController.offset >= triggerOffset;
+    } else {
+      nextShouldShow = shouldShow;
     }
-    final actionTop = renderObject.localToGlobal(Offset.zero).dy;
-    final threshold = MediaQuery.of(context).padding.top + 18;
-    final shouldShow = actionTop <= threshold;
-    if (shouldShow == _showStickyBrowseBar) {
+
+    if (nextShouldShow == _showStickyBrowseBar) {
       return;
     }
     setState(() {
-      _showStickyBrowseBar = shouldShow;
+      _showStickyBrowseBar = nextShouldShow;
     });
   }
 
@@ -514,6 +573,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
     FocusManager.instance.primaryFocus?.unfocus();
     setState(() {
       _pendingTransfer = null;
+      _operationState = null;
       _isSelectionMode = true;
       _selectedPaths = <String>{entry.relativePath};
     });
@@ -523,6 +583,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
     setState(() {
       _isSelectionMode = false;
       _selectedPaths = <String>{};
+      _operationState = null;
     });
   }
 
@@ -535,6 +596,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
       _isSelectionMode = false;
       _selectedPaths = <String>{};
       _pendingTransfer = null;
+      _operationState = null;
     });
     return true;
   }
@@ -639,7 +701,8 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
     if (!mounted || confirmed != true) {
       return;
     }
-    await _runSnapshotMutation(
+    _setOperationState(_FilesOperationState.deleting);
+    final didDelete = await _runSnapshotMutation(
       () => widget.bridge.deleteWorkspaceEntries(targets),
       applyState: (snapshot) {
         _snapshot = snapshot;
@@ -653,6 +716,13 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
         _errorMessage = null;
       },
     );
+    if (!mounted) {
+      return;
+    }
+    _setOperationState(
+      didDelete ? _FilesOperationState.done : _FilesOperationState.failed,
+    );
+    _scheduleOperationStateClear();
   }
 
   Future<void> _handleShare() async {
@@ -691,6 +761,9 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
       );
       _isSelectionMode = false;
       _selectedPaths = <String>{};
+      _operationState = move
+          ? _FilesOperationState.moveReady
+          : _FilesOperationState.copyReady;
     });
   }
 
@@ -699,7 +772,8 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
     if (pendingTransfer == null) {
       return;
     }
-    await _runSnapshotMutation(
+    _setOperationState(_FilesOperationState.pasting);
+    final didPaste = await _runSnapshotMutation(
       () => widget.bridge.pasteWorkspaceEntries(
         sourceRelativePaths: pendingTransfer.sourceRelativePaths,
         destinationRelativePath: _currentDirectoryPath,
@@ -715,6 +789,36 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
         _isSelectionMode = false;
         _pendingTransfer = null;
         _errorMessage = null;
+      },
+    );
+    if (!mounted) {
+      return;
+    }
+    _setOperationState(
+      didPaste ? _FilesOperationState.done : _FilesOperationState.failed,
+    );
+    _scheduleOperationStateClear();
+  }
+
+  void _setOperationState(_FilesOperationState state) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _operationState = state;
+    });
+  }
+
+  void _scheduleOperationStateClear() {
+    Future<void>.delayed(
+      OpenCrayMotion.resolve(context, OpenCrayMotion.panel),
+      () {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _operationState = null;
+        });
       },
     );
   }
@@ -961,7 +1065,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
       barrierDismissible: true,
       barrierLabel: barrierLabel ?? widget.copy.filesPreviewCloseAction,
       barrierColor: Colors.transparent,
-      transitionDuration: const Duration(milliseconds: 180),
+      transitionDuration: OpenCrayMotion.quick,
       pageBuilder: (dialogContext, animation, secondaryAnimation) {
         final media = MediaQuery.of(dialogContext);
         return GestureDetector(
@@ -983,8 +1087,11 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
                 SafeArea(
                   child: Center(
                     child: AnimatedPadding(
-                      duration: const Duration(milliseconds: 180),
-                      curve: Curves.easeOutCubic,
+                      duration: OpenCrayMotion.resolve(
+                        dialogContext,
+                        OpenCrayMotion.quick,
+                      ),
+                      curve: OpenCrayMotion.enter,
                       padding: EdgeInsets.fromLTRB(
                         20,
                         24,
@@ -1003,15 +1110,16 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
       transitionBuilder: (context, animation, secondaryAnimation, child) {
         final curved = CurvedAnimation(
           parent: animation,
-          curve: Curves.easeOutCubic,
-          reverseCurve: Curves.easeInCubic,
+          curve: OpenCrayMotion.enter,
+          reverseCurve: OpenCrayMotion.exit,
         );
-        return FadeTransition(
-          opacity: curved,
-          child: ScaleTransition(
-            scale: Tween<double>(begin: 0.96, end: 1).animate(curved),
-            child: child,
-          ),
+        final fade = FadeTransition(opacity: curved, child: child);
+        if (OpenCrayMotion.reduce(context)) {
+          return fade;
+        }
+        return ScaleTransition(
+          scale: Tween<double>(begin: 0.96, end: 1).animate(curved),
+          child: fade,
         );
       },
     );
@@ -1187,40 +1295,115 @@ class _TitleRow extends StatelessWidget {
   }
 }
 
-class _SearchBar extends StatelessWidget {
-  const _SearchBar({required this.controller, required this.hint});
+class _SearchBar extends StatefulWidget {
+  const _SearchBar({
+    required this.controller,
+    required this.hint,
+    required this.clearLabel,
+  });
 
   final TextEditingController controller;
   final String hint;
+  final String clearLabel;
+
+  @override
+  State<_SearchBar> createState() => _SearchBarState();
+}
+
+class _SearchBarState extends State<_SearchBar> {
+  late final FocusNode _focusNode = FocusNode()
+    ..addListener(_handleSearchStateChanged);
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_handleSearchStateChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _SearchBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller == widget.controller) {
+      return;
+    }
+    oldWidget.controller.removeListener(_handleSearchStateChanged);
+    widget.controller.addListener(_handleSearchStateChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_handleSearchStateChanged);
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _handleSearchStateChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
+    final bool hasQuery = widget.controller.text.trim().isNotEmpty;
+    final bool isActive = hasQuery || _focusNode.hasFocus;
+    return AnimatedContainer(
+      key: const ValueKey<String>('files-search-surface'),
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: isActive ? const Color(0xFFF9FBFF) : Colors.white,
         borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isActive
+              ? FilesFeatureScreen.accent.withValues(alpha: 0.28)
+              : Colors.transparent,
+        ),
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+        padding: const EdgeInsets.fromLTRB(12, 2, 8, 2),
         child: Row(
           children: [
-            const Icon(
+            Icon(
               CupertinoIcons.search,
               size: 18,
-              color: FilesFeatureScreen.textTertiary,
+              color: isActive
+                  ? FilesFeatureScreen.accent
+                  : FilesFeatureScreen.textTertiary,
             ),
             const SizedBox(width: 10),
             Expanded(
               child: TextField(
                 key: const ValueKey<String>('files-search-field'),
-                controller: controller,
+                controller: widget.controller,
+                focusNode: _focusNode,
                 decoration: InputDecoration(
                   border: InputBorder.none,
-                  hintText: hint,
+                  hintText: widget.hint,
                   hintStyle: const TextStyle(
                     fontSize: 14,
                     height: 1.2,
                     color: FilesFeatureScreen.textTertiary,
+                  ),
+                ),
+              ),
+            ),
+            AnimatedOpacity(
+              opacity: hasQuery ? 1 : 0,
+              duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+              curve: OpenCrayMotion.enter,
+              child: IgnorePointer(
+                ignoring: !hasQuery,
+                child: IconButton(
+                  key: const ValueKey<String>('files-search-clear'),
+                  tooltip: widget.clearLabel,
+                  onPressed: () => widget.controller.clear(),
+                  icon: const Icon(CupertinoIcons.xmark_circle_fill, size: 18),
+                  color: FilesFeatureScreen.textTertiary,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints.tightFor(
+                    width: 32,
+                    height: 32,
                   ),
                 ),
               ),
@@ -1503,8 +1686,10 @@ class _BreadcrumbTrail extends StatelessWidget {
               ),
             _BreadcrumbChip(
               segment: breadcrumbs[index],
+              isCurrent: index == breadcrumbs.length - 1,
               onTap:
-                  breadcrumbs[index].relativePath == null ||
+                  index == breadcrumbs.length - 1 ||
+                      breadcrumbs[index].relativePath == null ||
                       onBreadcrumbTap == null
                   ? null
                   : () => onBreadcrumbTap!(breadcrumbs[index].relativePath!),
@@ -1517,16 +1702,21 @@ class _BreadcrumbTrail extends StatelessWidget {
 }
 
 class _BreadcrumbChip extends StatelessWidget {
-  const _BreadcrumbChip({required this.segment, required this.onTap});
+  const _BreadcrumbChip({
+    required this.segment,
+    required this.isCurrent,
+    required this.onTap,
+  });
 
   final _BreadcrumbSegment segment;
+  final bool isCurrent;
   final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    final color = segment.relativePath == null
-        ? FilesFeatureScreen.textTertiary
-        : FilesFeatureScreen.textSecondary;
+    final color = isCurrent
+        ? FilesFeatureScreen.textPrimary
+        : FilesFeatureScreen.textTertiary;
     return InkWell(
       key: segment.relativePath == null
           ? null
@@ -1542,9 +1732,7 @@ class _BreadcrumbChip extends StatelessWidget {
           style: TextStyle(
             fontSize: 13,
             height: 1.2,
-            fontWeight: segment.relativePath == null
-                ? FontWeight.w500
-                : FontWeight.w600,
+            fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
             color: color,
           ),
         ),
@@ -1557,6 +1745,7 @@ class _DirectoryCard extends StatelessWidget {
   const _DirectoryCard({
     required this.copy,
     required this.query,
+    required this.isFiltered,
     required this.snapshot,
     required this.entries,
     required this.isLoading,
@@ -1570,6 +1759,7 @@ class _DirectoryCard extends StatelessWidget {
 
   final OpenCrayUiCopy copy;
   final String query;
+  final bool isFiltered;
   final OpenCrayFilesSnapshot? snapshot;
   final List<OpenCrayFileTreeNodeSnapshot> entries;
   final bool isLoading;
@@ -1583,39 +1773,28 @@ class _DirectoryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (isLoading && snapshot == null) {
-      return const _StateCard(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      return const SliverPadding(
+        padding: EdgeInsets.symmetric(horizontal: 20),
+        sliver: SliverToBoxAdapter(
+          child: OpenCrayStateCard(
+            key: ValueKey<String>('files-state-loading'),
+            isLoading: true,
+            padding: EdgeInsets.all(24),
+          ),
         ),
       );
     }
 
     if (errorMessage != null && snapshot == null) {
-      return _StateCard(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                copy.filesLoadFailed,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: FilesFeatureScreen.textPrimary,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                errorMessage!,
-                style: const TextStyle(
-                  fontSize: 14,
-                  height: 1.35,
-                  color: FilesFeatureScreen.textSecondary,
-                ),
-              ),
-            ],
+      return SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        sliver: SliverToBoxAdapter(
+          child: OpenCrayStateCard(
+            key: const ValueKey<String>('files-state-error'),
+            tone: OpenCrayStateTone.danger,
+            leadingIcon: Icons.error_outline,
+            title: copy.filesLoadFailed,
+            body: errorMessage!,
           ),
         ),
       );
@@ -1623,67 +1802,123 @@ class _DirectoryCard extends StatelessWidget {
 
     if (snapshot == null || entries.isEmpty) {
       final hasQuery = query.trim().isNotEmpty;
-      return _StateCard(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                hasQuery
-                    ? copy.filesNoMatchesTitle
-                    : copy.filesFolderEmptyTitle,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: FilesFeatureScreen.textPrimary,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                hasQuery
-                    ? copy.filesNoMatchesBody(query)
-                    : copy.filesFolderEmptyBody,
-                style: const TextStyle(
-                  fontSize: 14,
-                  height: 1.35,
-                  color: FilesFeatureScreen.textSecondary,
-                ),
-              ),
-            ],
+      return SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        sliver: SliverToBoxAdapter(
+          child: OpenCrayStateCard(
+            key: ValueKey<String>(
+              hasQuery ? 'files-state-filtered-empty' : 'files-state-empty',
+            ),
+            tone: hasQuery
+                ? OpenCrayStateTone.accent
+                : OpenCrayStateTone.neutral,
+            leadingIcon: hasQuery
+                ? Icons.search_off
+                : Icons.folder_open_outlined,
+            title: hasQuery
+                ? copy.filesNoMatchesTitle
+                : copy.filesFolderEmptyTitle,
+            body: hasQuery
+                ? copy.filesNoMatchesBody(query)
+                : copy.filesFolderEmptyBody,
           ),
         ),
       );
     }
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: FilesFeatureScreen.surface,
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-        child: Column(
-          children: [
-            for (var index = 0; index < entries.length; index++) ...[
-              _DirectoryEntryTile(
-                entry: entries[index],
-                copy: copy,
-                isSelectionMode: isSelectionMode,
-                isSelected: selectedPaths.contains(entries[index].relativePath),
-                isFaded:
-                    pendingTransfer?.move == true &&
-                    pendingTransfer!.sourceRelativePaths.contains(
-                      entries[index].relativePath,
-                    ),
-                onTap: () => onEntryTap(entries[index]),
-                onLongPress: () => onEntryLongPress(entries[index]),
-              ),
-              if (index < entries.length - 1)
-                const Divider(height: 1, color: FilesFeatureScreen.divider),
-            ],
-          ],
+    final int headerChildCount = isFiltered ? 2 : 0;
+    final int entryChildCount = entries.length * 2 - 1;
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      sliver: DecoratedSliver(
+        decoration: BoxDecoration(
+          color: FilesFeatureScreen.surface,
+          borderRadius: BorderRadius.circular(18),
         ),
+        sliver: SliverPadding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          sliver: SliverList(
+            delegate: SliverChildBuilderDelegate(
+              (context, index) {
+                if (isFiltered && index == 0) {
+                  return _DirectoryFilterStatus(
+                    label: copy.filesFilteredStatus(
+                      query.trim(),
+                      entries.length,
+                    ),
+                  );
+                }
+                if (isFiltered && index == 1) {
+                  return const Divider(
+                    height: 16,
+                    color: FilesFeatureScreen.divider,
+                  );
+                }
+                final adjustedIndex = index - headerChildCount;
+                if (adjustedIndex.isOdd) {
+                  return const Divider(
+                    height: 1,
+                    color: FilesFeatureScreen.divider,
+                  );
+                }
+                final entry = entries[adjustedIndex ~/ 2];
+                return _DirectoryEntryTile(
+                  entry: entry,
+                  copy: copy,
+                  isSelectionMode: isSelectionMode,
+                  isSelected: selectedPaths.contains(entry.relativePath),
+                  isFaded:
+                      pendingTransfer?.move == true &&
+                      pendingTransfer!.sourceRelativePaths.contains(
+                        entry.relativePath,
+                      ),
+                  onTap: () => onEntryTap(entry),
+                  onLongPress: () => onEntryLongPress(entry),
+                );
+              },
+              childCount: headerChildCount + entryChildCount,
+              addAutomaticKeepAlives: false,
+              addSemanticIndexes: false,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DirectoryFilterStatus extends StatelessWidget {
+  const _DirectoryFilterStatus({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Row(
+        key: const ValueKey<String>('files-filter-status'),
+        children: [
+          const Icon(
+            CupertinoIcons.line_horizontal_3_decrease_circle,
+            size: 16,
+            color: FilesFeatureScreen.accent,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 12,
+                height: 1.2,
+                fontWeight: FontWeight.w600,
+                color: FilesFeatureScreen.textSecondary,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -1721,7 +1956,7 @@ class _DirectoryEntryTile extends StatelessWidget {
         : _formatBytes(entry.sizeBytes ?? 0);
 
     return AnimatedOpacity(
-      duration: const Duration(milliseconds: 160),
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
       opacity: isFaded ? 0.38 : 1,
       child: InkWell(
         key: ValueKey<String>('files-row-${entry.relativePath}'),
@@ -1792,9 +2027,10 @@ class _DirectoryEntryTile extends StatelessWidget {
 
 class _SelectionToolbar extends StatelessWidget {
   const _SelectionToolbar({
-    super.key,
     required this.copy,
+    required this.isVisible,
     required this.isPendingTransfer,
+    required this.operationState,
     required this.canShare,
     required this.canMove,
     required this.canCopy,
@@ -1809,7 +2045,9 @@ class _SelectionToolbar extends StatelessWidget {
   });
 
   final OpenCrayUiCopy copy;
+  final bool isVisible;
   final bool isPendingTransfer;
+  final _FilesOperationState? operationState;
   final bool canShare;
   final bool canMove;
   final bool canCopy;
@@ -1824,67 +2062,257 @@ class _SelectionToolbar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: const BoxDecoration(
-        color: FilesFeatureScreen.surface,
-        border: Border(top: BorderSide(color: FilesFeatureScreen.divider)),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 8, 12, 6),
-        child: Row(
-          children: [
-            Expanded(
-              child: _ToolbarItem(
-                icon: CupertinoIcons.share,
-                label: copy.filesShareAction,
-                enabled: canShare,
-                onTap: onShare,
+    final Duration duration = OpenCrayMotion.resolve(
+      context,
+      OpenCrayMotion.panel,
+    );
+    final bool reduce = OpenCrayMotion.reduce(context);
+    return AnimatedSlide(
+      offset: reduce || isVisible ? Offset.zero : const Offset(0, 1),
+      duration: duration,
+      curve: isVisible ? OpenCrayMotion.enter : OpenCrayMotion.exit,
+      child: AnimatedOpacity(
+        opacity: isVisible ? 1 : 0,
+        duration: duration,
+        curve: isVisible ? OpenCrayMotion.enter : OpenCrayMotion.exit,
+        child: DecoratedBox(
+          key: isVisible
+              ? const ValueKey<String>('files-selection-toolbar')
+              : null,
+          decoration: const BoxDecoration(
+            color: FilesFeatureScreen.surface,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+            border: Border(top: BorderSide(color: FilesFeatureScreen.divider)),
+            boxShadow: [
+              BoxShadow(
+                color: Color(0x12000000),
+                blurRadius: 18,
+                offset: Offset(0, -6),
               ),
-            ),
-            Expanded(
-              child: _ToolbarItem(
-                icon: CupertinoIcons.folder,
-                label: copy.filesMoveAction,
-                enabled: canMove,
-                onTap: onMove,
-              ),
-            ),
-            Expanded(
-              child: _ToolbarItem(
-                key: ValueKey<String>(
-                  isPendingTransfer
-                      ? 'files-toolbar-action-paste'
-                      : 'files-toolbar-action-copy',
+            ],
+          ),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (operationState != null) ...[
+                  _FilesOperationStatusStrip(
+                    copy: copy,
+                    state: operationState!,
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                Row(
+                  children: [
+                    Expanded(
+                      child: _SelectionActionGroup(
+                        semanticsLabel: copy.filesSelectionStandardActions,
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: _ToolbarItem(
+                                key: const ValueKey<String>(
+                                  'files-toolbar-action-share',
+                                ),
+                                icon: CupertinoIcons.share,
+                                label: copy.filesShareAction,
+                                enabled: canShare,
+                                onTap: onShare,
+                              ),
+                            ),
+                            Expanded(
+                              child: _ToolbarItem(
+                                key: const ValueKey<String>(
+                                  'files-toolbar-action-move',
+                                ),
+                                icon: CupertinoIcons.folder,
+                                label: copy.filesMoveAction,
+                                enabled: canMove,
+                                onTap: onMove,
+                              ),
+                            ),
+                            Expanded(
+                              child: _ToolbarItem(
+                                key: ValueKey<String>(
+                                  isPendingTransfer
+                                      ? 'files-toolbar-action-paste'
+                                      : 'files-toolbar-action-copy',
+                                ),
+                                icon: isPendingTransfer
+                                    ? CupertinoIcons.doc_on_clipboard
+                                    : CupertinoIcons.doc_on_doc,
+                                label: isPendingTransfer
+                                    ? copy.filesPasteAction
+                                    : copy.filesCopyAction,
+                                enabled: isPendingTransfer ? canPaste : canCopy,
+                                onTap: onCopyOrPaste,
+                              ),
+                            ),
+                            Expanded(
+                              child: _ToolbarItem(
+                                key: const ValueKey<String>(
+                                  'files-toolbar-action-rename',
+                                ),
+                                icon: CupertinoIcons.pencil,
+                                label: copy.filesRenameAction,
+                                enabled: canRename,
+                                onTap: onRename,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _SelectionDangerAction(
+                      semanticsLabel: copy.filesSelectionDangerActions,
+                      child: _ToolbarItem(
+                        key: const ValueKey<String>(
+                          'files-toolbar-action-delete',
+                        ),
+                        icon: CupertinoIcons.delete,
+                        label: copy.filesDeleteAction,
+                        enabled: canDelete,
+                        accentColor: FilesFeatureScreen.danger,
+                        onTap: onDelete,
+                      ),
+                    ),
+                  ],
                 ),
-                icon: isPendingTransfer
-                    ? CupertinoIcons.doc_on_clipboard
-                    : CupertinoIcons.doc_on_doc,
-                label: isPendingTransfer
-                    ? copy.filesPasteAction
-                    : copy.filesCopyAction,
-                enabled: isPendingTransfer ? canPaste : canCopy,
-                onTap: onCopyOrPaste,
-              ),
+              ],
             ),
-            Expanded(
-              child: _ToolbarItem(
-                icon: CupertinoIcons.pencil,
-                label: copy.filesRenameAction,
-                enabled: canRename,
-                onTap: onRename,
-              ),
-            ),
-            Expanded(
-              child: _ToolbarItem(
-                icon: CupertinoIcons.delete,
-                label: copy.filesDeleteAction,
-                enabled: canDelete,
-                accentColor: FilesFeatureScreen.danger,
-                onTap: onDelete,
-              ),
-            ),
-          ],
+          ),
         ),
+      ),
+    );
+  }
+}
+
+class _FilesOperationStatusStrip extends StatelessWidget {
+  const _FilesOperationStatusStrip({required this.copy, required this.state});
+
+  final OpenCrayUiCopy copy;
+  final _FilesOperationState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isFailed = state == _FilesOperationState.failed;
+    final bool isPending =
+        state == _FilesOperationState.pasting ||
+        state == _FilesOperationState.deleting;
+    final Color textColor = isFailed
+        ? FilesFeatureScreen.danger
+        : state == _FilesOperationState.done
+        ? const Color(0xFF248A3D)
+        : FilesFeatureScreen.textSecondary;
+    final Color surfaceColor = isFailed
+        ? FilesFeatureScreen.danger.withValues(alpha: 0.08)
+        : state == _FilesOperationState.done
+        ? const Color(0xFFEAF7EF)
+        : FilesFeatureScreen.surfaceMuted;
+    return AnimatedContainer(
+      key: ValueKey<String>('files-operation-status-${state.name}'),
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: textColor.withValues(alpha: 0.14)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isPending) ...[
+            SizedBox.square(
+              dimension: 12,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.5,
+                color: textColor,
+              ),
+            ),
+            const SizedBox(width: 7),
+          ],
+          Text(
+            _filesOperationLabel(copy, state),
+            style: TextStyle(
+              fontSize: 12,
+              height: 1.1,
+              fontWeight: FontWeight.w700,
+              color: textColor,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _filesOperationLabel(OpenCrayUiCopy copy, _FilesOperationState state) =>
+    switch (state) {
+      _FilesOperationState.copyReady => copy.filesOperationPreparingCopy,
+      _FilesOperationState.moveReady => copy.filesOperationPreparingMove,
+      _FilesOperationState.pasting => copy.filesOperationPasting,
+      _FilesOperationState.deleting => copy.filesOperationDeleting,
+      _FilesOperationState.done => copy.filesOperationDone,
+      _FilesOperationState.failed => copy.filesOperationFailed,
+    };
+
+class _SelectionActionGroup extends StatelessWidget {
+  const _SelectionActionGroup({
+    required this.semanticsLabel,
+    required this.child,
+  });
+
+  final String semanticsLabel;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: semanticsLabel,
+      container: true,
+      child: DecoratedBox(
+        key: const ValueKey<String>('files-toolbar-standard-group'),
+        decoration: BoxDecoration(
+          color: FilesFeatureScreen.surfaceMuted,
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
+class _SelectionDangerAction extends StatelessWidget {
+  const _SelectionDangerAction({
+    required this.semanticsLabel,
+    required this.child,
+  });
+
+  final String semanticsLabel;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: semanticsLabel,
+      container: true,
+      child: DecoratedBox(
+        key: const ValueKey<String>('files-toolbar-danger-group'),
+        decoration: BoxDecoration(
+          color: FilesFeatureScreen.danger.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: FilesFeatureScreen.danger.withValues(alpha: 0.18),
+          ),
+        ),
+        child: SizedBox(width: 64, child: child),
       ),
     );
   }
@@ -2415,7 +2843,10 @@ class _CreateEntryDialogState extends State<_CreateEntryDialog> {
                   ),
                   const SizedBox(width: 4),
                   AnimatedOpacity(
-                    duration: const Duration(milliseconds: 160),
+                    duration: OpenCrayMotion.resolve(
+                      context,
+                      OpenCrayMotion.micro,
+                    ),
                     opacity: canSubmit ? 1 : 0.42,
                     child: TextButton(
                       key: const ValueKey<String>('files-create-entry-submit'),
@@ -2752,23 +3183,6 @@ class _ImagePreviewDialog extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _StateCard extends StatelessWidget {
-  const _StateCard({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: FilesFeatureScreen.surface,
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: child,
     );
   }
 }

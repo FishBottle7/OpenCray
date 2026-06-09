@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
 import 'package:opencray/core/copy/opencray_ui_copy.dart';
+import 'package:opencray/core/design/opencray_motion.dart';
 import 'package:opencray/core/models/opencray_skills_snapshot.dart';
 import 'package:opencray/features/skills/skills_feature.dart';
 
@@ -224,6 +227,7 @@ void main() {
   testWidgets('install page uses searched results and installs by source ref', (
     tester,
   ) async {
+    final installCompleter = Completer<String?>();
     final bridge = _RecordingSkillsBridge(
       initialSkillsSnapshot: const OpenCraySkillsSnapshot(
         installedSkills: <OpenCrayInstalledSkillSnapshot>[],
@@ -261,6 +265,7 @@ void main() {
           ),
         ],
       ),
+      installSkillSourceFuture: installCompleter.future,
     );
 
     await _pumpSkillsScreen(
@@ -283,9 +288,102 @@ void main() {
 
     await tester.tap(find.text('Install').last);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
 
     expect(bridge.lastInstalledSourceRef, 'roin-orca/skills@find-skills');
+    expect(
+      find.byKey(
+        const ValueKey<String>(
+          'skills-install-action-roin-orca/skills@find-skills-installing',
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Installing'), findsOneWidget);
+
+    installCompleter.complete('Installed roin-orca/skills@find-skills');
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(
+      find.byKey(
+        const ValueKey<String>(
+          'skills-install-action-roin-orca/skills@find-skills-installed',
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Installed'), findsOneWidget);
+  });
+
+  testWidgets('install page keeps failed suggested result ready to retry', (
+    tester,
+  ) async {
+    final bridge = _RecordingSkillsBridge(
+      initialSkillsSnapshot: const OpenCraySkillsSnapshot(
+        installedSkills: <OpenCrayInstalledSkillSnapshot>[],
+        installSources: <OpenCraySkillInstallSourceSnapshot>[
+          OpenCraySkillInstallSourceSnapshot(
+            id: 'github-url',
+            title: 'GitHub URL',
+            subtitle: 'Enter a source ref in search.',
+            ctaLabel: 'Use search',
+            isAvailable: true,
+          ),
+        ],
+        suggestedSkills: <OpenCraySuggestedSkillSnapshot>[],
+      ),
+      searchedSnapshot: const OpenCraySkillsSnapshot(
+        installedSkills: <OpenCrayInstalledSkillSnapshot>[],
+        installSources: <OpenCraySkillInstallSourceSnapshot>[
+          OpenCraySkillInstallSourceSnapshot(
+            id: 'github-url',
+            title: 'GitHub URL',
+            subtitle: 'Enter a source ref in search.',
+            ctaLabel: 'Use search',
+            isAvailable: true,
+          ),
+        ],
+        suggestedSkills: <OpenCraySuggestedSkillSnapshot>[
+          OpenCraySuggestedSkillSnapshot(
+            id: 'roin-orca/skills/find-skills',
+            name: 'find-skills',
+            description: 'roin-orca/skills via skills.sh',
+            sourceRef: 'roin-orca/skills@find-skills',
+            sourceLabel: 'skills.sh',
+            installs: 42,
+            detailUrl: 'https://skills.sh/roin-orca/skills',
+          ),
+        ],
+      ),
+      installSkillSourceError: StateError('Install failed'),
+    );
+
+    await _pumpSkillsScreen(
+      tester,
+      bridge: bridge,
+      initialPage: SkillsPage.install,
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    await tester.enterText(find.byType(TextField), 'find');
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pump(const Duration(milliseconds: 50));
+
+    await tester.tap(find.text('Install').last);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 200));
+
+    expect(bridge.lastInstalledSourceRef, 'roin-orca/skills@find-skills');
+    expect(
+      find.byKey(
+        const ValueKey<String>(
+          'skills-install-action-roin-orca/skills@find-skills-failed',
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Retry'), findsOneWidget);
   });
 
   testWidgets('install page can install directly from typed source ref', (
@@ -316,12 +414,19 @@ void main() {
 
     await tester.tap(find.text('Install').last);
     await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
+    await tester.pump(const Duration(milliseconds: 200));
 
     expect(
       bridge.lastInstalledSourceRef,
       'gitlab:acme/platform/skills@find-skills',
     );
+    expect(
+      find.byKey(
+        const ValueKey<String>('skills-direct-install-action-installed'),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Installed'), findsOneWidget);
   });
 
   testWidgets('install page shows results above sources and can load more', (
@@ -364,6 +469,80 @@ void main() {
 
     expect(bridge.lastSuggestedLimit, 20);
     expect(find.text('find-skill-9'), findsOneWidget);
+  });
+
+  testWidgets('manage and install pages switch with horizontal direction', (
+    tester,
+  ) async {
+    final bridge = _RecordingSkillsBridge(
+      initialSkillsSnapshot: _skillsSnapshotWithSources(),
+    );
+
+    await _pumpSkillsScreen(tester, bridge: bridge);
+
+    AnimatedPositioned indicator = tester.widget<AnimatedPositioned>(
+      find.byKey(const ValueKey<String>('skills-segment-indicator')),
+    );
+    expect(indicator.left, 0);
+
+    OpenCrayDirectionalSwitcher switcher = tester
+        .widget<OpenCrayDirectionalSwitcher>(
+          find.byType(OpenCrayDirectionalSwitcher),
+        );
+    expect(switcher.direction, -1);
+
+    await tester.tap(
+      find.byKey(const ValueKey<String>('skills-segment-install')),
+    );
+    await tester.pump();
+
+    switcher = tester.widget<OpenCrayDirectionalSwitcher>(
+      find.byType(OpenCrayDirectionalSwitcher),
+    );
+    expect(switcher.direction, 1);
+    expect(find.text('GitHub URL'), findsOneWidget);
+
+    indicator = tester.widget<AnimatedPositioned>(
+      find.byKey(const ValueKey<String>('skills-segment-indicator')),
+    );
+    expect(indicator.left, greaterThan(0));
+
+    FractionalTranslation currentLayer = tester.widget<FractionalTranslation>(
+      find.byKey(
+        const ValueKey<String>('opencray-directional-switcher-current'),
+      ),
+    );
+    FractionalTranslation previousLayer = tester.widget<FractionalTranslation>(
+      find.byKey(
+        const ValueKey<String>('opencray-directional-switcher-previous'),
+      ),
+    );
+    expect(currentLayer.translation.dx, 1);
+    expect(previousLayer.translation.dx, 0);
+
+    await tester.pump(const Duration(milliseconds: 90));
+
+    currentLayer = tester.widget<FractionalTranslation>(
+      find.byKey(
+        const ValueKey<String>('opencray-directional-switcher-current'),
+      ),
+    );
+    previousLayer = tester.widget<FractionalTranslation>(
+      find.byKey(
+        const ValueKey<String>('opencray-directional-switcher-previous'),
+      ),
+    );
+    expect(currentLayer.translation.dx, greaterThan(0));
+    expect(currentLayer.translation.dx, lessThan(1));
+    expect(previousLayer.translation.dx, lessThan(0));
+
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(
+        const ValueKey<String>('opencray-directional-switcher-previous'),
+      ),
+      findsNothing,
+    );
   });
 
   testWidgets('install page can preview suggested skill contents', (
@@ -492,6 +671,7 @@ void main() {
   testWidgets(
     'manage page update action updates the selected installed skill',
     (tester) async {
+      final updateCompleter = Completer<String?>();
       final bridge = _RecordingSkillsBridge(
         initialSkillsSnapshot: const OpenCraySkillsSnapshot(
           installedSkills: <OpenCrayInstalledSkillSnapshot>[
@@ -507,6 +687,7 @@ void main() {
           installSources: <OpenCraySkillInstallSourceSnapshot>[],
           suggestedSkills: <OpenCraySuggestedSkillSnapshot>[],
         ),
+        updateInstalledSkillFuture: updateCompleter.future,
       );
 
       await _pumpSkillsScreen(tester, bridge: bridge);
@@ -517,9 +698,31 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Update skills'));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 50));
 
       expect(bridge.lastUpdatedSkillId, 'find-skills');
+      expect(
+        find.byKey(
+          const ValueKey<String>(
+            'skills-manage-lifecycle-find-skills-updating',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Updating'), findsOneWidget);
+
+      updateCompleter.complete('Updated find-skills');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(
+        find.byKey(
+          const ValueKey<String>('skills-manage-lifecycle-find-skills-updated'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Updated'), findsOneWidget);
+
+      await tester.pump(const Duration(milliseconds: 300));
     },
   );
 }
@@ -531,12 +734,18 @@ class _RecordingSkillsBridge extends OpenCraySeedBridge {
     this.expandedSearchedSnapshot,
     this.inspectedSource,
     this.suggestedInstructions,
+    this.installSkillSourceFuture,
+    this.installSkillSourceError,
+    this.updateInstalledSkillFuture,
   }) : _defaultSnapshot = initialSkillsSnapshot!;
 
   final OpenCraySkillsSnapshot? searchedSnapshot;
   final OpenCraySkillsSnapshot? expandedSearchedSnapshot;
   final OpenCraySkillSourceInspectionSnapshot? inspectedSource;
   final OpenCraySkillInstructionsSnapshot? suggestedInstructions;
+  final Future<String?>? installSkillSourceFuture;
+  final Object? installSkillSourceError;
+  final Future<String?>? updateInstalledSkillFuture;
   OpenCraySkillsSnapshot _defaultSnapshot;
   String? lastQuery;
   int? lastSuggestedLimit;
@@ -598,6 +807,12 @@ class _RecordingSkillsBridge extends OpenCraySeedBridge {
           ? sourceRef
           : '$sourceRef#$selectedSkillName',
     );
+    if (installSkillSourceError != null) {
+      throw installSkillSourceError!;
+    }
+    if (installSkillSourceFuture != null) {
+      return installSkillSourceFuture!;
+    }
     return 'Installed $sourceRef';
   }
 
@@ -617,6 +832,9 @@ class _RecordingSkillsBridge extends OpenCraySeedBridge {
   @override
   Future<String?> updateInstalledSkill(String skillId) async {
     lastUpdatedSkillId = skillId;
+    if (updateInstalledSkillFuture != null) {
+      return updateInstalledSkillFuture!;
+    }
     return 'Updated $skillId';
   }
 }

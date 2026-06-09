@@ -244,6 +244,41 @@ void main() {
     expect(snapshot.initialSettingsPage, SettingsPage.home);
   });
 
+  testWidgets('shell tab transition preserves chat widget state', (
+    tester,
+  ) async {
+    final bridge = OpenCraySeedBridge(
+      initialSnapshot: const OpenCrayShellSnapshot(
+        initialTab: OpenCrayTab.chat,
+        localeTag: 'en',
+        hostLabel: 'HOST READY',
+        hostSummary: 'Ready',
+        isHostConnected: true,
+      ),
+    );
+    final filesController = FilesFeatureController();
+    final chatController = ChatFeatureController();
+
+    await _pumpShell(
+      tester,
+      bridge: bridge,
+      chatController: chatController,
+      filesController: filesController,
+      initialTab: OpenCrayTab.chat,
+    );
+
+    await tester.enterText(find.byType(TextField), 'keep this draft');
+    await tester.pump();
+
+    await tester.tap(find.text('FILES'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('CHAT'));
+    await tester.pumpAndSettle();
+
+    final TextField composer = tester.widget<TextField>(find.byType(TextField));
+    expect(composer.controller?.text, 'keep this draft');
+  });
+
   testWidgets('shell snapshot updates do not force a tab switch', (
     tester,
   ) async {
