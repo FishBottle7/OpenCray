@@ -13,6 +13,9 @@ import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
+import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.process.withNormalizedRemoteState
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -43,6 +46,11 @@ internal data class RunRecoveryPlan(
   val checkpointKind: PromptCheckpointKind? = null,
   val approvalState: AgentTaskApprovalState? = null,
   val journalTailKind: String? = null,
+  val managedProcessReconnectProcessIds: List<String> = emptyList(),
+  val managedProcessReconnectStatus: String? = null,
+  val managedProcessReconnectRecoveryState: String? = null,
+  val managedProcessReconnectRetryAfterEpochMs: Long? = null,
+  val managedProcessReconnectAttemptCount: Int? = null,
 ) {
   fun toMap(): Map<String, Any?> = buildMap {
     put("action", action.name.lowercase())
@@ -53,6 +61,13 @@ internal data class RunRecoveryPlan(
     checkpointKind?.let { put("checkpointKind", it.name.lowercase()) }
     approvalState?.let { put("approvalState", it.name.lowercase()) }
     journalTailKind?.let { put("journalTailKind", it) }
+    if (managedProcessReconnectProcessIds.isNotEmpty()) {
+      put("managedProcessReconnectProcessIds", managedProcessReconnectProcessIds)
+    }
+    managedProcessReconnectStatus?.let { put("managedProcessReconnectStatus", it) }
+    managedProcessReconnectRecoveryState?.let { put("managedProcessReconnectRecoveryState", it) }
+    managedProcessReconnectRetryAfterEpochMs?.let { put("managedProcessReconnectRetryAfterEpochMs", it) }
+    managedProcessReconnectAttemptCount?.let { put("managedProcessReconnectAttemptCount", it) }
   }
 }
 
@@ -96,6 +111,25 @@ internal class RunRecoveryPlanner {
         checkpointKind = checkpoint.checkpointKind,
         approvalState = input.approvalState,
         journalTailKind = journalTailKind,
+      )
+    }
+
+    if (
+      isInterruptedRestoreRun(run) &&
+      run.hasLiveManagedProcesses &&
+      isManagedProcessObservationReconnectPending(
+        run = run,
+        event = input.lastJournalEvent,
+      )
+    ) {
+      return reconnectProcessPlan(
+        run = run,
+        checkpoint = checkpoint,
+        approvalState = input.approvalState,
+        journalTailKind = journalTailKind,
+        reasonCode = "managed_process_observation_reconnect_pending",
+        summary =
+          "The host was rebuilt while a ProcessRead or ProcessWait observation was in flight against a live managed process, but reconnect state is not yet stable enough for checkpoint auto-resume. Preserve the process and surface reconnect state instead of replaying the task.",
       )
     }
 
@@ -238,15 +272,13 @@ internal class RunRecoveryPlanner {
     }
 
     if (run.hasLiveManagedProcesses) {
-      return RunRecoveryPlan(
-        action = RunRecoveryAction.RESUME_RECONNECT_PROCESS,
-        reasonCode = "live_managed_process_detected",
-        summary = "A managed process is still live for this run, but current recovery can only preserve that live process and surface reconnect state. Automatic continuation should not replay the task without a durable checkpoint.",
-        safeToAutoResume = false,
-        requiresUserAction = true,
-        checkpointKind = checkpoint?.checkpointKind,
+      return reconnectProcessPlan(
+        run = run,
+        checkpoint = checkpoint,
         approvalState = input.approvalState,
         journalTailKind = journalTailKind,
+        reasonCode = "live_managed_process_detected",
+        summary = "A managed process is still live for this run, but current recovery can only preserve that live process and surface reconnect state. Automatic continuation should not replay the task without a durable checkpoint.",
       )
     }
 
@@ -377,6 +409,75 @@ internal class RunRecoveryPlanner {
     return resumedProcessId == eventProcessId
   }
 
+  private fun isManagedProcessObservationReconnectPending(
+    run: AgentRunSnapshot,
+    event: OpenCrayAgentRunEvent?,
+  ): Boolean {
+    val toolCallEvent = event as? OpenCrayToolCallEvent ?: return false
+    if (!toolCallEvent.call.isManagedProcessObservationCall()) {
+      return false
+    }
+    val eventProcessId = managedProcessObservationProcessId(toolCallEvent.call.arguments) ?: return false
+    return liveManagedProcesses(run).any { process -> process.processId == eventProcessId }
+  }
+
+  private fun reconnectProcessPlan(
+    run: AgentRunSnapshot,
+    checkpoint: PersistedPromptCheckpoint?,
+    approvalState: AgentTaskApprovalState?,
+    journalTailKind: String?,
+    reasonCode: String,
+    summary: String,
+  ): RunRecoveryPlan {
+    val evidence = managedProcessReconnectEvidence(run)
+    return RunRecoveryPlan(
+      action = RunRecoveryAction.RESUME_RECONNECT_PROCESS,
+      reasonCode = reasonCode,
+      summary = summary,
+      safeToAutoResume = false,
+      requiresUserAction = true,
+      checkpointKind = checkpoint?.checkpointKind,
+      approvalState = approvalState,
+      journalTailKind = journalTailKind,
+      managedProcessReconnectProcessIds = evidence.processIds,
+      managedProcessReconnectStatus = evidence.status,
+      managedProcessReconnectRecoveryState = evidence.recoveryState,
+      managedProcessReconnectRetryAfterEpochMs = evidence.retryAfterEpochMs,
+      managedProcessReconnectAttemptCount = evidence.attemptCount,
+    )
+  }
+
+  private fun managedProcessReconnectEvidence(run: AgentRunSnapshot): ManagedProcessReconnectEvidence {
+    val liveProcesses = liveManagedProcesses(run)
+    return ManagedProcessReconnectEvidence(
+      processIds = liveProcesses.map(ManagedProcessSnapshot::processId).distinct(),
+      status = liveProcesses
+        .mapNotNull { process -> process.reconnectStatus() }
+        .distinct()
+        .sorted()
+        .joinToString(",")
+        .takeIf(String::isNotBlank),
+      recoveryState = liveProcesses
+        .mapNotNull { process -> process.reconnectRecoveryState() }
+        .distinct()
+        .sorted()
+        .joinToString(",")
+        .takeIf(String::isNotBlank),
+      retryAfterEpochMs = liveProcesses
+        .mapNotNull { process -> process.reconnectRetryAfterEpochMs() }
+        .minOrNull(),
+      attemptCount = liveProcesses
+        .mapNotNull { process -> process.reconnectAttemptCount() }
+        .maxOrNull(),
+    )
+  }
+
+  private fun liveManagedProcesses(run: AgentRunSnapshot): List<ManagedProcessSnapshot> =
+    run.managedProcesses
+      .map(ManagedProcessSnapshot::withNormalizedRemoteState)
+      .filter { process -> process.status == ManagedProcessStatus.RUNNING }
+      .distinctBy(ManagedProcessSnapshot::processId)
+
   private fun com.opencray.runtime.AgentToolCall.isManagedProcessObservationCall(): Boolean =
     toolName.equals("ProcessRead", ignoreCase = true) ||
       toolName.equals("ProcessWait", ignoreCase = true)
@@ -386,6 +487,36 @@ internal class RunRecoveryPlanner {
       ?.content
       ?.trim()
       ?.takeIf(String::isNotBlank)
+
+  private fun ManagedProcessSnapshot.reconnectStatus(): String? =
+    reconnectState
+      ?.status
+      ?.trim()
+      ?.lowercase()
+      ?.takeIf(String::isNotBlank)
+      ?: metadata["sandboxCommandReconnectStatus"]
+        ?.trim()
+        ?.lowercase()
+        ?.takeIf(String::isNotBlank)
+
+  private fun ManagedProcessSnapshot.reconnectRecoveryState(): String? =
+    reconnectState
+      ?.recoveryState
+      ?.trim()
+      ?.lowercase()
+      ?.takeIf(String::isNotBlank)
+      ?: metadata["sandboxCommandReconnectRecoveryState"]
+        ?.trim()
+        ?.lowercase()
+        ?.takeIf(String::isNotBlank)
+
+  private fun ManagedProcessSnapshot.reconnectRetryAfterEpochMs(): Long? =
+    reconnectState?.retryAfterEpochMs
+      ?: metadata["sandboxCommandReconnectRetryAfterEpochMs"]?.toLongOrNull()
+
+  private fun ManagedProcessSnapshot.reconnectAttemptCount(): Int? =
+    reconnectState?.attemptCount
+      ?: metadata["sandboxCommandReconnectAttemptCount"]?.toIntOrNull()
 
   private fun runNeedsTerminalRepair(
     run: AgentRunSnapshot,
@@ -436,3 +567,11 @@ internal class RunRecoveryPlanner {
     private const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
   }
 }
+
+private data class ManagedProcessReconnectEvidence(
+  val processIds: List<String> = emptyList(),
+  val status: String? = null,
+  val recoveryState: String? = null,
+  val retryAfterEpochMs: Long? = null,
+  val attemptCount: Int? = null,
+)

@@ -2011,12 +2011,62 @@ class RecoveryAwareQueueSnapshotStoreTest {
     val restored = requireNotNull(store.load())
     val restoredTask = restored.tasks.single()
 
-    assertEquals(QueueTaskLifecycleState.FAILED, restoredTask.lifecycleState)
-    assertEquals(AgentTaskState.FAILED, restoredTask.task.state)
+    assertEquals(QueueTaskLifecycleState.SUSPENDED, restoredTask.lifecycleState)
+    assertEquals(AgentTaskState.SUSPENDED, restoredTask.task.state)
     assertEquals("5000", restoredTask.task.metadata[METADATA_QUEUE_RESTORE_EPOCH_MS])
     assertEquals("running", restoredTask.task.metadata[METADATA_PREVIOUS_LIFECYCLE_STATE])
-    assertEquals("uncertain_inflight_mutation", restoredTask.task.metadata[METADATA_RECOVERY_REASON])
-    assertEquals(ERROR_RESTART_REQUIRES_EXPLICIT_RETRY, restoredTask.lastErrorCode)
+    assertEquals(
+      "managed_process_observation_reconnect_pending",
+      restoredTask.task.metadata[METADATA_RECOVERY_REASON],
+    )
+    assertEquals("2", restoredTask.task.metadata[RunLifecycleMetadataKeys.RUN_ATTEMPT])
+    assertEquals(
+      processId,
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS],
+    )
+    assertEquals(
+      "connecting",
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_STATUS],
+    )
+    assertEquals(
+      "retry_scheduled",
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RECOVERY_STATE],
+    )
+    assertEquals(
+      "9000",
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS],
+    )
+    assertEquals(
+      "1",
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_ATTEMPT_COUNT],
+    )
+    val diagnostics = runLifecycleDiagnosticsFrom(restoredTask.task.metadata)
+    assertEquals(listOf(processId), diagnostics.managedProcessReconnectProcessIds)
+    assertEquals("retry_scheduled", diagnostics.managedProcessReconnectRecoveryState)
+    assertEquals(9_000L, diagnostics.managedProcessReconnectRetryAfterEpochMs)
+    assertNull(restoredTask.lastErrorCode)
+    assertNull(restoredTask.lastErrorMessage)
+
+    val recoveryMetadata = runEventJournalStore.listForRun(runId)
+      .single { entry -> entry.kind == PersistedAgentRunEventKind.RECOVERY }
+      .payload
+      .resultMetadata
+    assertEquals(
+      "resume_reconnect_process",
+      recoveryMetadata[RunLifecycleMetadataKeys.RECOVERY_ACTION],
+    )
+    assertEquals(
+      processId,
+      recoveryMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS],
+    )
+    assertEquals(
+      "retry_scheduled",
+      recoveryMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RECOVERY_STATE],
+    )
+    assertEquals(
+      "9000",
+      recoveryMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS],
+    )
   }
 
   @Test

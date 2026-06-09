@@ -11,6 +11,9 @@ import com.opencray.runtime.OpenCraySerializableToolCall
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCrayToolCallEvent
+import com.opencray.runtime.process.ManagedProcessReconnectState
+import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -402,6 +405,130 @@ class RunRecoveryPlannerTest {
     assertEquals("tool_call", plan.journalTailKind)
     assertTrue(plan.safeToAutoResume)
     assertFalse(plan.requiresUserAction)
+  }
+
+  @Test
+  fun interruptedRestoreManagedProcessObservationReconnectBackoffPlansReconnectState() {
+    val processId = "proc-retry"
+    val checkpoint = PersistedPromptCheckpoint(
+      sessionId = "session-1",
+      runId = "run-1",
+      taskId = "task-1",
+      checkpointId = "checkpoint-1",
+      checkpointKind = PromptCheckpointKind.COMMENTARY_EMITTED,
+      createdAtEpochMs = 100L,
+      updatedAtEpochMs = 100L,
+      toolName = "ProcessWait",
+    )
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = interruptedRestoreRun().copy(
+            hasLiveManagedProcesses = true,
+            hasAutoResumeEligibleManagedProcesses = false,
+            managedProcesses = listOf(
+              ManagedProcessSnapshot(
+                processId = processId,
+                taskId = "task-1",
+                command = "server",
+                status = ManagedProcessStatus.RUNNING,
+                processStarted = true,
+                timeoutMs = 300_000L,
+                startedAtEpochMs = 90L,
+                updatedAtEpochMs = 150L,
+                reconnectState = ManagedProcessReconnectState(
+                  status = "connecting",
+                  recoveryState = "retry_scheduled",
+                  retryable = true,
+                  retryAfterEpochMs = 9_000L,
+                  attemptCount = 2,
+                ),
+              ),
+            ),
+          ),
+          checkpoint = checkpoint,
+          lastJournalEvent = OpenCrayToolCallEvent(
+            runId = "run-1",
+            taskId = "task-1",
+            turn = 0,
+            call = AgentToolCall(
+              id = "oc-call-1",
+              toolName = "ProcessWait",
+              arguments = JsonObject(
+                mapOf(
+                  "process_id" to JsonPrimitive(processId),
+                  "timeout_ms" to JsonPrimitive("250"),
+                ),
+              ),
+            ),
+            emittedAtEpochMs = 150L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.RESUME_RECONNECT_PROCESS, plan.action)
+    assertEquals("managed_process_observation_reconnect_pending", plan.reasonCode)
+    assertEquals(PromptCheckpointKind.COMMENTARY_EMITTED, plan.checkpointKind)
+    assertEquals("tool_call", plan.journalTailKind)
+    assertEquals(listOf(processId), plan.managedProcessReconnectProcessIds)
+    assertEquals("connecting", plan.managedProcessReconnectStatus)
+    assertEquals("retry_scheduled", plan.managedProcessReconnectRecoveryState)
+    assertEquals(9_000L, plan.managedProcessReconnectRetryAfterEpochMs)
+    assertEquals(2, plan.managedProcessReconnectAttemptCount)
+    assertFalse(plan.safeToAutoResume)
+    assertTrue(plan.requiresUserAction)
+    assertEquals(
+      listOf(processId),
+      plan.toMap()["managedProcessReconnectProcessIds"],
+    )
+    assertEquals("retry_scheduled", plan.toMap()["managedProcessReconnectRecoveryState"])
+  }
+
+  @Test
+  fun interruptedRestoreWithLiveManagedProcessAndMutatingToolCallStillRequiresExplicitRecovery() {
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = interruptedRestoreRun().copy(
+            hasLiveManagedProcesses = true,
+            managedProcesses = listOf(
+              ManagedProcessSnapshot(
+                processId = "proc-live",
+                taskId = "task-1",
+                command = "server",
+                status = ManagedProcessStatus.RUNNING,
+                processStarted = true,
+                timeoutMs = 300_000L,
+                startedAtEpochMs = 90L,
+                updatedAtEpochMs = 150L,
+              ),
+            ),
+          ),
+          checkpoint = PersistedPromptCheckpoint(
+            sessionId = "session-1",
+            runId = "run-1",
+            taskId = "task-1",
+            checkpointId = "checkpoint-1",
+            checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+            createdAtEpochMs = 100L,
+            updatedAtEpochMs = 100L,
+          ),
+          lastJournalEvent = OpenCrayToolCallEvent(
+            runId = "run-1",
+            taskId = "task-1",
+            turn = 1,
+            call = AgentToolCall(toolName = "Write"),
+            emittedAtEpochMs = 150L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED, plan.action)
+    assertEquals("uncertain_inflight_mutation", plan.reasonCode)
+    assertFalse(plan.safeToAutoResume)
+    assertTrue(plan.requiresUserAction)
   }
 
   @Test

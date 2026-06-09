@@ -16,6 +16,16 @@ internal object RunLifecycleMetadataKeys {
   const val RUN_ATTEMPT: String = "_host.runAttempt"
   const val RECOVERED_FROM_CHECKPOINT_ID: String = "_host.recoveredFromCheckpointId"
   const val RECOVERY_ACTION: String = "_host.recoveryAction"
+  const val MANAGED_PROCESS_RECONNECT_PROCESS_IDS: String =
+    "_host.managedProcessReconnectProcessIds"
+  const val MANAGED_PROCESS_RECONNECT_STATUS: String =
+    "_host.managedProcessReconnectStatus"
+  const val MANAGED_PROCESS_RECONNECT_RECOVERY_STATE: String =
+    "_host.managedProcessReconnectRecoveryState"
+  const val MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS: String =
+    "_host.managedProcessReconnectRetryAfterEpochMs"
+  const val MANAGED_PROCESS_RECONNECT_ATTEMPT_COUNT: String =
+    "_host.managedProcessReconnectAttemptCount"
   const val SUBMISSION_SOURCE: String = "_host.submissionSource"
   const val PREAPPROVED_TOOL_NAME: String = "_host.preapprovedToolName"
 }
@@ -94,6 +104,11 @@ internal data class RunLifecycleDiagnostics(
   val durableRuntimeControllerId: String? = null,
   val runAttempt: Int? = null,
   val recoveredFromCheckpointId: String? = null,
+  val managedProcessReconnectProcessIds: List<String> = emptyList(),
+  val managedProcessReconnectStatus: String? = null,
+  val managedProcessReconnectRecoveryState: String? = null,
+  val managedProcessReconnectRetryAfterEpochMs: Long? = null,
+  val managedProcessReconnectAttemptCount: Int? = null,
   val submissionSource: String? = null,
   val recoveryReason: String? = null,
   val queueRestoreEpochMs: Long? = null,
@@ -108,6 +123,11 @@ internal data class RunLifecycleDiagnostics(
       durableRuntimeControllerId.isNullOrBlank() &&
       runAttempt == null &&
       recoveredFromCheckpointId.isNullOrBlank() &&
+      managedProcessReconnectProcessIds.isEmpty() &&
+      managedProcessReconnectStatus.isNullOrBlank() &&
+      managedProcessReconnectRecoveryState.isNullOrBlank() &&
+      managedProcessReconnectRetryAfterEpochMs == null &&
+      managedProcessReconnectAttemptCount == null &&
       submissionSource.isNullOrBlank() &&
       recoveryReason.isNullOrBlank() &&
       queueRestoreEpochMs == null &&
@@ -124,6 +144,19 @@ internal data class RunLifecycleDiagnostics(
       ?.let { put("durableRuntimeControllerId", it) }
     runAttempt?.let { put("runAttempt", it) }
     recoveredFromCheckpointId?.takeIf(String::isNotBlank)?.let { put("recoveredFromCheckpointId", it) }
+    if (managedProcessReconnectProcessIds.isNotEmpty()) {
+      put("managedProcessReconnectProcessIds", managedProcessReconnectProcessIds)
+    }
+    managedProcessReconnectStatus
+      ?.takeIf(String::isNotBlank)
+      ?.let { put("managedProcessReconnectStatus", it) }
+    managedProcessReconnectRecoveryState
+      ?.takeIf(String::isNotBlank)
+      ?.let { put("managedProcessReconnectRecoveryState", it) }
+    managedProcessReconnectRetryAfterEpochMs
+      ?.let { put("managedProcessReconnectRetryAfterEpochMs", it) }
+    managedProcessReconnectAttemptCount
+      ?.let { put("managedProcessReconnectAttemptCount", it) }
     submissionSource?.takeIf(String::isNotBlank)?.let { put("submissionSource", it) }
     recoveryReason?.takeIf(String::isNotBlank)?.let { put("recoveryReason", it) }
     queueRestoreEpochMs?.let { put("queueRestoreEpochMs", it) }
@@ -157,6 +190,28 @@ internal fun runLifecycleDiagnosticsFrom(
     recoveredFromCheckpointId = taskMetadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID]
       ?.trim()
       ?.takeIf(String::isNotBlank),
+    managedProcessReconnectProcessIds =
+      taskMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS]
+        ?.split(",")
+        ?.mapNotNull { processId -> processId.trim().takeIf(String::isNotBlank) }
+        .orEmpty(),
+    managedProcessReconnectStatus =
+      taskMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_STATUS]
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
+    managedProcessReconnectRecoveryState =
+      taskMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RECOVERY_STATE]
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
+    managedProcessReconnectRetryAfterEpochMs =
+      taskMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS]
+        ?.trim()
+        ?.toLongOrNull(),
+    managedProcessReconnectAttemptCount =
+      taskMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_ATTEMPT_COUNT]
+        ?.trim()
+        ?.toIntOrNull()
+        ?.takeIf { attempt -> attempt > 0 },
     submissionSource = taskMetadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE]?.trim(),
     recoveryReason = recoveryReason,
     queueRestoreEpochMs = taskMetadata[METADATA_QUEUE_RESTORE_EPOCH_MS]?.toLongOrNull(),

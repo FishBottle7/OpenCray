@@ -10,7 +10,7 @@ Current repair targeting update: journal-tail-only evidence can now inherit `DET
 Current ownership-evidence update: each target now has a process-safe runtime-owner lease heartbeat that records held/released owner evidence with process, controller, owner, service, heartbeat, and expiry fields. Different owners can no longer overwrite a still-held unexpired lease, rejected acquire attempts are recorded on the held lease with attempted owner/controller/service ids, retained runtime-owner replacement releases the previous owner lease before saving the new owner heartbeat, a coordinator that fails to acquire the target lease skips projection writes instead of replacing the active owner's projection, and non-owner service shells skip shell attach, start-command handling, wake-command dispatch, binder chat/skills/settings writes, and sticky restart requests. This narrows host-rebuild diagnostics and arbitration for retained-owner continuity, attach-denied ownership conflicts, and controller teardown, but it is still for the existing `:runtime` process owner rather than a separate detached controller process.
 Current owner-lease repair update: attach-denied service starts now read the held target lease and enqueue an `owner_lease_expired` delayed repair for `expiresAtEpochMs`, while delayed repair work names are partitioned by reason so owner-lease expiry retries do not replace managed-process reconnect retries.
 The shared durable text store now also uses per-file sidecar OS locks for read/write/delete/update, and key read-modify-write JSON stores for queue snapshots, run records, checkpoints, schedules, memory, and subagent handles now update under that same file lock. Projection snapshots get file-operation locking through the same abstraction. Direct-file run journal append/list/clear now uses a session-level sidecar OS lock, disk-derived sequence allocation under that lock, and temp-file atomic moves, so journal events are no longer a known cross-owner overwrite risk.
-Current managed-process recovery update: live run snapshots, projection-only chat fallback, and host diagnostics now expose `hasAutoResumeEligibleManagedProcesses`, using the same stable-reconnect check as recovery-aware queue restore. `attached_live`, `completed`, and legacy local live snapshots can be distinguished from `connecting`, `retry_scheduled`, or interrupted terminal restore states before recovery chooses checkpoint replay or explicit interruption.
+Current managed-process recovery update: live run snapshots, projection-only chat fallback, and host diagnostics now expose `hasAutoResumeEligibleManagedProcesses`, using the same stable-reconnect check as recovery-aware queue restore. `attached_live`, `completed`, and legacy local live snapshots can be distinguished from `connecting`, `retry_scheduled`, or interrupted terminal restore states before recovery chooses checkpoint replay, reconnect-hold, or explicit interruption. Live `ProcessRead` / `ProcessWait` observation tails with reconnect backoff now restore as `resume_reconnect_process` and persist process id, reconnect status, recovery state, retry-after, and attempt evidence into task metadata, lifecycle diagnostics, and the durable recovery journal marker.
 Current managed-process repair update: scheduler repair preflight and runtime-service bootstrap/resume scans now read the file-backed process registry in passive `projection_only` mode, classify retry-scheduled or retryable connecting managed processes as `MANAGED_PROCESS_RECONNECT` evidence, persist `repairAfterEpochMs` through the interrupted-run repair projection, and enqueue a replacement delayed repair for future `retryAfterEpochMs` values instead of relying only on the hourly periodic pass.
 
 ## Implementation Progress
@@ -31,6 +31,7 @@ Implemented in code:
 - `approved_pending_resume` and `general_resume` checkpoints restore back to the same queued run when safe, `waiting_approval` restores back to the same suspended run when safe, and `rejected_pending_resume` restores into a stopped run awaiting the next user instruction
 - live managed-process restores now also fall back to that same queued checkpoint-resume path when a safe `general_resume` checkpoint exists, instead of staying in a reconnect state that cannot yet continue end-to-end
 - run snapshots now expose managed-process auto-resume eligibility consistently across live owner reads and projection-only fallback, so host rebuild diagnostics can show whether a live process is stable enough for checkpoint-backed observation replay or is still in reconnect backoff
+- live managed-process observation tails that are not stable enough for checkpoint-backed auto-resume now restore to a suspended `resume_reconnect_process` state with durable reconnect evidence, instead of failing as a generic uncertain in-flight mutation
 - file-backed managed-process registries can now reattach a live controller across registry or host rebuild while the same app process is still alive, so same-process rebuild no longer always degrades into `PROCESS_INTERRUPTED_ON_RESTORE`
 - that managed-process restore path is now also scoped by runtime controller identity instead of only session directory, so rebuilt controllers in the same process no longer accidentally share a live-process reattach slot
 - interrupted managed-process restore now stamps restore-scope metadata (`same_controller`, `same_process_new_controller`, `cross_process`, or `unknown`) plus current process/controller identity, and lifecycle diagnostics surface those narrower reasons in repaired runs
@@ -182,7 +183,7 @@ Not yet implemented:
 
 - fully detached runtime ownership via Android service with binder-driven control as the primary execution path
 - additional prompt checkpoint boundaries beyond the current approval and post-tool-result slices
-- generalized checkpoint-aware queue restore in `core` beyond the current app-layer approval-boundary rewrite
+- generalized checkpoint-aware queue restore in `core` beyond the current app-layer recovery-aware rewrite
 
 ## Purpose
 
@@ -281,6 +282,7 @@ Current restore behavior in `app`:
 - approval-boundary checkpoints can rewrite a restored run back into the same `SUSPENDED` run when the task was waiting for approval
 - rejected approval checkpoints restore into a stopped run that waits for the user's next instruction instead of resuming execution
 - post-tool-result general prompt checkpoint recovery is implemented for the current safe slices, including live-process restores when a durable checkpoint exists
+- live `ProcessRead` / `ProcessWait` tails with reconnect backoff now restore into a suspended reconnect intent and preserve process id/status/recovery-state/retry-after evidence, while non-observational in-flight tool calls still fall back to explicit interruption
 - controller-level managed-process reconnect is implemented for reconnectable backends, including the runtime routed-factory path when the default delegate supports reconnect, but the broader detached-runtime/controller split is still not implemented
 
 Today that startup edge is split:
@@ -294,7 +296,7 @@ Conclusion:
 
 - host recreation no longer blindly replays in-flight work at the queue layer
 - approval-boundary runs can already recover into the same run identity when recovery is proven safe
-- everything outside those safe boundaries still lacks a general checkpoint model, so interruption remains the default fallback
+- everything outside those safe boundaries still lacks a general checkpoint model, so interruption remains the default fallback except for live managed-process observation reconnect holds that can be preserved without replay
 
 ### 4. Expanded run history is no longer purely memory-backed, but replay is still layered
 
@@ -374,6 +376,7 @@ What we can now distinguish better:
 - per-controller-instance churn versus the same target-scoped durable runtime-controller identity
 - held versus released target owner lease evidence, including the last runtime owner/controller/service ids and heartbeat/expiry timestamps
 - stable managed-process auto-resume eligibility versus reconnect backoff or interrupted terminal managed-process restore
+- per-run managed-process reconnect-hold evidence, including process id, reconnect status, recovery state, retry-after, and attempt count when recovery parks a live observation instead of replaying it
 - per-run recovery intent and restore reason when a recovery plan or restore diagnostic exists
 - per-session interrupted-run repair evidence kind for wake/rescan decisions, including queue-task, prompt-checkpoint, detached-subagent, run-record, and journal-tail-only recovery candidates, plus the latest persisted service-side repair projection when binder fallback reads only the target-scoped projection snapshot
 
@@ -397,7 +400,7 @@ Today the system can persist durable journal and checkpoint state and recover so
 
 That leaves two remaining failures:
 
-1. runs outside the current safe checkpoint boundaries, plus any case where terminal evidence is incomplete, still fall back to explicit interruption or later repair/resume instead of seamless continuation
+1. runs outside the current safe checkpoint boundaries, plus any case where terminal evidence is incomplete, still fall back to explicit interruption, reconnect-hold, or later repair/resume instead of seamless continuation
 2. UI continuity still depends on layered host, service, and bridge reattachment rather than a truly detached execution controller
 
 ## Design Requirements
