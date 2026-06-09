@@ -2460,8 +2460,8 @@ class OpenCrayAgentRuntimeTest {
   }
 
   @Test
-  fun responsesContinuationFallsBackToFullRebuildWhenTodoWriteChangesWorkingState() {
-    val workspaceRoot = temporaryFolder.newFolder("agent-responses-working-state-rebuild")
+  fun responsesContinuationAppendsContextUpdateWhenTodoWriteChangesWorkingState() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-responses-working-state-update")
     val todoStore = InMemoryAgentTodoStore()
     val selection = LiteLlmRouteSelectionMetadata(
       profileId = "test-profile",
@@ -2523,7 +2523,7 @@ class OpenCrayAgentRuntimeTest {
             status = LiteLlmGatewayStatus.SUCCESS,
             completionMode = LiteLlmCompletionMode.PRIMARY,
             completion = LiteLlmStructuredCompletion(
-              finalText = "Rebuilt after working state changed.",
+              finalText = "Continued after working state changed.",
             ),
             providerResponseId = "resp_working_2",
             providerLineageId = "lineage_working_2",
@@ -2571,16 +2571,28 @@ class OpenCrayAgentRuntimeTest {
     )
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
-    assertEquals("Rebuilt after working state changed.", result.stdout)
+    assertEquals("Continued after working state changed.", result.stdout)
     assertEquals(2, gatewayRequests.size)
-    assertNull(gatewayRequests[1].previousResponseId)
-    assertEquals("full_rebuild", gatewayRequests[1].metadata["localContinuationMode"])
-    assertEquals("dynamic_context_changed", gatewayRequests[1].metadata["localContinuationReason"])
-    assertEquals(
-      "dynamic_context_changed",
-      gatewayRequests[1].metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON],
+    assertEquals("resp_working_1", gatewayRequests[1].previousResponseId)
+    assertEquals("responses_native", gatewayRequests[1].metadata["localContinuationMode"])
+    assertEquals("responses_previous_response_id", gatewayRequests[1].metadata["localContinuationReason"])
+    assertNull(gatewayRequests[1].metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON])
+    assertEquals("1", gatewayRequests[1].metadata["responsesPendingContextUpdateCount"])
+    assertNotNull(gatewayRequests[1].metadata["responsesPendingContextUpdateHash"])
+    assertEquals("1", result.metadata["responsesPendingContextUpdateCount"])
+    assertNotNull(result.metadata["responsesPendingContextUpdateHash"])
+    assertEquals("1", result.metadata["localContinuationUsedCount"])
+    assertEquals(2, gatewayRequests[1].messages.size)
+    assertTrue(
+      gatewayRequests[1].messages.any { message ->
+        message.role == LiteLlmGatewayMessageRole.TOOL &&
+          message.toolResult?.toolCallId == "call_1" &&
+          message.toolResult?.toolName == "TodoWrite"
+      },
     )
     val messageText = gatewayStructuredPayloadText(gatewayRequests[1])
+    assertTrue(messageText.contains("[OpenCray Context Update]"))
+    assertTrue(messageText.contains("zone=dynamic_operational"))
     assertTrue(messageText.contains("[Working State]"))
     assertTrue(messageText.contains("primary_goal=Keep the todo list up to date"))
     assertTrue(messageText.contains("TodoWrite todos=1 changed=true"))
@@ -2594,6 +2606,155 @@ class OpenCrayAgentRuntimeTest {
       ),
       todoStore.snapshot(),
     )
+  }
+
+  @Test
+  fun responsesContinuationAppendsContextUpdateWhenOrdinaryMemoryRecallChanges() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-responses-memory-recall-update")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "hello from workspace".toByteArray(StandardCharsets.UTF_8),
+    )
+    val selection = LiteLlmRouteSelectionMetadata(
+      profileId = "test-profile",
+      routeId = "responses-route",
+      providerId = "openai",
+      model = "gpt-5-mini",
+      attemptIndex = 0,
+    )
+    val gatewayRequests = mutableListOf<LiteLlmGatewayRequest>()
+    var requestIndex = 0
+    val gateway = object : LiteLlmGateway {
+      override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+        gatewayRequests += request
+        return if (requestIndex++ == 0) {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              toolCalls = listOf(
+                LiteLlmStructuredToolCall(
+                  id = "call_1",
+                  toolName = "LS",
+                  arguments = JsonObject(mapOf("path" to JsonPrimitive("."))),
+                ),
+              ),
+            ),
+            providerResponseId = "resp_memory_recall_1",
+            providerLineageId = "lineage_memory_recall_1",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 53_600L,
+                finishedAtEpochMs = 53_601L,
+              ),
+            ),
+            startedAtEpochMs = 53_600L,
+            finishedAtEpochMs = 53_601L,
+          )
+        } else {
+          LiteLlmGatewayResult(
+            requestId = request.requestId,
+            status = LiteLlmGatewayStatus.SUCCESS,
+            completionMode = LiteLlmCompletionMode.PRIMARY,
+            completion = LiteLlmStructuredCompletion(
+              finalText = "Continued after dynamic memory recall changed.",
+            ),
+            providerResponseId = "resp_memory_recall_2",
+            providerLineageId = "lineage_memory_recall_2",
+            selectedRoute = selection,
+            attempts = listOf(
+              LiteLlmAttemptRecord(
+                route = selection,
+                outcome = LiteLlmAttemptOutcome.SUCCESS,
+                outputChars = 0,
+                startedAtEpochMs = 53_602L,
+                finishedAtEpochMs = 53_603L,
+              ),
+            ),
+            startedAtEpochMs = 53_602L,
+            finishedAtEpochMs = 53_603L,
+          )
+        }
+      }
+    }
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(
+        maxTurns = 4,
+        maxToolCalls = 2,
+        sessionContext = AgentRuntimeSessionContext(
+          recalledMemory = MemoryRecallResult(
+            memories = listOf(
+              RetrievedMemory(
+                id = "memory-initial",
+                kind = MemoryKind.PROJECT_FACT,
+                scope = MemoryScope.WORKSPACE,
+                status = MemoryStatus.ACTIVE,
+                content = "Initial dynamic recall should not become a Responses baseline.",
+                lastConfirmedAtEpochMs = 1_000L,
+                score = 100,
+              ),
+            ),
+          ),
+        ),
+        midTurnMaintenance = { request ->
+          OpenCrayMidTurnMaintenanceResult(
+            sessionContext = request.sessionContext.copy(
+              recalledMemory = MemoryRecallResult(
+                memories = listOf(
+                  RetrievedMemory(
+                    id = "memory-updated",
+                    kind = MemoryKind.PROJECT_FACT,
+                    scope = MemoryScope.WORKSPACE,
+                    status = MemoryStatus.ACTIVE,
+                    content = "Updated ordinary dynamic recall travels as a context update.",
+                    lastConfirmedAtEpochMs = 2_000L,
+                    score = 200,
+                  ),
+                ),
+              ),
+            ),
+          )
+        },
+        llmMetadata = mapOf(
+          "protocol" to "openai_responses",
+          "responseApiPreferred" to "true",
+          "nativeToolCallingAvailable" to "true",
+          "responsesContinuationSupported" to "true",
+          "nativeWebSearchEnabled" to "false",
+        ),
+      ),
+      clock = IncrementingClock(start = 53_700L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Use relevant memory, list the workspace, then answer."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("Continued after dynamic memory recall changed.", result.stdout)
+    assertEquals(2, gatewayRequests.size)
+    assertEquals("resp_memory_recall_1", gatewayRequests[1].previousResponseId)
+    assertEquals("responses_native", gatewayRequests[1].metadata["localContinuationMode"])
+    assertEquals("responses_previous_response_id", gatewayRequests[1].metadata["localContinuationReason"])
+    assertEquals("1", gatewayRequests[1].metadata["responsesPendingContextUpdateCount"])
+    assertNull(gatewayRequests[1].metadata[LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON])
+    val messageText = gatewayStructuredPayloadText(gatewayRequests[1])
+    assertTrue(messageText.contains("[OpenCray Context Update]"))
+    assertTrue(messageText.contains("[Retrieved Memory]"))
+    assertTrue(messageText.contains("Updated ordinary dynamic recall travels as a context update."))
+    assertFalse(messageText.contains("Initial dynamic recall should not become a Responses baseline."))
   }
 
   @Test
@@ -5270,6 +5431,7 @@ class OpenCrayAgentRuntimeTest {
         sessionContext = AgentRuntimeSessionContext(
           memoryFlushTrace = MemoryFlushTrace(
             outcome = MemoryFlushOutcome.WRITTEN,
+            executionMode = "inline",
             omittedMessageCount = 4,
             omittedCharCount = 512,
             signature = "flush-signature-123",
@@ -5290,6 +5452,7 @@ class OpenCrayAgentRuntimeTest {
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("written", result.metadata["contextMemoryFlushOutcome"])
+    assertEquals("inline", result.metadata["contextMemoryFlushExecutionMode"])
     assertEquals("4", result.metadata["contextMemoryFlushOmittedMessageCount"])
     assertEquals("512", result.metadata["contextMemoryFlushOmittedCharCount"])
     assertEquals("flush-signature-123", result.metadata["contextMemoryFlushSignature"])
@@ -5324,6 +5487,7 @@ class OpenCrayAgentRuntimeTest {
             """.trimIndent(),
             trace = DurableCompactionTrace(
               compactedThisRun = true,
+              executionMode = "inline",
               sourceTranscriptMessageCount = 18,
               retainedTranscriptMessageCount = 12,
               latestCompactedMessageCount = 6,
@@ -5345,6 +5509,7 @@ class OpenCrayAgentRuntimeTest {
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("true", result.metadata["contextDurableCompactionCompactedThisRun"])
+    assertEquals("inline", result.metadata["contextDurableCompactionExecutionMode"])
     assertEquals("18", result.metadata["contextDurableCompactionSourceTranscriptMessageCount"])
     assertEquals("12", result.metadata["contextDurableCompactionRetainedTranscriptMessageCount"])
     assertEquals("6", result.metadata["contextDurableCompactionLatestMessageCount"])

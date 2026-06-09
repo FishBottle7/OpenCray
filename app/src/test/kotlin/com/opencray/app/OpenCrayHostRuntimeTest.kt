@@ -7272,6 +7272,7 @@ class OpenCrayHostRuntimeTest {
         metadata = task.metadata + mapOf(
           "responseFormat" to "json_final",
           "contextMemoryFlushOutcome" to "written",
+          "contextMemoryFlushExecutionMode" to "inline",
           "contextMemoryFlushOmittedMessageCount" to "4",
           "contextMemoryFlushOmittedCharCount" to "512",
           "contextMemoryFlushSignature" to "flush-signature-123",
@@ -7287,6 +7288,7 @@ class OpenCrayHostRuntimeTest {
     val memoryFlush = runSnapshot["memoryFlush"] as Map<*, *>
 
     assertEquals("written", memoryFlush["outcome"])
+    assertEquals("inline", memoryFlush["executionMode"])
     assertEquals(4, memoryFlush["omittedMessageCount"])
     assertEquals(512, memoryFlush["omittedCharCount"])
     assertEquals("flush-signature-123", memoryFlush["signature"])
@@ -7390,6 +7392,7 @@ class OpenCrayHostRuntimeTest {
         metadata = task.metadata + mapOf(
           "responseFormat" to "json_final",
           "contextDurableCompactionCompactedThisRun" to "true",
+          "contextDurableCompactionExecutionMode" to "inline",
           "contextDurableCompactionSourceTranscriptMessageCount" to "18",
           "contextDurableCompactionRetainedTranscriptMessageCount" to "12",
           "contextDurableCompactionLatestMessageCount" to "6",
@@ -7405,6 +7408,7 @@ class OpenCrayHostRuntimeTest {
     val durableCompaction = runSnapshot["durableCompaction"] as Map<*, *>
 
     assertEquals(true, durableCompaction["compactedThisRun"])
+    assertEquals("inline", durableCompaction["executionMode"])
     assertEquals(18, durableCompaction["sourceTranscriptMessageCount"])
     assertEquals(12, durableCompaction["retainedTranscriptMessageCount"])
     assertEquals(6, durableCompaction["latestCompactedMessageCount"])
@@ -7668,6 +7672,8 @@ class OpenCrayHostRuntimeTest {
           "localContinuationFallbackCount" to "1",
           "localContinuationLastMode" to "full_rebuild",
           "localContinuationLastReason" to "user_setting_changed",
+          "responsesPendingContextUpdateCount" to "2",
+          "responsesPendingContextUpdateHash" to "ctx-update-hash",
           LiteLlmMetadataKeys.TOOL_CALL_EVENT_EMITTED to "true",
           LiteLlmMetadataKeys.TOOL_RESULT_EVENT_EMITTED to "true",
           LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON to "user_setting_changed",
@@ -7694,6 +7700,8 @@ class OpenCrayHostRuntimeTest {
     assertEquals(1, llmDiagnostics["localContinuationFallbackCount"])
     assertEquals("full_rebuild", llmDiagnostics["localContinuationLastMode"])
     assertEquals("user_setting_changed", llmDiagnostics["localContinuationLastReason"])
+    assertEquals(2, llmDiagnostics["responsesPendingContextUpdateCount"])
+    assertEquals("ctx-update-hash", llmDiagnostics["responsesPendingContextUpdateHash"])
     assertEquals(true, llmDiagnostics["toolCallEventEmitted"])
     assertEquals(true, llmDiagnostics["toolResultEventEmitted"])
     assertEquals("user_setting_changed", llmDiagnostics["contextCacheBreakReason"])

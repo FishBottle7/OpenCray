@@ -10327,6 +10327,7 @@ void main() {
               ),
               memoryFlush: OpenCrayChatRunMemoryFlushSnapshot(
                 outcome: 'written',
+                executionMode: 'inline',
                 candidateCount: 2,
                 writtenRecordCount: 1,
                 writtenKinds: <String>['project_fact'],
@@ -10356,6 +10357,7 @@ void main() {
               ),
               durableCompaction: OpenCrayChatRunDurableCompactionSnapshot(
                 compactedThisRun: true,
+                executionMode: 'inline',
                 sourceTranscriptMessageCount: 18,
                 retainedTranscriptMessageCount: 12,
                 latestCompactedMessageCount: 6,

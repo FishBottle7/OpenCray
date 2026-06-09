@@ -580,6 +580,7 @@ class OpenCrayChatRunMemoryFlushSnapshot {
   const OpenCrayChatRunMemoryFlushSnapshot({
     this.outcome,
     this.triggerStage,
+    this.executionMode,
     this.contextWindowTokens,
     this.autoCompactTokenLimit,
     this.estimatedReplayTokens,
@@ -595,6 +596,7 @@ class OpenCrayChatRunMemoryFlushSnapshot {
 
   final String? outcome;
   final String? triggerStage;
+  final String? executionMode;
   final int? contextWindowTokens;
   final int? autoCompactTokenLimit;
   final int? estimatedReplayTokens;
@@ -617,6 +619,7 @@ class OpenCrayChatRunMemoryFlushSnapshot {
     return OpenCrayChatRunMemoryFlushSnapshot(
       outcome: map['outcome'] as String?,
       triggerStage: map['triggerStage'] as String?,
+      executionMode: map['executionMode'] as String?,
       contextWindowTokens: map['contextWindowTokens'] as int?,
       autoCompactTokenLimit: map['autoCompactTokenLimit'] as int?,
       estimatedReplayTokens: map['estimatedReplayTokens'] as int?,
@@ -930,6 +933,7 @@ class OpenCrayChatRunDurableCompactionSnapshot {
   const OpenCrayChatRunDurableCompactionSnapshot({
     this.compactedThisRun,
     this.triggerStage,
+    this.executionMode,
     this.contextWindowTokens,
     this.autoCompactTokenLimit,
     this.estimatedReplayTokens,
@@ -946,6 +950,7 @@ class OpenCrayChatRunDurableCompactionSnapshot {
 
   final bool? compactedThisRun;
   final String? triggerStage;
+  final String? executionMode;
   final int? contextWindowTokens;
   final int? autoCompactTokenLimit;
   final int? estimatedReplayTokens;
@@ -965,6 +970,7 @@ class OpenCrayChatRunDurableCompactionSnapshot {
     return OpenCrayChatRunDurableCompactionSnapshot(
       compactedThisRun: map['compactedThisRun'] as bool?,
       triggerStage: map['triggerStage'] as String?,
+      executionMode: map['executionMode'] as String?,
       contextWindowTokens: map['contextWindowTokens'] as int?,
       autoCompactTokenLimit: map['autoCompactTokenLimit'] as int?,
       estimatedReplayTokens: map['estimatedReplayTokens'] as int?,
@@ -1208,6 +1214,8 @@ class OpenCrayChatRunLlmDiagnosticsSnapshot {
     this.localContinuationFallbackCount,
     this.localContinuationLastMode,
     this.localContinuationLastReason,
+    this.responsesPendingContextUpdateCount,
+    this.responsesPendingContextUpdateHash,
     this.toolCallEventEmitted,
     this.toolResultEventEmitted,
     this.contextCacheBreakReason,
@@ -1226,6 +1234,8 @@ class OpenCrayChatRunLlmDiagnosticsSnapshot {
   final int? localContinuationFallbackCount;
   final String? localContinuationLastMode;
   final String? localContinuationLastReason;
+  final int? responsesPendingContextUpdateCount;
+  final String? responsesPendingContextUpdateHash;
   final bool? toolCallEventEmitted;
   final bool? toolResultEventEmitted;
   final String? contextCacheBreakReason;
@@ -1251,6 +1261,10 @@ class OpenCrayChatRunLlmDiagnosticsSnapshot {
       localContinuationLastMode: map['localContinuationLastMode'] as String?,
       localContinuationLastReason:
           map['localContinuationLastReason'] as String?,
+      responsesPendingContextUpdateCount:
+          map['responsesPendingContextUpdateCount'] as int?,
+      responsesPendingContextUpdateHash:
+          map['responsesPendingContextUpdateHash'] as String?,
       toolCallEventEmitted: map['toolCallEventEmitted'] as bool?,
       toolResultEventEmitted: map['toolResultEventEmitted'] as bool?,
       contextCacheBreakReason: map['contextCacheBreakReason'] as String?,

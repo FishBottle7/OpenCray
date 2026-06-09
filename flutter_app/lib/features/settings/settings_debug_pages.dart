@@ -1753,6 +1753,16 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                   'Local continuation',
                   'used ${llmDiagnostics.localContinuationUsedCount ?? 0}, fallback ${llmDiagnostics.localContinuationFallbackCount ?? 0}, mode ${llmDiagnostics.localContinuationLastMode?.trim().isNotEmpty == true ? llmDiagnostics.localContinuationLastMode!.trim() : 'unknown'}, reason ${llmDiagnostics.localContinuationLastReason?.trim().isNotEmpty == true ? llmDiagnostics.localContinuationLastReason!.trim() : 'none'}',
                 ),
+              if ((llmDiagnostics.responsesPendingContextUpdateCount ?? 0) >
+                      0 ||
+                  llmDiagnostics.responsesPendingContextUpdateHash
+                          ?.trim()
+                          .isNotEmpty ==
+                      true)
+                _DebugKeyValueLine(
+                  'Responses context updates',
+                  'pending ${llmDiagnostics.responsesPendingContextUpdateCount ?? 0}, hash ${llmDiagnostics.responsesPendingContextUpdateHash?.trim().isNotEmpty == true ? llmDiagnostics.responsesPendingContextUpdateHash!.trim() : 'none'}',
+                ),
               if (llmDiagnostics.toolCallEventEmitted != null ||
                   llmDiagnostics.toolResultEventEmitted != null)
                 _DebugKeyValueLine(
@@ -1989,6 +1999,11 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                   'Trigger stage',
                   memoryFlush.triggerStage!.trim(),
                 ),
+              if (memoryFlush.executionMode?.trim().isNotEmpty == true)
+                _DebugKeyValueLine(
+                  'Execution mode',
+                  memoryFlush.executionMode!.trim(),
+                ),
               if ((memoryFlush.contextWindowTokens ?? 0) > 0)
                 _DebugKeyValueLine(
                   'Context window',
@@ -2031,7 +2046,10 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                   bootstrap != null ||
                   memoryFlush != null)
                 const SizedBox(height: 16),
-              const Text('Sticky memory', style: _SettingsTextStyles.bodyStrong),
+              const Text(
+                'Sticky memory',
+                style: _SettingsTextStyles.bodyStrong,
+              ),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -2048,7 +2066,10 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                 ],
               ),
               if (stickyMemory.recordIds.isNotEmpty)
-                _DebugKeyValueLine('Pinned ids', stickyMemory.recordIds.join(', ')),
+                _DebugKeyValueLine(
+                  'Pinned ids',
+                  stickyMemory.recordIds.join(', '),
+                ),
             ],
             if (durableCompaction != null) ...[
               if (liveContext != null ||
@@ -2099,6 +2120,11 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                 _DebugKeyValueLine(
                   'Trigger stage',
                   durableCompaction.triggerStage!.trim(),
+                ),
+              if (durableCompaction.executionMode?.trim().isNotEmpty == true)
+                _DebugKeyValueLine(
+                  'Execution mode',
+                  durableCompaction.executionMode!.trim(),
                 ),
               if ((durableCompaction.contextWindowTokens ?? 0) > 0)
                 _DebugKeyValueLine(

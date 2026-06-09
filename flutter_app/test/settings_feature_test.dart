@@ -3912,6 +3912,7 @@ _FakeDebugBridge _buildDebugBridge({
         ),
         memoryFlush: OpenCrayChatRunMemoryFlushSnapshot(
           outcome: 'written',
+          executionMode: 'inline',
           omittedMessageCount: 6,
           omittedCharCount: 2100,
           signature: 'user-intro|tool-scan|workspace-facts',
@@ -3945,6 +3946,7 @@ _FakeDebugBridge _buildDebugBridge({
         ),
         durableCompaction: OpenCrayChatRunDurableCompactionSnapshot(
           compactedThisRun: true,
+          executionMode: 'inline',
           sourceTranscriptMessageCount: 18,
           retainedTranscriptMessageCount: 7,
           latestCompactedMessageCount: 9,

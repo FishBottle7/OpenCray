@@ -1,10 +1,12 @@
 # Codex / Claude Balanced Context Management Plan
 
-Last updated: 2026-06-08
+Last updated: 2026-06-09
 
 ## Status
 
-Active successor plan.
+Scoped implementation complete for the current branch slice.
+
+Model-switch pressure safeguards are explicitly deferred by product decision and are not part of the current completion gate.
 
 This document replaces the active planning role of:
 
@@ -296,6 +298,8 @@ Tasks:
 
 ### Phase 2: Responses Baseline And Context Updates
 
+Status: done.
+
 Goal:
 
 - stop making Responses-native continuation depend on full Zone C byte equality
@@ -316,8 +320,11 @@ Verification:
 - ordinary memory recall does not break baseline unless promoted sticky
 - tool pool/schema changes still force rebuild
 - lineage loss still forces rebuild
+- run snapshots expose pending Responses context update count and hash
 
 ### Phase 3: Deterministic Replay Projection Store
+
+Status: done in prior branch work.
 
 Goal:
 
@@ -336,8 +343,11 @@ Verification:
 - a large historical tool result is projected deterministically on repeated turns
 - projection does not change canonical transcript
 - cache hashes stay stable across repeated replay assembly
+- projection metadata is visible in host and projection-only run snapshots
 
 ### Phase 4: Provider-Specific Cache Layout
+
+Status: done for the currently supported provider families.
 
 Goal:
 
@@ -356,8 +366,16 @@ Verification:
 - OpenAI cached token telemetry round-trips into run trace
 - Anthropic cache read/write telemetry round-trips into run trace
 - dynamic memory recall change is visible as dynamic drift, not stable-prefix drift
+- Responses remote compaction is advertised only on Responses-native routes; Chat, Anthropic, on-device, and custom routes keep local projection/compaction contracts and honest unsupported-native-feature metadata
 
 ### Phase 5: Model-Switch Safeguard
+
+Status: deferred.
+
+Reason:
+
+- explicitly excluded from the current scope by user direction
+- should remain a separate trigger-stage implementation so it does not blur normal pre-run compaction semantics
 
 Goal:
 
@@ -377,6 +395,14 @@ Verification:
 
 ### Phase 6: Background Maintenance Worker
 
+Status: done as inline-first trace contract; real background worker deferred until latency data justifies it.
+
+Decision:
+
+- pre-run and mid-turn flush/compaction currently feed correctness-sensitive context for the next model call
+- moving those writes to a background worker without a stronger job protocol risks stale prompt state and double-compaction
+- the completed scope records `executionMode=inline` for memory flush and durable compaction so future `background` jobs can share the same trace surface
+
 Goal:
 
 - move expensive flush/compaction maintenance out of the inline path only where latency data justifies it
@@ -391,10 +417,12 @@ Work:
 Verification:
 
 - inline path still works
-- background job cannot double-compact the same omitted window
-- run trace distinguishes inline and background maintenance
+- run trace distinguishes maintenance execution mode
+- background worker remains deferred until there is latency evidence and an idempotent job protocol
 
 ### Phase 7: Cross-Layer Trace Replay
+
+Status: done for the current debug snapshot surface.
 
 Goal:
 
@@ -410,6 +438,7 @@ Verification:
 
 - an operator can inspect one run and see exact context layer final states
 - no need to reconstruct behavior from raw metadata keys
+- budget, cache, memory recall, sticky memory, skills, bootstrap, flush, local compaction, remote compaction, replay projection, and Responses context-update traces are projected through host and projection-only snapshots
 
 ## Explicit Non-Goals
 
@@ -419,10 +448,11 @@ Verification:
 - Do not claim native remote compaction outside OpenAI Responses.
 - Do not hide user-visible transcript loss behind provider-native compaction.
 - Do not treat Claude Code memory files and OpenCray durable memory as identical; they solve related but different layers.
+- Do not complete model-switch pressure safeguards in this branch slice; they remain a deferred standalone plan item.
 
 ## Completion Criteria
 
-This plan is complete when:
+This scoped plan is complete when:
 
 - OpenAI Responses native continuation is baseline-plus-update oriented rather than full dynamic-front-byte oriented.
 - Chat/Anthropic/on-device routes have stable local cache-shape contracts and honest native-feature metadata.
@@ -430,5 +460,8 @@ This plan is complete when:
 - Sticky memory and pinned skills can deliberately enter durable context with trace.
 - Replay projection is deterministic and persisted.
 - Local/remote compaction are late, threshold-driven, and traceable.
-- Model-switch pressure is handled before sending oversized requests.
 - Debug surfaces show the reason for cache breaks, compaction, projection, and layer reduction.
+
+Deferred completion criterion:
+
+- Model-switch pressure is handled before sending oversized requests.

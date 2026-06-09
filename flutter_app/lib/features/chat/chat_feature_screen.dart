@@ -1358,6 +1358,10 @@ Map<String, Object?>? _runtimeLlmDiagnosticsDisplaySignature(
         diagnostics.localContinuationFallbackCount,
     'localContinuationLastMode': diagnostics.localContinuationLastMode,
     'localContinuationLastReason': diagnostics.localContinuationLastReason,
+    'responsesPendingContextUpdateCount':
+        diagnostics.responsesPendingContextUpdateCount,
+    'responsesPendingContextUpdateHash':
+        diagnostics.responsesPendingContextUpdateHash,
     'toolCallEventEmitted': diagnostics.toolCallEventEmitted,
     'toolResultEventEmitted': diagnostics.toolResultEventEmitted,
     'contextCacheBreakReason': diagnostics.contextCacheBreakReason,
@@ -1478,6 +1482,7 @@ Map<String, Object?>? _runtimeMemoryFlushDisplaySignature(
   return <String, Object?>{
     'outcome': flush.outcome,
     'triggerStage': flush.triggerStage,
+    'executionMode': flush.executionMode,
     'contextWindowTokens': flush.contextWindowTokens,
     'autoCompactTokenLimit': flush.autoCompactTokenLimit,
     'estimatedReplayTokens': flush.estimatedReplayTokens,
@@ -1540,6 +1545,7 @@ Map<String, Object?>? _runtimeDurableCompactionDisplaySignature(
   return <String, Object?>{
     'compactedThisRun': compaction.compactedThisRun,
     'triggerStage': compaction.triggerStage,
+    'executionMode': compaction.executionMode,
     'contextWindowTokens': compaction.contextWindowTokens,
     'autoCompactTokenLimit': compaction.autoCompactTokenLimit,
     'estimatedReplayTokens': compaction.estimatedReplayTokens,
@@ -7909,6 +7915,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         widget.copy.isChinese
             ? '触发 ${flush.triggerStage}'
             : 'Trigger: ${flush.triggerStage}',
+      if (_nonEmpty(flush.executionMode) != null)
+        widget.copy.isChinese
+            ? '模式 ${flush.executionMode}'
+            : 'Mode: ${flush.executionMode}',
       if (flush.contextWindowTokens != null)
         widget.copy.isChinese
             ? '窗口 ${flush.contextWindowTokens}'
@@ -8054,6 +8064,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         widget.copy.isChinese
             ? '触发 ${durableCompaction.triggerStage}'
             : 'Trigger: ${durableCompaction.triggerStage}',
+      if (_nonEmpty(durableCompaction.executionMode) != null)
+        widget.copy.isChinese
+            ? '模式 ${durableCompaction.executionMode}'
+            : 'Mode: ${durableCompaction.executionMode}',
       if (durableCompaction.contextWindowTokens != null)
         widget.copy.isChinese
             ? '窗口 ${durableCompaction.contextWindowTokens}'

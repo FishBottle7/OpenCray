@@ -298,6 +298,8 @@ data class OpenCraySerializableResponsesContinuationShape(
   val stableAnchor: String,
   val durableContextPrompt: String? = null,
   val dynamicContextPrompt: String? = null,
+  val dynamicContextHash: String? = null,
+  val appliedContextUpdateCount: Int = 0,
   val toolPoolFingerprint: String,
   val toolSchemaFingerprint: String,
   val requestSettingsFingerprint: String,
@@ -314,6 +316,12 @@ data class OpenCraySerializableResponsesContinuationShape(
     }
     require(requestSettingsFingerprint.isNotBlank()) {
       "OpenCraySerializableResponsesContinuationShape requestSettingsFingerprint must not be blank."
+    }
+    require(dynamicContextHash == null || dynamicContextHash.isNotBlank()) {
+      "OpenCraySerializableResponsesContinuationShape dynamicContextHash must not be blank."
+    }
+    require(appliedContextUpdateCount >= 0) {
+      "OpenCraySerializableResponsesContinuationShape appliedContextUpdateCount must be >= 0."
     }
   }
 

@@ -58,6 +58,7 @@ import com.opencray.runtime.context.RuntimeConversationToolResult
 import com.opencray.runtime.context.FrozenToolResultReplayProjection
 import com.opencray.runtime.context.ToolProtocolTrace
 import com.opencray.runtime.context.ToolResultReplayProjector
+import com.opencray.runtime.memory.MemoryRecallResult
 import com.opencray.runtime.policy.ToolPolicyPlan
 import com.opencray.runtime.subagent.BuiltInSubAgentProfiles
 import com.opencray.runtime.subagent.InMemorySubAgentExecutionCoordinator
@@ -350,9 +351,19 @@ class OpenCrayAgentRuntime(
         ?: false,
       responsesFullReplayRequired = false,
       responsesContinuationShape = config.promptResumeState?.responsesContinuationShape?.let { shape ->
+        val restoredFrontContextZones = shape.restoredFrontContextZones()
         ResponsesContinuationShape(
           stableAnchor = shape.stableAnchor,
-          frontContextZones = shape.restoredFrontContextZones(),
+          baseline = ResponsesContextBaselineSnapshot(
+            durableContextPrompt = restoredFrontContextZones.durableContextPrompt,
+          ),
+          referenceState = ResponsesContextReferenceState(
+            dynamicContextHash = shape.dynamicContextHash
+              ?.trim()
+              ?.takeIf(String::isNotBlank)
+              ?: promptCacheFingerprint(restoredFrontContextZones.dynamicContextPrompt),
+            appliedUpdateCount = shape.appliedContextUpdateCount,
+          ),
           toolPoolFingerprint = shape.toolPoolFingerprint,
           toolSchemaFingerprint = shape.toolSchemaFingerprint,
           requestSettingsFingerprint = shape.requestSettingsFingerprint,
@@ -680,6 +691,11 @@ class OpenCrayAgentRuntime(
               put(LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON, reason)
             }
             putAll(contextCacheShapeMetadata)
+            put("responsesPendingContextUpdateCount", gatewayMessagePlan.responsesPendingContextUpdateCount.toString())
+            gatewayMessagePlan.responsesPendingContextUpdateHash
+              ?.trim()
+              ?.takeIf(String::isNotBlank)
+              ?.let { hash -> put("responsesPendingContextUpdateHash", hash) }
             cursor.responsesProviderLineageId
               ?.trim()
               ?.takeIf(String::isNotBlank)
@@ -910,12 +926,24 @@ class OpenCrayAgentRuntime(
         }
 
         is ParsedModelActionBatch.Actions -> {
+          val responsesAppliedUpdateCount = if (gatewayMessagePlan.mode == LocalContinuationMode.RESPONSES_NATIVE) {
+            (cursor.responsesContinuationShape?.referenceState?.appliedUpdateCount ?: 0) +
+              gatewayMessagePlan.responsesPendingContextUpdateCount
+          } else {
+            0
+          }
           updateResponsesContinuationState(
             cursor = cursor,
             gatewayResult = gatewayResult,
             continuationShape = ResponsesContinuationShape(
               stableAnchor = stableLocalContinuationAnchor,
-              frontContextZones = assembledPrompt.frontContextZones,
+              baseline = ResponsesContextBaselineSnapshot(
+                durableContextPrompt = assembledPrompt.frontContextZones.durableContextPrompt,
+              ),
+              referenceState = ResponsesContextReferenceState(
+                dynamicContextHash = promptCacheFingerprint(assembledPrompt.frontContextZones.dynamicContextPrompt),
+                appliedUpdateCount = responsesAppliedUpdateCount,
+              ),
               toolPoolFingerprint = toolPoolFingerprint,
               toolSchemaFingerprint = toolSchemaFingerprint,
               requestSettingsFingerprint = requestSettingsFingerprint,
@@ -2295,23 +2323,34 @@ class OpenCrayAgentRuntime(
     requestSettingsFingerprint: String,
     transcript: List<RuntimeConversationMessage>,
   ): GatewayMessagePlan {
+    val requestedFrontContextZones = normalizeFrontContextZones(frontContextPrompts)
     val decision = responsesContinuationDecision(
       cursor = cursor,
       requestedShape = ResponsesContinuationShape(
         stableAnchor = stableAnchor,
-        frontContextZones = normalizeFrontContextZones(frontContextPrompts),
+        baseline = ResponsesContextBaselineSnapshot(
+          durableContextPrompt = requestedFrontContextZones.durableContextPrompt,
+        ),
+        referenceState = ResponsesContextReferenceState(
+          dynamicContextHash = promptCacheFingerprint(requestedFrontContextZones.dynamicContextPrompt),
+        ),
         toolPoolFingerprint = toolPoolFingerprint,
         toolSchemaFingerprint = toolSchemaFingerprint,
         requestSettingsFingerprint = requestSettingsFingerprint,
       ),
+      requestedFrontContextZones = requestedFrontContextZones,
     )
     val previousResponseId = decision.previousResponseId
     return if (previousResponseId != null) {
       GatewayMessagePlan(
-        messages = cursor.responsesPendingMessages.toList(),
+        messages = cursor.responsesPendingMessages + decision.pendingContextUpdates.map { update ->
+          responsesPendingContextUpdateMessage(update)
+        },
         mode = LocalContinuationMode.RESPONSES_NATIVE,
         reason = decision.reason,
         previousResponseId = previousResponseId,
+        responsesPendingContextUpdateCount = decision.pendingContextUpdates.size,
+        responsesPendingContextUpdateHash = responsesPendingContextUpdateHash(decision.pendingContextUpdates),
       )
     } else {
       fullGatewayMessageRebuild(
@@ -2326,6 +2365,7 @@ class OpenCrayAgentRuntime(
   private fun responsesContinuationDecision(
     cursor: PromptTurnCursor,
     requestedShape: ResponsesContinuationShape,
+    requestedFrontContextZones: FrontContextZones,
   ): ResponsesContinuationDecision {
     if (!responsesContinuationSupported()) {
       return ResponsesContinuationDecision(reason = "responses_continuation_disabled")
@@ -2364,9 +2404,15 @@ class OpenCrayAgentRuntime(
     )?.let { reason ->
       return ResponsesContinuationDecision(reason = reason)
     }
+    val pendingContextUpdates = responsesPendingContextUpdates(
+      cursor = cursor,
+      requestedShape = requestedShape,
+      requestedFrontContextZones = requestedFrontContextZones,
+    ) ?: return ResponsesContinuationDecision(reason = "responses_context_update_chain_limit")
     return ResponsesContinuationDecision(
       previousResponseId = previousResponseId,
       reason = "responses_previous_response_id",
+      pendingContextUpdates = pendingContextUpdates,
     )
   }
 
@@ -2387,14 +2433,64 @@ class OpenCrayAgentRuntime(
     if (shape.stableAnchor != requestedShape.stableAnchor) {
       return "anchor_changed"
     }
-    if (shape.frontContextZones.durableContextPrompt != requestedShape.frontContextZones.durableContextPrompt) {
+    if (shape.baseline.durableContextPrompt != requestedShape.baseline.durableContextPrompt) {
       return "durable_context_changed"
-    }
-    if (shape.frontContextZones.dynamicContextPrompt != requestedShape.frontContextZones.dynamicContextPrompt) {
-      return "dynamic_context_changed"
     }
     return null
   }
+
+  private fun responsesPendingContextUpdates(
+    cursor: PromptTurnCursor,
+    requestedShape: ResponsesContinuationShape,
+    requestedFrontContextZones: FrontContextZones,
+  ): List<ResponsesPendingContextUpdate>? {
+    val storedShape = cursor.responsesContinuationShape ?: return emptyList()
+    if (storedShape.referenceState.dynamicContextHash == requestedShape.referenceState.dynamicContextHash) {
+      return emptyList()
+    }
+    if (storedShape.referenceState.appliedUpdateCount >= RESPONSES_CONTEXT_UPDATE_CHAIN_LIMIT) {
+      return null
+    }
+    val updateText = requestedFrontContextZones.dynamicContextPrompt.trim().takeIf(String::isNotBlank)
+      ?: "Dynamic operational context is currently empty."
+    return listOf(
+      ResponsesPendingContextUpdate(
+        sequence = storedShape.referenceState.appliedUpdateCount + 1,
+        dynamicContextHash = requestedShape.referenceState.dynamicContextHash,
+        content = updateText.take(RESPONSES_CONTEXT_UPDATE_MAX_CHARS),
+        truncated = updateText.length > RESPONSES_CONTEXT_UPDATE_MAX_CHARS,
+      ),
+    )
+  }
+
+  private fun responsesPendingContextUpdateMessage(
+    update: ResponsesPendingContextUpdate,
+  ): LiteLlmGatewayMessage = LiteLlmGatewayMessage(
+    role = LiteLlmGatewayMessageRole.USER,
+    content = buildString {
+      append("[OpenCray Context Update]\n")
+      append("zone=dynamic_operational\n")
+      append("sequence=")
+      append(update.sequence)
+      append("\n")
+      append("dynamic_context_hash=")
+      append(update.dynamicContextHash)
+      append("\n")
+      append("truncated=")
+      append(update.truncated)
+      append("\n\n")
+      append(update.content)
+    },
+  )
+
+  private fun responsesPendingContextUpdateHash(
+    updates: List<ResponsesPendingContextUpdate>,
+  ): String? = updates
+    .takeIf(List<ResponsesPendingContextUpdate>::isNotEmpty)
+    ?.joinToString(separator = "\n") { update ->
+      "${update.sequence}:${update.dynamicContextHash}:${update.truncated}:${update.content}"
+    }
+    ?.let(::promptCacheFingerprint)
 
   private fun hasResponsesLineage(cursor: PromptTurnCursor): Boolean =
     cursor.responsesLineageTrusted &&
@@ -2413,9 +2509,22 @@ class OpenCrayAgentRuntime(
           !toolResultPublishesAttachmentArtifacts(toolResult)
       }
 
+      LiteLlmGatewayMessageRole.USER -> isResponsesPendingContextUpdateMessage(message)
+
       else -> false
     }
   }
+
+  private fun isResponsesPendingContextUpdateMessage(
+    message: LiteLlmGatewayMessage,
+  ): Boolean =
+    message.content
+      ?.trimStart()
+      ?.startsWith("[OpenCray Context Update]\nzone=dynamic_operational\n") == true &&
+      message.attachments.isEmpty() &&
+      message.toolCalls.isEmpty() &&
+      message.toolResult == null &&
+      message.assistantPhase == null
 
   private fun toolResultPublishesAttachmentArtifacts(
     toolResult: LiteLlmGatewayToolResult,
@@ -3070,6 +3179,9 @@ class OpenCrayAgentRuntime(
         report.memoryFlushTrace.maintenanceTask
           .takeIf(String::isNotBlank)
           ?.let { maintenanceTask -> put("contextMemoryFlushMaintenanceTask", maintenanceTask) }
+        report.memoryFlushTrace.executionMode
+          .takeIf(String::isNotBlank)
+          ?.let { executionMode -> put("contextMemoryFlushExecutionMode", executionMode) }
         put("contextMemoryFlushContextWindowTokens", report.memoryFlushTrace.contextWindowTokens.toString())
         put("contextMemoryFlushAutoCompactTokenLimit", report.memoryFlushTrace.autoCompactTokenLimit.toString())
         put("contextMemoryFlushEstimatedReplayTokens", report.memoryFlushTrace.estimatedReplayTokens.toString())
@@ -3108,6 +3220,9 @@ class OpenCrayAgentRuntime(
         report.durableCompactionTrace.maintenanceTask
           .takeIf(String::isNotBlank)
           ?.let { maintenanceTask -> put("contextDurableCompactionMaintenanceTask", maintenanceTask) }
+        report.durableCompactionTrace.executionMode
+          .takeIf(String::isNotBlank)
+          ?.let { executionMode -> put("contextDurableCompactionExecutionMode", executionMode) }
         put(
           "contextDurableCompactionContextWindowTokens",
           report.durableCompactionTrace.contextWindowTokens.toString(),
@@ -3313,6 +3428,11 @@ class OpenCrayAgentRuntime(
       put("localContinuationUsedCount", promptDiagnostics.localContinuationUsedCount.toString())
       put("localContinuationFallbackCount", promptDiagnostics.localContinuationFallbackCount.toString())
       put("localContinuationLastMode", promptDiagnostics.localContinuationLastMode.wireValue)
+      put("responsesPendingContextUpdateCount", promptDiagnostics.responsesPendingContextUpdateCount.toString())
+      promptDiagnostics.responsesPendingContextUpdateHash
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { hash -> put("responsesPendingContextUpdateHash", hash) }
       promptDiagnostics.localContinuationLastReason
         ?.trim()
         ?.takeIf(String::isNotBlank)
@@ -4455,24 +4575,31 @@ class OpenCrayAgentRuntime(
       return
     }
     val requestedSessionContext = result.sessionContext ?: beforeSessionContext
-    val requestedConversation = result.conversation
-      ?: requestedSessionContext.conversation.takeIf { conversation -> conversation.isNotEmpty() }
-      ?: beforeConversation
+    val requestedConversation = result.conversation ?: beforeConversation
     val nextSessionContext = requestedSessionContext.copy(conversation = requestedConversation)
-    val changed = requestedConversation != beforeConversation ||
-      nextSessionContext.memoryFlushTrace != beforeSessionContext.memoryFlushTrace ||
+    val transcriptChanged = requestedConversation != beforeConversation
+    val durableMaintenanceChanged = nextSessionContext.memoryFlushTrace != beforeSessionContext.memoryFlushTrace ||
       nextSessionContext.durableCompaction.trace != beforeSessionContext.durableCompaction.trace ||
-      nextSessionContext.recalledMemory != beforeSessionContext.recalledMemory
+      stickyMemoryRecallChanged(
+        before = beforeSessionContext.recalledMemory,
+        after = nextSessionContext.recalledMemory,
+      )
     cursor.sessionContext = nextSessionContext
-    if (requestedConversation != beforeConversation) {
+    if (transcriptChanged) {
       cursor.transcript.clear()
       cursor.transcript += requestedConversation
     }
-    if (changed) {
+    if (transcriptChanged || durableMaintenanceChanged) {
       invalidateResponsesLineage(cursor)
       invalidateLocalContinuation(cursor)
     }
   }
+
+  private fun stickyMemoryRecallChanged(
+    before: MemoryRecallResult,
+    after: MemoryRecallResult,
+  ): Boolean =
+    before.memories.filter { memory -> memory.sticky } != after.memories.filter { memory -> memory.sticky }
 
   private fun collectParallelToolActionGroup(
     task: AgentTask,
@@ -6385,7 +6512,11 @@ class OpenCrayAgentRuntime(
     localContinuationLastMode = plan.mode
     localContinuationLastReason = plan.reason
     this.contextCacheBreakReason = contextCacheBreakReason
+    responsesPendingContextUpdateCount = plan.responsesPendingContextUpdateCount
+    responsesPendingContextUpdateHash = plan.responsesPendingContextUpdateHash
     if (plan.mode == LocalContinuationMode.LOCAL_DELTA || plan.mode == LocalContinuationMode.LOCAL_FRONT_PATCH) {
+      localContinuationUsedCount += 1
+    } else if (plan.mode == LocalContinuationMode.RESPONSES_NATIVE) {
       localContinuationUsedCount += 1
     } else if (
       plan.mode == LocalContinuationMode.FULL_REBUILD &&
@@ -9495,6 +9626,8 @@ class OpenCrayAgentRuntime(
     var localContinuationFallbackCount: Int = 0,
     var localContinuationLastMode: LocalContinuationMode = LocalContinuationMode.DISABLED,
     var localContinuationLastReason: String? = null,
+    var responsesPendingContextUpdateCount: Int = 0,
+    var responsesPendingContextUpdateHash: String? = null,
     var contextCacheBreakReason: String? = null,
     var contextCacheShapeMetadata: Map<String, String> = emptyMap(),
   )
@@ -9510,11 +9643,14 @@ class OpenCrayAgentRuntime(
     val mode: LocalContinuationMode,
     val reason: String? = null,
     val previousResponseId: String? = null,
+    val responsesPendingContextUpdateCount: Int = 0,
+    val responsesPendingContextUpdateHash: String? = null,
   )
 
   private data class ResponsesContinuationDecision(
     val previousResponseId: String? = null,
     val reason: String,
+    val pendingContextUpdates: List<ResponsesPendingContextUpdate> = emptyList(),
   )
 
   private data class PendingSubAgentApprovalContinuation(
@@ -9578,17 +9714,35 @@ class OpenCrayAgentRuntime(
 
   private data class ResponsesContinuationShape(
     val stableAnchor: String,
-    val frontContextZones: FrontContextZones,
+    val baseline: ResponsesContextBaselineSnapshot,
+    val referenceState: ResponsesContextReferenceState,
     val toolPoolFingerprint: String,
     val toolSchemaFingerprint: String,
     val requestSettingsFingerprint: String,
   )
 
+  private data class ResponsesContextBaselineSnapshot(
+    val durableContextPrompt: String,
+  )
+
+  private data class ResponsesContextReferenceState(
+    val dynamicContextHash: String,
+    val appliedUpdateCount: Int = 0,
+  )
+
+  private data class ResponsesPendingContextUpdate(
+    val sequence: Int,
+    val dynamicContextHash: String,
+    val content: String,
+    val truncated: Boolean,
+  )
+
   private fun ResponsesContinuationShape.toSerializable(): OpenCraySerializableResponsesContinuationShape =
     OpenCraySerializableResponsesContinuationShape(
       stableAnchor = stableAnchor,
-      durableContextPrompt = frontContextZones.durableContextPrompt.takeIf(String::isNotBlank),
-      dynamicContextPrompt = frontContextZones.dynamicContextPrompt.takeIf(String::isNotBlank),
+      durableContextPrompt = baseline.durableContextPrompt.takeIf(String::isNotBlank),
+      dynamicContextHash = referenceState.dynamicContextHash,
+      appliedContextUpdateCount = referenceState.appliedUpdateCount,
       toolPoolFingerprint = toolPoolFingerprint,
       toolSchemaFingerprint = toolSchemaFingerprint,
       requestSettingsFingerprint = requestSettingsFingerprint,
@@ -9724,6 +9878,8 @@ class OpenCrayAgentRuntime(
     const val ERROR_SKILL_TOOL_POLICY_BLOCKED: String = "SKILL_TOOL_POLICY_BLOCKED"
     const val MAX_PROTOCOL_ERROR_PREVIEW_CHARS: Int = 600
     const val MAX_STRUCTURED_TOOL_CALL_ERROR_COUNT: Int = 3
+    const val RESPONSES_CONTEXT_UPDATE_CHAIN_LIMIT: Int = 8
+    const val RESPONSES_CONTEXT_UPDATE_MAX_CHARS: Int = 6_000
     const val RECOVERABLE_LLM_RETRY_SLEEP_CHUNK_MS: Long = 250L
     val TERMINAL_PROVIDER_TIMEOUT_STATUS_CODES: Set<String> = setOf("449", "499")
     const val ACTIVATION_SOURCE_SKILL_READ: String = "skill_read"
