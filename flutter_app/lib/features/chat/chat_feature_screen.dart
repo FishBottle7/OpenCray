@@ -15366,12 +15366,14 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                   ),
                                   const SizedBox(height: 14),
                                 ],
-                                ...visibleHistory.map(
-                                  (entry) => Padding(
+                                ...visibleHistory.asMap().entries.map(
+                                  (historyEntry) => Padding(
                                     padding: const EdgeInsets.only(bottom: 14),
                                     child: _RunTraceHistoryCard(
+                                      entryKey:
+                                          '${trace.runId}-$selectedActorId-${historyEntry.key}',
                                       copy: copy,
-                                      entry: entry,
+                                      entry: historyEntry.value,
                                       bridge: widget.bridge,
                                     ),
                                   ),
@@ -16271,13 +16273,194 @@ bool _runTraceTextContains(String? source, String? fragment) {
   return normalizedSource.contains(normalizedFragment);
 }
 
+const int _runInspectorCollapsedLineCount = 3;
+const int _runInspectorCollapseCharacterThreshold = 320;
+
+bool _shouldCollapseRunInspectorText(String text) {
+  final String previewText = _runInspectorPlainPreviewText(text);
+  if (previewText.isEmpty) {
+    return false;
+  }
+  return _runInspectorLineCount(previewText) >
+          _runInspectorCollapsedLineCount ||
+      previewText.runes.length > _runInspectorCollapseCharacterThreshold;
+}
+
+String _runInspectorCollapsedPreviewText(String text) {
+  final String previewText = _runInspectorPlainPreviewText(text);
+  if (previewText.isEmpty) {
+    return '';
+  }
+  final List<String> lines = previewText.split(RegExp(r'\r\n?|\n'));
+  if (lines.length > _runInspectorCollapsedLineCount) {
+    final String visibleLines = lines
+        .take(_runInspectorCollapsedLineCount)
+        .join('\n')
+        .trimRight();
+    return visibleLines.endsWith('...') ? visibleLines : '$visibleLines...';
+  }
+  if (previewText.runes.length > _runInspectorCollapseCharacterThreshold) {
+    final String truncated = String.fromCharCodes(
+      previewText.runes.take(_runInspectorCollapseCharacterThreshold),
+    ).trimRight();
+    return truncated.endsWith('...') ? truncated : '$truncated...';
+  }
+  return previewText;
+}
+
+int _runInspectorLineCount(String text) {
+  if (text.trim().isEmpty) {
+    return 0;
+  }
+  return text.split(RegExp(r'\r\n?|\n')).length;
+}
+
+String _runInspectorPlainPreviewText(String markdown) {
+  String text = markdown.trim();
+  if (text.isEmpty) {
+    return '';
+  }
+  text = text.replaceAll(RegExp(r'```[^\n]*\n?'), '');
+  text = text.replaceAll('```', '');
+  text = text.replaceAllMapped(
+    RegExp(r'!\[([^\]]*)\]\([^)]+\)'),
+    (match) => match.group(1) ?? '',
+  );
+  text = text.replaceAllMapped(
+    RegExp(r'\[([^\]]+)\]\([^)]+\)'),
+    (match) => match.group(1) ?? '',
+  );
+  text = text.replaceAllMapped(
+    RegExp(r'(^|\n)\s{0,3}#{1,6}\s*'),
+    (match) => match.group(1) ?? '',
+  );
+  text = text.replaceAllMapped(
+    RegExp(r'(^|\n)\s{0,3}>\s?'),
+    (match) => match.group(1) ?? '',
+  );
+  text = text.replaceAllMapped(
+    RegExp(r'(^|\n)\s*[-*+]\s+'),
+    (match) => '${match.group(1) ?? ''}- ',
+  );
+  text = text.replaceAllMapped(
+    RegExp(r'(^|\n)\s*\d+\.\s+'),
+    (match) => match.group(1) ?? '',
+  );
+  text = text.replaceAll(RegExp(r'[*_`~]'), '');
+  text = text.replaceAll(RegExp(r'[ \t]+\n'), '\n');
+  text = text.replaceAll(RegExp(r'\n{3,}'), '\n\n');
+  return text.trim();
+}
+
+class _RunInspectorCollapsibleTextBlock extends StatefulWidget {
+  const _RunInspectorCollapsibleTextBlock({
+    super.key,
+    required this.blockKey,
+    required this.copy,
+    required this.data,
+    required this.bodyStyle,
+    required this.surfaceColor,
+    this.bridge,
+  });
+
+  final String blockKey;
+  final OpenCrayUiCopy copy;
+  final String data;
+  final TextStyle bodyStyle;
+  final Color surfaceColor;
+  final OpenCrayHostBridge? bridge;
+
+  @override
+  State<_RunInspectorCollapsibleTextBlock> createState() =>
+      _RunInspectorCollapsibleTextBlockState();
+}
+
+class _RunInspectorCollapsibleTextBlockState
+    extends State<_RunInspectorCollapsibleTextBlock> {
+  bool _isExpanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final String data = widget.data.trim();
+    final bool shouldCollapse = _shouldCollapseRunInspectorText(data);
+    if (!shouldCollapse) {
+      return _buildMarkdownBlock(data);
+    }
+    final String semanticsLabel = widget.copy.isChinese
+        ? (_isExpanded ? '收起' : '展开')
+        : (_isExpanded ? 'Collapse' : 'Expand');
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: <Widget>[
+        if (_isExpanded)
+          KeyedSubtree(
+            key: ValueKey<String>('${widget.blockKey}-expanded'),
+            child: _buildMarkdownBlock(data),
+          )
+        else
+          Text(
+            _runInspectorCollapsedPreviewText(data),
+            key: ValueKey<String>('${widget.blockKey}-collapsed'),
+            maxLines: _runInspectorCollapsedLineCount,
+            overflow: TextOverflow.ellipsis,
+            style: widget.bodyStyle,
+          ),
+        const SizedBox(height: 4),
+        Align(
+          alignment: Alignment.centerRight,
+          child: Semantics(
+            button: true,
+            label: semanticsLabel,
+            child: GestureDetector(
+              key: ValueKey<String>('${widget.blockKey}-toggle'),
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                setState(() {
+                  _isExpanded = !_isExpanded;
+                });
+              },
+              child: SizedBox.square(
+                dimension: 28,
+                child: Center(
+                  child: AnimatedRotation(
+                    key: ValueKey<String>('${widget.blockKey}-rotation'),
+                    duration: const Duration(milliseconds: 180),
+                    turns: _isExpanded ? 0.5 : 0,
+                    child: const Icon(
+                      Icons.keyboard_arrow_down_rounded,
+                      size: 18,
+                      color: _ChatPalette.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMarkdownBlock(String data) {
+    return _OpenCrayMarkdownTextBlock(
+      copy: widget.copy,
+      data: data,
+      bodyStyle: widget.bodyStyle,
+      surfaceColor: widget.surfaceColor,
+      bridge: widget.bridge,
+    );
+  }
+}
+
 class _RunTraceHistoryCard extends StatelessWidget {
   const _RunTraceHistoryCard({
+    required this.entryKey,
     required this.copy,
     required this.entry,
     this.bridge,
   });
 
+  final String entryKey;
   final OpenCrayUiCopy copy;
   final ChatRunTraceHistoryEntry entry;
   final OpenCrayHostBridge? bridge;
@@ -16302,7 +16485,9 @@ class _RunTraceHistoryCard extends StatelessWidget {
             ),
             const SizedBox(height: 4),
           ],
-          _OpenCrayMarkdownTextBlock(
+          _RunInspectorCollapsibleTextBlock(
+            key: ValueKey<String>('chat-run-inspector-body-$entryKey'),
+            blockKey: 'chat-run-inspector-body-$entryKey',
             copy: copy,
             data: entry.body,
             bodyStyle: _ChatTextStyles.bubble.copyWith(
@@ -16366,7 +16551,9 @@ class _RunTraceHistoryCard extends StatelessWidget {
         Text('└', style: _ChatTextStyles.runInspectorResultBranch),
         const SizedBox(width: 8),
         Expanded(
-          child: _OpenCrayMarkdownTextBlock(
+          child: _RunInspectorCollapsibleTextBlock(
+            key: ValueKey<String>('chat-run-inspector-result-$entryKey'),
+            blockKey: 'chat-run-inspector-result-$entryKey',
             copy: copy,
             data: body,
             bodyStyle: _ChatTextStyles.runInspectorResult,

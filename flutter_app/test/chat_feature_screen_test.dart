@@ -6473,6 +6473,142 @@ void main() {
     );
   });
 
+  testWidgets('run inspector collapses long tool results to three lines', (
+    tester,
+  ) async {
+    final String longResult = List<String>.generate(
+      6,
+      (index) => 'tool result line ${index + 1}',
+    ).join('\n');
+    await tester.pumpWidget(
+      _buildChatHarness(
+        runTraces: <ChatRunTraceData>[
+          ChatRunTraceData(
+            runId: 'run-long-tool-result',
+            taskId: 'task-long-tool-result',
+            label: 'Read',
+            body: longResult,
+            history: <ChatRunTraceHistoryEntry>[
+              ChatRunTraceHistoryEntry(
+                label: 'Read',
+                body: 'Read long output',
+                inspectorCallParts: const <ChatRunTraceInspectorTextPart>[
+                  ChatRunTraceInspectorTextPart(
+                    text: 'Read',
+                    semantic: ChatRunTraceInspectorTextSemantic.action,
+                  ),
+                  ChatRunTraceInspectorTextPart(text: ' long-output.txt'),
+                ],
+                inspectorResultBody: longResult,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _openRunTraceFullscreen(
+      tester,
+      find.byKey(const ValueKey<String>('chat-run-trace-run-long-tool-result')),
+    );
+
+    const toggleKey = ValueKey<String>(
+      'chat-run-inspector-result-run-long-tool-result-main-0-toggle',
+    );
+    const rotationKey = ValueKey<String>(
+      'chat-run-inspector-result-run-long-tool-result-main-0-rotation',
+    );
+    const collapsedKey = ValueKey<String>(
+      'chat-run-inspector-result-run-long-tool-result-main-0-collapsed',
+    );
+    const expandedKey = ValueKey<String>(
+      'chat-run-inspector-result-run-long-tool-result-main-0-expanded',
+    );
+    expect(find.byKey(toggleKey), findsOneWidget);
+    final Text collapsed = tester.widget<Text>(find.byKey(collapsedKey));
+    expect(collapsed.maxLines, 3);
+    expect(collapsed.overflow, TextOverflow.ellipsis);
+    expect(collapsed.data, contains('tool result line 3'));
+    expect(collapsed.data, isNot(contains('tool result line 4')));
+    expect(collapsed.data, endsWith('...'));
+    AnimatedRotation rotation = tester.widget<AnimatedRotation>(
+      find.byKey(rotationKey),
+    );
+    expect(rotation.turns, 0);
+
+    await tester.tap(find.byKey(toggleKey));
+    await tester.pumpAndSettle();
+
+    rotation = tester.widget<AnimatedRotation>(find.byKey(rotationKey));
+    expect(rotation.turns, 0.5);
+    expect(
+      find.descendant(
+        of: find.byKey(expandedKey),
+        matching: find.textContaining('tool result line 6', findRichText: true),
+      ),
+      findsWidgets,
+    );
+  });
+
+  testWidgets('run inspector collapses long agent replies to three lines', (
+    tester,
+  ) async {
+    final String longReply = List<String>.generate(
+      5,
+      (index) => 'agent reply line ${index + 1}',
+    ).join('\n');
+    await tester.pumpWidget(
+      _buildChatHarness(
+        runTraces: <ChatRunTraceData>[
+          ChatRunTraceData(
+            runId: 'run-long-agent-reply',
+            taskId: 'task-long-agent-reply',
+            label: 'Assistant',
+            body: longReply,
+            history: <ChatRunTraceHistoryEntry>[
+              ChatRunTraceHistoryEntry(label: 'Assistant', body: longReply),
+            ],
+          ),
+        ],
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await _openRunTraceFullscreen(
+      tester,
+      find.byKey(const ValueKey<String>('chat-run-trace-run-long-agent-reply')),
+    );
+
+    const toggleKey = ValueKey<String>(
+      'chat-run-inspector-body-run-long-agent-reply-main-0-toggle',
+    );
+    const collapsedKey = ValueKey<String>(
+      'chat-run-inspector-body-run-long-agent-reply-main-0-collapsed',
+    );
+    const expandedKey = ValueKey<String>(
+      'chat-run-inspector-body-run-long-agent-reply-main-0-expanded',
+    );
+    expect(find.byKey(toggleKey), findsOneWidget);
+    final Text collapsed = tester.widget<Text>(find.byKey(collapsedKey));
+    expect(collapsed.maxLines, 3);
+    expect(collapsed.overflow, TextOverflow.ellipsis);
+    expect(collapsed.data, contains('agent reply line 3'));
+    expect(collapsed.data, isNot(contains('agent reply line 4')));
+    expect(collapsed.data, endsWith('...'));
+
+    await tester.tap(find.byKey(toggleKey));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.descendant(
+        of: find.byKey(expandedKey),
+        matching: find.textContaining('agent reply line 5', findRichText: true),
+      ),
+      findsWidgets,
+    );
+  });
+
   testWidgets('anchored retry action renders inside the assistant bubble', (
     tester,
   ) async {
@@ -15931,6 +16067,7 @@ Widget _buildChatHarness({
       const <ChatPendingApprovalData>[],
   List<ChatTodoItemData> todos = const <ChatTodoItemData>[],
   List<ChatMessageData>? messages,
+  List<ChatRunTraceData>? runTraces,
   ChatSessionsDrawerState? drawer,
   bool drawerOpen = false,
 }) {
@@ -15959,43 +16096,45 @@ Widget _buildChatHarness({
                   text: 'Inspect the workspace.',
                 ),
               ],
-          runTraces: <ChatRunTraceData>[
-            ChatRunTraceData(
-              runId: 'run-1',
-              taskId: 'task-1',
-              label: copy.chatRunWorkingLabel,
-              body: traceBody,
-              history: <ChatRunTraceHistoryEntry>[
-                ChatRunTraceHistoryEntry(
+          runTraces:
+              runTraces ??
+              <ChatRunTraceData>[
+                ChatRunTraceData(
+                  runId: 'run-1',
+                  taskId: 'task-1',
                   label: copy.chatRunWorkingLabel,
-                  body: copy.chatRunThinkingActive,
-                ),
-                ChatRunTraceHistoryEntry(
-                  label: 'Read',
-                  body:
-                      'Read README.md lines 5-6\n  └ Project uses the Gradle wrapper from the repo root.\n  Use .\\\\gradlew.bat test to run JVM tests.',
-                  inspectorCallParts: <ChatRunTraceInspectorTextPart>[
-                    ChatRunTraceInspectorTextPart(
-                      text: 'Read',
-                      semantic: ChatRunTraceInspectorTextSemantic.action,
+                  body: traceBody,
+                  history: <ChatRunTraceHistoryEntry>[
+                    ChatRunTraceHistoryEntry(
+                      label: copy.chatRunWorkingLabel,
+                      body: copy.chatRunThinkingActive,
                     ),
-                    ChatRunTraceInspectorTextPart(text: ' '),
-                    ChatRunTraceInspectorTextPart(
-                      text: 'README.md',
-                      semantic: ChatRunTraceInspectorTextSemantic.target,
-                    ),
-                    ChatRunTraceInspectorTextPart(text: ' '),
-                    ChatRunTraceInspectorTextPart(
-                      text: 'lines 5-6',
-                      semantic: ChatRunTraceInspectorTextSemantic.scope,
+                    ChatRunTraceHistoryEntry(
+                      label: 'Read',
+                      body:
+                          'Read README.md lines 5-6\n  └ Project uses the Gradle wrapper from the repo root.\n  Use .\\\\gradlew.bat test to run JVM tests.',
+                      inspectorCallParts: <ChatRunTraceInspectorTextPart>[
+                        ChatRunTraceInspectorTextPart(
+                          text: 'Read',
+                          semantic: ChatRunTraceInspectorTextSemantic.action,
+                        ),
+                        ChatRunTraceInspectorTextPart(text: ' '),
+                        ChatRunTraceInspectorTextPart(
+                          text: 'README.md',
+                          semantic: ChatRunTraceInspectorTextSemantic.target,
+                        ),
+                        ChatRunTraceInspectorTextPart(text: ' '),
+                        ChatRunTraceInspectorTextPart(
+                          text: 'lines 5-6',
+                          semantic: ChatRunTraceInspectorTextSemantic.scope,
+                        ),
+                      ],
+                      inspectorResultBody:
+                          'Project uses the Gradle wrapper from the repo root.\nUse .\\\\gradlew.bat test to run JVM tests.',
                     ),
                   ],
-                  inspectorResultBody:
-                      'Project uses the Gradle wrapper from the repo root.\nUse .\\\\gradlew.bat test to run JVM tests.',
                 ),
               ],
-            ),
-          ],
           pendingApprovals: pendingApprovals,
           composer: ChatComposerState(
             placeholder: copy.chatComposerPlaceholder,
