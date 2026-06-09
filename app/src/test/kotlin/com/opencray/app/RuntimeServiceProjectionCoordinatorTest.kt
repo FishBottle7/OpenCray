@@ -95,6 +95,33 @@ class RuntimeServiceProjectionCoordinatorTest {
     assertEquals(refreshedLease, projectionStore.loadSnapshot()?.runtimeServiceOwnerLease)
     assertEquals(2, heartbeatScheduler.tasks.size)
 
+    val competingLease = refreshedLease.copy(
+      processStartId = "process-competing-owner",
+      controllerInstanceId = "runtime-controller-competing",
+      runtimeOwnerId = "runtime-owner-competing",
+      runtimeControllerId = "runtime-controller-competing",
+      serviceInstanceId = "runtime-service-competing",
+      acquiredAtEpochMs = 10_055L,
+      heartbeatAtEpochMs = 10_055L,
+      expiresAtEpochMs = 10_155L,
+    )
+    val blockedLease = ownerLeaseStore.save(competingLease)
+    assertEquals(refreshedLease, blockedLease.copy(lastAcquireFailure = null))
+    assertEquals("runtime-owner-competing", blockedLease.lastAcquireFailure?.attemptedRuntimeOwnerId)
+
+    now = 10_060L
+    heartbeatScheduler.runNext()
+
+    val refreshedLeaseWithFailure = checkNotNull(
+      projectionStore.loadSnapshot()?.runtimeServiceOwnerLease,
+    )
+    assertEquals(10_060L, refreshedLeaseWithFailure.heartbeatAtEpochMs)
+    assertEquals("runtime-owner-a", refreshedLeaseWithFailure.runtimeOwnerId)
+    assertEquals(
+      "runtime-owner-competing",
+      refreshedLeaseWithFailure.lastAcquireFailure?.attemptedRuntimeOwnerId,
+    )
+
     now = 10_075L
     val replacementOwnerLifecycle = runtimeOwnerLifecycle.copy(
       runtimeOwnerId = "runtime-owner-b",
@@ -206,14 +233,27 @@ class RuntimeServiceProjectionCoordinatorTest {
       ),
     )
 
-    assertEquals(existingOwnerLease, ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+    val blockedLease = checkNotNull(
+      ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND),
+    )
+    assertEquals(existingOwnerLease, blockedLease.copy(lastAcquireFailure = null))
+    val firstFailure = checkNotNull(blockedLease.lastAcquireFailure)
+    assertEquals("runtime-owner-a", firstFailure.attemptedRuntimeOwnerId)
+    assertEquals("runtime-owner-other", firstFailure.holderRuntimeOwnerId)
+    assertEquals("runtime-service-a", firstFailure.attemptedServiceInstanceId)
+    assertEquals("runtime-service-other", firstFailure.holderServiceInstanceId)
+    assertEquals(10_000L, firstFailure.attemptedAtEpochMs)
     assertNull(coordinator.currentOwnerLease())
     assertNull(projectionStore.loadSnapshot())
 
     now = 10_050L
     heartbeatScheduler.runNext()
 
-    assertEquals(existingOwnerLease, ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+    val refreshedBlockedLease = checkNotNull(
+      ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND),
+    )
+    assertEquals(existingOwnerLease, refreshedBlockedLease.copy(lastAcquireFailure = null))
+    assertEquals(10_050L, refreshedBlockedLease.lastAcquireFailure?.attemptedAtEpochMs)
     assertNull(coordinator.currentOwnerLease())
     assertNull(projectionStore.loadSnapshot())
   }

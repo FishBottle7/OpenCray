@@ -98,6 +98,24 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
           acquiredAtEpochMs = 2_000L,
           heartbeatAtEpochMs = 2_500L,
           expiresAtEpochMs = 32_500L,
+          lastAcquireFailure = RuntimeServiceOwnerLeaseAcquireFailure(
+            target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+            attemptedAtEpochMs = 2_750L,
+            attemptedProcessStartId = "process-contender",
+            attemptedControllerInstanceId = "controller-contender",
+            attemptedDurableControllerId = "durable-controller-lease",
+            attemptedRuntimeOwnerId = "owner-contender",
+            attemptedRuntimeControllerId = "controller-contender",
+            attemptedDurableRuntimeControllerId = "durable-controller-lease",
+            attemptedServiceInstanceId = "service-contender",
+            attemptedServiceProcessName = "org.opencray.app:runtime",
+            holderRuntimeOwnerId = "owner-lease",
+            holderControllerInstanceId = "controller-lease",
+            holderDurableControllerId = "durable-controller-lease",
+            holderServiceInstanceId = "service-lease",
+            holderHeartbeatAtEpochMs = 2_500L,
+            holderExpiresAtEpochMs = 32_500L,
+          ),
         ),
       )
     }
@@ -110,6 +128,12 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertEquals("service-lease", lease["serviceInstanceId"])
     assertEquals(2_500L, lease["heartbeatAtEpochMs"])
     assertEquals(32_500L, lease["expiresAtEpochMs"])
+    val failure = lease["lastAcquireFailure"] as Map<*, *>
+    assertEquals("owner_lease_held", failure["reason"])
+    assertEquals("owner-contender", failure["attemptedRuntimeOwnerId"])
+    assertEquals("owner-lease", failure["holderRuntimeOwnerId"])
+    assertEquals("service-contender", failure["attemptedServiceInstanceId"])
+    assertEquals(2_750L, failure["attemptedAtEpochMs"])
   }
 
   @Test

@@ -59,8 +59,12 @@ class RuntimeServiceOwnerLeaseStoreTest {
     )
 
     assertEquals(newerLease, staleReleaseResult)
-    assertEquals(newerLease, staleHeartbeatResult)
-    assertEquals(newerLease, store.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+    assertEquals(newerLease, staleHeartbeatResult.copy(lastAcquireFailure = null))
+    assertEquals(newerLease, store.load(RuntimeServiceTarget.DETACHED_BACKGROUND)?.copy(lastAcquireFailure = null))
+    val failure = checkNotNull(staleHeartbeatResult.lastAcquireFailure)
+    assertEquals("owner-old", failure.attemptedRuntimeOwnerId)
+    assertEquals("owner-new", failure.holderRuntimeOwnerId)
+    assertEquals(3_500L, failure.attemptedAtEpochMs)
   }
 
   @Test
@@ -86,8 +90,17 @@ class RuntimeServiceOwnerLeaseStoreTest {
 
     store.save(activeLease)
 
-    assertEquals(activeLease, store.save(competingLeaseBeforeExpiry))
-    assertEquals(activeLease, store.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+    val blockedLease = store.save(competingLeaseBeforeExpiry)
+
+    assertEquals(activeLease, blockedLease.copy(lastAcquireFailure = null))
+    assertEquals(activeLease, store.load(RuntimeServiceTarget.DETACHED_BACKGROUND)?.copy(lastAcquireFailure = null))
+    val failure = checkNotNull(blockedLease.lastAcquireFailure)
+    assertEquals("owner-competing", failure.attemptedRuntimeOwnerId)
+    assertEquals("owner-active", failure.holderRuntimeOwnerId)
+    assertEquals("service-owner-competing", failure.attemptedServiceInstanceId)
+    assertEquals("service-owner-active", failure.holderServiceInstanceId)
+    assertEquals(1_500L, failure.attemptedAtEpochMs)
+    assertEquals(1_100L, failure.holderHeartbeatAtEpochMs)
 
     assertEquals(competingLeaseAfterExpiry, store.save(competingLeaseAfterExpiry))
     assertEquals(competingLeaseAfterExpiry, store.load(RuntimeServiceTarget.DETACHED_BACKGROUND))

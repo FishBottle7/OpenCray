@@ -140,6 +140,7 @@ private fun RuntimeServiceProjectionSnapshot.toPersistedRecord():
       serviceWorkState.changedAtEpochMs,
       serviceKeepAliveState.changedAtEpochMs,
       runtimeServiceOwnerLease?.heartbeatAtEpochMs ?: 0L,
+      runtimeServiceOwnerLease?.lastAcquireFailure?.attemptedAtEpochMs ?: 0L,
       lastInterruptedRunRepair?.recordedAtEpochMs ?: 0L,
     ),
     localRuntimeServerState = localRuntimeServerState?.toPersistedRecord(),
@@ -394,6 +395,28 @@ private data class PersistedRuntimeServiceOwnerLeaseProjection(
   val heartbeatAtEpochMs: Long,
   val expiresAtEpochMs: Long,
   val releasedAtEpochMs: Long? = null,
+  val lastAcquireFailure: PersistedRuntimeServiceOwnerLeaseAcquireFailureProjection? = null,
+)
+
+@Serializable
+private data class PersistedRuntimeServiceOwnerLeaseAcquireFailureProjection(
+  val target: String,
+  val reason: String,
+  val attemptedAtEpochMs: Long,
+  val attemptedProcessStartId: String,
+  val attemptedControllerInstanceId: String? = null,
+  val attemptedDurableControllerId: String? = null,
+  val attemptedRuntimeOwnerId: String,
+  val attemptedRuntimeControllerId: String? = null,
+  val attemptedDurableRuntimeControllerId: String? = null,
+  val attemptedServiceInstanceId: String? = null,
+  val attemptedServiceProcessName: String? = null,
+  val holderRuntimeOwnerId: String,
+  val holderControllerInstanceId: String? = null,
+  val holderDurableControllerId: String? = null,
+  val holderServiceInstanceId: String? = null,
+  val holderHeartbeatAtEpochMs: Long,
+  val holderExpiresAtEpochMs: Long,
 )
 
 @Serializable
@@ -455,6 +478,29 @@ private fun RuntimeServiceOwnerLease.toPersistedRecord(): PersistedRuntimeServic
     heartbeatAtEpochMs = heartbeatAtEpochMs,
     expiresAtEpochMs = expiresAtEpochMs,
     releasedAtEpochMs = releasedAtEpochMs,
+    lastAcquireFailure = lastAcquireFailure?.toPersistedRecord(),
+  )
+
+private fun RuntimeServiceOwnerLeaseAcquireFailure.toPersistedRecord():
+  PersistedRuntimeServiceOwnerLeaseAcquireFailureProjection =
+  PersistedRuntimeServiceOwnerLeaseAcquireFailureProjection(
+    target = target.wireValue,
+    reason = reason,
+    attemptedAtEpochMs = attemptedAtEpochMs,
+    attemptedProcessStartId = attemptedProcessStartId,
+    attemptedControllerInstanceId = attemptedControllerInstanceId,
+    attemptedDurableControllerId = attemptedDurableControllerId,
+    attemptedRuntimeOwnerId = attemptedRuntimeOwnerId,
+    attemptedRuntimeControllerId = attemptedRuntimeControllerId,
+    attemptedDurableRuntimeControllerId = attemptedDurableRuntimeControllerId,
+    attemptedServiceInstanceId = attemptedServiceInstanceId,
+    attemptedServiceProcessName = attemptedServiceProcessName,
+    holderRuntimeOwnerId = holderRuntimeOwnerId,
+    holderControllerInstanceId = holderControllerInstanceId,
+    holderDurableControllerId = holderDurableControllerId,
+    holderServiceInstanceId = holderServiceInstanceId,
+    holderHeartbeatAtEpochMs = holderHeartbeatAtEpochMs,
+    holderExpiresAtEpochMs = holderExpiresAtEpochMs,
   )
 
 private fun RuntimeServiceInterruptedRunRepairProjection.toPersistedRecord():
@@ -518,6 +564,33 @@ private fun PersistedRuntimeServiceOwnerLeaseProjection.toSnapshot(): RuntimeSer
       heartbeatAtEpochMs = heartbeatAtEpochMs,
       expiresAtEpochMs = expiresAtEpochMs,
       releasedAtEpochMs = releasedAtEpochMs,
+      lastAcquireFailure = lastAcquireFailure?.toSnapshot(),
+    )
+  }.getOrNull()
+}
+
+private fun PersistedRuntimeServiceOwnerLeaseAcquireFailureProjection.toSnapshot():
+  RuntimeServiceOwnerLeaseAcquireFailure? {
+  val resolvedTarget = RuntimeServiceTarget.fromWireValue(target) ?: return null
+  return runCatching {
+    RuntimeServiceOwnerLeaseAcquireFailure(
+      target = resolvedTarget,
+      reason = reason,
+      attemptedAtEpochMs = attemptedAtEpochMs,
+      attemptedProcessStartId = attemptedProcessStartId,
+      attemptedControllerInstanceId = attemptedControllerInstanceId,
+      attemptedDurableControllerId = attemptedDurableControllerId,
+      attemptedRuntimeOwnerId = attemptedRuntimeOwnerId,
+      attemptedRuntimeControllerId = attemptedRuntimeControllerId,
+      attemptedDurableRuntimeControllerId = attemptedDurableRuntimeControllerId,
+      attemptedServiceInstanceId = attemptedServiceInstanceId,
+      attemptedServiceProcessName = attemptedServiceProcessName,
+      holderRuntimeOwnerId = holderRuntimeOwnerId,
+      holderControllerInstanceId = holderControllerInstanceId,
+      holderDurableControllerId = holderDurableControllerId,
+      holderServiceInstanceId = holderServiceInstanceId,
+      holderHeartbeatAtEpochMs = holderHeartbeatAtEpochMs,
+      holderExpiresAtEpochMs = holderExpiresAtEpochMs,
     )
   }.getOrNull()
 }
