@@ -63,6 +63,9 @@ internal data class OpenCrayAgentRuntimeServiceBootstrap(
   override fun currentForegroundState(): RuntimeForegroundState =
     executionCoordinator.currentForegroundState()
 
+  override fun ownsRuntimeServiceStartResult(): Boolean =
+    projectionCoordinator.tryAcquireOwnerLease()
+
   override fun dispose() {
     shellControlBundle.dispose.invoke()
     transportBootstrap.dispose.invoke()

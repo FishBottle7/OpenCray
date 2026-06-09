@@ -183,6 +183,9 @@ private class DefaultRuntimeServiceShellController(
 internal fun runtimeServiceStartResult(
   shellStateAccess: RuntimeServiceShellStateAccess,
 ): Int {
+  if (!shellStateAccess.ownsRuntimeServiceStartResult()) {
+    return Service.START_NOT_STICKY
+  }
   val keepAliveState = shellStateAccess.currentKeepAliveState()
   val foregroundState = shellStateAccess.currentForegroundState()
   val shouldRestart = foregroundState.notificationVisible ||

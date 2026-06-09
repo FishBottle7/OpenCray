@@ -4,6 +4,8 @@ internal interface RuntimeServiceShellStateAccess {
   fun currentKeepAliveState(): RuntimeServiceKeepAliveState
 
   fun currentForegroundState(): RuntimeForegroundState
+
+  fun ownsRuntimeServiceStartResult(): Boolean = true
 }
 
 internal interface RuntimeServiceExecutionCoordinator : RuntimeServiceShellStateAccess {

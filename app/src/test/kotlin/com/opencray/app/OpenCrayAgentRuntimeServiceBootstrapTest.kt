@@ -3913,6 +3913,49 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun runtimeServiceShellControllerReturnsNotStickyWhenOwnerLeaseIsNotHeld() {
+    val context = MinimalContext()
+    val mainHandler = Handler()
+    val service = TestRuntimeService()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator(
+      ownerLeaseAcquired = false,
+    )
+    val controller = runtimeServiceShellController(
+      service = service,
+      appContext = context,
+      mainHandler = mainHandler,
+      bootstrapDependencies = defaultRuntimeBootstrapDependencies,
+      serviceBootstrapFactory = { _, _, _, _ ->
+        OpenCrayAgentRuntimeServiceBootstrap(
+          shellControlBundle = defaultShellControlBundle(),
+          transportBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
+            gatewayBundle = testServiceGatewayBundle(),
+          ),
+          executionCoordinator = FixedStateRuntimeServiceExecutionCoordinator(
+            keepAliveState = RuntimeServiceKeepAliveState(
+              phase = RuntimeServiceKeepAliveState.PHASE_IDLE_GRACE,
+              stopScheduled = true,
+              stopDeadlineEpochMs = 31_000L,
+            ),
+          ),
+          wakeCommandDispatcher = RecordingRuntimeServiceWakeCommandDispatcher(),
+          binderEndpoint = RecordingRuntimeServiceBinderEndpoint(),
+          projectionCoordinator = projectionCoordinator,
+        )
+      },
+    )
+
+    controller.attach()
+    val startResult = controller.onStartCommand(
+      intent = Intent("runtime-shell-start"),
+      startId = 5,
+    )
+
+    assertEquals(Service.START_NOT_STICKY, startResult)
+    assertEquals(2, projectionCoordinator.ownerLeaseAcquireCallCount)
+  }
+
+  @Test
   fun runtimeServiceShellControllerReturnsStickyWhenForegroundNotificationIsVisible() {
     val context = MinimalContext()
     val mainHandler = Handler()
