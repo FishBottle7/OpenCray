@@ -11,7 +11,7 @@ final class OpenCrayMotion {
 
   static const Curve enter = Curves.easeOutCubic;
   static const Curve exit = Curves.easeInCubic;
-  static const Curve spatial = Cubic(0.2, 0.0, 0.0, 1.0);
+  static const Curve spatial = Curves.easeOutCubic;
   static const Curve spatialExit = Curves.easeInCubic;
   static const Curve expandCurve = Curves.easeInOutCubic;
 
