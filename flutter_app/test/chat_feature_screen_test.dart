@@ -12219,6 +12219,73 @@ void main() {
     expect(plusIcon.color, const Color(0xFF007AFF));
   });
 
+  testWidgets('composer keeps mixed sections in a stable vertical order', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    await tester.pumpWidget(
+      _buildChatHarness(
+        composer: ChatComposerState(
+          placeholder: copy.chatComposerPlaceholder,
+          todos: const <ChatTodoItemData>[
+            ChatTodoItemData(
+              content: 'Review composer stack',
+              status: ChatTodoStatus.inProgress,
+            ),
+          ],
+          commandOptions: const <ChatCommandOptionData>[
+            ChatCommandOptionData(label: '/plan', description: 'Plan the work'),
+          ],
+          attachments: <ChatAttachmentData>[
+            ChatAttachmentData(
+              id: 'draft-mixed-1',
+              kind: ChatAttachmentKind.file,
+              label: 'notes.md',
+              detail: '4 KB',
+              accentColor: Colors.blue,
+              draftAttachment: const OpenCrayChatDraftAttachment(
+                kind: OpenCrayChatDraftAttachmentKind.file,
+                displayName: 'notes.md',
+                relativePath: 'docs/notes.md',
+                mimeType: 'text/markdown',
+                sizeBytes: 4096,
+              ),
+            ),
+          ],
+          addActions: const <ChatAddActionData>[
+            ChatAddActionData(label: 'Attach file', icon: Icons.attach_file),
+            ChatAddActionData(label: 'Command', icon: Icons.terminal_rounded),
+          ],
+          showAddMenu: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final double todoY = tester
+        .getTopLeft(
+          find.byKey(const ValueKey<String>('chat-composer-todo-list')),
+        )
+        .dy;
+    final double commandY = tester.getTopLeft(find.text(copy.chatCommands)).dy;
+    final double attachmentY = tester
+        .getTopLeft(
+          find.byKey(const ValueKey<String>('chat-composer-attachments')),
+        )
+        .dy;
+    final double inputY = tester.getTopLeft(find.byType(TextField)).dy;
+    final double trayY = tester
+        .getTopLeft(
+          find.byKey(const ValueKey<String>('chat-composer-add-tray')),
+        )
+        .dy;
+
+    expect(todoY, lessThan(commandY));
+    expect(commandY, lessThan(attachmentY));
+    expect(attachmentY, lessThan(inputY));
+    expect(inputY, lessThan(trayY));
+  });
+
   testWidgets('session drawer opens from the left edge', (tester) async {
     await tester.pumpWidget(
       _buildChatHarness(
@@ -15006,6 +15073,7 @@ Widget _buildChatHarness({
   List<ChatPendingApprovalData> pendingApprovals =
       const <ChatPendingApprovalData>[],
   List<ChatTodoItemData> todos = const <ChatTodoItemData>[],
+  ChatComposerState? composer,
   List<ChatMessageData>? messages,
   ChatSessionsDrawerState? drawer,
   bool drawerOpen = false,
@@ -15073,10 +15141,12 @@ Widget _buildChatHarness({
             ),
           ],
           pendingApprovals: pendingApprovals,
-          composer: ChatComposerState(
-            placeholder: copy.chatComposerPlaceholder,
-            todos: todos,
-          ),
+          composer:
+              composer ??
+              ChatComposerState(
+                placeholder: copy.chatComposerPlaceholder,
+                todos: todos,
+              ),
           drawer:
               drawer ??
               const ChatSessionsDrawerState(

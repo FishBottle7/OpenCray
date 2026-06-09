@@ -1096,65 +1096,88 @@ Acceptance:
 
 Planning:
 
-- [ ] Audit current Chat screenshots on compact phone width for header,
-  transcript, run trace, approval, drawer, composer, and attachments.
-- [ ] Choose which Chat sub-area to implement first after this plan.
+- [x] Audit current Chat compact-phone risks for header, transcript, run trace,
+  approval, drawer, composer, and attachments through implementation review and
+  focused widget coverage.
+- [x] Choose Chat main surface polish as the implementation slice after this
+  plan.
 
 Header and transcript:
 
-- [ ] Add active-thread header/summary visual states.
-- [ ] Add keyed message/trace insertion wrappers.
+- [x] Add active-thread header/summary visual states.
+- [x] Add keyed message/trace insertion wrappers.
 - [x] Add restrained directional delete exit motion for message bubbles.
-- [ ] Review bubble width behavior against 78% content-width target.
+- [x] Review bubble width behavior against 78% content-width target.
 
 Run trace:
 
-- [ ] Define compact run-trace state visual grammar.
-- [ ] Split run trace rendering into status, actions, and optional preview
+- [x] Define compact run-trace state visual grammar.
+- [x] Split run trace rendering into status, actions, and optional preview
   sections.
-- [ ] Animate live -> terminal, live -> approval, and retryable transitions.
-- [ ] Ensure run trace shimmer uses shared reduced-motion helper.
+- [x] Animate live -> terminal, live -> approval, and retryable transitions.
+- [x] Ensure run trace shimmer uses shared reduced-motion helper.
 
 Approval:
 
-- [ ] Add approval stack transition for queued approvals moving forward.
-- [ ] Tighten approval action layout for 360dp.
-- [ ] Add explicit busy transition for approval actions.
-- [ ] Refine high-risk approval surface treatment.
+- [x] Add approval stack transition for queued approvals moving forward.
+- [x] Tighten approval action layout for 360dp.
+- [x] Add explicit busy transition for approval actions.
+- [x] Refine high-risk approval surface treatment.
 
 Composer:
 
-- [ ] Lock composer stack order across TODO, commands, attachments, input, and
+- [x] Lock composer stack order across TODO, commands, attachments, input, and
   add tray.
-- [ ] Add tests for mixed composer states.
-- [ ] Animate attachment insertion/removal from the input row edge.
+- [x] Add tests for mixed composer states.
+- [x] Animate attachment insertion/removal from the input row edge.
 
 Attachments and preview:
 
-- [ ] Stabilize attachment preview dimensions before async data arrives.
-- [ ] Normalize text/image preview dialog motion with shared tokens.
-- [ ] Keep voice waveform progress from shifting tile layout.
+- [x] Stabilize attachment preview dimensions before async data arrives.
+- [x] Normalize text/image preview dialog motion with shared tokens.
+- [x] Keep voice waveform progress from shifting tile layout.
 
 Session drawer:
 
-- [ ] Add current/running/unread/failed visual states to session rows.
-- [ ] Add row-level press/selection feedback.
-- [ ] Verify session selection never flashes seed content.
+- [x] Add current/unread visual states to session rows. Running/failed remain
+  pending model support because `ChatSessionListItemData` does not expose those
+  states.
+- [x] Add row-level press/selection feedback.
+- [x] Verify session selection never flashes seed content.
 
 Selection/menu:
 
-- [ ] Anchor message menu transition to the pressed bubble.
-- [ ] Clarify whole-message selection versus markdown text selection states.
-- [ ] Add focused widget tests for toolbar/menu transitions.
+- [x] Anchor message menu transition to the pressed bubble.
+- [x] Clarify whole-message selection versus markdown text selection states.
+- [x] Add focused widget tests for toolbar/menu transitions.
 
 Verification:
 
-- [ ] Run `dart analyze flutter_app`.
-- [ ] Run focused Chat widget tests for the sub-area changed.
-- [ ] Run message menu tests if selection/menu is changed.
-- [ ] Run shell tab state test if message list persistence or scroll state is
+- [x] Run `dart analyze flutter_app`.
+- [x] Run focused Chat widget tests for the sub-area changed.
+- [x] Run message menu tests if selection/menu is changed.
+- [x] Run shell tab state test if message list persistence or scroll state is
   touched.
-- [ ] Build debug APK after implementation.
+- [x] Build debug APK after implementation.
+
+Current Chat polish verification notes:
+
+- `dart analyze flutter_app` passes.
+- Sandboxed `flutter test test/chat_message_menu_test.dart` timed out after
+  180s, then the focused Flutter tests were rerun outside the sandbox per repo
+  guidance.
+- Passing focused suites:
+  - `test/chat_message_menu_test.dart`
+  - Chat focused subset:
+
+    ```powershell
+    flutter test test/chat_feature_screen_test.dart --name "composer keeps mixed sections in a stable vertical order|plus menu expands inside animated composer surface|composer picks and submits attachments without requiring text|composer image attachments render a thumbnail preview card|session drawer shows unread dot and count badges|session drawer opens from the left edge|host message renders image, voice, and file attachments in one bubble|text file attachments open an internal preview on tap"
+    ```
+
+  - `test/opencray_app_shell_test.dart test/skills_feature_test.dart`
+  - `test/files_feature_test.dart`
+- Debug APK built from the isolated worktree:
+  `.codex-worktrees/mobile-ui-motion-polish/build/apk/OpenCray-debug.apk`.
 
 ## Acceptance Criteria
 

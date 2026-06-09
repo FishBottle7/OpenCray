@@ -2496,6 +2496,8 @@ const Duration chatSandboxSessionAutoRefreshDebounce = Duration(
 
 const Duration _chatMessageDeleteMotionDuration = OpenCrayMotion.panel;
 const double _chatMessageDeleteSlideDistance = 22;
+const double _chatTranscriptInsertOffset = 10;
+const Duration _chatMessageMenuExitDuration = OpenCrayMotion.micro;
 
 @immutable
 class _ActiveChatMessageMenu {
@@ -2632,6 +2634,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       <String, Set<String>>{};
   final Set<String> _locallyDeletedSessionIds = <String>{};
   _ActiveChatMessageMenu? _activeMessageMenu;
+  _ActiveChatMessageMenu? _exitingMessageMenu;
+  int _messageMenuExitEpoch = 0;
   bool _suppressNextTransientUiDismiss = false;
   Timer? _todoArchiveHideTimer;
   Timer? _sandboxSessionAutoRefreshTimer;
@@ -3120,19 +3124,52 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (_activeMessageMenu == null) {
       return;
     }
+    final _ActiveChatMessageMenu menu = _activeMessageMenu!;
     setState(() {
       _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
+      _exitingMessageMenu = menu;
     });
+    _scheduleMessageMenuExitClear();
   }
 
   void _dismissMessageMenu() {
     if (_activeMessageMenu == null) {
       return;
     }
+    final _ActiveChatMessageMenu menu = _activeMessageMenu!;
     setState(() {
       _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
+      _exitingMessageMenu = menu;
+    });
+    _scheduleMessageMenuExitClear();
+  }
+
+  void _scheduleMessageMenuExitClear() {
+    _messageMenuExitEpoch += 1;
+    final int epoch = _messageMenuExitEpoch;
+    final Duration duration = OpenCrayMotion.resolve(
+      context,
+      _chatMessageMenuExitDuration,
+    );
+    if (duration == Duration.zero || _isAutomatedWidgetTest) {
+      if (mounted && epoch == _messageMenuExitEpoch) {
+        setState(() {
+          _exitingMessageMenu = null;
+        });
+      }
+      return;
+    }
+    Future<void>.delayed(duration, () {
+      if (!mounted ||
+          epoch != _messageMenuExitEpoch ||
+          _activeMessageMenu != null) {
+        return;
+      }
+      setState(() {
+        _exitingMessageMenu = null;
+      });
     });
   }
 
@@ -3148,6 +3185,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (!shouldCloseComposerMenus && _activeMessageMenu == null) {
       return;
     }
+    final _ActiveChatMessageMenu? menu = _activeMessageMenu;
     setState(() {
       if (shouldCloseComposerMenus) {
         _state = _state.copyWith(
@@ -3160,13 +3198,30 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       }
       _suppressNextTransientUiDismiss = false;
       _activeMessageMenu = null;
+      if (menu != null) {
+        _exitingMessageMenu = menu;
+      }
     });
+    if (menu != null) {
+      _scheduleMessageMenuExitClear();
+    }
   }
 
   void _showMessageFeedback(String message) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  bool get _isAutomatedWidgetTest {
+    bool result = false;
+    assert(() {
+      result = WidgetsBinding.instance.runtimeType.toString().contains(
+        'TestWidgetsFlutterBinding',
+      );
+      return true;
+    }());
+    return result;
   }
 
   Future<void> _handleRuntimeEnvironmentSelected(
@@ -3487,6 +3542,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         ),
       );
       _suppressNextTransientUiDismiss = true;
+      _messageMenuExitEpoch += 1;
+      _exitingMessageMenu = null;
       _activeMessageMenu = _ActiveChatMessageMenu(
         message: message,
         bubbleRect: bubbleRect,
@@ -3957,6 +4014,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                               bridge: widget.bridge,
                               copy: widget.copy,
                               state: _state,
+                              scrollController: _chatScrollController,
                               showSandboxPreviewCards:
                                   _selectedRuntimeEnvironment ==
                                   _ChatRuntimeEnvironment.cloud,
@@ -4003,23 +4061,25 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               ],
             ),
           ),
-          if (_activeMessageMenu != null)
+          if (_activeMessageMenu != null || _exitingMessageMenu != null)
             Positioned.fill(
               child: Stack(
                 children: <Widget>[
-                  Positioned.fill(
-                    child: GestureDetector(
-                      key: const ValueKey<String>(
-                        'chat-message-menu-dismiss-layer',
+                  if (_activeMessageMenu != null)
+                    Positioned.fill(
+                      child: GestureDetector(
+                        key: const ValueKey<String>(
+                          'chat-message-menu-dismiss-layer',
+                        ),
+                        onTap: _dismissMessageMenu,
+                        behavior: HitTestBehavior.translucent,
+                        child: const SizedBox.expand(),
                       ),
-                      onTap: _dismissMessageMenu,
-                      behavior: HitTestBehavior.translucent,
-                      child: const SizedBox.expand(),
                     ),
-                  ),
                   _ChatMessageMenuOverlay(
                     copy: widget.copy,
-                    menu: _activeMessageMenu!,
+                    menu: _activeMessageMenu ?? _exitingMessageMenu!,
+                    isExiting: _activeMessageMenu == null,
                     onActionSelected: _handleMessageMenuAction,
                   ),
                 ],
@@ -11560,6 +11620,7 @@ class _ChatScrollContent extends StatelessWidget {
     required this.bridge,
     required this.copy,
     required this.state,
+    required this.scrollController,
     required this.showSandboxPreviewCards,
     required this.voicePlaybackControllerFactory,
     required this.selectedMessageIds,
@@ -11579,6 +11640,7 @@ class _ChatScrollContent extends StatelessWidget {
   final OpenCrayHostBridge? bridge;
   final OpenCrayUiCopy copy;
   final ChatFeatureState state;
+  final ScrollController scrollController;
   final bool showSandboxPreviewCards;
   final ChatVoicePlaybackControllerFactory? voicePlaybackControllerFactory;
   final Set<String> selectedMessageIds;
@@ -11600,10 +11662,12 @@ class _ChatScrollContent extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
-        Text(state.screenTitle, style: _ChatTextStyles.pageTitle),
-        const SizedBox(height: 20),
-        _SummaryCard(copy: copy, summary: state.summary, bridge: bridge),
-        const SizedBox(height: 20),
+        _ChatHeaderCluster(
+          bridge: bridge,
+          copy: copy,
+          state: state,
+          scrollController: scrollController,
+        ),
         if (state.messages.isEmpty &&
             state.runTraces.isEmpty &&
             state.pendingApprovals.isEmpty)
@@ -11630,6 +11694,64 @@ class _ChatScrollContent extends StatelessWidget {
             onMessageTextSelectionChanged: onMessageTextSelectionChanged,
           ),
       ],
+    );
+  }
+}
+
+class _ChatHeaderCluster extends StatelessWidget {
+  const _ChatHeaderCluster({
+    required this.bridge,
+    required this.copy,
+    required this.state,
+    required this.scrollController,
+  });
+
+  final OpenCrayHostBridge? bridge;
+  final OpenCrayUiCopy copy;
+  final ChatFeatureState state;
+  final ScrollController scrollController;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isActiveThread =
+        state.messages.isNotEmpty ||
+        state.runTraces.isNotEmpty ||
+        state.pendingApprovals.isNotEmpty;
+    return AnimatedBuilder(
+      animation: scrollController,
+      builder: (BuildContext context, Widget? child) {
+        final double scrollOffset = scrollController.hasClients
+            ? scrollController.offset
+            : 0;
+        final double scrollProgress = (scrollOffset / 96).clamp(0.0, 1.0);
+        final TextStyle titleStyle = _ChatTextStyles.pageTitle.copyWith(
+          color: Color.lerp(
+            _ChatPalette.textPrimary,
+            _ChatPalette.textSecondary,
+            isActiveThread ? scrollProgress * 0.28 : 0,
+          ),
+        );
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            AnimatedDefaultTextStyle(
+              duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+              curve: OpenCrayMotion.enter,
+              style: titleStyle,
+              child: Text(state.screenTitle),
+            ),
+            SizedBox(height: isActiveThread ? 14 : 20),
+            _SummaryCard(
+              copy: copy,
+              summary: state.summary,
+              bridge: bridge,
+              isActiveThread: isActiveThread,
+              scrollProgress: scrollProgress,
+            ),
+            SizedBox(height: isActiveThread ? 14 : 20),
+          ],
+        );
+      },
     );
   }
 }
@@ -12039,39 +12161,85 @@ class _ChatSelectionActionButton extends StatelessWidget {
 }
 
 class _SummaryCard extends StatelessWidget {
-  const _SummaryCard({required this.copy, required this.summary, this.bridge});
+  const _SummaryCard({
+    required this.copy,
+    required this.summary,
+    required this.isActiveThread,
+    required this.scrollProgress,
+    this.bridge,
+  });
 
   final OpenCrayUiCopy copy;
   final ChatSessionSummary summary;
+  final bool isActiveThread;
+  final double scrollProgress;
   final OpenCrayHostBridge? bridge;
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
+    final double quietProgress = isActiveThread ? 1 : 0;
+    final Color surfaceColor = Color.lerp(
+      Colors.white,
+      const Color(0x00FFFFFF),
+      quietProgress * 0.22,
+    )!;
+    final Color borderColor = Color.lerp(
+      const Color(0x00E8E8ED),
+      _ChatPalette.border,
+      quietProgress,
+    )!;
+    final Color titleColor = Color.lerp(
+      _ChatPalette.textPrimary,
+      const Color(0xFF2F3642),
+      quietProgress,
+    )!;
+    final Color bodyColor = Color.lerp(
+      _ChatPalette.textSecondary,
+      _ChatPalette.textTertiary,
+      isActiveThread ? scrollProgress * 0.34 : 0,
+    )!;
+    return AnimatedContainer(
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: surfaceColor,
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: borderColor),
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: isActiveThread ? 10 : 12,
+        ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: <Widget>[
             Row(
               children: <Widget>[
                 Expanded(
-                  child: Text(summary.title, style: _ChatTextStyles.cardTitle),
+                  child: AnimatedDefaultTextStyle(
+                    duration: OpenCrayMotion.resolve(
+                      context,
+                      OpenCrayMotion.micro,
+                    ),
+                    curve: OpenCrayMotion.enter,
+                    style: _ChatTextStyles.cardTitle.copyWith(
+                      color: titleColor,
+                      fontSize: isActiveThread ? 16 : 17,
+                    ),
+                    child: Text(summary.title),
+                  ),
                 ),
                 const SizedBox(width: 12),
                 Text(summary.badge, style: _ChatTextStyles.summaryBadge),
               ],
             ),
-            const SizedBox(height: 8),
+            SizedBox(height: isActiveThread ? 6 : 8),
             _OpenCrayMarkdownTextBlock(
               copy: copy,
               data: summary.body,
-              bodyStyle: _ChatTextStyles.bodyMuted,
-              surfaceColor: Colors.white,
+              bodyStyle: _ChatTextStyles.bodyMuted.copyWith(color: bodyColor),
+              surfaceColor: surfaceColor,
               bridge: bridge,
             ),
           ],
@@ -12204,7 +12372,10 @@ class _PendingApprovalCardStack extends StatelessWidget {
         .take(2)
         .toList(growable: false);
     if (previewApprovals.isEmpty) {
-      return _PendingApprovalCard(copy: copy, approval: activeApproval);
+      return _ApprovalActiveCardSwitcher(
+        approvalId: activeApproval.approvalId,
+        child: _PendingApprovalCard(copy: copy, approval: activeApproval),
+      );
     }
     final int previewCount = previewApprovals.length;
     return Padding(
@@ -12229,9 +12400,53 @@ class _PendingApprovalCardStack extends StatelessWidget {
                 ),
               ),
             ),
-          _PendingApprovalCard(copy: copy, approval: activeApproval),
+          _ApprovalActiveCardSwitcher(
+            approvalId: activeApproval.approvalId,
+            child: _PendingApprovalCard(copy: copy, approval: activeApproval),
+          ),
         ],
       ),
+    );
+  }
+}
+
+class _ApprovalActiveCardSwitcher extends StatelessWidget {
+  const _ApprovalActiveCardSwitcher({
+    required this.approvalId,
+    required this.child,
+  });
+
+  final String approvalId;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (OpenCrayMotion.reduce(context)) {
+      return KeyedSubtree(key: ValueKey<String>(approvalId), child: child);
+    }
+    return AnimatedSwitcher(
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.panel),
+      reverseDuration: OpenCrayMotion.resolve(context, OpenCrayMotion.quick),
+      switchInCurve: OpenCrayMotion.enter,
+      switchOutCurve: OpenCrayMotion.exit,
+      transitionBuilder: (Widget child, Animation<double> animation) {
+        final Animation<double> curved = CurvedAnimation(
+          parent: animation,
+          curve: OpenCrayMotion.enter,
+          reverseCurve: OpenCrayMotion.exit,
+        );
+        return FadeTransition(
+          opacity: curved,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.05),
+              end: Offset.zero,
+            ).animate(curved),
+            child: child,
+          ),
+        );
+      },
+      child: KeyedSubtree(key: ValueKey<String>(approvalId), child: child),
     );
   }
 }
@@ -12284,70 +12499,91 @@ class _PendingApprovalCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(22),
         border: Border.all(color: borderColor),
       ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: <Widget>[
-            Row(
+      child: Stack(
+        children: <Widget>[
+          if (approval.isHighRisk && !isPreview)
+            Positioned(
+              left: 0,
+              top: 14,
+              bottom: 14,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: _ChatPalette.highRiskAccent.withValues(alpha: 0.68),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: const SizedBox(width: 3),
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: <Widget>[
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text(approval.title, style: _ChatTextStyles.cardTitle),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            approval.title,
+                            style: _ChatTextStyles.cardTitle,
+                          ),
+                        ],
+                      ),
+                    ),
+                    if (approval.isHighRisk && !isPreview) ...<Widget>[
+                      const SizedBox(width: 12),
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          color: _ChatPalette.highRiskBadgeSurface,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 4,
+                          ),
+                          child: Text(
+                            copy.chatHighRiskApproval,
+                            style: _ChatTextStyles.highRiskBadge,
+                          ),
+                        ),
+                      ),
                     ],
-                  ),
+                  ],
                 ),
-                if (approval.isHighRisk && !isPreview) ...<Widget>[
-                  const SizedBox(width: 12),
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: _ChatPalette.highRiskBadgeSurface,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 4,
-                      ),
-                      child: Text(
-                        copy.chatHighRiskApproval,
-                        style: _ChatTextStyles.highRiskBadge,
-                      ),
-                    ),
+                const SizedBox(height: 10),
+                for (
+                  int index = 0;
+                  index < visibleLines.length;
+                  index += 1
+                ) ...<Widget>[
+                  if (index > 0) const SizedBox(height: 8),
+                  Text(
+                    visibleLines[index],
+                    maxLines: isPreview && index > 0 ? 1 : null,
+                    overflow: isPreview && index > 0
+                        ? TextOverflow.ellipsis
+                        : TextOverflow.visible,
+                    style: index == 0
+                        ? detailStyle
+                        : _ChatTextStyles.approvalReason.copyWith(
+                            color:
+                                index == visibleLines.length - 1 &&
+                                    presentation.messageLine != null &&
+                                    visibleLines[index] ==
+                                        presentation.messageLine
+                                ? _ChatPalette.textSecondary
+                                : reasonColor,
+                          ),
                   ),
                 ],
               ],
             ),
-            const SizedBox(height: 10),
-            for (
-              int index = 0;
-              index < visibleLines.length;
-              index += 1
-            ) ...<Widget>[
-              if (index > 0) const SizedBox(height: 8),
-              Text(
-                visibleLines[index],
-                maxLines: isPreview && index > 0 ? 1 : null,
-                overflow: isPreview && index > 0
-                    ? TextOverflow.ellipsis
-                    : TextOverflow.visible,
-                style: index == 0
-                    ? detailStyle
-                    : _ChatTextStyles.approvalReason.copyWith(
-                        color:
-                            index == visibleLines.length - 1 &&
-                                presentation.messageLine != null &&
-                                visibleLines[index] == presentation.messageLine
-                            ? _ChatPalette.textSecondary
-                            : reasonColor,
-                      ),
-              ),
-            ],
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -12373,40 +12609,61 @@ class _ApprovalActionRow extends StatelessWidget {
     final Color accentColor = approval.isHighRisk
         ? const Color(0xFFF97316)
         : _ChatPalette.accent;
-    return Row(
-      children: <Widget>[
-        Expanded(
-          child: _ApprovalActionButton(
-            label: approval.rejectLabel,
-            foregroundColor: const Color(0xFF526071),
+    final Widget rejectButton = _ApprovalActionButton(
+      label: approval.rejectLabel,
+      foregroundColor: const Color(0xFF526071),
+      backgroundColor: Colors.white,
+      borderColor: const Color(0xFFD9DEE8),
+      onPressed: isBusy ? null : onReject,
+    );
+    final Widget? approveForSessionButton = approval.supportsSessionApproval
+        ? _ApprovalActionButton(
+            label: approval.approveForSessionLabel,
+            foregroundColor: accentColor,
             backgroundColor: Colors.white,
-            borderColor: const Color(0xFFD9DEE8),
-            onPressed: isBusy ? null : onReject,
-          ),
-        ),
-        const SizedBox(width: 10),
-        if (approval.supportsSessionApproval) ...<Widget>[
-          Expanded(
-            child: _ApprovalActionButton(
-              label: approval.approveForSessionLabel,
-              foregroundColor: accentColor,
-              backgroundColor: Colors.white,
-              borderColor: accentColor.withValues(alpha: 0.65),
-              onPressed: isBusy ? null : onApproveForSession,
-            ),
-          ),
-          const SizedBox(width: 10),
-        ],
-        Expanded(
-          child: _ApprovalActionButton(
-            label: approval.approveLabel,
-            foregroundColor: Colors.white,
-            backgroundColor: accentColor,
-            borderColor: accentColor,
-            onPressed: isBusy ? null : onApprove,
-          ),
-        ),
-      ],
+            borderColor: accentColor.withValues(alpha: 0.65),
+            onPressed: isBusy ? null : onApproveForSession,
+          )
+        : null;
+    final Widget approveButton = _ApprovalActionButton(
+      label: approval.approveLabel,
+      foregroundColor: Colors.white,
+      backgroundColor: accentColor,
+      borderColor: accentColor,
+      onPressed: isBusy ? null : onApprove,
+      isBusy: isBusy,
+    );
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        final bool compact =
+            constraints.maxWidth < 344 && approveForSessionButton != null;
+        if (compact) {
+          return Column(
+            children: <Widget>[
+              Row(
+                children: <Widget>[
+                  Expanded(child: rejectButton),
+                  const SizedBox(width: 10),
+                  Expanded(child: approveForSessionButton),
+                ],
+              ),
+              const SizedBox(height: 8),
+              approveButton,
+            ],
+          );
+        }
+        return Row(
+          children: <Widget>[
+            Expanded(child: rejectButton),
+            const SizedBox(width: 10),
+            if (approveForSessionButton != null) ...<Widget>[
+              Expanded(child: approveForSessionButton),
+              const SizedBox(width: 10),
+            ],
+            Expanded(child: approveButton),
+          ],
+        );
+      },
     );
   }
 }
@@ -12476,6 +12733,7 @@ class _ApprovalActionButton extends StatelessWidget {
     required this.backgroundColor,
     required this.borderColor,
     required this.onPressed,
+    this.isBusy = false,
   });
 
   final String label;
@@ -12483,6 +12741,7 @@ class _ApprovalActionButton extends StatelessWidget {
   final Color backgroundColor;
   final Color borderColor;
   final VoidCallback? onPressed;
+  final bool isBusy;
 
   @override
   Widget build(BuildContext context) {
@@ -12502,13 +12761,46 @@ class _ApprovalActionButton extends StatelessWidget {
           ),
         ),
         alignment: Alignment.center,
-        child: Text(
-          label,
-          style: _ChatTextStyles.approvalAction.copyWith(
-            color: enabled
-                ? foregroundColor
-                : foregroundColor.withValues(alpha: 0.6),
-          ),
+        child: AnimatedSwitcher(
+          duration: OpenCrayMotion.resolve(context, OpenCrayMotion.quick),
+          switchInCurve: OpenCrayMotion.enter,
+          switchOutCurve: OpenCrayMotion.exit,
+          child: isBusy
+              ? Row(
+                  key: const ValueKey<String>('approval-action-busy'),
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: <Widget>[
+                    SizedBox.square(
+                      dimension: 13,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.6,
+                        color: foregroundColor.withValues(alpha: 0.88),
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                    Flexible(
+                      child: Text(
+                        label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: _ChatTextStyles.approvalAction.copyWith(
+                          color: foregroundColor.withValues(alpha: 0.88),
+                        ),
+                      ),
+                    ),
+                  ],
+                )
+              : Text(
+                  label,
+                  key: const ValueKey<String>('approval-action-label'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: _ChatTextStyles.approvalAction.copyWith(
+                    color: enabled
+                        ? foregroundColor
+                        : foregroundColor.withValues(alpha: 0.6),
+                  ),
+                ),
         ),
       ),
     );
@@ -12682,6 +12974,47 @@ class _ChatTimestampDivider extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _ChatTranscriptRowMotion extends StatelessWidget {
+  const _ChatTranscriptRowMotion({
+    required this.rowKey,
+    required this.reveal,
+    required this.child,
+  });
+
+  final String rowKey;
+  final bool reveal;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    if (!reveal || OpenCrayMotion.reduce(context)) {
+      return child;
+    }
+    return TweenAnimationBuilder<double>(
+      key: ValueKey<String>('chat-transcript-row-motion-$rowKey'),
+      tween: Tween<double>(begin: 0, end: 1),
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.expand),
+      curve: OpenCrayMotion.enter,
+      child: child,
+      builder: (BuildContext context, double value, Widget? child) {
+        return ClipRect(
+          child: Align(
+            alignment: Alignment.topCenter,
+            heightFactor: value.clamp(0.0, 1.0),
+            child: Opacity(
+              opacity: value.clamp(0.0, 1.0),
+              child: Transform.translate(
+                offset: Offset(0, _chatTranscriptInsertOffset * (1 - value)),
+                child: child,
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -12992,7 +13325,7 @@ class _ChatSelectionControl extends StatelessWidget {
   }
 }
 
-class _MessageList extends StatelessWidget {
+class _MessageList extends StatefulWidget {
   const _MessageList({
     required this.bridge,
     required this.copy,
@@ -13035,7 +13368,64 @@ class _MessageList extends StatelessWidget {
   onMessageTextSelectionChanged;
 
   @override
+  State<_MessageList> createState() => _MessageListState();
+}
+
+class _MessageListState extends State<_MessageList> {
+  final Set<String> _knownTranscriptRowKeys = <String>{};
+  bool _hasBuiltTranscriptOnce = false;
+
+  Widget _transcriptRow(String rowKey, Widget child) {
+    final bool shouldReveal =
+        _hasBuiltTranscriptOnce && !_knownTranscriptRowKeys.contains(rowKey);
+    _knownTranscriptRowKeys.add(rowKey);
+    return _ChatTranscriptRowMotion(
+      rowKey: rowKey,
+      reveal: shouldReveal,
+      child: child,
+    );
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final OpenCrayHostBridge? bridge = widget.bridge;
+    final OpenCrayUiCopy copy = widget.copy;
+    final bool showSandboxPreviewCards = widget.showSandboxPreviewCards;
+    final ChatVoicePlaybackControllerFactory? voicePlaybackControllerFactory =
+        widget.voicePlaybackControllerFactory;
+    final List<ChatMessageData> messages = widget.messages;
+    final List<ChatRunTraceData> runTraces = widget.runTraces;
+    final Set<String> selectedMessageIds = widget.selectedMessageIds;
+    final Set<String> deletingMessageIds = widget.deletingMessageIds;
+    final String? interruptConfirmRunId = widget.interruptConfirmRunId;
+    final Set<String> busyInterruptRunIds = widget.busyInterruptRunIds;
+    final Set<String> busyRetryRunIds = widget.busyRetryRunIds;
+    final ValueChanged<ChatRunTraceData> onArmInterruptRunTrace =
+        widget.onArmInterruptRunTrace;
+    final ValueChanged<ChatRunTraceData> onDismissInterruptRunTrace =
+        widget.onDismissInterruptRunTrace;
+    final ValueChanged<ChatRunTraceData> onInterruptRunTrace =
+        widget.onInterruptRunTrace;
+    final ValueChanged<ChatRunTraceData> onRetryRunTrace =
+        widget.onRetryRunTrace;
+    final void Function(ChatMessageData, Rect, String?) onMessageLongPress =
+        widget.onMessageLongPress;
+    final ValueChanged<ChatMessageData> onMessageSelectionToggle =
+        widget.onMessageSelectionToggle;
+    final void Function(ChatMessageData, OpenCrayMarkdownSelectionSnapshot?)
+    onMessageTextSelectionChanged = widget.onMessageTextSelectionChanged;
+    final double contentWidth = math.max(
+      0,
+      MediaQuery.sizeOf(context).width - 40,
+    );
+    final double inboundBubbleMaxWidth = math.min(
+      360,
+      math.max(252, contentWidth * 0.78),
+    );
+    final double outboundBubbleMaxWidth = math.min(
+      340,
+      math.max(236, contentWidth * 0.76),
+    );
     final children = <Widget>[];
     int? previousTimestampEpochMs;
     final Map<String, List<ChatRunTraceData>> anchoredRunTracesByMessageId =
@@ -13068,40 +13458,45 @@ class _MessageList extends StatelessWidget {
       }
       final bool canShowInterrupt = showInterruptAction && trace.canInterrupt;
       final bool canShowRetry = showRetryAction && trace.isRetryable;
+      final String rowKey = 'trace-${_stableRunTraceKey(trace)}';
       children.add(
-        Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: _RunTraceBubble(
-              key: ValueKey<String>(
-                'chat-run-trace-${_stableRunTraceKey(trace)}',
+        _transcriptRow(
+          rowKey,
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: _RunTraceBubble(
+                key: ValueKey<String>(
+                  'chat-run-trace-${_stableRunTraceKey(trace)}',
+                ),
+                bridge: bridge,
+                copy: copy,
+                trace: trace,
+                showSandboxPreviewCard: showSandboxPreviewCards,
+                showRetryAction: canShowRetry,
+                showInterruptAction: canShowInterrupt,
+                showInterruptConfirm:
+                    canShowInterrupt &&
+                    interruptConfirmRunId == trace.interruptId,
+                isInterruptBusy:
+                    canShowInterrupt &&
+                    busyInterruptRunIds.contains(trace.interruptId),
+                onInterruptRequest: canShowInterrupt
+                    ? () => onArmInterruptRunTrace(trace)
+                    : null,
+                onInterruptDismiss:
+                    canShowInterrupt &&
+                        interruptConfirmRunId == trace.interruptId
+                    ? () => onDismissInterruptRunTrace(trace)
+                    : null,
+                onInterruptConfirm: canShowInterrupt
+                    ? () => onInterruptRunTrace(trace)
+                    : null,
+                isRetryBusy:
+                    canShowRetry && busyRetryRunIds.contains(trace.retryId),
+                onRetry: canShowRetry ? () => onRetryRunTrace(trace) : null,
               ),
-              bridge: bridge,
-              copy: copy,
-              trace: trace,
-              showSandboxPreviewCard: showSandboxPreviewCards,
-              showRetryAction: canShowRetry,
-              showInterruptAction: canShowInterrupt,
-              showInterruptConfirm:
-                  canShowInterrupt &&
-                  interruptConfirmRunId == trace.interruptId,
-              isInterruptBusy:
-                  canShowInterrupt &&
-                  busyInterruptRunIds.contains(trace.interruptId),
-              onInterruptRequest: canShowInterrupt
-                  ? () => onArmInterruptRunTrace(trace)
-                  : null,
-              onInterruptDismiss:
-                  canShowInterrupt && interruptConfirmRunId == trace.interruptId
-                  ? () => onDismissInterruptRunTrace(trace)
-                  : null,
-              onInterruptConfirm: canShowInterrupt
-                  ? () => onInterruptRunTrace(trace)
-                  : null,
-              isRetryBusy:
-                  canShowRetry && busyRetryRunIds.contains(trace.retryId),
-              onRetry: canShowRetry ? () => onRetryRunTrace(trace) : null,
             ),
           ),
         ),
@@ -13135,13 +13530,16 @@ class _MessageList extends StatelessWidget {
             previousTimestampEpochMs,
           )) {
         children.add(
-          _ChatTimestampDivider(
-            messageId: message.messageId,
-            label: _formatChatDividerLabel(
-              copy,
-              DateTime.fromMillisecondsSinceEpoch(
-                currentTimestampEpochMs,
-              ).toLocal(),
+          _transcriptRow(
+            'divider-${message.messageId}',
+            _ChatTimestampDivider(
+              messageId: message.messageId,
+              label: _formatChatDividerLabel(
+                copy,
+                DateTime.fromMillisecondsSinceEpoch(
+                  currentTimestampEpochMs,
+                ).toLocal(),
+              ),
             ),
           ),
         );
@@ -13149,20 +13547,26 @@ class _MessageList extends StatelessWidget {
       switch (message.kind) {
         case ChatMessageKind.timeline:
           children.add(
-            Padding(
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Center(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFE9E9ED),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 5,
+            _transcriptRow(
+              _chatMessageListItemKey(message),
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Center(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE9E9ED),
+                      borderRadius: BorderRadius.circular(999),
                     ),
-                    child: Text(message.text, style: _ChatTextStyles.timeline),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 5,
+                      ),
+                      child: Text(
+                        message.text,
+                        style: _ChatTextStyles.timeline,
+                      ),
+                    ),
                   ),
                 ),
               ),
@@ -13170,60 +13574,66 @@ class _MessageList extends StatelessWidget {
           );
         case ChatMessageKind.inbound:
           children.add(
-            _ChatMessageWithTimestamp(
-              key: ValueKey<String>(_chatMessageListItemKey(message)),
-              bridge: bridge,
-              copy: copy,
-              message: message,
-              voicePlaybackControllerFactory: voicePlaybackControllerFactory,
-              alignment: Alignment.centerLeft,
-              backgroundColor: Colors.white,
-              textColor: _ChatPalette.textPrimary,
-              maxWidth: 252,
-              selectionMode: selectedMessageIds.isNotEmpty,
-              isSelected: selectedMessageIds.contains(message.messageId),
-              isDeleting: deletingMessageIds.contains(message.messageId),
-              onLongPress: onMessageLongPress,
-              onSelectionToggle: () => onMessageSelectionToggle(message),
-              onTextSelectionChanged: (selectedText) =>
-                  onMessageTextSelectionChanged(message, selectedText),
-              attachedRunTraces: anchoredTraces,
-              interruptConfirmRunId: interruptConfirmRunId,
-              busyInterruptRunIds: busyInterruptRunIds,
-              busyRetryRunIds: busyRetryRunIds,
-              onArmInterruptRunTrace: onArmInterruptRunTrace,
-              onDismissInterruptRunTrace: onDismissInterruptRunTrace,
-              onInterruptRunTrace: onInterruptRunTrace,
-              onRetryRunTrace: onRetryRunTrace,
+            _transcriptRow(
+              _chatMessageListItemKey(message),
+              _ChatMessageWithTimestamp(
+                key: ValueKey<String>(_chatMessageListItemKey(message)),
+                bridge: bridge,
+                copy: copy,
+                message: message,
+                voicePlaybackControllerFactory: voicePlaybackControllerFactory,
+                alignment: Alignment.centerLeft,
+                backgroundColor: Colors.white,
+                textColor: _ChatPalette.textPrimary,
+                maxWidth: inboundBubbleMaxWidth,
+                selectionMode: selectedMessageIds.isNotEmpty,
+                isSelected: selectedMessageIds.contains(message.messageId),
+                isDeleting: deletingMessageIds.contains(message.messageId),
+                onLongPress: onMessageLongPress,
+                onSelectionToggle: () => onMessageSelectionToggle(message),
+                onTextSelectionChanged: (selectedText) =>
+                    onMessageTextSelectionChanged(message, selectedText),
+                attachedRunTraces: anchoredTraces,
+                interruptConfirmRunId: interruptConfirmRunId,
+                busyInterruptRunIds: busyInterruptRunIds,
+                busyRetryRunIds: busyRetryRunIds,
+                onArmInterruptRunTrace: onArmInterruptRunTrace,
+                onDismissInterruptRunTrace: onDismissInterruptRunTrace,
+                onInterruptRunTrace: onInterruptRunTrace,
+                onRetryRunTrace: onRetryRunTrace,
+              ),
             ),
           );
         case ChatMessageKind.outbound:
           children.add(
-            _ChatMessageWithTimestamp(
-              key: ValueKey<String>(_chatMessageListItemKey(message)),
-              bridge: bridge,
-              copy: copy,
-              message: message,
-              voicePlaybackControllerFactory: voicePlaybackControllerFactory,
-              alignment: Alignment.centerRight,
-              backgroundColor: _ChatPalette.accent,
-              textColor: Colors.white,
-              maxWidth: 236,
-              selectionMode: selectedMessageIds.isNotEmpty,
-              isSelected: selectedMessageIds.contains(message.messageId),
-              isDeleting: deletingMessageIds.contains(message.messageId),
-              onLongPress: onMessageLongPress,
-              onSelectionToggle: () => onMessageSelectionToggle(message),
-              onTextSelectionChanged: (selectedText) =>
-                  onMessageTextSelectionChanged(message, selectedText),
-              attachedRunTraces: anchoredTraces,
-              interruptConfirmRunId: interruptConfirmRunId,
-              busyInterruptRunIds: busyInterruptRunIds,
-              busyRetryRunIds: busyRetryRunIds,
-              onArmInterruptRunTrace: onArmInterruptRunTrace,
-              onDismissInterruptRunTrace: onDismissInterruptRunTrace,
-              onInterruptRunTrace: onInterruptRunTrace,
-              onRetryRunTrace: onRetryRunTrace,
+            _transcriptRow(
+              _chatMessageListItemKey(message),
+              _ChatMessageWithTimestamp(
+                key: ValueKey<String>(_chatMessageListItemKey(message)),
+                bridge: bridge,
+                copy: copy,
+                message: message,
+                voicePlaybackControllerFactory: voicePlaybackControllerFactory,
+                alignment: Alignment.centerRight,
+                backgroundColor: _ChatPalette.accent,
+                textColor: Colors.white,
+                maxWidth: outboundBubbleMaxWidth,
+                selectionMode: selectedMessageIds.isNotEmpty,
+                isSelected: selectedMessageIds.contains(message.messageId),
+                isDeleting: deletingMessageIds.contains(message.messageId),
+                onLongPress: onMessageLongPress,
+                onSelectionToggle: () => onMessageSelectionToggle(message),
+                onTextSelectionChanged: (selectedText) =>
+                    onMessageTextSelectionChanged(message, selectedText),
+                attachedRunTraces: anchoredTraces,
+                interruptConfirmRunId: interruptConfirmRunId,
+                busyInterruptRunIds: busyInterruptRunIds,
+                busyRetryRunIds: busyRetryRunIds,
+                onArmInterruptRunTrace: onArmInterruptRunTrace,
+                onDismissInterruptRunTrace: onDismissInterruptRunTrace,
+                onInterruptRunTrace: onInterruptRunTrace,
+                onRetryRunTrace: onRetryRunTrace,
+              ),
             ),
           );
       }
@@ -13244,7 +13654,19 @@ class _MessageList extends StatelessWidget {
       );
     }
 
-    return Column(children: children);
+    if (!_hasBuiltTranscriptOnce) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        _hasBuiltTranscriptOnce = true;
+      });
+    }
+    return LayoutBuilder(
+      builder: (BuildContext context, BoxConstraints constraints) {
+        return Column(children: children);
+      },
+    );
   }
 }
 
@@ -13601,10 +14023,9 @@ class _RunTraceStatusLineState extends State<_RunTraceStatusLine>
   );
 
   bool get _shouldAnimate {
-    final MediaQueryData? mediaQuery = MediaQuery.maybeOf(context);
     return !widget.trace.isTerminal &&
         !widget.trace.isRetryable &&
-        mediaQuery?.disableAnimations != true &&
+        !OpenCrayMotion.reduce(context) &&
         !_isAutomatedWidgetTest;
   }
 
@@ -13672,8 +14093,12 @@ class _RunTraceStatusLineState extends State<_RunTraceStatusLine>
       presentation: widget.presentation,
     );
     final String label = detail == null ? lead : '$lead · $detail';
+    final _RunTraceStatusTone tone = _RunTraceStatusTone.fromTrace(
+      widget.trace,
+      animate: animate,
+    );
     final TextStyle lineStyle = _ChatTextStyles.timeline.copyWith(
-      color: mutedColor,
+      color: tone.textColor,
       fontWeight: FontWeight.w700,
     );
     final Widget text = Row(
@@ -13740,16 +14165,9 @@ class _RunTraceStatusLineState extends State<_RunTraceStatusLine>
             child: Row(
               children: <Widget>[
                 SizedBox(
-                  width: 8,
-                  height: 8,
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: mutedColor.withValues(
-                        alpha: animate ? 0.88 : 0.52,
-                      ),
-                      shape: BoxShape.circle,
-                    ),
-                  ),
+                  width: 14,
+                  height: 14,
+                  child: _RunTraceStatusMark(tone: tone),
                 ),
                 const SizedBox(width: 8),
                 Flexible(child: animatedText),
@@ -13757,13 +14175,107 @@ class _RunTraceStatusLineState extends State<_RunTraceStatusLine>
                 Icon(
                   Icons.chevron_right_rounded,
                   size: 16,
-                  color: mutedColor.withValues(alpha: 0.78),
+                  color: tone.textColor.withValues(alpha: 0.78),
                 ),
               ],
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+class _RunTraceStatusTone {
+  const _RunTraceStatusTone({
+    required this.textColor,
+    required this.markColor,
+    required this.icon,
+    required this.showProgress,
+  });
+
+  final Color textColor;
+  final Color markColor;
+  final IconData? icon;
+  final bool showProgress;
+
+  factory _RunTraceStatusTone.fromTrace(
+    ChatRunTraceData trace, {
+    required bool animate,
+  }) {
+    if (trace.isRetryable) {
+      return const _RunTraceStatusTone(
+        textColor: Color(0xFFC06A1A),
+        markColor: Color(0xFFF59E0B),
+        icon: Icons.priority_high_rounded,
+        showProgress: false,
+      );
+    }
+    if (trace.isTerminal) {
+      return const _RunTraceStatusTone(
+        textColor: _ChatPalette.textSecondary,
+        markColor: Color(0xFF9CA3AF),
+        icon: Icons.check_rounded,
+        showProgress: false,
+      );
+    }
+    if (trace.isHighRisk) {
+      return const _RunTraceStatusTone(
+        textColor: _ChatPalette.highRiskAccent,
+        markColor: _ChatPalette.highRiskAccent,
+        icon: null,
+        showProgress: true,
+      );
+    }
+    return _RunTraceStatusTone(
+      textColor: _ChatPalette.runTraceActivityText,
+      markColor: _ChatPalette.runTraceStatusText,
+      icon: null,
+      showProgress: animate,
+    );
+  }
+}
+
+class _RunTraceStatusMark extends StatelessWidget {
+  const _RunTraceStatusMark({required this.tone});
+
+  final _RunTraceStatusTone tone;
+
+  @override
+  Widget build(BuildContext context) {
+    if (tone.icon != null) {
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          color: tone.markColor.withValues(alpha: 0.12),
+          shape: BoxShape.circle,
+        ),
+        child: Icon(tone.icon, size: 10, color: tone.markColor),
+      );
+    }
+    return Stack(
+      alignment: Alignment.centerLeft,
+      children: <Widget>[
+        Container(
+          width: 14,
+          height: 4,
+          decoration: BoxDecoration(
+            color: tone.markColor.withValues(alpha: 0.18),
+            borderRadius: BorderRadius.circular(999),
+          ),
+        ),
+        AnimatedContainer(
+          duration: OpenCrayMotion.resolve(context, OpenCrayMotion.quick),
+          curve: OpenCrayMotion.enter,
+          width: tone.showProgress ? 9 : 5,
+          height: 4,
+          decoration: BoxDecoration(
+            color: tone.markColor.withValues(
+              alpha: tone.showProgress ? 0.9 : 0.54,
+            ),
+            borderRadius: BorderRadius.circular(999),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -16178,11 +16690,13 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
   const _ChatMessageMenuOverlay({
     required this.copy,
     required this.menu,
+    required this.isExiting,
     required this.onActionSelected,
   });
 
   final OpenCrayUiCopy copy;
   final _ActiveChatMessageMenu menu;
+  final bool isExiting;
   final ValueChanged<_ChatMessageMenuAction> onActionSelected;
 
   @override
@@ -16233,13 +16747,25 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
           left: left,
           top: top,
           child: TweenAnimationBuilder<double>(
-            duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
-            curve: OpenCrayMotion.enter,
-            tween: Tween<double>(begin: 0.94, end: 1),
+            duration: OpenCrayMotion.resolve(
+              context,
+              isExiting ? _chatMessageMenuExitDuration : OpenCrayMotion.micro,
+            ),
+            curve: isExiting ? OpenCrayMotion.exit : OpenCrayMotion.enter,
+            tween: Tween<double>(
+              begin: isExiting ? 1 : 0,
+              end: isExiting ? 0 : 1,
+            ),
             builder: (BuildContext context, double value, Widget? child) {
+              final double side = menu.isOutgoing ? 1 : -1;
+              final double offsetX = side * (1 - value) * 12;
+              final double offsetY = (1 - value) * -4;
               return Opacity(
                 opacity: value.clamp(0, 1),
-                child: Transform.scale(scale: value, child: child),
+                child: Transform.translate(
+                  offset: Offset(offsetX, offsetY),
+                  child: child,
+                ),
               );
             },
             child: ClipRRect(
@@ -17485,12 +18011,12 @@ class _ChatImageAttachmentPreviewState
     return bridge.loadWorkspaceImagePreview(localPath);
   }
 
-  void _showFullscreenPreview(
+  Future<void> _showFullscreenPreview(
     BuildContext context,
     OpenCrayFileImagePreview preview,
   ) {
-    showDialog<void>(
-      context: context,
+    return _showChatPreviewDialog(
+      context,
       barrierColor: const Color(0xB3000000),
       builder: (dialogContext) {
         return Dialog(
@@ -17523,6 +18049,9 @@ class _ChatImageAttachmentPreviewState
         ? Colors.white.withValues(alpha: 0.14)
         : const Color(0xFFF3F4F7);
     final Future<OpenCrayFileImagePreview>? previewFuture = _previewFuture;
+    final double stableAspectRatio = _chatMessageAttachmentStableAspectRatio(
+      widget.attachment,
+    );
     if (previewFuture == null) {
       return _ChatImageAttachmentPlaceholder(
         attachment: widget.attachment,
@@ -17535,16 +18064,13 @@ class _ChatImageAttachmentPreviewState
       builder: (context, snapshot) {
         final OpenCrayFileImagePreview? preview = snapshot.data;
         final bool ready = preview != null && preview.bytes.isNotEmpty;
-        final double aspectRatio = ready
-            ? preview.aspectRatio.clamp(0.65, 1.65).toDouble()
-            : 1;
         return GestureDetector(
           key: ValueKey<String>(
             'chat-message-image-attachment-${widget.attachment.attachmentId}',
           ),
           onTap: ready ? () => _showFullscreenPreview(context, preview) : null,
           child: AspectRatio(
-            aspectRatio: aspectRatio,
+            aspectRatio: stableAspectRatio,
             child: ClipRRect(
               borderRadius: BorderRadius.circular(14),
               child: DecoratedBox(
@@ -17552,16 +18078,34 @@ class _ChatImageAttachmentPreviewState
                   color: placeholderColor,
                   border: Border.all(color: borderColor),
                 ),
-                child: ready
-                    ? OpenCrayImageBytesView(
-                        bytes: preview.bytes,
-                        mimeType: preview.mimeType,
-                        fit: BoxFit.cover,
-                      )
-                    : _ChatImageAttachmentPlaceholderBody(
-                        attachment: widget.attachment,
-                        isOutgoing: widget.isOutgoing,
-                      ),
+                child: AnimatedSwitcher(
+                  duration: OpenCrayMotion.resolve(
+                    context,
+                    OpenCrayMotion.quick,
+                  ),
+                  switchInCurve: OpenCrayMotion.enter,
+                  switchOutCurve: OpenCrayMotion.exit,
+                  transitionBuilder:
+                      (Widget child, Animation<double> animation) {
+                        return FadeTransition(opacity: animation, child: child);
+                      },
+                  child: ready
+                      ? OpenCrayImageBytesView(
+                          key: ValueKey<String>(
+                            'chat-message-image-ready-${widget.attachment.attachmentId}',
+                          ),
+                          bytes: preview.bytes,
+                          mimeType: preview.mimeType,
+                          fit: BoxFit.cover,
+                        )
+                      : _ChatImageAttachmentPlaceholderBody(
+                          key: ValueKey<String>(
+                            'chat-message-image-placeholder-${widget.attachment.attachmentId}',
+                          ),
+                          attachment: widget.attachment,
+                          isOutgoing: widget.isOutgoing,
+                        ),
+                ),
               ),
             ),
           ),
@@ -17569,6 +18113,17 @@ class _ChatImageAttachmentPreviewState
       },
     );
   }
+}
+
+double _chatMessageAttachmentStableAspectRatio(
+  ChatMessageAttachmentData attachment,
+) {
+  final int width = attachment.widthPx ?? 0;
+  final int height = attachment.heightPx ?? 0;
+  if (width <= 0 || height <= 0) {
+    return 1;
+  }
+  return (width / height).clamp(0.65, 1.65).toDouble();
 }
 
 class _ChatImageAttachmentPlaceholder extends StatelessWidget {
@@ -17588,23 +18143,26 @@ class _ChatImageAttachmentPlaceholder extends StatelessWidget {
       key: ValueKey<String>(
         'chat-message-image-attachment-${attachment.attachmentId}',
       ),
-      height: maxWidth.clamp(92, 180).toDouble(),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(14),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: isOutgoing
-                ? Colors.white.withValues(alpha: 0.14)
-                : const Color(0xFFF3F4F7),
-            border: Border.all(
+      width: maxWidth,
+      child: AspectRatio(
+        aspectRatio: _chatMessageAttachmentStableAspectRatio(attachment),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
               color: isOutgoing
-                  ? Colors.white.withValues(alpha: 0.22)
-                  : _ChatPalette.border,
+                  ? Colors.white.withValues(alpha: 0.14)
+                  : const Color(0xFFF3F4F7),
+              border: Border.all(
+                color: isOutgoing
+                    ? Colors.white.withValues(alpha: 0.22)
+                    : _ChatPalette.border,
+              ),
             ),
-          ),
-          child: _ChatImageAttachmentPlaceholderBody(
-            attachment: attachment,
-            isOutgoing: isOutgoing,
+            child: _ChatImageAttachmentPlaceholderBody(
+              attachment: attachment,
+              isOutgoing: isOutgoing,
+            ),
           ),
         ),
       ),
@@ -17614,6 +18172,7 @@ class _ChatImageAttachmentPlaceholder extends StatelessWidget {
 
 class _ChatImageAttachmentPlaceholderBody extends StatelessWidget {
   const _ChatImageAttachmentPlaceholderBody({
+    super.key,
     required this.attachment,
     required this.isOutgoing,
   });
@@ -18416,10 +18975,58 @@ Future<void> _showChatTextPreviewDialog(
   OpenCrayFileTextPreview preview, {
   OpenCrayHostBridge? bridge,
 }) {
-  return showDialog<void>(
-    context: context,
+  return _showChatPreviewDialog(
+    context,
     builder: (dialogContext) =>
         _ChatTextPreviewDialog(preview: preview, bridge: bridge),
+  );
+}
+
+Future<void> _showChatPreviewDialog(
+  BuildContext context, {
+  required WidgetBuilder builder,
+  Color barrierColor = const Color(0x8A0B0E14),
+}) {
+  return showGeneralDialog<void>(
+    context: context,
+    barrierDismissible: true,
+    barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
+    barrierColor: barrierColor,
+    transitionDuration: OpenCrayMotion.resolve(context, OpenCrayMotion.panel),
+    pageBuilder:
+        (
+          BuildContext dialogContext,
+          Animation<double> animation,
+          Animation<double> secondaryAnimation,
+        ) => builder(dialogContext),
+    transitionBuilder:
+        (
+          BuildContext dialogContext,
+          Animation<double> animation,
+          Animation<double> secondaryAnimation,
+          Widget child,
+        ) {
+          final bool reduce = OpenCrayMotion.reduce(dialogContext);
+          final Animation<double> curvedAnimation = CurvedAnimation(
+            parent: animation,
+            curve: OpenCrayMotion.enter,
+            reverseCurve: OpenCrayMotion.exit,
+          );
+          final Widget faded = FadeTransition(
+            opacity: curvedAnimation,
+            child: child,
+          );
+          if (reduce) {
+            return faded;
+          }
+          return SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, 0.03),
+              end: Offset.zero,
+            ).animate(curvedAnimation),
+            child: faded,
+          );
+        },
   );
 }
 
@@ -18809,9 +19416,9 @@ class _ComposerCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool hasTodos = state.composer.todos.isNotEmpty;
+    final bool hasCommands = state.composer.commandOptions.isNotEmpty;
     final bool hasPersistentIntegratedSurface =
-        state.composer.commandOptions.isNotEmpty ||
-        state.composer.attachments.isNotEmpty;
+        hasCommands || state.composer.attachments.isNotEmpty;
 
     return TweenAnimationBuilder<double>(
       tween: Tween<double>(end: state.composer.showAddMenu ? 1 : 0),
@@ -18834,54 +19441,42 @@ class _ComposerCard extends StatelessWidget {
               _TodoListPanel(todos: state.composer.todos),
               const SizedBox(height: 12),
             ],
-            if (state.composer.commandOptions.isNotEmpty) ...<Widget>[
-              Container(
-                decoration: BoxDecoration(
-                  color: _ChatPalette.subtleSurface,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                padding: const EdgeInsets.all(12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: <Widget>[
-                    Text(
-                      copy.chatCommands,
-                      style: _ChatTextStyles.commandsLabel,
-                    ),
-                    const SizedBox(height: 8),
-                    ...state.composer.commandOptions.map(
-                      (ChatCommandOptionData option) => _CommandOptionTile(
-                        option: option,
-                        onPressed: onCommandSelected,
+            _ComposerSecondarySection(
+              sectionKey: 'commands',
+              isVisible: hasCommands,
+              bottomGap: 10,
+              child: hasCommands
+                  ? Container(
+                      decoration: BoxDecoration(
+                        color: _ChatPalette.subtleSurface,
+                        borderRadius: BorderRadius.circular(14),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 10),
-            ],
-            if (state.composer.attachments.isNotEmpty) ...<Widget>[
-              SizedBox(
-                height: 68,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  itemBuilder: (BuildContext context, int index) {
-                    return _AttachmentCard(
-                      attachment: state.composer.attachments[index],
-                      bridge: bridge,
-                      onRemove: () => onAttachmentRemoved(
-                        state.composer.attachments[index],
+                      padding: const EdgeInsets.all(12),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: <Widget>[
+                          Text(
+                            copy.chatCommands,
+                            style: _ChatTextStyles.commandsLabel,
+                          ),
+                          const SizedBox(height: 8),
+                          ...state.composer.commandOptions.map(
+                            (ChatCommandOptionData option) =>
+                                _CommandOptionTile(
+                                  option: option,
+                                  onPressed: onCommandSelected,
+                                ),
+                          ),
+                        ],
                       ),
-                    );
-                  },
-                  separatorBuilder: (BuildContext context, int index) {
-                    return const SizedBox(width: 8);
-                  },
-                  itemCount: state.composer.attachments.length,
-                ),
-              ),
-              const SizedBox(height: 10),
-            ],
+                    )
+                  : const SizedBox.shrink(),
+            ),
+            _ComposerAttachmentSection(
+              attachments: state.composer.attachments,
+              bridge: bridge,
+              onAttachmentRemoved: onAttachmentRemoved,
+            ),
             AnimatedBuilder(
               animation: controller,
               builder: (BuildContext context, Widget? child) {
@@ -18961,6 +19556,391 @@ class _ComposerCard extends StatelessWidget {
         );
       },
     );
+  }
+}
+
+class _ComposerSecondarySection extends StatefulWidget {
+  const _ComposerSecondarySection({
+    required this.sectionKey,
+    required this.isVisible,
+    required this.child,
+    this.bottomGap = 0,
+    this.updateChildDuringExit = false,
+  });
+
+  final String sectionKey;
+  final bool isVisible;
+  final Widget child;
+  final double bottomGap;
+  final bool updateChildDuringExit;
+
+  @override
+  State<_ComposerSecondarySection> createState() =>
+      _ComposerSecondarySectionState();
+}
+
+class _ComposerSecondarySectionState extends State<_ComposerSecondarySection> {
+  Widget? _motionChild;
+  int _exitEpoch = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.isVisible) {
+      _motionChild = widget.child;
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _ComposerSecondarySection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.isVisible) {
+      _exitEpoch += 1;
+      _motionChild = widget.child;
+      return;
+    }
+    if (widget.updateChildDuringExit) {
+      _motionChild = widget.child;
+    }
+    if (oldWidget.isVisible && _motionChild != null) {
+      _scheduleClearAfterExit();
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget? child = widget.isVisible ? widget.child : _motionChild;
+    if (child == null) {
+      return SizedBox.shrink(
+        key: ValueKey<String>('chat-composer-${widget.sectionKey}-empty'),
+      );
+    }
+    final bool reduce = OpenCrayMotion.reduce(context);
+    final double target = widget.isVisible ? 1 : 0;
+    return TweenAnimationBuilder<double>(
+      key: ValueKey<String>('chat-composer-${widget.sectionKey}-section'),
+      tween: Tween<double>(end: target),
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.expand),
+      curve: OpenCrayMotion.expandCurve,
+      child: Padding(
+        padding: EdgeInsets.only(bottom: widget.bottomGap),
+        child: child,
+      ),
+      builder: (BuildContext context, double value, Widget? child) {
+        final double t = reduce ? target : value.clamp(0.0, 1.0).toDouble();
+        return ClipRect(
+          child: Align(
+            alignment: Alignment.bottomCenter,
+            heightFactor: t,
+            child: IgnorePointer(
+              ignoring: !widget.isVisible,
+              child: Opacity(
+                opacity: reduce
+                    ? target
+                    : (t * 1.18).clamp(0.0, 1.0).toDouble(),
+                child: Transform.translate(
+                  offset: Offset(0, (1 - t) * 6),
+                  child: child,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _scheduleClearAfterExit() {
+    _exitEpoch += 1;
+    final int epoch = _exitEpoch;
+    final Duration duration = OpenCrayMotion.resolve(
+      context,
+      OpenCrayMotion.expand,
+    );
+    if (duration == Duration.zero || _isAutomatedWidgetTest) {
+      if (mounted && epoch == _exitEpoch) {
+        setState(() {
+          _motionChild = null;
+        });
+      }
+      return;
+    }
+    Future<void>.delayed(duration, () {
+      if (!mounted || widget.isVisible || epoch != _exitEpoch) {
+        return;
+      }
+      setState(() {
+        _motionChild = null;
+      });
+    });
+  }
+
+  bool get _isAutomatedWidgetTest {
+    bool result = false;
+    assert(() {
+      result = WidgetsBinding.instance.runtimeType.toString().contains(
+        'TestWidgetsFlutterBinding',
+      );
+      return true;
+    }());
+    return result;
+  }
+}
+
+class _ComposerAttachmentSection extends StatelessWidget {
+  const _ComposerAttachmentSection({
+    required this.attachments,
+    required this.bridge,
+    required this.onAttachmentRemoved,
+  });
+
+  final List<ChatAttachmentData> attachments;
+  final OpenCrayHostBridge? bridge;
+  final ValueChanged<ChatAttachmentData> onAttachmentRemoved;
+
+  @override
+  Widget build(BuildContext context) {
+    return _ComposerSecondarySection(
+      sectionKey: 'attachments',
+      isVisible: attachments.isNotEmpty,
+      bottomGap: 10,
+      updateChildDuringExit: true,
+      child: _ComposerAttachmentStrip(
+        key: const ValueKey<String>('chat-composer-attachment-strip'),
+        attachments: attachments,
+        bridge: bridge,
+        onAttachmentRemoved: onAttachmentRemoved,
+      ),
+    );
+  }
+}
+
+class _ComposerAttachmentStrip extends StatefulWidget {
+  const _ComposerAttachmentStrip({
+    super.key,
+    required this.attachments,
+    required this.bridge,
+    required this.onAttachmentRemoved,
+  });
+
+  final List<ChatAttachmentData> attachments;
+  final OpenCrayHostBridge? bridge;
+  final ValueChanged<ChatAttachmentData> onAttachmentRemoved;
+
+  @override
+  State<_ComposerAttachmentStrip> createState() =>
+      _ComposerAttachmentStripState();
+}
+
+class _ComposerAttachmentStripState extends State<_ComposerAttachmentStrip> {
+  final Map<String, ChatAttachmentData> _exitingAttachments =
+      <String, ChatAttachmentData>{};
+  final Map<String, int> _exitEpochByAttachment = <String, int>{};
+
+  @override
+  void didUpdateWidget(covariant _ComposerAttachmentStrip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final Set<String> currentIds = widget.attachments
+        .map((ChatAttachmentData attachment) => attachment.id)
+        .toSet();
+    for (final ChatAttachmentData attachment in oldWidget.attachments) {
+      if (!currentIds.contains(attachment.id)) {
+        _exitingAttachments[attachment.id] = attachment;
+        _scheduleAttachmentExitClear(attachment.id);
+      }
+    }
+    for (final ChatAttachmentData attachment in widget.attachments) {
+      _exitingAttachments.remove(attachment.id);
+      _exitEpochByAttachment.remove(attachment.id);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Set<String> currentIds = widget.attachments
+        .map((ChatAttachmentData attachment) => attachment.id)
+        .toSet();
+    final List<_ComposerAttachmentStripEntry> entries =
+        <_ComposerAttachmentStripEntry>[
+          ...widget.attachments.map(
+            (ChatAttachmentData attachment) => _ComposerAttachmentStripEntry(
+              attachment: attachment,
+              isPresent: true,
+            ),
+          ),
+          ..._exitingAttachments.values
+              .where(
+                (ChatAttachmentData attachment) =>
+                    !currentIds.contains(attachment.id),
+              )
+              .map(
+                (ChatAttachmentData attachment) =>
+                    _ComposerAttachmentStripEntry(
+                      attachment: attachment,
+                      isPresent: false,
+                    ),
+              ),
+        ];
+    if (entries.isEmpty) {
+      return const SizedBox.shrink(
+        key: ValueKey<String>('chat-composer-attachments-empty'),
+      );
+    }
+    return SizedBox(
+      key: const ValueKey<String>('chat-composer-attachments'),
+      height: 68,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: EdgeInsets.zero,
+        physics: const BouncingScrollPhysics(),
+        itemCount: entries.length,
+        separatorBuilder: (BuildContext context, int index) =>
+            const SizedBox(width: 8),
+        itemBuilder: (BuildContext context, int index) {
+          final _ComposerAttachmentStripEntry entry = entries[index];
+          return _ComposerAttachmentCardMotion(
+            key: ValueKey<String>(
+              'chat-composer-attachment-motion-${entry.attachment.id}',
+            ),
+            isPresent: entry.isPresent,
+            child: _AttachmentCard(
+              attachment: entry.attachment,
+              bridge: widget.bridge,
+              onRemove: entry.isPresent
+                  ? () => widget.onAttachmentRemoved(entry.attachment)
+                  : () {},
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  void _scheduleAttachmentExitClear(String attachmentId) {
+    final int epoch = (_exitEpochByAttachment[attachmentId] ?? 0) + 1;
+    _exitEpochByAttachment[attachmentId] = epoch;
+    final Duration duration = OpenCrayMotion.resolve(
+      context,
+      OpenCrayMotion.expand,
+    );
+    if (duration == Duration.zero || _isAutomatedWidgetTest) {
+      _exitingAttachments.remove(attachmentId);
+      _exitEpochByAttachment.remove(attachmentId);
+      return;
+    }
+    Future<void>.delayed(duration, () {
+      if (!mounted || _exitEpochByAttachment[attachmentId] != epoch) {
+        return;
+      }
+      final bool isCurrent = widget.attachments.any(
+        (ChatAttachmentData attachment) => attachment.id == attachmentId,
+      );
+      if (isCurrent) {
+        return;
+      }
+      setState(() {
+        _exitingAttachments.remove(attachmentId);
+        _exitEpochByAttachment.remove(attachmentId);
+      });
+    });
+  }
+
+  bool get _isAutomatedWidgetTest {
+    bool result = false;
+    assert(() {
+      result = WidgetsBinding.instance.runtimeType.toString().contains(
+        'TestWidgetsFlutterBinding',
+      );
+      return true;
+    }());
+    return result;
+  }
+}
+
+class _ComposerAttachmentStripEntry {
+  const _ComposerAttachmentStripEntry({
+    required this.attachment,
+    required this.isPresent,
+  });
+
+  final ChatAttachmentData attachment;
+  final bool isPresent;
+}
+
+class _ComposerAttachmentCardMotion extends StatefulWidget {
+  const _ComposerAttachmentCardMotion({
+    super.key,
+    required this.isPresent,
+    required this.child,
+  });
+
+  final bool isPresent;
+  final Widget child;
+
+  @override
+  State<_ComposerAttachmentCardMotion> createState() =>
+      _ComposerAttachmentCardMotionState();
+}
+
+class _ComposerAttachmentCardMotionState
+    extends State<_ComposerAttachmentCardMotion> {
+  late bool _isPresent = widget.isPresent;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.isPresent && !_isAutomatedWidgetTest) {
+      _isPresent = false;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _isPresent = true;
+        });
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _ComposerAttachmentCardMotion oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.isPresent != widget.isPresent) {
+      setState(() {
+        _isPresent = widget.isPresent;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final Duration duration = OpenCrayMotion.resolve(
+      context,
+      _isPresent ? OpenCrayMotion.expand : OpenCrayMotion.quick,
+    );
+    final Curve curve = _isPresent ? OpenCrayMotion.enter : OpenCrayMotion.exit;
+    return AnimatedSlide(
+      offset: _isPresent ? Offset.zero : const Offset(0, 0.14),
+      duration: duration,
+      curve: curve,
+      child: AnimatedOpacity(
+        opacity: _isPresent ? 1 : 0,
+        duration: duration,
+        curve: curve,
+        child: IgnorePointer(ignoring: !_isPresent, child: widget.child),
+      ),
+    );
+  }
+
+  bool get _isAutomatedWidgetTest {
+    bool result = false;
+    assert(() {
+      result = WidgetsBinding.instance.runtimeType.toString().contains(
+        'TestWidgetsFlutterBinding',
+      );
+      return true;
+    }());
+    return result;
   }
 }
 
@@ -19809,7 +20789,10 @@ class _ComposerAttachmentLeadingVisualState
         : Icons.description_outlined;
     final Future<OpenCrayFileImagePreview>? previewFuture = _previewFuture;
     if (previewFuture == null) {
-      return _buildIconPlaceholder(icon, attachment.id);
+      return _buildAnimatedLeadingVisual(
+        context,
+        _buildIconPlaceholder(icon, attachment.id),
+      );
     }
     return FutureBuilder<OpenCrayFileImagePreview>(
       future: previewFuture,
@@ -19817,28 +20800,46 @@ class _ComposerAttachmentLeadingVisualState
         final OpenCrayFileImagePreview? preview = snapshot.data;
         final bool ready = preview != null && preview.bytes.isNotEmpty;
         if (!ready) {
-          return _buildIconPlaceholder(icon, attachment.id);
+          return _buildAnimatedLeadingVisual(
+            context,
+            _buildIconPlaceholder(icon, attachment.id),
+          );
         }
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(10),
-          child: Container(
-            key: ValueKey<String>(
-              'chat-composer-image-preview-${attachment.id}',
-            ),
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              color: Colors.white.withValues(alpha: 0.75),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: OpenCrayImageBytesView(
-              bytes: preview.bytes,
-              mimeType: preview.mimeType,
-              fit: BoxFit.cover,
+        return _buildAnimatedLeadingVisual(
+          context,
+          ClipRRect(
+            borderRadius: BorderRadius.circular(10),
+            child: Container(
+              key: ValueKey<String>(
+                'chat-composer-image-preview-${attachment.id}',
+              ),
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                color: Colors.white.withValues(alpha: 0.75),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: OpenCrayImageBytesView(
+                bytes: preview.bytes,
+                mimeType: preview.mimeType,
+                fit: BoxFit.cover,
+              ),
             ),
           ),
         );
       },
+    );
+  }
+
+  Widget _buildAnimatedLeadingVisual(BuildContext context, Widget child) {
+    return AnimatedSwitcher(
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.quick),
+      switchInCurve: OpenCrayMotion.enter,
+      switchOutCurve: OpenCrayMotion.exit,
+      transitionBuilder: (Widget child, Animation<double> animation) {
+        return FadeTransition(opacity: animation, child: child);
+      },
+      child: child,
     );
   }
 
@@ -20119,7 +21120,7 @@ class _SessionsDrawerOverlayState extends State<_SessionsDrawerOverlay> {
   }
 }
 
-class _SessionListTile extends StatelessWidget {
+class _SessionListTile extends StatefulWidget {
   const _SessionListTile({
     required this.copy,
     required this.session,
@@ -20133,62 +21134,134 @@ class _SessionListTile extends StatelessWidget {
   final ValueChanged<LongPressStartDetails> onLongPressStart;
 
   @override
+  State<_SessionListTile> createState() => _SessionListTileState();
+}
+
+class _SessionListTileState extends State<_SessionListTile> {
+  bool _isPressed = false;
+
+  @override
   Widget build(BuildContext context) {
     final String sessionMetaLabel = _formatChatSessionTimestampLabel(
-      copy,
-      session.lastMessageAtEpochMs,
-      session.meta,
+      widget.copy,
+      widget.session.lastMessageAtEpochMs,
+      widget.session.meta,
     );
-    return GestureDetector(
-      onTap: onPressed,
-      onLongPressStart: onLongPressStart,
-      behavior: HitTestBehavior.opaque,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: session.isSelected
-              ? const Color(0xFFF4F7FF)
-              : const Color(0xFFF7F7F9),
-          borderRadius: BorderRadius.circular(14),
-          border: session.isSelected
-              ? Border.all(color: const Color(0xFFD8E5FF))
-              : null,
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: <Widget>[
-              Row(
-                children: <Widget>[
-                  Expanded(
-                    child: Text(
-                      session.title,
-                      style: _ChatTextStyles.sessionTitle,
-                    ),
+    final bool isSelected = widget.session.isSelected;
+    final bool hasUnread = widget.session.unreadCount > 0;
+    final Color backgroundColor = isSelected
+        ? const Color(0xFFF4F7FF)
+        : _isPressed
+        ? const Color(0xFFF0F3F8)
+        : const Color(0xFFF7F7F9);
+    final Color borderColor = isSelected
+        ? const Color(0xFFD8E5FF)
+        : hasUnread
+        ? const Color(0xFFFFD5D2)
+        : Colors.transparent;
+    final Color railColor = isSelected
+        ? _ChatPalette.accent
+        : hasUnread
+        ? const Color(0xFFFF3B30)
+        : Colors.transparent;
+    return Semantics(
+      button: true,
+      selected: isSelected,
+      child: GestureDetector(
+        onTapDown: (_) => _setPressed(true),
+        onTapUp: (_) {
+          _setPressed(false);
+          widget.onPressed();
+        },
+        onTapCancel: () => _setPressed(false),
+        onLongPressStart: (LongPressStartDetails details) {
+          _setPressed(false);
+          widget.onLongPressStart(details);
+        },
+        behavior: HitTestBehavior.opaque,
+        child: AnimatedContainer(
+          duration: OpenCrayMotion.resolve(context, OpenCrayMotion.quick),
+          curve: OpenCrayMotion.enter,
+          decoration: BoxDecoration(
+            color: backgroundColor,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: borderColor),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                AnimatedContainer(
+                  duration: OpenCrayMotion.resolve(
+                    context,
+                    OpenCrayMotion.quick,
                   ),
-                  const SizedBox(width: 8),
-                  Text(sessionMetaLabel, style: _ChatTextStyles.sessionMeta),
-                  if (session.unreadCount > 0) ...<Widget>[
-                    const SizedBox(width: 8),
-                    _SessionUnreadBadge(
-                      sessionId: session.sessionId,
-                      count: session.unreadCount,
-                    ),
-                  ],
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(
-                session.preview,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: _ChatTextStyles.sessionPreview,
-              ),
-            ],
+                  curve: OpenCrayMotion.enter,
+                  width: 3,
+                  height: isSelected ? 44 : 10,
+                  margin: const EdgeInsets.only(top: 2),
+                  decoration: BoxDecoration(
+                    color: railColor,
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: <Widget>[
+                      Row(
+                        children: <Widget>[
+                          Expanded(
+                            child: Text(
+                              widget.session.title,
+                              style: _ChatTextStyles.sessionTitle.copyWith(
+                                fontWeight: isSelected
+                                    ? FontWeight.w700
+                                    : FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            sessionMetaLabel,
+                            style: _ChatTextStyles.sessionMeta,
+                          ),
+                          if (hasUnread) ...<Widget>[
+                            const SizedBox(width: 8),
+                            _SessionUnreadBadge(
+                              sessionId: widget.session.sessionId,
+                              count: widget.session.unreadCount,
+                            ),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        widget.session.preview,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: _ChatTextStyles.sessionPreview,
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
+  }
+
+  void _setPressed(bool value) {
+    if (_isPressed == value) {
+      return;
+    }
+    setState(() {
+      _isPressed = value;
+    });
   }
 }
 

@@ -12,7 +12,7 @@ final class OpenCrayMotion {
   static const Curve enter = Curves.easeOutCubic;
   static const Curve exit = Curves.easeInCubic;
   static const Curve spatial = Curves.easeOutCubic;
-  static const Curve spatialExit = Curves.easeInCubic;
+  static const Curve spatialExit = Curves.easeOutCubic;
   static const Curve expandCurve = Curves.easeInOutCubic;
 
   static bool reduce(BuildContext context) {
