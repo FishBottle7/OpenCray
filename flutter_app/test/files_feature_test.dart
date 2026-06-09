@@ -752,7 +752,7 @@ void main() {
 
     await tester.drag(
       find.byKey(const ValueKey<String>('files-scroll-view')),
-      const Offset(0, -260),
+      const Offset(0, -520),
     );
     await tester.pumpAndSettle();
 
@@ -764,6 +764,55 @@ void main() {
       find.byKey(const ValueKey<String>('files-sticky-new')),
       findsOneWidget,
     );
+  });
+
+  testWidgets('large directory rows are lazily built while scrolling', (
+    tester,
+  ) async {
+    final children = List<OpenCrayFileTreeNodeSnapshot>.generate(
+      90,
+      (index) => OpenCrayFileTreeNodeSnapshot(
+        name: 'entry-$index.txt',
+        relativePath: 'entry-$index.txt',
+        isDirectory: false,
+        childCount: 0,
+        sizeBytes: 256 + index,
+        isTruncated: false,
+        children: const <OpenCrayFileTreeNodeSnapshot>[],
+      ),
+    );
+    final bridge = OpenCraySeedBridge(
+      initialFilesSnapshot: OpenCrayFilesSnapshot(
+        rootName: 'agent-workspace',
+        rootPath: '/tmp/agent-workspace',
+        availableBytes: 2048,
+        directoryCount: 0,
+        fileCount: children.length,
+        entryCount: children.length,
+        isTruncated: false,
+        children: children,
+      ),
+    );
+
+    await _pumpFilesScreen(tester, bridge: bridge);
+
+    final firstRow = find.byKey(
+      const ValueKey<String>('files-row-entry-0.txt'),
+    );
+    final lastRow = find.byKey(
+      const ValueKey<String>('files-row-entry-89.txt'),
+    );
+
+    expect(firstRow, findsOneWidget);
+    expect(lastRow, findsNothing);
+
+    final scrollView = find.byKey(const ValueKey<String>('files-scroll-view'));
+    for (var attempt = 0; attempt < 14 && !tester.any(lastRow); attempt++) {
+      await tester.drag(scrollView, const Offset(0, -520));
+      await tester.pumpAndSettle();
+    }
+
+    expect(lastRow, findsOneWidget);
   });
 
   testWidgets('new creates supported text files and opens the editor', (

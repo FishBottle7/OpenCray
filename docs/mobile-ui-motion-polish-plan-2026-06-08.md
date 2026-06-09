@@ -1179,6 +1179,170 @@ Current Chat polish verification notes:
 - Debug APK built from the isolated worktree:
   `.codex-worktrees/mobile-ui-motion-polish/build/apk/OpenCray-debug.apk`.
 
+## Next Revision Plan: Lazy Rendering And Paging
+
+This revision addresses high-content surfaces where visual polish alone is not
+enough. Chat transcripts, session history, and file directories can all grow
+large enough that building every row at once will make motion feel janky even
+when the motion curves are correct.
+
+Design distinction:
+
+- Render virtualization is mandatory for long local lists. It keeps offscreen
+  rows from building and reduces layout/paint work during scroll and transition
+  frames.
+- Data paging is a separate host/runtime contract. It keeps Flutter from
+  receiving, decoding, diffing, and holding huge snapshots at once.
+- Do not hide paging behind generic spinners. Loading older/newer content should
+  appear where the content belongs: top of transcript for older chat history,
+  bottom of session drawer for older sessions, and bottom of a large directory
+  listing for additional entries.
+
+### Files Directory Virtualization
+
+Files:
+
+- `flutter_app/lib/features/files/files_feature.dart`
+- `flutter_app/test/files_feature_test.dart`
+
+Current behavior:
+
+- `FilesFeatureScreen` uses a `SingleChildScrollView` containing one `Column`.
+- `_DirectoryCard` builds every visible entry with a `for` loop.
+- Large directories therefore build all row widgets, all dividers, and all row
+  text in one layout pass.
+
+Target behavior:
+
+- Keep the existing Files visual structure: title, search, location card, then a
+  rounded directory card.
+- Convert the screen body to a sliver scroll surface.
+- Render directory rows with a builder-backed sliver so only visible rows are
+  built.
+- Preserve row keys such as `files-row-<relativePath>` and the
+  `files-scroll-view` key for tests and automation.
+
+Implementation details:
+
+- Replace the outer `SingleChildScrollView + Column` with `CustomScrollView`.
+- Render title/search/location as a short `SliverList` or
+  `SliverToBoxAdapter` group.
+- Replace `_DirectoryCard` with a sliver-capable directory section:
+  - state/empty/error cards remain box adapters
+  - populated directories use `SliverList` with a `SliverChildBuilderDelegate`
+  - dividers are produced by the builder between rows
+- Keep the selection toolbar overlay outside the scroll view, still pinned above
+  the shell tab bar.
+- Do not add per-row entrance animation for existing directory contents. Large
+  directory performance matters more than decorative row motion here.
+
+Acceptance:
+
+- Scrolling a large directory does not require building every file row.
+- Existing file row keys, tap, long-press, selection, preview, and breadcrumb
+  tests keep working.
+- Sticky location bar still appears after scrolling.
+- Empty, error, and loading states preserve the current card layout.
+
+### Chat Transcript Virtualization
+
+Files:
+
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+- `flutter_app/test/chat_feature_screen_test.dart`
+- `flutter_app/test/chat_message_menu_test.dart`
+
+Current behavior:
+
+- The Chat page uses `SingleChildScrollView`.
+- `_MessageList` precomputes every message, timestamp divider, and run trace
+  into a `children` list, then returns a `Column`.
+- Long sessions with markdown, attachments, live traces, and delete/selection
+  wrappers will eventually make normal scroll and tab transition frames heavy.
+
+Target behavior:
+
+- Convert transcript rendering to a row model plus virtual list.
+- Keep current message insertion, directional delete, selection, and run-trace
+  behavior intact.
+- Preserve bottom composer anchoring and "scroll to latest" behavior.
+
+Implementation details:
+
+- Introduce a transcript row model before rendering:
+  - timestamp divider
+  - timeline pill
+  - inbound message
+  - outbound message
+  - detached run trace
+  - leading/attached run trace groups
+- Use a builder-backed sliver/list for transcript rows.
+- Keep row keys stable so insertion and delete exit motion can remain local to
+  the affected row.
+- Keep recent-message auto-scroll behavior explicit:
+  - new local/user message can scroll to bottom
+  - older-page prepend must preserve scroll offset
+  - reduced-motion mode still avoids spatial reveal
+- Treat this as a separate implementation slice because it touches scroll
+  physics, overlays, message menu anchoring, and delete motion.
+
+Acceptance:
+
+- Long transcripts do not build all historical rows during a normal frame.
+- New message insertion still reads as an insertion, not a page flash.
+- Deleting inbound/outbound messages still exits toward the owning side.
+- Message menu anchoring still uses the visible bubble rect.
+- No seed-content flash appears when switching sessions.
+
+### Session Drawer Paging
+
+Files:
+
+- `flutter_app/lib/features/chat/chat_feature_screen.dart`
+- host snapshot/gateway files if the data contract is extended
+
+Current behavior:
+
+- The session drawer already uses `ListView.separated`, so its rendering path is
+  lazy enough for the visible drawer rows.
+- The data contract still appears to provide the drawer's session list as one
+  snapshot.
+
+Target behavior:
+
+- Keep the current `ListView.separated` rendering.
+- Add data paging only when the host/runtime model can provide a cursor or
+  bounded list.
+- First page should prioritize recent/current sessions.
+
+Implementation details:
+
+- Add a drawer paging model only after the host contract exists:
+  - `hasMore`
+  - `nextCursor` or `oldestLoadedAt`
+  - loading/error state for older sessions
+- Trigger load-more near the bottom of the drawer list.
+- Keep row selection feedback immediate and independent from page loads.
+- Do not block opening the drawer on older-page loading.
+
+Acceptance:
+
+- Opening the drawer remains fast even with a large session history.
+- Current/recent sessions are available immediately.
+- Loading older sessions does not reset scroll position or selected-row state.
+
+### Lazy Rendering Checklist
+
+- [x] Write lazy rendering and paging plan before implementation.
+- [x] Convert Files body to a sliver scroll surface.
+- [x] Convert Files directory rows to builder-backed lazy rendering.
+- [x] Add or update Files widget coverage for large-directory virtualization.
+- [x] Keep Session drawer rendering as `ListView.separated`; defer data paging
+  until a host cursor contract exists.
+- [x] Plan Chat transcript row-model migration as a separate high-risk slice.
+- [x] Run `dart analyze flutter_app`.
+- [x] Run focused Files tests after the Files slice.
+
 ## Acceptance Criteria
 
 - Navigation direction is consistent: things return along the path they used to

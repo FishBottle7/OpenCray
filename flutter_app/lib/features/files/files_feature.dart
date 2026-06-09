@@ -41,6 +41,8 @@ class _NewEntryIntent {
 
 enum _TextPreviewDialogResult { edit }
 
+const double _fallbackStickyBrowseBarTriggerScrollOffset = 200;
+
 class FilesFeatureScreen extends StatefulWidget {
   const FilesFeatureScreen({
     super.key,
@@ -88,6 +90,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
   bool _isMutating = false;
   bool _isSelectionMode = false;
   bool _showStickyBrowseBar = false;
+  double? _stickyBrowseBarTriggerScrollOffset;
   Set<String> _selectedPaths = <String>{};
   _PendingTransfer? _pendingTransfer;
   Timer? _autoRefreshTimer;
@@ -182,61 +185,69 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
             children: [
               AbsorbPointer(
                 absorbing: _isMutating,
-                child: SingleChildScrollView(
+                child: CustomScrollView(
                   key: const ValueKey<String>('files-scroll-view'),
                   controller: _scrollController,
-                  padding: EdgeInsets.fromLTRB(
-                    20,
-                    8,
-                    20,
-                    _showsSelectionToolbar ? 118 : 28,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _TitleRow(
-                        copy: widget.copy,
-                        isSelectionMode: _isSelectionMode,
-                        selectedCount: _selectedPaths.length,
-                        onDone: _isSelectionMode ? _exitSelectionMode : null,
+                  slivers: [
+                    SliverToBoxAdapter(
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            _TitleRow(
+                              copy: widget.copy,
+                              isSelectionMode: _isSelectionMode,
+                              selectedCount: _selectedPaths.length,
+                              onDone: _isSelectionMode
+                                  ? _exitSelectionMode
+                                  : null,
+                            ),
+                            const SizedBox(height: 16),
+                            _SearchBar(
+                              controller: _searchController,
+                              hint: widget.copy.filesSearchHint,
+                            ),
+                            const SizedBox(height: 12),
+                            _LocationCard(
+                              copy: widget.copy,
+                              snapshot: snapshot,
+                              directoryName: _currentDirectoryName(snapshot),
+                              absolutePath: _currentAbsolutePath(snapshot),
+                              visibleItemCount: currentEntries.length,
+                              isLoading: _isLoading,
+                              isMutating: _isMutating,
+                              actionRowKey: _locationActionRowKey,
+                              breadcrumbs: _visibleBreadcrumbs(),
+                              breadcrumbsEnabled: !_isSelectionMode,
+                              onRefresh: _handleManualRefresh,
+                              onCreateFolder: _handleCreateFolder,
+                              onBreadcrumbTap: _handleBreadcrumbTap,
+                            ),
+                            const SizedBox(height: 12),
+                          ],
+                        ),
                       ),
-                      const SizedBox(height: 16),
-                      _SearchBar(
-                        controller: _searchController,
-                        hint: widget.copy.filesSearchHint,
+                    ),
+                    _DirectoryCard(
+                      copy: widget.copy,
+                      query: _query,
+                      snapshot: snapshot,
+                      entries: currentEntries,
+                      isLoading: _isLoading,
+                      errorMessage: _errorMessage,
+                      isSelectionMode: _isSelectionMode,
+                      selectedPaths: _selectedPaths,
+                      pendingTransfer: _pendingTransfer,
+                      onEntryTap: _handleEntryTap,
+                      onEntryLongPress: _handleEntryLongPress,
+                    ),
+                    SliverToBoxAdapter(
+                      child: SizedBox(
+                        height: _showsSelectionToolbar ? 118 : 28,
                       ),
-                      const SizedBox(height: 12),
-                      _LocationCard(
-                        copy: widget.copy,
-                        snapshot: snapshot,
-                        directoryName: _currentDirectoryName(snapshot),
-                        absolutePath: _currentAbsolutePath(snapshot),
-                        visibleItemCount: currentEntries.length,
-                        isLoading: _isLoading,
-                        isMutating: _isMutating,
-                        actionRowKey: _locationActionRowKey,
-                        breadcrumbs: _visibleBreadcrumbs(),
-                        breadcrumbsEnabled: !_isSelectionMode,
-                        onRefresh: _handleManualRefresh,
-                        onCreateFolder: _handleCreateFolder,
-                        onBreadcrumbTap: _handleBreadcrumbTap,
-                      ),
-                      const SizedBox(height: 12),
-                      _DirectoryCard(
-                        copy: widget.copy,
-                        query: _query,
-                        snapshot: snapshot,
-                        entries: currentEntries,
-                        isLoading: _isLoading,
-                        errorMessage: _errorMessage,
-                        isSelectionMode: _isSelectionMode,
-                        selectedPaths: _selectedPaths,
-                        pendingTransfer: _pendingTransfer,
-                        onEntryTap: _handleEntryTap,
-                        onEntryLongPress: _handleEntryLongPress,
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
               if (_showStickyBrowseBar && snapshot != null)
@@ -365,21 +376,47 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
 
   void _syncStickyBarVisibility() {
     final actionContext = _locationActionRowKey.currentContext;
-    if (actionContext == null) {
-      return;
+    bool? shouldShow;
+    if (actionContext != null) {
+      final renderObject = actionContext.findRenderObject();
+      if (renderObject is RenderBox && renderObject.hasSize) {
+        final actionTop = renderObject.localToGlobal(Offset.zero).dy;
+        final threshold = MediaQuery.of(context).padding.top + 18;
+        final scrollOffset = _scrollController.hasClients
+            ? _scrollController.offset
+            : 0.0;
+        final measuredTriggerOffset = (scrollOffset + actionTop - threshold)
+            .clamp(0.0, double.infinity)
+            .toDouble();
+        final previousTriggerOffset = _stickyBrowseBarTriggerScrollOffset;
+        final triggerOffset =
+            previousTriggerOffset == null ||
+                measuredTriggerOffset < previousTriggerOffset
+            ? measuredTriggerOffset
+            : previousTriggerOffset;
+        _stickyBrowseBarTriggerScrollOffset = triggerOffset;
+        shouldShow = actionTop <= threshold || scrollOffset >= triggerOffset;
+      }
     }
-    final renderObject = actionContext.findRenderObject();
-    if (renderObject is! RenderBox || !renderObject.hasSize) {
-      return;
+
+    final bool nextShouldShow;
+    if (shouldShow == null) {
+      if (!_scrollController.hasClients) {
+        return;
+      }
+      final triggerOffset =
+          _stickyBrowseBarTriggerScrollOffset ??
+          _fallbackStickyBrowseBarTriggerScrollOffset;
+      nextShouldShow = _scrollController.offset >= triggerOffset;
+    } else {
+      nextShouldShow = shouldShow;
     }
-    final actionTop = renderObject.localToGlobal(Offset.zero).dy;
-    final threshold = MediaQuery.of(context).padding.top + 18;
-    final shouldShow = actionTop <= threshold;
-    if (shouldShow == _showStickyBrowseBar) {
+
+    if (nextShouldShow == _showStickyBrowseBar) {
       return;
     }
     setState(() {
-      _showStickyBrowseBar = shouldShow;
+      _showStickyBrowseBar = nextShouldShow;
     });
   }
 
@@ -1588,39 +1625,49 @@ class _DirectoryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (isLoading && snapshot == null) {
-      return const _StateCard(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      return const SliverPadding(
+        padding: EdgeInsets.symmetric(horizontal: 20),
+        sliver: SliverToBoxAdapter(
+          child: _StateCard(
+            child: Padding(
+              padding: EdgeInsets.all(24),
+              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            ),
+          ),
         ),
       );
     }
 
     if (errorMessage != null && snapshot == null) {
-      return _StateCard(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                copy.filesLoadFailed,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: FilesFeatureScreen.textPrimary,
-                ),
+      return SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        sliver: SliverToBoxAdapter(
+          child: _StateCard(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    copy.filesLoadFailed,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: FilesFeatureScreen.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    errorMessage!,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      height: 1.35,
+                      color: FilesFeatureScreen.textSecondary,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 8),
-              Text(
-                errorMessage!,
-                style: const TextStyle(
-                  fontSize: 14,
-                  height: 1.35,
-                  color: FilesFeatureScreen.textSecondary,
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       );
@@ -1628,66 +1675,82 @@ class _DirectoryCard extends StatelessWidget {
 
     if (snapshot == null || entries.isEmpty) {
       final hasQuery = query.trim().isNotEmpty;
-      return _StateCard(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                hasQuery
-                    ? copy.filesNoMatchesTitle
-                    : copy.filesFolderEmptyTitle,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: FilesFeatureScreen.textPrimary,
-                ),
+      return SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
+        sliver: SliverToBoxAdapter(
+          child: _StateCard(
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    hasQuery
+                        ? copy.filesNoMatchesTitle
+                        : copy.filesFolderEmptyTitle,
+                    style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                      color: FilesFeatureScreen.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    hasQuery
+                        ? copy.filesNoMatchesBody(query)
+                        : copy.filesFolderEmptyBody,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      height: 1.35,
+                      color: FilesFeatureScreen.textSecondary,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 8),
-              Text(
-                hasQuery
-                    ? copy.filesNoMatchesBody(query)
-                    : copy.filesFolderEmptyBody,
-                style: const TextStyle(
-                  fontSize: 14,
-                  height: 1.35,
-                  color: FilesFeatureScreen.textSecondary,
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       );
     }
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: FilesFeatureScreen.surface,
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-        child: Column(
-          children: [
-            for (var index = 0; index < entries.length; index++) ...[
-              _DirectoryEntryTile(
-                entry: entries[index],
-                copy: copy,
-                isSelectionMode: isSelectionMode,
-                isSelected: selectedPaths.contains(entries[index].relativePath),
-                isFaded:
-                    pendingTransfer?.move == true &&
-                    pendingTransfer!.sourceRelativePaths.contains(
-                      entries[index].relativePath,
-                    ),
-                onTap: () => onEntryTap(entries[index]),
-                onLongPress: () => onEntryLongPress(entries[index]),
-              ),
-              if (index < entries.length - 1)
-                const Divider(height: 1, color: FilesFeatureScreen.divider),
-            ],
-          ],
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      sliver: DecoratedSliver(
+        decoration: BoxDecoration(
+          color: FilesFeatureScreen.surface,
+          borderRadius: BorderRadius.circular(18),
+        ),
+        sliver: SliverPadding(
+          padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+          sliver: SliverList(
+            delegate: SliverChildBuilderDelegate(
+              (context, index) {
+                if (index.isOdd) {
+                  return const Divider(
+                    height: 1,
+                    color: FilesFeatureScreen.divider,
+                  );
+                }
+                final entry = entries[index ~/ 2];
+                return _DirectoryEntryTile(
+                  entry: entry,
+                  copy: copy,
+                  isSelectionMode: isSelectionMode,
+                  isSelected: selectedPaths.contains(entry.relativePath),
+                  isFaded:
+                      pendingTransfer?.move == true &&
+                      pendingTransfer!.sourceRelativePaths.contains(
+                        entry.relativePath,
+                      ),
+                  onTap: () => onEntryTap(entry),
+                  onLongPress: () => onEntryLongPress(entry),
+                );
+              },
+              childCount: entries.length * 2 - 1,
+              addAutomaticKeepAlives: false,
+              addSemanticIndexes: false,
+            ),
+          ),
         ),
       ),
     );
