@@ -550,6 +550,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
         hasLiveManagedProcesses = associatedProcesses.any { snapshot ->
           snapshot.status == ManagedProcessStatus.RUNNING
         },
+        hasAutoResumeEligibleManagedProcesses = associatedProcesses.any { snapshot ->
+          snapshot.isAutoResumeEligibleManagedProcess()
+        },
         lastEvent = lastEvent,
         lifecycleDiagnostics = runLifecycleDiagnosticsFrom(
           taskMetadata = taskSnapshot?.task?.metadata.orEmpty(),

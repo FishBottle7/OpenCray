@@ -1333,8 +1333,9 @@ private class ManagedAgentSessionHandle(
         existingIds = record?.managedProcessIds.orEmpty(),
         managedProcessesById = managedProcessesById,
       )
-      val runningManagedProcessCount = managedProcessIds.count { processId ->
-        managedProcessesById[processId]?.status == ManagedProcessStatus.RUNNING
+      val associatedProcesses = managedProcessIds.mapNotNull(managedProcessesById::get)
+      val runningManagedProcessCount = associatedProcesses.count { snapshot ->
+        snapshot.status == ManagedProcessStatus.RUNNING
       }
       val acceptedAtEpochMs = record?.submission?.acceptedAtEpochMs
         ?: taskSnapshot?.task?.createdAtEpochMs
@@ -1392,6 +1393,9 @@ private class ManagedAgentSessionHandle(
         managedProcessIds = managedProcessIds,
         runningManagedProcessCount = runningManagedProcessCount,
         hasLiveManagedProcesses = runningManagedProcessCount > 0,
+        hasAutoResumeEligibleManagedProcesses = associatedProcesses.any { snapshot ->
+          snapshot.isAutoResumeEligibleManagedProcess()
+        },
         lastEvent = record?.lastEvent,
         lifecycleDiagnostics = runLifecycleDiagnosticsFrom(
           taskMetadata = taskMetadata,

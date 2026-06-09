@@ -32,6 +32,7 @@ import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.process.ManagedProcessController
+import com.opencray.runtime.process.ManagedProcessReconnectState
 import com.opencray.runtime.process.ManagedProcessRuntimeIdentity
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY
@@ -925,6 +926,7 @@ class AgentSessionRuntimeManagerTest {
     assertEquals(QueueTaskLifecycleState.SUSPENDED, restoredRun.lifecycleState)
     assertEquals(AgentTaskState.SUSPENDED, restoredRun.taskState)
     assertTrue(restoredRun.hasLiveManagedProcesses)
+    assertTrue(restoredRun.hasAutoResumeEligibleManagedProcesses)
     assertEquals("live_managed_process_detected", restoredRun.lifecycleDiagnostics.recoveryReason)
 
     restoredHandle.resume()
@@ -935,6 +937,64 @@ class AgentSessionRuntimeManagerTest {
       QueueTaskLifecycleState.SUSPENDED,
       restoredHandle.findRun(submission.runId)?.lifecycleState,
     )
+  }
+
+  @Test
+  fun restoredLiveManagedProcessWithScheduledReconnectIsNotAutoResumeEligible() {
+    val sessionId = "session-live-process-reconnect-retry"
+    val firstManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+    )
+    val firstHandle = firstManager.forSession(sessionId)
+
+    val submission = firstHandle.submitPrompt(
+      userText = "keep the watcher attached through retry",
+      pendingMessageId = "pending-live-process-reconnect-retry",
+      visibleThroughMessageId = "pending-live-process-reconnect-retry",
+      policyDecision = allowDecision(),
+    )
+    overwriteQueueSnapshot(
+      sessionId = sessionId,
+      snapshot = firstHandle.snapshot(),
+      taskId = submission.taskId,
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+    )
+    firstManager.release(sessionId)
+
+    val restoredFactory = RecordingRuntimeFactory(
+      managedProcessesProvider = { restoredSessionId ->
+        if (restoredSessionId == sessionId) {
+          listOf(
+            managedProcessSnapshot(
+              processId = "proc-live-retry",
+              taskId = submission.taskId,
+              status = ManagedProcessStatus.RUNNING,
+            ).copy(
+              reconnectState = ManagedProcessReconnectState(
+                status = "connecting",
+                recoveryState = "retry_scheduled",
+                retryable = true,
+                retryAfterEpochMs = 9_000L,
+                attemptCount = 1,
+              ),
+            ),
+          )
+        } else {
+          emptyList()
+        }
+      },
+    )
+    val restoredManager = manager(
+      runtimeFactory = restoredFactory,
+      executor = RecordingExecutorService(),
+    )
+    val restoredRun = requireNotNull(restoredManager.forSession(sessionId).findRun(submission.runId))
+
+    assertEquals(QueueTaskLifecycleState.SUSPENDED, restoredRun.lifecycleState)
+    assertTrue(restoredRun.hasLiveManagedProcesses)
+    assertTrue(!restoredRun.hasAutoResumeEligibleManagedProcesses)
+    assertEquals("live_managed_process_detected", restoredRun.lifecycleDiagnostics.recoveryReason)
   }
 
   @Test
@@ -1014,6 +1074,7 @@ class AgentSessionRuntimeManagerTest {
     assertEquals(QueueTaskLifecycleState.SUSPENDED, restoredRun?.lifecycleState)
     assertEquals(null, restoredRun?.errorCode)
     assertTrue(restoredRun?.hasLiveManagedProcesses == true)
+    assertTrue(restoredRun?.hasAutoResumeEligibleManagedProcesses == true)
   }
 
   @Test
@@ -1772,6 +1833,7 @@ class AgentSessionRuntimeManagerTest {
     assertEquals(listOf("proc-live"), restoredRun?.managedProcessIds)
     assertEquals(1, restoredRun?.runningManagedProcessCount)
     assertTrue(restoredRun?.hasLiveManagedProcesses == true)
+    assertTrue(restoredRun?.hasAutoResumeEligibleManagedProcesses == true)
     assertTrue(restoredRun?.isTerminal == true)
     assertTrue(restoredRun?.isActive == true)
   }
@@ -1854,6 +1916,7 @@ class AgentSessionRuntimeManagerTest {
     assertEquals(listOf("proc-restored"), restoredRun?.managedProcessIds)
     assertEquals(0, restoredRun?.runningManagedProcessCount)
     assertTrue(restoredRun?.hasLiveManagedProcesses == false)
+    assertTrue(restoredRun?.hasAutoResumeEligibleManagedProcesses == false)
     assertTrue(restoredRun?.isTerminal == true)
     assertTrue(restoredRun?.isActive == false)
     assertEquals(

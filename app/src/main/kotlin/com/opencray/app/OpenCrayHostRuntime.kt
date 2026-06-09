@@ -4837,6 +4837,7 @@ internal class OpenCrayHostRuntime private constructor(
     "managedProcessIds" to run.managedProcessIds,
     "runningManagedProcessCount" to run.runningManagedProcessCount,
     "hasLiveManagedProcesses" to run.hasLiveManagedProcesses,
+    "hasAutoResumeEligibleManagedProcesses" to run.hasAutoResumeEligibleManagedProcesses,
     "isActive" to run.isActive,
     "isTerminal" to run.isTerminal,
     "lastEvent" to run.lastEvent?.let(::runtimeEventToMap),

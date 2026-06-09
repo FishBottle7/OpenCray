@@ -32,9 +32,7 @@ import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.process.ManagedProcessSnapshot
-import com.opencray.runtime.process.ManagedProcessReconnectState
 import com.opencray.runtime.process.ManagedProcessStatus
-import com.opencray.runtime.process.withNormalizedRemoteState
 import com.opencray.runtime.subagent.SubAgentApprovalResume
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import kotlinx.serialization.json.Json
@@ -1315,35 +1313,5 @@ private fun AgentToolResult.isApprovalRequiredDenial(): Boolean =
         errorCode == SNAPSHOT_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE
       )
 
-private fun ManagedProcessSnapshot.isAutoResumeEligibleManagedProcess(): Boolean {
-  if (status != ManagedProcessStatus.RUNNING) {
-    return false
-  }
-  val normalizedSnapshot = withNormalizedRemoteState()
-  val reconnectState = normalizedSnapshot.reconnectState
-  if (reconnectState == null && !normalizedSnapshot.hasReconnectMetadata()) {
-    return true
-  }
-  val recoveryState = reconnectState.normalizedRecoveryState()
-    ?: normalizedSnapshot.metadata["sandboxCommandReconnectRecoveryState"]
-      ?.trim()
-      ?.lowercase()
-      ?.takeIf(String::isNotBlank)
-  return recoveryState == MANAGED_PROCESS_RECOVERY_STATE_ATTACHED_LIVE ||
-    recoveryState == MANAGED_PROCESS_RECOVERY_STATE_COMPLETED
-}
-
-private fun ManagedProcessReconnectState?.normalizedRecoveryState(): String? =
-  this?.recoveryState
-    ?.trim()
-    ?.lowercase()
-    ?.takeIf(String::isNotBlank)
-
-private fun ManagedProcessSnapshot.hasReconnectMetadata(): Boolean =
-  reconnectState != null ||
-    metadata.keys.any { key -> key.startsWith("sandboxCommandReconnect") }
-
 private const val SNAPSHOT_APPROVAL_REQUIRED_ERROR_CODE: String = "APPROVAL_REQUIRED"
 private const val SNAPSHOT_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE: String = "HIGH_RISK_APPROVAL_REQUIRED"
-private const val MANAGED_PROCESS_RECOVERY_STATE_ATTACHED_LIVE: String = "attached_live"
-private const val MANAGED_PROCESS_RECOVERY_STATE_COMPLETED: String = "completed"
