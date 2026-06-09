@@ -86,6 +86,7 @@ internal data class ProjectionOnlyChatRuntimeDiagnosticsSource(
   val serviceLifecycleProvider: () -> RuntimeServiceLifecycleDescriptor? = { null },
   val serviceWorkStateProvider: () -> RuntimeServiceWorkState? = { null },
   val serviceKeepAliveStateProvider: () -> RuntimeServiceKeepAliveState? = { null },
+  val ownerLeaseProvider: () -> RuntimeServiceOwnerLease? = { null },
   val interruptedRunRepairProvider: () -> RuntimeServiceInterruptedRunRepairProjection? = { null },
 )
 
@@ -114,6 +115,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private val serviceLifecycleProvider: () -> RuntimeServiceLifecycleDescriptor? = { null },
   private val serviceWorkStateProvider: () -> RuntimeServiceWorkState? = { null },
   private val serviceKeepAliveStateProvider: () -> RuntimeServiceKeepAliveState? = { null },
+  private val ownerLeaseProvider: () -> RuntimeServiceOwnerLease? = { null },
   private val interruptedRunRepairProvider: () -> RuntimeServiceInterruptedRunRepairProjection? = {
     null
   },
@@ -426,6 +428,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
           runtimeServiceLifecycle = serviceLifecycleProvider(),
           runtimeServiceWorkState = serviceWorkStateProvider(),
           runtimeServiceKeepAliveState = serviceKeepAliveStateProvider(),
+          runtimeServiceOwnerLease = ownerLeaseProvider(),
           runtimeServiceInterruptedRunRepair = interruptedRunRepairProvider(),
           runtimeServiceConnectionState = connectionStateProvider(),
         )
@@ -1648,6 +1651,9 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
     serviceKeepAliveStateProvider = {
       projectionSnapshotProvider()?.serviceKeepAliveState
     },
+    ownerLeaseProvider = {
+      projectionSnapshotProvider()?.runtimeServiceOwnerLease
+    },
     interruptedRunRepairProvider = {
       projectionSnapshotProvider()?.lastInterruptedRunRepair
     },
@@ -1696,6 +1702,7 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
     serviceLifecycleProvider = diagnosticsSource.serviceLifecycleProvider,
     serviceWorkStateProvider = diagnosticsSource.serviceWorkStateProvider,
     serviceKeepAliveStateProvider = diagnosticsSource.serviceKeepAliveStateProvider,
+    ownerLeaseProvider = diagnosticsSource.ownerLeaseProvider,
     interruptedRunRepairProvider = diagnosticsSource.interruptedRunRepairProvider,
     sessionUnreadCountProvider = sessionUnreadCountProvider,
   )

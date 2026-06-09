@@ -695,6 +695,7 @@ internal class OpenCrayHostRuntime private constructor(
       runtimeServiceLifecycle = runtimeDiagnosticsBridge.runtimeServiceDescriptor,
       runtimeServiceWorkState = runtimeDiagnosticsBridge.runtimeServiceWorkStateProvider(),
       runtimeServiceKeepAliveState = runtimeDiagnosticsBridge.runtimeServiceKeepAliveStateProvider(),
+      runtimeServiceOwnerLease = runtimeDiagnosticsBridge.runtimeServiceOwnerLeaseProvider(),
       runtimeServiceConnectionState =
         runtimeDiagnosticsBridge.runtimeServiceConnectionStateProvider(),
       includeNullRuntimeServiceFields = true,
@@ -2659,6 +2660,7 @@ internal class OpenCrayHostRuntime private constructor(
         runtimeServiceWorkState = runtimeDiagnosticsBridge.runtimeServiceWorkStateProvider(),
         runtimeServiceKeepAliveState =
           runtimeDiagnosticsBridge.runtimeServiceKeepAliveStateProvider(),
+        runtimeServiceOwnerLease = runtimeDiagnosticsBridge.runtimeServiceOwnerLeaseProvider(),
         runtimeServiceConnectionState =
           runtimeDiagnosticsBridge.runtimeServiceConnectionStateProvider(),
         includeNullRuntimeServiceFields = true,

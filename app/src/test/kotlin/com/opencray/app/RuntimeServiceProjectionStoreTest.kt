@@ -116,6 +116,35 @@ class RuntimeServiceProjectionStoreTest {
     assertEquals(expected, store.loadSnapshot())
   }
 
+  @Test
+  fun fileBackedProjectionStorePreservesRuntimeServiceOwnerLease() {
+    val store = FileBackedRuntimeServiceProjectionStoreFactory(
+      runtimeRootDirectory = temporaryFolder.newFolder("runtime-projection-owner-lease"),
+    ).create(RuntimeServiceTarget.DETACHED_BACKGROUND)
+    val expectedLease = RuntimeServiceOwnerLease(
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      processStartId = "process-owner-lease",
+      processStartedAtEpochMs = 1_000L,
+      controllerInstanceId = "controller-owner-lease",
+      durableControllerId = "durable-controller-owner-lease",
+      runtimeOwnerId = "runtime-owner-lease",
+      runtimeControllerId = "controller-owner-lease",
+      durableRuntimeControllerId = "durable-controller-owner-lease",
+      serviceInstanceId = "runtime-service-owner-lease",
+      serviceProcessName = "org.opencray.app:runtime",
+      acquiredAtEpochMs = 2_000L,
+      heartbeatAtEpochMs = 2_500L,
+      expiresAtEpochMs = 32_500L,
+    )
+    val expected = projectionSnapshot(activeRunCount = 1).copy(
+      runtimeServiceOwnerLease = expectedLease,
+    )
+
+    store.saveSnapshot(expected)
+
+    assertEquals(expected, store.loadSnapshot())
+  }
+
   private fun projectionSnapshot(
     activeRunCount: Int,
   ): RuntimeServiceProjectionSnapshot = RuntimeServiceProjectionSnapshot(

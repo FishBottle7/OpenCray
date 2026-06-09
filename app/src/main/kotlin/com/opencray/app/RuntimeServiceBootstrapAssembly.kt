@@ -259,6 +259,7 @@ private fun RuntimeServiceBootstrapAssembly.toGatewayBundleDependencies(
     localRuntimeServerStateProvider = localRuntimeServerStateProvider,
     serviceLifecycle = serviceLifecycle,
     serviceWorkStateProvider = serviceWorkStateTracker::currentState,
+    runtimeServiceOwnerLeaseProvider = projectionCoordinator::currentOwnerLease,
     safetySettingsFacade = bootstrapContext.safetySettingsFacade,
     workspaceRootProvider = bootstrapContext.workspaceRootProvider,
     approvedReadRootsProvider = bootstrapContext.approvedReadRootsProvider,

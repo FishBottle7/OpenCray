@@ -8,6 +8,7 @@ internal data class HostRuntimeDiagnosticsBridge(
   val runtimeServiceWorkStateProvider: () -> RuntimeServiceWorkState? = { null },
   val runtimeServiceKeepAliveStateProvider: () -> RuntimeServiceKeepAliveState? = { null },
   val runtimeServiceKeepAliveChangeRegistrar: RuntimeServiceKeepAliveChangeRegistrar? = null,
+  val runtimeServiceOwnerLeaseProvider: () -> RuntimeServiceOwnerLease? = { null },
   val runtimeServiceConnectionStateProvider: () -> RuntimeServiceConnectionState? = { null },
   val runtimeServiceConnectionChangeRegistrar: RuntimeServiceConnectionChangeRegistrar? = null,
 ) {
@@ -44,6 +45,10 @@ internal data class HostRuntimeDiagnosticsBridge(
         runtimeServiceKeepAliveState
       },
       runtimeServiceKeepAliveChangeRegistrar: RuntimeServiceKeepAliveChangeRegistrar? = null,
+      runtimeServiceOwnerLease: RuntimeServiceOwnerLease? = null,
+      runtimeServiceOwnerLeaseProvider: () -> RuntimeServiceOwnerLease? = {
+        runtimeServiceOwnerLease
+      },
       runtimeServiceConnectionState: RuntimeServiceConnectionState? = null,
       runtimeServiceConnectionStateProvider: () -> RuntimeServiceConnectionState? = {
         runtimeServiceConnectionState
@@ -57,6 +62,7 @@ internal data class HostRuntimeDiagnosticsBridge(
       runtimeServiceWorkStateProvider = runtimeServiceWorkStateProvider,
       runtimeServiceKeepAliveStateProvider = runtimeServiceKeepAliveStateProvider,
       runtimeServiceKeepAliveChangeRegistrar = runtimeServiceKeepAliveChangeRegistrar,
+      runtimeServiceOwnerLeaseProvider = runtimeServiceOwnerLeaseProvider,
       runtimeServiceConnectionStateProvider = runtimeServiceConnectionStateProvider,
       runtimeServiceConnectionChangeRegistrar = runtimeServiceConnectionChangeRegistrar,
     )

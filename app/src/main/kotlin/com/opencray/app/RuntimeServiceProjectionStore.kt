@@ -16,6 +16,7 @@ internal data class RuntimeServiceProjectionSnapshot(
   val serviceLifecycle: RuntimeServiceLifecycleDescriptor,
   val serviceWorkState: RuntimeServiceWorkState,
   val serviceKeepAliveState: RuntimeServiceKeepAliveState,
+  val runtimeServiceOwnerLease: RuntimeServiceOwnerLease? = null,
   val lastInterruptedRunRepair: RuntimeServiceInterruptedRunRepairProjection? = null,
 )
 
@@ -138,6 +139,7 @@ private fun RuntimeServiceProjectionSnapshot.toPersistedRecord():
       serviceLifecycle.serviceCreatedAtEpochMs,
       serviceWorkState.changedAtEpochMs,
       serviceKeepAliveState.changedAtEpochMs,
+      runtimeServiceOwnerLease?.heartbeatAtEpochMs ?: 0L,
       lastInterruptedRunRepair?.recordedAtEpochMs ?: 0L,
     ),
     localRuntimeServerState = localRuntimeServerState?.toPersistedRecord(),
@@ -199,6 +201,7 @@ private fun RuntimeServiceProjectionSnapshot.toPersistedRecord():
       lastStopSucceeded = serviceKeepAliveState.lastStopSucceeded,
       changedAtEpochMs = serviceKeepAliveState.changedAtEpochMs,
     ),
+    runtimeServiceOwnerLease = runtimeServiceOwnerLease?.toPersistedRecord(),
     lastInterruptedRunRepair = lastInterruptedRunRepair?.toPersistedRecord(),
   )
 
@@ -265,6 +268,7 @@ private fun PersistedRuntimeServiceProjectionRecord.toSnapshot(): RuntimeService
       lastStopSucceeded = serviceKeepAliveState.lastStopSucceeded,
       changedAtEpochMs = serviceKeepAliveState.changedAtEpochMs,
     ),
+    runtimeServiceOwnerLease = runtimeServiceOwnerLease?.toSnapshot(),
     lastInterruptedRunRepair = lastInterruptedRunRepair?.toSnapshot(),
   )
 
@@ -279,6 +283,7 @@ private data class PersistedRuntimeServiceProjectionRecord(
   val serviceLifecycle: PersistedRuntimeServiceLifecycleDescriptor,
   val serviceWorkState: PersistedRuntimeServiceWorkState,
   val serviceKeepAliveState: PersistedRuntimeServiceKeepAliveState,
+  val runtimeServiceOwnerLease: PersistedRuntimeServiceOwnerLeaseProjection? = null,
   val lastInterruptedRunRepair: PersistedRuntimeServiceInterruptedRunRepairProjection? = null,
 )
 
@@ -373,6 +378,25 @@ private data class PersistedRuntimeServiceKeepAliveState(
 )
 
 @Serializable
+private data class PersistedRuntimeServiceOwnerLeaseProjection(
+  val target: String,
+  val phase: String,
+  val processStartId: String,
+  val processStartedAtEpochMs: Long,
+  val controllerInstanceId: String? = null,
+  val durableControllerId: String? = null,
+  val runtimeOwnerId: String,
+  val runtimeControllerId: String? = null,
+  val durableRuntimeControllerId: String? = null,
+  val serviceInstanceId: String? = null,
+  val serviceProcessName: String? = null,
+  val acquiredAtEpochMs: Long,
+  val heartbeatAtEpochMs: Long,
+  val expiresAtEpochMs: Long,
+  val releasedAtEpochMs: Long? = null,
+)
+
+@Serializable
 private data class PersistedRuntimeServiceInterruptedRunRepairProjection(
   val recordedAtEpochMs: Long,
   val scannedSessionIds: List<String> = emptyList(),
@@ -412,6 +436,25 @@ private fun RuntimeServiceProcessDescriptor.toPersistedRecord():
     expectedProcessSuffix = expectedProcessSuffix,
     isDedicatedRuntimeProcess = isDedicatedRuntimeProcess,
     mismatchReason = mismatchReason,
+  )
+
+private fun RuntimeServiceOwnerLease.toPersistedRecord(): PersistedRuntimeServiceOwnerLeaseProjection =
+  PersistedRuntimeServiceOwnerLeaseProjection(
+    target = target.wireValue,
+    phase = phase,
+    processStartId = processStartId,
+    processStartedAtEpochMs = processStartedAtEpochMs,
+    controllerInstanceId = controllerInstanceId,
+    durableControllerId = durableControllerId,
+    runtimeOwnerId = runtimeOwnerId,
+    runtimeControllerId = runtimeControllerId,
+    durableRuntimeControllerId = durableRuntimeControllerId,
+    serviceInstanceId = serviceInstanceId,
+    serviceProcessName = serviceProcessName,
+    acquiredAtEpochMs = acquiredAtEpochMs,
+    heartbeatAtEpochMs = heartbeatAtEpochMs,
+    expiresAtEpochMs = expiresAtEpochMs,
+    releasedAtEpochMs = releasedAtEpochMs,
   )
 
 private fun RuntimeServiceInterruptedRunRepairProjection.toPersistedRecord():
@@ -454,6 +497,29 @@ private fun PersistedRuntimeServiceInterruptedRunRepairProjection.toSnapshot():
     repairEvidenceBySession = evidenceBySession,
     recordedAtEpochMs = recordedAtEpochMs,
   )
+}
+
+private fun PersistedRuntimeServiceOwnerLeaseProjection.toSnapshot(): RuntimeServiceOwnerLease? {
+  val resolvedTarget = RuntimeServiceTarget.fromWireValue(target) ?: return null
+  return runCatching {
+    RuntimeServiceOwnerLease(
+      target = resolvedTarget,
+      phase = phase,
+      processStartId = processStartId,
+      processStartedAtEpochMs = processStartedAtEpochMs,
+      controllerInstanceId = controllerInstanceId,
+      durableControllerId = durableControllerId,
+      runtimeOwnerId = runtimeOwnerId,
+      runtimeControllerId = runtimeControllerId,
+      durableRuntimeControllerId = durableRuntimeControllerId,
+      serviceInstanceId = serviceInstanceId,
+      serviceProcessName = serviceProcessName,
+      acquiredAtEpochMs = acquiredAtEpochMs,
+      heartbeatAtEpochMs = heartbeatAtEpochMs,
+      expiresAtEpochMs = expiresAtEpochMs,
+      releasedAtEpochMs = releasedAtEpochMs,
+    )
+  }.getOrNull()
 }
 
 private fun PersistedInterruptedRunRepairEvidence.toSnapshot(

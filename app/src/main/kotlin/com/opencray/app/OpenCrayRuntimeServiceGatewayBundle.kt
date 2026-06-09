@@ -98,6 +98,7 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
           serviceLifecycleProvider = { gatewayDependencies.serviceLifecycle },
           serviceWorkStateProvider = gatewayDependencies.serviceWorkStateProvider,
           serviceKeepAliveStateProvider = runtimeServiceKeepAliveStateProvider,
+          ownerLeaseProvider = gatewayDependencies.runtimeServiceOwnerLeaseProvider,
         ),
         stringsProvider = {
           projectionOnlyChatStrings(localizedContextProvider())
@@ -115,6 +116,7 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
         runtimeServiceWorkStateProvider = gatewayDependencies.serviceWorkStateProvider,
         runtimeServiceKeepAliveStateProvider = runtimeServiceKeepAliveStateProvider,
         runtimeServiceKeepAliveChangeRegistrar = runtimeServiceKeepAliveChangeRegistrar,
+        runtimeServiceOwnerLeaseProvider = gatewayDependencies.runtimeServiceOwnerLeaseProvider,
         runtimeServiceConnectionStateProvider = { runtimeServiceConnectionState },
         localRuntimeServerStateProvider = gatewayDependencies.localRuntimeServerStateProvider,
         mainThreadPoster = HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
@@ -276,6 +278,7 @@ internal data class RuntimeServiceGatewayBundleDependencies(
   val workspaceRootProvider: () -> Path,
   val approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot,
   val approvalDecisionAccess: RuntimeServiceApprovalDecisionAccess,
+  val runtimeServiceOwnerLeaseProvider: () -> RuntimeServiceOwnerLease? = { null },
 ) {
   val runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor
     get() = runtimeServicePort.lifecycleDescriptor
@@ -331,6 +334,7 @@ internal class ServiceOwnedShellGateway(
   private val runtimeServiceWorkStateProvider: () -> RuntimeServiceWorkState?,
   private val runtimeServiceKeepAliveStateProvider: () -> RuntimeServiceKeepAliveState? = { null },
   private val runtimeServiceKeepAliveChangeRegistrar: RuntimeServiceKeepAliveChangeRegistrar? = null,
+  private val runtimeServiceOwnerLeaseProvider: () -> RuntimeServiceOwnerLease? = { null },
   private val runtimeServiceConnectionStateProvider: () -> RuntimeServiceConnectionState? = { null },
   private val localRuntimeServerStateProvider: () -> LocalRuntimeServerState? = { null },
   private val mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
@@ -389,6 +393,7 @@ internal class ServiceOwnedShellGateway(
       runtimeServiceLifecycle = runtimeServiceLifecycle,
       runtimeServiceWorkState = runtimeServiceWorkStateProvider(),
       runtimeServiceKeepAliveState = runtimeServiceKeepAliveStateProvider(),
+      runtimeServiceOwnerLease = runtimeServiceOwnerLeaseProvider(),
       runtimeServiceConnectionState = runtimeServiceConnectionStateProvider(),
     )
   }

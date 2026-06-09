@@ -33,6 +33,8 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertEquals(null, snapshot["runtimeServiceWorkState"])
     assertTrue(snapshot.containsKey("runtimeServiceKeepAliveState"))
     assertEquals(null, snapshot["runtimeServiceKeepAliveState"])
+    assertTrue(snapshot.containsKey("runtimeServiceOwnerLease"))
+    assertEquals(null, snapshot["runtimeServiceOwnerLease"])
     assertTrue(snapshot.containsKey("runtimeServiceInterruptedRunRepair"))
     assertEquals(null, snapshot["runtimeServiceInterruptedRunRepair"])
     assertTrue(snapshot.containsKey("runtimeServiceConnectionState"))
@@ -72,8 +74,42 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertFalse(snapshot.containsKey("runtimeServiceLifecycle"))
     assertFalse(snapshot.containsKey("runtimeServiceWorkState"))
     assertFalse(snapshot.containsKey("runtimeServiceKeepAliveState"))
+    assertFalse(snapshot.containsKey("runtimeServiceOwnerLease"))
     assertFalse(snapshot.containsKey("runtimeServiceInterruptedRunRepair"))
     assertEquals("host-b", (snapshot["hostLifecycle"] as Map<*, *>)["hostInstanceId"])
+  }
+
+  @Test
+  fun includesRuntimeServiceOwnerLeaseWhenProvided() {
+    val snapshot = buildMap<String, Any?> {
+      putRuntimeServiceDiagnosticsSnapshot(
+        hostLifecycle = HostRuntimeLifecycleDescriptor(hostInstanceId = "host-lease"),
+        runtimeServiceOwnerLease = RuntimeServiceOwnerLease(
+          target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+          processStartId = "process-lease",
+          processStartedAtEpochMs = 1_000L,
+          controllerInstanceId = "controller-lease",
+          durableControllerId = "durable-controller-lease",
+          runtimeOwnerId = "owner-lease",
+          runtimeControllerId = "controller-lease",
+          durableRuntimeControllerId = "durable-controller-lease",
+          serviceInstanceId = "service-lease",
+          serviceProcessName = "org.opencray.app:runtime",
+          acquiredAtEpochMs = 2_000L,
+          heartbeatAtEpochMs = 2_500L,
+          expiresAtEpochMs = 32_500L,
+        ),
+      )
+    }
+
+    val lease = snapshot["runtimeServiceOwnerLease"] as Map<*, *>
+    assertEquals("detached_background", lease["target"])
+    assertEquals("held", lease["phase"])
+    assertEquals("owner-lease", lease["runtimeOwnerId"])
+    assertEquals("durable-controller-lease", lease["durableControllerId"])
+    assertEquals("service-lease", lease["serviceInstanceId"])
+    assertEquals(2_500L, lease["heartbeatAtEpochMs"])
+    assertEquals(32_500L, lease["expiresAtEpochMs"])
   }
 
   @Test
