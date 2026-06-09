@@ -1252,6 +1252,7 @@ class OpenCrayLocalRuntimeServerTest {
         metadata = task.metadata + mapOf(
           "contextMemoryFlushOutcome" to "written",
           "contextMemoryFlushTriggerStage" to "pre_compaction",
+          "contextMemoryFlushExecutionMode" to "inline",
           "contextMemoryFlushContextWindowTokens" to "128000",
           "contextMemoryFlushAutoCompactTokenLimit" to "115200",
           "contextMemoryFlushEstimatedReplayTokens" to "116000",
@@ -1281,6 +1282,7 @@ class OpenCrayLocalRuntimeServerTest {
       assertEquals(200, response.statusCode)
       assertEquals("written", memoryFlush.getString("outcome"))
       assertEquals("pre_compaction", memoryFlush.getString("triggerStage"))
+      assertEquals("inline", memoryFlush.getString("executionMode"))
       assertEquals(128000, memoryFlush.getInt("contextWindowTokens"))
       assertEquals(115200, memoryFlush.getInt("autoCompactTokenLimit"))
       assertEquals(116000, memoryFlush.getInt("estimatedReplayTokens"))
@@ -1414,6 +1416,7 @@ class OpenCrayLocalRuntimeServerTest {
         metadata = task.metadata + mapOf(
           "contextDurableCompactionCompactedThisRun" to "true",
           "contextDurableCompactionTriggerStage" to "pre_compaction",
+          "contextDurableCompactionExecutionMode" to "inline",
           "contextDurableCompactionContextWindowTokens" to "128000",
           "contextDurableCompactionAutoCompactTokenLimit" to "115200",
           "contextDurableCompactionEstimatedReplayTokens" to "116000",
@@ -1443,6 +1446,7 @@ class OpenCrayLocalRuntimeServerTest {
       assertEquals(200, response.statusCode)
       assertTrue(durableCompaction.getBoolean("compactedThisRun"))
       assertEquals("pre_compaction", durableCompaction.getString("triggerStage"))
+      assertEquals("inline", durableCompaction.getString("executionMode"))
       assertEquals(128000, durableCompaction.getInt("contextWindowTokens"))
       assertEquals(115200, durableCompaction.getInt("autoCompactTokenLimit"))
       assertEquals(116000, durableCompaction.getInt("estimatedReplayTokens"))

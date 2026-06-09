@@ -159,17 +159,24 @@ void main() {
         TextInputType.text,
       );
 
+      await tester.ensureVisible(fields.at(0));
       await tester.tap(fields.at(0));
       await tester.pump();
-      expect(FocusManager.instance.primaryFocus, isNotNull);
+      expect(tester.widget<TextField>(fields.at(0)).focusNode?.hasFocus, isTrue);
 
+      await tester.ensureVisible(find.text('LLM'));
       await tester.tap(find.text('LLM'));
       await tester.pump();
-      expect(FocusManager.instance.primaryFocus, isNull);
-
-      await tester.tap(
-        find.byKey(const ValueKey<String>('settings-llm-api-key-clear')),
+      expect(
+        tester.widget<TextField>(fields.at(0)).focusNode?.hasFocus,
+        isFalse,
       );
+
+      final Finder clearApiKeyButton = find.byKey(
+        const ValueKey<String>('settings-llm-api-key-clear'),
+      );
+      await tester.ensureVisible(clearApiKeyButton);
+      await tester.tap(clearApiKeyButton);
       await tester.pumpAndSettle();
 
       expect(tester.widget<TextField>(fields.at(1)).controller!.text, isEmpty);
@@ -272,17 +279,26 @@ void main() {
       await tester.pumpAndSettle();
 
       final Finder baseUrlField = find.byType(TextField).first;
+      await tester.ensureVisible(baseUrlField);
       await tester.tap(baseUrlField);
       await tester.pump();
-      expect(FocusManager.instance.primaryFocus, isNotNull);
+      expect(
+        tester.widget<TextField>(baseUrlField).focusNode?.hasFocus,
+        isTrue,
+      );
 
       tester.view.viewInsets = const FakeViewPadding(bottom: 320);
+      tester.binding.handleMetricsChanged();
       await tester.pump();
       expect(FocusManager.instance.primaryFocus, isNotNull);
 
       tester.view.viewInsets = FakeViewPadding.zero;
+      tester.binding.handleMetricsChanged();
       await tester.pump();
-      expect(FocusManager.instance.primaryFocus, isNull);
+      expect(
+        tester.widget<TextField>(baseUrlField).focusNode?.hasFocus,
+        isFalse,
+      );
     },
   );
 
@@ -2260,6 +2276,13 @@ void main() {
     );
     expect(
       find.textContaining(
+        'Responses context updates: pending 1, hash hash-dynamic-context',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
         'Last successful tool: EchoProbe',
         findRichText: true,
       ),
@@ -2314,7 +2337,25 @@ void main() {
       findsNothing,
     );
     expect(find.text('Outcome: written'), findsOneWidget);
+    expect(
+      find.textContaining('Execution mode: inline', findRichText: true),
+      findsAtLeastNWidgets(2),
+    );
     expect(find.text('Compacted: yes'), findsOneWidget);
+    expect(
+      find.textContaining(
+        'Remote compaction: used, supported, requested, trigger pre_compaction',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Remote compaction details: output 2, compaction 1, encrypted 1',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
     expect(find.text('Restricted: yes'), findsOneWidget);
     expect(find.text('Matched: 2'), findsOneWidget);
     expect(find.text('Injected: 1'), findsOneWidget);
@@ -3830,6 +3871,8 @@ _FakeDebugBridge _buildDebugBridge({
           localContinuationFallbackCount: 1,
           localContinuationLastMode: 'full_rebuild',
           localContinuationLastReason: 'user_setting_changed',
+          responsesPendingContextUpdateCount: 1,
+          responsesPendingContextUpdateHash: 'hash-dynamic-context',
           toolCallEventEmitted: true,
           toolResultEventEmitted: true,
           contextCacheBreakReason: 'user_setting_changed',
@@ -3912,6 +3955,7 @@ _FakeDebugBridge _buildDebugBridge({
         ),
         memoryFlush: OpenCrayChatRunMemoryFlushSnapshot(
           outcome: 'written',
+          executionMode: 'inline',
           omittedMessageCount: 6,
           omittedCharCount: 2100,
           signature: 'user-intro|tool-scan|workspace-facts',
@@ -3945,6 +3989,7 @@ _FakeDebugBridge _buildDebugBridge({
         ),
         durableCompaction: OpenCrayChatRunDurableCompactionSnapshot(
           compactedThisRun: true,
+          executionMode: 'inline',
           sourceTranscriptMessageCount: 18,
           retainedTranscriptMessageCount: 7,
           latestCompactedMessageCount: 9,
@@ -3953,6 +3998,15 @@ _FakeDebugBridge _buildDebugBridge({
           totalSummaryCount: 3,
           totalCompactedMessageCount: 14,
           latestCompactedAtEpochMs: 1950,
+          remoteCompaction: OpenCrayChatRunRemoteCompactionSnapshot(
+            requested: true,
+            supported: true,
+            used: true,
+            triggerStage: 'pre_compaction',
+            outputItemCount: 2,
+            compactionItemCount: 1,
+            encryptedContentCount: 1,
+          ),
         ),
         memoryTrace: OpenCrayChatRunMemoryTraceSnapshot(
           matchedRecordCount: 2,

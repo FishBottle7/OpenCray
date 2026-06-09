@@ -1136,11 +1136,15 @@ internal class ServiceOwnedChatRuntimeGateway(
       ?.trim()
       ?.takeIf(String::isNotBlank)
       ?: return null
-    val previousKeys = payloadRuntimeEvents(previousPayload)
-      .mapTo(linkedSetOf(), ::runtimeEventPayloadMergeKey)
+    val previousSignaturesByKey = payloadRuntimeEvents(previousPayload)
+      .associateBy(
+        keySelector = ::runtimeEventPayloadMergeKey,
+        valueTransform = ::runtimeEventPayloadContentSignature,
+      )
     val nextEvents = payloadRuntimeEvents(nextPayload)
     val deltaEvents = nextEvents.filter { event ->
-      runtimeEventPayloadMergeKey(event) !in previousKeys
+      previousSignaturesByKey[runtimeEventPayloadMergeKey(event)] !=
+        runtimeEventPayloadContentSignature(event)
     }
     if (
       deltaEvents.isEmpty() &&
@@ -1154,6 +1158,7 @@ internal class ServiceOwnedChatRuntimeGateway(
       "sequence" to sequence,
       "events" to deltaEvents,
       "totalLength" to nextEvents.size,
+      "runPatchMode" to "replace",
       "activeRuns" to (nextPayload["activeRuns"] ?: emptyList<Any?>()),
       "retainedRuns" to (nextPayload["retainedRuns"] ?: emptyList<Any?>()),
       "subAgents" to (nextPayload["subAgents"] ?: emptyList<Any?>()),
@@ -1193,6 +1198,29 @@ internal class ServiceOwnedChatRuntimeGateway(
     event["childTaskId"],
     event["emittedAtEpochMs"],
   ).joinToString(separator = "|") { value -> value?.toString().orEmpty() }
+
+  private fun runtimeEventPayloadContentSignature(event: Map<String, Any?>): String =
+    event.entries
+      .sortedBy(Map.Entry<String, Any?>::key)
+      .joinToString(separator = "|") { (key, value) ->
+        "$key=${runtimeEventPayloadSignatureValue(value)}"
+      }
+
+  private fun runtimeEventPayloadSignatureValue(value: Any?): String = when (value) {
+    null -> ""
+    is Map<*, *> -> value.entries
+      .sortedBy { entry -> entry.key?.toString().orEmpty() }
+      .joinToString(separator = ",", prefix = "{", postfix = "}") { entry ->
+        "${entry.key}=${runtimeEventPayloadSignatureValue(entry.value)}"
+      }
+    is Iterable<*> -> value.joinToString(separator = ",", prefix = "[", postfix = "]") { item ->
+      runtimeEventPayloadSignatureValue(item)
+    }
+    is Array<*> -> value.joinToString(separator = ",", prefix = "[", postfix = "]") { item ->
+      runtimeEventPayloadSignatureValue(item)
+    }
+    else -> value.toString()
+  }
 
   private fun chatRuntimePayloadDebugSummary(payload: Map<String, Any?>): String {
     val activeRuns = (payload["activeRuns"] as? List<*>)

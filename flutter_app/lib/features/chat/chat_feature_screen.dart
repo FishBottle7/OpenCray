@@ -241,6 +241,42 @@ OpenCrayChatRuntimeSnapshot _mergeRuntimeDeltaSnapshot(
   );
 }
 
+bool _runtimeRunListPatchCanReplace(
+  List<OpenCrayChatRunSnapshot> currentRuns,
+  List<OpenCrayChatRunSnapshot> patchRuns,
+) {
+  for (final currentRun in currentRuns) {
+    if (!_isRuntimeRunActiveForProjection(currentRun)) {
+      continue;
+    }
+    if (_findRuntimeRun(patchRuns, currentRun) == null) {
+      return false;
+    }
+  }
+  for (final patchRun in patchRuns) {
+    final OpenCrayChatRunSnapshot? currentRun = _findRuntimeRun(
+      currentRuns,
+      patchRun,
+    );
+    if (currentRun == null) {
+      continue;
+    }
+    final OpenCrayChatRunSnapshot preferred = _preferRuntimeRunSnapshot(
+      currentRun,
+      patchRun,
+    );
+    if (identical(preferred, currentRun) &&
+        _runtimeRunStateSignature(currentRun) !=
+            _runtimeRunStateSignature(patchRun)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+String _runtimeRunStateSignature(OpenCrayChatRunSnapshot run) =>
+    jsonEncode(_runtimeRunDisplaySignature(run));
+
 List<OpenCrayChatRunSnapshot> _mergeRuntimeRuns(
   List<OpenCrayChatRunSnapshot> left,
   List<OpenCrayChatRunSnapshot> right,
@@ -673,6 +709,7 @@ String _runtimeManagedProcessMergeKey(
   return <String>[
     process.command,
     process.args.join('\u0001'),
+    process.workingDirectory?.trim() ?? '',
     process.startedAtEpochMs.toString(),
   ].join('\u0001');
 }
@@ -856,8 +893,6 @@ int _runtimeEventDetailWeight(OpenCrayChatRuntimeEventSnapshot event) =>
     (event.totalLineCount == null ? 0 : 4);
 
 String _runtimeEventMergeKey(OpenCrayChatRuntimeEventSnapshot event) {
-  final bool mergeAssistantPhaseText =
-      event.kind.trim().toLowerCase() == 'assistant_phase';
   return <String>[
     event.kind,
     event.runId,
@@ -865,14 +900,14 @@ String _runtimeEventMergeKey(OpenCrayChatRuntimeEventSnapshot event) {
     event.executionId ?? '',
     event.executionOrdinal?.toString() ?? '',
     event.executionKind ?? '',
-    event.emittedAtEpochMs.toString(),
+    event.turn?.toString() ?? '',
     event.phase ?? '',
     event.stage ?? '',
     event.toolName ?? '',
+    event.entryId ?? '',
     event.childRunId ?? '',
     event.childTaskId ?? '',
-    event.entryId ?? '',
-    mergeAssistantPhaseText ? '' : event.text ?? '',
+    event.emittedAtEpochMs.toString(),
   ].join('\u0001');
 }
 
@@ -1362,6 +1397,10 @@ Map<String, Object?>? _runtimeLlmDiagnosticsDisplaySignature(
         diagnostics.localContinuationFallbackCount,
     'localContinuationLastMode': diagnostics.localContinuationLastMode,
     'localContinuationLastReason': diagnostics.localContinuationLastReason,
+    'responsesPendingContextUpdateCount':
+        diagnostics.responsesPendingContextUpdateCount,
+    'responsesPendingContextUpdateHash':
+        diagnostics.responsesPendingContextUpdateHash,
     'toolCallEventEmitted': diagnostics.toolCallEventEmitted,
     'toolResultEventEmitted': diagnostics.toolResultEventEmitted,
     'contextCacheBreakReason': diagnostics.contextCacheBreakReason,
@@ -1482,6 +1521,7 @@ Map<String, Object?>? _runtimeMemoryFlushDisplaySignature(
   return <String, Object?>{
     'outcome': flush.outcome,
     'triggerStage': flush.triggerStage,
+    'executionMode': flush.executionMode,
     'contextWindowTokens': flush.contextWindowTokens,
     'autoCompactTokenLimit': flush.autoCompactTokenLimit,
     'estimatedReplayTokens': flush.estimatedReplayTokens,
@@ -1544,6 +1584,7 @@ Map<String, Object?>? _runtimeDurableCompactionDisplaySignature(
   return <String, Object?>{
     'compactedThisRun': compaction.compactedThisRun,
     'triggerStage': compaction.triggerStage,
+    'executionMode': compaction.executionMode,
     'contextWindowTokens': compaction.contextWindowTokens,
     'autoCompactTokenLimit': compaction.autoCompactTokenLimit,
     'estimatedReplayTokens': compaction.estimatedReplayTokens,
@@ -1556,6 +1597,20 @@ Map<String, Object?>? _runtimeDurableCompactionDisplaySignature(
     'totalSummaryCount': compaction.totalSummaryCount,
     'totalCompactedMessageCount': compaction.totalCompactedMessageCount,
     'latestCompactedAtEpochMs': compaction.latestCompactedAtEpochMs,
+    'remoteCompaction': compaction.remoteCompaction == null
+        ? null
+        : <String, Object?>{
+            'requested': compaction.remoteCompaction!.requested,
+            'supported': compaction.remoteCompaction!.supported,
+            'used': compaction.remoteCompaction!.used,
+            'triggerStage': compaction.remoteCompaction!.triggerStage,
+            'fallbackReason': compaction.remoteCompaction!.fallbackReason,
+            'outputItemCount': compaction.remoteCompaction!.outputItemCount,
+            'compactionItemCount':
+                compaction.remoteCompaction!.compactionItemCount,
+            'encryptedContentCount':
+                compaction.remoteCompaction!.encryptedContentCount,
+          },
   };
 }
 
@@ -1822,6 +1877,9 @@ int javaStringHashCode(String value) {
   }
   return hash;
 }
+
+String javaStringHashHex(String value) =>
+    (javaStringHashCode(value) & 0xffffffff).toRadixString(16);
 
 @visibleForTesting
 bool chatFeatureStatesEquivalent(
@@ -4435,8 +4493,20 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         : _mergeRuntimeDeltaSnapshot(
             currentSnapshot,
             deltaSnapshot,
-            hasActiveRunsPatch: delta.hasActiveRunsPatch,
-            hasRetainedRunsPatch: delta.hasRetainedRunsPatch,
+            hasActiveRunsPatch:
+                delta.runPatchMode.trim().toLowerCase() == 'replace' &&
+                delta.hasActiveRunsPatch &&
+                _runtimeRunListPatchCanReplace(
+                  currentSnapshot.activeRuns,
+                  deltaSnapshot.activeRuns,
+                ),
+            hasRetainedRunsPatch:
+                delta.runPatchMode.trim().toLowerCase() == 'replace' &&
+                delta.hasRetainedRunsPatch &&
+                _runtimeRunListPatchCanReplace(
+                  currentSnapshot.retainedRuns,
+                  deltaSnapshot.retainedRuns,
+                ),
             hasSubAgentsPatch: delta.hasSubAgentsPatch,
             hasLiveAssistantDraftsPatch: delta.hasLiveAssistantDraftsPatch,
           );
@@ -4445,12 +4515,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       patchedSnapshot,
     )) {
       if (delta.hasLiveAssistantDraftsPatch) {
+        final OpenCrayChatRuntimeSnapshot draftPatchedSnapshot =
+            _runtimeSnapshotWithLiveDraftPatch(currentSnapshot, deltaSnapshot);
         _reconcileLiveAssistantDraftOverrides(
-          patchedSnapshot,
+          draftPatchedSnapshot,
           liveAssistantDraftsAuthoritative: true,
         );
         if (_latestChatSnapshot != null) {
-          _queueRuntimeActivityPatch(patchedSnapshot);
+          _queueRuntimeActivityPatch(draftPatchedSnapshot);
         }
       }
       if (delta.sequence > 0) {
@@ -4472,6 +4544,28 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return;
     }
     _queueRuntimeActivityPatch(patchedSnapshot);
+  }
+
+  OpenCrayChatRuntimeSnapshot _runtimeSnapshotWithLiveDraftPatch(
+    OpenCrayChatRuntimeSnapshot? currentSnapshot,
+    OpenCrayChatRuntimeSnapshot deltaSnapshot,
+  ) {
+    final OpenCrayChatRuntimeSnapshot base = currentSnapshot ?? deltaSnapshot;
+    return OpenCrayChatRuntimeSnapshot(
+      sessionId: deltaSnapshot.sessionId.trim().isNotEmpty
+          ? deltaSnapshot.sessionId
+          : base.sessionId,
+      activeRuns: base.activeRuns,
+      retainedRuns: base.retainedRuns,
+      subAgents: base.subAgents,
+      events: base.events,
+      liveAssistantDrafts: deltaSnapshot.liveAssistantDrafts,
+      hostLifecycle: base.hostLifecycle,
+      updatedAtEpochMs: math.max(
+        base.updatedAtEpochMs,
+        deltaSnapshot.updatedAtEpochMs,
+      ),
+    );
   }
 
   Future<void> _resyncRuntimeSnapshotAfterDeltaMiss() async {
@@ -6723,7 +6817,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       process.workingDirectory?.trim() ?? '',
       process.startedAtEpochMs.toString(),
     ].join('\u0002');
-    return 'runtime-process-$runId-fp-${javaStringHashCode(fingerprint).abs()}';
+    return 'runtime-process-$runId-fp-${javaStringHashHex(fingerprint)}';
   }
 
   List<String> _projectedManagedProcessMessageIds({
@@ -6739,7 +6833,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final String processId = process.processId.trim();
     final String processKey = processId.isNotEmpty
         ? processId
-        : 'fp-${javaStringHashCode(_managedProcessFingerprint(process)).abs()}';
+        : 'fp-${javaStringHashHex(_managedProcessFingerprint(process))}';
     return ownerKeys
         .map((ownerKey) => 'runtime-process-$ownerKey-$processKey')
         .toList(growable: false);
@@ -7942,6 +8036,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         widget.copy.isChinese
             ? '触发 ${flush.triggerStage}'
             : 'Trigger: ${flush.triggerStage}',
+      if (_nonEmpty(flush.executionMode) != null)
+        widget.copy.isChinese
+            ? '模式 ${flush.executionMode}'
+            : 'Mode: ${flush.executionMode}',
       if (flush.contextWindowTokens != null)
         widget.copy.isChinese
             ? '窗口 ${flush.contextWindowTokens}'
@@ -8087,6 +8185,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         widget.copy.isChinese
             ? '触发 ${durableCompaction.triggerStage}'
             : 'Trigger: ${durableCompaction.triggerStage}',
+      if (_nonEmpty(durableCompaction.executionMode) != null)
+        widget.copy.isChinese
+            ? '模式 ${durableCompaction.executionMode}'
+            : 'Mode: ${durableCompaction.executionMode}',
       if (durableCompaction.contextWindowTokens != null)
         widget.copy.isChinese
             ? '窗口 ${durableCompaction.contextWindowTokens}'
@@ -8106,6 +8208,69 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                   ? 'Threshold triggered'
                   : 'Threshold not triggered'),
     ];
+    final remote = durableCompaction.remoteCompaction;
+    final List<String> remoteState = <String>[];
+    final List<String> remoteCounts = <String>[];
+    if (remote != null) {
+      if (remote.used != null) {
+        remoteState.add(
+          widget.copy.isChinese
+              ? (remote.used! ? '已使用远端压缩' : '未使用远端压缩')
+              : (remote.used! ? 'used' : 'not used'),
+        );
+      }
+      if (remote.supported != null) {
+        remoteState.add(
+          widget.copy.isChinese
+              ? (remote.supported! ? '支持' : '不支持')
+              : (remote.supported! ? 'supported' : 'unsupported'),
+        );
+      }
+      if (remote.requested != null) {
+        remoteState.add(
+          widget.copy.isChinese
+              ? (remote.requested! ? '已请求' : '未请求')
+              : (remote.requested! ? 'requested' : 'not requested'),
+        );
+      }
+      final remoteTriggerStage = _nonEmpty(remote.triggerStage);
+      if (remoteTriggerStage != null) {
+        remoteState.add(
+          widget.copy.isChinese
+              ? '触发 $remoteTriggerStage'
+              : 'trigger $remoteTriggerStage',
+        );
+      }
+      if (remote.outputItemCount != null) {
+        remoteCounts.add(
+          widget.copy.isChinese
+              ? '输出 ${remote.outputItemCount}'
+              : 'output ${remote.outputItemCount}',
+        );
+      }
+      if (remote.compactionItemCount != null) {
+        remoteCounts.add(
+          widget.copy.isChinese
+              ? '压缩项 ${remote.compactionItemCount}'
+              : 'compaction ${remote.compactionItemCount}',
+        );
+      }
+      if (remote.encryptedContentCount != null) {
+        remoteCounts.add(
+          widget.copy.isChinese
+              ? '加密内容 ${remote.encryptedContentCount}'
+              : 'encrypted ${remote.encryptedContentCount}',
+        );
+      }
+      final fallbackReason = _nonEmpty(remote.fallbackReason);
+      if (fallbackReason != null) {
+        remoteCounts.add(
+          widget.copy.isChinese
+              ? '回退 $fallbackReason'
+              : 'fallback $fallbackReason',
+        );
+      }
+    }
     return _joinTraceSections(<String?>[
       summary.isEmpty ? null : summary.join(widget.copy.isChinese ? '，' : ', '),
       summaryCounts.isEmpty
@@ -8114,6 +8279,16 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       pressure.isEmpty
           ? null
           : pressure.join(widget.copy.isChinese ? '，' : ', '),
+      remoteState.isEmpty
+          ? null
+          : widget.copy.isChinese
+          ? '远端压缩：${remoteState.join('，')}'
+          : 'Remote compaction: ${remoteState.join(', ')}',
+      remoteCounts.isEmpty
+          ? null
+          : widget.copy.isChinese
+          ? '远端压缩明细：${remoteCounts.join('，')}'
+          : 'Remote compaction details: ${remoteCounts.join(', ')}',
       durableCompaction.latestCompactedAtEpochMs == null
           ? null
           : widget.copy.isChinese

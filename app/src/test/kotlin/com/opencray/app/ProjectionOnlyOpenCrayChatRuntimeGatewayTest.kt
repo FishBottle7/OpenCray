@@ -1103,11 +1103,14 @@ class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
           finishedAtEpochMs = 1_400L,
           metadata = mapOf(
             LiteLlmMetadataKeys.PROVIDER_RESPONSE_SHAPE to "openai_tool_calls",
+            "responsesPendingContextUpdateCount" to "1",
+            "responsesPendingContextUpdateHash" to "projection-context-update-hash",
             "contextLiveMode" to "full",
             "contextBudgetApplied" to "true",
             "contextMatchedMemoryCount" to "1",
             "contextMemoryFlushOutcome" to "written",
             "contextMemoryFlushTriggerStage" to "pre_compaction",
+            "contextMemoryFlushExecutionMode" to "inline",
             "contextMemoryFlushContextWindowTokens" to "128000",
             "contextMemoryFlushAutoCompactTokenLimit" to "115200",
             "contextMemoryFlushEstimatedReplayTokens" to "116000",
@@ -1115,6 +1118,7 @@ class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
             "contextBootstrapMode" to "workspace",
             "contextDurableCompactionCompactedThisRun" to "true",
             "contextDurableCompactionTriggerStage" to "pre_compaction",
+            "contextDurableCompactionExecutionMode" to "inline",
             "contextDurableCompactionContextWindowTokens" to "128000",
             "contextDurableCompactionAutoCompactTokenLimit" to "115200",
             "contextDurableCompactionEstimatedReplayTokens" to "116000",
@@ -1163,11 +1167,17 @@ class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
 
     assertEquals("diagram.png", finalAttachments.single()["displayName"])
     assertEquals("openai_tool_calls", llmDiagnostics["providerResponseShape"])
+    assertEquals(1, llmDiagnostics["responsesPendingContextUpdateCount"])
+    assertEquals(
+      "projection-context-update-hash",
+      llmDiagnostics["responsesPendingContextUpdateHash"],
+    )
     assertEquals("full", liveContext["mode"])
     assertEquals(true, contextBudget["applied"])
     assertEquals(1, memoryTrace["matchedRecordCount"])
     assertEquals("written", memoryFlush["outcome"])
     assertEquals("pre_compaction", memoryFlush["triggerStage"])
+    assertEquals("inline", memoryFlush["executionMode"])
     assertEquals(128000, memoryFlush["contextWindowTokens"])
     assertEquals(115200, memoryFlush["autoCompactTokenLimit"])
     assertEquals(116000, memoryFlush["estimatedReplayTokens"])
@@ -1175,6 +1185,7 @@ class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
     assertEquals("workspace", bootstrap["mode"])
     assertEquals(true, durableCompaction["compactedThisRun"])
     assertEquals("pre_compaction", durableCompaction["triggerStage"])
+    assertEquals("inline", durableCompaction["executionMode"])
     assertEquals(128000, durableCompaction["contextWindowTokens"])
     assertEquals(115200, durableCompaction["autoCompactTokenLimit"])
     assertEquals(116000, durableCompaction["estimatedReplayTokens"])

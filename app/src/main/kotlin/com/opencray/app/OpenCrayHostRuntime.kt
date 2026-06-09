@@ -2760,6 +2760,7 @@ internal class OpenCrayHostRuntime private constructor(
       put("sessionId", sessionId)
       put("sequence", sequence)
       put("updatedAtEpochMs", updatedAtEpochMs)
+      put("runPatchMode", "merge")
       put("events", visibleEvent?.let(::runtimeEventToMap)?.let(::listOf) ?: emptyList<Map<String, Any?>>())
       if (visibleRun != null) {
         put("activeRuns", activeRuns)
@@ -3747,7 +3748,7 @@ internal class OpenCrayHostRuntime private constructor(
               sourceOrder = sourceOrder,
               snapshot = chatMessageSnapshotMap(
                 messageId = runtimeProjectedManagedProcessMessageId(
-                  runId = run.runId,
+                  run = run,
                   process = process,
                 ),
                 kind = "inbound",
@@ -3825,9 +3826,25 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   private fun runtimeProjectedManagedProcessMessageId(
-    runId: String,
+    run: AgentRunSnapshot,
     process: ManagedProcessSnapshot,
-  ): String = "runtime-process-$runId-${process.processId}"
+  ): String {
+    val ownerKey = listOf(run.taskId, run.runId)
+      .map(String::trim)
+      .firstOrNull(String::isNotBlank)
+      ?: run.acceptedAtEpochMs.toString()
+    val processId = process.processId.trim()
+    if (processId.isNotEmpty()) {
+      return "runtime-process-$ownerKey-$processId"
+    }
+    val fingerprint = listOf(
+      process.command.trim(),
+      process.args.joinToString(separator = "\u0001"),
+      process.workingDirectory?.trim().orEmpty(),
+      process.startedAtEpochMs.toString(),
+    ).joinToString(separator = "\u0002")
+    return "runtime-process-$ownerKey-fp-${Integer.toUnsignedString(fingerprint.hashCode(), 16)}"
+  }
 
   private fun projectedManagedProcessMessageText(
     process: ManagedProcessSnapshot,
@@ -5548,6 +5565,10 @@ internal class OpenCrayHostRuntime private constructor(
       ?.takeIf(String::isNotBlank)
     val localContinuationLastReason = metadata["localContinuationLastReason"]
       ?.takeIf(String::isNotBlank)
+    val responsesPendingContextUpdateCount = metadata["responsesPendingContextUpdateCount"]
+      ?.toIntOrNull()
+    val responsesPendingContextUpdateHash = metadata["responsesPendingContextUpdateHash"]
+      ?.takeIf(String::isNotBlank)
     val toolCallEventEmitted = metadata[LiteLlmMetadataKeys.TOOL_CALL_EVENT_EMITTED]
       ?.toBooleanStrictOrNull()
     val toolResultEventEmitted = metadata[LiteLlmMetadataKeys.TOOL_RESULT_EVENT_EMITTED]
@@ -5569,6 +5590,8 @@ internal class OpenCrayHostRuntime private constructor(
       localContinuationFallbackCount == null &&
       localContinuationLastMode == null &&
       localContinuationLastReason == null &&
+      responsesPendingContextUpdateCount == null &&
+      responsesPendingContextUpdateHash == null &&
       toolCallEventEmitted == null &&
       toolResultEventEmitted == null &&
       contextCacheBreakReason == null &&
@@ -5589,6 +5612,8 @@ internal class OpenCrayHostRuntime private constructor(
       put("localContinuationFallbackCount", localContinuationFallbackCount)
       put("localContinuationLastMode", localContinuationLastMode)
       put("localContinuationLastReason", localContinuationLastReason)
+      put("responsesPendingContextUpdateCount", responsesPendingContextUpdateCount)
+      put("responsesPendingContextUpdateHash", responsesPendingContextUpdateHash)
       put("toolCallEventEmitted", toolCallEventEmitted)
       put("toolResultEventEmitted", toolResultEventEmitted)
       put("contextCacheBreakReason", contextCacheBreakReason)
@@ -5854,6 +5879,7 @@ internal class OpenCrayHostRuntime private constructor(
     val outcome = metadata["contextMemoryFlushOutcome"]?.takeIf(String::isNotBlank)
     val triggerStage = metadata["contextMemoryFlushTriggerStage"]?.takeIf(String::isNotBlank)
     val maintenanceTask = metadata["contextMemoryFlushMaintenanceTask"]?.takeIf(String::isNotBlank)
+    val executionMode = metadata["contextMemoryFlushExecutionMode"]?.takeIf(String::isNotBlank)
     val contextWindowTokens = metadata["contextMemoryFlushContextWindowTokens"]?.toIntOrNull()
     val autoCompactTokenLimit = metadata["contextMemoryFlushAutoCompactTokenLimit"]?.toIntOrNull()
     val estimatedReplayTokens = metadata["contextMemoryFlushEstimatedReplayTokens"]?.toIntOrNull()
@@ -5882,6 +5908,7 @@ internal class OpenCrayHostRuntime private constructor(
       outcome == null &&
       triggerStage == null &&
       maintenanceTask == null &&
+      executionMode == null &&
       contextWindowTokens == null &&
       autoCompactTokenLimit == null &&
       estimatedReplayTokens == null &&
@@ -5901,6 +5928,7 @@ internal class OpenCrayHostRuntime private constructor(
       outcome?.let { put("outcome", it) }
       triggerStage?.let { put("triggerStage", it) }
       maintenanceTask?.let { put("maintenanceTask", it) }
+      executionMode?.let { put("executionMode", it) }
       contextWindowTokens?.let { put("contextWindowTokens", it) }
       autoCompactTokenLimit?.let { put("autoCompactTokenLimit", it) }
       estimatedReplayTokens?.let { put("estimatedReplayTokens", it) }
@@ -6007,6 +6035,7 @@ internal class OpenCrayHostRuntime private constructor(
     val compactedThisRun = metadata["contextDurableCompactionCompactedThisRun"]?.toBooleanStrictOrNull()
     val triggerStage = metadata["contextDurableCompactionTriggerStage"]?.takeIf(String::isNotBlank)
     val maintenanceTask = metadata["contextDurableCompactionMaintenanceTask"]?.takeIf(String::isNotBlank)
+    val executionMode = metadata["contextDurableCompactionExecutionMode"]?.takeIf(String::isNotBlank)
     val contextWindowTokens =
       metadata["contextDurableCompactionContextWindowTokens"]?.toIntOrNull()
     val autoCompactTokenLimit =
@@ -6042,6 +6071,7 @@ internal class OpenCrayHostRuntime private constructor(
       compactedThisRun == null &&
       triggerStage == null &&
       maintenanceTask == null &&
+      executionMode == null &&
       contextWindowTokens == null &&
       autoCompactTokenLimit == null &&
       estimatedReplayTokens == null &&
@@ -6062,6 +6092,7 @@ internal class OpenCrayHostRuntime private constructor(
       compactedThisRun?.let { put("compactedThisRun", it) }
       triggerStage?.let { put("triggerStage", it) }
       maintenanceTask?.let { put("maintenanceTask", it) }
+      executionMode?.let { put("executionMode", it) }
       contextWindowTokens?.let { put("contextWindowTokens", it) }
       autoCompactTokenLimit?.let { put("autoCompactTokenLimit", it) }
       estimatedReplayTokens?.let { put("estimatedReplayTokens", it) }

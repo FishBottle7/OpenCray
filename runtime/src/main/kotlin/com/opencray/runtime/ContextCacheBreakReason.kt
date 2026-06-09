@@ -13,6 +13,8 @@ internal fun deriveContextCacheBreakReason(
     "durable_context_changed" -> "durable_context_changed"
     "dynamic_context_changed" -> "dynamic_context_changed"
     "front_context_changed" -> "dynamic_context_changed"
+    "responses_context_update_chain_limit" -> "dynamic_context_changed"
+    "responses_context_update_too_large" -> "dynamic_context_changed"
     "transcript_mismatch" -> "replay_projection_changed"
     "responses_restored_replay_required" -> "continuation_lineage_untrusted"
     "responses_shape_unavailable" -> "continuation_lineage_untrusted"

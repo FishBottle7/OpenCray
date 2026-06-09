@@ -580,6 +580,7 @@ class OpenCrayChatRunMemoryFlushSnapshot {
   const OpenCrayChatRunMemoryFlushSnapshot({
     this.outcome,
     this.triggerStage,
+    this.executionMode,
     this.contextWindowTokens,
     this.autoCompactTokenLimit,
     this.estimatedReplayTokens,
@@ -595,6 +596,7 @@ class OpenCrayChatRunMemoryFlushSnapshot {
 
   final String? outcome;
   final String? triggerStage;
+  final String? executionMode;
   final int? contextWindowTokens;
   final int? autoCompactTokenLimit;
   final int? estimatedReplayTokens;
@@ -617,6 +619,7 @@ class OpenCrayChatRunMemoryFlushSnapshot {
     return OpenCrayChatRunMemoryFlushSnapshot(
       outcome: map['outcome'] as String?,
       triggerStage: map['triggerStage'] as String?,
+      executionMode: map['executionMode'] as String?,
       contextWindowTokens: map['contextWindowTokens'] as int?,
       autoCompactTokenLimit: map['autoCompactTokenLimit'] as int?,
       estimatedReplayTokens: map['estimatedReplayTokens'] as int?,
@@ -926,10 +929,48 @@ class OpenCrayChatRunBootstrapSnapshot {
   }
 }
 
+class OpenCrayChatRunRemoteCompactionSnapshot {
+  const OpenCrayChatRunRemoteCompactionSnapshot({
+    this.requested,
+    this.supported,
+    this.used,
+    this.triggerStage,
+    this.fallbackReason,
+    this.outputItemCount,
+    this.compactionItemCount,
+    this.encryptedContentCount,
+  });
+
+  final bool? requested;
+  final bool? supported;
+  final bool? used;
+  final String? triggerStage;
+  final String? fallbackReason;
+  final int? outputItemCount;
+  final int? compactionItemCount;
+  final int? encryptedContentCount;
+
+  factory OpenCrayChatRunRemoteCompactionSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayChatRunRemoteCompactionSnapshot(
+      requested: map['requested'] as bool?,
+      supported: map['supported'] as bool?,
+      used: map['used'] as bool?,
+      triggerStage: map['triggerStage'] as String?,
+      fallbackReason: map['fallbackReason'] as String?,
+      outputItemCount: map['outputItemCount'] as int?,
+      compactionItemCount: map['compactionItemCount'] as int?,
+      encryptedContentCount: map['encryptedContentCount'] as int?,
+    );
+  }
+}
+
 class OpenCrayChatRunDurableCompactionSnapshot {
   const OpenCrayChatRunDurableCompactionSnapshot({
     this.compactedThisRun,
     this.triggerStage,
+    this.executionMode,
     this.contextWindowTokens,
     this.autoCompactTokenLimit,
     this.estimatedReplayTokens,
@@ -942,10 +983,12 @@ class OpenCrayChatRunDurableCompactionSnapshot {
     this.totalSummaryCount,
     this.totalCompactedMessageCount,
     this.latestCompactedAtEpochMs,
+    this.remoteCompaction,
   });
 
   final bool? compactedThisRun;
   final String? triggerStage;
+  final String? executionMode;
   final int? contextWindowTokens;
   final int? autoCompactTokenLimit;
   final int? estimatedReplayTokens;
@@ -958,13 +1001,16 @@ class OpenCrayChatRunDurableCompactionSnapshot {
   final int? totalSummaryCount;
   final int? totalCompactedMessageCount;
   final int? latestCompactedAtEpochMs;
+  final OpenCrayChatRunRemoteCompactionSnapshot? remoteCompaction;
 
   factory OpenCrayChatRunDurableCompactionSnapshot.fromMap(
     Map<Object?, Object?> map,
   ) {
+    final rawRemoteCompaction = map['remoteCompaction'];
     return OpenCrayChatRunDurableCompactionSnapshot(
       compactedThisRun: map['compactedThisRun'] as bool?,
       triggerStage: map['triggerStage'] as String?,
+      executionMode: map['executionMode'] as String?,
       contextWindowTokens: map['contextWindowTokens'] as int?,
       autoCompactTokenLimit: map['autoCompactTokenLimit'] as int?,
       estimatedReplayTokens: map['estimatedReplayTokens'] as int?,
@@ -978,6 +1024,9 @@ class OpenCrayChatRunDurableCompactionSnapshot {
       totalSummaryCount: map['totalSummaryCount'] as int?,
       totalCompactedMessageCount: map['totalCompactedMessageCount'] as int?,
       latestCompactedAtEpochMs: map['latestCompactedAtEpochMs'] as int?,
+      remoteCompaction: rawRemoteCompaction is Map<Object?, Object?>
+          ? OpenCrayChatRunRemoteCompactionSnapshot.fromMap(rawRemoteCompaction)
+          : null,
     );
   }
 }
@@ -1208,6 +1257,8 @@ class OpenCrayChatRunLlmDiagnosticsSnapshot {
     this.localContinuationFallbackCount,
     this.localContinuationLastMode,
     this.localContinuationLastReason,
+    this.responsesPendingContextUpdateCount,
+    this.responsesPendingContextUpdateHash,
     this.toolCallEventEmitted,
     this.toolResultEventEmitted,
     this.contextCacheBreakReason,
@@ -1226,6 +1277,8 @@ class OpenCrayChatRunLlmDiagnosticsSnapshot {
   final int? localContinuationFallbackCount;
   final String? localContinuationLastMode;
   final String? localContinuationLastReason;
+  final int? responsesPendingContextUpdateCount;
+  final String? responsesPendingContextUpdateHash;
   final bool? toolCallEventEmitted;
   final bool? toolResultEventEmitted;
   final String? contextCacheBreakReason;
@@ -1251,6 +1304,10 @@ class OpenCrayChatRunLlmDiagnosticsSnapshot {
       localContinuationLastMode: map['localContinuationLastMode'] as String?,
       localContinuationLastReason:
           map['localContinuationLastReason'] as String?,
+      responsesPendingContextUpdateCount:
+          map['responsesPendingContextUpdateCount'] as int?,
+      responsesPendingContextUpdateHash:
+          map['responsesPendingContextUpdateHash'] as String?,
       toolCallEventEmitted: map['toolCallEventEmitted'] as bool?,
       toolResultEventEmitted: map['toolResultEventEmitted'] as bool?,
       contextCacheBreakReason: map['contextCacheBreakReason'] as String?,
@@ -1705,6 +1762,7 @@ class OpenCrayChatRuntimeEventDelta {
     this.hasSubAgentsPatch = false,
     this.hasLiveAssistantDraftsPatch = false,
     this.hostLifecycle,
+    this.runPatchMode = 'replace',
     this.updatedAtEpochMs = 0,
   });
 
@@ -1721,6 +1779,7 @@ class OpenCrayChatRuntimeEventDelta {
   final bool hasSubAgentsPatch;
   final bool hasLiveAssistantDraftsPatch;
   final OpenCrayHostLifecycleSnapshot? hostLifecycle;
+  final String runPatchMode;
   final int updatedAtEpochMs;
 
   factory OpenCrayChatRuntimeEventDelta.fromMap(Map<Object?, Object?> map) {
@@ -1769,6 +1828,7 @@ class OpenCrayChatRuntimeEventDelta {
       hostLifecycle: rawHostLifecycle is Map<Object?, Object?>
           ? OpenCrayHostLifecycleSnapshot.fromMap(rawHostLifecycle)
           : null,
+      runPatchMode: map['runPatchMode'] as String? ?? 'replace',
       updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
     );
   }

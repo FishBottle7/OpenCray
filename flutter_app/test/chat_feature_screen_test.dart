@@ -2141,7 +2141,7 @@ void main() {
       await tester.pumpAndSettle();
 
       final String projectedBubbleMessageId =
-          'runtime-assistant-commentary-task-progress-1--1-Planning-2200-${javaStringHashCode('Inspecting the project layout.')}';
+          'runtime-assistant-commentary-task-progress-1--1-Planning-2200';
       final projectedBubble = find.byKey(
         ValueKey<String>('chat-bubble-$projectedBubbleMessageId'),
       );
@@ -3366,6 +3366,312 @@ void main() {
   );
 
   testWidgets(
+    'runtime event deltas keep newer managed process state when stale patches carry newer events',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeEventDeltas =
+          StreamController<OpenCrayChatRuntimeEventDelta>.broadcast();
+      addTearDown(runtimeEventDeltas.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          updatedAtEpochMs: 1000,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Start the development server.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-stale-delta-process-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 2000,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-stale-delta-process-1',
+              taskId: 'task-stale-delta-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 2000,
+              attempt: 1,
+              pendingMessageId: 'pending-stale-delta-process-1',
+              managedProcessIds: <String>['proc-stale-delta-process-1'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-stale-delta-process-1',
+                  status: 'running',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1050,
+                  updatedAtEpochMs: 2000,
+                  stdoutPreview: 'fresh server output',
+                ),
+              ],
+              runningManagedProcessCount: 1,
+              hasLiveManagedProcesses: true,
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+        runtimeEventDeltaStream: runtimeEventDeltas.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('fresh server output'), findsWidgets);
+
+      runtimeEventDeltas.add(
+        const OpenCrayChatRuntimeEventDelta(
+          sessionId: 'session-1',
+          sequence: 1,
+          totalLength: 1,
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_call',
+              runId: 'run-stale-delta-process-1',
+              taskId: 'task-stale-delta-process-1',
+              emittedAtEpochMs: 2200,
+              toolName: 'Read',
+              argumentsJson: '{"file_path":"README.md"}',
+            ),
+          ],
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-stale-delta-process-1',
+              taskId: 'task-stale-delta-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1200,
+              attempt: 1,
+              pendingMessageId: 'pending-stale-delta-process-1',
+              managedProcessIds: <String>['proc-stale-delta-process-1'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-stale-delta-process-1',
+                  status: 'running',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1050,
+                  updatedAtEpochMs: 1200,
+                  stdoutPreview: 'stale server output',
+                ),
+              ],
+              runningManagedProcessCount: 1,
+              hasLiveManagedProcesses: true,
+              isTerminal: false,
+            ),
+          ],
+          hasActiveRunsPatch: true,
+          updatedAtEpochMs: 1200,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('fresh server output'), findsWidgets);
+      expect(find.textContaining('Read', findRichText: true), findsWidgets);
+      expect(
+        find.textContaining('README.md', findRichText: true),
+        findsWidgets,
+      );
+      expect(find.textContaining('stale server output'), findsNothing);
+
+      runtimeEventDeltas.add(
+        const OpenCrayChatRuntimeEventDelta(
+          sessionId: 'session-1',
+          sequence: 2,
+          totalLength: 2,
+          events: <OpenCrayChatRuntimeEventSnapshot>[
+            OpenCrayChatRuntimeEventSnapshot(
+              kind: 'tool_result',
+              runId: 'run-stale-delta-process-1',
+              taskId: 'task-stale-delta-process-1',
+              emittedAtEpochMs: 2300,
+              toolName: 'Read',
+              contentPreview: 'README loaded.',
+            ),
+          ],
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          hasActiveRunsPatch: true,
+          updatedAtEpochMs: 2300,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('fresh server output'), findsWidgets);
+      expect(
+        find.textContaining('README loaded.', findRichText: true),
+        findsWidgets,
+      );
+    },
+  );
+
+  testWidgets(
+    'runtime merge deltas update one run without clearing sibling runs',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeEventDeltas =
+          StreamController<OpenCrayChatRuntimeEventDelta>.broadcast();
+      addTearDown(runtimeEventDeltas.close);
+      const firstRun = OpenCrayChatRunSnapshot(
+        sessionId: 'session-1',
+        runId: 'run-merge-delta-1',
+        taskId: 'task-merge-delta-1',
+        acceptedAtEpochMs: 1000,
+        updatedAtEpochMs: 1200,
+        attempt: 1,
+        pendingMessageId: 'pending-merge-delta-1',
+        managedProcessIds: <String>['proc-merge-delta-1'],
+        managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+          OpenCrayChatManagedProcessSnapshot(
+            processId: 'proc-merge-delta-1',
+            status: 'running',
+            command: 'npm',
+            args: <String>['run', 'dev'],
+            processStarted: true,
+            startedAtEpochMs: 1100,
+            updatedAtEpochMs: 1200,
+            stdoutPreview: 'first run old output',
+          ),
+        ],
+        runningManagedProcessCount: 1,
+        hasLiveManagedProcesses: true,
+        isTerminal: false,
+      );
+      const secondRun = OpenCrayChatRunSnapshot(
+        sessionId: 'session-1',
+        runId: 'run-merge-delta-2',
+        taskId: 'task-merge-delta-2',
+        acceptedAtEpochMs: 1300,
+        updatedAtEpochMs: 1400,
+        attempt: 1,
+        pendingMessageId: 'pending-merge-delta-2',
+        managedProcessIds: <String>['proc-merge-delta-2'],
+        managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+          OpenCrayChatManagedProcessSnapshot(
+            processId: 'proc-merge-delta-2',
+            status: 'running',
+            command: 'python',
+            args: <String>['worker.py'],
+            processStarted: true,
+            startedAtEpochMs: 1350,
+            updatedAtEpochMs: 1400,
+            stdoutPreview: 'second run stays visible',
+          ),
+        ],
+        runningManagedProcessCount: 1,
+        hasLiveManagedProcesses: true,
+        isTerminal: false,
+      );
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          updatedAtEpochMs: 1000,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              messageId: 'user-merge-delta-1',
+              kind: 'outbound',
+              text: 'Start two processes.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-merge-delta-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1200,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-merge-delta-2',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1400,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 1400,
+          activeRuns: <OpenCrayChatRunSnapshot>[firstRun, secondRun],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+        runtimeEventDeltaStream: runtimeEventDeltas.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('first run old output'), findsWidgets);
+      expect(find.textContaining('second run stays visible'), findsWidgets);
+
+      runtimeEventDeltas.add(
+        const OpenCrayChatRuntimeEventDelta(
+          sessionId: 'session-1',
+          sequence: 1,
+          totalLength: 0,
+          runPatchMode: 'merge',
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-merge-delta-1',
+              taskId: 'task-merge-delta-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1600,
+              attempt: 1,
+              pendingMessageId: 'pending-merge-delta-1',
+              managedProcessIds: <String>['proc-merge-delta-1'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-merge-delta-1',
+                  status: 'running',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  processStarted: true,
+                  startedAtEpochMs: 1100,
+                  updatedAtEpochMs: 1600,
+                  stdoutPreview: 'first run fresh output',
+                ),
+              ],
+              runningManagedProcessCount: 1,
+              hasLiveManagedProcesses: true,
+              isTerminal: false,
+            ),
+          ],
+          hasActiveRunsPatch: true,
+          updatedAtEpochMs: 1600,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('first run fresh output'), findsWidgets);
+      expect(find.textContaining('first run old output'), findsNothing);
+      expect(find.textContaining('second run stays visible'), findsWidgets);
+    },
+  );
+
+  testWidgets(
     'open inspector keeps receiving updates when a run id is added later',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
@@ -4463,7 +4769,7 @@ void main() {
               createdAtEpochMs: 1000,
             ),
             OpenCrayChatMessageSnapshot(
-              messageId: 'runtime-process-run-runtime-anchor-1-proc-1',
+              messageId: 'runtime-process-task-runtime-anchor-1-proc-1',
               kind: 'inbound',
               text: 'Process proc-1\n\nrunning: npm run dev\n\nstale output',
               createdAtEpochMs: 1200,
@@ -4544,7 +4850,7 @@ void main() {
       );
       final processBubbleFinder = find.byKey(
         const ValueKey<String>(
-          'chat-bubble-runtime-process-run-runtime-anchor-1-proc-1',
+          'chat-bubble-runtime-process-task-runtime-anchor-1-proc-1',
         ),
       );
       final draftBubbleFinder = find.byKey(
@@ -4927,6 +5233,113 @@ void main() {
     expect(find.textContaining('Planning first chunk.'), findsNothing);
   });
 
+  testWidgets('runtime event merge keys keep different turns distinct', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final runtimeEventDeltas =
+        StreamController<OpenCrayChatRuntimeEventDelta>.broadcast();
+    addTearDown(runtimeEventDeltas.close);
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        messages: const <OpenCrayChatMessageSnapshot>[
+          OpenCrayChatMessageSnapshot(
+            kind: 'outbound',
+            text: 'Read README twice.',
+          ),
+          OpenCrayChatMessageSnapshot(
+            messageId: 'pending-turn-key-1',
+            kind: 'inbound',
+            text: 'Thinking',
+            createdAtEpochMs: 1000,
+          ),
+        ],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[
+          OpenCrayChatRunSnapshot(
+            sessionId: 'session-1',
+            runId: 'run-turn-key-1',
+            taskId: 'task-turn-key-1',
+            acceptedAtEpochMs: 1000,
+            updatedAtEpochMs: 1400,
+            attempt: 1,
+            pendingMessageId: 'pending-turn-key-1',
+            isTerminal: false,
+          ),
+        ],
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'tool_result',
+            runId: 'run-turn-key-1',
+            taskId: 'task-turn-key-1',
+            emittedAtEpochMs: 1500,
+            turn: 0,
+            toolName: 'Read',
+            contentPreview: 'turn zero content',
+          ),
+        ],
+        updatedAtEpochMs: 1500,
+      ),
+      runtimeEventDeltaStream: runtimeEventDeltas.stream,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final runTraceFinder = find.byKey(
+      const ValueKey<String>('chat-run-trace-run-turn-key-1'),
+    );
+    expect(runTraceFinder, findsOneWidget);
+    await _openRunTraceFullscreen(tester, runTraceFinder);
+    final fullscreenFinder = find.byKey(
+      const ValueKey<String>('chat-run-trace-fullscreen-run-turn-key-1'),
+    );
+
+    runtimeEventDeltas.add(
+      const OpenCrayChatRuntimeEventDelta(
+        sessionId: 'session-1',
+        sequence: 1,
+        totalLength: 2,
+        events: <OpenCrayChatRuntimeEventSnapshot>[
+          OpenCrayChatRuntimeEventSnapshot(
+            kind: 'tool_result',
+            runId: 'run-turn-key-1',
+            taskId: 'task-turn-key-1',
+            emittedAtEpochMs: 1500,
+            turn: 1,
+            toolName: 'Read',
+            contentPreview: 'turn one content',
+          ),
+        ],
+        updatedAtEpochMs: 1600,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.descendant(
+        of: fullscreenFinder,
+        matching: find.textContaining('turn zero content', findRichText: true),
+      ),
+      findsWidgets,
+    );
+    expect(
+      find.descendant(
+        of: fullscreenFinder,
+        matching: find.textContaining('turn one content', findRichText: true),
+      ),
+      findsWidgets,
+    );
+  });
+
   testWidgets('duplicate active and retained runs render one status line', (
     tester,
   ) async {
@@ -5033,7 +5446,7 @@ void main() {
               createdAtEpochMs: 1000,
             ),
             OpenCrayChatMessageSnapshot(
-              messageId: 'runtime-process-run-runtime-host-process-1-proc-1',
+              messageId: 'runtime-process-task-runtime-host-process-1-proc-1',
               kind: 'inbound',
               text: 'Process proc-1\n\nrunning: npm run dev',
               createdAtEpochMs: 1200,
@@ -5089,7 +5502,7 @@ void main() {
       );
       final processBubbleFinder = find.byKey(
         const ValueKey<String>(
-          'chat-bubble-runtime-process-run-runtime-host-process-1-proc-1',
+          'chat-bubble-runtime-process-task-runtime-host-process-1-proc-1',
         ),
       );
       final finalBubbleFinder = find.byKey(
@@ -10415,6 +10828,7 @@ void main() {
               ),
               memoryFlush: OpenCrayChatRunMemoryFlushSnapshot(
                 outcome: 'written',
+                executionMode: 'inline',
                 candidateCount: 2,
                 writtenRecordCount: 1,
                 writtenKinds: <String>['project_fact'],
@@ -10444,12 +10858,22 @@ void main() {
               ),
               durableCompaction: OpenCrayChatRunDurableCompactionSnapshot(
                 compactedThisRun: true,
+                executionMode: 'inline',
                 sourceTranscriptMessageCount: 18,
                 retainedTranscriptMessageCount: 12,
                 latestCompactedMessageCount: 6,
                 includedSummaryCount: 1,
                 totalSummaryCount: 1,
                 totalCompactedMessageCount: 6,
+                remoteCompaction: OpenCrayChatRunRemoteCompactionSnapshot(
+                  requested: true,
+                  supported: true,
+                  used: true,
+                  triggerStage: 'pre_compaction',
+                  outputItemCount: 2,
+                  compactionItemCount: 1,
+                  encryptedContentCount: 1,
+                ),
               ),
               skillInventory: OpenCrayChatRunSkillInventorySnapshot(
                 visibleSkillCount: 2,
@@ -10553,7 +10977,32 @@ void main() {
       expect(
         find.descendant(
           of: fullscreenFinder,
+          matching: find.textContaining('Mode: inline'),
+        ),
+        findsAtLeastNWidgets(2),
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
           matching: find.textContaining('Retained 12/18 transcript messages'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'Remote compaction: used, supported, requested, trigger pre_compaction',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'Remote compaction details: output 2, compaction 1, encrypted 1',
+          ),
         ),
         findsOneWidget,
       );

@@ -24,6 +24,7 @@ data class MemoryFlushTrace(
   val outcome: MemoryFlushOutcome? = null,
   val triggerStage: String = "",
   val maintenanceTask: String = "",
+  val executionMode: String = "",
   val contextWindowTokens: Int = 0,
   val autoCompactTokenLimit: Int = 0,
   val estimatedReplayTokens: Int = 0,
@@ -41,6 +42,7 @@ data class MemoryFlushTrace(
     get() = outcome == null &&
       triggerStage.isBlank() &&
       maintenanceTask.isBlank() &&
+      executionMode.isBlank() &&
       contextWindowTokens == 0 &&
       autoCompactTokenLimit == 0 &&
       estimatedReplayTokens == 0 &&
@@ -260,6 +262,7 @@ private fun memoryFlushTrace(
   outcome = outcome,
   triggerStage = triggerStage,
   maintenanceTask = "memory_flush:$triggerStage",
+  executionMode = MEMORY_MAINTENANCE_EXECUTION_MODE_INLINE,
   contextWindowTokens = replayPressure.contextWindowTokens,
   autoCompactTokenLimit = replayPressure.autoCompactTokenLimit,
   estimatedReplayTokens = replayPressure.estimatedReplayTokens,
@@ -276,3 +279,4 @@ private fun memoryFlushTrace(
 
 private const val MEMORY_FLUSH_TRIGGER_STAGE_PRE_COMPACTION: String = "pre_compaction"
 private const val MEMORY_FLUSH_TRIGGER_STAGE_MID_TURN: String = "mid_turn"
+private const val MEMORY_MAINTENANCE_EXECUTION_MODE_INLINE: String = "inline"

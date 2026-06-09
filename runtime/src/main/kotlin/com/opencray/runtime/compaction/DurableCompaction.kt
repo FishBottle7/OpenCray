@@ -57,6 +57,7 @@ data class DurableCompactionTrace(
   val compactedThisRun: Boolean = false,
   val triggerStage: String = "",
   val maintenanceTask: String = "",
+  val executionMode: String = "",
   val contextWindowTokens: Int = 0,
   val autoCompactTokenLimit: Int = 0,
   val estimatedReplayTokens: Int = 0,
@@ -99,6 +100,7 @@ data class DurableCompactionTrace(
     get() = !compactedThisRun &&
       triggerStage.isBlank() &&
       maintenanceTask.isBlank() &&
+      executionMode.isBlank() &&
       contextWindowTokens == 0 &&
       autoCompactTokenLimit == 0 &&
       estimatedReplayTokens == 0 &&
@@ -450,6 +452,7 @@ class DurableCompactionCoordinator(
       compactedThisRun = compactedThisRun,
       triggerStage = replayPressure?.let { triggerStage }.orEmpty(),
       maintenanceTask = replayPressure?.let { "durable_compaction:$triggerStage" }.orEmpty(),
+      executionMode = replayPressure?.let { MEMORY_MAINTENANCE_EXECUTION_MODE_INLINE }.orEmpty(),
       contextWindowTokens = replayPressure?.contextWindowTokens ?: 0,
       autoCompactTokenLimit = replayPressure?.autoCompactTokenLimit ?: 0,
       estimatedReplayTokens = replayPressure?.estimatedReplayTokens ?: 0,
@@ -475,3 +478,4 @@ private fun RemoteCompactionResult.metadata(): Map<String, String> = when (this)
 
 private const val MEMORY_COMPACTION_TRIGGER_STAGE_PRE_COMPACTION: String = "pre_compaction"
 private const val MEMORY_COMPACTION_TRIGGER_STAGE_MID_TURN: String = "mid_turn"
+private const val MEMORY_MAINTENANCE_EXECUTION_MODE_INLINE: String = "inline"

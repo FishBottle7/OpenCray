@@ -1187,6 +1187,7 @@ void main() {
               'memoryFlush': <String, Object?>{
                 'outcome': 'written',
                 'triggerStage': 'pre_compaction',
+                'executionMode': 'inline',
                 'contextWindowTokens': 128000,
                 'autoCompactTokenLimit': 115200,
                 'estimatedReplayTokens': 116000,
@@ -1214,6 +1215,7 @@ void main() {
               'durableCompaction': <String, Object?>{
                 'compactedThisRun': true,
                 'triggerStage': 'pre_compaction',
+                'executionMode': 'inline',
                 'contextWindowTokens': 128000,
                 'autoCompactTokenLimit': 115200,
                 'estimatedReplayTokens': 116000,
@@ -1223,6 +1225,15 @@ void main() {
                 'latestCompactedMessageCount': 6,
                 'includedSummaryCount': 1,
                 'totalSummaryCount': 1,
+                'remoteCompaction': <String, Object?>{
+                  'requested': true,
+                  'supported': true,
+                  'used': true,
+                  'triggerStage': 'pre_compaction',
+                  'outputItemCount': 2,
+                  'compactionItemCount': 1,
+                  'encryptedContentCount': 1,
+                },
               },
               'skillInventory': <String, Object?>{
                 'visibleSkillCount': 2,
@@ -1304,6 +1315,7 @@ void main() {
         snapshot.activeRuns.single.memoryFlush?.triggerStage,
         'pre_compaction',
       );
+      expect(snapshot.activeRuns.single.memoryFlush?.executionMode, 'inline');
       expect(
         snapshot.activeRuns.single.memoryFlush?.contextWindowTokens,
         128000,
@@ -1334,6 +1346,10 @@ void main() {
         'pre_compaction',
       );
       expect(
+        snapshot.activeRuns.single.durableCompaction?.executionMode,
+        'inline',
+      );
+      expect(
         snapshot.activeRuns.single.durableCompaction?.contextWindowTokens,
         128000,
       );
@@ -1348,6 +1364,28 @@ void main() {
       expect(
         snapshot.activeRuns.single.durableCompaction?.tokenThresholdTriggered,
         isTrue,
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.remoteCompaction?.used,
+        isTrue,
+      );
+      expect(
+        snapshot
+            .activeRuns
+            .single
+            .durableCompaction
+            ?.remoteCompaction
+            ?.triggerStage,
+        'pre_compaction',
+      );
+      expect(
+        snapshot
+            .activeRuns
+            .single
+            .durableCompaction
+            ?.remoteCompaction
+            ?.outputItemCount,
+        2,
       );
       expect(
         snapshot.activeRuns.single.skillInventory?.skills.single.name,

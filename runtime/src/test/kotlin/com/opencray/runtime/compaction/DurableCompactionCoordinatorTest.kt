@@ -97,6 +97,7 @@ class DurableCompactionCoordinatorTest {
     assertTrue(context.trace.compactedThisRun)
     assertEquals("mid_turn", context.trace.triggerStage)
     assertEquals("durable_compaction:mid_turn", context.trace.maintenanceTask)
+    assertEquals("inline", context.trace.executionMode)
     assertEquals(4, transcriptStore.snapshot().size)
     assertEquals(1, context.trace.entryTraces.size)
     assertEquals(4, context.trace.entryTraces.single().compactedMessageCount)
