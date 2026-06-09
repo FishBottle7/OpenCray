@@ -4739,6 +4739,94 @@ void main() {
     },
   );
 
+  testWidgets(
+    'no-turn assistant phase aliases patch legacy host bubbles without duplication',
+    (tester) async {
+      const assistantPhase = OpenCrayChatRuntimeEventSnapshot(
+        kind: 'assistant_phase',
+        runId: 'run-assistant-no-turn-alias-1',
+        taskId: 'task-assistant-no-turn-alias-1',
+        emittedAtEpochMs: 2200,
+        phase: 'commentary',
+        isFinal: false,
+        stage: 'Planning',
+        text: 'Fresh no-turn assistant phase text.',
+      );
+      final String hashedMessageId =
+          'runtime-assistant-commentary-task-assistant-no-turn-alias-1--1-Planning-2200-${javaStringHashCode('Fresh no-turn assistant phase text.')}';
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              messageId:
+                  'runtime-assistant-commentary-task-assistant-no-turn-alias-1--1-Planning-2200',
+              kind: 'inbound',
+              text: 'Planning\n\nStale no-turn assistant phase text.',
+              createdAtEpochMs: 2200,
+              isEphemeral: true,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-assistant-no-turn-alias-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 2300,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-assistant-no-turn-alias-1',
+              taskId: 'task-assistant-no-turn-alias-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 2300,
+              attempt: 1,
+              pendingMessageId: 'pending-assistant-no-turn-alias-1',
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[assistantPhase],
+          updatedAtEpochMs: 2300,
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(
+              copy: OpenCrayUiCopy.fromLocaleTag('en'),
+              bridge: bridge,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(
+          const ValueKey<String>(
+            'chat-bubble-runtime-assistant-commentary-task-assistant-no-turn-alias-1--1-Planning-2200',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.byKey(ValueKey<String>('chat-bubble-$hashedMessageId')),
+        findsNothing,
+      );
+      expect(
+        find.textContaining('Fresh no-turn assistant phase text.'),
+        findsWidgets,
+      );
+      expect(
+        find.textContaining('Stale no-turn assistant phase text.'),
+        findsNothing,
+      );
+    },
+  );
+
   testWidgets('assistant phase deltas update the same bubble identity', (
     tester,
   ) async {
@@ -13817,6 +13905,7 @@ void main() {
       <String>['.opencray/chat-media/session-1/hash-c/report.pdf'],
       <String>['.opencray/chat-media/session-1/hash-a/diagram.png'],
     ]);
+    expect(bridge.openedWorkspaceEntries, isEmpty);
     expect(bridge.savedWorkspaceMediaAttachments, hasLength(3));
     expect(
       bridge.savedWorkspaceMediaAttachments[0].relativePath,

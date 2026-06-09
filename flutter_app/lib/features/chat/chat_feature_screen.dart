@@ -1127,6 +1127,10 @@ bool shouldReplaceObservedChatSnapshot(
     if (incoming.updatedAtEpochMs > current.updatedAtEpochMs) {
       return true;
     }
+    if (_chatSnapshotDropsOnlyEphemeralMessageTail(current, incoming) &&
+        _chatSnapshotsHostContentEquivalentExceptMessages(current, incoming)) {
+      return false;
+    }
     return !_chatSnapshotsHostContentEquivalent(current, incoming);
   }
   return !_chatSnapshotsHostContentEquivalent(current, incoming);
@@ -1156,13 +1160,13 @@ bool shouldReplaceObservedRuntimeSnapshot(
   if (_runtimeSnapshotIsAuthoritativeClear(candidate, current)) {
     return true;
   }
+  if (_runtimeSnapshotContinuesTerminalRun(candidate, current)) {
+    return true;
+  }
   final int currentOperationalVersion = _runtimeOperationalVersion(current);
   final int candidateOperationalVersion = _runtimeOperationalVersion(candidate);
   if (candidateOperationalVersion != currentOperationalVersion) {
     return candidateOperationalVersion > currentOperationalVersion;
-  }
-  if (_runtimeSnapshotContinuesTerminalRun(candidate, current)) {
-    return true;
   }
   if (_runtimeSnapshotTerminalizesRun(candidate, current)) {
     return true;
@@ -2132,6 +2136,14 @@ bool _chatSnapshotsHostContentEquivalent(
   OpenCrayChatSnapshot left,
   OpenCrayChatSnapshot right,
 ) {
+  return _chatSnapshotsHostContentEquivalentExceptMessages(left, right) &&
+      _chatMessageSnapshotsEquivalent(left.messages, right.messages);
+}
+
+bool _chatSnapshotsHostContentEquivalentExceptMessages(
+  OpenCrayChatSnapshot left,
+  OpenCrayChatSnapshot right,
+) {
   return left.screenTitle == right.screenTitle &&
       left.modeLabel == right.modeLabel &&
       left.sessionButtonLabel == right.sessionButtonLabel &&
@@ -2141,13 +2153,32 @@ bool _chatSnapshotsHostContentEquivalent(
       left.todoHideDelayMs == right.todoHideDelayMs &&
       left.todoCompletedAtEpochMs == right.todoCompletedAtEpochMs &&
       _chatSummarySnapshotsEquivalent(left.summary, right.summary) &&
-      _chatMessageSnapshotsEquivalent(left.messages, right.messages) &&
       _chatDrawerSnapshotsEquivalent(left.drawer, right.drawer) &&
       _chatTodoSnapshotsEquivalent(left.todos, right.todos) &&
       _chatPendingApprovalSnapshotsEquivalent(
         left.pendingApprovals,
         right.pendingApprovals,
       );
+}
+
+bool _chatSnapshotDropsOnlyEphemeralMessageTail(
+  OpenCrayChatSnapshot current,
+  OpenCrayChatSnapshot incoming,
+) {
+  if (incoming.messages.length >= current.messages.length) {
+    return false;
+  }
+  for (int index = 0; index < incoming.messages.length; index += 1) {
+    if (!_chatMessageSnapshotEquivalent(
+      current.messages[index],
+      incoming.messages[index],
+    )) {
+      return false;
+    }
+  }
+  return current.messages
+      .skip(incoming.messages.length)
+      .every((message) => message.isEphemeral);
 }
 
 bool _chatSummarySnapshotsEquivalent(
@@ -2163,21 +2194,23 @@ bool _chatMessageSnapshotsEquivalent(
   List<OpenCrayChatMessageSnapshot> left,
   List<OpenCrayChatMessageSnapshot> right,
 ) {
-  return _listsEquivalent(
-    left,
-    right,
-    (leftMessage, rightMessage) =>
-        leftMessage.messageId == rightMessage.messageId &&
-        leftMessage.kind == rightMessage.kind &&
-        leftMessage.text == rightMessage.text &&
-        leftMessage.meta == rightMessage.meta &&
-        leftMessage.createdAtEpochMs == rightMessage.createdAtEpochMs &&
-        leftMessage.isEphemeral == rightMessage.isEphemeral &&
-        _chatAttachmentSnapshotsEquivalent(
-          leftMessage.attachments,
-          rightMessage.attachments,
-        ),
-  );
+  return _listsEquivalent(left, right, _chatMessageSnapshotEquivalent);
+}
+
+bool _chatMessageSnapshotEquivalent(
+  OpenCrayChatMessageSnapshot leftMessage,
+  OpenCrayChatMessageSnapshot rightMessage,
+) {
+  return leftMessage.messageId == rightMessage.messageId &&
+      leftMessage.kind == rightMessage.kind &&
+      leftMessage.text == rightMessage.text &&
+      leftMessage.meta == rightMessage.meta &&
+      leftMessage.createdAtEpochMs == rightMessage.createdAtEpochMs &&
+      leftMessage.isEphemeral == rightMessage.isEphemeral &&
+      _chatAttachmentSnapshotsEquivalent(
+        leftMessage.attachments,
+        rightMessage.attachments,
+      );
 }
 
 bool _chatAttachmentSnapshotsEquivalent(
@@ -9162,10 +9195,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final List<String> ownerIds = _assistantPhaseOwnerIds(event);
     if (ownerIds.isEmpty) {
       addId(_assistantPhaseMessageIdForOwner(event, ''));
+      addId(_assistantPhaseBaseMessageIdForOwner(event, ''));
       return ids;
     }
     for (final String ownerId in ownerIds) {
       addId(_assistantPhaseMessageIdForOwner(event, ownerId));
+    }
+    for (final String ownerId in ownerIds) {
+      addId(_assistantPhaseBaseMessageIdForOwner(event, ownerId));
     }
     for (final String ownerId in ownerIds) {
       addId(
@@ -9189,6 +9226,20 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   String _assistantPhaseMessageIdForOwner(
+    OpenCrayChatRuntimeEventSnapshot event,
+    String ownerId,
+  ) {
+    final String base = _assistantPhaseBaseMessageIdForOwner(event, ownerId);
+    if (event.turn != null) {
+      return base;
+    }
+    final String textFingerprint = event.text?.trim().isNotEmpty == true
+        ? event.text!.trim()
+        : _projectedAssistantPhaseMessageText(event);
+    return '$base-${javaStringHashCode(textFingerprint)}';
+  }
+
+  String _assistantPhaseBaseMessageIdForOwner(
     OpenCrayChatRuntimeEventSnapshot event,
     String ownerId,
   ) {
@@ -17693,9 +17744,6 @@ class _ChatFileAttachmentTile extends StatelessWidget {
         : _ChatPalette.textSecondary;
 
     return Ink(
-      key: ValueKey<String>(
-        'chat-message-attachment-${attachment.attachmentId}',
-      ),
       decoration: BoxDecoration(
         color: surfaceColor,
         borderRadius: BorderRadius.circular(14),
@@ -17703,77 +17751,88 @@ class _ChatFileAttachmentTile extends StatelessWidget {
       ),
       child: Material(
         color: Colors.transparent,
-        child: InkWell(
-          borderRadius: BorderRadius.circular(14),
-          onTap: canOpen ? () => _openAttachment(context) : null,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            child: Row(
-              children: <Widget>[
-                Container(
-                  width: 36,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: isOutgoing
-                        ? Colors.white.withValues(alpha: 0.18)
-                        : Colors.white,
-                    borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Row(
+            children: <Widget>[
+              Expanded(
+                child: InkWell(
+                  key: ValueKey<String>(
+                    'chat-message-attachment-${attachment.attachmentId}',
                   ),
-                  child: Icon(
-                    _isPreviewableTextAttachment(attachment)
-                        ? Icons.article_outlined
-                        : Icons.description_outlined,
-                    size: 18,
-                    color: titleColor,
+                  borderRadius: BorderRadius.circular(10),
+                  onTap: canOpen ? () => _openAttachment(context) : null,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 2),
+                    child: Row(
+                      children: <Widget>[
+                        Container(
+                          width: 36,
+                          height: 36,
+                          decoration: BoxDecoration(
+                            color: isOutgoing
+                                ? Colors.white.withValues(alpha: 0.18)
+                                : Colors.white,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Icon(
+                            _isPreviewableTextAttachment(attachment)
+                                ? Icons.article_outlined
+                                : Icons.description_outlined,
+                            size: 18,
+                            color: titleColor,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: <Widget>[
+                              Text(
+                                attachment.displayName,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: _ChatTextStyles.attachmentLabel.copyWith(
+                                  color: titleColor,
+                                ),
+                              ),
+                              const SizedBox(height: 3),
+                              Text(
+                                _chatAttachmentDetailText(attachment),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: _ChatTextStyles.attachmentDetail
+                                    .copyWith(color: detailColor),
+                              ),
+                            ],
+                          ),
+                        ),
+                        if (canOpen) ...<Widget>[
+                          const SizedBox(width: 10),
+                          Icon(
+                            _isPreviewableTextAttachment(attachment)
+                                ? Icons.visibility_outlined
+                                : Icons.open_in_new_rounded,
+                            size: 16,
+                            color: detailColor,
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: <Widget>[
-                      Text(
-                        attachment.displayName,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: _ChatTextStyles.attachmentLabel.copyWith(
-                          color: titleColor,
-                        ),
-                      ),
-                      const SizedBox(height: 3),
-                      Text(
-                        _chatAttachmentDetailText(attachment),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: _ChatTextStyles.attachmentDetail.copyWith(
-                          color: detailColor,
-                        ),
-                      ),
-                    ],
-                  ),
+              ),
+              if (canOpen) ...<Widget>[
+                const SizedBox(width: 8),
+                _ChatAttachmentActions(
+                  bridge: bridge,
+                  copy: copy,
+                  attachment: attachment,
+                  isOutgoing: isOutgoing,
+                  keyPrefix: 'chat-message-attachment',
                 ),
-                if (canOpen) ...<Widget>[
-                  const SizedBox(width: 8),
-                  _ChatAttachmentActions(
-                    bridge: bridge,
-                    copy: copy,
-                    attachment: attachment,
-                    isOutgoing: isOutgoing,
-                    keyPrefix: 'chat-message-attachment',
-                  ),
-                ],
-                if (canOpen) ...<Widget>[
-                  const SizedBox(width: 10),
-                  Icon(
-                    _isPreviewableTextAttachment(attachment)
-                        ? Icons.visibility_outlined
-                        : Icons.open_in_new_rounded,
-                    size: 16,
-                    color: detailColor,
-                  ),
-                ],
               ],
-            ),
+            ],
           ),
         ),
       ),

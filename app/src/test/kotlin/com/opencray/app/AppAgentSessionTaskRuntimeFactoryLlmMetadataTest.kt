@@ -71,7 +71,7 @@ class AppAgentSessionTaskRuntimeFactoryLlmMetadataTest {
   }
 
   @Test
-  fun builtinToolsForWarmupDefaultsResponsesRouteToNativeWebSearch() {
+  fun builtinToolsForWarmupDefaultsOfficialResponsesRouteToNativeWebSearch() {
     val factory = createFactory()
 
     val builtinTools = builtinToolsForWarmupForTest(
@@ -82,10 +82,62 @@ class AppAgentSessionTaskRuntimeFactoryLlmMetadataTest {
           description = "Search the web.",
         ),
       ),
-      llmMetadata = mapOf("protocol" to LlmProviderProtocols.OPENAI_RESPONSES),
+      llmMetadata = mapOf(
+        "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+        "_host.baseUrl" to "https://api.openai.com/v1",
+      ),
     )
 
     assertEquals(LiteLlmBuiltinToolType.WEB_SEARCH, builtinTools.single().type)
+  }
+
+  @Test
+  fun builtinToolsForWarmupKeepsHostWebSearchForCustomResponsesRouteByDefault() {
+    val factory = createFactory()
+
+    val builtinTools = builtinToolsForWarmupForTest(
+      factory = factory,
+      visibleToolDefinitions = listOf(
+        AgentToolDefinition(
+          name = "WebSearch",
+          description = "Search the web.",
+        ),
+      ),
+      llmMetadata = mapOf(
+        "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+        "_host.baseUrl" to "https://third-party.example/v1",
+      ),
+    )
+
+    assertTrue(builtinTools.isEmpty())
+  }
+
+  @Test
+  fun builtinToolsForWarmupKeepsHostWebSearchForResponsesRouteWithoutOfficialHostMetadata() {
+    val factory = createFactory()
+    val visibleTools = listOf(
+      AgentToolDefinition(
+        name = "WebSearch",
+        description = "Search the web.",
+      ),
+    )
+
+    val missingHostBuiltinTools = builtinToolsForWarmupForTest(
+      factory = factory,
+      visibleToolDefinitions = visibleTools,
+      llmMetadata = mapOf("protocol" to LlmProviderProtocols.OPENAI_RESPONSES),
+    )
+    val blankHostBuiltinTools = builtinToolsForWarmupForTest(
+      factory = factory,
+      visibleToolDefinitions = visibleTools,
+      llmMetadata = mapOf(
+        "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+        "_host.baseUrl" to " ",
+      ),
+    )
+
+    assertTrue(missingHostBuiltinTools.isEmpty())
+    assertTrue(blankHostBuiltinTools.isEmpty())
   }
 
   @Test

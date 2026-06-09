@@ -136,6 +136,7 @@ import com.opencray.runtime.workingstate.InMemoryWorkingStateStore
 import com.opencray.runtime.workingstate.WorkingState
 import com.opencray.runtime.workingstate.WorkingStateStore
 import java.io.File
+import java.net.URI
 import java.nio.file.Path
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
@@ -1449,7 +1450,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
           "false" -> false
           else -> null
         }
-      } ?: (llmMetadata["protocol"]?.trim()?.lowercase() == LlmProviderProtocols.OPENAI_RESPONSES)
+      } ?: (
+        llmMetadata["protocol"]?.trim()?.lowercase() == LlmProviderProtocols.OPENAI_RESPONSES &&
+          officialOpenAiRouteForHostMetadata(llmMetadata)
+        )
     if (!nativeProviderWebSearchEnabled) {
       return emptyList()
     }
@@ -1465,6 +1469,17 @@ internal class AppAgentSessionTaskRuntimeFactory(
         includeSources = true,
       ),
     )
+  }
+
+  private fun officialOpenAiRouteForHostMetadata(llmMetadata: Map<String, String>): Boolean {
+    val hostBaseUrl = llmMetadata[HOST_METADATA_BASE_URL]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return false
+    val host = runCatching {
+      URI(hostBaseUrl).host.orEmpty().lowercase()
+    }.getOrDefault("")
+    return host == "api.openai.com" || host.endsWith(".openai.com")
   }
 
   private fun functionToolDefinitionsForWarmup(
