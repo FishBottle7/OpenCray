@@ -7,7 +7,7 @@ import android.os.Handler
 import android.os.IBinder
 
 internal interface RuntimeServiceShellController {
-  fun attach(target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET)
+  fun attach(target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET): Boolean
 
   fun onStartCommand(
     intent: Intent?,
@@ -74,9 +74,9 @@ private class DefaultRuntimeServiceShellController(
   private val boundEndpoints =
     linkedMapOf<RuntimeServiceTarget, RuntimeServiceBinderEndpoint>()
 
-  override fun attach(target: RuntimeServiceTarget) {
+  override fun attach(target: RuntimeServiceTarget): Boolean {
     if (serviceBootstraps.containsKey(target)) {
-      return
+      return true
     }
     val bootstrap = serviceBootstrapFactory(
       service,
@@ -84,8 +84,12 @@ private class DefaultRuntimeServiceShellController(
       mainHandler,
       target,
     )
-    bootstrap.attach()
-    serviceBootstraps[target] = bootstrap
+    return if (bootstrap.attach()) {
+      serviceBootstraps[target] = bootstrap
+      true
+    } else {
+      false
+    }
   }
 
   override fun onStartCommand(
@@ -95,7 +99,9 @@ private class DefaultRuntimeServiceShellController(
     val target = runtimeTargetReader(intent)
     var bootstrap = requireBootstrap(target)
     if (runtimeResetRequested(intent)) {
-      resetRuntimeShell(target)
+      if (!resetRuntimeShell(target)) {
+        return Service.START_NOT_STICKY
+      }
       bootstrap = requireBootstrap(target)
     }
     if (bootstrapForegroundRequested(intent)) {
@@ -119,11 +125,11 @@ private class DefaultRuntimeServiceShellController(
     disposeAllShells()
   }
 
-  private fun resetRuntimeShell(target: RuntimeServiceTarget) {
+  private fun resetRuntimeShell(target: RuntimeServiceTarget): Boolean {
     val bootstrap = serviceBootstraps[target]
     disposeShell(target)
     bootstrap?.resetRuntimeOwner()
-    attach(target)
+    return attach(target)
   }
 
   private fun requireBootstrap(

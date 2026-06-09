@@ -37,7 +37,9 @@ internal class OpenCrayAgentRuntimeService : Service() {
     startId: Int,
   ): Int {
     val controller = shellController
-    controller.attach(runtimeTargetForIntent(intent))
+    if (!controller.attach(runtimeTargetForIntent(intent))) {
+      return START_NOT_STICKY
+    }
     return controller.onStartCommand(intent = intent, startId = startId)
   }
 

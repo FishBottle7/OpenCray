@@ -3204,6 +3204,71 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun runtimeServiceShellControllerDoesNotCacheShellWhenOwnerLeaseIsNotHeld() {
+    val context = MinimalContext()
+    val mainHandler = Handler()
+    val service = TestRuntimeService()
+    val steps = mutableListOf<String>()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator(
+      ownerLeaseAcquired = false,
+    )
+    val controller = runtimeServiceShellController(
+      service = service,
+      appContext = context,
+      mainHandler = mainHandler,
+      bootstrapDependencies = defaultRuntimeBootstrapDependencies,
+      serviceBootstrapFactory = { _, _, _, _ ->
+        steps += "assemble_bootstrap"
+        OpenCrayAgentRuntimeServiceBootstrap(
+          shellControlBundle = RuntimeServiceShellControlBundle(
+            keepAliveController = RuntimeServiceKeepAliveController(
+              appVisibleProvider = { true },
+              scheduler = object : RuntimeServiceDelayScheduler {
+                override fun schedule(
+                  delayMs: Long,
+                  action: () -> Unit,
+                ): RuntimeServiceDelayedTask = RuntimeServiceDelayedTask { }
+              },
+              stopRequester = { false },
+            ),
+            runtimeForegroundController = RuntimeForegroundController(
+              serviceAdapter = object : RuntimeForegroundServiceAdapter {
+                override fun startOrUpdateForeground(model: RuntimeForegroundNotificationModel) = Unit
+
+                override fun stopForeground(removeNotification: Boolean) = Unit
+              },
+              appVisibleProvider = { true },
+            ),
+            attach = { steps += "shell_attach" },
+          ),
+          transportBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
+            gatewayBundle = testServiceGatewayBundle(),
+            ensureStarted = { steps += "transport_started" },
+          ),
+          executionCoordinator = RecordingRuntimeServiceExecutionCoordinator(),
+          wakeCommandDispatcher = RecordingRuntimeServiceWakeCommandDispatcher(),
+          binderEndpoint = RecordingRuntimeServiceBinderEndpoint(),
+          projectionCoordinator = projectionCoordinator,
+        )
+      },
+    )
+
+    val attached = controller.attach()
+    val startFailure = runCatching {
+      controller.onStartCommand(Intent("runtime-shell-start"), startId = 9)
+    }.exceptionOrNull()
+    val bindFailure = runCatching {
+      controller.onBind(null)
+    }.exceptionOrNull()
+
+    assertFalse(attached)
+    assertEquals(listOf("assemble_bootstrap"), steps)
+    assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
+    assertTrue(startFailure is IllegalStateException)
+    assertTrue(bindFailure is IllegalStateException)
+  }
+
+  @Test
   fun runtimeServiceShellControllerAttachIsIdempotentWithinSingleShellInstance() {
     val context = MinimalContext()
     val mainHandler = Handler()
@@ -3914,45 +3979,30 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
 
   @Test
   fun runtimeServiceShellControllerReturnsNotStickyWhenOwnerLeaseIsNotHeld() {
-    val context = MinimalContext()
-    val mainHandler = Handler()
-    val service = TestRuntimeService()
     val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator(
       ownerLeaseAcquired = false,
     )
-    val controller = runtimeServiceShellController(
-      service = service,
-      appContext = context,
-      mainHandler = mainHandler,
-      bootstrapDependencies = defaultRuntimeBootstrapDependencies,
-      serviceBootstrapFactory = { _, _, _, _ ->
-        OpenCrayAgentRuntimeServiceBootstrap(
-          shellControlBundle = defaultShellControlBundle(),
-          transportBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
-            gatewayBundle = testServiceGatewayBundle(),
-          ),
-          executionCoordinator = FixedStateRuntimeServiceExecutionCoordinator(
-            keepAliveState = RuntimeServiceKeepAliveState(
-              phase = RuntimeServiceKeepAliveState.PHASE_IDLE_GRACE,
-              stopScheduled = true,
-              stopDeadlineEpochMs = 31_000L,
-            ),
-          ),
-          wakeCommandDispatcher = RecordingRuntimeServiceWakeCommandDispatcher(),
-          binderEndpoint = RecordingRuntimeServiceBinderEndpoint(),
-          projectionCoordinator = projectionCoordinator,
-        )
-      },
+    val bootstrap = OpenCrayAgentRuntimeServiceBootstrap(
+      shellControlBundle = defaultShellControlBundle(),
+      transportBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
+        gatewayBundle = testServiceGatewayBundle(),
+      ),
+      executionCoordinator = FixedStateRuntimeServiceExecutionCoordinator(
+        keepAliveState = RuntimeServiceKeepAliveState(
+          phase = RuntimeServiceKeepAliveState.PHASE_IDLE_GRACE,
+          stopScheduled = true,
+          stopDeadlineEpochMs = 31_000L,
+        ),
+      ),
+      wakeCommandDispatcher = RecordingRuntimeServiceWakeCommandDispatcher(),
+      binderEndpoint = RecordingRuntimeServiceBinderEndpoint(),
+      projectionCoordinator = projectionCoordinator,
     )
 
-    controller.attach()
-    val startResult = controller.onStartCommand(
-      intent = Intent("runtime-shell-start"),
-      startId = 5,
-    )
+    val startResult = runtimeServiceStartResult(bootstrap)
 
     assertEquals(Service.START_NOT_STICKY, startResult)
-    assertEquals(2, projectionCoordinator.ownerLeaseAcquireCallCount)
+    assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
   }
 
   @Test
