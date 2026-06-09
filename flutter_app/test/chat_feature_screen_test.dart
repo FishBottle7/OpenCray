@@ -11443,19 +11443,103 @@ void main() {
       expect(find.text('Approval required'), findsOneWidget);
       expect(find.text(copy.chatComposerPlaceholder), findsNothing);
       expect(find.text('git status --short'), findsOneWidget);
-      expect(find.text('Working directory  .'), findsOneWidget);
+      expect(find.text(copy.chatApprovalToolLabel), findsOneWidget);
+      expect(find.text('Bash'), findsOneWidget);
+      expect(find.text(copy.chatApprovalWorkingDirectoryLabel), findsOneWidget);
+      expect(find.text(copy.chatApprovalReasonLabel), findsOneWidget);
       expect(
-        find.text('Reason  Check repository state before editing.'),
+        find.text('Check repository state before editing.'),
         findsOneWidget,
       );
 
       await tester.ensureVisible(find.text('Approve'));
       await tester.tap(find.text('Approve'));
+      await tester.pump();
+
+      expect(find.text(copy.chatApprovalDecisionApproved), findsOneWidget);
+
       await tester.pumpAndSettle();
 
       expect(bridge.approvedApprovalIds, <String>['run-approval-1']);
     },
   );
+
+  testWidgets('high-risk approval exposes structured non-color risk cues', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final bridge = _FakeChatBridge(
+      chatSnapshot: _hostChatSnapshot(
+        pendingApprovals: const <OpenCrayChatPendingApprovalSnapshot>[
+          OpenCrayChatPendingApprovalSnapshot(
+            runId: 'run-approval-risk-1',
+            taskId: 'task-approval-risk-1',
+            title: 'High-risk approval required',
+            body: 'Edit src/main.dart',
+            approveLabel: 'Approve',
+            rejectLabel: 'Reject',
+            isHighRisk: true,
+            toolName: 'Edit',
+            requestSummary: 'Edit src/main.dart',
+            pathDetails: <String>['src/main.dart'],
+            workingDirectory: '.',
+            reason: 'Apply the requested UI change.',
+          ),
+        ],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-1',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final riskCard = find.byKey(
+      const ValueKey<String>('chat-approval-card-run-approval-risk-1'),
+    );
+    expect(riskCard, findsOneWidget);
+    expect(
+      find.descendant(
+        of: riskCard,
+        matching: find.text(copy.chatHighRiskApproval),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: riskCard,
+        matching: find.text(copy.chatApprovalToolLabel),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: riskCard,
+        matching: find.text(copy.chatApprovalPathsLabel),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: riskCard, matching: find.text('src/main.dart')),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: riskCard,
+        matching: find.text(copy.chatApprovalReasonLabel),
+      ),
+      findsOneWidget,
+    );
+  });
 
   testWidgets(
     'host-backed approval surface appears as soon as a pending approval snapshot arrives',
@@ -11599,10 +11683,26 @@ void main() {
 
       await tester.ensureVisible(find.text('Approve'));
       await tester.tap(find.text('Approve'));
-      await tester.pumpAndSettle();
+      await tester.pump();
 
       expect(bridge.approvedApprovalIds, <String>['run-approval-stack-1']);
       expect(bridge.rejectedApprovalIds, isEmpty);
+      expect(find.text('Approved'), findsOneWidget);
+
+      await tester.pump(const Duration(milliseconds: 800));
+
+      expect(
+        find.byKey(
+          const ValueKey<String>('chat-approval-card-run-approval-stack-1'),
+        ),
+        findsNothing,
+      );
+      expect(
+        find.byKey(
+          const ValueKey<String>('chat-approval-card-run-approval-stack-2'),
+        ),
+        findsOneWidget,
+      );
     },
   );
 

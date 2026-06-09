@@ -50,6 +50,12 @@ class OpenCrayUiCopy {
   String get filesPasteAction => isChinese ? '粘贴' : 'Paste';
   String get filesRenameAction => isChinese ? '重命名' : 'Rename';
   String get filesDeleteAction => isChinese ? '删除' : 'Delete';
+  String get filesOperationPreparingCopy => isChinese ? '复制已准备' : 'Copy ready';
+  String get filesOperationPreparingMove => isChinese ? '移动已准备' : 'Move ready';
+  String get filesOperationPasting => isChinese ? '粘贴中' : 'Pasting';
+  String get filesOperationDeleting => isChinese ? '删除中' : 'Deleting';
+  String get filesOperationDone => isChinese ? '已完成' : 'Done';
+  String get filesOperationFailed => isChinese ? '操作失败' : 'Operation failed';
   String get filesCancelAction => isChinese ? '取消' : 'Cancel';
   String get filesCreateAction => isChinese ? '创建' : 'Create';
   String get filesSaveAction => isChinese ? '保存' : 'Save';
@@ -178,6 +184,15 @@ class OpenCrayUiCopy {
   String get skillsInstallingButton => isChinese ? '安装中' : 'Installing';
   String get skillsInstalledButton => isChinese ? '已安装' : 'Installed';
   String get skillsRetryInstallButton => isChinese ? '重试' : 'Retry';
+  String get skillsUpdatingButton => isChinese ? '更新中' : 'Updating';
+  String get skillsUpdatedButton => isChinese ? '已更新' : 'Updated';
+  String get skillsDeletingButton => isChinese ? '删除中' : 'Deleting';
+  String get skillsDeletedButton => isChinese ? '已删除' : 'Deleted';
+  String get skillsEnablingButton => isChinese ? '启用中' : 'Enabling';
+  String get skillsDisablingButton => isChinese ? '停用中' : 'Disabling';
+  String get skillsEnabledButton => isChinese ? '已启用' : 'Enabled';
+  String get skillsDisabledButton => isChinese ? '已停用' : 'Disabled';
+  String get skillsActionFailedButton => isChinese ? '操作失败' : 'Action failed';
   String get skillsPreviewButton => isChinese ? '查看内容' : 'Preview';
   String get skillsInspectButton => isChinese ? '检查' : 'Inspect';
   String get skillsCancelAction => isChinese ? '取消' : 'Cancel';
@@ -553,6 +568,10 @@ class OpenCrayUiCopy {
   String get chatApprovalWorkingDirectoryLabel =>
       isChinese ? '工作目录' : 'Working directory';
   String get chatApprovalReasonLabel => isChinese ? '理由' : 'Agent reason';
+  String get chatApprovalDecisionApproved => isChinese ? '已批准' : 'Approved';
+  String get chatApprovalDecisionApprovedForSession =>
+      isChinese ? '本会话已批准' : 'Approved for session';
+  String get chatApprovalDecisionRejected => isChinese ? '已拒绝' : 'Rejected';
   String get chatApprovalActionFailed =>
       isChinese ? '处理审批请求失败。' : 'Failed to process approval request.';
   String get chatSessionActionFailed =>

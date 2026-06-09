@@ -2589,6 +2589,8 @@ class OpenCrayChatFeature extends StatefulWidget {
   State<OpenCrayChatFeature> createState() => _OpenCrayChatFeatureState();
 }
 
+enum _ApprovalResolutionKind { approved, approvedForSession, rejected }
+
 class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   static const AnimationStyle _sessionMenuAnimationStyle = AnimationStyle(
     duration: OpenCrayMotion.instant,
@@ -2624,6 +2626,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   bool _runtimeEventDeltaResyncInFlight = false;
   OpenCrayChatRuntimeEventDelta? _queuedRuntimeEventDeltaAfterResync;
   final Set<String> _approvalTaskIdsInFlight = <String>{};
+  final Map<String, _ApprovalResolutionKind> _approvalResolutionById =
+      <String, _ApprovalResolutionKind>{};
+  final Set<String> _locallyDismissedApprovalIds = <String>{};
+  final Map<String, Timer> _approvalResolutionDismissTimers = <String, Timer>{};
   final Set<String> _interruptRunIdsInFlight = <String>{};
   final Set<String> _retryRunIdsInFlight = <String>{};
   final Set<String> _selectedMessageIds = <String>{};
@@ -2904,6 +2910,20 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
   }
 
+  List<ChatPendingApprovalData> _visiblePendingApprovals(
+    List<ChatPendingApprovalData> approvals,
+  ) {
+    if (_locallyDismissedApprovalIds.isEmpty) {
+      return approvals;
+    }
+    return approvals
+        .where(
+          (approval) =>
+              !_locallyDismissedApprovalIds.contains(approval.approvalId),
+        )
+        .toList(growable: false);
+  }
+
   ChatFeatureState _applyLocalDeletionTombstones(ChatFeatureState state) {
     final String sessionId = _sessionIdForState(state).trim();
     final bool selectedSessionDeleted =
@@ -2921,6 +2941,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       pendingApprovals = const <ChatPendingApprovalData>[];
       composer = composer.copyWith(todos: const <ChatTodoItemData>[]);
     }
+    pendingApprovals = _visiblePendingApprovals(pendingApprovals);
     if (locallyDeletedMessageIds.isNotEmpty) {
       messages = messages
           .where(
@@ -2997,6 +3018,28 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   }
 
   void _pruneLocalDeletionTombstones(OpenCrayChatSnapshot snapshot) {
+    final Set<String> snapshotApprovalIds = snapshot.pendingApprovals
+        .map(
+          (approval) => approval.runId.trim().isNotEmpty
+              ? approval.runId.trim()
+              : approval.taskId.trim(),
+        )
+        .where((approvalId) => approvalId.isNotEmpty)
+        .toSet();
+    _approvalResolutionById.removeWhere(
+      (approvalId, _) => !snapshotApprovalIds.contains(approvalId),
+    );
+    _locallyDismissedApprovalIds.removeWhere(
+      (approvalId) => !snapshotApprovalIds.contains(approvalId),
+    );
+    final List<String> staleApprovalTimers = _approvalResolutionDismissTimers
+        .keys
+        .where((approvalId) => !snapshotApprovalIds.contains(approvalId))
+        .toList(growable: false);
+    for (final String approvalId in staleApprovalTimers) {
+      _approvalResolutionDismissTimers.remove(approvalId)?.cancel();
+    }
+
     if (_locallyDeletedSessionIds.isNotEmpty) {
       final Set<String> snapshotSessionIds = snapshot.drawer.sessions
           .map((session) => session.sessionId.trim())
@@ -3108,6 +3151,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _runtimeEventDeltaSubscription?.cancel();
     _runtimeProjectionFlushTimer?.cancel();
     _todoArchiveHideTimer?.cancel();
+    for (final Timer timer in _approvalResolutionDismissTimers.values) {
+      timer.cancel();
+    }
+    _approvalResolutionDismissTimers.clear();
     _sandboxSessionAutoRefreshTimer?.cancel();
     _sandboxSessionLifecycleRefreshTimer?.cancel();
     _composerController.dispose();
@@ -3950,8 +3997,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     const double toolbarReserveHeight = 44;
     final double topGlassBarHeight =
         MediaQuery.paddingOf(context).top + toolbarReserveHeight + 4;
+    final List<ChatPendingApprovalData> visibleApprovals =
+        _visiblePendingApprovals(_state.pendingApprovals);
     final bool showApprovalSurface =
-        !_isMessageSelectionMode && _state.pendingApprovals.isNotEmpty;
+        !_isMessageSelectionMode && visibleApprovals.isNotEmpty;
     final Widget bottomSurface = _isMessageSelectionMode
         ? _ChatSelectionToolbar(
             copy: widget.copy,
@@ -3970,8 +4019,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         : showApprovalSurface
         ? _PendingApprovalOverlaySurface(
             copy: widget.copy,
-            approvals: _state.pendingApprovals,
+            approvals: visibleApprovals,
             busyApprovalTaskIds: _approvalTaskIdsInFlight,
+            approvalResolutionById: _approvalResolutionById,
             onApproveApproval: _approvePendingApproval,
             onApproveApprovalForSession: _approvePendingApprovalForSession,
             onRejectApproval: _rejectPendingApproval,
@@ -5307,6 +5357,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   Future<void> _approvePendingApproval(ChatPendingApprovalData approval) async {
     await _runApprovalAction(
       approvalId: approval.approvalId,
+      resolutionKind: _ApprovalResolutionKind.approved,
       action: (bridge) => bridge.approveChatApproval(approval.approvalId),
     );
   }
@@ -5316,6 +5367,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   ) async {
     await _runApprovalAction(
       approvalId: approval.approvalId,
+      resolutionKind: _ApprovalResolutionKind.approvedForSession,
       action: (bridge) =>
           bridge.approveChatApprovalForSession(approval.approvalId),
     );
@@ -5324,12 +5376,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   Future<void> _rejectPendingApproval(ChatPendingApprovalData approval) async {
     await _runApprovalAction(
       approvalId: approval.approvalId,
+      resolutionKind: _ApprovalResolutionKind.rejected,
       action: (bridge) => bridge.rejectChatApproval(approval.approvalId),
     );
   }
 
   Future<void> _runApprovalAction({
     required String approvalId,
+    required _ApprovalResolutionKind resolutionKind,
     required Future<void> Function(OpenCrayHostBridge bridge) action,
   }) async {
     final bridge = widget.bridge;
@@ -5341,6 +5395,13 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     });
     try {
       await action(bridge);
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _approvalResolutionById[approvalId] = resolutionKind;
+      });
+      _scheduleApprovalResolutionDismiss(approvalId);
     } catch (_) {
       if (!mounted) {
         return;
@@ -5357,6 +5418,38 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         });
       }
     }
+  }
+
+  void _scheduleApprovalResolutionDismiss(String approvalId) {
+    _approvalResolutionDismissTimers.remove(approvalId)?.cancel();
+    final Duration duration = OpenCrayMotion.resolve(
+      context,
+      OpenCrayMotion.panel,
+    );
+    final Duration holdDuration = duration == Duration.zero
+        ? Duration.zero
+        : duration + const Duration(milliseconds: 280);
+    if (holdDuration == Duration.zero) {
+      _dismissResolvedApproval(approvalId);
+      return;
+    }
+    _approvalResolutionDismissTimers[approvalId] = Timer(holdDuration, () {
+      _approvalResolutionDismissTimers.remove(approvalId);
+      _dismissResolvedApproval(approvalId);
+    });
+  }
+
+  void _dismissResolvedApproval(String approvalId) {
+    if (!mounted) {
+      _approvalResolutionById.remove(approvalId);
+      _locallyDismissedApprovalIds.add(approvalId);
+      return;
+    }
+    setState(() {
+      _approvalResolutionById.remove(approvalId);
+      _locallyDismissedApprovalIds.add(approvalId);
+      _state = _applyLocalDeletionTombstones(_state);
+    });
   }
 
   Future<void> _retryRunTrace(ChatRunTraceData trace) async {
@@ -12364,6 +12457,7 @@ class _PendingApprovalOverlaySurface extends StatelessWidget {
     required this.copy,
     required this.approvals,
     required this.busyApprovalTaskIds,
+    required this.approvalResolutionById,
     required this.onApproveApproval,
     required this.onApproveApprovalForSession,
     required this.onRejectApproval,
@@ -12372,6 +12466,7 @@ class _PendingApprovalOverlaySurface extends StatelessWidget {
   final OpenCrayUiCopy copy;
   final List<ChatPendingApprovalData> approvals;
   final Set<String> busyApprovalTaskIds;
+  final Map<String, _ApprovalResolutionKind> approvalResolutionById;
   final ValueChanged<ChatPendingApprovalData> onApproveApproval;
   final ValueChanged<ChatPendingApprovalData> onApproveApprovalForSession;
   final ValueChanged<ChatPendingApprovalData> onRejectApproval;
@@ -12398,8 +12493,10 @@ class _PendingApprovalOverlaySurface extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             _ApprovalActionRow(
+              copy: copy,
               approval: activeApproval,
               isBusy: busyApprovalTaskIds.contains(activeApproval.approvalId),
+              resolutionKind: approvalResolutionById[activeApproval.approvalId],
               onApprove: () => onApproveApproval(activeApproval),
               onApproveForSession: () =>
                   onApproveApprovalForSession(activeApproval),
@@ -12575,7 +12672,7 @@ class _PendingApprovalCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final _PendingApprovalPresentation presentation =
-        _PendingApprovalPresentation.fromApproval(approval);
+        _PendingApprovalPresentation.fromApproval(copy, approval);
     final Color surfaceColor = approval.isHighRisk
         ? const Color(0xFFFFF8F5)
         : const Color(0xFFF7F9FC);
@@ -12588,19 +12685,9 @@ class _PendingApprovalCard extends StatelessWidget {
     final TextStyle detailStyle = _ChatTextStyles.approvalRequest.copyWith(
       color: const Color(0xFF1E2430),
     );
-    final List<String> previewLines = <String>[
-      presentation.primaryLine,
-      if (presentation.secondaryLines.isNotEmpty)
-        presentation.secondaryLines.first,
-      if (presentation.reasonLine != null) presentation.reasonLine!,
-    ];
-    final List<String> activeLines = <String>[
-      presentation.primaryLine,
-      ...presentation.secondaryLines,
-      if (presentation.reasonLine != null) presentation.reasonLine!,
-      if (presentation.messageLine != null) presentation.messageLine!,
-    ];
-    final List<String> visibleLines = isPreview ? previewLines : activeLines;
+    final List<_ApprovalInfoRowData> visibleRows = isPreview
+        ? presentation.impactRows.take(1).toList(growable: false)
+        : presentation.impactRows;
 
     return DecoratedBox(
       key: ValueKey<String>('chat-approval-card-${approval.approvalId}'),
@@ -12633,14 +12720,9 @@ class _PendingApprovalCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: <Widget>[
                     Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: <Widget>[
-                          Text(
-                            approval.title,
-                            style: _ChatTextStyles.cardTitle,
-                          ),
-                        ],
+                      child: Text(
+                        approval.title,
+                        style: _ChatTextStyles.cardTitle,
                       ),
                     ),
                     if (approval.isHighRisk && !isPreview) ...<Widget>[
@@ -12664,30 +12746,39 @@ class _PendingApprovalCard extends StatelessWidget {
                     ],
                   ],
                 ),
-                const SizedBox(height: 10),
-                for (
-                  int index = 0;
-                  index < visibleLines.length;
-                  index += 1
-                ) ...<Widget>[
-                  if (index > 0) const SizedBox(height: 8),
+                if (presentation.headline.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 10),
                   Text(
-                    visibleLines[index],
-                    maxLines: isPreview && index > 0 ? 1 : null,
-                    overflow: isPreview && index > 0
+                    presentation.headline,
+                    key: ValueKey<String>(
+                      'chat-approval-headline-${approval.approvalId}',
+                    ),
+                    maxLines: isPreview ? 1 : null,
+                    overflow: isPreview
                         ? TextOverflow.ellipsis
                         : TextOverflow.visible,
-                    style: index == 0
-                        ? detailStyle
-                        : _ChatTextStyles.approvalReason.copyWith(
-                            color:
-                                index == visibleLines.length - 1 &&
-                                    presentation.messageLine != null &&
-                                    visibleLines[index] ==
-                                        presentation.messageLine
-                                ? _ChatPalette.textSecondary
-                                : reasonColor,
-                          ),
+                    style: detailStyle,
+                  ),
+                ],
+                if (visibleRows.isNotEmpty) ...<Widget>[
+                  const SizedBox(height: 10),
+                  for (int index = 0; index < visibleRows.length; index += 1)
+                    Padding(
+                      padding: EdgeInsets.only(top: index == 0 ? 0 : 7),
+                      child: _ApprovalInfoRow(
+                        row: visibleRows[index],
+                        color: reasonColor,
+                        compact: isPreview,
+                      ),
+                    ),
+                ],
+                if (presentation.messageLine != null && !isPreview) ...<Widget>[
+                  const SizedBox(height: 8),
+                  Text(
+                    presentation.messageLine!,
+                    style: _ChatTextStyles.approvalReason.copyWith(
+                      color: _ChatPalette.textSecondary,
+                    ),
                   ),
                 ],
               ],
@@ -12699,23 +12790,156 @@ class _PendingApprovalCard extends StatelessWidget {
   }
 }
 
+class _ApprovalInfoRowData {
+  const _ApprovalInfoRowData({required this.label, required this.value});
+
+  final String label;
+  final String value;
+}
+
+class _ApprovalInfoRow extends StatelessWidget {
+  const _ApprovalInfoRow({
+    required this.row,
+    required this.color,
+    required this.compact,
+  });
+
+  final _ApprovalInfoRowData row;
+  final Color color;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: compact ? 0.34 : 0.48),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.54)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 7),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: <Widget>[
+            SizedBox(
+              width: compact ? 58 : 86,
+              child: Text(
+                row.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: _ChatTextStyles.approvalReason.copyWith(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: color.withValues(alpha: 0.78),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                row.value,
+                maxLines: compact ? 1 : 3,
+                overflow: TextOverflow.ellipsis,
+                style: _ChatTextStyles.approvalReason.copyWith(color: color),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ApprovalResolutionBanner extends StatelessWidget {
+  const _ApprovalResolutionBanner({
+    required this.label,
+    required this.isRejected,
+  });
+
+  final String label;
+  final bool isRejected;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color color = isRejected
+        ? const Color(0xFF8B4A4A)
+        : const Color(0xFF226B45);
+    final Color surface = isRejected
+        ? const Color(0xFFFFF1F1)
+        : const Color(0xFFEAF7EF);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withValues(alpha: 0.18)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(
+              isRejected ? Icons.block_rounded : Icons.check_circle_rounded,
+              size: 15,
+              color: color,
+            ),
+            const SizedBox(width: 7),
+            Flexible(
+              child: Text(
+                label,
+                key: const ValueKey<String>('chat-approval-resolution-label'),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: _ChatTextStyles.approvalAction.copyWith(color: color),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _approvalResolutionLabel(
+  OpenCrayUiCopy copy,
+  _ApprovalResolutionKind kind,
+) => switch (kind) {
+  _ApprovalResolutionKind.approved => copy.chatApprovalDecisionApproved,
+  _ApprovalResolutionKind.approvedForSession =>
+    copy.chatApprovalDecisionApprovedForSession,
+  _ApprovalResolutionKind.rejected => copy.chatApprovalDecisionRejected,
+};
+
 class _ApprovalActionRow extends StatelessWidget {
   const _ApprovalActionRow({
+    required this.copy,
     required this.approval,
     required this.isBusy,
+    required this.resolutionKind,
     required this.onApprove,
     required this.onApproveForSession,
     required this.onReject,
   });
 
+  final OpenCrayUiCopy copy;
   final ChatPendingApprovalData approval;
   final bool isBusy;
+  final _ApprovalResolutionKind? resolutionKind;
   final VoidCallback onApprove;
   final VoidCallback onApproveForSession;
   final VoidCallback onReject;
 
   @override
   Widget build(BuildContext context) {
+    if (resolutionKind != null) {
+      return SizedBox(
+        width: double.infinity,
+        child: _ApprovalResolutionBanner(
+          label: _approvalResolutionLabel(copy, resolutionKind!),
+          isRejected: resolutionKind == _ApprovalResolutionKind.rejected,
+        ),
+      );
+    }
     final Color accentColor = approval.isHighRisk
         ? const Color(0xFFF97316)
         : _ChatPalette.accent;
@@ -12780,20 +13004,20 @@ class _ApprovalActionRow extends StatelessWidget {
 
 class _PendingApprovalPresentation {
   const _PendingApprovalPresentation({
-    required this.primaryLine,
-    required this.secondaryLines,
-    required this.reasonLine,
+    required this.headline,
+    required this.impactRows,
     required this.messageLine,
   });
 
-  final String primaryLine;
-  final List<String> secondaryLines;
-  final String? reasonLine;
+  final String headline;
+  final List<_ApprovalInfoRowData> impactRows;
   final String? messageLine;
 
   factory _PendingApprovalPresentation.fromApproval(
+    OpenCrayUiCopy copy,
     ChatPendingApprovalData approval,
   ) {
+    final String toolName = approval.toolName.trim();
     final String requestSummary = approval.requestSummary.trim();
     final String primaryDetail = approval.primaryDetail.trim();
     final List<String> pathDetails = approval.pathDetails
@@ -12805,22 +13029,42 @@ class _PendingApprovalPresentation {
     final String message = approval.message.trim();
     final String body = approval.body.trim();
 
-    final String primaryLine = requestSummary.isNotEmpty
+    final String headline = requestSummary.isNotEmpty
         ? requestSummary
         : primaryDetail.isNotEmpty
         ? primaryDetail
         : pathDetails.isNotEmpty
         ? pathDetails.first
         : body;
-    final List<String> secondaryLines = <String>[
+    final List<_ApprovalInfoRowData> impactRows = <_ApprovalInfoRowData>[
+      if (toolName.isNotEmpty)
+        _ApprovalInfoRowData(
+          label: copy.chatApprovalToolLabel,
+          value: toolName,
+        ),
       if (primaryDetail.isNotEmpty &&
-          primaryDetail != primaryLine &&
+          primaryDetail != headline &&
           !pathDetails.contains(primaryDetail))
-        primaryDetail,
-      ...pathDetails.where((path) => path != primaryLine),
-      if (workingDirectory.isNotEmpty) 'Working directory  $workingDirectory',
+        _ApprovalInfoRowData(
+          label: copy.chatApprovalDetailsLabel,
+          value: primaryDetail,
+        ),
+      if (pathDetails.where((path) => path != headline).isNotEmpty)
+        _ApprovalInfoRowData(
+          label: copy.chatApprovalPathsLabel,
+          value: pathDetails.where((path) => path != headline).join('\n'),
+        ),
+      if (workingDirectory.isNotEmpty)
+        _ApprovalInfoRowData(
+          label: copy.chatApprovalWorkingDirectoryLabel,
+          value: workingDirectory,
+        ),
+      if (reason.isNotEmpty)
+        _ApprovalInfoRowData(
+          label: copy.chatApprovalReasonLabel,
+          value: reason,
+        ),
     ];
-    final String? reasonLine = reason.isEmpty ? null : 'Reason  $reason';
     final String? messageLine =
         message.isNotEmpty &&
             message != reason &&
@@ -12828,9 +13072,8 @@ class _PendingApprovalPresentation {
         ? message
         : null;
     return _PendingApprovalPresentation(
-      primaryLine: primaryLine,
-      secondaryLines: secondaryLines,
-      reasonLine: reasonLine,
+      headline: headline,
+      impactRows: impactRows,
       messageLine: messageLine,
     );
   }

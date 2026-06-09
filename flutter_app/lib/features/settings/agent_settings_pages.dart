@@ -28,6 +28,8 @@ enum _AgentRiskTolerance { conservative, balanced, assertive }
 
 enum _AgentToolUseBias { verifyFirst, executionFirst, minimalTools }
 
+enum _AgentCreateStatus { clean, edited, saving, saved, failed }
+
 class _AgentImageReference {
   const _AgentImageReference({
     required this.id,
@@ -959,9 +961,9 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
   }
 
   Future<T?> _pushAgentPage<T>(WidgetBuilder builder) {
-    return Navigator.of(context).push<T>(
-      openCrayHorizontalPageRoute<T>(builder: builder),
-    );
+    return Navigator.of(
+      context,
+    ).push<T>(openCrayHorizontalPageRoute<T>(builder: builder));
   }
 
   Future<void> _selectAgent(_SavedAgent agent) async {
@@ -1065,6 +1067,8 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   late final TextEditingController _descriptionController =
       TextEditingController(text: widget.draft.baseDescription);
   bool _isSubmitting = false;
+  _AgentCreateStatus _createStatus = _AgentCreateStatus.clean;
+  String? _createStatusDetail;
 
   @override
   void dispose() {
@@ -1096,6 +1100,13 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
                 style: _SettingsTextStyles.pageTitleSubpage,
               ),
               const SizedBox(height: 10),
+              _AgentCreateStatusCard(
+                key: const ValueKey<String>('agent-create-status-card'),
+                status: _createStatus,
+                detail: _createStatusDetail,
+                draft: draft,
+              ),
+              const SizedBox(height: 10),
               _SettingsCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1123,7 +1134,7 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
                             hintText: 'Agent name',
                             onChanged: (String value) {
                               draft.agentName = value;
-                              setState(() {});
+                              _markDraftEdited();
                             },
                           ),
                         ),
@@ -1140,6 +1151,7 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
                             hintText: 'Optional',
                             onChanged: (String value) {
                               draft.callsYou = value;
+                              _markDraftEdited();
                             },
                           ),
                         ),
@@ -1162,6 +1174,7 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
                       maxLines: 3,
                       onChanged: (String value) {
                         draft.baseDescription = value;
+                        _markDraftEdited();
                       },
                     ),
                   ],
@@ -1193,6 +1206,8 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
                           draft.soulPreset = _AgentSoulPreset.values.firstWhere(
                             (_AgentSoulPreset preset) => preset.name == value,
                           );
+                          _createStatus = _AgentCreateStatus.edited;
+                          _createStatusDetail = null;
                         });
                       },
                     ),
@@ -1263,21 +1278,46 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
     return widget.draft;
   }
 
+  void _markDraftEdited() {
+    setState(() {
+      if (_createStatus != _AgentCreateStatus.saving) {
+        _createStatus = _AgentCreateStatus.edited;
+        _createStatusDetail = null;
+      }
+    });
+  }
+
   Future<void> _submitAgent() async {
     if (_isSubmitting) {
       return;
     }
     final _AgentDraft draft = _syncedDraft();
     if (!widget.persistToHost || widget.debugBridge == null) {
+      setState(() {
+        _createStatus = _AgentCreateStatus.saved;
+        _createStatusDetail = 'Local draft ready';
+      });
       Navigator.of(context).pop(_SavedAgent.fromDraft(draft));
       return;
     }
     try {
       setState(() {
         _isSubmitting = true;
+        _createStatus = _AgentCreateStatus.saving;
+        _createStatusDetail = null;
       });
       final snapshot = await widget.debugBridge!.createAgent(
         draft.toHostCreateRequest(),
+      );
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _createStatus = _AgentCreateStatus.saved;
+        _createStatusDetail = 'Saved as ${snapshot.displayName}';
+      });
+      await Future<void>.delayed(
+        OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
       );
       if (!mounted) {
         return;
@@ -1289,6 +1329,8 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
       }
       setState(() {
         _isSubmitting = false;
+        _createStatus = _AgentCreateStatus.failed;
+        _createStatusDetail = 'Failed to create agent: $error';
       });
       ScaffoldMessenger.of(
         context,
@@ -1374,9 +1416,9 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   }
 
   Future<void> _pushEditorPage(WidgetBuilder builder) {
-    return Navigator.of(context).push<void>(
-      openCrayHorizontalPageRoute<void>(builder: builder),
-    );
+    return Navigator.of(
+      context,
+    ).push<void>(openCrayHorizontalPageRoute<void>(builder: builder));
   }
 }
 
@@ -2967,6 +3009,150 @@ class _AgentListCard extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+class _AgentCreateStatusCard extends StatelessWidget {
+  const _AgentCreateStatusCard({
+    super.key,
+    required this.status,
+    required this.detail,
+    required this.draft,
+  });
+
+  final _AgentCreateStatus status;
+  final String? detail;
+  final _AgentDraft draft;
+
+  @override
+  Widget build(BuildContext context) {
+    final _AgentStatusVisual visual = _AgentStatusVisual.fromStatus(status);
+    final String modelLabel = draft.model.trim().isEmpty
+        ? 'Model'
+        : draft.model.trim();
+    final String modelSummary =
+        '${_labelForProvider(draft.provider)} · $modelLabel';
+    final String behaviorSummary =
+        '${draft.modeLabel} · ${_labelForRiskTolerance(draft.riskTolerance)} risk';
+    return _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          Row(
+            children: <Widget>[
+              AnimatedContainer(
+                key: ValueKey<String>('agent-create-status-${status.name}'),
+                duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+                curve: OpenCrayMotion.enter,
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                decoration: BoxDecoration(
+                  color: visual.surfaceColor,
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: visual.borderColor),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: <Widget>[
+                    if (status == _AgentCreateStatus.saving) ...<Widget>[
+                      SizedBox.square(
+                        dimension: 12,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.5,
+                          color: visual.textColor,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
+                    Text(
+                      visual.label,
+                      style: _SettingsTextStyles.selectionMeta.copyWith(
+                        color: visual.textColor,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Spacer(),
+              Text(
+                modelSummary,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: _SettingsTextStyles.selectionMeta,
+              ),
+            ],
+          ),
+          const SizedBox(height: 9),
+          Text(
+            draft.agentName.trim().isEmpty ? 'Unnamed agent' : draft.agentName,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: _SettingsTextStyles.cardTitle.copyWith(fontSize: 15),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            detail?.trim().isNotEmpty == true ? detail! : behaviorSummary,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: _SettingsTextStyles.body.copyWith(
+              fontSize: 12,
+              color: status == _AgentCreateStatus.failed
+                  ? OpenCrayColors.dangerText
+                  : OpenCrayColors.textTertiary,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AgentStatusVisual {
+  const _AgentStatusVisual({
+    required this.label,
+    required this.surfaceColor,
+    required this.borderColor,
+    required this.textColor,
+  });
+
+  final String label;
+  final Color surfaceColor;
+  final Color borderColor;
+  final Color textColor;
+
+  factory _AgentStatusVisual.fromStatus(_AgentCreateStatus status) {
+    return switch (status) {
+      _AgentCreateStatus.clean => const _AgentStatusVisual(
+        label: 'Draft ready',
+        surfaceColor: Color(0xFFF1F2F6),
+        borderColor: Color(0xFFE3E5EA),
+        textColor: Color(0xFF5B6472),
+      ),
+      _AgentCreateStatus.edited => const _AgentStatusVisual(
+        label: 'Unsaved changes',
+        surfaceColor: Color(0xFFFFF7E8),
+        borderColor: Color(0xFFFFDCA8),
+        textColor: Color(0xFF9A5B00),
+      ),
+      _AgentCreateStatus.saving => const _AgentStatusVisual(
+        label: 'Saving agent',
+        surfaceColor: Color(0xFFEEF5FF),
+        borderColor: Color(0xFFCFE2FF),
+        textColor: Color(0xFF0A63C7),
+      ),
+      _AgentCreateStatus.saved => const _AgentStatusVisual(
+        label: 'Saved',
+        surfaceColor: Color(0xFFEAF7EF),
+        borderColor: Color(0xFFCDEDD8),
+        textColor: Color(0xFF248A3D),
+      ),
+      _AgentCreateStatus.failed => const _AgentStatusVisual(
+        label: 'Save failed',
+        surfaceColor: Color(0xFFFFF0F0),
+        borderColor: Color(0xFFFFD4D4),
+        textColor: OpenCrayColors.dangerText,
+      ),
+    };
   }
 }
 

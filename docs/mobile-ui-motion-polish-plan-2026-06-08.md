@@ -1845,20 +1845,160 @@ Acceptance:
 - Search no-results states are actionable, not dead ends.
 - Loading states do not flash unrelated placeholder/seed content.
 
+#### Deferred. Microcopy Density And Redundant Text Audit
+
+Status: deferred. This should be planned now but implemented after the five UI
+state polish items above. It crosses copy, layout density, accessibility labels,
+and empty/error state behavior, so mixing it into the same implementation slice
+would make visual regressions harder to review.
+
+Files:
+
+- `flutter_app/lib/core/copy/opencray_ui_copy.dart`
+- feature-local copy in Chat, Files, Skills, and Settings
+- shared state widgets if created by the global state polish item
+- focused widget tests that assert important state text remains present
+
+Current behavior:
+
+- Some surfaces include helper text or body copy that repeats the title,
+  describes an obvious state, or exists mainly to prevent visual emptiness.
+- This can make high-frequency screens feel less precise:
+  - empty folders say both that the folder is empty and that there are no files
+  - Skills and Settings subtitles sometimes explain what the label already says
+  - Chat empty/seed/helper prompts can compete with real conversation state
+  - Settings helper text can make pages feel like documentation instead of a
+    control surface
+- The problem is not all explanatory text. The problem is text that does not
+  help the user decide, recover, orient, or understand a changed state.
+
+Target behavior:
+
+- Every visible sentence should earn its place by serving one of these jobs:
+  - Decision: helps the user choose, especially for approval, delete, permission,
+    model, or safety settings
+  - Recovery: tells the user how to fix empty/error/unavailable states
+  - Status: reports a real state such as Installing, Saved, Failed, Filtered, or
+    Waiting for approval
+  - Orientation: helps the user on first encounter, but should be short and
+    visually secondary
+  - Accessibility: provides labels or semantics that may not need to be visible
+- Filler text should be removed, folded into labels, or replaced with compact
+  state chips.
+
+Implementation details:
+
+- Run a copy audit with a simple classification table:
+  - keep: decision/recovery/status/accessibility copy
+  - shorten: useful copy that repeats nouns or contains obvious lead-ins
+  - hide until relevant: helper text that is only useful during focus, error, or
+    destructive/broad-scope changes
+  - remove: filler copy that repeats title, action label, or visible state
+- Apply screen-specific rules:
+  - Chat:
+    - keep real message, run trace, approval, and failure copy dominant
+    - reduce generic "choose a command" and seed/empty hints once real session
+      content exists
+    - do not remove accessibility labels for icon-only controls
+  - Files:
+    - reduce empty-state body copy when the title already explains the state
+    - keep path, filter query, and recovery actions visible
+    - avoid explanatory text inside the high-frequency selection toolbar
+  - Skills:
+    - make search and install states do more work than helper paragraphs
+    - direct install should rely on source chip plus button unless the source is
+      invalid, ambiguous, or failed
+    - installed skill cards should prioritize name, source/status, and action
+      state over generic management text
+  - Settings:
+    - default rows should be title + current value
+    - helper text appears for risk, permission broadening, failed save, or
+      focused editing only
+    - long explanations move to detail pages or expandable advanced sections
+- Preserve i18n parity:
+  - Chinese and English copy should be shortened together
+  - avoid changing only one language unless the other already has equivalent
+    density
+- Preserve testability:
+  - update tests that assert removed filler copy
+  - add tests for critical remaining copy, especially recovery text and approval
+    risk labels
+
+Acceptance:
+
+- No high-frequency screen depends on filler copy to fill vertical space.
+- Empty states keep one useful recovery/action path where one exists.
+- Risk, error, and permission copy remains explicit and visible.
+- Reduced copy does not remove semantic labels needed by assistive technology.
+
 #### Future Polish Checklist
 
-- [ ] Plan and implement Approval risk-decision card structure.
-- [ ] Add Approval focused tests for non-color risk cues, queue advancement, and
+- [x] Plan and implement Approval risk-decision card structure.
+- [x] Add Approval focused tests for non-color risk cues, queue advancement, and
   compact action layout.
-- [ ] Plan and implement Settings/Agent section-level pending/saved/failed
+- [x] Plan and implement Settings/Agent section-level pending/saved/failed
   states.
-- [ ] Add Settings focused tests for local save/error feedback.
-- [ ] Plan and implement Skills Manage installed-card action lifecycle.
-- [ ] Add Skills Manage tests for update/delete retry and stable card position.
-- [ ] Plan and implement Files operation execution feedback.
-- [ ] Add Files tests for pending/success/failure operation states.
-- [ ] Plan and normalize global empty/loading/error states.
-- [ ] Add focused tests for shared or normalized state components.
+- [x] Add Settings focused tests for local save/error feedback.
+- [x] Plan and implement Skills Manage installed-card action lifecycle.
+- [x] Add Skills Manage tests for update/delete retry and stable card position.
+- [x] Plan and implement Files operation execution feedback.
+- [x] Add Files tests for pending/success/failure operation states.
+- [x] Plan and normalize global empty/loading/error states.
+- [x] Add focused tests for shared or normalized state components.
+- [ ] Deferred: audit and reduce redundant microcopy after the five state polish
+  items are complete.
+
+#### Future Polish Implementation Notes
+
+Status: implemented for the five active polish items. The microcopy density audit
+above remains deliberately deferred so it can be reviewed as a separate copy and
+layout pass.
+
+- Approval risk-decision card:
+  - Added structured decision content for tool, details, affected paths, working
+    directory, and agent reason.
+  - Added high-risk cues that do not depend only on color.
+  - Added local approved/rejected resolution states so the originating card
+    resolves briefly before the queue advances.
+- Settings/Agent configuration state:
+  - Added an Agent create status card with Draft ready, Unsaved changes, Saving,
+    Saved, and Save failed states.
+  - Kept feedback local to the create surface instead of relying only on a
+    snackbar or route pop.
+- Skills Manage installed-card lifecycle:
+  - Added per-installed-skill lifecycle states for update, enable/disable,
+    delete, resolved, and failed.
+  - Kept the affected skill row in place while an operation is pending or
+    recently resolved.
+- Files operation execution feedback:
+  - Added bottom workbench operation states for Copy ready, Move ready, Pasting,
+    Deleting, Done, and Operation failed.
+  - Cleared pending operation state when selection exits, back is consumed, or
+    the Files tab becomes inactive.
+- Global empty/loading/error states:
+  - Added shared `OpenCrayStateCard` for compact operational empty, loading, and
+    error surfaces.
+  - Migrated Files, Skills, and Settings high-frequency loading/empty/error
+    states to the shared state language while preserving existing copy.
+
+Verification:
+
+- `dart analyze flutter_app` passed.
+- `flutter test test/opencray_widgets_test.dart` passed outside the sandbox.
+- `flutter test test/files_feature_test.dart` passed outside the sandbox.
+- `flutter test test/skills_feature_test.dart` passed outside the sandbox.
+- `flutter test test/settings_feature_test.dart --plain-name "agents page loads host-backed agents and persists creation"` passed outside the sandbox.
+- `flutter test test/settings_feature_test.dart --plain-name "agent create flow exposes twin import page and updates summary"` passed outside the sandbox.
+- Chat approval focused tests passed outside the sandbox:
+  - `approval card replaces the composer with a bottom glass surface`
+  - `host-backed approval card shows tool name, concrete request details, and agent reason`
+  - `high-risk approval exposes structured non-color risk cues`
+  - `host-backed approval surface appears as soon as a pending approval snapshot arrives`
+  - `multiple approvals render as a stacked queue and only the first one is actionable`
+- Full `settings_feature_test.dart` was also attempted. It still has two known
+  unrelated 600px viewport focus failures in standalone LLM tests; the new Agent
+  layout failure found during that run was fixed and verified with the focused
+  twin-import test above.
 
 ### High-Frequency Polish Checklist
 

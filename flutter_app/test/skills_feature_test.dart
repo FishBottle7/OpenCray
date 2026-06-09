@@ -671,6 +671,7 @@ void main() {
   testWidgets(
     'manage page update action updates the selected installed skill',
     (tester) async {
+      final updateCompleter = Completer<String?>();
       final bridge = _RecordingSkillsBridge(
         initialSkillsSnapshot: const OpenCraySkillsSnapshot(
           installedSkills: <OpenCrayInstalledSkillSnapshot>[
@@ -686,6 +687,7 @@ void main() {
           installSources: <OpenCraySkillInstallSourceSnapshot>[],
           suggestedSkills: <OpenCraySuggestedSkillSnapshot>[],
         ),
+        updateInstalledSkillFuture: updateCompleter.future,
       );
 
       await _pumpSkillsScreen(tester, bridge: bridge);
@@ -696,9 +698,31 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Update skills'));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 50));
 
       expect(bridge.lastUpdatedSkillId, 'find-skills');
+      expect(
+        find.byKey(
+          const ValueKey<String>(
+            'skills-manage-lifecycle-find-skills-updating',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Updating'), findsOneWidget);
+
+      updateCompleter.complete('Updated find-skills');
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 200));
+
+      expect(
+        find.byKey(
+          const ValueKey<String>('skills-manage-lifecycle-find-skills-updated'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Updated'), findsOneWidget);
+
+      await tester.pump(const Duration(milliseconds: 300));
     },
   );
 }
@@ -712,6 +736,7 @@ class _RecordingSkillsBridge extends OpenCraySeedBridge {
     this.suggestedInstructions,
     this.installSkillSourceFuture,
     this.installSkillSourceError,
+    this.updateInstalledSkillFuture,
   }) : _defaultSnapshot = initialSkillsSnapshot!;
 
   final OpenCraySkillsSnapshot? searchedSnapshot;
@@ -720,6 +745,7 @@ class _RecordingSkillsBridge extends OpenCraySeedBridge {
   final OpenCraySkillInstructionsSnapshot? suggestedInstructions;
   final Future<String?>? installSkillSourceFuture;
   final Object? installSkillSourceError;
+  final Future<String?>? updateInstalledSkillFuture;
   OpenCraySkillsSnapshot _defaultSnapshot;
   String? lastQuery;
   int? lastSuggestedLimit;
@@ -806,6 +832,9 @@ class _RecordingSkillsBridge extends OpenCraySeedBridge {
   @override
   Future<String?> updateInstalledSkill(String skillId) async {
     lastUpdatedSkillId = skillId;
+    if (updateInstalledSkillFuture != null) {
+      return updateInstalledSkillFuture!;
+    }
     return 'Updated $skillId';
   }
 }

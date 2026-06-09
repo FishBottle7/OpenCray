@@ -14,6 +14,7 @@ import '../../core/models/opencray_shell_snapshot.dart';
 import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/design/opencray_motion.dart';
 import '../../core/design/opencray_tokens.dart';
+import '../../core/design/opencray_widgets.dart';
 import 'notification_settings_models.dart';
 import 'safety_settings_copy.dart';
 import 'safety_settings_models.dart';
@@ -549,9 +550,12 @@ class _SettingsLoading extends StatelessWidget {
   Widget build(BuildContext context) {
     return const Center(
       child: SizedBox(
-        width: 24,
-        height: 24,
-        child: CircularProgressIndicator(strokeWidth: 2),
+        width: 96,
+        child: OpenCrayStateCard(
+          key: ValueKey<String>('settings-state-loading-card'),
+          isLoading: true,
+          padding: EdgeInsets.all(14),
+        ),
       ),
     );
   }
@@ -4825,21 +4829,13 @@ class _SettingsLoadErrorCard extends StatelessWidget {
           const SizedBox(height: 8),
           Text(title, style: _SettingsTextStyles.pageTitleSubpage),
           const SizedBox(height: 16),
-          _SettingsCard(
-            backgroundColor: OpenCrayColors.dangerSurface,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Unable to load this page',
-                  style: _SettingsTextStyles.cardTitle,
-                ),
-                const SizedBox(height: 8),
-                Text(message, style: _SettingsTextStyles.body),
-                const SizedBox(height: 12),
-                _HeaderActionChip(label: 'Retry', onTap: onRetry),
-              ],
-            ),
+          OpenCrayStateCard(
+            key: const ValueKey<String>('settings-state-error-card'),
+            tone: OpenCrayStateTone.danger,
+            leadingIcon: Icons.error_outline,
+            title: 'Unable to load this page',
+            body: message,
+            action: _HeaderActionChip(label: 'Retry', onTap: onRetry),
           ),
         ],
       ),

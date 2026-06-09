@@ -579,6 +579,11 @@ void main() {
       find.byKey(const ValueKey<String>('files-toolbar-action-paste')),
       findsOneWidget,
     );
+    expect(
+      find.byKey(const ValueKey<String>('files-operation-status-moveReady')),
+      findsOneWidget,
+    );
+    expect(find.text('Move ready'), findsOneWidget);
 
     final opacity = tester.widget<AnimatedOpacity>(
       find.ancestor(
@@ -594,9 +599,16 @@ void main() {
     await tester.tap(
       find.byKey(const ValueKey<String>('files-toolbar-action-paste')),
     );
-    await tester.pumpAndSettle();
+    await tester.pump();
 
     expect(find.text('todo.txt'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('files-operation-status-done')),
+      findsOneWidget,
+    );
+    expect(find.text('Done'), findsOneWidget);
+
+    await tester.pump(const Duration(milliseconds: 700));
     expect(
       find.byKey(const ValueKey<String>('files-toolbar-action-paste')),
       findsNothing,

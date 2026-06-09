@@ -122,6 +122,187 @@ class OpenCrayCard extends StatelessWidget {
   }
 }
 
+enum OpenCrayStateTone { neutral, accent, success, danger }
+
+class OpenCrayStateCard extends StatelessWidget {
+  const OpenCrayStateCard({
+    super.key,
+    this.title,
+    this.body,
+    this.action,
+    this.leadingIcon,
+    this.isLoading = false,
+    this.tone = OpenCrayStateTone.neutral,
+    this.padding = const EdgeInsets.all(OpenCraySpacing.md),
+  });
+
+  final String? title;
+  final String? body;
+  final Widget? action;
+  final IconData? leadingIcon;
+  final bool isLoading;
+  final OpenCrayStateTone tone;
+  final EdgeInsets padding;
+
+  @override
+  Widget build(BuildContext context) {
+    final _OpenCrayStateToneColors colors = _stateToneColors(tone);
+    final bool hasText =
+        (title?.trim().isNotEmpty ?? false) ||
+        (body?.trim().isNotEmpty ?? false);
+
+    return AnimatedContainer(
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
+      padding: padding,
+      decoration: BoxDecoration(
+        color: colors.background,
+        borderRadius: const BorderRadius.all(OpenCrayRadii.lg),
+        border: Border.all(color: colors.border),
+      ),
+      child: hasText
+          ? Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _OpenCrayStateLeading(
+                  icon: leadingIcon,
+                  isLoading: isLoading,
+                  colors: colors,
+                ),
+                const SizedBox(width: OpenCraySpacing.sm),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (title?.trim().isNotEmpty ?? false)
+                        Text(
+                          title!,
+                          style: const TextStyle(
+                            fontSize: 16,
+                            height: 1.2,
+                            fontWeight: FontWeight.w700,
+                            color: OpenCrayColors.textPrimary,
+                          ),
+                        ),
+                      if ((title?.trim().isNotEmpty ?? false) &&
+                          (body?.trim().isNotEmpty ?? false))
+                        const SizedBox(height: OpenCraySpacing.xs),
+                      if (body?.trim().isNotEmpty ?? false)
+                        Text(
+                          body!,
+                          style: const TextStyle(
+                            fontSize: 14,
+                            height: 1.35,
+                            color: OpenCrayColors.textSecondary,
+                          ),
+                        ),
+                      if (action != null) ...[
+                        const SizedBox(height: OpenCraySpacing.sm),
+                        action!,
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            )
+          : Center(
+              child: _OpenCrayStateLeading(
+                icon: leadingIcon,
+                isLoading: isLoading,
+                colors: colors,
+              ),
+            ),
+    );
+  }
+}
+
+class _OpenCrayStateLeading extends StatelessWidget {
+  const _OpenCrayStateLeading({
+    required this.icon,
+    required this.isLoading,
+    required this.colors,
+  });
+
+  final IconData? icon;
+  final bool isLoading;
+  final _OpenCrayStateToneColors colors;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox.square(
+      dimension: 32,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: colors.markerBackground,
+          borderRadius: const BorderRadius.all(OpenCrayRadii.md),
+        ),
+        child: Center(
+          child: isLoading
+              ? SizedBox.square(
+                  dimension: 15,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: colors.markerForeground,
+                  ),
+                )
+              : Icon(
+                  icon ?? Icons.info_outline,
+                  size: 17,
+                  color: colors.markerForeground,
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+class _OpenCrayStateToneColors {
+  const _OpenCrayStateToneColors({
+    required this.background,
+    required this.border,
+    required this.markerBackground,
+    required this.markerForeground,
+  });
+
+  final Color background;
+  final Color border;
+  final Color markerBackground;
+  final Color markerForeground;
+}
+
+_OpenCrayStateToneColors _stateToneColors(OpenCrayStateTone tone) {
+  switch (tone) {
+    case OpenCrayStateTone.neutral:
+      return _OpenCrayStateToneColors(
+        background: OpenCrayColors.surface,
+        border: OpenCrayColors.divider.withValues(alpha: 0.7),
+        markerBackground: OpenCrayColors.surfaceMuted,
+        markerForeground: OpenCrayColors.textSecondary,
+      );
+    case OpenCrayStateTone.accent:
+      return _OpenCrayStateToneColors(
+        background: OpenCrayColors.surface,
+        border: OpenCrayColors.primary.withValues(alpha: 0.18),
+        markerBackground: OpenCrayColors.surfaceAccent,
+        markerForeground: OpenCrayColors.primary,
+      );
+    case OpenCrayStateTone.success:
+      return _OpenCrayStateToneColors(
+        background: OpenCrayColors.surface,
+        border: OpenCrayColors.success.withValues(alpha: 0.2),
+        markerBackground: const Color(0xFFEAF7EF),
+        markerForeground: const Color(0xFF248A3D),
+      );
+    case OpenCrayStateTone.danger:
+      return _OpenCrayStateToneColors(
+        background: OpenCrayColors.dangerSurface,
+        border: OpenCrayColors.dangerText.withValues(alpha: 0.18),
+        markerBackground: OpenCrayColors.surface,
+        markerForeground: OpenCrayColors.dangerText,
+      );
+  }
+}
+
 class OpenCrayPillButton extends StatelessWidget {
   const OpenCrayPillButton({super.key, required this.label, this.icon});
 

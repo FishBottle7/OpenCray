@@ -13,6 +13,7 @@ import '../../core/models/opencray_file_text_preview.dart';
 import '../../core/models/opencray_files_snapshot.dart';
 import '../../core/models/opencray_workspace_text_document.dart';
 import '../../core/design/opencray_motion.dart';
+import '../../core/design/opencray_widgets.dart';
 import '../../core/widgets/opencray_image_bytes_view.dart';
 import '../../core/widgets/opencray_markdown.dart';
 
@@ -40,6 +41,15 @@ class _NewEntryIntent {
 }
 
 enum _TextPreviewDialogResult { edit }
+
+enum _FilesOperationState {
+  copyReady,
+  moveReady,
+  pasting,
+  deleting,
+  done,
+  failed,
+}
 
 const double _fallbackStickyBrowseBarTriggerScrollOffset = 200;
 
@@ -93,6 +103,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
   double? _stickyBrowseBarTriggerScrollOffset;
   Set<String> _selectedPaths = <String>{};
   _PendingTransfer? _pendingTransfer;
+  _FilesOperationState? _operationState;
   Timer? _autoRefreshTimer;
   late AppLifecycleState _appLifecycleState;
   bool _isSnapshotLoadInFlight = false;
@@ -100,8 +111,10 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
   bool _queuedSnapshotLoadShowBusyIndicator = false;
 
   bool get _hasPendingTransfer => _pendingTransfer != null;
-  bool get _handlesBackPress => _isSelectionMode || _hasPendingTransfer;
-  bool get _showsSelectionToolbar => _isSelectionMode || _hasPendingTransfer;
+  bool get _handlesBackPress =>
+      _isSelectionMode || _hasPendingTransfer || _operationState != null;
+  bool get _showsSelectionToolbar =>
+      _isSelectionMode || _hasPendingTransfer || _operationState != null;
 
   @override
   void initState() {
@@ -123,11 +136,12 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
     }
     if (oldWidget.isTabActive &&
         !widget.isTabActive &&
-        (_isSelectionMode || _hasPendingTransfer)) {
+        (_isSelectionMode || _hasPendingTransfer || _operationState != null)) {
       setState(() {
         _isSelectionMode = false;
         _selectedPaths = <String>{};
         _pendingTransfer = null;
+        _operationState = null;
       });
     }
     if (!oldWidget.isTabActive &&
@@ -246,7 +260,9 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
                     ),
                     SliverToBoxAdapter(
                       child: SizedBox(
-                        height: _showsSelectionToolbar ? 118 : 28,
+                        height: _showsSelectionToolbar
+                            ? (_operationState == null ? 118 : 154)
+                            : 28,
                       ),
                     ),
                   ],
@@ -277,6 +293,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
                     copy: widget.copy,
                     isVisible: _showsSelectionToolbar,
                     isPendingTransfer: _hasPendingTransfer,
+                    operationState: _operationState,
                     canShare: _isSelectionMode && _selectedPaths.isNotEmpty,
                     canMove: _isSelectionMode && _selectedPaths.isNotEmpty,
                     canCopy: _isSelectionMode && _selectedPaths.isNotEmpty,
@@ -556,6 +573,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
     FocusManager.instance.primaryFocus?.unfocus();
     setState(() {
       _pendingTransfer = null;
+      _operationState = null;
       _isSelectionMode = true;
       _selectedPaths = <String>{entry.relativePath};
     });
@@ -565,6 +583,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
     setState(() {
       _isSelectionMode = false;
       _selectedPaths = <String>{};
+      _operationState = null;
     });
   }
 
@@ -577,6 +596,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
       _isSelectionMode = false;
       _selectedPaths = <String>{};
       _pendingTransfer = null;
+      _operationState = null;
     });
     return true;
   }
@@ -681,7 +701,8 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
     if (!mounted || confirmed != true) {
       return;
     }
-    await _runSnapshotMutation(
+    _setOperationState(_FilesOperationState.deleting);
+    final didDelete = await _runSnapshotMutation(
       () => widget.bridge.deleteWorkspaceEntries(targets),
       applyState: (snapshot) {
         _snapshot = snapshot;
@@ -695,6 +716,13 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
         _errorMessage = null;
       },
     );
+    if (!mounted) {
+      return;
+    }
+    _setOperationState(
+      didDelete ? _FilesOperationState.done : _FilesOperationState.failed,
+    );
+    _scheduleOperationStateClear();
   }
 
   Future<void> _handleShare() async {
@@ -733,6 +761,9 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
       );
       _isSelectionMode = false;
       _selectedPaths = <String>{};
+      _operationState = move
+          ? _FilesOperationState.moveReady
+          : _FilesOperationState.copyReady;
     });
   }
 
@@ -741,7 +772,8 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
     if (pendingTransfer == null) {
       return;
     }
-    await _runSnapshotMutation(
+    _setOperationState(_FilesOperationState.pasting);
+    final didPaste = await _runSnapshotMutation(
       () => widget.bridge.pasteWorkspaceEntries(
         sourceRelativePaths: pendingTransfer.sourceRelativePaths,
         destinationRelativePath: _currentDirectoryPath,
@@ -757,6 +789,36 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
         _isSelectionMode = false;
         _pendingTransfer = null;
         _errorMessage = null;
+      },
+    );
+    if (!mounted) {
+      return;
+    }
+    _setOperationState(
+      didPaste ? _FilesOperationState.done : _FilesOperationState.failed,
+    );
+    _scheduleOperationStateClear();
+  }
+
+  void _setOperationState(_FilesOperationState state) {
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _operationState = state;
+    });
+  }
+
+  void _scheduleOperationStateClear() {
+    Future<void>.delayed(
+      OpenCrayMotion.resolve(context, OpenCrayMotion.panel),
+      () {
+        if (!mounted) {
+          return;
+        }
+        setState(() {
+          _operationState = null;
+        });
       },
     );
   }
@@ -1714,11 +1776,10 @@ class _DirectoryCard extends StatelessWidget {
       return const SliverPadding(
         padding: EdgeInsets.symmetric(horizontal: 20),
         sliver: SliverToBoxAdapter(
-          child: _StateCard(
-            child: Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            ),
+          child: OpenCrayStateCard(
+            key: ValueKey<String>('files-state-loading'),
+            isLoading: true,
+            padding: EdgeInsets.all(24),
           ),
         ),
       );
@@ -1728,32 +1789,12 @@ class _DirectoryCard extends StatelessWidget {
       return SliverPadding(
         padding: const EdgeInsets.symmetric(horizontal: 20),
         sliver: SliverToBoxAdapter(
-          child: _StateCard(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    copy.filesLoadFailed,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: FilesFeatureScreen.textPrimary,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    errorMessage!,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      height: 1.35,
-                      color: FilesFeatureScreen.textSecondary,
-                    ),
-                  ),
-                ],
-              ),
-            ),
+          child: OpenCrayStateCard(
+            key: const ValueKey<String>('files-state-error'),
+            tone: OpenCrayStateTone.danger,
+            leadingIcon: Icons.error_outline,
+            title: copy.filesLoadFailed,
+            body: errorMessage!,
           ),
         ),
       );
@@ -1764,36 +1805,22 @@ class _DirectoryCard extends StatelessWidget {
       return SliverPadding(
         padding: const EdgeInsets.symmetric(horizontal: 20),
         sliver: SliverToBoxAdapter(
-          child: _StateCard(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    hasQuery
-                        ? copy.filesNoMatchesTitle
-                        : copy.filesFolderEmptyTitle,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: FilesFeatureScreen.textPrimary,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    hasQuery
-                        ? copy.filesNoMatchesBody(query)
-                        : copy.filesFolderEmptyBody,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      height: 1.35,
-                      color: FilesFeatureScreen.textSecondary,
-                    ),
-                  ),
-                ],
-              ),
+          child: OpenCrayStateCard(
+            key: ValueKey<String>(
+              hasQuery ? 'files-state-filtered-empty' : 'files-state-empty',
             ),
+            tone: hasQuery
+                ? OpenCrayStateTone.accent
+                : OpenCrayStateTone.neutral,
+            leadingIcon: hasQuery
+                ? Icons.search_off
+                : Icons.folder_open_outlined,
+            title: hasQuery
+                ? copy.filesNoMatchesTitle
+                : copy.filesFolderEmptyTitle,
+            body: hasQuery
+                ? copy.filesNoMatchesBody(query)
+                : copy.filesFolderEmptyBody,
           ),
         ),
       );
@@ -2003,6 +2030,7 @@ class _SelectionToolbar extends StatelessWidget {
     required this.copy,
     required this.isVisible,
     required this.isPendingTransfer,
+    required this.operationState,
     required this.canShare,
     required this.canMove,
     required this.canCopy,
@@ -2019,6 +2047,7 @@ class _SelectionToolbar extends StatelessWidget {
   final OpenCrayUiCopy copy;
   final bool isVisible;
   final bool isPendingTransfer;
+  final _FilesOperationState? operationState;
   final bool canShare;
   final bool canMove;
   final bool canCopy;
@@ -2064,78 +2093,92 @@ class _SelectionToolbar extends StatelessWidget {
           ),
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 10, 12, 8),
-            child: Row(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: _SelectionActionGroup(
-                    semanticsLabel: copy.filesSelectionStandardActions,
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: _ToolbarItem(
-                            key: const ValueKey<String>(
-                              'files-toolbar-action-share',
+                if (operationState != null) ...[
+                  _FilesOperationStatusStrip(
+                    copy: copy,
+                    state: operationState!,
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                Row(
+                  children: [
+                    Expanded(
+                      child: _SelectionActionGroup(
+                        semanticsLabel: copy.filesSelectionStandardActions,
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: _ToolbarItem(
+                                key: const ValueKey<String>(
+                                  'files-toolbar-action-share',
+                                ),
+                                icon: CupertinoIcons.share,
+                                label: copy.filesShareAction,
+                                enabled: canShare,
+                                onTap: onShare,
+                              ),
                             ),
-                            icon: CupertinoIcons.share,
-                            label: copy.filesShareAction,
-                            enabled: canShare,
-                            onTap: onShare,
-                          ),
-                        ),
-                        Expanded(
-                          child: _ToolbarItem(
-                            key: const ValueKey<String>(
-                              'files-toolbar-action-move',
+                            Expanded(
+                              child: _ToolbarItem(
+                                key: const ValueKey<String>(
+                                  'files-toolbar-action-move',
+                                ),
+                                icon: CupertinoIcons.folder,
+                                label: copy.filesMoveAction,
+                                enabled: canMove,
+                                onTap: onMove,
+                              ),
                             ),
-                            icon: CupertinoIcons.folder,
-                            label: copy.filesMoveAction,
-                            enabled: canMove,
-                            onTap: onMove,
-                          ),
-                        ),
-                        Expanded(
-                          child: _ToolbarItem(
-                            key: ValueKey<String>(
-                              isPendingTransfer
-                                  ? 'files-toolbar-action-paste'
-                                  : 'files-toolbar-action-copy',
+                            Expanded(
+                              child: _ToolbarItem(
+                                key: ValueKey<String>(
+                                  isPendingTransfer
+                                      ? 'files-toolbar-action-paste'
+                                      : 'files-toolbar-action-copy',
+                                ),
+                                icon: isPendingTransfer
+                                    ? CupertinoIcons.doc_on_clipboard
+                                    : CupertinoIcons.doc_on_doc,
+                                label: isPendingTransfer
+                                    ? copy.filesPasteAction
+                                    : copy.filesCopyAction,
+                                enabled: isPendingTransfer ? canPaste : canCopy,
+                                onTap: onCopyOrPaste,
+                              ),
                             ),
-                            icon: isPendingTransfer
-                                ? CupertinoIcons.doc_on_clipboard
-                                : CupertinoIcons.doc_on_doc,
-                            label: isPendingTransfer
-                                ? copy.filesPasteAction
-                                : copy.filesCopyAction,
-                            enabled: isPendingTransfer ? canPaste : canCopy,
-                            onTap: onCopyOrPaste,
-                          ),
-                        ),
-                        Expanded(
-                          child: _ToolbarItem(
-                            key: const ValueKey<String>(
-                              'files-toolbar-action-rename',
+                            Expanded(
+                              child: _ToolbarItem(
+                                key: const ValueKey<String>(
+                                  'files-toolbar-action-rename',
+                                ),
+                                icon: CupertinoIcons.pencil,
+                                label: copy.filesRenameAction,
+                                enabled: canRename,
+                                onTap: onRename,
+                              ),
                             ),
-                            icon: CupertinoIcons.pencil,
-                            label: copy.filesRenameAction,
-                            enabled: canRename,
-                            onTap: onRename,
-                          ),
+                          ],
                         ),
-                      ],
+                      ),
                     ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                _SelectionDangerAction(
-                  semanticsLabel: copy.filesSelectionDangerActions,
-                  child: _ToolbarItem(
-                    key: const ValueKey<String>('files-toolbar-action-delete'),
-                    icon: CupertinoIcons.delete,
-                    label: copy.filesDeleteAction,
-                    enabled: canDelete,
-                    accentColor: FilesFeatureScreen.danger,
-                    onTap: onDelete,
-                  ),
+                    const SizedBox(width: 8),
+                    _SelectionDangerAction(
+                      semanticsLabel: copy.filesSelectionDangerActions,
+                      child: _ToolbarItem(
+                        key: const ValueKey<String>(
+                          'files-toolbar-action-delete',
+                        ),
+                        icon: CupertinoIcons.delete,
+                        label: copy.filesDeleteAction,
+                        enabled: canDelete,
+                        accentColor: FilesFeatureScreen.danger,
+                        onTap: onDelete,
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
@@ -2145,6 +2188,77 @@ class _SelectionToolbar extends StatelessWidget {
     );
   }
 }
+
+class _FilesOperationStatusStrip extends StatelessWidget {
+  const _FilesOperationStatusStrip({required this.copy, required this.state});
+
+  final OpenCrayUiCopy copy;
+  final _FilesOperationState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool isFailed = state == _FilesOperationState.failed;
+    final bool isPending =
+        state == _FilesOperationState.pasting ||
+        state == _FilesOperationState.deleting;
+    final Color textColor = isFailed
+        ? FilesFeatureScreen.danger
+        : state == _FilesOperationState.done
+        ? const Color(0xFF248A3D)
+        : FilesFeatureScreen.textSecondary;
+    final Color surfaceColor = isFailed
+        ? FilesFeatureScreen.danger.withValues(alpha: 0.08)
+        : state == _FilesOperationState.done
+        ? const Color(0xFFEAF7EF)
+        : FilesFeatureScreen.surfaceMuted;
+    return AnimatedContainer(
+      key: ValueKey<String>('files-operation-status-${state.name}'),
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: textColor.withValues(alpha: 0.14)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isPending) ...[
+            SizedBox.square(
+              dimension: 12,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.5,
+                color: textColor,
+              ),
+            ),
+            const SizedBox(width: 7),
+          ],
+          Text(
+            _filesOperationLabel(copy, state),
+            style: TextStyle(
+              fontSize: 12,
+              height: 1.1,
+              fontWeight: FontWeight.w700,
+              color: textColor,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _filesOperationLabel(OpenCrayUiCopy copy, _FilesOperationState state) =>
+    switch (state) {
+      _FilesOperationState.copyReady => copy.filesOperationPreparingCopy,
+      _FilesOperationState.moveReady => copy.filesOperationPreparingMove,
+      _FilesOperationState.pasting => copy.filesOperationPasting,
+      _FilesOperationState.deleting => copy.filesOperationDeleting,
+      _FilesOperationState.done => copy.filesOperationDone,
+      _FilesOperationState.failed => copy.filesOperationFailed,
+    };
 
 class _SelectionActionGroup extends StatelessWidget {
   const _SelectionActionGroup({
@@ -3069,23 +3183,6 @@ class _ImagePreviewDialog extends StatelessWidget {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _StateCard extends StatelessWidget {
-  const _StateCard({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: FilesFeatureScreen.surface,
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: child,
     );
   }
 }
