@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import com.opencray.persistence.model.ChatTranscriptRole
+import com.opencray.persistence.model.ChatTranscriptSessionEntry
 
 internal class ChatSessionMutationCoordinator(
   private val chatSessionStore: ChatSessionLocalStore,
@@ -79,8 +80,13 @@ internal class ChatSessionMutationCoordinator(
     if (messageId.isBlank()) {
       return null
     }
-    cancelPendingMessageIds(sessionId = sessionId, pendingMessageIds = setOf(messageId))
-    chatSessionStore.deleteMessage(sessionId, messageId)
+    val session = chatSessionStore.loadSession(sessionId) ?: return null
+    val messageIdsToDelete = messageIdsForChatDelete(
+      session = session,
+      messageId = messageId,
+    )
+    cancelPendingMessageIds(sessionId = sessionId, pendingMessageIds = messageIdsToDelete)
+    chatSessionStore.deleteMessages(sessionId, messageIdsToDelete)
     runMediaGc()
     return sessionId
   }
@@ -197,6 +203,67 @@ internal class ChatSessionMutationCoordinator(
   private fun runMediaGc() {
     runCatching { mediaGc() }
   }
+
+  private fun messageIdsForChatDelete(
+    session: ChatTranscriptSessionEntry,
+    messageId: String,
+  ): Set<String> {
+    val normalizedMessageId = messageId.trim()
+    if (normalizedMessageId.isBlank()) {
+      return emptySet()
+    }
+    val messageIndex = session.messages.indexOfFirst { message ->
+      message.messageId == normalizedMessageId
+    }
+    if (messageIndex < 0) {
+      return setOf(normalizedMessageId)
+    }
+    if (!shouldCascadeFinalAgentBubbleDelete(session, messageIndex)) {
+      return setOf(normalizedMessageId)
+    }
+    val messageIds = linkedSetOf<String>()
+    for (index in messageIndex downTo 0) {
+      val message = session.messages[index]
+      if (message.role == ChatTranscriptRole.USER) {
+        break
+      }
+      if (message.role == ChatTranscriptRole.ASSISTANT) {
+        messageIds += message.messageId
+      }
+    }
+    messageIds += normalizedMessageId
+    return messageIds
+  }
+
+  private fun shouldCascadeFinalAgentBubbleDelete(
+    session: ChatTranscriptSessionEntry,
+    messageIndex: Int,
+  ): Boolean {
+    val message = session.messages.getOrNull(messageIndex) ?: return false
+    if (
+      message.role != ChatTranscriptRole.ASSISTANT ||
+      isRuntimeProjectedAgentMessageId(message.messageId)
+    ) {
+      return false
+    }
+    for (index in (messageIndex - 1) downTo 0) {
+      val candidate = session.messages[index]
+      if (candidate.role == ChatTranscriptRole.USER) {
+        break
+      }
+      if (
+        candidate.role == ChatTranscriptRole.ASSISTANT &&
+        isRuntimeProjectedAgentMessageId(candidate.messageId)
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+
+  private fun isRuntimeProjectedAgentMessageId(messageId: String): Boolean =
+    messageId.startsWith("runtime-assistant-") ||
+      messageId.startsWith("runtime-process-")
 }
 
 internal class ServiceOwnedChatSessionMutationAccess(

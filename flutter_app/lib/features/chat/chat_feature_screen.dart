@@ -2624,7 +2624,9 @@ class _ActiveChatMessageMenu {
   bool get canBranch =>
       message.kind == ChatMessageKind.inbound && !message.isEphemeral;
 
-  bool get canDelete => !message.isEphemeral;
+  bool get canDelete =>
+      !message.isEphemeral ||
+      _isRuntimeProjectedAgentMessageId(message.messageId.trim());
 }
 
 @immutable
@@ -2872,6 +2874,107 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
   }
 
+  Set<String> _deleteTargetMessageIdsForMessages(
+    Iterable<ChatMessageData> messages,
+  ) {
+    final Set<String> targetIds = <String>{};
+    for (final message in messages) {
+      targetIds.addAll(_deleteTargetMessageIdsForMessage(message));
+    }
+    return targetIds;
+  }
+
+  Set<String> _deleteTargetMessageIdsForMessage(ChatMessageData message) {
+    final String messageId = message.messageId.trim();
+    if (messageId.isEmpty) {
+      return const <String>{};
+    }
+    final String anchorMessageId = _agentTurnDeleteAnchorMessageId(message);
+    if (anchorMessageId.isEmpty) {
+      return <String>{messageId};
+    }
+    return _agentMessageIdsForTurnAnchor(anchorMessageId)..add(messageId);
+  }
+
+  String _agentTurnDeleteAnchorMessageId(ChatMessageData message) {
+    final String messageId = message.messageId.trim();
+    if (messageId.isEmpty || message.kind != ChatMessageKind.inbound) {
+      return '';
+    }
+    if (message.runtimeAnchorMessageId.trim().isNotEmpty ||
+        _isRuntimeProjectedAgentMessageId(messageId)) {
+      return '';
+    }
+    if (_state.messages.any(
+          (candidate) => candidate.runtimeAnchorMessageId.trim() == messageId,
+        ) ||
+        _state.runTraces.any(
+          (trace) => trace.anchorMessageId.trim() == messageId,
+        )) {
+      return messageId;
+    }
+    final OpenCrayChatRuntimeSnapshot? runtimeSnapshot =
+        _latestChatRuntimeSnapshot ?? _latestChatSnapshot?.runtimeActivity;
+    if (runtimeSnapshot != null &&
+        _visibleRuns(
+          runtimeSnapshot,
+        ).any((run) => run.pendingMessageId?.trim() == messageId)) {
+      return messageId;
+    }
+    final int anchorIndex = _state.messages.indexWhere(
+      (candidate) => candidate.messageId.trim() == messageId,
+    );
+    if (anchorIndex <= 0) {
+      return '';
+    }
+    for (int index = anchorIndex - 1; index >= 0; index -= 1) {
+      final ChatMessageData candidate = _state.messages[index];
+      if (candidate.kind == ChatMessageKind.outbound) {
+        break;
+      }
+      if (candidate.kind == ChatMessageKind.inbound &&
+          _isRuntimeProjectedAgentMessageId(candidate.messageId.trim())) {
+        return messageId;
+      }
+    }
+    return '';
+  }
+
+  Set<String> _agentMessageIdsForTurnAnchor(String anchorMessageId) {
+    final String normalizedAnchorMessageId = anchorMessageId.trim();
+    if (normalizedAnchorMessageId.isEmpty) {
+      return const <String>{};
+    }
+    final Set<String> messageIds = <String>{normalizedAnchorMessageId};
+    for (final ChatMessageData message in _state.messages) {
+      final String messageId = message.messageId.trim();
+      if (messageId.isEmpty) {
+        continue;
+      }
+      if (messageId == normalizedAnchorMessageId ||
+          message.runtimeAnchorMessageId.trim() == normalizedAnchorMessageId) {
+        messageIds.add(messageId);
+      }
+    }
+    final int anchorIndex = _state.messages.indexWhere(
+      (message) => message.messageId.trim() == normalizedAnchorMessageId,
+    );
+    if (anchorIndex >= 0) {
+      for (int index = anchorIndex - 1; index >= 0; index -= 1) {
+        final ChatMessageData candidate = _state.messages[index];
+        if (candidate.kind == ChatMessageKind.outbound) {
+          break;
+        }
+        final String candidateId = candidate.messageId.trim();
+        if (candidate.kind == ChatMessageKind.inbound &&
+            candidateId.isNotEmpty) {
+          messageIds.add(candidateId);
+        }
+      }
+    }
+    return messageIds;
+  }
+
   ChatFeatureState _applyLocalDeletionTombstones(ChatFeatureState state) {
     final String sessionId = _sessionIdForState(state).trim();
     final bool selectedSessionDeleted =
@@ -2991,12 +3094,71 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               : 'message-${entry.key}-${entry.value.kind}';
         })
         .toSet();
+    final Set<String> runtimeTombstoneIds =
+        _runtimeProjectionTombstoneIdsForSession(sessionId);
     deletedMessageIds.removeWhere(
-      (messageId) => !snapshotMessageIds.contains(messageId),
+      (messageId) =>
+          !snapshotMessageIds.contains(messageId) &&
+          !runtimeTombstoneIds.contains(messageId),
     );
     if (deletedMessageIds.isEmpty) {
       _locallyDeletedMessageIdsBySession.remove(sessionId);
     }
+  }
+
+  Set<String> _runtimeProjectionTombstoneIdsForSession(String sessionId) {
+    final String normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty) {
+      return const <String>{};
+    }
+    final OpenCrayChatRuntimeSnapshot? runtimeSnapshot =
+        _latestChatRuntimeSnapshot ?? _latestChatSnapshot?.runtimeActivity;
+    if (runtimeSnapshot == null ||
+        runtimeSnapshot.sessionId.trim() != normalizedSessionId) {
+      return const <String>{};
+    }
+    final Set<String> messageIds = <String>{};
+    final List<OpenCrayChatRunSnapshot> visibleRuns = _visibleRuns(
+      runtimeSnapshot,
+    );
+    final Map<String, OpenCrayChatRunSnapshot> visibleRunsByRunId =
+        <String, OpenCrayChatRunSnapshot>{
+          for (final run in visibleRuns)
+            if (run.runId.trim().isNotEmpty) run.runId.trim(): run,
+        };
+    final Map<String, OpenCrayChatRunSnapshot> visibleRunsByTaskId =
+        <String, OpenCrayChatRunSnapshot>{
+          for (final run in visibleRuns)
+            if (run.taskId.trim().isNotEmpty) run.taskId.trim(): run,
+        };
+    for (final OpenCrayChatRunSnapshot run in visibleRuns) {
+      final String pendingMessageId = run.pendingMessageId?.trim() ?? '';
+      if (pendingMessageId.isNotEmpty) {
+        messageIds.add(pendingMessageId);
+      }
+      for (final OpenCrayChatManagedProcessSnapshot process
+          in run.managedProcesses) {
+        messageIds.addAll(
+          _projectedManagedProcessMessageIds(run: run, process: process),
+        );
+      }
+    }
+    for (final OpenCrayChatRuntimeEventSnapshot event
+        in runtimeSnapshot.events) {
+      if (event.kind != 'assistant_phase' ||
+          event.isFinal == true ||
+          _hideAssistantPhaseBubble(event)) {
+        continue;
+      }
+      final OpenCrayChatRunSnapshot? run =
+          visibleRunsByRunId[event.runId.trim()] ??
+          visibleRunsByTaskId[event.taskId.trim()];
+      if (run == null || !run.matchesRuntimeEvent(event)) {
+        continue;
+      }
+      messageIds.addAll(_assistantPhaseMessageIds(event));
+    }
+    return messageIds;
   }
 
   ChatComposerState _composerStateForHostSnapshot(ChatFeatureState nextState) {
@@ -3379,10 +3541,23 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (selectedIds.isEmpty) {
       return;
     }
+    final Set<String> deleteIdSet = _deleteTargetMessageIdsForMessages(
+      _selectedMessagesInOrder,
+    )..addAll(selectedIds);
+    final List<String> deleteIds = <String>[
+      for (final ChatMessageData message in _state.messages)
+        if (deleteIdSet.contains(message.messageId.trim()))
+          message.messageId.trim(),
+    ];
+    for (final String selectedId in selectedIds) {
+      if (!deleteIds.contains(selectedId)) {
+        deleteIds.add(selectedId);
+      }
+    }
     final bridge = widget.bridge;
     if (bridge != null) {
       final String sessionId = _activeSessionId;
-      final Set<String> deletedIds = selectedIds.toSet();
+      final Set<String> deletedIds = deleteIdSet;
       setState(() {
         _rememberLocallyDeletedMessages(sessionId, deletedIds);
         _removeSelectionForMessages(deletedIds);
@@ -3390,7 +3565,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       });
       final Set<String> pendingIds = <String>{...deletedIds};
       final Set<String> failedOrUnsentIds = <String>{};
-      for (final String messageId in selectedIds) {
+      for (final String messageId in deleteIds) {
         try {
           await bridge.deleteChatMessage(
             sessionId: sessionId,
@@ -3417,10 +3592,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     setState(() {
       _state = _state.copyWith(
         messages: _state.messages
-            .where((message) => !selectedIds.contains(message.messageId))
+            .where((message) => !deleteIdSet.contains(message.messageId))
             .toList(growable: false),
       );
-      _removeSelectionForMessages(selectedIds);
+      _removeSelectionForMessages(deleteIdSet);
     });
   }
 
@@ -3517,24 +3692,31 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (messageId.isEmpty) {
       return;
     }
+    final Set<String> deleteIds = _deleteTargetMessageIdsForMessage(message);
     final bridge = widget.bridge;
     if (bridge != null) {
       final String sessionId = _activeSessionId;
       setState(() {
-        _rememberLocallyDeletedMessages(sessionId, <String>{messageId});
-        _removeSelectionForMessages(<String>{messageId});
+        _rememberLocallyDeletedMessages(sessionId, deleteIds);
+        _removeSelectionForMessages(deleteIds);
         _state = _applyLocalDeletionTombstones(_state);
       });
+      final Set<String> pendingIds = <String>{...deleteIds};
+      final Set<String> failedOrUnsentIds = <String>{};
       try {
-        await bridge.deleteChatMessage(
-          sessionId: sessionId,
-          messageId: messageId,
-        );
+        for (final String deletedMessageId in deleteIds) {
+          await bridge.deleteChatMessage(
+            sessionId: sessionId,
+            messageId: deletedMessageId,
+          );
+          pendingIds.remove(deletedMessageId);
+        }
       } catch (_) {
         if (!mounted) {
           return;
         }
-        _forgetLocallyDeletedMessages(sessionId, <String>{messageId});
+        failedOrUnsentIds.addAll(pendingIds);
+        _forgetLocallyDeletedMessages(sessionId, failedOrUnsentIds);
         _applyHostState();
         _showMessageFeedback(widget.copy.chatMessageActionFailed);
       }
@@ -3543,10 +3725,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     setState(() {
       _state = _state.copyWith(
         messages: _state.messages
-            .where((candidate) => candidate.messageId != messageId)
+            .where((candidate) => !deleteIds.contains(candidate.messageId))
             .toList(growable: false),
       );
-      _removeSelectionForMessages(<String>{messageId});
+      _removeSelectionForMessages(deleteIds);
     });
   }
 
@@ -6036,6 +6218,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final List<ChatRunTraceData> runTraces = _mapRunTraces(
       effectiveRuntime,
       snapshot.pendingApprovals,
+      snapshot.messages
+          .map((message) => message.messageId.trim())
+          .where((messageId) => messageId.isNotEmpty)
+          .toSet(),
     );
     final Map<String, String> liveDraftTextByMessageId =
         _liveDraftTextByMessageId(effectiveRuntime);
@@ -6288,15 +6474,24 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   List<ChatRunTraceData> _mapRunTraces(
     OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
     List<OpenCrayChatPendingApprovalSnapshot> pendingApprovals,
+    Set<String> visibleAnchorMessageIds,
   ) {
     if (runtimeSnapshot == null) {
       return const <ChatRunTraceData>[];
     }
-    final activeRuns = _visibleRuns(runtimeSnapshot).toList(growable: false)
-      ..sort(
-        (left, right) =>
-            left.acceptedAtEpochMs.compareTo(right.acceptedAtEpochMs),
-      );
+    final activeRuns =
+        _visibleRuns(runtimeSnapshot)
+            .where((run) {
+              final String pendingMessageId =
+                  run.pendingMessageId?.trim() ?? '';
+              return pendingMessageId.isEmpty ||
+                  visibleAnchorMessageIds.contains(pendingMessageId);
+            })
+            .toList(growable: false)
+          ..sort(
+            (left, right) =>
+                left.acceptedAtEpochMs.compareTo(right.acceptedAtEpochMs),
+          );
     final List<ChatRunTraceData> runTraces = activeRuns
         .map(
           (run) => _mapRunTrace(
@@ -13321,6 +13516,10 @@ String _runtimeProjectedTraceAnchorMessageIdForMessage(
   }
   return bestAnchorMessageId;
 }
+
+bool _isRuntimeProjectedAgentMessageId(String messageId) =>
+    messageId.startsWith('runtime-assistant-') ||
+    messageId.startsWith('runtime-process-');
 
 String _stableRunTraceKey(ChatRunTraceData trace) {
   final String runId = trace.runId.trim();

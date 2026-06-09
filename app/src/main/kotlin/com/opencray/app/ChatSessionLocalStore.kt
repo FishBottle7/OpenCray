@@ -395,12 +395,23 @@ internal open class ChatSessionLocalStore(
   fun deleteMessage(
     sessionId: String,
     messageId: String,
+  ): ChatSessionsState = deleteMessages(
+    sessionId = sessionId,
+    messageIds = setOf(messageId),
+  )
+
+  fun deleteMessages(
+    sessionId: String,
+    messageIds: Set<String>,
   ): ChatSessionsState {
+    val normalizedMessageIds = messageIds
+      .mapTo(linkedSetOf()) { messageId -> messageId.trim() }
+      .filterTo(linkedSetOf(), String::isNotBlank)
     val workspace = loadWorkspaceOrCreate()
     val currentSession = workspace.sessions.firstOrNull { it.sessionId == sessionId } ?: activeSessionFrom(workspace)
       ?: createSessionInternal(workspace).activeSession
     val now = nowEpochMs()
-    val updatedMessages = currentSession.messages.filterNot { it.messageId == messageId }
+    val updatedMessages = currentSession.messages.filterNot { it.messageId in normalizedMessageIds }
     val updatedSession = currentSession.copy(
       messages = updatedMessages,
       updatedAtEpochMs = now,
