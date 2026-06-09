@@ -12306,7 +12306,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Sessions'));
+    await tester.tap(_chatSessionsButton());
     await tester.pump();
 
     AnimatedSlide slide = tester.widget<AnimatedSlide>(
@@ -12389,7 +12389,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Sessions'));
+    await tester.tap(_chatSessionsButton());
     await tester.pumpAndSettle();
 
     expect(find.text('14:32'), findsOneWidget);
@@ -12503,7 +12503,7 @@ void main() {
         findsOneWidget,
       );
 
-      await tester.tap(find.text('Sessions'));
+      await tester.tap(_chatSessionsButton());
       await tester.pumpAndSettle();
       expect(find.text('Delete session'), findsOneWidget);
       expect(find.text('Keep session'), findsOneWidget);
@@ -12594,7 +12594,7 @@ void main() {
 
       expect(find.text('Old selected session text'), findsOneWidget);
 
-      await tester.tap(find.text('Sessions'));
+      await tester.tap(_chatSessionsButton());
       await tester.pumpAndSettle();
       await tester.tap(find.text('Next session'));
       await tester.pump();
@@ -12603,7 +12603,7 @@ void main() {
       expect(find.text('Old selected session text'), findsNothing);
       expect(find.text(copy.chatComposerPlaceholder), findsOneWidget);
 
-      await tester.tap(find.text('Sessions'));
+      await tester.tap(_chatSessionsButton());
       await tester.pumpAndSettle();
       expect(find.text('Next session'), findsOneWidget);
       expect(find.text('Old session'), findsOneWidget);
@@ -12666,7 +12666,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Sessions'));
+      await tester.tap(_chatSessionsButton());
       await tester.pumpAndSettle();
       await tester.tap(find.text('Next session'));
       await tester.pump();
@@ -12838,7 +12838,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Sessions'));
+      await tester.tap(_chatSessionsButton());
       await tester.pumpAndSettle();
       expect(find.text('New session'), findsOneWidget);
 
@@ -12856,6 +12856,40 @@ void main() {
       expect(find.text('New session'), findsNothing);
     },
   );
+
+  testWidgets('chat top utility bar keeps frequent controls visually quiet', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_buildChatHarness());
+    await tester.pumpAndSettle();
+
+    final Finder sessionsButton = _chatSessionsButton();
+    final Finder statusPill = find.byKey(
+      const ValueKey<String>('chat-runtime-status-pill'),
+    );
+
+    expect(sessionsButton, findsOneWidget);
+    expect(statusPill, findsOneWidget);
+    expect(find.text('Sessions'), findsNothing);
+    expect(find.text('Local'), findsOneWidget);
+    expect(find.text('SAFE'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: statusPill,
+        matching: find.byKey(
+          const ValueKey<String>('chat-runtime-selector-label'),
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: statusPill,
+        matching: find.byKey(const ValueKey<String>('chat-runtime-mode-label')),
+      ),
+      findsOneWidget,
+    );
+  });
 
   testWidgets(
     'runtime environment selector uses English labels, shows icons, and saves cloud selection',
@@ -15060,6 +15094,9 @@ Finder _findRichTextWithPlainText(String text) =>
       }
       return widget.text.toPlainText() == text;
     });
+
+Finder _chatSessionsButton() =>
+    find.byKey(const ValueKey<String>('chat-sessions-button'));
 
 void _activateRichTextLink(WidgetTester tester, Finder richTextFinder) {
   final RichText richText = tester.widget<RichText>(richTextFinder);

@@ -11883,61 +11883,111 @@ class _ChatToolbar extends StatelessWidget {
         ),
       );
     }
-    return Row(
-      children: <Widget>[
-        GestureDetector(
-          onTap: onSessionsPressed,
+    return SizedBox(
+      height: 44,
+      child: Row(
+        children: <Widget>[
+          _ChatToolbarIconButton(
+            key: const ValueKey<String>('chat-sessions-button'),
+            tooltip: sessionButtonLabel,
+            icon: Icons.menu_rounded,
+            onPressed: onSessionsPressed,
+          ),
+          const Spacer(),
+          _ChatRuntimeEnvironmentSelector(
+            environment: runtimeEnvironment,
+            modeLabel: modeLabel,
+            onSelected: onRuntimeEnvironmentSelected,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ChatToolbarIconButton extends StatefulWidget {
+  const _ChatToolbarIconButton({
+    super.key,
+    required this.tooltip,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  final String tooltip;
+  final IconData icon;
+  final VoidCallback onPressed;
+
+  @override
+  State<_ChatToolbarIconButton> createState() => _ChatToolbarIconButtonState();
+}
+
+class _ChatToolbarIconButtonState extends State<_ChatToolbarIconButton> {
+  bool _isPressed = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color foregroundColor = _isPressed
+        ? _ChatPalette.textPrimary
+        : _ChatPalette.textSecondary;
+    return Semantics(
+      button: true,
+      label: widget.tooltip,
+      onTap: widget.onPressed,
+      child: Tooltip(
+        message: widget.tooltip,
+        child: GestureDetector(
+          onTapDown: (_) => _setPressed(true),
+          onTapUp: (_) => _setPressed(false),
+          onTapCancel: () => _setPressed(false),
+          onTap: widget.onPressed,
           behavior: HitTestBehavior.opaque,
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(999),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: <Widget>[
-                  const Icon(
-                    Icons.menu_rounded,
-                    size: 14,
-                    color: _ChatPalette.textSecondary,
+          child: SizedBox.square(
+            dimension: 44,
+            child: Center(
+              child: AnimatedContainer(
+                duration: OpenCrayMotion.resolve(context, OpenCrayMotion.quick),
+                curve: OpenCrayMotion.enter,
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: _isPressed
+                      ? Colors.white.withValues(alpha: 0.86)
+                      : Colors.white.withValues(alpha: 0.54),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: Colors.white.withValues(
+                      alpha: _isPressed ? 0.92 : 0.58,
+                    ),
                   ),
-                  const SizedBox(width: 6),
-                  Text(
-                    sessionButtonLabel,
-                    style: _ChatTextStyles.toolbarButton,
-                  ),
-                  const SizedBox(width: 2),
-                  const Icon(
-                    Icons.chevron_right_rounded,
-                    size: 16,
-                    color: _ChatPalette.textSecondary,
-                  ),
-                ],
+                ),
+                child: Icon(widget.icon, size: 18, color: foregroundColor),
               ),
             ),
           ),
         ),
-        const Spacer(),
-        _ChatRuntimeEnvironmentSelector(
-          environment: runtimeEnvironment,
-          onSelected: onRuntimeEnvironmentSelected,
-        ),
-        const SizedBox(width: 8),
-        Text(modeLabel, style: _ChatTextStyles.modeLabel),
-      ],
+      ),
     );
+  }
+
+  void _setPressed(bool value) {
+    if (_isPressed == value) {
+      return;
+    }
+    setState(() {
+      _isPressed = value;
+    });
   }
 }
 
 class _ChatRuntimeEnvironmentSelector extends StatelessWidget {
   const _ChatRuntimeEnvironmentSelector({
     required this.environment,
+    required this.modeLabel,
     required this.onSelected,
   });
 
   final _ChatRuntimeEnvironment environment;
+  final String modeLabel;
   final ValueChanged<_ChatRuntimeEnvironment> onSelected;
 
   @override
@@ -11979,37 +12029,10 @@ class _ChatRuntimeEnvironmentSelector extends StatelessWidget {
               ),
             ),
           ],
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: <Widget>[
-              Icon(
-                icon,
-                key: const ValueKey<String>('chat-runtime-selector-icon'),
-                size: 14,
-                color: _ChatPalette.textSecondary,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                label,
-                key: const ValueKey<String>('chat-runtime-selector-label'),
-                style: _ChatTextStyles.toolbarButton,
-              ),
-              const SizedBox(width: 2),
-              const Icon(
-                Icons.expand_more_rounded,
-                size: 16,
-                color: _ChatPalette.textSecondary,
-              ),
-            ],
-          ),
-        ),
+      child: _ChatRuntimeStatusPill(
+        icon: icon,
+        environmentLabel: label,
+        modeLabel: modeLabel,
       ),
     );
   }
@@ -12021,6 +12044,72 @@ class _ChatRuntimeEnvironmentSelector extends StatelessWidget {
       environment == _ChatRuntimeEnvironment.cloud
       ? Icons.cloud_queue_rounded
       : Icons.laptop_mac_outlined;
+}
+
+class _ChatRuntimeStatusPill extends StatelessWidget {
+  const _ChatRuntimeStatusPill({
+    required this.icon,
+    required this.environmentLabel,
+    required this.modeLabel,
+  });
+
+  final IconData icon;
+  final String environmentLabel;
+  final String modeLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      key: const ValueKey<String>('chat-runtime-status-pill'),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.62),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.64)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: <Widget>[
+            Icon(
+              icon,
+              key: const ValueKey<String>('chat-runtime-selector-icon'),
+              size: 16,
+              color: _ChatPalette.textSecondary,
+            ),
+            const SizedBox(width: 7),
+            Text(
+              environmentLabel,
+              key: const ValueKey<String>('chat-runtime-selector-label'),
+              style: _ChatTextStyles.toolbarButton,
+            ),
+            const SizedBox(width: 7),
+            Container(
+              key: const ValueKey<String>('chat-runtime-status-divider'),
+              width: 3,
+              height: 3,
+              decoration: BoxDecoration(
+                color: _ChatPalette.textTertiary.withValues(alpha: 0.72),
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 7),
+            Text(
+              modeLabel,
+              key: const ValueKey<String>('chat-runtime-mode-label'),
+              style: _ChatTextStyles.toolbarStatus,
+            ),
+            const SizedBox(width: 4),
+            const Icon(
+              Icons.expand_more_rounded,
+              size: 16,
+              color: _ChatPalette.textTertiary,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 class _ChatRuntimeEnvironmentMenuRow extends StatelessWidget {
@@ -21483,7 +21572,7 @@ class _ChatTextStyles {
     color: _ChatPalette.textPrimary,
   );
 
-  static const TextStyle modeLabel = TextStyle(
+  static const TextStyle toolbarStatus = TextStyle(
     fontSize: 12,
     height: 1.1,
     fontWeight: FontWeight.w700,
