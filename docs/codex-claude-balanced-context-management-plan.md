@@ -234,7 +234,7 @@ Preferred path:
 1. rely on local budget coordination
 2. rely on deterministic replay projection
 3. rely on local durable compaction
-4. expose unsupported native features as unavailable metadata, not silent no-ops
+4. gate provider-native features honestly; absence/null support metadata means unavailable unless a route explicitly advertises support
 
 ## Memory And Soul Balance Rules
 
@@ -366,7 +366,7 @@ Verification:
 - OpenAI cached token telemetry round-trips into run trace
 - Anthropic cache read/write telemetry round-trips into run trace
 - dynamic memory recall change is visible as dynamic drift, not stable-prefix drift
-- Responses remote compaction is advertised only on Responses-native routes; Chat, Anthropic, on-device, and custom routes keep local projection/compaction contracts and honest unsupported-native-feature metadata
+- Responses remote compaction is advertised only on Responses-native routes; Chat, Anthropic, on-device, and custom routes keep local projection/compaction contracts and do not advertise unsupported native features
 
 ### Phase 5: Model-Switch Safeguard
 
@@ -381,7 +381,7 @@ Goal:
 
 - protect continuation/compaction when switching to a smaller context window
 
-Work:
+Deferred work:
 
 - compare previous route context window with next route context window
 - force pressure evaluation before model switch when next window is smaller
@@ -438,7 +438,7 @@ Verification:
 
 - an operator can inspect one run and see exact context layer final states
 - no need to reconstruct behavior from raw metadata keys
-- budget, cache, memory recall, sticky memory, skills, bootstrap, flush, local compaction, remote compaction, replay projection, and Responses context-update traces are projected through host and projection-only snapshots
+- budget, cache, memory recall, sticky memory, skills, bootstrap, flush, local compaction, remote compaction, replay projection, and Responses context-update traces are projected through host, projection-only, local-server, and Flutter debug snapshots
 
 ## Explicit Non-Goals
 
@@ -455,7 +455,7 @@ Verification:
 This scoped plan is complete when:
 
 - OpenAI Responses native continuation is baseline-plus-update oriented rather than full dynamic-front-byte oriented.
-- Chat/Anthropic/on-device routes have stable local cache-shape contracts and honest native-feature metadata.
+- Chat/Anthropic/on-device routes have stable local cache-shape contracts and do not advertise unsupported provider-native features.
 - Opportunistic memory recall no longer breaks provider-native continuation by default.
 - Sticky memory and pinned skills can deliberately enter durable context with trace.
 - Replay projection is deterministic and persisted.

@@ -2141,7 +2141,7 @@ void main() {
       await tester.pumpAndSettle();
 
       final String projectedBubbleMessageId =
-          'runtime-assistant-commentary-task-progress-1--1-Planning-2200-${javaStringHashCode('Inspecting the project layout.')}';
+          'runtime-assistant-commentary-task-progress-1--1-Planning-2200';
       final projectedBubble = find.byKey(
         ValueKey<String>('chat-bubble-$projectedBubbleMessageId'),
       );
@@ -10364,6 +10364,15 @@ void main() {
                 includedSummaryCount: 1,
                 totalSummaryCount: 1,
                 totalCompactedMessageCount: 6,
+                remoteCompaction: OpenCrayChatRunRemoteCompactionSnapshot(
+                  requested: true,
+                  supported: true,
+                  used: true,
+                  triggerStage: 'pre_compaction',
+                  outputItemCount: 2,
+                  compactionItemCount: 1,
+                  encryptedContentCount: 1,
+                ),
               ),
               skillInventory: OpenCrayChatRunSkillInventorySnapshot(
                 visibleSkillCount: 2,
@@ -10467,7 +10476,32 @@ void main() {
       expect(
         find.descendant(
           of: fullscreenFinder,
+          matching: find.textContaining('Mode: inline'),
+        ),
+        findsAtLeastNWidgets(2),
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
           matching: find.textContaining('Retained 12/18 transcript messages'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'Remote compaction: used, supported, requested, trigger pre_compaction',
+          ),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'Remote compaction details: output 2, compaction 1, encrypted 1',
+          ),
         ),
         findsOneWidget,
       );

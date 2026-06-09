@@ -1232,6 +1232,15 @@ void main() {
                     'latestCompactedMessageCount': 6,
                     'includedSummaryCount': 1,
                     'totalSummaryCount': 1,
+                    'remoteCompaction': <String, Object?>{
+                      'requested': true,
+                      'supported': true,
+                      'used': true,
+                      'triggerStage': 'pre_compaction',
+                      'outputItemCount': 2,
+                      'compactionItemCount': 1,
+                      'encryptedContentCount': 1,
+                    },
                   },
                   'skillInventory': <String, Object?>{
                     'visibleSkillCount': 2,
@@ -1357,6 +1366,28 @@ void main() {
       expect(
         snapshot.activeRuns.single.durableCompaction?.estimatedReplayTokens,
         116000,
+      );
+      expect(
+        snapshot.activeRuns.single.durableCompaction?.remoteCompaction?.used,
+        isTrue,
+      );
+      expect(
+        snapshot
+            .activeRuns
+            .single
+            .durableCompaction
+            ?.remoteCompaction
+            ?.triggerStage,
+        'pre_compaction',
+      );
+      expect(
+        snapshot
+            .activeRuns
+            .single
+            .durableCompaction
+            ?.remoteCompaction
+            ?.encryptedContentCount,
+        1,
       );
       expect(
         snapshot.activeRuns.single.durableCompaction?.tokenThresholdTriggered,

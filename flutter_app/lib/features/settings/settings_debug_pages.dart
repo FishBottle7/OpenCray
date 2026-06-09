@@ -2126,6 +2126,23 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                   'Execution mode',
                   durableCompaction.executionMode!.trim(),
                 ),
+              if (durableCompaction.remoteCompaction != null)
+                _DebugKeyValueLine(
+                  'Remote compaction',
+                  _formatRemoteCompactionState(
+                    durableCompaction.remoteCompaction!,
+                  ),
+                ),
+              if (_formatRemoteCompactionDetails(
+                    durableCompaction.remoteCompaction,
+                  ) !=
+                  null)
+                _DebugKeyValueLine(
+                  'Remote compaction details',
+                  _formatRemoteCompactionDetails(
+                    durableCompaction.remoteCompaction,
+                  )!,
+                ),
               if ((durableCompaction.contextWindowTokens ?? 0) > 0)
                 _DebugKeyValueLine(
                   'Context window',
@@ -2169,6 +2186,49 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
         ],
       ),
     );
+  }
+
+  String _formatRemoteCompactionState(
+    OpenCrayChatRunRemoteCompactionSnapshot remote,
+  ) {
+    final parts = <String>[];
+    if (remote.used != null) {
+      parts.add(remote.used! ? 'used' : 'not used');
+    }
+    if (remote.supported != null) {
+      parts.add(remote.supported! ? 'supported' : 'unsupported');
+    }
+    if (remote.requested != null) {
+      parts.add(remote.requested! ? 'requested' : 'not requested');
+    }
+    final triggerStage = remote.triggerStage?.trim();
+    if (triggerStage != null && triggerStage.isNotEmpty) {
+      parts.add('trigger $triggerStage');
+    }
+    return parts.isEmpty ? 'present' : parts.join(', ');
+  }
+
+  String? _formatRemoteCompactionDetails(
+    OpenCrayChatRunRemoteCompactionSnapshot? remote,
+  ) {
+    if (remote == null) {
+      return null;
+    }
+    final parts = <String>[];
+    if (remote.outputItemCount != null) {
+      parts.add('output ${remote.outputItemCount}');
+    }
+    if (remote.compactionItemCount != null) {
+      parts.add('compaction ${remote.compactionItemCount}');
+    }
+    if (remote.encryptedContentCount != null) {
+      parts.add('encrypted ${remote.encryptedContentCount}');
+    }
+    final fallbackReason = remote.fallbackReason?.trim();
+    if (fallbackReason != null && fallbackReason.isNotEmpty) {
+      parts.add('fallback $fallbackReason');
+    }
+    return parts.isEmpty ? null : parts.join(', ');
   }
 
   String _formatContextBudgetPreset(

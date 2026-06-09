@@ -929,6 +929,43 @@ class OpenCrayChatRunBootstrapSnapshot {
   }
 }
 
+class OpenCrayChatRunRemoteCompactionSnapshot {
+  const OpenCrayChatRunRemoteCompactionSnapshot({
+    this.requested,
+    this.supported,
+    this.used,
+    this.triggerStage,
+    this.fallbackReason,
+    this.outputItemCount,
+    this.compactionItemCount,
+    this.encryptedContentCount,
+  });
+
+  final bool? requested;
+  final bool? supported;
+  final bool? used;
+  final String? triggerStage;
+  final String? fallbackReason;
+  final int? outputItemCount;
+  final int? compactionItemCount;
+  final int? encryptedContentCount;
+
+  factory OpenCrayChatRunRemoteCompactionSnapshot.fromMap(
+    Map<Object?, Object?> map,
+  ) {
+    return OpenCrayChatRunRemoteCompactionSnapshot(
+      requested: map['requested'] as bool?,
+      supported: map['supported'] as bool?,
+      used: map['used'] as bool?,
+      triggerStage: map['triggerStage'] as String?,
+      fallbackReason: map['fallbackReason'] as String?,
+      outputItemCount: map['outputItemCount'] as int?,
+      compactionItemCount: map['compactionItemCount'] as int?,
+      encryptedContentCount: map['encryptedContentCount'] as int?,
+    );
+  }
+}
+
 class OpenCrayChatRunDurableCompactionSnapshot {
   const OpenCrayChatRunDurableCompactionSnapshot({
     this.compactedThisRun,
@@ -946,6 +983,7 @@ class OpenCrayChatRunDurableCompactionSnapshot {
     this.totalSummaryCount,
     this.totalCompactedMessageCount,
     this.latestCompactedAtEpochMs,
+    this.remoteCompaction,
   });
 
   final bool? compactedThisRun;
@@ -963,10 +1001,12 @@ class OpenCrayChatRunDurableCompactionSnapshot {
   final int? totalSummaryCount;
   final int? totalCompactedMessageCount;
   final int? latestCompactedAtEpochMs;
+  final OpenCrayChatRunRemoteCompactionSnapshot? remoteCompaction;
 
   factory OpenCrayChatRunDurableCompactionSnapshot.fromMap(
     Map<Object?, Object?> map,
   ) {
+    final rawRemoteCompaction = map['remoteCompaction'];
     return OpenCrayChatRunDurableCompactionSnapshot(
       compactedThisRun: map['compactedThisRun'] as bool?,
       triggerStage: map['triggerStage'] as String?,
@@ -984,6 +1024,11 @@ class OpenCrayChatRunDurableCompactionSnapshot {
       totalSummaryCount: map['totalSummaryCount'] as int?,
       totalCompactedMessageCount: map['totalCompactedMessageCount'] as int?,
       latestCompactedAtEpochMs: map['latestCompactedAtEpochMs'] as int?,
+      remoteCompaction: rawRemoteCompaction is Map<Object?, Object?>
+          ? OpenCrayChatRunRemoteCompactionSnapshot.fromMap(
+              rawRemoteCompaction,
+            )
+          : null,
     );
   }
 }

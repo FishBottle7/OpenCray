@@ -2408,11 +2408,14 @@ class OpenCrayAgentRuntime(
       cursor = cursor,
       requestedShape = requestedShape,
       requestedFrontContextZones = requestedFrontContextZones,
-    ) ?: return ResponsesContinuationDecision(reason = "responses_context_update_chain_limit")
+    )
+    pendingContextUpdates.fallbackReason?.let { reason ->
+      return ResponsesContinuationDecision(reason = reason)
+    }
     return ResponsesContinuationDecision(
       previousResponseId = previousResponseId,
       reason = "responses_previous_response_id",
-      pendingContextUpdates = pendingContextUpdates,
+      pendingContextUpdates = pendingContextUpdates.updates,
     )
   }
 
@@ -2443,22 +2446,31 @@ class OpenCrayAgentRuntime(
     cursor: PromptTurnCursor,
     requestedShape: ResponsesContinuationShape,
     requestedFrontContextZones: FrontContextZones,
-  ): List<ResponsesPendingContextUpdate>? {
-    val storedShape = cursor.responsesContinuationShape ?: return emptyList()
+  ): ResponsesPendingContextUpdatePlan {
+    val storedShape = cursor.responsesContinuationShape ?: return ResponsesPendingContextUpdatePlan()
     if (storedShape.referenceState.dynamicContextHash == requestedShape.referenceState.dynamicContextHash) {
-      return emptyList()
+      return ResponsesPendingContextUpdatePlan()
     }
     if (storedShape.referenceState.appliedUpdateCount >= RESPONSES_CONTEXT_UPDATE_CHAIN_LIMIT) {
-      return null
+      return ResponsesPendingContextUpdatePlan(
+        fallbackReason = "responses_context_update_chain_limit",
+      )
     }
     val updateText = requestedFrontContextZones.dynamicContextPrompt.trim().takeIf(String::isNotBlank)
       ?: "Dynamic operational context is currently empty."
-    return listOf(
-      ResponsesPendingContextUpdate(
-        sequence = storedShape.referenceState.appliedUpdateCount + 1,
-        dynamicContextHash = requestedShape.referenceState.dynamicContextHash,
-        content = updateText.take(RESPONSES_CONTEXT_UPDATE_MAX_CHARS),
-        truncated = updateText.length > RESPONSES_CONTEXT_UPDATE_MAX_CHARS,
+    if (updateText.length > RESPONSES_CONTEXT_UPDATE_MAX_CHARS) {
+      return ResponsesPendingContextUpdatePlan(
+        fallbackReason = "responses_context_update_too_large",
+      )
+    }
+    return ResponsesPendingContextUpdatePlan(
+      updates = listOf(
+        ResponsesPendingContextUpdate(
+          sequence = storedShape.referenceState.appliedUpdateCount + 1,
+          dynamicContextHash = requestedShape.referenceState.dynamicContextHash,
+          content = updateText,
+          truncated = false,
+        ),
       ),
     )
   }
@@ -6521,14 +6533,16 @@ class OpenCrayAgentRuntime(
     } else if (
       plan.mode == LocalContinuationMode.FULL_REBUILD &&
       (
-        plan.reason == "anchor_changed" ||
-          plan.reason == "durable_context_changed" ||
-          plan.reason == "dynamic_context_changed" ||
-          plan.reason == "transcript_mismatch" ||
-          plan.reason == "responses_shape_unavailable" ||
-          plan.reason == "tool_pool_changed" ||
-          plan.reason == "tool_schema_changed" ||
-          plan.reason == "user_setting_changed"
+          plan.reason == "anchor_changed" ||
+            plan.reason == "durable_context_changed" ||
+            plan.reason == "dynamic_context_changed" ||
+            plan.reason == "transcript_mismatch" ||
+            plan.reason == "responses_shape_unavailable" ||
+            plan.reason == "responses_context_update_chain_limit" ||
+            plan.reason == "responses_context_update_too_large" ||
+            plan.reason == "tool_pool_changed" ||
+            plan.reason == "tool_schema_changed" ||
+            plan.reason == "user_setting_changed"
         )
     ) {
       localContinuationFallbackCount += 1
@@ -9651,6 +9665,11 @@ class OpenCrayAgentRuntime(
     val previousResponseId: String? = null,
     val reason: String,
     val pendingContextUpdates: List<ResponsesPendingContextUpdate> = emptyList(),
+  )
+
+  private data class ResponsesPendingContextUpdatePlan(
+    val updates: List<ResponsesPendingContextUpdate> = emptyList(),
+    val fallbackReason: String? = null,
   )
 
   private data class PendingSubAgentApprovalContinuation(

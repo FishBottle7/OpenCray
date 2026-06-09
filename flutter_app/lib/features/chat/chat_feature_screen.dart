@@ -1127,6 +1127,9 @@ bool shouldReplaceObservedChatSnapshot(
     if (incoming.updatedAtEpochMs > current.updatedAtEpochMs) {
       return true;
     }
+    if (_chatSnapshotOnlyPrunesEphemeralTail(current, incoming)) {
+      return false;
+    }
     return !_chatSnapshotsHostContentEquivalent(current, incoming);
   }
   return !_chatSnapshotsHostContentEquivalent(current, incoming);
@@ -1156,13 +1159,13 @@ bool shouldReplaceObservedRuntimeSnapshot(
   if (_runtimeSnapshotIsAuthoritativeClear(candidate, current)) {
     return true;
   }
+  if (_runtimeSnapshotContinuesTerminalRun(candidate, current)) {
+    return true;
+  }
   final int currentOperationalVersion = _runtimeOperationalVersion(current);
   final int candidateOperationalVersion = _runtimeOperationalVersion(candidate);
   if (candidateOperationalVersion != currentOperationalVersion) {
     return candidateOperationalVersion > currentOperationalVersion;
-  }
-  if (_runtimeSnapshotContinuesTerminalRun(candidate, current)) {
-    return true;
   }
   if (_runtimeSnapshotTerminalizesRun(candidate, current)) {
     return true;
@@ -1558,6 +1561,20 @@ Map<String, Object?>? _runtimeDurableCompactionDisplaySignature(
     'totalSummaryCount': compaction.totalSummaryCount,
     'totalCompactedMessageCount': compaction.totalCompactedMessageCount,
     'latestCompactedAtEpochMs': compaction.latestCompactedAtEpochMs,
+    'remoteCompaction': compaction.remoteCompaction == null
+        ? null
+        : <String, Object?>{
+            'requested': compaction.remoteCompaction!.requested,
+            'supported': compaction.remoteCompaction!.supported,
+            'used': compaction.remoteCompaction!.used,
+            'triggerStage': compaction.remoteCompaction!.triggerStage,
+            'fallbackReason': compaction.remoteCompaction!.fallbackReason,
+            'outputItemCount': compaction.remoteCompaction!.outputItemCount,
+            'compactionItemCount':
+                compaction.remoteCompaction!.compactionItemCount,
+            'encryptedContentCount':
+                compaction.remoteCompaction!.encryptedContentCount,
+          },
   };
 }
 
@@ -2172,19 +2189,44 @@ bool _chatMessageSnapshotsEquivalent(
   return _listsEquivalent(
     left,
     right,
-    (leftMessage, rightMessage) =>
-        leftMessage.messageId == rightMessage.messageId &&
-        leftMessage.kind == rightMessage.kind &&
-        leftMessage.text == rightMessage.text &&
-        leftMessage.meta == rightMessage.meta &&
-        leftMessage.createdAtEpochMs == rightMessage.createdAtEpochMs &&
-        leftMessage.isEphemeral == rightMessage.isEphemeral &&
-        _chatAttachmentSnapshotsEquivalent(
-          leftMessage.attachments,
-          rightMessage.attachments,
-        ),
+    _chatMessageSnapshotEquivalent,
   );
 }
+
+bool _chatSnapshotOnlyPrunesEphemeralTail(
+  OpenCrayChatSnapshot current,
+  OpenCrayChatSnapshot incoming,
+) {
+  if (incoming.messages.length >= current.messages.length) {
+    return false;
+  }
+  for (var index = 0; index < incoming.messages.length; index += 1) {
+    if (!_chatMessageSnapshotEquivalent(
+      current.messages[index],
+      incoming.messages[index],
+    )) {
+      return false;
+    }
+  }
+  return current.messages
+      .skip(incoming.messages.length)
+      .every((message) => message.isEphemeral);
+}
+
+bool _chatMessageSnapshotEquivalent(
+  OpenCrayChatMessageSnapshot leftMessage,
+  OpenCrayChatMessageSnapshot rightMessage,
+) =>
+    leftMessage.messageId == rightMessage.messageId &&
+    leftMessage.kind == rightMessage.kind &&
+    leftMessage.text == rightMessage.text &&
+    leftMessage.meta == rightMessage.meta &&
+    leftMessage.createdAtEpochMs == rightMessage.createdAtEpochMs &&
+    leftMessage.isEphemeral == rightMessage.isEphemeral &&
+    _chatAttachmentSnapshotsEquivalent(
+      leftMessage.attachments,
+      rightMessage.attachments,
+    );
 
 bool _chatAttachmentSnapshotsEquivalent(
   List<OpenCrayChatAttachmentSnapshot> left,
@@ -8087,6 +8129,69 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
                   ? 'Threshold triggered'
                   : 'Threshold not triggered'),
     ];
+    final remote = durableCompaction.remoteCompaction;
+    final List<String> remoteState = <String>[];
+    final List<String> remoteCounts = <String>[];
+    if (remote != null) {
+      if (remote.used != null) {
+        remoteState.add(
+          widget.copy.isChinese
+              ? (remote.used! ? '已使用远端压缩' : '未使用远端压缩')
+              : (remote.used! ? 'used' : 'not used'),
+        );
+      }
+      if (remote.supported != null) {
+        remoteState.add(
+          widget.copy.isChinese
+              ? (remote.supported! ? '支持' : '不支持')
+              : (remote.supported! ? 'supported' : 'unsupported'),
+        );
+      }
+      if (remote.requested != null) {
+        remoteState.add(
+          widget.copy.isChinese
+              ? (remote.requested! ? '已请求' : '未请求')
+              : (remote.requested! ? 'requested' : 'not requested'),
+        );
+      }
+      final remoteTriggerStage = _nonEmpty(remote.triggerStage);
+      if (remoteTriggerStage != null) {
+        remoteState.add(
+          widget.copy.isChinese
+              ? '触发 $remoteTriggerStage'
+              : 'trigger $remoteTriggerStage',
+        );
+      }
+      if (remote.outputItemCount != null) {
+        remoteCounts.add(
+          widget.copy.isChinese
+              ? '输出 ${remote.outputItemCount}'
+              : 'output ${remote.outputItemCount}',
+        );
+      }
+      if (remote.compactionItemCount != null) {
+        remoteCounts.add(
+          widget.copy.isChinese
+              ? '压缩项 ${remote.compactionItemCount}'
+              : 'compaction ${remote.compactionItemCount}',
+        );
+      }
+      if (remote.encryptedContentCount != null) {
+        remoteCounts.add(
+          widget.copy.isChinese
+              ? '加密内容 ${remote.encryptedContentCount}'
+              : 'encrypted ${remote.encryptedContentCount}',
+        );
+      }
+      final fallbackReason = _nonEmpty(remote.fallbackReason);
+      if (fallbackReason != null) {
+        remoteCounts.add(
+          widget.copy.isChinese
+              ? '回退 $fallbackReason'
+              : 'fallback $fallbackReason',
+        );
+      }
+    }
     return _joinTraceSections(<String?>[
       summary.isEmpty ? null : summary.join(widget.copy.isChinese ? '，' : ', '),
       summaryCounts.isEmpty
@@ -8095,6 +8200,16 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       pressure.isEmpty
           ? null
           : pressure.join(widget.copy.isChinese ? '，' : ', '),
+      remoteState.isEmpty
+          ? null
+          : widget.copy.isChinese
+          ? '远端压缩：${remoteState.join('，')}'
+          : 'Remote compaction: ${remoteState.join(', ')}',
+      remoteCounts.isEmpty
+          ? null
+          : widget.copy.isChinese
+          ? '远端压缩明细：${remoteCounts.join('，')}'
+          : 'Remote compaction details: ${remoteCounts.join(', ')}',
       durableCompaction.latestCompactedAtEpochMs == null
           ? null
           : widget.copy.isChinese

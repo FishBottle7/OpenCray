@@ -120,6 +120,7 @@ class MemoryFlushCoordinatorTest {
     assertTrue(summary.wasWritten)
     assertEquals("mid_turn", summary.trace.triggerStage)
     assertEquals("memory_flush:mid_turn", summary.trace.maintenanceTask)
+    assertEquals("inline", summary.trace.executionMode)
     assertEquals(summary.writtenRecords.map(MemoryRecord::id), summary.trace.candidateRecordIds)
     assertEquals("Project uses mid-turn durable memory", summary.writtenRecords.single().content)
   }

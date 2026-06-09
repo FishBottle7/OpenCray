@@ -195,11 +195,11 @@ OpenCray already has:
 - durable compaction summaries
 - trace projection for both
 
-But the remaining-work checklist still correctly calls out missing pieces:
+The remaining-work checklist still correctly calls out missing pieces, with one update:
 
 - no separate durable compaction worker
 - no dedicated flush task
-- no mid-turn pressure path
+- mid-turn pressure now has an inline flush/compaction path, but not a detached worker path
 - no model-switch safeguard
 
 This is less of a soul/memory data-model gap and more of a lifecycle/orchestration gap, but it still affects real long-run memory quality.
