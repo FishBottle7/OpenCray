@@ -27,6 +27,17 @@ Skill search found these useful references:
 - Skills design topic index
   https://www.skills.sh/topic/design
 
+Most relevant guidance carried into this plan:
+
+- `ui-animation`: keep motion purposeful, fast, interruptible, mostly on
+  transform/opacity, and disable transform-heavy motion for reduced-motion users.
+- `animation-principles / accessible-motion`: when users request reduced motion,
+  preserve functional state clarity with opacity/color/instant changes instead
+  of spatial movement.
+- `animation-principles / motion-designer`: use anticipation and staging only
+  where it clarifies intent; keep UI personality subtle for productivity
+  surfaces.
+
 Local `ui-ux-pro-max` search also highlighted the same baseline constraints:
 respect reduced motion, animate only key changes, keep most UI transitions in
 the 150-300ms range, use directional easing instead of linear motion, and avoid
@@ -509,15 +520,44 @@ Inline and state feedback:
 
 Visual QA:
 
-- [ ] Check Chat on compact phone width.
-- [ ] Check Settings home -> subpage -> nested subpage -> back.
-- [ ] Check Files preview/create dialog and editor states.
-- [ ] Check Skills manage/install tab and actions sheet.
-- [ ] Confirm no text overlap, horizontal scroll, or touch-target regression.
+- [x] Check Chat drawer behavior through focused widget coverage.
+- [x] Check Settings home -> subpage -> nested subpage -> back through focused
+  widget coverage.
+- [x] Check Files preview/create dialog behavior through focused widget coverage.
+- [x] Check Skills manage/install behavior through focused widget coverage.
+- [ ] Manual compact-phone emulator pass for text overlap, horizontal scroll,
+  and touch-target regressions. Not executed yet: `adb devices` returned no
+  connected devices and `emulator`/`avdmanager` were not on PATH in this
+  environment.
 
 Verification:
 
-- [ ] Run `dart analyze flutter_app`.
-- [ ] Run Flutter tests, escalating outside sandbox if the command hangs.
-- [ ] Add or update focused widget tests where behavior can be deterministic.
-- [ ] Create a focused Conventional Commit in Chinese after verification.
+- [x] Run `dart analyze flutter_app`.
+- [x] Run Flutter tests, escalating outside sandbox if the command hangs.
+- [x] Use focused widget tests where behavior can be deterministic.
+- [x] Create a focused Conventional Commit in Chinese after verification.
+
+Verification notes:
+
+- `dart analyze flutter_app` passes.
+- `flutter test` hung in the sandbox, then ran outside the sandbox as required
+  by the repository guidance.
+- Focused tests passing outside the sandbox:
+  - `test/chat_feature_screen_test.dart --plain-name "session drawer opens from the left edge"`
+  - `test/chat_feature_screen_test.dart --plain-name "new session drawer action waits for host creation before closing the drawer"`
+  - `test/chat_feature_screen_test.dart --plain-name "host-backed session selection updates drawer and clears old thread immediately"`
+  - `test/chat_feature_screen_test.dart --plain-name "session drawer shows unread dot and count badges"`
+  - `test/opencray_app_shell_test.dart test/opencray_app_test.dart`
+  - `test/settings_feature_test.dart --plain-name "home settings opens API integrations entry"`
+  - `test/settings_feature_test.dart --plain-name "api integrations page opens sandbox providers and the E2B detail page"`
+  - `test/settings_feature_test.dart --plain-name "about version page opens debug tools and renders context trace details"`
+  - `test/settings_feature_test.dart --plain-name "agent create flow exposes twin import page and updates summary"`
+  - `test/files_feature_test.dart`
+  - `test/skills_feature_test.dart`
+- Full `flutter test` still reports existing failures outside this motion pass:
+  runtime snapshot assertions in `chat_feature_screen_test.dart`, plus two
+  standalone LLM focus tests whose direct failure is a tap on a TextField laid
+  out below the 600px test viewport. No runtime snapshot logic was changed in
+  this pass.
+- Focused commit created on `codex/mobile-ui-motion-polish`:
+  `feat: 打磨移动端 UI 动效体系`.
