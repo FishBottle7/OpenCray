@@ -1842,6 +1842,9 @@ int javaStringHashCode(String value) {
   return hash;
 }
 
+String javaStringHashHex(String value) =>
+    (javaStringHashCode(value) & 0xffffffff).toRadixString(16);
+
 @visibleForTesting
 bool chatFeatureStatesEquivalent(
   ChatFeatureState left,
@@ -2186,11 +2189,7 @@ bool _chatMessageSnapshotsEquivalent(
   List<OpenCrayChatMessageSnapshot> left,
   List<OpenCrayChatMessageSnapshot> right,
 ) {
-  return _listsEquivalent(
-    left,
-    right,
-    _chatMessageSnapshotEquivalent,
-  );
+  return _listsEquivalent(left, right, _chatMessageSnapshotEquivalent);
 }
 
 bool _chatSnapshotOnlyPrunesEphemeralTail(
@@ -4460,12 +4459,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       patchedSnapshot,
     )) {
       if (delta.hasLiveAssistantDraftsPatch) {
+        final OpenCrayChatRuntimeSnapshot draftPatchedSnapshot =
+            _runtimeSnapshotWithLiveDraftPatch(currentSnapshot, deltaSnapshot);
         _reconcileLiveAssistantDraftOverrides(
-          patchedSnapshot,
+          draftPatchedSnapshot,
           liveAssistantDraftsAuthoritative: true,
         );
         if (_latestChatSnapshot != null) {
-          _queueRuntimeActivityPatch(patchedSnapshot);
+          _queueRuntimeActivityPatch(draftPatchedSnapshot);
         }
       }
       if (delta.sequence > 0) {
@@ -4487,6 +4488,28 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return;
     }
     _queueRuntimeActivityPatch(patchedSnapshot);
+  }
+
+  OpenCrayChatRuntimeSnapshot _runtimeSnapshotWithLiveDraftPatch(
+    OpenCrayChatRuntimeSnapshot? currentSnapshot,
+    OpenCrayChatRuntimeSnapshot deltaSnapshot,
+  ) {
+    final OpenCrayChatRuntimeSnapshot base = currentSnapshot ?? deltaSnapshot;
+    return OpenCrayChatRuntimeSnapshot(
+      sessionId: deltaSnapshot.sessionId.trim().isNotEmpty
+          ? deltaSnapshot.sessionId
+          : base.sessionId,
+      activeRuns: base.activeRuns,
+      retainedRuns: base.retainedRuns,
+      subAgents: base.subAgents,
+      events: base.events,
+      liveAssistantDrafts: deltaSnapshot.liveAssistantDrafts,
+      hostLifecycle: base.hostLifecycle,
+      updatedAtEpochMs: math.max(
+        base.updatedAtEpochMs,
+        deltaSnapshot.updatedAtEpochMs,
+      ),
+    );
   }
 
   Future<void> _resyncRuntimeSnapshotAfterDeltaMiss() async {
@@ -6738,7 +6761,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       process.workingDirectory?.trim() ?? '',
       process.startedAtEpochMs.toString(),
     ].join('\u0002');
-    return 'runtime-process-$runId-fp-${javaStringHashCode(fingerprint).abs()}';
+    return 'runtime-process-$runId-fp-${javaStringHashHex(fingerprint)}';
   }
 
   List<String> _projectedManagedProcessMessageIds({
@@ -6754,7 +6777,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     final String processId = process.processId.trim();
     final String processKey = processId.isNotEmpty
         ? processId
-        : 'fp-${javaStringHashCode(_managedProcessFingerprint(process)).abs()}';
+        : 'fp-${javaStringHashHex(_managedProcessFingerprint(process))}';
     return ownerKeys
         .map((ownerKey) => 'runtime-process-$ownerKey-$processKey')
         .toList(growable: false);

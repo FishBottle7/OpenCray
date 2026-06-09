@@ -3736,7 +3736,7 @@ internal class OpenCrayHostRuntime private constructor(
               sourceOrder = sourceOrder,
               snapshot = chatMessageSnapshotMap(
                 messageId = runtimeProjectedManagedProcessMessageId(
-                  runId = run.runId,
+                  run = run,
                   process = process,
                 ),
                 kind = "inbound",
@@ -3814,9 +3814,25 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   private fun runtimeProjectedManagedProcessMessageId(
-    runId: String,
+    run: AgentRunSnapshot,
     process: ManagedProcessSnapshot,
-  ): String = "runtime-process-$runId-${process.processId}"
+  ): String {
+    val ownerKey = listOf(run.taskId, run.runId)
+      .map(String::trim)
+      .firstOrNull(String::isNotBlank)
+      ?: run.acceptedAtEpochMs.toString()
+    val processId = process.processId.trim()
+    if (processId.isNotEmpty()) {
+      return "runtime-process-$ownerKey-$processId"
+    }
+    val fingerprint = listOf(
+      process.command.trim(),
+      process.args.joinToString(separator = "\u0001"),
+      process.workingDirectory?.trim().orEmpty(),
+      process.startedAtEpochMs.toString(),
+    ).joinToString(separator = "\u0002")
+    return "runtime-process-$ownerKey-fp-${Integer.toUnsignedString(fingerprint.hashCode(), 16)}"
+  }
 
   private fun projectedManagedProcessMessageText(
     process: ManagedProcessSnapshot,

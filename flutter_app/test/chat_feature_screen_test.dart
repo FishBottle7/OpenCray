@@ -3366,6 +3366,122 @@ void main() {
   );
 
   testWidgets(
+    'runtime event deltas do not replace newer managed process state with stale patches',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final runtimeEventDeltas =
+          StreamController<OpenCrayChatRuntimeEventDelta>.broadcast();
+      addTearDown(runtimeEventDeltas.close);
+      final bridge = _FakeChatBridge(
+        chatSnapshot: _hostChatSnapshot(
+          updatedAtEpochMs: 1000,
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              kind: 'outbound',
+              text: 'Start the development server.',
+              createdAtEpochMs: 1000,
+            ),
+            OpenCrayChatMessageSnapshot(
+              messageId: 'pending-stale-delta-process-1',
+              kind: 'inbound',
+              text: 'Thinking',
+              createdAtEpochMs: 1100,
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          updatedAtEpochMs: 2000,
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-stale-delta-process-1',
+              taskId: 'task-stale-delta-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 2000,
+              attempt: 1,
+              pendingMessageId: 'pending-stale-delta-process-1',
+              managedProcessIds: <String>['proc-stale-delta-process-1'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-stale-delta-process-1',
+                  status: 'running',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1050,
+                  updatedAtEpochMs: 2000,
+                  stdoutPreview: 'fresh server output',
+                ),
+              ],
+              runningManagedProcessCount: 1,
+              hasLiveManagedProcesses: true,
+              isTerminal: false,
+            ),
+          ],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+        runtimeEventDeltaStream: runtimeEventDeltas.stream,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('fresh server output'), findsWidgets);
+
+      runtimeEventDeltas.add(
+        const OpenCrayChatRuntimeEventDelta(
+          sessionId: 'session-1',
+          sequence: 1,
+          totalLength: 0,
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+          activeRuns: <OpenCrayChatRunSnapshot>[
+            OpenCrayChatRunSnapshot(
+              sessionId: 'session-1',
+              runId: 'run-stale-delta-process-1',
+              taskId: 'task-stale-delta-process-1',
+              acceptedAtEpochMs: 1000,
+              updatedAtEpochMs: 1200,
+              attempt: 1,
+              pendingMessageId: 'pending-stale-delta-process-1',
+              managedProcessIds: <String>['proc-stale-delta-process-1'],
+              managedProcesses: <OpenCrayChatManagedProcessSnapshot>[
+                OpenCrayChatManagedProcessSnapshot(
+                  processId: 'proc-stale-delta-process-1',
+                  status: 'running',
+                  command: 'npm',
+                  args: <String>['run', 'dev'],
+                  workingDirectory: '.',
+                  processStarted: true,
+                  startedAtEpochMs: 1050,
+                  updatedAtEpochMs: 1200,
+                  stdoutPreview: 'stale server output',
+                ),
+              ],
+              runningManagedProcessCount: 1,
+              hasLiveManagedProcesses: true,
+              isTerminal: false,
+            ),
+          ],
+          hasActiveRunsPatch: true,
+          updatedAtEpochMs: 1200,
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('fresh server output'), findsWidgets);
+      expect(find.textContaining('stale server output'), findsNothing);
+    },
+  );
+
+  testWidgets(
     'open inspector keeps receiving updates when a run id is added later',
     (tester) async {
       final copy = OpenCrayUiCopy.fromLocaleTag('en');
@@ -4463,7 +4579,7 @@ void main() {
               createdAtEpochMs: 1000,
             ),
             OpenCrayChatMessageSnapshot(
-              messageId: 'runtime-process-run-runtime-anchor-1-proc-1',
+              messageId: 'runtime-process-task-runtime-anchor-1-proc-1',
               kind: 'inbound',
               text: 'Process proc-1\n\nrunning: npm run dev\n\nstale output',
               createdAtEpochMs: 1200,
@@ -4544,7 +4660,7 @@ void main() {
       );
       final processBubbleFinder = find.byKey(
         const ValueKey<String>(
-          'chat-bubble-runtime-process-run-runtime-anchor-1-proc-1',
+          'chat-bubble-runtime-process-task-runtime-anchor-1-proc-1',
         ),
       );
       final draftBubbleFinder = find.byKey(
@@ -4945,7 +5061,7 @@ void main() {
               createdAtEpochMs: 1000,
             ),
             OpenCrayChatMessageSnapshot(
-              messageId: 'runtime-process-run-runtime-host-process-1-proc-1',
+              messageId: 'runtime-process-task-runtime-host-process-1-proc-1',
               kind: 'inbound',
               text: 'Process proc-1\n\nrunning: npm run dev',
               createdAtEpochMs: 1200,
@@ -5001,7 +5117,7 @@ void main() {
       );
       final processBubbleFinder = find.byKey(
         const ValueKey<String>(
-          'chat-bubble-runtime-process-run-runtime-host-process-1-proc-1',
+          'chat-bubble-runtime-process-task-runtime-host-process-1-proc-1',
         ),
       );
       final finalBubbleFinder = find.byKey(

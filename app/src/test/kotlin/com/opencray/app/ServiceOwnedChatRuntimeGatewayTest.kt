@@ -1039,6 +1039,46 @@ class ServiceOwnedChatRuntimeGatewayTest {
   }
 
   @Test
+  fun serviceOwnedChatRuntimeGatewayEmitsRuntimeDeltaWhenEventContentChanges() {
+    val readGateway = RecordingChatGateway("projection").apply {
+      chatRuntimePayload = runtimeEventContentPayload(
+        source = "projection-runtime-first",
+        contentPreview = "Searching...",
+        status = "running",
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = readGateway,
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    val observedDeltas = mutableListOf<Map<String, Any?>>()
+    val disposer = gateway.observeRuntimeEventDeltas { payload ->
+      observedDeltas += payload
+    }
+
+    try {
+      readGateway.chatRuntimePayload = runtimeEventContentPayload(
+        source = "projection-runtime-second",
+        contentPreview = "Found 3 results.",
+        status = "completed",
+      )
+
+      gateway.notifyChatSnapshotsChanged()
+
+      assertEquals(1, observedDeltas.size)
+      val events = observedDeltas.single()["events"] as List<*>
+      val event = events.single() as Map<*, *>
+      assertEquals("Found 3 results.", event["contentPreview"])
+      assertEquals(
+        mapOf("status" to "completed"),
+        event["resultMetadata"],
+      )
+    } finally {
+      disposer()
+    }
+  }
+
+  @Test
   fun serviceOwnedChatRuntimeGatewaySubmitWithoutMutationSkipsNotification() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("service-owned-chat-submit-empty-store"))
     val sessionId = chatStore.loadState().activeSession.sessionId
@@ -1541,6 +1581,27 @@ class ServiceOwnedChatRuntimeGatewayTest {
     "retainedRuns" to emptyList<Map<String, Any?>>(),
     "events" to emptyList<Map<String, Any?>>(),
     "liveAssistantDrafts" to emptyList<Map<String, Any?>>(),
+  )
+
+  private fun runtimeEventContentPayload(
+    source: String,
+    contentPreview: String,
+    status: String,
+  ): Map<String, Any?> = mapOf(
+    "source" to source,
+    "sessionId" to "session-runtime-event-content",
+    "updatedAtEpochMs" to 1_000L,
+    "events" to listOf(
+      mapOf(
+        "kind" to "tool_result",
+        "runId" to "run-runtime-event-content",
+        "taskId" to "task-runtime-event-content",
+        "toolName" to "WebSearch",
+        "emittedAtEpochMs" to 1_000L,
+        "contentPreview" to contentPreview,
+        "resultMetadata" to mapOf("status" to status),
+      ),
+    ),
   )
 
   private fun firstManagedProcessStdout(payload: Map<String, Any?>): String? {

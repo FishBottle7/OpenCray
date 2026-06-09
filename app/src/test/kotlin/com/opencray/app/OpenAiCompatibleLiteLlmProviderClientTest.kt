@@ -3467,6 +3467,96 @@ class OpenAiCompatibleLiteLlmProviderClientTest {
   }
 
   @Test
+  fun executeKeepsResponsesBuiltinWebSearchWhenCompletedOutputOnlyHasFinalAnswer() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_builtin_search"}}
+
+              event: response.output_item.done
+              data: {"type":"response.output_item.done","output_index":0,"item":{"id":"ws_stream_1","type":"web_search_call","status":"completed","action":{"type":"search","query":"OpenCray streaming inspector","sources":[{"type":"url_citation","title":"OpenCray","url":"https://example.com/opencray"}]}}}
+
+              event: response.completed
+              data: {"type":"response.completed","response":{"id":"resp_stream_builtin_search","status":"completed","output":[{"id":"msg_stream_builtin_search","type":"message","role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Search result summarized."}]}]}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-builtin-search",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Search and summarize.",
+            builtinTools = listOf(
+              LiteLlmBuiltinToolDefinition(type = LiteLlmBuiltinToolType.WEB_SEARCH),
+            ),
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-builtin-search",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val payload = JSONObject(requestBody.get())
+      assertEquals(true, payload.getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("Search result summarized.", success.completion?.finalText)
+      assertEquals("true", success.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED])
+      val observations = JSONArray(
+        success.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON],
+      )
+      assertEquals(1, observations.length())
+      assertEquals(
+        "OpenCray streaming inspector",
+        observations.getJSONObject(0).getJSONArray("queries").getString(0),
+      )
+      assertEquals(
+        "https://example.com/opencray",
+        observations
+          .getJSONObject(0)
+          .getJSONArray("sources")
+          .getJSONObject(0)
+          .getString("url"),
+      )
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
   fun executeDropsStreamOnlyFunctionCallWhenCompletedResponsesOutputHasOnlyFinalAnswer() {
     val requestBody = AtomicReference<String>()
     val responseSent = CountDownLatch(1)

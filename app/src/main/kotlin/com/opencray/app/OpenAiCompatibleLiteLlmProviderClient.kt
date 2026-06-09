@@ -4538,19 +4538,46 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     outputIndexByItemId: MutableMap<String, Int>,
     output: JSONArray,
   ) {
+    val preservedWebSearchItems = outputItems.values
+      .filter { item -> item.optString("type") == "web_search_call" }
+      .map(::sanitizeResponsesWebSearchCallItem)
     outputItems.clear()
     outputIndexByItemId.clear()
+    val webSearchKeys = linkedSetOf<String>()
     for (index in 0 until output.length()) {
       val item = output.optJSONObject(index) ?: continue
       val copiedItem = sanitizeResponsesOutputItem(item)
       outputItems[index] = copiedItem
+      if (copiedItem.optString("type") == "web_search_call") {
+        webSearchKeys += responsesWebSearchItemPreservationKey(copiedItem)
+      }
       registerResponsesOutputItemIdentities(
         outputIndexByItemId = outputIndexByItemId,
         item = copiedItem,
         outputIndex = index,
       )
     }
+    var nextIndex = output.length()
+    for (item in preservedWebSearchItems) {
+      if (!webSearchKeys.add(responsesWebSearchItemPreservationKey(item))) {
+        continue
+      }
+      outputItems[nextIndex] = item
+      registerResponsesOutputItemIdentities(
+        outputIndexByItemId = outputIndexByItemId,
+        item = item,
+        outputIndex = nextIndex,
+      )
+      nextIndex += 1
+    }
   }
+
+  private fun responsesWebSearchItemPreservationKey(
+    item: JSONObject,
+  ): String = responsesOutputItemIdentities(item)
+    .takeIf(List<String>::isNotEmpty)
+    ?.joinToString(separator = "\u0001", prefix = "id:")
+    ?: "body:${item.toString()}"
 
   private fun registerResponsesOutputItemIdentities(
     outputIndexByItemId: MutableMap<String, Int>,
