@@ -7,10 +7,13 @@ import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.RuntimeConversationToolResult
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -266,6 +269,83 @@ class PromptCheckpointStoreFactoryTest {
   }
 
   @Test
+  fun fileBackedStoreListRepairUsesSingleStorageUpdate() {
+    val storage = StaleReadDurableTextStorage()
+    val store = fileBackedPromptCheckpointStore(
+      sessionId = "session-1",
+      storage = storage,
+    )
+    val staleBeforeConcurrentCheckpoint = promptCheckpointsJson(
+      recordVersion = 1L,
+      updatedAtEpochMs = 1_000L,
+      checkpointsJson = listOf(
+        persistedCheckpointJson(
+          sessionId = "session-1",
+          runId = "run-older",
+          taskId = "task-older",
+          checkpointId = "checkpoint-older",
+          checkpointKind = PromptCheckpointKind.WAITING_APPROVAL,
+          createdAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_000L,
+          toolName = " Read ",
+          pendingMessageId = " pending-message ",
+        ),
+      ),
+    )
+    storage.writeText("runtime-prompt-checkpoints.json", staleBeforeConcurrentCheckpoint)
+    storage.writeText(
+      "runtime-prompt-checkpoints.json",
+      promptCheckpointsJson(
+        recordVersion = 2L,
+        updatedAtEpochMs = 2_000L,
+        checkpointsJson = listOf(
+          persistedCheckpointJson(
+            sessionId = "session-1",
+            runId = "run-older",
+            taskId = "task-older",
+            checkpointId = "checkpoint-older",
+            checkpointKind = PromptCheckpointKind.WAITING_APPROVAL,
+            createdAtEpochMs = 1_000L,
+            updatedAtEpochMs = 1_000L,
+            toolName = " Read ",
+            pendingMessageId = " pending-message ",
+          ),
+          persistedCheckpointJson(
+            sessionId = "session-1",
+            runId = "run-concurrent",
+            taskId = "task-concurrent",
+            checkpointId = "checkpoint-concurrent",
+            checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+            createdAtEpochMs = 2_000L,
+            updatedAtEpochMs = 2_000L,
+            toolName = "Bash",
+            pendingMessageId = null,
+          ),
+        ),
+      ),
+    )
+    val updateCallsBeforeList = storage.updateTextCallCount
+
+    storage.returnStaleTextOnNextRead(staleBeforeConcurrentCheckpoint)
+    val checkpoints = store.list()
+
+    assertEquals(updateCallsBeforeList + 1, storage.updateTextCallCount)
+    assertTrue(storage.hasPendingStaleRead)
+    assertEquals(
+      listOf("task-concurrent", "task-older"),
+      checkpoints.map(PersistedPromptCheckpoint::taskId),
+    )
+    val olderCheckpoint = checkpoints.single { checkpoint -> checkpoint.taskId == "task-older" }
+    assertEquals("Read", olderCheckpoint.toolName)
+    assertEquals("pending-message", olderCheckpoint.pendingMessageId)
+    storage.clearPendingStaleRead()
+    assertEquals(
+      listOf("task-concurrent", "task-older"),
+      store.list().map(PersistedPromptCheckpoint::taskId),
+    )
+  }
+
+  @Test
   fun fileBackedStoreRestoresSubAgentApprovalIdentityFromCheckpoint() {
     val runtimeRoot = temporaryFolder.newFolder("runtime-prompt-checkpoints-subagent-identity")
     val store = FileBackedPromptCheckpointStoreFactory(runtimeRoot).forChatSession("session-1")
@@ -315,4 +395,114 @@ class PromptCheckpointStoreFactoryTest {
   private fun encodedPayloadForRecord(payload: String): String = payload
     .replace("\\", "\\\\")
     .replace("\"", "\\\"")
+
+  private fun promptCheckpointsJson(
+    recordVersion: Long,
+    updatedAtEpochMs: Long,
+    checkpointsJson: List<String>,
+  ): String =
+    """
+    {
+      "schemaVersion": 1,
+      "recordVersion": $recordVersion,
+      "updatedAtEpochMs": $updatedAtEpochMs,
+      "checkpoints": [
+        ${checkpointsJson.joinToString(separator = ",\n        ")}
+      ]
+    }
+    """.trimIndent()
+
+  private fun persistedCheckpointJson(
+    sessionId: String,
+    runId: String,
+    taskId: String,
+    checkpointId: String,
+    checkpointKind: PromptCheckpointKind,
+    createdAtEpochMs: Long,
+    updatedAtEpochMs: Long,
+    toolName: String?,
+    pendingMessageId: String?,
+  ): String {
+    val encodedToolName = toolName?.let { value -> "\"${escapeJson(value)}\"" } ?: "null"
+    val encodedPendingMessageId = pendingMessageId
+      ?.let { value -> "\"${escapeJson(value)}\"" }
+      ?: "null"
+    return """
+      {
+        "schemaVersion": 1,
+        "sessionId": "${escapeJson(sessionId)}",
+        "runId": "${escapeJson(runId)}",
+        "taskId": "${escapeJson(taskId)}",
+        "checkpointId": "${escapeJson(checkpointId)}",
+        "checkpointKind": "${checkpointKind.name}",
+        "createdAtEpochMs": $createdAtEpochMs,
+        "updatedAtEpochMs": $updatedAtEpochMs,
+        "toolName": $encodedToolName,
+        "pendingMessageId": $encodedPendingMessageId,
+        "isHighRisk": false,
+        "promptCheckpointBoundary": null,
+        "promptResumeState": null,
+        "subAgentApprovedToolName": null,
+        "subAgentPromptResumeState": null,
+        "subAgentIsHighRisk": null,
+        "subAgentAgentId": null,
+        "subAgentChildRunId": null,
+        "subAgentChildTaskId": null
+      }
+    """.trimIndent()
+  }
+
+  private fun escapeJson(value: String): String =
+    value
+      .replace("\\", "\\\\")
+      .replace("\"", "\\\"")
+
+  private class StaleReadDurableTextStorage : DurableTextStorage {
+    private var text: String? = null
+    private var staleReadText: String? = null
+    var hasPendingStaleRead: Boolean = false
+      private set
+    var updateTextCallCount: Int = 0
+      private set
+
+    fun returnStaleTextOnNextRead(staleText: String?) {
+      this.staleReadText = staleText
+      hasPendingStaleRead = true
+    }
+
+    fun clearPendingStaleRead() {
+      staleReadText = null
+      hasPendingStaleRead = false
+    }
+
+    override fun readText(name: String): String? {
+      if (!hasPendingStaleRead) {
+        return text
+      }
+      hasPendingStaleRead = false
+      return staleReadText
+    }
+
+    override fun writeText(name: String, text: String) {
+      this.text = text
+    }
+
+    override fun delete(name: String): Boolean {
+      val hadText = text != null
+      text = null
+      return hadText
+    }
+
+    override fun <T> updateText(
+      name: String,
+      update: (String?) -> DurableTextUpdate<T>,
+    ): T {
+      updateTextCallCount += 1
+      val updated = update(text)
+      if (updated.write) {
+        text = updated.text
+      }
+      return updated.result
+    }
+  }
 }

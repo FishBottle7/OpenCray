@@ -66,7 +66,8 @@ internal class FileBackedPromptCheckpointStoreFactory(
     }
     return FileBackedPromptCheckpointStore(
       sessionId = sessionId,
-      directory = sessionDirectory,
+      storage = DirectoryDurableTextStorage(sessionDirectory),
+      lock = lockForPromptCheckpointDirectory(sessionDirectory),
       config = config,
     )
   }
@@ -92,6 +93,19 @@ internal class FileBackedPromptCheckpointStoreFactory(
       )
   }
 }
+
+internal fun fileBackedPromptCheckpointStore(
+  sessionId: String,
+  storage: DurableTextStorage,
+  config: PromptCheckpointStoreConfig = PromptCheckpointStoreConfig(),
+  clock: () -> Long = System::currentTimeMillis,
+): PromptCheckpointStore = FileBackedPromptCheckpointStore(
+  sessionId = sessionId,
+  storage = storage,
+  lock = Any(),
+  config = config,
+  clock = clock,
+)
 
 internal data class PromptCheckpointStoreConfig(
   val maxTrackedCheckpoints: Int = 128,
@@ -306,13 +320,11 @@ private class InMemoryPromptCheckpointStore(
 
 private class FileBackedPromptCheckpointStore(
   private val sessionId: String,
-  directory: File,
+  private val storage: DurableTextStorage,
+  private val lock: Any,
   private val config: PromptCheckpointStoreConfig,
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) : PromptCheckpointStore {
-  private val lock = lockFor(directory)
-  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
-
   override fun list(): List<PersistedPromptCheckpoint> = synchronized(lock) {
     loadNormalizedRecord().checkpoints
   }
@@ -416,31 +428,19 @@ private class FileBackedPromptCheckpointStore(
     }
   }
 
-  private fun loadRecord(): PromptCheckpointRecord {
-    val encoded = storage.readText(FILE_NAME).orEmpty().trim()
-    if (encoded.isBlank()) {
-      return PromptCheckpointRecord()
+  private fun loadNormalizedRecord(): PromptCheckpointRecord =
+    storage.updateRecord(
+      name = FILE_NAME,
+      serializer = PromptCheckpointRecord.serializer(),
+    ) { current ->
+      val existing = current ?: PromptCheckpointRecord()
+      val normalized = normalizeRecord(existing)
+      RecordStorageUpdate(
+        value = normalized,
+        result = normalized,
+        write = normalized != existing,
+      )
     }
-    return PersistenceJson.instance.decodeFromString(
-      deserializer = PromptCheckpointRecord.serializer(),
-      string = encoded,
-    )
-  }
-
-  private fun loadNormalizedRecord(): PromptCheckpointRecord {
-    val existing = loadRecord()
-    val normalizedCheckpoints = normalizeCheckpoints(existing.checkpoints)
-    if (normalizedCheckpoints == existing.checkpoints) {
-      return existing
-    }
-    val repaired = existing.copy(
-      recordVersion = existing.recordVersion + 1L,
-      updatedAtEpochMs = clock(),
-      checkpoints = normalizedCheckpoints,
-    )
-    saveRecord(repaired)
-    return repaired
-  }
 
   private fun <T> updateRecord(
     update: (PromptCheckpointRecord) -> RecordStorageUpdate<PromptCheckpointRecord, T>,
@@ -507,16 +507,6 @@ private class FileBackedPromptCheckpointStore(
       .take(config.maxTrackedCheckpoints)
   }
 
-  private fun saveRecord(record: PromptCheckpointRecord) {
-    storage.writeText(
-      FILE_NAME,
-      PersistenceJson.instance.encodeToString(
-        serializer = PromptCheckpointRecord.serializer(),
-        value = record,
-      ),
-    )
-  }
-
   @Serializable
   private data class PromptCheckpointRecord(
     val schemaVersion: Int = PersistenceSchemaVersion.CURRENT,
@@ -527,10 +517,12 @@ private class FileBackedPromptCheckpointStore(
 
   private companion object {
     private const val FILE_NAME: String = "runtime-prompt-checkpoints.json"
-
-    private val FILE_LOCKS = ConcurrentHashMap<String, Any>()
-
-    private fun lockFor(directory: File): Any =
-      FILE_LOCKS.computeIfAbsent(File(directory, FILE_NAME).absolutePath) { Any() }
   }
 }
+
+private val PROMPT_CHECKPOINT_FILE_LOCKS = ConcurrentHashMap<String, Any>()
+
+private fun lockForPromptCheckpointDirectory(directory: File): Any =
+  PROMPT_CHECKPOINT_FILE_LOCKS.computeIfAbsent(
+    File(directory, "runtime-prompt-checkpoints.json").absolutePath,
+  ) { Any() }
