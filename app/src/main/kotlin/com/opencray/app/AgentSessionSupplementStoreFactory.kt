@@ -2,13 +2,13 @@ package com.opencray.app
 
 import android.content.Context
 import com.opencray.app.agent.AgentPathResolver
-import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.RecordStorageUpdate
+import com.opencray.persistence.store.file.updateRecord
 import java.io.File
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
 
 internal interface AgentSessionSupplementStoreFactory {
@@ -47,7 +47,9 @@ internal class FileBackedAgentSessionSupplementStoreFactory(
         mkdirs()
       }
     }
-    return FileBackedSessionSupplementStore(sessionDirectory)
+    return FileBackedSessionSupplementStore(
+      storage = DirectoryDurableTextStorage(sessionDirectory),
+    )
   }
 
   internal fun directoryForSession(sessionId: String): File =
@@ -78,6 +80,16 @@ internal class FileBackedAgentSessionSupplementStoreFactory(
     ): File = pathResolver.resolve(agentId).transcriptSupplementsRoot.toFile()
   }
 }
+
+internal fun fileBackedSessionSupplementStore(
+  storage: DurableTextStorage,
+  nowEpochMs: () -> Long = System::currentTimeMillis,
+  entryIdSuffix: () -> String = { UUID.randomUUID().toString().take(8) },
+): SessionSupplementStore = FileBackedSessionSupplementStore(
+  storage = storage,
+  nowEpochMs = nowEpochMs,
+  entryIdSuffix = entryIdSuffix,
+)
 
 internal class InMemorySessionSupplementStore(
   private val nowEpochMs: () -> Long = System::currentTimeMillis,
@@ -159,10 +171,11 @@ internal class InMemorySessionSupplementStore(
 }
 
 private class FileBackedSessionSupplementStore(
-  directory: File,
+  private val storage: DurableTextStorage,
+  private val nowEpochMs: () -> Long = System::currentTimeMillis,
+  private val entryIdSuffix: () -> String = { UUID.randomUUID().toString().take(8) },
 ) : SessionSupplementStore {
-  private val lock = lockFor(directory)
-  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
+  private val lock = Any()
 
   override fun snapshot(): List<MidLoopSupplementEntry> = synchronized(lock) {
     loadRecord().entries.sortedBy(MidLoopSupplementEntry::createdAtEpochMs)
@@ -178,23 +191,28 @@ private class FileBackedSessionSupplementStore(
     require(taskId.isNotBlank()) { "append supplement taskId must not be blank." }
     require(normalizedText.isNotBlank()) { "append supplement text must not be blank." }
     synchronized(lock) {
-      val existing = loadRecord()
-      val now = System.currentTimeMillis()
+      val now = nowEpochMs()
       val entry = MidLoopSupplementEntry(
-        entryId = "supplement-$now-${UUID.randomUUID().toString().take(8)}",
+        entryId = "supplement-$now-${entryIdSuffix()}",
         runId = runId,
         taskId = taskId,
         text = normalizedText,
         createdAtEpochMs = now,
       )
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = now,
-          entries = (existing.entries + entry).sortedBy(MidLoopSupplementEntry::createdAtEpochMs),
-        ),
-      )
-      return entry
+      return storage.updateRecord(
+        name = FILE_NAME,
+        serializer = SessionSupplementRecord.serializer(),
+      ) { persisted ->
+        val existing = persisted ?: SessionSupplementRecord()
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = now,
+            entries = (existing.entries + entry).sortedBy(MidLoopSupplementEntry::createdAtEpochMs),
+          ),
+          result = entry,
+        )
+      }
     }
   }
 
@@ -202,54 +220,81 @@ private class FileBackedSessionSupplementStore(
     runId: String,
     taskId: String,
   ): List<MidLoopSupplementEntry> = synchronized(lock) {
-    val existing = loadRecord()
-    val matched = existing.entries.filter { entry ->
-      entry.runId == runId || entry.taskId == taskId
+    storage.updateRecord(
+      name = FILE_NAME,
+      serializer = SessionSupplementRecord.serializer(),
+    ) { persisted ->
+      val existing = persisted ?: SessionSupplementRecord()
+      val matched = existing.entries.filter { entry ->
+        entry.runId == runId || entry.taskId == taskId
+      }
+      if (matched.isEmpty()) {
+        return@updateRecord RecordStorageUpdate(
+          value = existing,
+          result = emptyList(),
+          write = false,
+        )
+      }
+      RecordStorageUpdate(
+        value = existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = nowEpochMs(),
+          entries = existing.entries.filterNot { entry -> entry in matched },
+        ),
+        result = matched.sortedBy(MidLoopSupplementEntry::createdAtEpochMs),
+      )
     }
-    if (matched.isEmpty()) {
-      return@synchronized emptyList()
-    }
-    saveRecord(
-      existing.copy(
-        recordVersion = existing.recordVersion + 1L,
-        updatedAtEpochMs = System.currentTimeMillis(),
-        entries = existing.entries.filterNot { entry -> entry in matched },
-      ),
-    )
-    matched.sortedBy(MidLoopSupplementEntry::createdAtEpochMs)
   }
 
   override fun consumeMatching(
     predicate: (MidLoopSupplementEntry) -> Boolean,
   ): List<MidLoopSupplementEntry> = synchronized(lock) {
-    val existing = loadRecord()
-    val matched = existing.entries.filter(predicate)
-    if (matched.isEmpty()) {
-      return@synchronized emptyList()
+    storage.updateRecord(
+      name = FILE_NAME,
+      serializer = SessionSupplementRecord.serializer(),
+    ) { persisted ->
+      val existing = persisted ?: SessionSupplementRecord()
+      val matched = existing.entries.filter(predicate)
+      if (matched.isEmpty()) {
+        return@updateRecord RecordStorageUpdate(
+          value = existing,
+          result = emptyList(),
+          write = false,
+        )
+      }
+      RecordStorageUpdate(
+        value = existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = nowEpochMs(),
+          entries = existing.entries.filterNot { entry -> entry in matched },
+        ),
+        result = matched.sortedBy(MidLoopSupplementEntry::createdAtEpochMs),
+      )
     }
-    saveRecord(
-      existing.copy(
-        recordVersion = existing.recordVersion + 1L,
-        updatedAtEpochMs = System.currentTimeMillis(),
-        entries = existing.entries.filterNot { entry -> entry in matched },
-      ),
-    )
-    matched.sortedBy(MidLoopSupplementEntry::createdAtEpochMs)
   }
 
   override fun consumeAll(): List<MidLoopSupplementEntry> = synchronized(lock) {
-    val existing = loadRecord()
-    if (existing.entries.isEmpty()) {
-      return@synchronized emptyList()
+    storage.updateRecord(
+      name = FILE_NAME,
+      serializer = SessionSupplementRecord.serializer(),
+    ) { persisted ->
+      val existing = persisted ?: SessionSupplementRecord()
+      if (existing.entries.isEmpty()) {
+        return@updateRecord RecordStorageUpdate(
+          value = existing,
+          result = emptyList(),
+          write = false,
+        )
+      }
+      RecordStorageUpdate(
+        value = existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = nowEpochMs(),
+          entries = emptyList(),
+        ),
+        result = existing.entries.sortedBy(MidLoopSupplementEntry::createdAtEpochMs),
+      )
     }
-    saveRecord(
-      existing.copy(
-        recordVersion = existing.recordVersion + 1L,
-        updatedAtEpochMs = System.currentTimeMillis(),
-        entries = emptyList(),
-      ),
-    )
-    existing.entries.sortedBy(MidLoopSupplementEntry::createdAtEpochMs)
   }
 
   override fun clear() {
@@ -259,24 +304,17 @@ private class FileBackedSessionSupplementStore(
   }
 
   private fun loadRecord(): SessionSupplementRecord {
-    val encoded = storage.readText(FILE_NAME).orEmpty().trim()
-    if (encoded.isBlank()) {
-      return SessionSupplementRecord()
+    return storage.updateRecord(
+      name = FILE_NAME,
+      serializer = SessionSupplementRecord.serializer(),
+    ) { persisted ->
+      val existing = persisted ?: SessionSupplementRecord()
+      RecordStorageUpdate(
+        value = existing,
+        result = existing,
+        write = false,
+      )
     }
-    return PersistenceJson.instance.decodeFromString(
-      deserializer = SessionSupplementRecord.serializer(),
-      string = encoded,
-    )
-  }
-
-  private fun saveRecord(record: SessionSupplementRecord) {
-    storage.writeText(
-      FILE_NAME,
-      PersistenceJson.instance.encodeToString(
-        serializer = SessionSupplementRecord.serializer(),
-        value = record,
-      ),
-    )
   }
 
   @Serializable
@@ -289,11 +327,6 @@ private class FileBackedSessionSupplementStore(
 
   private companion object {
     private const val FILE_NAME = "runtime-supplements.json"
-
-    private val FILE_LOCKS = ConcurrentHashMap<String, Any>()
-
-    private fun lockFor(directory: File): Any =
-      FILE_LOCKS.computeIfAbsent(File(directory, FILE_NAME).absolutePath) { Any() }
   }
 }
 

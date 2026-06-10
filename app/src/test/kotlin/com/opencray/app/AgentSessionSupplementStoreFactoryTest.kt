@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -87,5 +89,142 @@ class AgentSessionSupplementStoreFactoryTest {
     assertEquals(listOf("First supplement"), consumed.map(MidLoopSupplementEntry::text))
     assertTrue(secondStore.consumeForRun(runId = "run-1", taskId = "task-1").isEmpty())
     assertTrue(factory.forChatSession("session-1").snapshot().isEmpty())
+  }
+
+  @Test
+  fun fileBackedStoreAppendUsesSingleStorageUpdate() {
+    val storage = StaleReadDurableTextStorage()
+    var now = 1_000L
+    var suffix = 0
+    val store = fileBackedSessionSupplementStore(
+      storage = storage,
+      nowEpochMs = { now },
+      entryIdSuffix = { "id-${++suffix}" },
+    )
+    store.append(
+      runId = "run-1",
+      taskId = "task-1",
+      text = "First supplement",
+    )
+    val staleBeforeConcurrentAppend = storage.currentText
+    now = 2_000L
+    store.append(
+      runId = "run-2",
+      taskId = "task-2",
+      text = "Second supplement",
+    )
+    val updateCallsBeforeAppend = storage.updateTextCallCount
+
+    storage.returnStaleTextOnNextRead(staleBeforeConcurrentAppend)
+    now = 3_000L
+    store.append(
+      runId = "run-3",
+      taskId = "task-3",
+      text = "Third supplement",
+    )
+
+    assertEquals(updateCallsBeforeAppend + 1, storage.updateTextCallCount)
+    assertTrue(storage.hasPendingStaleRead)
+    storage.clearPendingStaleRead()
+    assertEquals(
+      listOf("First supplement", "Second supplement", "Third supplement"),
+      store.snapshot().map(MidLoopSupplementEntry::text),
+    )
+  }
+
+  @Test
+  fun fileBackedStoreConsumeForRunUsesSingleStorageUpdate() {
+    val storage = StaleReadDurableTextStorage()
+    var now = 1_000L
+    var suffix = 0
+    val store = fileBackedSessionSupplementStore(
+      storage = storage,
+      nowEpochMs = { now },
+      entryIdSuffix = { "id-${++suffix}" },
+    )
+    store.append(
+      runId = "run-remove",
+      taskId = "task-remove",
+      text = "Remove supplement",
+    )
+    now = 2_000L
+    store.append(
+      runId = "run-keep",
+      taskId = "task-keep",
+      text = "Keep supplement",
+    )
+    val staleBeforeConcurrentAppend = storage.currentText
+    now = 3_000L
+    store.append(
+      runId = "run-concurrent",
+      taskId = "task-concurrent",
+      text = "Concurrent supplement",
+    )
+    val updateCallsBeforeConsume = storage.updateTextCallCount
+
+    storage.returnStaleTextOnNextRead(staleBeforeConcurrentAppend)
+    now = 4_000L
+    val consumed = store.consumeForRun(runId = "run-remove", taskId = "task-remove")
+
+    assertEquals(updateCallsBeforeConsume + 1, storage.updateTextCallCount)
+    assertTrue(storage.hasPendingStaleRead)
+    storage.clearPendingStaleRead()
+    assertEquals(listOf("Remove supplement"), consumed.map(MidLoopSupplementEntry::text))
+    assertEquals(
+      listOf("Keep supplement", "Concurrent supplement"),
+      store.snapshot().map(MidLoopSupplementEntry::text),
+    )
+  }
+
+  private class StaleReadDurableTextStorage : DurableTextStorage {
+    private var text: String? = null
+    private var staleReadText: String? = null
+    var hasPendingStaleRead: Boolean = false
+      private set
+    var updateTextCallCount: Int = 0
+      private set
+
+    val currentText: String?
+      get() = text
+
+    fun returnStaleTextOnNextRead(staleText: String?) {
+      this.staleReadText = staleText
+      hasPendingStaleRead = true
+    }
+
+    fun clearPendingStaleRead() {
+      staleReadText = null
+      hasPendingStaleRead = false
+    }
+
+    override fun readText(name: String): String? {
+      if (!hasPendingStaleRead) {
+        return text
+      }
+      hasPendingStaleRead = false
+      return staleReadText
+    }
+
+    override fun writeText(name: String, text: String) {
+      this.text = text
+    }
+
+    override fun delete(name: String): Boolean {
+      val hadText = text != null
+      text = null
+      return hadText
+    }
+
+    override fun <T> updateText(
+      name: String,
+      update: (String?) -> DurableTextUpdate<T>,
+    ): T {
+      updateTextCallCount += 1
+      val updated = update(text)
+      if (updated.write) {
+        text = updated.text
+      }
+      return updated.result
+    }
   }
 }
