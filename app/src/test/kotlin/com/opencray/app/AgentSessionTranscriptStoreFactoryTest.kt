@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.context.RuntimeConversationCommentary
@@ -245,6 +247,45 @@ class AgentSessionTranscriptStoreFactoryTest {
     )
   }
 
+  @Test
+  fun fileBackedStoreAppendUsesSingleStorageUpdate() {
+    val storage = StaleReadDurableTextStorage()
+    val store = fileBackedSessionTranscriptStore(
+      storage = storage,
+      clock = { 10_000L },
+    )
+    store.appendIfDistinct(
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.USER,
+        content = "First prompt",
+      ),
+    )
+    val staleBeforeConcurrentAppend = storage.currentText
+    store.appendIfDistinct(
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.ASSISTANT,
+        content = "Second response",
+      ),
+    )
+    val updateCallsBeforeAppend = storage.updateTextCallCount
+
+    storage.returnStaleTextOnNextRead(staleBeforeConcurrentAppend)
+    store.appendIfDistinct(
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.TOOL,
+        content = "Third observation",
+      ),
+    )
+
+    assertEquals(updateCallsBeforeAppend + 1, storage.updateTextCallCount)
+    assertTrue(storage.hasPendingStaleRead)
+    storage.clearPendingStaleRead()
+    assertEquals(
+      listOf("First prompt", "Second response", "Third observation"),
+      store.snapshot().map(RuntimeConversationMessage::content),
+    )
+  }
+
   private fun MutableList<RuntimeConversationMessage>.addToolInteraction(
     runId: String,
     taskId: String,
@@ -276,5 +317,57 @@ class AgentSessionTranscriptStoreFactoryTest {
         ),
       ),
     )
+  }
+
+  private class StaleReadDurableTextStorage : DurableTextStorage {
+    private var text: String? = null
+    private var staleReadText: String? = null
+    var hasPendingStaleRead: Boolean = false
+      private set
+    var updateTextCallCount: Int = 0
+      private set
+
+    val currentText: String?
+      get() = text
+
+    fun returnStaleTextOnNextRead(staleText: String?) {
+      this.staleReadText = staleText
+      hasPendingStaleRead = true
+    }
+
+    fun clearPendingStaleRead() {
+      staleReadText = null
+      hasPendingStaleRead = false
+    }
+
+    override fun readText(name: String): String? {
+      if (!hasPendingStaleRead) {
+        return text
+      }
+      hasPendingStaleRead = false
+      return staleReadText
+    }
+
+    override fun writeText(name: String, text: String) {
+      this.text = text
+    }
+
+    override fun delete(name: String): Boolean {
+      val hadText = text != null
+      text = null
+      return hadText
+    }
+
+    override fun <T> updateText(
+      name: String,
+      update: (String?) -> DurableTextUpdate<T>,
+    ): T {
+      updateTextCallCount += 1
+      val updated = update(text)
+      if (updated.write) {
+        text = updated.text
+      }
+      return updated.result
+    }
   }
 }

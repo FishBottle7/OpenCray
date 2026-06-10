@@ -2,10 +2,11 @@ package com.opencray.app
 
 import android.content.Context
 import com.opencray.app.agent.AgentPathResolver
-import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.RecordStorageUpdate
+import com.opencray.persistence.store.file.updateRecord
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.session.SessionTranscriptStore
 import com.opencray.runtime.session.SessionTranscriptRules
@@ -25,7 +26,9 @@ internal class FileBackedAgentSessionTranscriptStoreFactory(
         mkdirs()
       }
     }
-    return FileBackedSessionTranscriptStore(sessionDirectory)
+    return FileBackedSessionTranscriptStore(
+      storage = DirectoryDurableTextStorage(sessionDirectory),
+    )
   }
 
   internal fun directoryForSession(sessionId: String): File =
@@ -57,11 +60,19 @@ internal class FileBackedAgentSessionTranscriptStoreFactory(
   }
 }
 
+internal fun fileBackedSessionTranscriptStore(
+  storage: DurableTextStorage,
+  clock: () -> Long = System::currentTimeMillis,
+): SessionTranscriptStore = FileBackedSessionTranscriptStore(
+  storage = storage,
+  clock = clock,
+)
+
 private class FileBackedSessionTranscriptStore(
-  directory: File,
+  private val storage: DurableTextStorage,
+  private val clock: () -> Long = System::currentTimeMillis,
 ) : SessionTranscriptStore {
   private val lock = Any()
-  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
 
   override fun snapshot(): List<RuntimeConversationMessage> = synchronized(lock) {
     loadNormalizedRecord().messages
@@ -73,51 +84,75 @@ private class FileBackedSessionTranscriptStore(
       return
     }
     synchronized(lock) {
-      val existing = loadNormalizedRecord()
-      if (existing.messages.isNotEmpty()) {
-        return
+      updateRecord { current ->
+        val normalizedCurrentMessages = SessionTranscriptRules.normalize(current.messages)
+        if (normalizedCurrentMessages.isNotEmpty()) {
+          val normalizedCurrent = current.copy(
+            recordVersion = current.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            messages = normalizedCurrentMessages,
+          )
+          return@updateRecord RecordStorageUpdate(
+            value = normalizedCurrent,
+            result = Unit,
+            write = normalizedCurrentMessages != current.messages,
+          )
+        }
+        RecordStorageUpdate(
+          value = current.copy(
+            recordVersion = current.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            messages = normalized,
+          ),
+          result = Unit,
+        )
       }
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = System.currentTimeMillis(),
-          messages = normalized,
-        ),
-      )
     }
   }
 
   override fun appendIfDistinct(message: RuntimeConversationMessage) {
     synchronized(lock) {
-      val existing = loadNormalizedRecord()
-      val normalizedMessages = SessionTranscriptRules.normalize(existing.messages + message)
-      if (normalizedMessages == existing.messages) {
-        return
+      updateRecord { existing ->
+        val normalizedMessages = SessionTranscriptRules.normalize(existing.messages + message)
+        if (normalizedMessages == existing.messages) {
+          return@updateRecord RecordStorageUpdate(
+            value = existing,
+            result = Unit,
+            write = false,
+          )
+        }
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            messages = normalizedMessages,
+          ),
+          result = Unit,
+        )
       }
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = System.currentTimeMillis(),
-          messages = normalizedMessages,
-        ),
-      )
     }
   }
 
   override fun replace(messages: List<RuntimeConversationMessage>) {
     val normalized = SessionTranscriptRules.normalize(messages)
     synchronized(lock) {
-      val existing = loadNormalizedRecord()
-      if (normalized == existing.messages) {
-        return
+      updateRecord { existing ->
+        if (normalized == existing.messages) {
+          return@updateRecord RecordStorageUpdate(
+            value = existing,
+            result = Unit,
+            write = false,
+          )
+        }
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            messages = normalized,
+          ),
+          result = Unit,
+        )
       }
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = System.currentTimeMillis(),
-          messages = normalized,
-        ),
-      )
     }
   }
 
@@ -127,40 +162,35 @@ private class FileBackedSessionTranscriptStore(
     }
   }
 
-  private fun loadRecord(): SessionTranscriptRecord {
-    val encoded = storage.readText(FILE_NAME).orEmpty().trim()
-    if (encoded.isBlank()) {
-      return SessionTranscriptRecord()
-    }
-    return PersistenceJson.instance.decodeFromString(
-      deserializer = SessionTranscriptRecord.serializer(),
-      string = encoded,
-    )
-  }
-
   private fun loadNormalizedRecord(): SessionTranscriptRecord {
-    val existing = loadRecord()
-    val normalizedMessages = SessionTranscriptRules.normalize(existing.messages)
-    if (normalizedMessages == existing.messages) {
-      return existing
+    return updateRecord { existing ->
+      val normalizedMessages = SessionTranscriptRules.normalize(existing.messages)
+      if (normalizedMessages == existing.messages) {
+        return@updateRecord RecordStorageUpdate(
+          value = existing,
+          result = existing,
+          write = false,
+        )
+      }
+      val repaired = existing.copy(
+        recordVersion = existing.recordVersion + 1L,
+        updatedAtEpochMs = clock(),
+        messages = normalizedMessages,
+      )
+      RecordStorageUpdate(
+        value = repaired,
+        result = repaired,
+      )
     }
-    val repaired = existing.copy(
-      recordVersion = existing.recordVersion + 1L,
-      updatedAtEpochMs = System.currentTimeMillis(),
-      messages = normalizedMessages,
-    )
-    saveRecord(repaired)
-    return repaired
   }
 
-  private fun saveRecord(record: SessionTranscriptRecord) {
-    storage.writeText(
-      FILE_NAME,
-      PersistenceJson.instance.encodeToString(
-        serializer = SessionTranscriptRecord.serializer(),
-        value = record,
-      ),
-    )
+  private fun <R> updateRecord(
+    update: (SessionTranscriptRecord) -> RecordStorageUpdate<SessionTranscriptRecord, R>,
+  ): R = storage.updateRecord(
+    name = FILE_NAME,
+    serializer = SessionTranscriptRecord.serializer(),
+  ) { persisted ->
+    update(persisted ?: SessionTranscriptRecord())
   }
 
   @Serializable
