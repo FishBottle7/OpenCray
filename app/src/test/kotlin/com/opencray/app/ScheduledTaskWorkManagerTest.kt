@@ -460,6 +460,44 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun scheduleNextInterruptedRunRepairRetryEnqueuesManagedProcessReconnectRepair() {
+    val workScheduler = RecordingScheduledWorkScheduler()
+
+    val scheduled = scheduleNextInterruptedRunRepairRetry(
+      workScheduler = workScheduler,
+      nextRepairAfterEpochMs = 2_500L,
+      nowEpochMs = 2_000L,
+    )
+
+    assertTrue(scheduled)
+    assertEquals(
+      listOf(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT to 500L),
+      workScheduler.repairRequests,
+    )
+  }
+
+  @Test
+  fun scheduleNextInterruptedRunRepairRetryIgnoresMissingOrDueDeadline() {
+    val workScheduler = RecordingScheduledWorkScheduler()
+
+    assertFalse(
+      scheduleNextInterruptedRunRepairRetry(
+        workScheduler = workScheduler,
+        nextRepairAfterEpochMs = null,
+        nowEpochMs = 2_000L,
+      ),
+    )
+    assertFalse(
+      scheduleNextInterruptedRunRepairRetry(
+        workScheduler = workScheduler,
+        nextRepairAfterEpochMs = 2_000L,
+        nowEpochMs = 2_000L,
+      ),
+    )
+    assertEquals(emptyList<Pair<String, Long>>(), workScheduler.repairRequests)
+  }
+
+  @Test
   fun scheduleRuntimeOwnerLeaseExpiryRepairEnqueuesRepairAtHeldLeaseExpiry() {
     val ownerLeaseStore = inMemoryRuntimeServiceOwnerLeaseStore()
     val workScheduler = RecordingScheduledWorkScheduler()

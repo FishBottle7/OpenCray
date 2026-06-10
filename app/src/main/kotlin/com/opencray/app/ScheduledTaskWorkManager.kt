@@ -41,6 +41,22 @@ internal interface ScheduledWorkScheduler {
   fun ensurePeriodicRepair()
 }
 
+internal object NoOpScheduledWorkScheduler : ScheduledWorkScheduler {
+  override fun scheduleWake(
+    scheduleId: String,
+    triggerAtEpochMs: Long,
+  ) = Unit
+
+  override fun cancel(scheduleId: String) = Unit
+
+  override fun enqueueRepair(
+    reason: String,
+    initialDelayMs: Long,
+  ) = Unit
+
+  override fun ensurePeriodicRepair() = Unit
+}
+
 internal class WorkManagerScheduledWorkScheduler(
   private val workManager: WorkManager,
   private val clock: () -> Long = System::currentTimeMillis,
@@ -583,6 +599,21 @@ internal fun nextInterruptedRunRepairAfterEpochMs(
   .mapNotNull(InterruptedRunRepairEvidence::repairAfterEpochMs)
   .filter { repairAfterEpochMs -> repairAfterEpochMs > nowEpochMs }
   .minOrNull()
+
+internal fun scheduleNextInterruptedRunRepairRetry(
+  workScheduler: ScheduledWorkScheduler,
+  nextRepairAfterEpochMs: Long?,
+  nowEpochMs: Long = System.currentTimeMillis(),
+): Boolean {
+  val retryAtEpochMs = nextRepairAfterEpochMs
+    ?.takeIf { repairAfterEpochMs -> repairAfterEpochMs > nowEpochMs }
+    ?: return false
+  workScheduler.enqueueRepair(
+    reason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+    initialDelayMs = retryAtEpochMs - nowEpochMs,
+  )
+  return true
+}
 
 internal fun startInterruptedRunRepairTargets(
   targets: Set<RuntimeServiceTarget>,

@@ -515,6 +515,109 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun runtimeServiceBootstrapAssemblySchedulesReconnectRetryWhenBootstrapScanFindsFutureDeadline() {
+    val root = temporaryFolder.newFolder("bootstrap-assembly-reconnect-retry").toPath()
+    val chatStore = ChatSessionLocalStore(root.resolve("chat-session").toFile())
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val reconnectSessionId = chatStore.copySession(activeSessionId).activeSession.sessionId
+    chatStore.selectSession(activeSessionId)
+    val dependencies = testRuntimeDependencies(root = root, chatStore = chatStore)
+    val retryAfterEpochMs = System.currentTimeMillis() + 60_000L
+    FileBackedAgentQueueSnapshotStoreFactory.fromContext(dependencies.appContext)
+      .forChatSession(reconnectSessionId)
+      .save(
+        SessionQueueSnapshot(
+          sessionId = reconnectSessionId,
+          agentId = "test-agent",
+          lifecycleState = SessionLifecycleState.IDLE,
+          nextEnqueueOrder = 2L,
+          updatedAtEpochMs = retryAfterEpochMs - 1_000L,
+          tasks = listOf(
+            SessionQueueTaskSnapshot(
+              enqueueOrder = 1L,
+              lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+              task = AgentTask(
+                id = "task-bootstrap-reconnect-retry",
+                type = AgentTaskType.PROMPT,
+                input = "Reconnect later.",
+                state = AgentTaskState.SUSPENDED,
+                policyDecision = PolicyDecision(
+                  outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                  reasonCode = "test",
+                ),
+                createdAtEpochMs = retryAfterEpochMs - 2_000L,
+                updatedAtEpochMs = retryAfterEpochMs - 1_000L,
+                metadata = mapOf(
+                  AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to
+                    "run-bootstrap-reconnect-retry",
+                  AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to reconnectSessionId,
+                  RunLifecycleMetadataKeys.RECOVERY_ACTION to "resume_reconnect_process",
+                  RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS to
+                    "process-bootstrap-reconnect-retry",
+                  RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS to
+                    retryAfterEpochMs.toString(),
+                ),
+              ),
+            ),
+          ),
+        ),
+      )
+    val runtimeManager = RecordingAgentSessionRuntimeManager().apply {
+      putHandle(
+        RecordingAgentSessionHandle(
+          sessionId = activeSessionId,
+          resumedSessionIds = resumedSessionIds,
+        ),
+      )
+      putHandle(
+        RecordingAgentSessionHandle(
+          sessionId = reconnectSessionId,
+          resumedSessionIds = resumedSessionIds,
+        ),
+      )
+    }
+    val workScheduler = RecordingScheduledWorkScheduler()
+    val assembly = createRuntimeServiceBootstrapAssembly(
+      appContext = dependencies.appContext,
+      bootstrapContext = runtimeServiceBootstrapContext(dependencies),
+      retainedOwnerState = retainedOwnerStateFor(
+        testRuntimeAccess(sessionRuntimeManager = runtimeManager),
+      ),
+      runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(),
+      retainedShellControlFactory = { testRuntimeServiceRetainedShellControl() },
+      bootstrapFactory = RuntimeServiceBootstrapFactory {
+        RuntimeServiceBootstrapParts(
+          scheduledTaskSpecStore = inMemoryScheduledTaskSpecStoreFactory().create(),
+          scheduledTaskRunRecordStore = inMemoryScheduledTaskRunRecordStoreFactory().create(),
+          scheduledTaskTriggerSyncStateStore =
+            inMemoryScheduledTaskTriggerSyncStateStoreFactory().create(),
+          scheduledTriggerRegistrar = NoOpScheduledTriggerRegistrar,
+          scheduledWorkScheduler = workScheduler,
+        )
+      },
+    )
+
+    try {
+      assertTrue(reconnectSessionId in assembly.bootstrapResult.scannedSessionIds)
+      assertEquals(emptyList<String>(), assembly.bootstrapResult.resumedSessionIds)
+      assertEquals(emptyList<String>(), runtimeManager.resumedSessionIds)
+      assertEquals(retryAfterEpochMs, assembly.bootstrapResult.nextRepairAfterEpochMs)
+      assertEquals(
+        listOf(InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT),
+        assembly.bootstrapResult.repairEvidenceBySession
+          .getValue(reconnectSessionId)
+          .map { evidence -> evidence.kind },
+      )
+      val repairRequest = workScheduler.repairRequests.single()
+      assertEquals(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT, repairRequest.first)
+      assertTrue(repairRequest.second > 0L)
+      assertTrue(repairRequest.second <= 60_000L)
+    } finally {
+      assembly.dispose()
+    }
+  }
+
+  @Test
   fun inProcessRuntimeOwnerDisposeStillRunsCleanupWhenSessionReleaseFails() {
     val runtimeManager = object : AgentSessionRuntimeManager {
       var releaseAllSessionsCallCount: Int = 0
@@ -6400,6 +6503,26 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         scheduledTriggerRegistrar = NoOpScheduledTriggerRegistrar,
       )
     }
+
+  private class RecordingScheduledWorkScheduler : ScheduledWorkScheduler {
+    val repairRequests = mutableListOf<Pair<String, Long>>()
+
+    override fun scheduleWake(
+      scheduleId: String,
+      triggerAtEpochMs: Long,
+    ) = Unit
+
+    override fun cancel(scheduleId: String) = Unit
+
+    override fun enqueueRepair(
+      reason: String,
+      initialDelayMs: Long,
+    ) {
+      repairRequests += reason to initialDelayMs
+    }
+
+    override fun ensurePeriodicRepair() = Unit
+  }
 
   private class RecordingRuntimeServiceExecutionControllerHandle(
     val controller: RuntimeServiceExecutionController,

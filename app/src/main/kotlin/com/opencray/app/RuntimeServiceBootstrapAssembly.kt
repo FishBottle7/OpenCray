@@ -41,6 +41,7 @@ internal data class RuntimeServiceBootstrapAssembly(
   val scheduledTaskRunRecordStore: ScheduledTaskRunRecordStore,
   val scheduledTaskTriggerSyncStateStore: ScheduledTaskTriggerSyncStateStore,
   val scheduledTriggerRegistrar: ScheduledTriggerRegistrar,
+  val scheduledWorkScheduler: ScheduledWorkScheduler = NoOpScheduledWorkScheduler,
   private val runtimeOwnerRebinder: (RuntimeOwnerBootstrap) -> Unit = {},
   private val disposeHandler: () -> Unit = {},
 )
@@ -134,6 +135,10 @@ internal fun createRuntimeServiceBootstrapAssembly(
       restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
     ),
   )
+  scheduleNextInterruptedRunRepairRetry(
+    workScheduler = bootstrap.scheduledWorkScheduler,
+    nextRepairAfterEpochMs = bootstrapResult.nextRepairAfterEpochMs,
+  )
   resyncEnabledScheduledTasks(
     specStore = bootstrap.scheduledTaskSpecStore,
     triggerRegistrar = bootstrap.scheduledTriggerRegistrar,
@@ -187,6 +192,7 @@ internal fun createRuntimeServiceBootstrapAssembly(
     scheduledTaskRunRecordStore = bootstrap.scheduledTaskRunRecordStore,
     scheduledTaskTriggerSyncStateStore = bootstrap.scheduledTaskTriggerSyncStateStore,
     scheduledTriggerRegistrar = bootstrap.scheduledTriggerRegistrar,
+    scheduledWorkScheduler = bootstrap.scheduledWorkScheduler,
     runtimeOwnerRebinder = {
       val nextRuntimePort = retainedOwnerState.currentRuntimeServicePort()
       ownerWorkStateObservationBinding.bind(nextRuntimePort.ownerObservationAccess)
@@ -361,7 +367,12 @@ private fun RuntimeServiceBootstrapAssembly.toWakeCommandDispatcherDependencies(
           context = bootstrapContext.localizedContext.applicationContext,
           restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
         ),
-      )
+      ).also { result ->
+        scheduleNextInterruptedRunRepairRetry(
+          workScheduler = scheduledWorkScheduler,
+          nextRepairAfterEpochMs = result.nextRepairAfterEpochMs,
+        )
+      }
     },
     approvalDecisionAccess = approvalDecisionAccess,
     refreshServiceWorkState = serviceWorkStateTracker::refresh,

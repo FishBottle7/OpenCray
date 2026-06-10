@@ -7,6 +7,7 @@ internal data class RuntimeServiceBootstrapParts(
   val scheduledTaskRunRecordStore: ScheduledTaskRunRecordStore,
   val scheduledTaskTriggerSyncStateStore: ScheduledTaskTriggerSyncStateStore,
   val scheduledTriggerRegistrar: ScheduledTriggerRegistrar,
+  val scheduledWorkScheduler: ScheduledWorkScheduler = NoOpScheduledWorkScheduler,
 )
 
 internal fun interface RuntimeServiceBootstrapFactory {
@@ -20,6 +21,7 @@ internal object DefaultRuntimeServiceBootstrapFactory :
   override fun create(
     appContext: Context,
   ): RuntimeServiceBootstrapParts {
+    val workScheduler = WorkManagerScheduledWorkScheduler.fromContext(appContext)
     return RuntimeServiceBootstrapParts(
       scheduledTaskSpecStore = FileBackedScheduledTaskSpecStoreFactory
         .fromContext(appContext)
@@ -32,8 +34,9 @@ internal object DefaultRuntimeServiceBootstrapFactory :
         .create(),
       scheduledTriggerRegistrar = DefaultScheduledTriggerRegistrar(
         alarmScheduler = AlarmManagerScheduledAlarmScheduler.fromContext(appContext),
-        workScheduler = WorkManagerScheduledWorkScheduler.fromContext(appContext),
+        workScheduler = workScheduler,
       ),
+      scheduledWorkScheduler = workScheduler,
     )
   }
 }
