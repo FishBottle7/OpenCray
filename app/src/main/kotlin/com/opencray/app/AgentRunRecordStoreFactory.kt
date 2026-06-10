@@ -75,7 +75,8 @@ internal class FileBackedAgentRunRecordStoreFactory(
       }
     }
     return FileBackedAgentRunRecordStore(
-      directory = sessionDirectory,
+      storage = DirectoryDurableTextStorage(sessionDirectory),
+      lock = lockForAgentRunRecordDirectory(sessionDirectory),
       config = config,
     )
   }
@@ -119,6 +120,17 @@ internal class FileBackedAgentRunRecordStoreFactory(
     ): File = pathResolver.resolve(agentId).runRecordsRoot.toFile()
   }
 }
+
+internal fun fileBackedAgentRunRecordStore(
+  storage: DurableTextStorage,
+  config: AgentRunRecordStoreConfig = AgentRunRecordStoreConfig(),
+  clock: () -> Long = System::currentTimeMillis,
+): AgentRunRecordStore = FileBackedAgentRunRecordStore(
+  storage = storage,
+  lock = Any(),
+  config = config,
+  clock = clock,
+)
 
 @Serializable
 internal data class PersistedAgentRunRecord(
@@ -225,13 +237,11 @@ internal enum class PersistedAgentRunEventKind {
 }
 
 private class FileBackedAgentRunRecordStore(
-  directory: File,
+  private val storage: DurableTextStorage,
+  private val lock: Any,
   private val config: AgentRunRecordStoreConfig,
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) : AgentRunRecordStore {
-  private val lock = lockFor(directory)
-  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
-
   override fun list(): List<PersistedAgentRunRecord> = synchronized(lock) {
     loadNormalizedRecord().runs
   }
@@ -251,31 +261,19 @@ private class FileBackedAgentRunRecordStore(
     }
   }
 
-  private fun loadRecord(): AgentRunStoreRecord {
-    val encoded = storage.readText(FILE_NAME).orEmpty().trim()
-    if (encoded.isBlank()) {
-      return AgentRunStoreRecord()
+  private fun loadNormalizedRecord(): AgentRunStoreRecord =
+    storage.updateRecord(
+      name = FILE_NAME,
+      serializer = AgentRunStoreRecord.serializer(),
+    ) { current ->
+      val existing = current ?: AgentRunStoreRecord()
+      val normalized = normalizeRecord(existing)
+      RecordStorageUpdate(
+        value = normalized,
+        result = normalized,
+        write = normalized != existing,
+      )
     }
-    return PersistenceJson.instance.decodeFromString(
-      deserializer = AgentRunStoreRecord.serializer(),
-      string = encoded,
-    )
-  }
-
-  private fun loadNormalizedRecord(): AgentRunStoreRecord {
-    val existing = loadRecord()
-    val normalizedRuns = normalizeRuns(existing.runs)
-    if (normalizedRuns == existing.runs) {
-      return existing
-    }
-    val repaired = existing.copy(
-      recordVersion = existing.recordVersion + 1L,
-      updatedAtEpochMs = clock(),
-      runs = normalizedRuns,
-    )
-    saveRecord(repaired)
-    return repaired
-  }
 
   private fun updateRecord(update: (AgentRunStoreRecord) -> AgentRunStoreRecord) {
     storage.updateRecord(
@@ -367,16 +365,6 @@ private class FileBackedAgentRunRecordStore(
     record.lastEvent?.emittedAtEpochMs ?: 0L,
   )
 
-  private fun saveRecord(record: AgentRunStoreRecord) {
-    storage.writeText(
-      FILE_NAME,
-      PersistenceJson.instance.encodeToString(
-        serializer = AgentRunStoreRecord.serializer(),
-        value = record,
-      ),
-    )
-  }
-
   @Serializable
   private data class AgentRunStoreRecord(
     val schemaVersion: Int = PersistenceSchemaVersion.CURRENT,
@@ -387,13 +375,15 @@ private class FileBackedAgentRunRecordStore(
 
   private companion object {
     private const val FILE_NAME: String = "runtime-runs.json"
-
-    private val FILE_LOCKS = ConcurrentHashMap<String, Any>()
-
-    private fun lockFor(directory: File): Any =
-      FILE_LOCKS.computeIfAbsent(File(directory, FILE_NAME).absolutePath) { Any() }
   }
 }
+
+private val AGENT_RUN_RECORD_FILE_LOCKS = ConcurrentHashMap<String, Any>()
+
+private fun lockForAgentRunRecordDirectory(directory: File): Any =
+  AGENT_RUN_RECORD_FILE_LOCKS.computeIfAbsent(
+    File(directory, "runtime-runs.json").absolutePath,
+  ) { Any() }
 
 @Serializable
 internal data class PersistedMemoryStewardshipPlanStep(

@@ -16,6 +16,8 @@ import com.opencray.runtime.memory.MemoryStewardshipPlanStep
 import com.opencray.runtime.memory.MemoryStewardshipPlanStepOutcome
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -293,5 +295,161 @@ class AgentRunRecordStoreFactoryTest {
     ).toRuntimeEventOrNull()
 
     assertNull(restored)
+  }
+
+  @Test
+  fun listRepairUsesSingleStorageUpdate() {
+    val storage = StaleReadDurableTextStorage()
+    val store = fileBackedAgentRunRecordStore(storage)
+
+    val staleBeforeConcurrentRun = runtimeRunsJson(
+      recordVersion = 1L,
+      updatedAtEpochMs = 1_000L,
+      runsJson = listOf(
+        persistedRunJson(
+          runId = "run-older",
+          taskId = "task-older",
+          acceptedAtEpochMs = 1_000L,
+          pendingMessageId = " pending-message ",
+          managedProcessIds = listOf(" proc-a ", "proc-a", ""),
+        ),
+      ),
+    )
+    storage.writeText("runtime-runs.json", staleBeforeConcurrentRun)
+    storage.writeText(
+      "runtime-runs.json",
+      runtimeRunsJson(
+        recordVersion = 2L,
+        updatedAtEpochMs = 2_000L,
+        runsJson = listOf(
+          persistedRunJson(
+            runId = "run-older",
+            taskId = "task-older",
+            acceptedAtEpochMs = 1_000L,
+            pendingMessageId = " pending-message ",
+            managedProcessIds = listOf(" proc-a ", "proc-a", ""),
+          ),
+          persistedRunJson(
+            runId = "run-concurrent",
+            taskId = "task-concurrent",
+            acceptedAtEpochMs = 2_000L,
+            pendingMessageId = null,
+            managedProcessIds = listOf("proc-live"),
+          ),
+        ),
+      ),
+    )
+    val updateCallsBeforeList = storage.updateTextCallCount
+
+    storage.returnStaleTextOnNextRead(staleBeforeConcurrentRun)
+    val runs = store.list()
+
+    assertEquals(updateCallsBeforeList + 1, storage.updateTextCallCount)
+    assertTrue(storage.hasPendingStaleRead)
+    assertEquals(listOf("run-concurrent", "run-older"), runs.map(PersistedAgentRunRecord::runId))
+    val olderRun = runs.single { run -> run.runId == "run-older" }
+    assertEquals("pending-message", olderRun.pendingMessageId)
+    assertEquals(listOf("proc-a"), olderRun.managedProcessIds)
+    storage.clearPendingStaleRead()
+    assertEquals(
+      listOf("run-concurrent", "run-older"),
+      store.list().map(PersistedAgentRunRecord::runId),
+    )
+  }
+
+  private fun runtimeRunsJson(
+    recordVersion: Long,
+    updatedAtEpochMs: Long,
+    runsJson: List<String>,
+  ): String =
+    """
+    {
+      "schemaVersion": 1,
+      "recordVersion": $recordVersion,
+      "updatedAtEpochMs": $updatedAtEpochMs,
+      "runs": [
+        ${runsJson.joinToString(separator = ",\n        ")}
+      ]
+    }
+    """.trimIndent()
+
+  private fun persistedRunJson(
+    runId: String,
+    taskId: String,
+    acceptedAtEpochMs: Long,
+    pendingMessageId: String?,
+    managedProcessIds: List<String>,
+  ): String {
+    val encodedPendingMessageId = pendingMessageId
+      ?.let { value -> "\"${escapeJson(value)}\"" }
+      ?: "null"
+    val encodedManagedProcessIds = managedProcessIds
+      .joinToString(prefix = "[", postfix = "]") { value -> "\"${escapeJson(value)}\"" }
+    return """
+      {
+        "runId": "${escapeJson(runId)}",
+        "taskId": "${escapeJson(taskId)}",
+        "acceptedAtEpochMs": $acceptedAtEpochMs,
+        "pendingMessageId": $encodedPendingMessageId,
+        "managedProcessIds": $encodedManagedProcessIds,
+        "detachedTask": null,
+        "lastResult": null,
+        "lastEvent": null
+      }
+    """.trimIndent()
+  }
+
+  private fun escapeJson(value: String): String =
+    value
+      .replace("\\", "\\\\")
+      .replace("\"", "\\\"")
+
+  private class StaleReadDurableTextStorage : DurableTextStorage {
+    private var text: String? = null
+    private var staleReadText: String? = null
+    var hasPendingStaleRead: Boolean = false
+      private set
+    var updateTextCallCount: Int = 0
+      private set
+
+    fun returnStaleTextOnNextRead(staleText: String?) {
+      this.staleReadText = staleText
+      hasPendingStaleRead = true
+    }
+
+    fun clearPendingStaleRead() {
+      staleReadText = null
+      hasPendingStaleRead = false
+    }
+
+    override fun readText(name: String): String? {
+      if (!hasPendingStaleRead) {
+        return text
+      }
+      hasPendingStaleRead = false
+      return staleReadText
+    }
+
+    override fun writeText(name: String, text: String) {
+      this.text = text
+    }
+
+    override fun delete(name: String): Boolean {
+      val hadText = text != null
+      text = null
+      return hadText
+    }
+
+    override fun <T> updateText(
+      name: String,
+      update: (String?) -> DurableTextUpdate<T>,
+    ): T {
+      updateTextCallCount += 1
+      val updated = update(text)
+      if (updated.write) {
+        text = updated.text
+      }
+      return updated.result
+    }
   }
 }
