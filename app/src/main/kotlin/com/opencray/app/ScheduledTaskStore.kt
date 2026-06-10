@@ -115,6 +115,16 @@ internal class FileBackedScheduledTaskRunRecordStoreFactory(
   }
 }
 
+internal fun fileBackedScheduledTaskRunRecordStore(
+  storage: DurableTextStorage,
+  config: ScheduledTaskRunRecordStoreConfig = ScheduledTaskRunRecordStoreConfig(),
+  clock: () -> Long = System::currentTimeMillis,
+): ScheduledTaskRunRecordStore = FileBackedScheduledTaskRunRecordStore(
+  storage = storage,
+  config = config,
+  clock = clock,
+)
+
 internal data class ScheduledTaskSpecStoreConfig(
   val maxTrackedSpecs: Int = 256,
 ) {
@@ -544,18 +554,24 @@ private class FileBackedScheduledTaskRunRecordStore(
 
   override fun removeForSchedule(scheduleId: String) {
     synchronized(lock) {
-      val existing = loadNormalizedRecord()
-      val retained = existing.records.filterNot { record -> record.scheduleId == scheduleId }
-      if (retained.size == existing.records.size) {
-        return
+      updateRecord { existing ->
+        val retained = existing.records.filterNot { record -> record.scheduleId == scheduleId }
+        if (retained.size == existing.records.size) {
+          return@updateRecord RecordStorageUpdate(
+            value = existing,
+            result = Unit,
+            write = false,
+          )
+        }
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            records = retained,
+          ),
+          result = Unit,
+        )
       }
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = clock(),
-          records = retained,
-        ),
-      )
     }
   }
 

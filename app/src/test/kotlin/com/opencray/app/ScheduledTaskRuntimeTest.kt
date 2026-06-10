@@ -15,6 +15,8 @@ import com.opencray.runtime.ScheduledTaskTriggerRequest
 import com.opencray.runtime.ScheduledTaskUpdateRequest
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.subagent.SubAgentApprovalResume
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -111,6 +113,50 @@ class ScheduledTaskRuntimeTest {
     assertTrue(specStorePayload.contains("\"persistenceType\":\"at\""))
     assertFalse(specStorePayload.contains("run_at_timestamp"))
     assertFalse(specStorePayload.contains("run_after_delay"))
+  }
+
+  @Test
+  fun fileBackedScheduledTaskRunRecordRemoveForScheduleUsesSingleStorageUpdate() {
+    val storage = StaleReadDurableTextStorage()
+    val runRecordStore = fileBackedScheduledTaskRunRecordStore(
+      storage = storage,
+      clock = { 10_000L },
+    )
+    runRecordStore.upsert(
+      scheduledTaskRunRecord(
+        scheduleRunId = "schedule-run-remove",
+        scheduleId = "schedule-remove",
+        updatedAtEpochMs = 1_000L,
+      ),
+    )
+    runRecordStore.upsert(
+      scheduledTaskRunRecord(
+        scheduleRunId = "schedule-run-keep",
+        scheduleId = "schedule-keep",
+        updatedAtEpochMs = 2_000L,
+      ),
+    )
+    val staleBeforeConcurrentWrite = storage.currentText
+    runRecordStore.upsert(
+      scheduledTaskRunRecord(
+        scheduleRunId = "schedule-run-concurrent",
+        scheduleId = "schedule-concurrent",
+        updatedAtEpochMs = 3_000L,
+      ),
+    )
+    val updateCallsBeforeRemove = storage.updateTextCallCount
+
+    storage.returnStaleTextOnNextRead(staleBeforeConcurrentWrite)
+    runRecordStore.removeForSchedule("schedule-remove")
+
+    assertEquals(updateCallsBeforeRemove + 1, storage.updateTextCallCount)
+    assertTrue(storage.hasPendingStaleRead)
+    storage.clearPendingStaleRead()
+    assertNull(runRecordStore.get("schedule-run-remove"))
+    assertEquals(
+      setOf("schedule-run-keep", "schedule-run-concurrent"),
+      runRecordStore.list().map(ScheduledTaskRunRecord::scheduleRunId).toSet(),
+    )
   }
 
   @Test
@@ -838,6 +884,73 @@ class ScheduledTaskRuntimeTest {
     createdAtEpochMs = 1_000L,
     updatedAtEpochMs = updatedAtEpochMs,
   )
+
+  private fun scheduledTaskRunRecord(
+    scheduleRunId: String,
+    scheduleId: String,
+    updatedAtEpochMs: Long,
+    sessionId: String = "session-scheduled-record",
+  ): ScheduledTaskRunRecord = ScheduledTaskRunRecord(
+    scheduleRunId = scheduleRunId,
+    scheduleId = scheduleId,
+    sessionId = sessionId,
+    triggerReason = ScheduledTaskTriggerReasons.WORK_MANAGER,
+    triggeredAtEpochMs = updatedAtEpochMs,
+    result = ScheduledTaskRunResult.TRIGGERED,
+    updatedAtEpochMs = updatedAtEpochMs,
+  )
+
+  private class StaleReadDurableTextStorage : DurableTextStorage {
+    private var text: String? = null
+    private var staleReadText: String? = null
+    var hasPendingStaleRead: Boolean = false
+      private set
+    var updateTextCallCount: Int = 0
+      private set
+
+    val currentText: String?
+      get() = text
+
+    fun returnStaleTextOnNextRead(staleText: String?) {
+      this.staleReadText = staleText
+      hasPendingStaleRead = true
+    }
+
+    fun clearPendingStaleRead() {
+      staleReadText = null
+      hasPendingStaleRead = false
+    }
+
+    override fun readText(name: String): String? {
+      if (!hasPendingStaleRead) {
+        return text
+      }
+      hasPendingStaleRead = false
+      return staleReadText
+    }
+
+    override fun writeText(name: String, text: String) {
+      this.text = text
+    }
+
+    override fun delete(name: String): Boolean {
+      val hadText = text != null
+      text = null
+      return hadText
+    }
+
+    override fun <T> updateText(
+      name: String,
+      update: (String?) -> DurableTextUpdate<T>,
+    ): T {
+      updateTextCallCount += 1
+      val updated = update(text)
+      if (updated.write) {
+        text = updated.text
+      }
+      return updated.result
+    }
+  }
 
   private class RecordingScheduledTriggerRegistrar : ScheduledTriggerRegistrar {
     val syncedScheduleIds = mutableListOf<String>()
