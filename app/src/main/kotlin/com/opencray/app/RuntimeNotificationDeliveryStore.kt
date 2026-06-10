@@ -1,10 +1,11 @@
 package com.opencray.app
 
 import android.content.Context
-import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.RecordStorageUpdate
+import com.opencray.persistence.store.file.updateRecord
 import java.io.File
 import kotlinx.serialization.Serializable
 
@@ -62,6 +63,16 @@ internal data class RuntimeNotificationDeliveryStoreConfig(
   }
 }
 
+internal fun fileBackedRuntimeNotificationDeliveryStore(
+  storage: DurableTextStorage,
+  config: RuntimeNotificationDeliveryStoreConfig = RuntimeNotificationDeliveryStoreConfig(),
+  clock: () -> Long = System::currentTimeMillis,
+): RuntimeNotificationDeliveryStore = FileBackedRuntimeNotificationDeliveryStore(
+  storage = storage,
+  config = config,
+  clock = clock,
+)
+
 private class InMemoryRuntimeNotificationDeliveryStore : RuntimeNotificationDeliveryStore {
   private val lock = Any()
   private val fingerprintsByKey = linkedMapOf<String, String>()
@@ -93,57 +104,56 @@ private class FileBackedRuntimeNotificationDeliveryStore(
   override fun markDelivered(notificationKey: String, fingerprint: String) {
     synchronized(lock) {
       val now = clock()
-      val existing = loadNormalizedRecord()
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = now,
-          entries = normalizeEntries(
-            existing.entries.filterNot { entry -> entry.notificationKey == notificationKey } +
-              PersistedRuntimeNotificationDeliveryEntry(
-                notificationKey = notificationKey,
-                fingerprint = fingerprint,
-                deliveredAtEpochMs = now,
-              ),
+      storage.updateRecord(
+        name = FILE_NAME,
+        serializer = PersistedRuntimeNotificationDeliveryRecord.serializer(),
+      ) { persisted ->
+        val existing = normalizeRecord(persisted ?: PersistedRuntimeNotificationDeliveryRecord())
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = now,
+            entries = normalizeEntries(
+              existing.entries.filterNot { entry -> entry.notificationKey == notificationKey } +
+                PersistedRuntimeNotificationDeliveryEntry(
+                  notificationKey = notificationKey,
+                  fingerprint = fingerprint,
+                  deliveredAtEpochMs = now,
+                ),
+            ),
           ),
-        ),
-      )
+          result = Unit,
+        )
+      }
     }
   }
 
   private fun loadNormalizedRecord(): PersistedRuntimeNotificationDeliveryRecord {
-    val existing = loadRecord()
-    val normalizedEntries = normalizeEntries(existing.entries)
-    if (normalizedEntries == existing.entries) {
-      return existing
+    return storage.updateRecord(
+      name = FILE_NAME,
+      serializer = PersistedRuntimeNotificationDeliveryRecord.serializer(),
+    ) { persisted ->
+      val existing = persisted ?: PersistedRuntimeNotificationDeliveryRecord()
+      val repaired = normalizeRecord(existing)
+      RecordStorageUpdate(
+        value = repaired,
+        result = repaired,
+        write = repaired != existing,
+      )
     }
-    val repaired = existing.copy(
-      recordVersion = existing.recordVersion + 1L,
+  }
+
+  private fun normalizeRecord(
+    record: PersistedRuntimeNotificationDeliveryRecord,
+  ): PersistedRuntimeNotificationDeliveryRecord {
+    val normalizedEntries = normalizeEntries(record.entries)
+    if (normalizedEntries == record.entries) {
+      return record
+    }
+    return record.copy(
+      recordVersion = record.recordVersion + 1L,
       updatedAtEpochMs = clock(),
       entries = normalizedEntries,
-    )
-    saveRecord(repaired)
-    return repaired
-  }
-
-  private fun loadRecord(): PersistedRuntimeNotificationDeliveryRecord {
-    val encoded = storage.readText(FILE_NAME).orEmpty().trim()
-    if (encoded.isBlank()) {
-      return PersistedRuntimeNotificationDeliveryRecord()
-    }
-    return PersistenceJson.instance.decodeFromString(
-      deserializer = PersistedRuntimeNotificationDeliveryRecord.serializer(),
-      string = encoded,
-    )
-  }
-
-  private fun saveRecord(record: PersistedRuntimeNotificationDeliveryRecord) {
-    storage.writeText(
-      FILE_NAME,
-      PersistenceJson.instance.encodeToString(
-        serializer = PersistedRuntimeNotificationDeliveryRecord.serializer(),
-        value = record,
-      ),
     )
   }
 

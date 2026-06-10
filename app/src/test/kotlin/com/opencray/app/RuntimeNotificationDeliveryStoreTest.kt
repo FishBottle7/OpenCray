@@ -1,7 +1,10 @@
 package com.opencray.app
 
 import com.opencray.persistence.PersistenceSchemaVersion
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import java.io.File
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -63,6 +66,28 @@ class RuntimeNotificationDeliveryStoreTest {
   }
 
   @Test
+  fun fileBackedStoreMarkDeliveredUsesSingleStorageUpdate() {
+    val storage = StaleReadDurableTextStorage()
+    val store = fileBackedRuntimeNotificationDeliveryStore(
+      storage = storage,
+      clock = { 10_000L },
+    )
+    store.markDelivered("terminal:run-1", "fingerprint-1")
+    val staleBeforeConcurrentWrite = storage.currentText
+    store.markDelivered("terminal:run-2", "fingerprint-2")
+    val updateCallsBeforeMark = storage.updateTextCallCount
+
+    storage.returnStaleTextOnNextRead(staleBeforeConcurrentWrite)
+    store.markDelivered("terminal:run-3", "fingerprint-3")
+
+    assertEquals(updateCallsBeforeMark + 1, storage.updateTextCallCount)
+    assertTrue(storage.hasPendingStaleRead)
+    storage.clearPendingStaleRead()
+    assertTrue(store.wasDelivered("terminal:run-2", "fingerprint-2"))
+    assertTrue(store.wasDelivered("terminal:run-3", "fingerprint-3"))
+  }
+
+  @Test
   fun fileBackedStoreNormalizesInvalidAndDuplicatePersistedEntriesOnLoad() {
     val runtimeRoot = temporaryFolder.newFolder("runtime-notification-delivery-normalize")
     File(runtimeRoot, "runtime-notification-delivery.json").writeText(
@@ -113,5 +138,57 @@ class RuntimeNotificationDeliveryStoreTest {
 
     assertTrue(restoredStore.wasDelivered("terminal:run-a", "fingerprint-new"))
     assertTrue(restoredStore.wasDelivered("terminal:run-c", "fingerprint-c"))
+  }
+
+  private class StaleReadDurableTextStorage : DurableTextStorage {
+    private var text: String? = null
+    private var staleReadText: String? = null
+    var hasPendingStaleRead: Boolean = false
+      private set
+    var updateTextCallCount: Int = 0
+      private set
+
+    val currentText: String?
+      get() = text
+
+    fun returnStaleTextOnNextRead(staleText: String?) {
+      this.staleReadText = staleText
+      hasPendingStaleRead = true
+    }
+
+    fun clearPendingStaleRead() {
+      staleReadText = null
+      hasPendingStaleRead = false
+    }
+
+    override fun readText(name: String): String? {
+      if (!hasPendingStaleRead) {
+        return text
+      }
+      hasPendingStaleRead = false
+      return staleReadText
+    }
+
+    override fun writeText(name: String, text: String) {
+      this.text = text
+    }
+
+    override fun delete(name: String): Boolean {
+      val hadText = text != null
+      text = null
+      return hadText
+    }
+
+    override fun <T> updateText(
+      name: String,
+      update: (String?) -> DurableTextUpdate<T>,
+    ): T {
+      updateTextCallCount += 1
+      val updated = update(text)
+      if (updated.write) {
+        text = updated.text
+      }
+      return updated.result
+    }
   }
 }
