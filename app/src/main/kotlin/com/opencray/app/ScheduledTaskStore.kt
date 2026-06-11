@@ -1,7 +1,6 @@
 package com.opencray.app
 
 import android.content.Context
-import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
@@ -114,6 +113,16 @@ internal class FileBackedScheduledTaskRunRecordStoreFactory(
       )
   }
 }
+
+internal fun fileBackedScheduledTaskSpecStore(
+  storage: DurableTextStorage,
+  config: ScheduledTaskSpecStoreConfig = ScheduledTaskSpecStoreConfig(),
+  clock: () -> Long = System::currentTimeMillis,
+): ScheduledTaskSpecStore = FileBackedScheduledTaskSpecStore(
+  storage = storage,
+  config = config,
+  clock = clock,
+)
 
 internal fun fileBackedScheduledTaskRunRecordStore(
   storage: DurableTextStorage,
@@ -446,41 +455,19 @@ private class FileBackedScheduledTaskSpecStore(
     }
   }
 
-  private fun loadNormalizedRecord(): ScheduledTaskSpecStoreRecord {
-    val existing = loadRecord()
-    val normalizedSpecs = normalizeSpecs(existing.specs)
-    if (normalizedSpecs == existing.specs) {
-      return existing
+  private fun loadNormalizedRecord(): ScheduledTaskSpecStoreRecord =
+    storage.updateRecord(
+      name = SPEC_STORE_FILE_NAME,
+      serializer = ScheduledTaskSpecStoreRecord.serializer(),
+    ) { current ->
+      val existing = current ?: ScheduledTaskSpecStoreRecord()
+      val normalized = normalizeRecord(existing)
+      RecordStorageUpdate(
+        value = normalized,
+        result = normalized,
+        write = normalized != existing,
+      )
     }
-    val repaired = existing.copy(
-      recordVersion = existing.recordVersion + 1L,
-      updatedAtEpochMs = clock(),
-      specs = normalizedSpecs,
-    )
-    saveRecord(repaired)
-    return repaired
-  }
-
-  private fun loadRecord(): ScheduledTaskSpecStoreRecord {
-    val encoded = storage.readText(SPEC_STORE_FILE_NAME).orEmpty().trim()
-    if (encoded.isBlank()) {
-      return ScheduledTaskSpecStoreRecord()
-    }
-    return PersistenceJson.instance.decodeFromString(
-      ScheduledTaskSpecStoreRecord.serializer(),
-      encoded,
-    )
-  }
-
-  private fun saveRecord(record: ScheduledTaskSpecStoreRecord) {
-    storage.writeText(
-      SPEC_STORE_FILE_NAME,
-      PersistenceJson.instance.encodeToString(
-        ScheduledTaskSpecStoreRecord.serializer(),
-        record,
-      ),
-    )
-  }
 
   private fun <T> updateRecord(
     update: (ScheduledTaskSpecStoreRecord) -> RecordStorageUpdate<ScheduledTaskSpecStoreRecord, T>,
@@ -581,41 +568,19 @@ private class FileBackedScheduledTaskRunRecordStore(
     }
   }
 
-  private fun loadNormalizedRecord(): ScheduledTaskRunRecordStoreRecord {
-    val existing = loadRecord()
-    val normalizedRecords = normalizeRunRecords(existing.records)
-    if (normalizedRecords == existing.records) {
-      return existing
+  private fun loadNormalizedRecord(): ScheduledTaskRunRecordStoreRecord =
+    storage.updateRecord(
+      name = RUN_RECORD_STORE_FILE_NAME,
+      serializer = ScheduledTaskRunRecordStoreRecord.serializer(),
+    ) { current ->
+      val existing = current ?: ScheduledTaskRunRecordStoreRecord()
+      val normalized = normalizeRecord(existing)
+      RecordStorageUpdate(
+        value = normalized,
+        result = normalized,
+        write = normalized != existing,
+      )
     }
-    val repaired = existing.copy(
-      recordVersion = existing.recordVersion + 1L,
-      updatedAtEpochMs = clock(),
-      records = normalizedRecords,
-    )
-    saveRecord(repaired)
-    return repaired
-  }
-
-  private fun loadRecord(): ScheduledTaskRunRecordStoreRecord {
-    val encoded = storage.readText(RUN_RECORD_STORE_FILE_NAME).orEmpty().trim()
-    if (encoded.isBlank()) {
-      return ScheduledTaskRunRecordStoreRecord()
-    }
-    return PersistenceJson.instance.decodeFromString(
-      ScheduledTaskRunRecordStoreRecord.serializer(),
-      encoded,
-    )
-  }
-
-  private fun saveRecord(record: ScheduledTaskRunRecordStoreRecord) {
-    storage.writeText(
-      RUN_RECORD_STORE_FILE_NAME,
-      PersistenceJson.instance.encodeToString(
-        ScheduledTaskRunRecordStoreRecord.serializer(),
-        record,
-      ),
-    )
-  }
 
   private fun <T> updateRecord(
     update: (ScheduledTaskRunRecordStoreRecord) -> RecordStorageUpdate<ScheduledTaskRunRecordStoreRecord, T>,

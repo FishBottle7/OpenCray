@@ -160,6 +160,88 @@ class ScheduledTaskRuntimeTest {
   }
 
   @Test
+  fun fileBackedScheduledTaskSpecListUsesSingleStorageUpdate() {
+    val storage = StaleReadDurableTextStorage()
+    val specStore = fileBackedScheduledTaskSpecStore(
+      storage = storage,
+      clock = { 10_000L },
+    )
+    specStore.upsert(
+      scheduledTaskSpec(
+        sessionId = "session-scheduled-spec",
+        scheduleId = "schedule-older",
+        title = "Older schedule",
+        updatedAtEpochMs = 1_000L,
+      ),
+    )
+    val staleBeforeConcurrentWrite = storage.currentText
+    specStore.upsert(
+      scheduledTaskSpec(
+        sessionId = "session-scheduled-spec",
+        scheduleId = "schedule-concurrent",
+        title = "Concurrent schedule",
+        updatedAtEpochMs = 2_000L,
+      ),
+    )
+    val updateCallsBeforeList = storage.updateTextCallCount
+
+    storage.returnStaleTextOnNextRead(staleBeforeConcurrentWrite)
+    val specs = specStore.list()
+
+    assertEquals(updateCallsBeforeList + 1, storage.updateTextCallCount)
+    assertTrue(storage.hasPendingStaleRead)
+    storage.clearPendingStaleRead()
+    assertEquals(
+      listOf("Concurrent schedule", "Older schedule"),
+      specs.map(ScheduledTaskSpec::title),
+    )
+    assertEquals(
+      listOf("schedule-concurrent", "schedule-older"),
+      specStore.list().map(ScheduledTaskSpec::scheduleId),
+    )
+  }
+
+  @Test
+  fun fileBackedScheduledTaskRunRecordListUsesSingleStorageUpdate() {
+    val storage = StaleReadDurableTextStorage()
+    val runRecordStore = fileBackedScheduledTaskRunRecordStore(
+      storage = storage,
+      clock = { 10_000L },
+    )
+    runRecordStore.upsert(
+      scheduledTaskRunRecord(
+        scheduleRunId = "schedule-run-older",
+        scheduleId = "schedule-older",
+        updatedAtEpochMs = 1_000L,
+      ),
+    )
+    val staleBeforeConcurrentWrite = storage.currentText
+    runRecordStore.upsert(
+      scheduledTaskRunRecord(
+        scheduleRunId = "schedule-run-concurrent",
+        scheduleId = "schedule-concurrent",
+        updatedAtEpochMs = 2_000L,
+      ),
+    )
+    val updateCallsBeforeList = storage.updateTextCallCount
+
+    storage.returnStaleTextOnNextRead(staleBeforeConcurrentWrite)
+    val records = runRecordStore.list()
+
+    assertEquals(updateCallsBeforeList + 1, storage.updateTextCallCount)
+    assertTrue(storage.hasPendingStaleRead)
+    storage.clearPendingStaleRead()
+    assertEquals(
+      listOf("schedule-run-concurrent", "schedule-run-older"),
+      records.map(ScheduledTaskRunRecord::scheduleRunId),
+    )
+    assertEquals(
+      listOf("schedule-run-concurrent", "schedule-run-older"),
+      runRecordStore.list().map(ScheduledTaskRunRecord::scheduleRunId),
+    )
+  }
+
+  @Test
   fun appScheduledTaskManagerCanListGetUpdateAndDeleteSchedules() {
     val runtimeRoot = temporaryFolder.newFolder("scheduled-manager-runtime-root")
     val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat-store"))
