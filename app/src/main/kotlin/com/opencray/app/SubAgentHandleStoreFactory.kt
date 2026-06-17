@@ -1,7 +1,6 @@
 package com.opencray.app
 
 import android.content.Context
-import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
@@ -63,7 +62,8 @@ internal class FileBackedSubAgentHandleStoreFactory(
     }
     return FileBackedSubAgentHandleStore(
       sessionId = sessionId,
-      directory = sessionDirectory,
+      storage = DirectoryDurableTextStorage(sessionDirectory),
+      lock = lockForSubAgentHandleDirectory(sessionDirectory),
       config = config,
     )
   }
@@ -89,6 +89,19 @@ internal class FileBackedSubAgentHandleStoreFactory(
       )
   }
 }
+
+internal fun fileBackedSubAgentHandleStore(
+  sessionId: String,
+  storage: DurableTextStorage,
+  config: SubAgentHandleStoreConfig = SubAgentHandleStoreConfig(),
+  clock: () -> Long = System::currentTimeMillis,
+): SubAgentHandleStore = FileBackedSubAgentHandleStore(
+  sessionId = sessionId,
+  storage = storage,
+  lock = Any(),
+  config = config,
+  clock = clock,
+)
 
 internal data class SubAgentHandleStoreConfig(
   val maxTrackedHandles: Int = 256,
@@ -148,13 +161,11 @@ private class InMemorySubAgentHandleStore(
 
 private class FileBackedSubAgentHandleStore(
   private val sessionId: String,
-  directory: File,
+  private val storage: DurableTextStorage,
+  private val lock: Any,
   private val config: SubAgentHandleStoreConfig,
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) : SubAgentHandleStore {
-  private val lock = lockFor(directory)
-  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
-
   override fun list(): List<SubAgentHandleState> = synchronized(lock) {
     loadNormalizedRecord().handles
   }
@@ -241,32 +252,19 @@ private class FileBackedSubAgentHandleStore(
     }
   }
 
-  private fun loadRecord(): SubAgentHandleRecord {
-    val encoded = storage.readText(FILE_NAME).orEmpty().trim()
-    if (encoded.isBlank()) {
-      return SubAgentHandleRecord(sessionId = sessionId)
+  private fun loadNormalizedRecord(): SubAgentHandleRecord =
+    storage.updateRecord(
+      name = FILE_NAME,
+      serializer = SubAgentHandleRecord.serializer(),
+    ) { current ->
+      val existing = current ?: SubAgentHandleRecord(sessionId = sessionId)
+      val normalized = normalizeRecord(existing)
+      RecordStorageUpdate(
+        value = normalized,
+        result = normalized,
+        write = normalized != existing,
+      )
     }
-    return PersistenceJson.instance.decodeFromString(
-      deserializer = SubAgentHandleRecord.serializer(),
-      string = encoded,
-    )
-  }
-
-  private fun loadNormalizedRecord(): SubAgentHandleRecord {
-    val existing = loadRecord()
-    val normalizedHandles = normalizeHandles(existing.handles)
-    if (normalizedHandles == existing.handles && existing.sessionId == sessionId) {
-      return existing
-    }
-    val repaired = existing.copy(
-      sessionId = sessionId,
-      recordVersion = existing.recordVersion + 1L,
-      updatedAtEpochMs = clock(),
-      handles = normalizedHandles,
-    )
-    saveRecord(repaired)
-    return repaired
-  }
 
   private fun <T> updateRecord(
     update: (SubAgentHandleRecord) -> RecordStorageUpdate<SubAgentHandleRecord, T>,
@@ -319,16 +317,6 @@ private class FileBackedSubAgentHandleStore(
       .take(config.maxTrackedHandles)
   }
 
-  private fun saveRecord(record: SubAgentHandleRecord) {
-    storage.writeText(
-      FILE_NAME,
-      PersistenceJson.instance.encodeToString(
-        serializer = SubAgentHandleRecord.serializer(),
-        value = record,
-      ),
-    )
-  }
-
   @Serializable
   private data class SubAgentHandleRecord(
     val schemaVersion: Int = PersistenceSchemaVersion.CURRENT,
@@ -340,10 +328,12 @@ private class FileBackedSubAgentHandleStore(
 
   private companion object {
     private const val FILE_NAME: String = "runtime-subagent-handles.json"
-
-    private val FILE_LOCKS = ConcurrentHashMap<String, Any>()
-
-    private fun lockFor(directory: File): Any =
-      FILE_LOCKS.computeIfAbsent(File(directory, FILE_NAME).absolutePath) { Any() }
   }
 }
+
+private val SUBAGENT_HANDLE_FILE_LOCKS = ConcurrentHashMap<String, Any>()
+
+private fun lockForSubAgentHandleDirectory(directory: File): Any =
+  SUBAGENT_HANDLE_FILE_LOCKS.computeIfAbsent(
+    File(directory, "runtime-subagent-handles.json").absolutePath,
+  ) { Any() }

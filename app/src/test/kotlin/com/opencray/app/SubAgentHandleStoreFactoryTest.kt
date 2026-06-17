@@ -2,6 +2,8 @@ package com.opencray.app
 
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.persistence.PersistenceJson
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.subagent.SubAgentExecutionKey
@@ -66,6 +68,49 @@ class SubAgentHandleStoreFactoryTest {
       factory.forChatSession("session-a").list().none { handle ->
         handle.agentId == sessionBHandle.agentId
       },
+    )
+  }
+
+  @Test
+  fun fileBackedStoreListRepairUsesSingleStorageUpdate() {
+    val storage = StaleReadDurableTextStorage()
+    val store = fileBackedSubAgentHandleStore(
+      sessionId = "session-1",
+      storage = storage,
+      clock = { 10_000L },
+    )
+    store.upsert(
+      sampleHandle(
+        agentId = "child-older",
+        childRunId = "child-run-older",
+        childTaskId = "child-task-older",
+        updatedAtEpochMs = 1_000L,
+      ),
+    )
+    val staleBeforeConcurrentWrite = storage.currentText
+    store.upsert(
+      sampleHandle(
+        agentId = "child-concurrent",
+        childRunId = "child-run-concurrent",
+        childTaskId = "child-task-concurrent",
+        updatedAtEpochMs = 2_000L,
+      ),
+    )
+    val updateCallsBeforeList = storage.updateTextCallCount
+
+    storage.returnStaleTextOnNextRead(staleBeforeConcurrentWrite)
+    val handles = store.list()
+
+    assertEquals(updateCallsBeforeList + 1, storage.updateTextCallCount)
+    assertTrue(storage.hasPendingStaleRead)
+    storage.clearPendingStaleRead()
+    assertEquals(
+      listOf("child-concurrent", "child-older"),
+      handles.map(SubAgentHandleState::agentId),
+    )
+    assertEquals(
+      listOf("child-concurrent", "child-older"),
+      store.list().map(SubAgentHandleState::agentId),
     )
   }
 
@@ -229,6 +274,58 @@ class SubAgentHandleStoreFactoryTest {
     createdAtEpochMs = 900L,
     updatedAtEpochMs = updatedAtEpochMs,
   )
+
+  private class StaleReadDurableTextStorage : DurableTextStorage {
+    private var text: String? = null
+    private var staleReadText: String? = null
+    var hasPendingStaleRead: Boolean = false
+      private set
+    var updateTextCallCount: Int = 0
+      private set
+
+    val currentText: String?
+      get() = text
+
+    fun returnStaleTextOnNextRead(staleText: String?) {
+      this.staleReadText = staleText
+      hasPendingStaleRead = true
+    }
+
+    fun clearPendingStaleRead() {
+      staleReadText = null
+      hasPendingStaleRead = false
+    }
+
+    override fun readText(name: String): String? {
+      if (!hasPendingStaleRead) {
+        return text
+      }
+      hasPendingStaleRead = false
+      return staleReadText
+    }
+
+    override fun writeText(name: String, text: String) {
+      this.text = text
+    }
+
+    override fun delete(name: String): Boolean {
+      val hadText = text != null
+      text = null
+      return hadText
+    }
+
+    override fun <T> updateText(
+      name: String,
+      update: (String?) -> DurableTextUpdate<T>,
+    ): T {
+      updateTextCallCount += 1
+      val updated = update(text)
+      if (updated.write) {
+        text = updated.text
+      }
+      return updated.result
+    }
+  }
 
   @Serializable
   private data class LegacySubAgentHandleRecord(
