@@ -2140,7 +2140,10 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     var startCallCount = 0
     val expectedBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
       gatewayBundle = expectedGatewayBundle,
-      ensureStarted = { startCallCount += 1 },
+      ensureStarted = {
+        startCallCount += 1
+        true
+      },
     )
     var factoryCallCount = 0
     var capturedContext: Context? = null
@@ -3418,6 +3421,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         gatewayBundle = testServiceGatewayBundle(),
         ensureStarted = {
           steps += "transport_started"
+          true
         },
         dispose = {
           steps += "transport_dispose"
@@ -3531,6 +3535,55 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun runtimeServiceBootstrapAttachFailsWhenTransportDoesNotStart() {
+    val executionCoordinator = RecordingRuntimeServiceExecutionCoordinator()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val steps = mutableListOf<String>()
+    val bootstrap = OpenCrayAgentRuntimeServiceBootstrap(
+      shellControlBundle = RuntimeServiceShellControlBundle(
+        keepAliveController = RuntimeServiceKeepAliveController(
+          appVisibleProvider = { true },
+          scheduler = object : RuntimeServiceDelayScheduler {
+            override fun schedule(
+              delayMs: Long,
+              action: () -> Unit,
+            ): RuntimeServiceDelayedTask = RuntimeServiceDelayedTask { }
+          },
+          stopRequester = { false },
+        ),
+        runtimeForegroundController = RuntimeForegroundController(
+          serviceAdapter = object : RuntimeForegroundServiceAdapter {
+            override fun startOrUpdateForeground(model: RuntimeForegroundNotificationModel) = Unit
+
+            override fun stopForeground(removeNotification: Boolean) = Unit
+          },
+          appVisibleProvider = { true },
+        ),
+        attach = { steps += "shell_attach" },
+      ),
+      transportBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
+        gatewayBundle = testServiceGatewayBundle(),
+        ensureStarted = {
+          steps += "transport_started"
+          false
+        },
+      ),
+      executionCoordinator = executionCoordinator,
+      wakeCommandDispatcher = RecordingRuntimeServiceWakeCommandDispatcher(),
+      binderEndpoint = RecordingRuntimeServiceBinderEndpoint(),
+      projectionCoordinator = projectionCoordinator,
+    )
+
+    val attached = bootstrap.attach()
+
+    assertFalse(attached)
+    assertEquals(listOf("transport_started"), steps)
+    assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
+    assertEquals(0, projectionCoordinator.startCallCount)
+    assertEquals(0, executionCoordinator.attachCallCount)
+  }
+
+  @Test
   fun runtimeServiceShellControllerReturnsNullBinderWhenOwnerLeaseIsNotHeld() {
     val context = MinimalContext()
     val mainHandler = Handler()
@@ -3572,7 +3625,10 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           ),
           transportBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
             gatewayBundle = testServiceGatewayBundle(),
-            ensureStarted = { steps += "transport_started" },
+            ensureStarted = {
+              steps += "transport_started"
+              true
+            },
             dispose = { steps += "transport_dispose" },
           ),
           executionCoordinator = object : RuntimeServiceExecutionCoordinator {
@@ -3627,6 +3683,106 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun runtimeServiceShellControllerReturnsNullBinderWhenTransportDoesNotStart() {
+    val context = MinimalContext()
+    val mainHandler = Handler()
+    val service = TestRuntimeService()
+    val steps = mutableListOf<String>()
+    val retryTargets = mutableListOf<RuntimeServiceTarget>()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val controller = runtimeServiceShellController(
+      service = service,
+      appContext = context,
+      mainHandler = mainHandler,
+      bootstrapDependencies = defaultRuntimeBootstrapDependencies,
+      serviceBootstrapFactory = { _, _, _, _ ->
+        steps += "assemble_bootstrap"
+        OpenCrayAgentRuntimeServiceBootstrap(
+          shellControlBundle = RuntimeServiceShellControlBundle(
+            keepAliveController = RuntimeServiceKeepAliveController(
+              appVisibleProvider = { true },
+              scheduler = object : RuntimeServiceDelayScheduler {
+                override fun schedule(
+                  delayMs: Long,
+                  action: () -> Unit,
+                ): RuntimeServiceDelayedTask = RuntimeServiceDelayedTask { }
+              },
+              stopRequester = { false },
+            ),
+            runtimeForegroundController = RuntimeForegroundController(
+              serviceAdapter = object : RuntimeForegroundServiceAdapter {
+                override fun startOrUpdateForeground(model: RuntimeForegroundNotificationModel) = Unit
+
+                override fun stopForeground(removeNotification: Boolean) = Unit
+              },
+              appVisibleProvider = { true },
+            ),
+            attach = { steps += "shell_attach" },
+            dispose = { steps += "shell_dispose" },
+          ),
+          transportBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
+            gatewayBundle = testServiceGatewayBundle(),
+            ensureStarted = {
+              steps += "transport_started"
+              false
+            },
+            dispose = { steps += "transport_dispose" },
+          ),
+          executionCoordinator = object : RuntimeServiceExecutionCoordinator {
+            override fun attach() {
+              steps += "coordinator_attach"
+            }
+
+            override fun onStartCommand(startId: Int) = Unit
+
+            override fun currentKeepAliveState(): RuntimeServiceKeepAliveState =
+              RuntimeServiceKeepAliveState()
+
+            override fun currentForegroundState(): RuntimeForegroundState =
+              RuntimeForegroundState()
+
+            override fun persistProjectionSnapshot(
+              workState: RuntimeServiceWorkState?,
+              keepAliveState: RuntimeServiceKeepAliveState?,
+            ) = Unit
+
+            override fun onScheduledDispatchOutcome(outcome: ScheduledTaskDispatchOutcome) = Unit
+
+            override fun dispose() {
+              steps += "coordinator_dispose"
+            }
+          },
+          wakeCommandDispatcher = RecordingRuntimeServiceWakeCommandDispatcher(),
+          binderEndpoint = RecordingRuntimeServiceBinderEndpoint(),
+          projectionCoordinator = projectionCoordinator,
+        )
+      },
+      ownerLeaseRetryScheduler = { target -> retryTargets += target },
+    )
+
+    val bound = controller.onBind(null)
+    val startFailure = runCatching {
+      controller.onStartCommand(Intent("runtime-shell-start"), startId = 9)
+    }.exceptionOrNull()
+
+    assertNull(bound)
+    assertEquals(
+      listOf(
+        "assemble_bootstrap",
+        "transport_started",
+        "shell_dispose",
+        "transport_dispose",
+        "coordinator_dispose",
+      ),
+      steps,
+    )
+    assertEquals(listOf(RuntimeServiceTarget.DETACHED_BACKGROUND), retryTargets)
+    assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
+    assertEquals(0, projectionCoordinator.startCallCount)
+    assertTrue(startFailure is IllegalStateException)
+  }
+
+  @Test
   fun runtimeServiceShellControllerAttachIsIdempotentWithinSingleShellInstance() {
     val context = MinimalContext()
     val mainHandler = Handler()
@@ -3663,6 +3819,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         gatewayBundle = testServiceGatewayBundle(),
         ensureStarted = {
           steps += "transport_started"
+          true
         },
       ),
       executionCoordinator = object : RuntimeServiceExecutionCoordinator {
@@ -3769,6 +3926,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
             gatewayBundle = testServiceGatewayBundle(),
             ensureStarted = {
               steps += "$label:transport_started"
+              true
             },
             dispose = {
               steps += "$label:transport_dispose"
@@ -3984,6 +4142,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
             gatewayBundle = testServiceGatewayBundle(),
             ensureStarted = {
               steps += "$label:transport_started"
+              true
             },
             dispose = {
               steps += "$label:transport_dispose"
@@ -4105,6 +4264,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
             gatewayBundle = testServiceGatewayBundle(),
             ensureStarted = {
               steps += "transport_started"
+              true
             },
           ),
           executionCoordinator = object : RuntimeServiceExecutionCoordinator {

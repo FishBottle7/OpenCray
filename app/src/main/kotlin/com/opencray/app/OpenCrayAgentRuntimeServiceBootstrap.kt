@@ -40,7 +40,9 @@ internal data class OpenCrayAgentRuntimeServiceBootstrap(
     if (!projectionCoordinator.tryAcquireOwnerLease()) {
       return false
     }
-    transportBootstrap.ensureStarted()
+    if (!transportBootstrap.ensureStarted()) {
+      return false
+    }
     shellControlBundle.attach()
     executionCoordinator.attach()
     projectionCoordinator.start()

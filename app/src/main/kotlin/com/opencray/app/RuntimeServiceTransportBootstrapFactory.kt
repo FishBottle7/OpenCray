@@ -4,7 +4,7 @@ import android.content.Context
 
 internal data class OpenCrayRuntimeServiceTransportBootstrap(
   val gatewayBundle: OpenCrayRuntimeServiceGatewayBundle,
-  val ensureStarted: () -> Unit = {},
+  val ensureStarted: () -> Boolean = { true },
   val dispose: () -> Unit = {},
 )
 
@@ -57,7 +57,7 @@ internal class DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
       ensureStarted = ensureStarted@{
         val shouldStart = synchronized(lock) {
           if (disposed) {
-            return@ensureStarted
+            return@ensureStarted false
           }
           if (starting || activated) {
             false
@@ -67,21 +67,22 @@ internal class DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
           }
         }
         if (!shouldStart) {
-          return@ensureStarted
+          return@ensureStarted activated
         }
         try {
           val started = loopbackBootstrap.ensureStarted()
           synchronized(lock) {
             starting = false
             if (disposed) {
-              return@ensureStarted
+              return@ensureStarted false
             }
             if (!started) {
-              return@ensureStarted
+              return@ensureStarted false
             }
             activated = true
           }
           transportCoordinator.bindGatewayBundle(gatewayBundle)
+          true
         } catch (throwable: Throwable) {
           synchronized(lock) {
             starting = false
