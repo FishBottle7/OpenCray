@@ -3535,6 +3535,57 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun runtimeServiceBootstrapAttachFailsWhenOwnerLeaseIsNotHeld() {
+    val executionCoordinator = RecordingRuntimeServiceExecutionCoordinator()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator(
+      ownerLeaseAcquired = false,
+    )
+    val steps = mutableListOf<String>()
+    val bootstrap = OpenCrayAgentRuntimeServiceBootstrap(
+      shellControlBundle = RuntimeServiceShellControlBundle(
+        keepAliveController = RuntimeServiceKeepAliveController(
+          appVisibleProvider = { true },
+          scheduler = object : RuntimeServiceDelayScheduler {
+            override fun schedule(
+              delayMs: Long,
+              action: () -> Unit,
+            ): RuntimeServiceDelayedTask = RuntimeServiceDelayedTask { }
+          },
+          stopRequester = { false },
+        ),
+        runtimeForegroundController = RuntimeForegroundController(
+          serviceAdapter = object : RuntimeForegroundServiceAdapter {
+            override fun startOrUpdateForeground(model: RuntimeForegroundNotificationModel) = Unit
+
+            override fun stopForeground(removeNotification: Boolean) = Unit
+          },
+          appVisibleProvider = { true },
+        ),
+        attach = { steps += "shell_attach" },
+      ),
+      transportBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
+        gatewayBundle = testServiceGatewayBundle(),
+        ensureStarted = {
+          steps += "transport_started"
+          true
+        },
+      ),
+      executionCoordinator = executionCoordinator,
+      wakeCommandDispatcher = RecordingRuntimeServiceWakeCommandDispatcher(),
+      binderEndpoint = RecordingRuntimeServiceBinderEndpoint(),
+      projectionCoordinator = projectionCoordinator,
+    )
+
+    val attached = bootstrap.attach()
+
+    assertEquals(RuntimeServiceShellAttachResult.OwnerLeaseDenied, attached)
+    assertTrue(steps.isEmpty())
+    assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
+    assertEquals(0, projectionCoordinator.startCallCount)
+    assertEquals(0, executionCoordinator.attachCallCount)
+  }
+
+  @Test
   fun runtimeServiceBootstrapAttachFailsWhenTransportDoesNotStart() {
     val executionCoordinator = RecordingRuntimeServiceExecutionCoordinator()
     val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
@@ -3576,7 +3627,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
 
     val attached = bootstrap.attach()
 
-    assertFalse(attached)
+    assertEquals(RuntimeServiceShellAttachResult.TransportStartFailed, attached)
     assertEquals(listOf("transport_started"), steps)
     assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
     assertEquals(0, projectionCoordinator.startCallCount)
@@ -3776,7 +3827,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       ),
       steps,
     )
-    assertEquals(listOf(RuntimeServiceTarget.DETACHED_BACKGROUND), retryTargets)
+    assertTrue(retryTargets.isEmpty())
     assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
     assertEquals(0, projectionCoordinator.startCallCount)
     assertTrue(startFailure is IllegalStateException)

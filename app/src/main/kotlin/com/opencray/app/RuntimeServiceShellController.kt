@@ -87,13 +87,20 @@ private class DefaultRuntimeServiceShellController(
       mainHandler,
       target,
     )
-    return if (bootstrap.attach()) {
-      serviceBootstraps[target] = bootstrap
-      true
-    } else {
-      bootstrap.dispose()
-      ownerLeaseRetryScheduler(target)
-      false
+    return when (bootstrap.attach()) {
+      RuntimeServiceShellAttachResult.Attached -> {
+        serviceBootstraps[target] = bootstrap
+        true
+      }
+      RuntimeServiceShellAttachResult.OwnerLeaseDenied -> {
+        bootstrap.dispose()
+        ownerLeaseRetryScheduler(target)
+        false
+      }
+      RuntimeServiceShellAttachResult.TransportStartFailed -> {
+        bootstrap.dispose()
+        false
+      }
     }
   }
 

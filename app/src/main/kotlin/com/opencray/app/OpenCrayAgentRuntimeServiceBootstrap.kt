@@ -10,7 +10,7 @@ internal interface RuntimeServiceShellAttachment : RuntimeServiceShellStateAcces
 
   fun resetRuntimeOwner()
 
-  fun attach(): Boolean
+  fun attach(): RuntimeServiceShellAttachResult
 
   fun startBootstrapForeground()
 
@@ -20,6 +20,14 @@ internal interface RuntimeServiceShellAttachment : RuntimeServiceShellStateAcces
   )
 
   fun dispose()
+}
+
+internal sealed interface RuntimeServiceShellAttachResult {
+  data object Attached : RuntimeServiceShellAttachResult
+
+  data object OwnerLeaseDenied : RuntimeServiceShellAttachResult
+
+  data object TransportStartFailed : RuntimeServiceShellAttachResult
 }
 
 internal data class OpenCrayAgentRuntimeServiceBootstrap(
@@ -36,17 +44,17 @@ internal data class OpenCrayAgentRuntimeServiceBootstrap(
     resetRuntimeOwnerAction()
   }
 
-  override fun attach(): Boolean {
+  override fun attach(): RuntimeServiceShellAttachResult {
     if (!projectionCoordinator.tryAcquireOwnerLease()) {
-      return false
+      return RuntimeServiceShellAttachResult.OwnerLeaseDenied
     }
     if (!transportBootstrap.ensureStarted()) {
-      return false
+      return RuntimeServiceShellAttachResult.TransportStartFailed
     }
     shellControlBundle.attach()
     executionCoordinator.attach()
     projectionCoordinator.start()
-    return true
+    return RuntimeServiceShellAttachResult.Attached
   }
 
   override fun startBootstrapForeground() {
