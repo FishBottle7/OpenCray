@@ -14,7 +14,7 @@ internal interface RuntimeServiceShellController {
     startId: Int,
   ): Int
 
-  fun onBind(intent: Intent?): IBinder
+  fun onBind(intent: Intent?): IBinder?
 
   fun dispose()
 }
@@ -118,9 +118,11 @@ private class DefaultRuntimeServiceShellController(
     )
   }
 
-  override fun onBind(intent: Intent?): IBinder =
+  override fun onBind(intent: Intent?): IBinder? =
     runtimeTargetReader(intent).let { target ->
-      requireBootstrap(target)
+      if (!attach(target)) {
+        return null
+      }
       boundEndpoints.getOrPut(target) {
         DelegatingRuntimeServiceBinderEndpoint(target)
       }

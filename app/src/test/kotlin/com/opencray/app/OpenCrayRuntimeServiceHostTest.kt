@@ -2628,6 +2628,43 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun androidBindingClientReportsNullBindingWhenServiceReturnsNoBinder() {
+    val expected = bridgeSnapshot(temporaryFolder.newFolder("binding-client-null-binding"))
+    val bindingAdapter = RecordingBindingAdapter()
+    var startRequestCount = 0
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      projectionStore = projectionStoreFor(expected),
+      bindingAdapter = bindingAdapter,
+      startRequester = { startRequestCount += 1 },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+    )
+
+    val initial = client.loadSnapshot()
+    bindingAdapter.nullBind()
+
+    val connectionState = client.loadConnectionState()
+    val fallbackSnapshot = client.loadSnapshot()
+
+    assertEquals("binding", initial.connectionState.phase)
+    assertEquals("null_binding", connectionState.phase)
+    assertEquals("in_process", connectionState.transport)
+    assertTrue(connectionState.serviceStartRequested)
+    assertFalse(connectionState.bindingRequested)
+    assertFalse(connectionState.binderAvailable)
+    assertEquals("null_binding", connectionState.fallbackReason)
+    assertNull(fallbackSnapshot.bridgeSnapshot)
+    assertEquals(
+      expected.serviceLifecycle.serviceInstanceId,
+      fallbackSnapshot.diagnosticsSnapshot.serviceLifecycle.serviceInstanceId,
+    )
+    assertEquals(1, startRequestCount)
+    assertEquals(2, bindingAdapter.bindCount)
+    assertEquals(0, bindingAdapter.unbindCount)
+  }
+
+  @Test
   fun androidBindingClientExposesBinderSkillsGatewayWhenConnected() {
     val expected = bridgeSnapshot(temporaryFolder.newFolder("binding-client-skills-gateway"))
     val bindingAdapter = RecordingBindingAdapter()
@@ -6843,6 +6880,12 @@ class OpenCrayRuntimeServiceHostTest {
       checkNotNull(connection).onServiceConnected(
         ComponentName("org.opencray.app", "OpenCrayAgentRuntimeService"),
         binder,
+      )
+    }
+
+    fun nullBind() {
+      checkNotNull(connection).onNullBinding(
+        ComponentName("org.opencray.app", "OpenCrayAgentRuntimeService"),
       )
     }
 

@@ -46,11 +46,8 @@ internal class OpenCrayAgentRuntimeService : Service() {
     return controller.onStartCommand(intent = intent, startId = startId)
   }
 
-  override fun onBind(intent: Intent?): IBinder {
-    val controller = shellController
-    controller.attach(runtimeTargetForIntent(intent))
-    return controller.onBind(intent)
-  }
+  override fun onBind(intent: Intent?): IBinder? =
+    shellController.onBind(intent)
 
   override fun onDestroy() {
     shellControllerInstance?.dispose()

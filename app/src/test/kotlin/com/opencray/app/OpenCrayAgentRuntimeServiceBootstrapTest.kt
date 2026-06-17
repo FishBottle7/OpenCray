@@ -3307,7 +3307,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
-  fun runtimeServiceShellControllerDoesNotCacheShellWhenOwnerLeaseIsNotHeld() {
+  fun runtimeServiceShellControllerReturnsNullBinderWhenOwnerLeaseIsNotHeld() {
     val context = MinimalContext()
     val mainHandler = Handler()
     val service = TestRuntimeService()
@@ -3381,15 +3381,12 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       ownerLeaseRetryScheduler = { target -> retryTargets += target },
     )
 
-    val attached = controller.attach()
+    val bound = controller.onBind(null)
     val startFailure = runCatching {
       controller.onStartCommand(Intent("runtime-shell-start"), startId = 9)
     }.exceptionOrNull()
-    val bindFailure = runCatching {
-      controller.onBind(null)
-    }.exceptionOrNull()
 
-    assertFalse(attached)
+    assertNull(bound)
     assertEquals(
       listOf(
         "assemble_bootstrap",
@@ -3403,7 +3400,6 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
     assertEquals(0, projectionCoordinator.startCallCount)
     assertTrue(startFailure is IllegalStateException)
-    assertTrue(bindFailure is IllegalStateException)
   }
 
   @Test
