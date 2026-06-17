@@ -1,15 +1,24 @@
 package com.opencray.app
 
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 class RuntimeNotificationSettingsStoreTest {
+  @get:Rule
+  val temporaryFolder = TemporaryFolder()
+
   @Test
   fun persistsNotificationSettingsRoundTrip() {
     val store = RuntimeNotificationSettingsStore(
-      InMemoryRuntimeNotificationSettingsKeyValueStore(),
+      DirectoryDurableTextStorage(
+        temporaryFolder.newFolder("runtime-notification-settings-round-trip"),
+      ),
     )
     val expected = RuntimeNotificationSettingsState(
       masterEnabled = false,
@@ -29,6 +38,53 @@ class RuntimeNotificationSettingsStoreTest {
     store.save(expected)
 
     assertEquals(expected.sanitized(), store.load())
+  }
+
+  @Test
+  fun fileBackedStoreRoundTripsAcrossInstances() {
+    val directory = temporaryFolder.newFolder("runtime-notification-settings-cross-instance")
+    val firstStore = RuntimeNotificationSettingsStore(
+      DirectoryDurableTextStorage(directory),
+    )
+    val secondStore = RuntimeNotificationSettingsStore(
+      DirectoryDurableTextStorage(directory),
+    )
+    val expected = RuntimeNotificationSettingsState(
+      masterEnabled = true,
+      defaultDeliveryMode = RuntimeNotificationDeliveryMode.CRITICAL,
+      quietHoursEnabled = false,
+      quietHoursStartMinutes = -30,
+      quietHoursEndMinutes = (25 * 60) + 15,
+      approvalRequestsEnabled = false,
+      approvalReminderEnabled = true,
+      taskFinishedEnabled = false,
+      taskFailedEnabled = true,
+      scheduledWakeEnabled = false,
+      backgroundTaskPausedEnabled = true,
+      serviceRecoveredEnabled = false,
+    )
+
+    firstStore.save(expected)
+
+    assertEquals(expected.sanitized(), secondStore.load())
+  }
+
+  @Test
+  fun fileBackedStoreClearRemovesPersistedSnapshot() {
+    val directory = temporaryFolder.newFolder("runtime-notification-settings-clear")
+    val store = RuntimeNotificationSettingsStore(
+      DirectoryDurableTextStorage(directory),
+    )
+    store.save(
+      RuntimeNotificationSettingsState(
+        masterEnabled = false,
+        approvalRequestsEnabled = false,
+      ),
+    )
+
+    store.clear()
+
+    assertEquals(RuntimeNotificationSettingsState(), store.load())
   }
 
   @Test

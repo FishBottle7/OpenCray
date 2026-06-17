@@ -1,25 +1,15 @@
 package com.opencray.app
 
 import android.content.Context
-import android.content.SharedPreferences
+import com.opencray.persistence.PersistenceJson
+import com.opencray.persistence.PersistenceSchemaVersion
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import java.io.File
+import kotlinx.serialization.Serializable
 
-private const val DEFAULT_RUNTIME_NOTIFICATION_SETTINGS_PREFERENCES =
-  "opencray.runtime-notification-settings"
-
-internal object RuntimeNotificationSettingsStoreKeys {
-  const val MASTER_ENABLED = "master_enabled"
-  const val DEFAULT_DELIVERY_MODE_ID = "default_delivery_mode_id"
-  const val QUIET_HOURS_ENABLED = "quiet_hours_enabled"
-  const val QUIET_HOURS_START_MINUTES = "quiet_hours_start_minutes"
-  const val QUIET_HOURS_END_MINUTES = "quiet_hours_end_minutes"
-  const val APPROVAL_REQUESTS_ENABLED = "approval_requests_enabled"
-  const val APPROVAL_REMINDER_ENABLED = "approval_reminder_enabled"
-  const val TASK_FINISHED_ENABLED = "task_finished_enabled"
-  const val TASK_FAILED_ENABLED = "task_failed_enabled"
-  const val SCHEDULED_WAKE_ENABLED = "scheduled_wake_enabled"
-  const val BACKGROUND_TASK_PAUSED_ENABLED = "background_task_paused_enabled"
-  const val SERVICE_RECOVERED_ENABLED = "service_recovered_enabled"
-}
+private const val RUNTIME_NOTIFICATION_SETTINGS_FILE_NAME =
+  "runtime-notification-settings.json"
 
 enum class RuntimeNotificationDeliveryMode(
   val wireValue: String,
@@ -77,217 +67,124 @@ internal data class RuntimeNotificationSettingsState(
   }
 }
 
-internal interface RuntimeNotificationSettingsKeyValueStore {
-  fun getBoolean(key: String): Boolean?
-
-  fun putBoolean(
-    key: String,
-    value: Boolean,
-  )
-
-  fun getInt(key: String): Int?
-
-  fun putInt(
-    key: String,
-    value: Int,
-  )
-
-  fun getString(key: String): String?
-
-  fun putString(
-    key: String,
-    value: String,
-  )
-
-  fun clear()
-}
-
-internal class InMemoryRuntimeNotificationSettingsKeyValueStore(
-  initialValues: Map<String, String> = emptyMap(),
-) : RuntimeNotificationSettingsKeyValueStore {
-  private val values = linkedMapOf<String, String>().apply {
-    putAll(initialValues)
-  }
-
-  override fun getBoolean(key: String): Boolean? = values[key]?.toBooleanStrictOrNull()
-
-  override fun putBoolean(
-    key: String,
-    value: Boolean,
-  ) {
-    values[key] = value.toString()
-  }
-
-  override fun getInt(key: String): Int? = values[key]?.toIntOrNull()
-
-  override fun putInt(
-    key: String,
-    value: Int,
-  ) {
-    values[key] = value.toString()
-  }
-
-  override fun getString(key: String): String? = values[key]
-
-  override fun putString(
-    key: String,
-    value: String,
-  ) {
-    values[key] = value
-  }
-
-  override fun clear() {
-    values.clear()
-  }
-}
-
-internal class SharedPreferencesRuntimeNotificationSettingsKeyValueStore(
-  private val sharedPreferences: SharedPreferences,
-) : RuntimeNotificationSettingsKeyValueStore {
-  override fun getBoolean(key: String): Boolean? =
-    if (sharedPreferences.contains(key)) sharedPreferences.getBoolean(key, false) else null
-
-  override fun putBoolean(
-    key: String,
-    value: Boolean,
-  ) {
-    sharedPreferences.edit().putBoolean(key, value).apply()
-  }
-
-  override fun getInt(key: String): Int? =
-    if (sharedPreferences.contains(key)) sharedPreferences.getInt(key, 0) else null
-
-  override fun putInt(
-    key: String,
-    value: Int,
-  ) {
-    sharedPreferences.edit().putInt(key, value).apply()
-  }
-
-  override fun getString(key: String): String? =
-    if (sharedPreferences.contains(key)) sharedPreferences.getString(key, null) else null
-
-  override fun putString(
-    key: String,
-    value: String,
-  ) {
-    sharedPreferences.edit().putString(key, value).apply()
-  }
-
-  override fun clear() {
-    sharedPreferences.edit().clear().apply()
-  }
-}
-
 internal class RuntimeNotificationSettingsStore(
-  private val keyValueStore: RuntimeNotificationSettingsKeyValueStore,
+  private val storage: DurableTextStorage,
 ) {
+  private val lock = Any()
+
   fun load(
     defaults: RuntimeNotificationSettingsState = RuntimeNotificationSettingsState(),
-  ): RuntimeNotificationSettingsState = defaults.copy(
-    masterEnabled =
-      keyValueStore.getBoolean(RuntimeNotificationSettingsStoreKeys.MASTER_ENABLED)
-        ?: defaults.masterEnabled,
-    defaultDeliveryMode = RuntimeNotificationDeliveryMode.fromWireValue(
-      keyValueStore.getString(RuntimeNotificationSettingsStoreKeys.DEFAULT_DELIVERY_MODE_ID),
-    ),
-    quietHoursEnabled =
-      keyValueStore.getBoolean(RuntimeNotificationSettingsStoreKeys.QUIET_HOURS_ENABLED)
-        ?: defaults.quietHoursEnabled,
-    quietHoursStartMinutes =
-      keyValueStore.getInt(RuntimeNotificationSettingsStoreKeys.QUIET_HOURS_START_MINUTES)
-        ?: defaults.quietHoursStartMinutes,
-    quietHoursEndMinutes =
-      keyValueStore.getInt(RuntimeNotificationSettingsStoreKeys.QUIET_HOURS_END_MINUTES)
-        ?: defaults.quietHoursEndMinutes,
-    approvalRequestsEnabled =
-      keyValueStore.getBoolean(RuntimeNotificationSettingsStoreKeys.APPROVAL_REQUESTS_ENABLED)
-        ?: defaults.approvalRequestsEnabled,
-    approvalReminderEnabled =
-      keyValueStore.getBoolean(RuntimeNotificationSettingsStoreKeys.APPROVAL_REMINDER_ENABLED)
-        ?: defaults.approvalReminderEnabled,
-    taskFinishedEnabled =
-      keyValueStore.getBoolean(RuntimeNotificationSettingsStoreKeys.TASK_FINISHED_ENABLED)
-        ?: defaults.taskFinishedEnabled,
-    taskFailedEnabled =
-      keyValueStore.getBoolean(RuntimeNotificationSettingsStoreKeys.TASK_FAILED_ENABLED)
-        ?: defaults.taskFailedEnabled,
-    scheduledWakeEnabled =
-      keyValueStore.getBoolean(RuntimeNotificationSettingsStoreKeys.SCHEDULED_WAKE_ENABLED)
-        ?: defaults.scheduledWakeEnabled,
-    backgroundTaskPausedEnabled =
-      keyValueStore.getBoolean(RuntimeNotificationSettingsStoreKeys.BACKGROUND_TASK_PAUSED_ENABLED)
-        ?: defaults.backgroundTaskPausedEnabled,
-    serviceRecoveredEnabled =
-      keyValueStore.getBoolean(RuntimeNotificationSettingsStoreKeys.SERVICE_RECOVERED_ENABLED)
-        ?: defaults.serviceRecoveredEnabled,
-  ).sanitized()
+  ): RuntimeNotificationSettingsState = synchronized(lock) {
+    loadRecord()?.toState(defaults = defaults) ?: defaults.sanitized()
+  }
 
   fun save(state: RuntimeNotificationSettingsState) {
-    val sanitized = state.sanitized()
-    keyValueStore.putBoolean(
-      RuntimeNotificationSettingsStoreKeys.MASTER_ENABLED,
-      sanitized.masterEnabled,
-    )
-    keyValueStore.putString(
-      RuntimeNotificationSettingsStoreKeys.DEFAULT_DELIVERY_MODE_ID,
-      sanitized.defaultDeliveryMode.wireValue,
-    )
-    keyValueStore.putBoolean(
-      RuntimeNotificationSettingsStoreKeys.QUIET_HOURS_ENABLED,
-      sanitized.quietHoursEnabled,
-    )
-    keyValueStore.putInt(
-      RuntimeNotificationSettingsStoreKeys.QUIET_HOURS_START_MINUTES,
-      sanitized.quietHoursStartMinutes,
-    )
-    keyValueStore.putInt(
-      RuntimeNotificationSettingsStoreKeys.QUIET_HOURS_END_MINUTES,
-      sanitized.quietHoursEndMinutes,
-    )
-    keyValueStore.putBoolean(
-      RuntimeNotificationSettingsStoreKeys.APPROVAL_REQUESTS_ENABLED,
-      sanitized.approvalRequestsEnabled,
-    )
-    keyValueStore.putBoolean(
-      RuntimeNotificationSettingsStoreKeys.APPROVAL_REMINDER_ENABLED,
-      sanitized.approvalReminderEnabled,
-    )
-    keyValueStore.putBoolean(
-      RuntimeNotificationSettingsStoreKeys.TASK_FINISHED_ENABLED,
-      sanitized.taskFinishedEnabled,
-    )
-    keyValueStore.putBoolean(
-      RuntimeNotificationSettingsStoreKeys.TASK_FAILED_ENABLED,
-      sanitized.taskFailedEnabled,
-    )
-    keyValueStore.putBoolean(
-      RuntimeNotificationSettingsStoreKeys.SCHEDULED_WAKE_ENABLED,
-      sanitized.scheduledWakeEnabled,
-    )
-    keyValueStore.putBoolean(
-      RuntimeNotificationSettingsStoreKeys.BACKGROUND_TASK_PAUSED_ENABLED,
-      sanitized.backgroundTaskPausedEnabled,
-    )
-    keyValueStore.putBoolean(
-      RuntimeNotificationSettingsStoreKeys.SERVICE_RECOVERED_ENABLED,
-      sanitized.serviceRecoveredEnabled,
-    )
+    synchronized(lock) {
+      val sanitized = state.sanitized()
+      storage.writeText(
+        RUNTIME_NOTIFICATION_SETTINGS_FILE_NAME,
+        PersistenceJson.instance.encodeToString(
+          serializer = PersistedRuntimeNotificationSettingsRecord.serializer(),
+          value = PersistedRuntimeNotificationSettingsRecord.fromState(sanitized),
+        ),
+      )
+    }
   }
 
   fun clear() {
-    keyValueStore.clear()
+    synchronized(lock) {
+      storage.delete(RUNTIME_NOTIFICATION_SETTINGS_FILE_NAME)
+    }
+  }
+
+  private fun loadRecord(): PersistedRuntimeNotificationSettingsRecord? {
+    val encoded = storage.readText(RUNTIME_NOTIFICATION_SETTINGS_FILE_NAME).orEmpty().trim()
+    if (encoded.isBlank()) {
+      return null
+    }
+    return runCatching {
+      PersistenceJson.instance.decodeFromString(
+        deserializer = PersistedRuntimeNotificationSettingsRecord.serializer(),
+        string = encoded,
+      )
+    }.getOrNull()
   }
 
   companion object {
     fun fromContext(
       context: Context,
-      preferencesName: String = DEFAULT_RUNTIME_NOTIFICATION_SETTINGS_PREFERENCES,
     ): RuntimeNotificationSettingsStore = RuntimeNotificationSettingsStore(
-      keyValueStore = SharedPreferencesRuntimeNotificationSettingsKeyValueStore(
-        context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE),
+      storage = DirectoryDurableTextStorage(
+        File(
+          context.filesDir,
+          FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+        ),
       ),
     )
+  }
+}
+
+@Serializable
+private data class PersistedRuntimeNotificationSettingsRecord(
+  val schemaVersion: Int = PersistenceSchemaVersion.CURRENT,
+  val masterEnabled: Boolean = RuntimeNotificationSettingsState().masterEnabled,
+  val defaultDeliveryModeId: String =
+    RuntimeNotificationSettingsState().defaultDeliveryMode.wireValue,
+  val quietHoursEnabled: Boolean = RuntimeNotificationSettingsState().quietHoursEnabled,
+  val quietHoursStartMinutes: Int =
+    RuntimeNotificationSettingsState().quietHoursStartMinutes,
+  val quietHoursEndMinutes: Int =
+    RuntimeNotificationSettingsState().quietHoursEndMinutes,
+  val approvalRequestsEnabled: Boolean =
+    RuntimeNotificationSettingsState().approvalRequestsEnabled,
+  val approvalReminderEnabled: Boolean =
+    RuntimeNotificationSettingsState().approvalReminderEnabled,
+  val taskFinishedEnabled: Boolean =
+    RuntimeNotificationSettingsState().taskFinishedEnabled,
+  val taskFailedEnabled: Boolean =
+    RuntimeNotificationSettingsState().taskFailedEnabled,
+  val scheduledWakeEnabled: Boolean =
+    RuntimeNotificationSettingsState().scheduledWakeEnabled,
+  val backgroundTaskPausedEnabled: Boolean =
+    RuntimeNotificationSettingsState().backgroundTaskPausedEnabled,
+  val serviceRecoveredEnabled: Boolean =
+    RuntimeNotificationSettingsState().serviceRecoveredEnabled,
+) {
+  fun toState(
+    defaults: RuntimeNotificationSettingsState,
+  ): RuntimeNotificationSettingsState = defaults.copy(
+    masterEnabled = masterEnabled,
+    defaultDeliveryMode = RuntimeNotificationDeliveryMode.fromWireValue(defaultDeliveryModeId),
+    quietHoursEnabled = quietHoursEnabled,
+    quietHoursStartMinutes = quietHoursStartMinutes,
+    quietHoursEndMinutes = quietHoursEndMinutes,
+    approvalRequestsEnabled = approvalRequestsEnabled,
+    approvalReminderEnabled = approvalReminderEnabled,
+    taskFinishedEnabled = taskFinishedEnabled,
+    taskFailedEnabled = taskFailedEnabled,
+    scheduledWakeEnabled = scheduledWakeEnabled,
+    backgroundTaskPausedEnabled = backgroundTaskPausedEnabled,
+    serviceRecoveredEnabled = serviceRecoveredEnabled,
+  ).sanitized()
+
+  companion object {
+    fun fromState(
+      state: RuntimeNotificationSettingsState,
+    ): PersistedRuntimeNotificationSettingsRecord =
+      PersistedRuntimeNotificationSettingsRecord(
+        masterEnabled = state.masterEnabled,
+        defaultDeliveryModeId = state.defaultDeliveryMode.wireValue,
+        quietHoursEnabled = state.quietHoursEnabled,
+        quietHoursStartMinutes = state.quietHoursStartMinutes,
+        quietHoursEndMinutes = state.quietHoursEndMinutes,
+        approvalRequestsEnabled = state.approvalRequestsEnabled,
+        approvalReminderEnabled = state.approvalReminderEnabled,
+        taskFinishedEnabled = state.taskFinishedEnabled,
+        taskFailedEnabled = state.taskFailedEnabled,
+        scheduledWakeEnabled = state.scheduledWakeEnabled,
+        backgroundTaskPausedEnabled = state.backgroundTaskPausedEnabled,
+        serviceRecoveredEnabled = state.serviceRecoveredEnabled,
+      )
   }
 }
 

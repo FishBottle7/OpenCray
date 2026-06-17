@@ -1,10 +1,11 @@
 package com.opencray.app.facade.notifications
 
 import android.content.Context
-import com.opencray.app.InMemoryRuntimeNotificationSettingsKeyValueStore
 import com.opencray.app.RuntimeNotificationDeliveryMode
 import com.opencray.app.RuntimeNotificationSettingsState
 import com.opencray.app.RuntimeNotificationSettingsStore
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import java.io.File
 
 data class NotificationSettingsSnapshot(
   val masterEnabled: Boolean,
@@ -72,7 +73,9 @@ internal class LocalNotificationSettingsFacade(
 
     internal fun create(
       store: RuntimeNotificationSettingsStore = RuntimeNotificationSettingsStore(
-        InMemoryRuntimeNotificationSettingsKeyValueStore(),
+        DirectoryDurableTextStorage(
+          File(System.getProperty("java.io.tmpdir"), "opencray-test-runtime-notification-settings"),
+        ),
       ),
     ): LocalNotificationSettingsFacade = LocalNotificationSettingsFacade(store = store)
   }
