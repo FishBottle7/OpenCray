@@ -41,7 +41,6 @@ internal class DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
       runtimeServiceKeepAliveStateProvider = runtimeServiceKeepAliveStateProvider,
       runtimeServiceKeepAliveChangeRegistrar = runtimeServiceKeepAliveChangeRegistrar,
     )
-    transportCoordinator.bindGatewayBundle(gatewayBundle)
     val loopbackBootstrap = loopbackBootstrapFactory.create(
       appContext = appContext,
       runtimeTarget = runtimeTarget,
@@ -49,12 +48,61 @@ internal class DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
       gatewayBundle = gatewayBundle,
       transportCoordinator = transportCoordinator,
     )
+    val lock = Any()
+    var starting = false
+    var activated = false
+    var disposed = false
     return OpenCrayRuntimeServiceTransportBootstrap(
       gatewayBundle = gatewayBundle,
-      ensureStarted = loopbackBootstrap.ensureStarted,
-      dispose = {
+      ensureStarted = ensureStarted@{
+        val shouldStart = synchronized(lock) {
+          if (disposed) {
+            return@ensureStarted
+          }
+          if (starting || activated) {
+            false
+          } else {
+            starting = true
+            true
+          }
+        }
+        if (!shouldStart) {
+          return@ensureStarted
+        }
+        try {
+          val started = loopbackBootstrap.ensureStarted()
+          synchronized(lock) {
+            starting = false
+            if (disposed) {
+              return@ensureStarted
+            }
+            if (!started) {
+              return@ensureStarted
+            }
+            activated = true
+          }
+          transportCoordinator.bindGatewayBundle(gatewayBundle)
+        } catch (throwable: Throwable) {
+          synchronized(lock) {
+            starting = false
+          }
+          throw throwable
+        }
+      },
+      dispose = dispose@{
+        val releaseFromCoordinator = synchronized(lock) {
+          if (disposed) {
+            return@synchronized null
+          }
+          disposed = true
+          activated
+        } ?: return@dispose
         loopbackBootstrap.dispose()
-        transportCoordinator.releaseGatewayBundle(gatewayBundle)
+        if (releaseFromCoordinator) {
+          transportCoordinator.releaseGatewayBundle(gatewayBundle)
+        } else {
+          gatewayBundle.dispose()
+        }
       },
     )
   }

@@ -3,7 +3,7 @@ package com.opencray.app
 import android.content.Context
 
 internal data class RuntimeServiceLoopbackBootstrap(
-  val ensureStarted: () -> Unit = {},
+  val ensureStarted: () -> Boolean = { true },
   val dispose: () -> Unit = {},
 )
 
@@ -59,6 +59,7 @@ internal class DefaultRuntimeServiceLoopbackBootstrapFactory(
           }
         }
         transportCoordinator.bindLocalRuntimeServerStateProvider(startedServer::currentState)
+        startedServer.currentState().phase == LocalRuntimeServerState.PHASE_LISTENING
       },
       dispose = {
         val existingServer = synchronized(serverLock) {

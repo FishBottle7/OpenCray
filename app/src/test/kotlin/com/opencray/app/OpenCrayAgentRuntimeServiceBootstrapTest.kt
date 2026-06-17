@@ -31,6 +31,7 @@ import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -2209,7 +2210,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
-  fun defaultTransportBootstrapFactoryUsesInjectedGatewayBundleFactoryAndLoopbackBootstrap() {
+  fun defaultTransportBootstrapFactoryUsesInjectedFactoryAndLoopbackBootstrap() {
     val context = MinimalContext()
     val serviceHost = testServiceHost(temporaryFolder.newFolder("service-transport-default"))
     var gatewayDisposeCallCount = 0
@@ -2241,10 +2242,16 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         capturedLoopbackTarget = runtimeTarget
         capturedLoopbackTransportCoordinator = resolvedTransportCoordinator
         assertSame(expectedGatewayBundle, gatewayBundle)
-        assertSame(expectedGatewayBundle, resolvedTransportCoordinator.currentGatewayBundle())
+        assertTrue(
+          runCatching { resolvedTransportCoordinator.currentGatewayBundle() }.exceptionOrNull()
+            is IllegalStateException,
+        )
         assertTrue(localGatewayProvider() is OpenCrayLocalHostGateway)
         RuntimeServiceLoopbackBootstrap(
-          ensureStarted = { loopbackStartCallCount += 1 },
+          ensureStarted = {
+            loopbackStartCallCount += 1
+            true
+          },
           dispose = { loopbackDisposeCallCount += 1 },
         )
       },
@@ -2280,6 +2287,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     )
 
     resolved.ensureStarted()
+    assertSame(expectedGatewayBundle, transportCoordinator.currentGatewayBundle())
     resolved.dispose()
 
     assertSame(expectedGatewayBundle, resolved.gatewayBundle)
@@ -2298,6 +2306,222 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(1, loopbackDisposeCallCount)
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
+  fun defaultTransportBootstrapFactoryDoesNotReplaceRetainedGatewayUntilEnsureStarted() {
+    val context = MinimalContext()
+    val serviceHost = testServiceHost(temporaryFolder.newFolder("service-transport-delayed-bind"))
+    val disposedLabels = mutableListOf<String>()
+    val retainedGatewayBundle = testServiceGatewayBundle(
+      dispose = { disposedLabels += "retained" },
+    )
+    val contenderGatewayBundle = testServiceGatewayBundle(
+      dispose = { disposedLabels += "contender" },
+    )
+    val transportCoordinator = DefaultRuntimeServiceTransportCoordinator().apply {
+      bindGatewayBundle(retainedGatewayBundle)
+    }
+    var loopbackCreateCount = 0
+    val bootstrap = DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
+      loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory { _, _, _, gatewayBundle, _ ->
+        loopbackCreateCount += 1
+        assertSame(contenderGatewayBundle, gatewayBundle)
+        RuntimeServiceLoopbackBootstrap()
+      },
+    ).create(
+      appContext = context,
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      localGatewayProvider = { NoOpLocalHostGateway() },
+      gatewayDependencies = serviceHost.toRuntimeServiceBootstrapState().gatewayDependencies,
+      runtimeServiceGatewayBundleFactory = RuntimeServiceGatewayBundleFactory { _, _, _, _ ->
+        contenderGatewayBundle
+      },
+      runtimeServiceKeepAliveStateProvider = { RuntimeServiceKeepAliveState() },
+      runtimeServiceKeepAliveChangeRegistrar = RuntimeServiceKeepAliveChangeRegistrar { ({ }) },
+      transportCoordinator = transportCoordinator,
+    )
+
+    assertSame(retainedGatewayBundle, transportCoordinator.currentGatewayBundle())
+    assertTrue(disposedLabels.isEmpty())
+    assertEquals(1, loopbackCreateCount)
+
+    bootstrap.dispose()
+
+    assertSame(retainedGatewayBundle, transportCoordinator.currentGatewayBundle())
+    assertEquals(listOf("contender"), disposedLabels)
+  }
+
+  @Test
+  fun defaultTransportBootstrapFactoryReplacesRetainedGatewayOnEnsureStarted() {
+    val context = MinimalContext()
+    val serviceHost = testServiceHost(
+      temporaryFolder.newFolder("service-transport-replace-on-start"),
+    )
+    val disposedLabels = mutableListOf<String>()
+    val retainedGatewayBundle = testServiceGatewayBundle(
+      dispose = { disposedLabels += "retained" },
+    )
+    val contenderGatewayBundle = testServiceGatewayBundle(
+      dispose = { disposedLabels += "contender" },
+    )
+    val transportCoordinator = DefaultRuntimeServiceTransportCoordinator().apply {
+      bindGatewayBundle(retainedGatewayBundle)
+    }
+    var loopbackStartCount = 0
+    var loopbackDisposeCount = 0
+    val bootstrap = DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
+      loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory { _, _, _, gatewayBundle, resolvedTransportCoordinator ->
+        assertSame(contenderGatewayBundle, gatewayBundle)
+        assertSame(retainedGatewayBundle, resolvedTransportCoordinator.currentGatewayBundle())
+        RuntimeServiceLoopbackBootstrap(
+          ensureStarted = {
+            loopbackStartCount += 1
+            true
+          },
+          dispose = { loopbackDisposeCount += 1 },
+        )
+      },
+    ).create(
+      appContext = context,
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      localGatewayProvider = { NoOpLocalHostGateway() },
+      gatewayDependencies = serviceHost.toRuntimeServiceBootstrapState().gatewayDependencies,
+      runtimeServiceGatewayBundleFactory = RuntimeServiceGatewayBundleFactory { _, _, _, _ ->
+        contenderGatewayBundle
+      },
+      runtimeServiceKeepAliveStateProvider = { RuntimeServiceKeepAliveState() },
+      runtimeServiceKeepAliveChangeRegistrar = RuntimeServiceKeepAliveChangeRegistrar { ({ }) },
+      transportCoordinator = transportCoordinator,
+    )
+
+    bootstrap.ensureStarted()
+
+    assertSame(contenderGatewayBundle, transportCoordinator.currentGatewayBundle())
+    assertEquals(listOf("retained"), disposedLabels)
+    assertEquals(1, loopbackStartCount)
+
+    bootstrap.dispose()
+
+    assertEquals(listOf("retained", "contender"), disposedLabels)
+    assertEquals(1, loopbackDisposeCount)
+    assertTrue(
+      runCatching { transportCoordinator.currentGatewayBundle() }.exceptionOrNull()
+        is IllegalStateException,
+    )
+  }
+
+  @Test
+  fun defaultTransportBootstrapFactoryDoesNotReplaceRetainedGatewayWhenLoopbackStartFails() {
+    val context = MinimalContext()
+    val serviceHost = testServiceHost(
+      temporaryFolder.newFolder("service-transport-start-failure"),
+    )
+    val disposedLabels = mutableListOf<String>()
+    val retainedGatewayBundle = testServiceGatewayBundle(
+      dispose = { disposedLabels += "retained" },
+    )
+    val contenderGatewayBundle = testServiceGatewayBundle(
+      dispose = { disposedLabels += "contender" },
+    )
+    val transportCoordinator = DefaultRuntimeServiceTransportCoordinator().apply {
+      bindGatewayBundle(retainedGatewayBundle)
+    }
+    var loopbackStartCount = 0
+    val bootstrap = DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
+      loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory { _, _, _, gatewayBundle, resolvedTransportCoordinator ->
+        assertSame(contenderGatewayBundle, gatewayBundle)
+        assertSame(retainedGatewayBundle, resolvedTransportCoordinator.currentGatewayBundle())
+        RuntimeServiceLoopbackBootstrap(
+          ensureStarted = {
+            loopbackStartCount += 1
+            false
+          },
+        )
+      },
+    ).create(
+      appContext = context,
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      localGatewayProvider = { NoOpLocalHostGateway() },
+      gatewayDependencies = serviceHost.toRuntimeServiceBootstrapState().gatewayDependencies,
+      runtimeServiceGatewayBundleFactory = RuntimeServiceGatewayBundleFactory { _, _, _, _ ->
+        contenderGatewayBundle
+      },
+      runtimeServiceKeepAliveStateProvider = { RuntimeServiceKeepAliveState() },
+      runtimeServiceKeepAliveChangeRegistrar = RuntimeServiceKeepAliveChangeRegistrar { ({ }) },
+      transportCoordinator = transportCoordinator,
+    )
+
+    bootstrap.ensureStarted()
+
+    assertSame(retainedGatewayBundle, transportCoordinator.currentGatewayBundle())
+    assertEquals(1, loopbackStartCount)
+    assertTrue(disposedLabels.isEmpty())
+
+    bootstrap.dispose()
+
+    assertSame(retainedGatewayBundle, transportCoordinator.currentGatewayBundle())
+    assertEquals(listOf("contender"), disposedLabels)
+  }
+
+  @Test
+  fun defaultTransportBootstrapFactoryDoesNotReplaceRetainedGatewayWhenLoopbackStartThrows() {
+    val context = MinimalContext()
+    val serviceHost = testServiceHost(
+      temporaryFolder.newFolder("service-transport-start-throw"),
+    )
+    val disposedLabels = mutableListOf<String>()
+    val retainedGatewayBundle = testServiceGatewayBundle(
+      dispose = { disposedLabels += "retained" },
+    )
+    val contenderGatewayBundle = testServiceGatewayBundle(
+      dispose = { disposedLabels += "contender" },
+    )
+    val transportCoordinator = DefaultRuntimeServiceTransportCoordinator().apply {
+      bindGatewayBundle(retainedGatewayBundle)
+    }
+    var loopbackStartCount = 0
+    val expectedFailure = IllegalStateException("loopback_start_failed")
+    val bootstrap = DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
+      loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory { _, _, _, gatewayBundle, resolvedTransportCoordinator ->
+        assertSame(contenderGatewayBundle, gatewayBundle)
+        assertSame(retainedGatewayBundle, resolvedTransportCoordinator.currentGatewayBundle())
+        RuntimeServiceLoopbackBootstrap(
+          ensureStarted = {
+            loopbackStartCount += 1
+            throw expectedFailure
+          },
+        )
+      },
+    ).create(
+      appContext = context,
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      localGatewayProvider = { NoOpLocalHostGateway() },
+      gatewayDependencies = serviceHost.toRuntimeServiceBootstrapState().gatewayDependencies,
+      runtimeServiceGatewayBundleFactory = RuntimeServiceGatewayBundleFactory { _, _, _, _ ->
+        contenderGatewayBundle
+      },
+      runtimeServiceKeepAliveStateProvider = { RuntimeServiceKeepAliveState() },
+      runtimeServiceKeepAliveChangeRegistrar = RuntimeServiceKeepAliveChangeRegistrar { ({ }) },
+      transportCoordinator = transportCoordinator,
+    )
+
+    val failure = try {
+      bootstrap.ensureStarted()
+      fail("Expected loopback start failure to propagate.")
+    } catch (throwable: IllegalStateException) {
+      throwable
+    }
+
+    assertSame(expectedFailure, failure)
+    assertSame(retainedGatewayBundle, transportCoordinator.currentGatewayBundle())
+    assertEquals(1, loopbackStartCount)
+    assertTrue(disposedLabels.isEmpty())
+
+    bootstrap.dispose()
+
+    assertSame(retainedGatewayBundle, transportCoordinator.currentGatewayBundle())
+    assertEquals(listOf("contender"), disposedLabels)
   }
 
   @Test
