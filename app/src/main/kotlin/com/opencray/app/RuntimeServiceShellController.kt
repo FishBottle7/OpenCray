@@ -91,6 +91,7 @@ private class DefaultRuntimeServiceShellController(
       serviceBootstraps[target] = bootstrap
       true
     } else {
+      bootstrap.dispose()
       ownerLeaseRetryScheduler(target)
       false
     }

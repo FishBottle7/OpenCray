@@ -70,6 +70,7 @@ class RuntimeServiceProjectionCoordinatorTest {
     )
 
     coordinator.bindServiceLifecycle(serviceLifecycle)
+    coordinator.start()
 
     val firstLease = checkNotNull(
       ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND),
@@ -232,6 +233,7 @@ class RuntimeServiceProjectionCoordinatorTest {
         ),
       ),
     )
+    coordinator.start()
 
     val blockedLease = checkNotNull(
       ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND),
@@ -256,6 +258,80 @@ class RuntimeServiceProjectionCoordinatorTest {
     assertEquals(10_050L, refreshedBlockedLease.lastAcquireFailure?.attemptedAtEpochMs)
     assertNull(coordinator.currentOwnerLease())
     assertNull(projectionStore.loadSnapshot())
+  }
+
+  @Test
+  fun projectionCoordinatorDefersActivationUntilStart() {
+    var now = 10_000L
+    val projectionStore = inMemoryRuntimeServiceProjectionStore()
+    val ownerLeaseStore = inMemoryRuntimeServiceOwnerLeaseStore()
+    val heartbeatScheduler = RecordingRuntimeServiceDelayScheduler()
+    val runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(
+      processStartId = "process-owner",
+      processStartedAtEpochMs = 9_000L,
+      runtimeOwnerId = "runtime-owner-a",
+      runtimeControllerId = "runtime-controller-a",
+      durableRuntimeControllerId = "runtime-controller-durable",
+    )
+    val ownerAccess = RecordingRuntimeNotificationHostAccess(runtimeOwnerLifecycle)
+    val coordinator = DefaultRuntimeServiceProjectionCoordinator(
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
+        processStartId = "process-controller",
+        processStartedAtEpochMs = 8_000L,
+        controllerInstanceId = "runtime-controller-a",
+        durableControllerId = "runtime-controller-durable",
+        controllerCreatedAtEpochMs = 8_500L,
+      ),
+      clock = { now },
+      ownerLeaseDurationMs = 100L,
+      ownerLeaseHeartbeatIntervalMs = 25L,
+      runtimeOwnerLifecycle = runtimeOwnerLifecycle,
+      ownerObservationAccess = ownerAccess,
+      notificationHostAccess = ownerAccess,
+      serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
+        workSummaryProvider = ownerAccess::activeWorkSummary,
+        clock = { now },
+      ),
+      appContext = ContextWrapper(null),
+      localizedContext = ContextWrapper(null),
+      chatSessionStore = ChatSessionLocalStore(
+        temporaryFolder.newFolder("chat-session-store-deferred-start"),
+      ),
+      scheduledTaskSpecStore = inMemoryScheduledTaskSpecStoreFactory().create(),
+      scheduledTaskRunRecordStore = inMemoryScheduledTaskRunRecordStoreFactory().create(),
+      runtimeServiceAccessGateway = NoOpRuntimeServiceAccessGateway,
+      projectionStore = projectionStore,
+      ownerLeaseStore = ownerLeaseStore,
+      ownerLeaseHeartbeatScheduler = heartbeatScheduler,
+      runtimeNotificationCoordinator = null,
+    )
+
+    coordinator.bindServiceLifecycle(
+      RuntimeServiceLifecycleDescriptor(
+        serviceInstanceId = "runtime-service-a",
+        serviceCreatedAtEpochMs = 9_500L,
+        serviceProcess = runtimeServiceProcessDescriptor(
+          packageName = "org.opencray.app",
+          processName = "org.opencray.app:runtime",
+        ),
+      ),
+    )
+
+    assertNull(ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+    assertNull(projectionStore.loadSnapshot())
+    assertEquals(0, heartbeatScheduler.tasks.size)
+
+    coordinator.start()
+
+    val firstLease = checkNotNull(
+      ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND),
+    )
+    assertEquals(RuntimeServiceOwnerLease.PHASE_HELD, firstLease.phase)
+    assertEquals(10_000L, firstLease.acquiredAtEpochMs)
+    assertEquals(10_000L, firstLease.heartbeatAtEpochMs)
+    assertEquals(firstLease, projectionStore.loadSnapshot()?.runtimeServiceOwnerLease)
+    assertEquals(1, heartbeatScheduler.tasks.size)
   }
 
   private class RecordingRuntimeNotificationHostAccess(

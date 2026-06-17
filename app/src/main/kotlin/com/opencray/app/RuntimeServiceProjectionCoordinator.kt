@@ -94,7 +94,8 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
   private val lock = Any()
   private var started: Boolean = false
   private var disposed: Boolean = false
-  private var serviceLifecycle: RuntimeServiceLifecycleDescriptor? = null
+  private var boundServiceLifecycle: RuntimeServiceLifecycleDescriptor? = null
+  private var activeServiceLifecycle: RuntimeServiceLifecycleDescriptor? = null
   private var currentKeepAliveState: RuntimeServiceKeepAliveState = RuntimeServiceKeepAliveState()
   private var lastInterruptedRunRepair: RuntimeServiceInterruptedRunRepairProjection? =
     initialInterruptedRunRepairProjection
@@ -124,27 +125,29 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
 
   override fun bindServiceLifecycle(serviceLifecycle: RuntimeServiceLifecycleDescriptor) {
     synchronized(lock) {
-      this.serviceLifecycle = serviceLifecycle
-      currentKeepAliveState = RuntimeServiceKeepAliveState()
+      boundServiceLifecycle = serviceLifecycle
     }
-    start()
-    persistProjectionSnapshot(keepAliveState = RuntimeServiceKeepAliveState())
   }
 
   override fun start() {
-    val resolvedOwnerObservationAccess: RuntimeOwnerObservationAccess
+    var shouldStartObservers = false
     synchronized(lock) {
-      if (started || disposed) {
+      if (disposed || boundServiceLifecycle == null) {
         return
       }
-      started = true
-      resolvedOwnerObservationAccess = ownerObservationAccess
-      serviceWorkStateObservationDisposer = serviceWorkStateTracker.observe(::onServiceWorkStateChanged)
-      runtimeOwnerProjectionObservationDisposer = resolvedOwnerObservationAccess.observe(
-        runtimeOwnerProjectionListener,
-      )
+      activeServiceLifecycle = boundServiceLifecycle
+      if (!started) {
+        started = true
+        shouldStartObservers = true
+        serviceWorkStateObservationDisposer = serviceWorkStateTracker.observe(::onServiceWorkStateChanged)
+        runtimeOwnerProjectionObservationDisposer = ownerObservationAccess.observe(
+          runtimeOwnerProjectionListener,
+        )
+      }
     }
-    runtimeNotificationCoordinator?.start()
+    if (shouldStartObservers) {
+      runtimeNotificationCoordinator?.start()
+    }
     scheduleOwnerLeaseHeartbeat()
     persistProjectionSnapshot()
   }
@@ -169,7 +172,8 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
       runtimeOwnerDisposer = runtimeOwnerProjectionObservationDisposer
       serviceWorkStateObservationDisposer = null
       runtimeOwnerProjectionObservationDisposer = null
-      serviceLifecycle = null
+      boundServiceLifecycle = null
+      activeServiceLifecycle = null
     }
     ownerLeaseToRelease?.let(ownerLeaseStore::release)
     runtimeNotificationCoordinator?.dispose()
@@ -224,7 +228,7 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
       if (keepAliveState != null) {
         currentKeepAliveState = keepAliveState
       }
-      resolvedServiceLifecycle = serviceLifecycle ?: return
+      resolvedServiceLifecycle = activeServiceLifecycle ?: return
       resolvedKeepAliveState = currentKeepAliveState
       resolvedRuntimeOwnerLifecycle = runtimeOwnerLifecycle
       resolvedOwnerObservationAccess = ownerObservationAccess
@@ -272,7 +276,11 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
       if (disposed) {
         return null
       }
-      createOwnerLeaseLocked(clock())
+      val nowEpochMs = clock()
+      if (currentOwnerLease == null) {
+        ownerLeaseAcquiredAtEpochMs = nowEpochMs
+      }
+      createOwnerLeaseLocked(nowEpochMs)
     } ?: return null
     val savedLease = ownerLeaseStore.save(lease)
     val ownsLease = savedLease.sameRuntimeServiceOwnerAs(lease)
@@ -283,7 +291,7 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
   }
 
   private fun createOwnerLeaseLocked(nowEpochMs: Long): RuntimeServiceOwnerLease? {
-    val resolvedServiceLifecycle = serviceLifecycle ?: return null
+    val resolvedServiceLifecycle = boundServiceLifecycle ?: activeServiceLifecycle ?: return null
     return runtimeServiceOwnerLease(
       target = runtimeTarget,
       runtimeControllerLifecycle = runtimeControllerLifecycle,

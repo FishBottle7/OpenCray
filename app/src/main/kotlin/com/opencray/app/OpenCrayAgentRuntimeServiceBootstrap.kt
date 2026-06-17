@@ -43,6 +43,7 @@ internal data class OpenCrayAgentRuntimeServiceBootstrap(
     transportBootstrap.ensureStarted()
     shellControlBundle.attach()
     executionCoordinator.attach()
+    projectionCoordinator.start()
     return true
   }
 

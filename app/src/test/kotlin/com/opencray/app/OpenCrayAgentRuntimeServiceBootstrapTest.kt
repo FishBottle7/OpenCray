@@ -3344,12 +3344,35 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
               appVisibleProvider = { true },
             ),
             attach = { steps += "shell_attach" },
+            dispose = { steps += "shell_dispose" },
           ),
           transportBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
             gatewayBundle = testServiceGatewayBundle(),
             ensureStarted = { steps += "transport_started" },
+            dispose = { steps += "transport_dispose" },
           ),
-          executionCoordinator = RecordingRuntimeServiceExecutionCoordinator(),
+          executionCoordinator = object : RuntimeServiceExecutionCoordinator {
+            override fun attach() = Unit
+
+            override fun onStartCommand(startId: Int) = Unit
+
+            override fun currentKeepAliveState(): RuntimeServiceKeepAliveState =
+              RuntimeServiceKeepAliveState()
+
+            override fun currentForegroundState(): RuntimeForegroundState =
+              RuntimeForegroundState()
+
+            override fun persistProjectionSnapshot(
+              workState: RuntimeServiceWorkState?,
+              keepAliveState: RuntimeServiceKeepAliveState?,
+            ) = Unit
+
+            override fun onScheduledDispatchOutcome(outcome: ScheduledTaskDispatchOutcome) = Unit
+
+            override fun dispose() {
+              steps += "coordinator_dispose"
+            }
+          },
           wakeCommandDispatcher = RecordingRuntimeServiceWakeCommandDispatcher(),
           binderEndpoint = RecordingRuntimeServiceBinderEndpoint(),
           projectionCoordinator = projectionCoordinator,
@@ -3367,9 +3390,18 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     }.exceptionOrNull()
 
     assertFalse(attached)
-    assertEquals(listOf("assemble_bootstrap"), steps)
+    assertEquals(
+      listOf(
+        "assemble_bootstrap",
+        "shell_dispose",
+        "transport_dispose",
+        "coordinator_dispose",
+      ),
+      steps,
+    )
     assertEquals(listOf(RuntimeServiceTarget.DETACHED_BACKGROUND), retryTargets)
     assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
+    assertEquals(0, projectionCoordinator.startCallCount)
     assertTrue(startFailure is IllegalStateException)
     assertTrue(bindFailure is IllegalStateException)
   }
