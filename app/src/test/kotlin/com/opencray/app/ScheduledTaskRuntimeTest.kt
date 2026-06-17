@@ -17,6 +17,10 @@ import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.subagent.SubAgentApprovalResume
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.DurableTextUpdate
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -586,6 +590,75 @@ class ScheduledTaskRuntimeTest {
   }
 
   @Test
+  fun fileBackedTriggerSyncStateStoreResyncLockSerializesConcurrentEntrants() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-trigger-sync-lock")
+    val store = FileBackedScheduledTaskTriggerSyncStateStoreFactory(runtimeRoot).create()
+    val ready = CountDownLatch(2)
+    val release = CountDownLatch(1)
+    val executor = Executors.newFixedThreadPool(2)
+    val activeEntrants = AtomicInteger(0)
+    val maxConcurrentEntrants = AtomicInteger(0)
+    val failures = mutableListOf<Throwable>()
+
+    repeat(2) {
+      executor.execute {
+        try {
+          ready.countDown()
+          store.withResyncLock {
+            val current = activeEntrants.incrementAndGet()
+            maxConcurrentEntrants.updateAndGet { previous -> maxOf(previous, current) }
+            release.await(5, TimeUnit.SECONDS)
+            activeEntrants.decrementAndGet()
+          }
+        } catch (error: Throwable) {
+          synchronized(failures) {
+            failures += error
+          }
+        }
+      }
+    }
+
+    assertTrue(ready.await(5, TimeUnit.SECONDS))
+    Thread.sleep(100L)
+    release.countDown()
+    executor.shutdown()
+    assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS))
+    synchronized(failures) {
+      if (failures.isNotEmpty()) {
+        throw AssertionError("Concurrent trigger sync lock test failed.", failures.first())
+      }
+    }
+    assertEquals(1, maxConcurrentEntrants.get())
+  }
+
+  @Test
+  fun resyncEnabledScheduledTasksExecutesUnderTriggerSyncResyncLock() {
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val triggerSyncStateStore = LockTrackingScheduledTaskTriggerSyncStateStore()
+    specStore.upsert(
+      scheduledTaskSpec(
+        sessionId = "session-locked",
+        scheduleId = "schedule-locked",
+      ),
+    )
+
+    resyncEnabledScheduledTasks(
+      specStore = specStore,
+      triggerRegistrar = registrar,
+      triggerSyncStateStore = triggerSyncStateStore,
+    )
+
+    assertEquals(1, triggerSyncStateStore.withResyncLockCallCount)
+    assertEquals(0, triggerSyncStateStore.activeLockDepth)
+    assertEquals(
+      listOf("load", "replace"),
+      triggerSyncStateStore.events,
+    )
+    assertEquals(listOf("schedule-locked"), registrar.syncedScheduleIds)
+  }
+
+  @Test
   fun plannedRepairWakeCommandsReturnsOnlyDueEnabledSchedules() {
     val dueSpec = scheduledTaskSpec(
       sessionId = "session-due",
@@ -1048,6 +1121,41 @@ class ScheduledTaskRuntimeTest {
 
     override fun cancel(scheduleId: String) {
       cancelledScheduleIds += scheduleId
+    }
+  }
+
+  private class LockTrackingScheduledTaskTriggerSyncStateStore :
+    ScheduledTaskTriggerSyncStateStore {
+    private var scheduleIds: LinkedHashSet<String> = linkedSetOf()
+    val events = mutableListOf<String>()
+    var withResyncLockCallCount: Int = 0
+      private set
+    var activeLockDepth: Int = 0
+      private set
+
+    override fun loadScheduleIds(): Set<String> {
+      events += "load"
+      return LinkedHashSet(scheduleIds)
+    }
+
+    override fun replaceScheduleIds(scheduleIds: Set<String>) {
+      events += "replace"
+      this.scheduleIds = scheduleIds.toCollection(linkedSetOf())
+    }
+
+    override fun clear() {
+      events += "clear"
+      scheduleIds.clear()
+    }
+
+    override fun <T> withResyncLock(block: () -> T): T {
+      withResyncLockCallCount += 1
+      activeLockDepth += 1
+      try {
+        return block()
+      } finally {
+        activeLockDepth -= 1
+      }
     }
   }
 

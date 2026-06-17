@@ -93,26 +93,28 @@ internal fun resyncEnabledScheduledTasks(
   triggerRegistrar: ScheduledTriggerRegistrar,
   triggerSyncStateStore: ScheduledTaskTriggerSyncStateStore,
 ) {
-  val allSpecs = specStore.list()
-  val enabledSpecs = allSpecs.filter(ScheduledTaskSpec::enabled)
-  val enabledScheduleIds = enabledSpecs
-    .map(ScheduledTaskSpec::scheduleId)
-    .toCollection(linkedSetOf())
-  val previouslySyncedScheduleIds = triggerSyncStateStore.loadScheduleIds()
-  val scheduleIdsToCancel = linkedSetOf<String>().apply {
-    addAll(
-      allSpecs
-        .filterNot(ScheduledTaskSpec::enabled)
-        .map(ScheduledTaskSpec::scheduleId),
-    )
-    addAll(previouslySyncedScheduleIds - enabledScheduleIds)
-  }
-  scheduleIdsToCancel.forEach(triggerRegistrar::cancel)
-  triggerRegistrar.syncAll(enabledSpecs)
-  if (enabledScheduleIds.isEmpty()) {
-    triggerSyncStateStore.clear()
-  } else {
-    triggerSyncStateStore.replaceScheduleIds(enabledScheduleIds)
+  triggerSyncStateStore.withResyncLock {
+    val allSpecs = specStore.list()
+    val enabledSpecs = allSpecs.filter(ScheduledTaskSpec::enabled)
+    val enabledScheduleIds = enabledSpecs
+      .map(ScheduledTaskSpec::scheduleId)
+      .toCollection(linkedSetOf())
+    val previouslySyncedScheduleIds = triggerSyncStateStore.loadScheduleIds()
+    val scheduleIdsToCancel = linkedSetOf<String>().apply {
+      addAll(
+        allSpecs
+          .filterNot(ScheduledTaskSpec::enabled)
+          .map(ScheduledTaskSpec::scheduleId),
+      )
+      addAll(previouslySyncedScheduleIds - enabledScheduleIds)
+    }
+    scheduleIdsToCancel.forEach(triggerRegistrar::cancel)
+    triggerRegistrar.syncAll(enabledSpecs)
+    if (enabledScheduleIds.isEmpty()) {
+      triggerSyncStateStore.clear()
+    } else {
+      triggerSyncStateStore.replaceScheduleIds(enabledScheduleIds)
+    }
   }
 }
 

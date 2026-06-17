@@ -6,6 +6,8 @@ import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
+import java.io.RandomAccessFile
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
 
 internal interface ScheduledTaskTriggerSyncStateStoreFactory {
@@ -18,6 +20,8 @@ internal interface ScheduledTaskTriggerSyncStateStore {
   fun replaceScheduleIds(scheduleIds: Set<String>)
 
   fun clear()
+
+  fun <T> withResyncLock(block: () -> T): T = block()
 }
 
 internal fun inMemoryScheduledTaskTriggerSyncStateStoreFactory():
@@ -39,6 +43,7 @@ internal class FileBackedScheduledTaskTriggerSyncStateStoreFactory(
     }
     return FileBackedScheduledTaskTriggerSyncStateStore(
       storage = DirectoryDurableTextStorage(runtimeRootDirectory),
+      runtimeRootDirectory = runtimeRootDirectory,
     )
   }
 
@@ -76,10 +81,15 @@ private class InMemoryScheduledTaskTriggerSyncStateStore :
       scheduleIds.clear()
     }
   }
+
+  override fun <T> withResyncLock(block: () -> T): T = synchronized(lock) {
+    block()
+  }
 }
 
 private class FileBackedScheduledTaskTriggerSyncStateStore(
   private val storage: DurableTextStorage,
+  private val runtimeRootDirectory: File,
 ) : ScheduledTaskTriggerSyncStateStore {
   private val lock = Any()
 
@@ -110,6 +120,9 @@ private class FileBackedScheduledTaskTriggerSyncStateStore(
     }
   }
 
+  override fun <T> withResyncLock(block: () -> T): T =
+    ScheduledTaskTriggerResyncLock.withLock(runtimeRootDirectory, block)
+
   private fun loadRecord(): ScheduledTaskTriggerSyncStateRecord {
     val encoded = storage.readText(TRIGGER_SYNC_STATE_FILE_NAME).orEmpty().trim()
     if (encoded.isBlank()) {
@@ -139,3 +152,29 @@ private data class ScheduledTaskTriggerSyncStateRecord(
 )
 
 private const val TRIGGER_SYNC_STATE_FILE_NAME: String = "scheduled-task-trigger-sync-state-v2.json"
+private const val TRIGGER_SYNC_RESYNC_LOCK_FILE_NAME: String = "scheduled-task-trigger-resync.lock"
+
+private object ScheduledTaskTriggerResyncLock {
+  private val locksByDirectory = ConcurrentHashMap<String, Any>()
+
+  fun <T> withLock(runtimeRootDirectory: File, block: () -> T): T {
+    val normalizedDirectory = runtimeRootDirectory.absoluteFile.normalize()
+    val directoryKey = normalizedDirectory.path
+    val processLocalLock = locksByDirectory.computeIfAbsent(directoryKey) { Any() }
+    synchronized(processLocalLock) {
+      ensureDirectory(normalizedDirectory)
+      val lockFile = File(normalizedDirectory, TRIGGER_SYNC_RESYNC_LOCK_FILE_NAME)
+      RandomAccessFile(lockFile, "rw").channel.use { channel ->
+        channel.lock().use {
+          return block()
+        }
+      }
+    }
+  }
+
+  private fun ensureDirectory(directory: File) {
+    if (!directory.exists()) {
+      directory.mkdirs()
+    }
+  }
+}
