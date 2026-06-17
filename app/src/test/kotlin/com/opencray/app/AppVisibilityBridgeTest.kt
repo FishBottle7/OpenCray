@@ -1,11 +1,89 @@
 package com.opencray.app
 
+import com.opencray.persistence.PersistenceJson
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 class AppVisibilityBridgeTest {
+  @get:Rule
+  val temporaryFolder: TemporaryFolder = TemporaryFolder()
+
+  @Test
+  fun fileBackedAppVisibilityStateStoreWritesLeaseStateThroughSingleStorageUpdate() {
+    val storage = RecordingDurableTextStorage()
+    var nowEpochMs = 1_000L
+    val stateStore = fileBackedAppVisibilityStateStore(
+      storage = storage,
+      clock = { nowEpochMs },
+    )
+
+    stateStore.saveAppVisibleUntilEpochMs(2_500L)
+
+    val persisted = PersistenceJson.instance.decodeFromString(
+      PersistedVisibilityStateRecordCompat.serializer(),
+      checkNotNull(storage.currentText),
+    )
+    assertEquals(1, storage.updateTextCallCount)
+    assertEquals(1, storage.writeCount)
+    assertTrue(stateStore.loadAppVisible())
+    assertEquals(2_500L, stateStore.loadAppVisibleUntilEpochMs())
+    assertEquals(true, persisted.appVisible)
+    assertEquals(2_500L, persisted.visibleUntilEpochMs)
+    assertEquals(1_000L, persisted.updatedAtEpochMs)
+  }
+
+  @Test
+  fun fileBackedAppVisibilityStateStoreDoesNotRewriteWhenClearedStateIsAlreadyCurrent() {
+    val storage = RecordingDurableTextStorage()
+    var nowEpochMs = 1_000L
+    val stateStore = fileBackedAppVisibilityStateStore(
+      storage = storage,
+      clock = { nowEpochMs },
+    )
+
+    stateStore.saveAppVisible(true)
+    stateStore.saveAppVisible(false)
+    nowEpochMs = 1_500L
+    stateStore.saveAppVisible(false)
+
+    assertEquals(3, storage.updateTextCallCount)
+    assertEquals(2, storage.writeCount)
+    assertFalse(stateStore.loadAppVisible())
+    assertEquals(null, stateStore.loadAppVisibleUntilEpochMs())
+  }
+
+  @Test
+  fun fileBackedAppVisibilityStateStoreRoundTripsAcrossStoreInstances() {
+    val runtimeRoot = temporaryFolder.newFolder("app-visibility-state")
+    var writerNowEpochMs = 1_000L
+    FileBackedAppVisibilityStateStore.fromRootDirectory(
+      runtimeRootDirectory = runtimeRoot,
+      clock = { writerNowEpochMs },
+    ).saveAppVisibleUntilEpochMs(2_500L)
+
+    var readerNowEpochMs = 1_500L
+    val restoredBeforeExpiry = FileBackedAppVisibilityStateStore.fromRootDirectory(
+      runtimeRootDirectory = runtimeRoot,
+      clock = { readerNowEpochMs },
+    )
+    assertTrue(restoredBeforeExpiry.loadAppVisible())
+    assertEquals(2_500L, restoredBeforeExpiry.loadAppVisibleUntilEpochMs())
+
+    readerNowEpochMs = 2_500L
+    val restoredAfterExpiry = FileBackedAppVisibilityStateStore.fromRootDirectory(
+      runtimeRootDirectory = runtimeRoot,
+      clock = { readerNowEpochMs },
+    )
+    assertFalse(restoredAfterExpiry.loadAppVisible())
+    assertEquals(2_500L, restoredAfterExpiry.loadAppVisibleUntilEpochMs())
+  }
+
   @Test
   fun persistingAppVisibilityPublisherWritesStoreAndBroadcastsVisibility() {
     val stateStore = RecordingAppVisibilityStateStore(initialVisible = false)
@@ -161,4 +239,48 @@ class AppVisibilityBridgeTest {
       actions.removeFirstOrNull()?.invoke()
     }
   }
+
+  private class RecordingDurableTextStorage : DurableTextStorage {
+    private var text: String? = null
+    var updateTextCallCount: Int = 0
+      private set
+    var writeCount: Int = 0
+      private set
+
+    val currentText: String?
+      get() = text
+
+    override fun readText(name: String): String? = text
+
+    override fun writeText(name: String, text: String) {
+      this.text = text
+    }
+
+    override fun delete(name: String): Boolean {
+      val hadText = text != null
+      text = null
+      return hadText
+    }
+
+    override fun <T> updateText(
+      name: String,
+      update: (String?) -> DurableTextUpdate<T>,
+    ): T {
+      updateTextCallCount += 1
+      val updated = update(text)
+      if (updated.write) {
+        text = updated.text
+        writeCount += 1
+      }
+      return updated.result
+    }
+  }
+
+  @kotlinx.serialization.Serializable
+  private data class PersistedVisibilityStateRecordCompat(
+    val schemaVersion: Int,
+    val appVisible: Boolean,
+    val visibleUntilEpochMs: Long? = null,
+    val updatedAtEpochMs: Long,
+  )
 }
