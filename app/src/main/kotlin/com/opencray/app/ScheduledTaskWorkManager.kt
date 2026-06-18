@@ -740,14 +740,12 @@ private fun isPotentialManagedProcessReconnectRepair(
   if (process.status != ManagedProcessStatus.RUNNING) {
     return false
   }
-  val reconnectState = process.reconnectState
-  val recoveryState = reconnectState?.recoveryState
-    ?: process.metadata["sandboxCommandReconnectRecoveryState"]
-  val retryable = reconnectState?.retryable
-    ?: process.metadata["sandboxCommandReconnectRetryable"]?.toBooleanStrictOrNull()
+  val reconnectEvidence = process.reconnectSnapshotEvidence()
+  val recoveryState = reconnectEvidence.recoveryState
+  val retryable = reconnectEvidence.retryable
   return recoveryState == MANAGED_PROCESS_RECONNECT_RECOVERY_STATE_RETRY_SCHEDULED ||
     (
-      reconnectState?.status == MANAGED_PROCESS_RECONNECT_STATUS_CONNECTING &&
+      reconnectEvidence.status == MANAGED_PROCESS_RECONNECT_STATUS_CONNECTING &&
         retryable == true
       )
 }
@@ -851,8 +849,7 @@ private fun runIdForManagedProcess(
 
 private fun managedProcessReconnectRetryAfterEpochMs(
   process: ManagedProcessSnapshot,
-): Long? = process.reconnectState?.retryAfterEpochMs
-  ?: process.metadata["sandboxCommandReconnectRetryAfterEpochMs"]?.toLongOrNull()
+): Long? = process.reconnectSnapshotEvidence().retryAfterEpochMs
 
 private fun runIdForTask(
   taskSnapshot: SessionQueueTaskSnapshot,

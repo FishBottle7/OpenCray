@@ -388,6 +388,41 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun potentialInterruptedRunRepairEvidenceIgnoresManagedProcessWhenMetadataShowsAttached() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-evidence-managed-process-attached")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val processRegistryFactory = FixedAgentProcessRegistryFactory(
+      sessionId to listOf(
+        reconnectingManagedProcessSnapshot(
+          processId = "process-attached",
+          taskId = "task-managed-attached",
+          metadata = mapOf(
+            "sandboxCommandReconnectStatus" to "attached",
+            "sandboxCommandReconnectRecoveryState" to "attached_live",
+            "sandboxCommandReconnectRetryable" to "false",
+            "sandboxCommandReconnectAttemptCount" to "2",
+          ),
+        ),
+      ),
+    )
+
+    val evidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory(),
+      subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory(),
+      processRegistryFactory = processRegistryFactory,
+    )
+
+    assertTrue(evidence.none { item ->
+      item.kind == InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT &&
+        item.detailId == "process-attached"
+    })
+  }
+
+  @Test
   fun dueInterruptedRunRepairTargetsDefersFutureManagedProcessReconnectUntilRetryAfter() {
     val evidence = listOf(
       InterruptedRunRepairEvidence(
@@ -1147,6 +1182,7 @@ class ScheduledTaskWorkManagerTest {
     processId: String,
     taskId: String,
     retryAfterEpochMs: Long? = null,
+    metadata: Map<String, String> = emptyMap(),
   ): ManagedProcessSnapshot = ManagedProcessSnapshot(
     processId = processId,
     taskId = taskId,
@@ -1163,6 +1199,7 @@ class ScheduledTaskWorkManagerTest {
       retryable = true,
       retryAfterEpochMs = retryAfterEpochMs,
     ),
+    metadata = metadata,
   )
 
   private fun queueSnapshot(

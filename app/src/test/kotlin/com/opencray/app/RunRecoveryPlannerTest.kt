@@ -16,6 +16,7 @@ import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.serialization.json.JsonObject
@@ -483,6 +484,79 @@ class RunRecoveryPlannerTest {
       plan.toMap()["managedProcessReconnectProcessIds"],
     )
     assertEquals("retry_scheduled", plan.toMap()["managedProcessReconnectRecoveryState"])
+  }
+
+  @Test
+  fun interruptedRestoreManagedProcessObservationUsesNewerMetadataReconnectEvidence() {
+    val processId = "proc-attached"
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = interruptedRestoreRun().copy(
+            hasLiveManagedProcesses = true,
+            hasAutoResumeEligibleManagedProcesses = false,
+            managedProcesses = listOf(
+              ManagedProcessSnapshot(
+                processId = processId,
+                taskId = "task-1",
+                command = "server",
+                status = ManagedProcessStatus.RUNNING,
+                processStarted = true,
+                timeoutMs = 300_000L,
+                startedAtEpochMs = 90L,
+                updatedAtEpochMs = 150L,
+                reconnectState = ManagedProcessReconnectState(
+                  status = "connecting",
+                  recoveryState = "retry_scheduled",
+                  retryable = true,
+                  retryAfterEpochMs = 9_000L,
+                  attemptCount = 1,
+                ),
+                metadata = mapOf(
+                  "sandboxCommandReconnectStatus" to "attached",
+                  "sandboxCommandReconnectRecoveryState" to "attached_live",
+                  "sandboxCommandReconnectRetryable" to "false",
+                  "sandboxCommandReconnectAttemptCount" to "2",
+                ),
+              ),
+            ),
+          ),
+          checkpoint = PersistedPromptCheckpoint(
+            sessionId = "session-1",
+            runId = "run-1",
+            taskId = "task-1",
+            checkpointId = "checkpoint-1",
+            checkpointKind = PromptCheckpointKind.COMMENTARY_EMITTED,
+            createdAtEpochMs = 100L,
+            updatedAtEpochMs = 100L,
+            toolName = "ProcessWait",
+          ),
+          lastJournalEvent = OpenCrayToolCallEvent(
+            runId = "run-1",
+            taskId = "task-1",
+            turn = 0,
+            call = AgentToolCall(
+              id = "oc-call-1",
+              toolName = "ProcessWait",
+              arguments = JsonObject(
+                mapOf(
+                  "process_id" to JsonPrimitive(processId),
+                  "timeout_ms" to JsonPrimitive("250"),
+                ),
+              ),
+            ),
+            emittedAtEpochMs = 150L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.RESUME_RECONNECT_PROCESS, plan.action)
+    assertEquals(listOf(processId), plan.managedProcessReconnectProcessIds)
+    assertEquals("attached", plan.managedProcessReconnectStatus)
+    assertEquals("attached_live", plan.managedProcessReconnectRecoveryState)
+    assertNull(plan.managedProcessReconnectRetryAfterEpochMs)
+    assertEquals(2, plan.managedProcessReconnectAttemptCount)
   }
 
   @Test

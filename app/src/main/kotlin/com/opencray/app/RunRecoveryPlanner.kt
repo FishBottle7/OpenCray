@@ -15,7 +15,6 @@ import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
-import com.opencray.runtime.process.withNormalizedRemoteState
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -474,7 +473,6 @@ internal class RunRecoveryPlanner {
 
   private fun liveManagedProcesses(run: AgentRunSnapshot): List<ManagedProcessSnapshot> =
     run.managedProcesses
-      .map(ManagedProcessSnapshot::withNormalizedRemoteState)
       .filter { process -> process.status == ManagedProcessStatus.RUNNING }
       .distinctBy(ManagedProcessSnapshot::processId)
 
@@ -489,34 +487,16 @@ internal class RunRecoveryPlanner {
       ?.takeIf(String::isNotBlank)
 
   private fun ManagedProcessSnapshot.reconnectStatus(): String? =
-    reconnectState
-      ?.status
-      ?.trim()
-      ?.lowercase()
-      ?.takeIf(String::isNotBlank)
-      ?: metadata["sandboxCommandReconnectStatus"]
-        ?.trim()
-        ?.lowercase()
-        ?.takeIf(String::isNotBlank)
+    reconnectSnapshotEvidence().status
 
   private fun ManagedProcessSnapshot.reconnectRecoveryState(): String? =
-    reconnectState
-      ?.recoveryState
-      ?.trim()
-      ?.lowercase()
-      ?.takeIf(String::isNotBlank)
-      ?: metadata["sandboxCommandReconnectRecoveryState"]
-        ?.trim()
-        ?.lowercase()
-        ?.takeIf(String::isNotBlank)
+    reconnectSnapshotEvidence().recoveryState
 
   private fun ManagedProcessSnapshot.reconnectRetryAfterEpochMs(): Long? =
-    reconnectState?.retryAfterEpochMs
-      ?: metadata["sandboxCommandReconnectRetryAfterEpochMs"]?.toLongOrNull()
+    reconnectSnapshotEvidence().retryAfterEpochMs
 
   private fun ManagedProcessSnapshot.reconnectAttemptCount(): Int? =
-    reconnectState?.attemptCount
-      ?: metadata["sandboxCommandReconnectAttemptCount"]?.toIntOrNull()
+    reconnectSnapshotEvidence().attemptCount
 
   private fun runNeedsTerminalRepair(
     run: AgentRunSnapshot,
