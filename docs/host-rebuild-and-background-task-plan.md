@@ -390,6 +390,7 @@ What we can now distinguish better:
 - per-controller-instance churn versus the same target-scoped durable runtime-controller identity
 - held versus released target owner lease evidence, including the last runtime owner/controller/service ids and heartbeat/expiry timestamps
 - stable managed-process auto-resume eligibility versus reconnect backoff or interrupted terminal managed-process restore
+- stable `attached_live` reconnect metadata versus stale typed `retry_scheduled` reconnect snapshots, so repair and recovery diagnostics no longer confuse a live controller-level reattachment with a delayed reconnect hold
 - per-run managed-process reconnect-hold evidence, including process id, reconnect status, recovery state, retry-after, and attempt count when recovery parks a live observation instead of replaying it
 - per-run recovery intent and restore reason when a recovery plan or restore diagnostic exists
 - per-session interrupted-run repair evidence kind for wake/rescan decisions, including queue-task, prompt-checkpoint, detached-subagent, run-record, and journal-tail-only recovery candidates, plus the latest persisted service-side repair projection when binder fallback reads only the target-scoped projection snapshot
@@ -397,6 +398,7 @@ What we can now distinguish better:
 What is now safer:
 
 - detached/runtime-process and projection-only readers no longer rely only on process-local synchronization for the managed-process registry; session-level registry read/modify/write operations now take a directory-scoped JVM lock plus OS file lock, so concurrent owners do not lose durable managed-process snapshots while reconnect or passive projection is in flight
+- active managed-process registry restore now respects reconnect backoff deadlines before reconnecting or interrupt-repairing a restored running process, so a future `retryAfterEpochMs` remains an observable hold instead of being bypassed by registry construction or first read
 
 What we still cannot distinguish with confidence:
 
