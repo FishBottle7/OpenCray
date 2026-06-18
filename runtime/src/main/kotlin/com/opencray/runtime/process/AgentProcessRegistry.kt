@@ -642,7 +642,14 @@ class FileBackedAgentProcessRegistry(
       )
       .forEach { snapshot ->
         if (snapshot.processId !in orderedByProcessId) {
-          val normalizedSnapshot = snapshot.withNormalizedRemoteState()
+          val normalizedSnapshot = if (
+            restoreMode == ManagedProcessRestoreMode.ACTIVE &&
+            snapshot.status == ManagedProcessStatus.RUNNING
+          ) {
+            snapshot
+          } else {
+            snapshot.withNormalizedRemoteState()
+          }
           orderedByProcessId[snapshot.processId] = when (restoreMode) {
             ManagedProcessRestoreMode.ACTIVE -> repairRestoredRunningSnapshot(normalizedSnapshot)
             ManagedProcessRestoreMode.PROJECTION_ONLY -> normalizedSnapshot
@@ -669,6 +676,14 @@ class FileBackedAgentProcessRegistry(
       return preserveDeliveredObservationState(
         controller.snapshot(),
         snapshot,
+      )
+    }
+    if (shouldDeferRetryableReconnect(snapshot)) {
+      return snapshot.copy(
+        metadata = snapshot.metadata + managedProcessRestoreMetadata(
+          snapshot = snapshot,
+          runtimeIdentity = runtimeIdentity,
+        ),
       )
     }
     val repairedAt = maxOf(clock(), snapshot.updatedAtEpochMs)
@@ -729,17 +744,40 @@ class FileBackedAgentProcessRegistry(
       }
       ?: reconnectControllerForSnapshot(snapshot)
 
+  private fun reconnectRecoveryState(snapshot: ManagedProcessSnapshot): String? =
+    snapshot.metadata["sandboxCommandReconnectRecoveryState"]
+      ?.trim()
+      ?.lowercase()
+      ?.takeIf(String::isNotBlank)
+      ?: snapshot.reconnectState?.recoveryState
+        ?.trim()
+        ?.lowercase()
+        ?.takeIf(String::isNotBlank)
+
+  private fun reconnectRetryable(snapshot: ManagedProcessSnapshot): Boolean? =
+    snapshot.metadata["sandboxCommandReconnectRetryable"]
+      ?.trim()
+      ?.lowercase()
+      ?.toBooleanStrictOrNull()
+      ?: snapshot.reconnectState?.retryable
+
+  private fun reconnectRetryAfterEpochMs(snapshot: ManagedProcessSnapshot): Long? =
+    snapshot.metadata["sandboxCommandReconnectRetryAfterEpochMs"]
+      ?.trim()
+      ?.toLongOrNull()
+      ?: snapshot.reconnectState?.retryAfterEpochMs
+
+  private fun reconnectAttemptCount(snapshot: ManagedProcessSnapshot): Int? =
+    snapshot.metadata["sandboxCommandReconnectAttemptCount"]
+      ?.trim()
+      ?.toIntOrNull()
+      ?: snapshot.reconnectState?.attemptCount
+
   private fun snapshotRequestsRetryableReconnectReplacement(
     snapshot: ManagedProcessSnapshot,
   ): Boolean {
-    val normalizedSnapshot = snapshot.withNormalizedRemoteState()
-    val reconnectState = normalizedSnapshot.reconnectState
-    val recoveryState =
-      reconnectState?.recoveryState
-        ?: normalizedSnapshot.metadata["sandboxCommandReconnectRecoveryState"]
-    val retryable =
-      reconnectState?.retryable
-        ?: normalizedSnapshot.metadata["sandboxCommandReconnectRetryable"] == "true"
+    val recoveryState = reconnectRecoveryState(snapshot)
+    val retryable = reconnectRetryable(snapshot)
     return recoveryState == "retry_scheduled" || (recoveryState == null && retryable == true)
   }
 
@@ -753,16 +791,8 @@ class FileBackedAgentProcessRegistry(
     if (liveSnapshot.status != ManagedProcessStatus.RUNNING) {
       return false
     }
-    val normalizedPersistedSnapshot = persistedSnapshot.withNormalizedRemoteState()
-    val normalizedLiveSnapshot = liveSnapshot.withNormalizedRemoteState()
-    val persistedReconnectState = normalizedPersistedSnapshot.reconnectState
-    val reconnectState = normalizedLiveSnapshot.reconnectState
-    val persistedAttemptCount =
-      persistedReconnectState?.attemptCount
-        ?: normalizedPersistedSnapshot.metadata["sandboxCommandReconnectAttemptCount"]?.toIntOrNull()
-    val liveAttemptCount =
-      reconnectState?.attemptCount
-        ?: normalizedLiveSnapshot.metadata["sandboxCommandReconnectAttemptCount"]?.toIntOrNull()
+    val persistedAttemptCount = reconnectAttemptCount(persistedSnapshot)
+    val liveAttemptCount = reconnectAttemptCount(liveSnapshot)
     if (
       persistedAttemptCount != null &&
       liveAttemptCount != null &&
@@ -770,25 +800,10 @@ class FileBackedAgentProcessRegistry(
     ) {
       return false
     }
-    val reconnectRecoveryState =
-      reconnectState?.recoveryState
-        ?: normalizedLiveSnapshot.metadata["sandboxCommandReconnectRecoveryState"]
-    val retryScheduled =
-      reconnectRecoveryState == "retry_scheduled" ||
-        (
-          reconnectRecoveryState == null &&
-            (
-              reconnectState?.retryable == true ||
-                normalizedLiveSnapshot.metadata["sandboxCommandReconnectRetryable"] == "true"
-              )
-          )
-    if (!retryScheduled) {
+    if (!snapshotRequestsRetryableReconnectReplacement(liveSnapshot)) {
       return false
     }
-    val retryAfterEpochMs =
-      reconnectState?.retryAfterEpochMs
-        ?: normalizedLiveSnapshot.metadata["sandboxCommandReconnectRetryAfterEpochMs"]?.toLongOrNull()
-        ?: return true
+    val retryAfterEpochMs = reconnectRetryAfterEpochMs(liveSnapshot) ?: return true
     return clock() >= retryAfterEpochMs
   }
 
@@ -796,6 +811,9 @@ class FileBackedAgentProcessRegistry(
     snapshot: ManagedProcessSnapshot,
   ): ManagedProcessController? {
     if (snapshot.status != ManagedProcessStatus.RUNNING) {
+      return null
+    }
+    if (shouldDeferRetryableReconnect(snapshot)) {
       return null
     }
     val reconnectSnapshot = snapshot.copy(
@@ -812,6 +830,16 @@ class FileBackedAgentProcessRegistry(
       controller = controller,
     )
     return controller
+  }
+
+  private fun shouldDeferRetryableReconnect(
+    snapshot: ManagedProcessSnapshot,
+  ): Boolean {
+    if (!snapshotRequestsRetryableReconnectReplacement(snapshot)) {
+      return false
+    }
+    val retryAfterEpochMs = reconnectRetryAfterEpochMs(snapshot) ?: return false
+    return clock() < retryAfterEpochMs
   }
 
   private fun preserveDeliveredObservationState(

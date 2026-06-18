@@ -600,6 +600,89 @@ class FileBackedAgentProcessRegistryTest {
   }
 
   @Test
+  fun restoredRetryScheduledSnapshotDefersReconnectUntilBackoffDeadline() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-retryable-restore-backoff")
+    var nowEpochMs = 1_000L
+    val factory = RetryableReconnectFakeManagedProcessControllerFactory(clock = { nowEpochMs })
+    val ownerIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "owner-process-start",
+      runtimeControllerId = "owner-runtime-controller",
+    )
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = factory,
+      runtimeIdentity = ownerIdentity,
+      clock = { nowEpochMs },
+    )
+
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-retryable-restore",
+        taskId = "task-retryable-restore",
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        timeoutMs = 120_000L,
+        requestedAtEpochMs = 1_000L,
+        ownerIdentity = ownerIdentity,
+      ),
+    )
+    ManagedProcessControllerRegistry.clearForTest()
+
+    val firstRestore = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = factory,
+      runtimeIdentity = ManagedProcessRuntimeIdentity(
+        processStartId = "restore-process-start-1",
+        runtimeControllerId = "restore-runtime-controller-1",
+      ),
+      clock = { nowEpochMs },
+    ).read("proc-retryable-restore")
+
+    assertNotNull(firstRestore)
+    assertEquals(ManagedProcessStatus.RUNNING, firstRestore!!.status)
+    assertEquals("retry_scheduled", firstRestore.metadata["sandboxCommandReconnectRecoveryState"])
+    assertEquals("1", firstRestore.metadata["sandboxCommandReconnectAttemptCount"])
+    assertEquals("2000", firstRestore.metadata["sandboxCommandReconnectRetryAfterEpochMs"])
+    assertEquals(1, factory.reconnectCount)
+
+    ManagedProcessControllerRegistry.clearForTest()
+    nowEpochMs = 1_500L
+    val deferredRegistry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = factory,
+      runtimeIdentity = ManagedProcessRuntimeIdentity(
+        processStartId = "restore-process-start-2",
+        runtimeControllerId = "restore-runtime-controller-2",
+      ),
+      clock = { nowEpochMs },
+    )
+    val deferred = deferredRegistry.read("proc-retryable-restore")
+
+    assertNotNull(deferred)
+    assertEquals(ManagedProcessStatus.RUNNING, deferred!!.status)
+    assertNull(deferred.errorCode)
+    assertNull(deferred.finishedAtEpochMs)
+    assertEquals("retry_scheduled", deferred.metadata["sandboxCommandReconnectRecoveryState"])
+    assertEquals("1", deferred.metadata["sandboxCommandReconnectAttemptCount"])
+    assertEquals(
+      ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+      deferred.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY],
+    )
+    assertEquals(1, factory.reconnectCount)
+
+    nowEpochMs = 2_500L
+    val attached = deferredRegistry.read("proc-retryable-restore")
+
+    assertNotNull(attached)
+    assertEquals(ManagedProcessStatus.RUNNING, attached!!.status)
+    assertEquals("false", attached.metadata["sandboxCommandReconnectRetryable"])
+    assertEquals("attached_live", attached.metadata["sandboxCommandReconnectRecoveryState"])
+    assertEquals("true", attached.metadata["reconnectedAfterRetry"])
+    assertEquals(2, factory.reconnectCount)
+  }
+
+  @Test
   fun metadataOnlyRemoteSnapshotIsNormalizedIntoTypedRemoteStateOnLoad() {
     val directory = temporaryFolder.newFolder("durable-process-registry-typed-normalize")
     File(directory, FileBackedAgentProcessRegistry.FILE_NAME).writeText(
