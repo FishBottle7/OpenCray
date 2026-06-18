@@ -22,6 +22,8 @@ The runtime-process execution controller now also resolves a target-scoped durab
 
 Managed-process ownership now also carries that durable controller anchor. `ProcessStart` derives `ManagedProcessRuntimeIdentity` from `_host.processStartId`, `_host.runtimeControllerId`, and `_host.durableRuntimeControllerId`, production file-backed process registries pass the target durable controller id into restore metadata, and run-snapshot association preserves `managedProcessRestoreCurrentDurableRuntimeControllerId`. Restore scope still uses the live controller/process ids, so durable identity improves detached diagnostics without pretending a recreated controller is the same live owner.
 
+Runtime diagnostics now also expose a derived `runtimeExecutionOwnership` projection with `ownershipTier=runtime_process`, `controllerProcessSeparate=false`, and the current owner/controller/service process ids plus service process placement. This makes the current execution boundary machine-readable for shell/chat/projection fallback without adding a second persistence source, and keeps the stronger controller-process ownership tier explicitly pending.
+
 ## Goal
 
 This document turns the earlier runtime recovery proposals into a concrete delivery plan for three missing foundations:

@@ -56,6 +56,52 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
   }
 
   @Test
+  fun includesRuntimeExecutionOwnershipFromLifecycleAndServiceProcess() {
+    val snapshot = buildMap<String, Any?> {
+      putRuntimeServiceDiagnosticsSnapshot(
+        hostLifecycle = HostRuntimeLifecycleDescriptor(
+          processStartId = "main-process",
+          hostInstanceId = "host-main",
+        ),
+        runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
+          processStartId = "runtime-process",
+          controllerInstanceId = "controller-runtime",
+          durableControllerId = "durable-runtime",
+        ),
+        runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(
+          processStartId = "runtime-process",
+          hostInstanceId = "owner-runtime",
+          runtimeOwnerId = "owner-runtime",
+          runtimeControllerId = "controller-runtime",
+          durableRuntimeControllerId = "durable-runtime",
+        ),
+        runtimeServiceLifecycle = RuntimeServiceLifecycleDescriptor(
+          processStartId = "runtime-process",
+          serviceInstanceId = "service-runtime",
+          serviceProcess = RuntimeServiceProcessDescriptor(
+            packageName = "org.opencray.app",
+            processName = "org.opencray.app:runtime",
+            expectedProcessName = "org.opencray.app:runtime",
+            isDedicatedRuntimeProcess = true,
+          ),
+        ),
+      )
+    }
+
+    val ownership = snapshot["runtimeExecutionOwnership"] as Map<*, *>
+    assertEquals("runtime_process", ownership["ownershipTier"])
+    assertEquals(false, ownership["controllerProcessSeparate"])
+    assertEquals("runtime-process", ownership["executionProcessStartId"])
+    assertEquals("runtime-process", ownership["runtimeOwnerProcessStartId"])
+    assertEquals("runtime-process", ownership["runtimeControllerProcessStartId"])
+    assertEquals("runtime-process", ownership["runtimeServiceProcessStartId"])
+    assertEquals("org.opencray.app:runtime", ownership["runtimeServiceProcessName"])
+    assertEquals("org.opencray.app:runtime", ownership["expectedRuntimeServiceProcessName"])
+    assertEquals(true, ownership["dedicatedRuntimeServiceProcess"])
+    assertFalse(ownership.containsKey("runtimeServiceProcessMismatchReason"))
+  }
+
+  @Test
   fun omitsMissingRuntimeServiceFieldsByDefault() {
     val snapshot = buildMap<String, Any?> {
       putRuntimeServiceDiagnosticsSnapshot(

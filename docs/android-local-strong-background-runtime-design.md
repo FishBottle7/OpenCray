@@ -76,6 +76,7 @@ Today OpenCray already has a service-host boundary:
 - client-side runtime-service start and base bind-intent lookup now route through the environment-owned `RuntimeServiceAccessGateway`, so caller-side transport wiring no longer holds a direct reference to the concrete Android service-intent builder
 - runtime-service bind/start/repair/approval intents now also resolve through a dedicated `RuntimeServiceIntentFactory` file with an injectable component provider, and caller-side access now only consumes endpoint-built intents instead of hand-encoding wake/start actions or extras in the access facade
 - the runtime-process execution controller now also resolves a target-scoped durable controller identity from file-backed runtime storage in production; `controllerInstanceId` remains a per-controller-instance value for managed-process restore scope, while `durableControllerId` and `_host.durableRuntimeControllerId` give diagnostics, projection fallback, and repair evidence a stable per-target ownership anchor across service/controller recreate
+- shell/chat/projection diagnostics now also carry a derived `runtimeExecutionOwnership` map that declares the current `runtime_process` ownership tier, `controllerProcessSeparate=false`, and the observed owner/controller/service process ids plus service process placement, so a fallback reader can tell this is still runtime-process isolation rather than a stronger controller/process split
 
 But the background product surface is still incomplete:
 

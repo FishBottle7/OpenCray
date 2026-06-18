@@ -18,6 +18,15 @@ internal fun MutableMap<String, Any?>.putRuntimeServiceDiagnosticsSnapshot(
     put("localRuntimeServerState", state.snapshotMap())
   }
   put("hostLifecycle", hostLifecycle.snapshotMap())
+  put(
+    "runtimeExecutionOwnership",
+    runtimeExecutionOwnershipDescriptor(
+      hostLifecycle = hostLifecycle,
+      runtimeControllerLifecycle = runtimeControllerLifecycle,
+      runtimeOwnerLifecycle = runtimeOwnerLifecycle,
+      runtimeServiceLifecycle = runtimeServiceLifecycle,
+    ).snapshotMap(),
+  )
   runtimeControllerLifecycle?.let { lifecycle ->
     put("runtimeControllerLifecycle", lifecycle.snapshotMap())
   }
@@ -67,4 +76,67 @@ private fun MutableMap<String, Any?>.putRuntimeServiceField(
   if (includeNullField || value != null) {
     put(key, value)
   }
+}
+
+internal data class RuntimeExecutionOwnershipDescriptor(
+  val ownershipTier: String = OWNERSHIP_TIER_RUNTIME_PROCESS,
+  val controllerProcessSeparate: Boolean = false,
+  val executionProcessStartId: String,
+  val runtimeOwnerProcessStartId: String,
+  val runtimeControllerProcessStartId: String? = null,
+  val runtimeServiceProcessStartId: String? = null,
+  val runtimeServiceProcessName: String? = null,
+  val expectedRuntimeServiceProcessName: String? = null,
+  val dedicatedRuntimeServiceProcess: Boolean? = null,
+  val runtimeServiceProcessMismatchReason: String? = null,
+) {
+  fun snapshotMap(): Map<String, Any?> = buildMap {
+    put("ownershipTier", ownershipTier)
+    put("controllerProcessSeparate", controllerProcessSeparate)
+    put("executionProcessStartId", executionProcessStartId)
+    put("runtimeOwnerProcessStartId", runtimeOwnerProcessStartId)
+    runtimeControllerProcessStartId?.let { processStartId ->
+      put("runtimeControllerProcessStartId", processStartId)
+    }
+    runtimeServiceProcessStartId?.let { processStartId ->
+      put("runtimeServiceProcessStartId", processStartId)
+    }
+    runtimeServiceProcessName?.let { processName ->
+      put("runtimeServiceProcessName", processName)
+    }
+    expectedRuntimeServiceProcessName?.let { processName ->
+      put("expectedRuntimeServiceProcessName", processName)
+    }
+    dedicatedRuntimeServiceProcess?.let { isDedicated ->
+      put("dedicatedRuntimeServiceProcess", isDedicated)
+    }
+    runtimeServiceProcessMismatchReason?.let { reason ->
+      put("runtimeServiceProcessMismatchReason", reason)
+    }
+  }
+
+  companion object {
+    const val OWNERSHIP_TIER_RUNTIME_PROCESS: String = "runtime_process"
+  }
+}
+
+private fun runtimeExecutionOwnershipDescriptor(
+  hostLifecycle: HostRuntimeLifecycleDescriptor,
+  runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor?,
+  runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor?,
+  runtimeServiceLifecycle: RuntimeServiceLifecycleDescriptor?,
+): RuntimeExecutionOwnershipDescriptor {
+  val resolvedRuntimeOwnerLifecycle = runtimeOwnerLifecycle ?: hostLifecycle
+  val serviceProcess = runtimeServiceLifecycle?.serviceProcess
+  return RuntimeExecutionOwnershipDescriptor(
+    executionProcessStartId = runtimeServiceLifecycle?.processStartId
+      ?: resolvedRuntimeOwnerLifecycle.processStartId,
+    runtimeOwnerProcessStartId = resolvedRuntimeOwnerLifecycle.processStartId,
+    runtimeControllerProcessStartId = runtimeControllerLifecycle?.processStartId,
+    runtimeServiceProcessStartId = runtimeServiceLifecycle?.processStartId,
+    runtimeServiceProcessName = serviceProcess?.processName,
+    expectedRuntimeServiceProcessName = serviceProcess?.expectedProcessName,
+    dedicatedRuntimeServiceProcess = serviceProcess?.isDedicatedRuntimeProcess,
+    runtimeServiceProcessMismatchReason = serviceProcess?.mismatchReason,
+  )
 }

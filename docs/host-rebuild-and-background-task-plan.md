@@ -342,6 +342,7 @@ Current state:
 - execution now routes through a dedicated `:runtime` Android `Service` host boundary rather than directly through a UI-owned host facade
 - runtime-service lifecycle/projection diagnostics now include expected and observed service process identity, and runtime-service bootstrap now rejects a misplaced main-process or secondary-process shell before it can create runtime ownership
 - runtime-process controller lifecycle now has a target-scoped durable controller identity persisted under the runtime storage root; projection snapshots and task lifecycle metadata expose it separately as `durableControllerId` / `_host.durableRuntimeControllerId` while the existing per-instance `runtimeControllerId` remains unchanged for managed-process restore scope
+- shell/chat/projection diagnostics now include a derived `runtimeExecutionOwnership` map that reports the current `runtime_process` tier, `controllerProcessSeparate=false`, owner/controller/service process ids, and service process placement without adding another persisted ownership record
 - target-scoped runtime-owner lease heartbeat now records held/released owner evidence under the runtime storage root, projects the latest lease into shell/chat diagnostics, records the latest rejected acquire attempt on the held lease, prevents a different owner from replacing a still-held unexpired lease, prevents non-owner coordinators from overwriting the active owner's target projection, gates shell attach, service start-command handling, sticky restart decisions, plus wake/binder writes on the held target lease, and schedules owner-lease-expiry repair when service attach is denied by a still-held lease
 - binder attachment now also obeys that owner-lease gate at bind time: a non-owner shell returns Android null binding, so the main process falls back to the target-scoped projection snapshot with an explicit `null_binding` connection state instead of serving stale runtime-owned state or crashing the service bind path
 - retained transport ownership now also avoids early bundle replacement during contender bootstrap assembly: the transport coordinator keeps the active service-owned gateway bundle until the new shell actually reaches loopback listening state, and a denied or failed contender disposes only its own bundle instead of disconnecting the current detached shell first
@@ -387,6 +388,7 @@ What we can now distinguish better:
 - host-facade recreation versus runtime-owner continuity
 - binder transport churn versus loopback server churn
 - runtime-service shell placement in the dedicated `:runtime` process versus main-process or other secondary-process mismatch
+- current execution ownership tier as runtime-process isolation versus a future separate controller-process tier
 - per-controller-instance churn versus the same target-scoped durable runtime-controller identity
 - managed-process restore current controller instance versus current durable runtime-controller identity, including `managedProcessRestoreCurrentDurableRuntimeControllerId` on restored process/run metadata
 - held versus released target owner lease evidence, including the last runtime owner/controller/service ids and heartbeat/expiry timestamps
@@ -408,7 +410,7 @@ What we still cannot distinguish with confidence:
 - every Dart-side observer glitch versus a real host rebuild
 - true controller-level live managed-process reattachment versus checkpoint-based recovery fallback
 
-The reason is now narrower: lifecycle diagnostics and managed-process restore scope now distinguish same-controller, same-process-new-controller, and cross-process interruption, runtime-service bootstrap now refuses to create ownership outside the dedicated `:runtime` process, and a target-scoped durable controller identity now survives service/controller recreate for diagnostics and projection fallback. That durable id is intentionally separate from the live controller instance id; it does not make in-memory execution survive runtime-process death or provide a stronger cross-process controller/runtime tier by itself.
+The reason is now narrower: lifecycle diagnostics and managed-process restore scope now distinguish same-controller, same-process-new-controller, and cross-process interruption, runtime-service bootstrap now refuses to create ownership outside the dedicated `:runtime` process, `runtimeExecutionOwnership` explicitly reports that execution is still in the runtime-process tier, and a target-scoped durable controller identity now survives service/controller recreate for diagnostics and projection fallback. That durable id is intentionally separate from the live controller instance id; it does not make in-memory execution survive runtime-process death or provide a stronger cross-process controller/runtime tier by itself.
 
 ## Root Problem Statement
 
