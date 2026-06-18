@@ -251,6 +251,7 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
     runtimeIdentity = ManagedProcessRuntimeIdentity(
       processStartId = runtimeOwnerLifecycleState.current().processStartId,
       runtimeControllerId = runtimeOwnerLifecycleState.current().runtimeControllerId,
+      durableRuntimeControllerId = runtimeOwnerLifecycleState.current().durableRuntimeControllerId,
     ),
   )
   val onDeviceModelInstallStore = LiteRtOnDeviceModelInstallStore.fromContext(appContext)

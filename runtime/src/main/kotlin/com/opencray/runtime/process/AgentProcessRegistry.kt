@@ -135,9 +135,12 @@ data class ManagedProcessDeliveredObservationState(
 data class ManagedProcessRuntimeIdentity(
   val processStartId: String? = null,
   val runtimeControllerId: String? = null,
+  val durableRuntimeControllerId: String? = null,
 ) {
   val isEmpty: Boolean
-    get() = processStartId.isNullOrBlank() && runtimeControllerId.isNullOrBlank()
+    get() = processStartId.isNullOrBlank() &&
+      runtimeControllerId.isNullOrBlank() &&
+      durableRuntimeControllerId.isNullOrBlank()
 }
 
 @Serializable
@@ -168,6 +171,8 @@ const val MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY: String 
   "managedProcessRestoreCurrentProcessStartId"
 const val MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY: String =
   "managedProcessRestoreCurrentRuntimeControllerId"
+const val MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY: String =
+  "managedProcessRestoreCurrentDurableRuntimeControllerId"
 
 @Serializable
 data class ManagedProcessSnapshot(
@@ -900,6 +905,15 @@ private fun managedProcessRestoreMetadata(
     ?.takeIf(String::isNotBlank)
     ?.let { runtimeControllerId ->
       put(MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY, runtimeControllerId)
+    }
+  runtimeIdentity.durableRuntimeControllerId
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?.let { durableRuntimeControllerId ->
+      put(
+        MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY,
+        durableRuntimeControllerId,
+      )
     }
 }
 

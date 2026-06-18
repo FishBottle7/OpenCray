@@ -6897,9 +6897,13 @@ class OpenCrayToolDispatcher(
     val runtimeControllerId = task.metadata["_host.runtimeControllerId"]
       ?.trim()
       ?.takeIf(String::isNotBlank)
+    val durableRuntimeControllerId = task.metadata["_host.durableRuntimeControllerId"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
     return ManagedProcessRuntimeIdentity(
       processStartId = processStartId,
       runtimeControllerId = runtimeControllerId,
+      durableRuntimeControllerId = durableRuntimeControllerId,
     ).takeUnless(ManagedProcessRuntimeIdentity::isEmpty)
   }
 
@@ -9773,6 +9777,7 @@ class OpenCrayToolDispatcher(
       "managedProcessRestoreScope",
       "managedProcessRestoreCurrentProcessStartId",
       "managedProcessRestoreCurrentRuntimeControllerId",
+      "managedProcessRestoreCurrentDurableRuntimeControllerId",
     )
   }
 

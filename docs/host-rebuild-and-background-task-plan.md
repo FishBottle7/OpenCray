@@ -388,6 +388,7 @@ What we can now distinguish better:
 - binder transport churn versus loopback server churn
 - runtime-service shell placement in the dedicated `:runtime` process versus main-process or other secondary-process mismatch
 - per-controller-instance churn versus the same target-scoped durable runtime-controller identity
+- managed-process restore current controller instance versus current durable runtime-controller identity, including `managedProcessRestoreCurrentDurableRuntimeControllerId` on restored process/run metadata
 - held versus released target owner lease evidence, including the last runtime owner/controller/service ids and heartbeat/expiry timestamps
 - stable managed-process auto-resume eligibility versus reconnect backoff or interrupted terminal managed-process restore
 - stable `attached_live` reconnect metadata versus stale typed `retry_scheduled` reconnect snapshots, so repair and recovery diagnostics no longer confuse a live controller-level reattachment with a delayed reconnect hold
@@ -399,6 +400,7 @@ What is now safer:
 
 - detached/runtime-process and projection-only readers no longer rely only on process-local synchronization for the managed-process registry; session-level registry read/modify/write operations now take a directory-scoped JVM lock plus OS file lock, so concurrent owners do not lose durable managed-process snapshots while reconnect or passive projection is in flight
 - active managed-process registry restore now respects reconnect backoff deadlines before reconnecting or interrupt-repairing a restored running process, so a future `retryAfterEpochMs` remains an observable hold instead of being bypassed by registry construction or first read
+- managed-process owner identity now includes the durable runtime-controller id for diagnostics while restore scope continues to depend on live process/controller ids, so a stable target identity no longer blurs true live-controller reattachment semantics
 
 What we still cannot distinguish with confidence:
 

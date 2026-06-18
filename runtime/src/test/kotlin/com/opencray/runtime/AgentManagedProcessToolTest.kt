@@ -219,6 +219,44 @@ class AgentManagedProcessToolTest {
   }
 
   @Test
+  fun processStartCarriesDurableRuntimeControllerOwnerIdentity() {
+    val workspaceRoot = temporaryFolder.newFolder("process-tool-durable-owner-identity").toPath()
+    val registry = RecordingProcessRegistry(workspaceRoot = workspaceRoot)
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        processRegistry = registry,
+      ),
+    )
+
+    dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf(
+          "chatMode" to "DEVELOPER",
+          "_host.processStartId" to "process-owner",
+          "_host.runtimeControllerId" to "controller-instance",
+          "_host.durableRuntimeControllerId" to "controller-durable",
+        ),
+      ),
+      call = AgentToolCall(
+        toolName = "ProcessStart",
+        arguments = JsonObject(
+          mapOf(
+            "command" to JsonPrimitive("npm"),
+            "working_directory" to JsonPrimitive("."),
+          ),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    val ownerIdentity = requireNotNull(registry.startRequests.single().ownerIdentity)
+    assertEquals("process-owner", ownerIdentity.processStartId)
+    assertEquals("controller-instance", ownerIdentity.runtimeControllerId)
+    assertEquals("controller-durable", ownerIdentity.durableRuntimeControllerId)
+  }
+
+  @Test
   fun processReadAndWaitRenderSandboxBackendMetadataForHostedNativeSnapshots() {
     val workspaceRoot = temporaryFolder.newFolder("process-tool-native-render").toPath()
     val registry = RecordingProcessRegistry(

@@ -35,6 +35,7 @@ import com.opencray.runtime.process.ManagedProcessController
 import com.opencray.runtime.process.ManagedProcessReconnectState
 import com.opencray.runtime.process.ManagedProcessRuntimeIdentity
 import com.opencray.runtime.process.ManagedProcessStartRequest
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
@@ -1176,6 +1177,7 @@ class AgentSessionRuntimeManagerTest {
     val firstOwnerIdentity = ManagedProcessRuntimeIdentity(
       processStartId = "process-owner-1",
       runtimeControllerId = "controller-owner-1",
+      durableRuntimeControllerId = "durable-controller-target",
     )
     val reconnectableFactory = ReconnectableCountingManagedProcessControllerFactory()
     val firstProcessRegistryFactory = FileBackedAgentProcessRegistryFactory(
@@ -1216,6 +1218,7 @@ class AgentSessionRuntimeManagerTest {
       runtimeIdentity = ManagedProcessRuntimeIdentity(
         processStartId = "process-owner-2",
         runtimeControllerId = "controller-owner-2",
+        durableRuntimeControllerId = "durable-controller-target",
       ),
     )
     val restoredManager = manager(
@@ -1241,6 +1244,10 @@ class AgentSessionRuntimeManagerTest {
     assertEquals(
       "controller-owner-2",
       restoredProcess.metadata[MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY],
+    )
+    assertEquals(
+      "durable-controller-target",
+      restoredProcess.metadata[MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY],
     )
 
     val restoredRun = restoredHandle.findRun(submission.runId)

@@ -32,6 +32,7 @@ import com.opencray.runtime.OpenCrayAgentEngine
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
@@ -1842,6 +1843,15 @@ private class ManagedAgentSessionHandle(
         ?.takeIf(String::isNotBlank)
         ?.let { runtimeControllerId ->
           put(MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY, runtimeControllerId)
+        }
+      restoreMetadata[MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { durableRuntimeControllerId ->
+          put(
+            MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY,
+            durableRuntimeControllerId,
+          )
         }
     }
   }

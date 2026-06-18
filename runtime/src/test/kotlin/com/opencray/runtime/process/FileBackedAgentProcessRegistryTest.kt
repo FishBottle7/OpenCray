@@ -229,10 +229,12 @@ class FileBackedAgentProcessRegistryTest {
     val ownerIdentity = ManagedProcessRuntimeIdentity(
       processStartId = "process-1",
       runtimeControllerId = "controller-1",
+      durableRuntimeControllerId = "durable-controller-1",
     )
     val restoredRuntimeIdentity = ManagedProcessRuntimeIdentity(
       processStartId = "process-1",
       runtimeControllerId = "controller-2",
+      durableRuntimeControllerId = "durable-controller-1",
     )
     val factory = ReconnectableFakeManagedProcessControllerFactory()
     val registry = FileBackedAgentProcessRegistry(
@@ -275,6 +277,10 @@ class FileBackedAgentProcessRegistryTest {
     assertEquals(
       "controller-2",
       restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY],
+    )
+    assertEquals(
+      "durable-controller-1",
+      restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY],
     )
     assertEquals(1, factory.reconnectCount)
   }
