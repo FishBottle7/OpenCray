@@ -228,7 +228,7 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
       if (keepAliveState != null) {
         currentKeepAliveState = keepAliveState
       }
-      resolvedServiceLifecycle = activeServiceLifecycle ?: return
+      resolvedServiceLifecycle = boundServiceLifecycle ?: activeServiceLifecycle ?: return
       resolvedKeepAliveState = currentKeepAliveState
       resolvedRuntimeOwnerLifecycle = runtimeOwnerLifecycle
       resolvedOwnerObservationAccess = ownerObservationAccess

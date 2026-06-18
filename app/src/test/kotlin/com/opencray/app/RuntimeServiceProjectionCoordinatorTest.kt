@@ -334,10 +334,97 @@ class RuntimeServiceProjectionCoordinatorTest {
     assertEquals(1, heartbeatScheduler.tasks.size)
   }
 
+  @Test
+  fun projectionCoordinatorPersistsTransportFailureSnapshotBeforeStart() {
+    val now = 10_000L
+    val projectionStore = inMemoryRuntimeServiceProjectionStore()
+    val ownerLeaseStore = inMemoryRuntimeServiceOwnerLeaseStore()
+    val heartbeatScheduler = RecordingRuntimeServiceDelayScheduler()
+    val runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(
+      processStartId = "process-owner",
+      processStartedAtEpochMs = 9_000L,
+      runtimeOwnerId = "runtime-owner-a",
+      runtimeControllerId = "runtime-controller-a",
+      durableRuntimeControllerId = "runtime-controller-durable",
+    )
+    val ownerAccess = RecordingRuntimeNotificationHostAccess(runtimeOwnerLifecycle)
+    val failedServerState = LocalRuntimeServerState(
+      phase = LocalRuntimeServerState.PHASE_BIND_FAILED,
+      bindAddress = "127.0.0.1",
+      requestedPort = 42_618,
+      listeningPort = null,
+      lastStartAttemptAtEpochMs = 9_950L,
+      lastStartedAtEpochMs = null,
+      failureReason = "Address already in use",
+      changedAtEpochMs = 9_960L,
+    )
+    val serviceLifecycle = RuntimeServiceLifecycleDescriptor(
+      serviceInstanceId = "runtime-service-a",
+      serviceCreatedAtEpochMs = 9_500L,
+      serviceProcess = runtimeServiceProcessDescriptor(
+        packageName = "org.opencray.app",
+        processName = "org.opencray.app:runtime",
+      ),
+    )
+    val coordinator = DefaultRuntimeServiceProjectionCoordinator(
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      localRuntimeServerStateProvider = { failedServerState },
+      runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
+        processStartId = "process-controller",
+        processStartedAtEpochMs = 8_000L,
+        controllerInstanceId = "runtime-controller-a",
+        durableControllerId = "runtime-controller-durable",
+        controllerCreatedAtEpochMs = 8_500L,
+      ),
+      clock = { now },
+      ownerLeaseDurationMs = 100L,
+      ownerLeaseHeartbeatIntervalMs = 25L,
+      runtimeOwnerLifecycle = runtimeOwnerLifecycle,
+      ownerObservationAccess = ownerAccess,
+      notificationHostAccess = ownerAccess,
+      serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
+        workSummaryProvider = ownerAccess::activeWorkSummary,
+        clock = { now },
+      ),
+      appContext = ContextWrapper(null),
+      localizedContext = ContextWrapper(null),
+      chatSessionStore = ChatSessionLocalStore(
+        temporaryFolder.newFolder("chat-session-store-transport-failure"),
+      ),
+      scheduledTaskSpecStore = inMemoryScheduledTaskSpecStoreFactory().create(),
+      scheduledTaskRunRecordStore = inMemoryScheduledTaskRunRecordStoreFactory().create(),
+      runtimeServiceAccessGateway = NoOpRuntimeServiceAccessGateway,
+      projectionStore = projectionStore,
+      ownerLeaseStore = ownerLeaseStore,
+      ownerLeaseHeartbeatScheduler = heartbeatScheduler,
+      runtimeNotificationCoordinator = null,
+    )
+
+    coordinator.bindServiceLifecycle(serviceLifecycle)
+
+    coordinator.persistProjectionSnapshot()
+
+    val snapshot = checkNotNull(projectionStore.loadSnapshot())
+    val lease = checkNotNull(snapshot.runtimeServiceOwnerLease)
+    assertEquals(LocalRuntimeServerState.PHASE_BIND_FAILED, snapshot.localRuntimeServerState?.phase)
+    assertEquals("Address already in use", snapshot.localRuntimeServerState?.failureReason)
+    assertEquals("runtime-service-a", snapshot.serviceLifecycle.serviceInstanceId)
+    assertEquals("runtime-owner-a", snapshot.runtimeOwnerLifecycle.runtimeOwnerId)
+    assertEquals(RuntimeServiceOwnerLease.PHASE_HELD, lease.phase)
+    assertEquals("runtime-owner-a", lease.runtimeOwnerId)
+    assertEquals(10_000L, lease.heartbeatAtEpochMs)
+    assertEquals(10_100L, lease.expiresAtEpochMs)
+    assertEquals(lease, ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+    assertEquals(0, heartbeatScheduler.tasks.size)
+    assertEquals(0, ownerAccess.observerCount)
+  }
+
   private class RecordingRuntimeNotificationHostAccess(
     override val lifecycleDescriptor: HostRuntimeLifecycleDescriptor,
   ) : RuntimeNotificationHostAccess {
     private val listeners = linkedSetOf<AgentSessionRuntimeListener>()
+    val observerCount: Int
+      get() = listeners.size
     private val runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory()
     private val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
     private val supplementStores = linkedMapOf<String, SessionSupplementStore>()

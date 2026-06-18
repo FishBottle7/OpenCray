@@ -49,6 +49,7 @@ internal data class OpenCrayAgentRuntimeServiceBootstrap(
       return RuntimeServiceShellAttachResult.OwnerLeaseDenied
     }
     if (!transportBootstrap.ensureStarted()) {
+      projectionCoordinator.persistProjectionSnapshot()
       return RuntimeServiceShellAttachResult.TransportStartFailed
     }
     shellControlBundle.attach()

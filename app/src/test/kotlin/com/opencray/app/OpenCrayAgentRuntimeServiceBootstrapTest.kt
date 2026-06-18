@@ -498,7 +498,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       ),
     )
 
-    assertEquals(2, runtimeManager.observerCount)
+    assertEquals(1, runtimeManager.observerCount)
 
     assembly.dispose()
     assembly.dispose()
@@ -1877,7 +1877,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       ),
     )
 
-    assertEquals(2, firstRuntimeManager.observerCount)
+    assertEquals(1, firstRuntimeManager.observerCount)
     assertEquals(0, secondRuntimeManager.observerCount)
 
     val replacementBootstrap = controller.replaceRuntimeOwner()
@@ -1891,7 +1891,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(2, ownerBootstrapResolveCount)
     assertEquals(listOf("first"), ownerDisposeLabels)
     assertEquals(0, firstRuntimeManager.observerCount)
-    assertEquals(2, secondRuntimeManager.observerCount)
+    assertEquals(1, secondRuntimeManager.observerCount)
     assertEquals(
       controller.runtimeControllerLifecycle?.controllerInstanceId,
       replacementBootstrap.runtimeOwnerLifecycle.runtimeControllerId,
@@ -3632,6 +3632,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
     assertEquals(0, projectionCoordinator.startCallCount)
     assertEquals(0, executionCoordinator.attachCallCount)
+    assertEquals(1, projectionCoordinator.persistCallCount)
   }
 
   @Test
