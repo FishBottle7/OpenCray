@@ -26,6 +26,8 @@ Runtime diagnostics now also expose a derived `runtimeExecutionOwnership` projec
 
 Run lifecycle metadata now stamps `_host.runtimeExecutionOwnershipTier=runtime_process` and `_host.runtimeControllerProcessSeparate=false`, and `RunLifecycleDiagnostics` projects those values into run snapshots. Per-run diagnostics can now be correlated with the shell/projection ownership head when investigating host rebuilds, while execution remains runtime-process-bound.
 
+The Android runtime service foreground path now also declares and uses the Android 14+ `specialUse` foreground-service type for generic local agent runtime work. The manifest carries `FOREGROUND_SERVICE_SPECIAL_USE`, `foregroundServiceType="specialUse"`, and a subtype description, while `RuntimeForegroundServiceTypeResolver` supplies `ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE` only on Android 14+ so the foreground controller remains replaceable if distribution policy requires a narrower service type later.
+
 ## Goal
 
 This document turns the earlier runtime recovery proposals into a concrete delivery plan for three missing foundations:

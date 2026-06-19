@@ -78,6 +78,7 @@ Today OpenCray already has a service-host boundary:
 - the runtime-process execution controller now also resolves a target-scoped durable controller identity from file-backed runtime storage in production; `controllerInstanceId` remains a per-controller-instance value for managed-process restore scope, while `durableControllerId` and `_host.durableRuntimeControllerId` give diagnostics, projection fallback, and repair evidence a stable per-target ownership anchor across service/controller recreate
 - shell/chat/projection diagnostics now also carry a derived `runtimeExecutionOwnership` map that declares the current `runtime_process` ownership tier, `controllerProcessSeparate=false`, and the observed owner/controller/service process ids plus service process placement, so a fallback reader can tell this is still runtime-process isolation rather than a stronger controller/process split
 - run lifecycle metadata now also stamps `_host.runtimeExecutionOwnershipTier=runtime_process` and `_host.runtimeControllerProcessSeparate=false`, and run diagnostics project those values so individual runs can be correlated with the same ownership tier visible in shell/projection diagnostics
+- the runtime service manifest now declares the Android 14+ `specialUse` foreground-service type plus its subtype property, and foreground updates route through a small service-type resolver instead of hardcoding `dataSync`
 
 But the background product surface is still incomplete:
 
@@ -810,6 +811,12 @@ Recommended policy:
 
 The design should therefore keep the foreground controller pluggable by service type decision, not hardcode `dataSync`.
 
+Current implementation:
+
+- `OpenCrayAgentRuntimeService` declares `foregroundServiceType="specialUse"` and the matching `FOREGROUND_SERVICE_SPECIAL_USE` permission.
+- Android 14+ foreground starts pass `ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE`; older platforms keep the legacy two-argument `startForeground(...)` call.
+- The type decision is isolated in `RuntimeForegroundServiceTypeResolver`, so a distribution that cannot use `specialUse` can replace the resolver without rewriting keepalive state reduction.
+
 ## Exact Alarm Strategy
 
 Exact alarms should be reserved for user-intentioned schedules:
@@ -900,6 +907,7 @@ Status:
 - the shell controller now honors explicit runtime-reset requests without conflating them with ordinary interrupted-run resume wakes, so the `:runtime` process can still dispose the current shell, replace retained runtime ownership inside the existing execution controller, and attach a fresh shell when reset is actually requested, while `ACTION_RESUME_INTERRUPTED_RUNS` continues through the normal repair/resume path without forcing a retained-runtime rebuild
 - `RuntimeServiceIntentFactory` and the environment-owned `RuntimeServiceAccessGateway` now also expose a standalone `ACTION_RESET_RUNTIME` / `resetRuntime(...)` wake path, and the shell controller recognizes either that explicit action or `EXTRA_FORCE_RUNTIME_RESET`, so repair or diagnostics callers in the app process can ask the runtime process to rebuild retained ownership instead of resetting controller state locally in the wrong process
 - foreground-started wake actions for scheduled-task dispatch, schedule repair, explicit runtime reset, interrupted-run resume, and supported fire-and-forget chat-write wake commands now also force an immediate bootstrap foreground notification before dispatch continues, which closes the Android foreground-service timing gap during detached wake-up when real work-state transitions have not yet propagated
+- runtime foreground service starts now carry the declared `specialUse` service type on Android 14+ through `RuntimeForegroundServiceTypeResolver`, keeping generic agent runtime foreground work off the narrower `dataSync` type
 - the shell controller's default reset path now also reuses the current runtime-process execution controller and swaps only the retained runtime owner plus owner-bound observers instead of resetting the whole execution-controller provider, so the detached service shell can rebuild retained ownership without dropping retained transport, projection, or shell-control state inside `:runtime`
 - that retained-owner swap path now also keeps the same in-process session manager, executors, approval/journal/checkpoint stores, and managed-process registry continuity alive behind a shared owner-lifecycle state, so explicit same-process reset no longer interrupts active work simply because owner-bound service access was rebuilt
 - app visibility is now also projected across processes through a lease-based persisted visibility heartbeat plus app-private visibility broadcast, and the runtime-process shell keepalive/foreground path plus runtime notifications consume that bridged signal instead of reading a same-process `AppVisibilityMonitor` singleton, so detached runtime behavior no longer defaults to “always backgrounded” just because the service lives in `:runtime`, and it does not collapse idle-grace/notification behavior immediately on every transient activity stop/start edge; that heartbeat now also persists under the runtime storage root through the same file-backed durable store family used by other detached-runtime evidence instead of `SharedPreferences`, so the main process and `:runtime` process do not diverge on cached visibility state

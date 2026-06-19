@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import org.opencray.app.R
@@ -48,6 +49,20 @@ internal interface RuntimeForegroundServiceAdapter {
   fun startOrUpdateForeground(model: RuntimeForegroundNotificationModel)
 
   fun stopForeground(removeNotification: Boolean)
+}
+
+internal class RuntimeForegroundServiceTypeResolver(
+  private val sdkIntProvider: () -> Int = { Build.VERSION.SDK_INT },
+) {
+  fun foregroundServiceType(
+    _model: RuntimeForegroundNotificationModel,
+  ): Int? {
+    return if (sdkIntProvider() >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+      ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+    } else {
+      null
+    }
+  }
 }
 
 internal class RuntimeForegroundController(
@@ -450,12 +465,17 @@ internal class AndroidRuntimeForegroundServiceAdapter(
   private val service: Service,
   private val notificationFactory: RuntimeActiveNotificationFactory,
   private val notificationId: Int = NOTIFICATION_ID_RUNTIME_ACTIVE,
+  private val serviceTypeResolver: RuntimeForegroundServiceTypeResolver =
+    RuntimeForegroundServiceTypeResolver(),
 ) : RuntimeForegroundServiceAdapter {
   override fun startOrUpdateForeground(model: RuntimeForegroundNotificationModel) {
-    service.startForeground(
-      notificationId,
-      notificationFactory.build(model),
-    )
+    val notification = notificationFactory.build(model)
+    val serviceType = serviceTypeResolver.foregroundServiceType(model)
+    if (serviceType != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      service.startForeground(notificationId, notification, serviceType)
+    } else {
+      service.startForeground(notificationId, notification)
+    }
   }
 
   override fun stopForeground(removeNotification: Boolean) {
