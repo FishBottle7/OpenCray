@@ -131,9 +131,19 @@ class RecoveryAwareQueueSnapshotStoreTest {
       "checkpoint-general-resume",
       restoredTask.task.metadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID],
     )
+    assertEquals(
+      "runtime_process",
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER],
+    )
+    assertEquals(
+      false.toString(),
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_PROCESS_SEPARATE],
+    )
     val diagnostics = runLifecycleDiagnosticsFrom(restoredTask.task.metadata)
     assertEquals(2, diagnostics.runAttempt)
     assertEquals("checkpoint-general-resume", diagnostics.recoveredFromCheckpointId)
+    assertEquals("runtime_process", diagnostics.runtimeExecutionOwnershipTier)
+    assertEquals(false, diagnostics.runtimeControllerProcessSeparate)
     assertEquals(2, diagnostics.toMap()["runAttempt"])
     assertEquals("checkpoint-general-resume", diagnostics.toMap()["recoveredFromCheckpointId"])
     assertEquals(5_000L, restoredTask.task.updatedAtEpochMs)
@@ -167,6 +177,14 @@ class RecoveryAwareQueueSnapshotStoreTest {
     assertEquals(
       "checkpoint-general-resume",
       recoveryMetadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID],
+    )
+    assertEquals(
+      "runtime_process",
+      recoveryMetadata[RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER],
+    )
+    assertEquals(
+      false.toString(),
+      recoveryMetadata[RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_PROCESS_SEPARATE],
     )
   }
 

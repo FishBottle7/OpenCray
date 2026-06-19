@@ -752,9 +752,29 @@ internal class RecoveryAwareQueueSnapshotStore(
         recoveredCheckpointId?.let { checkpointId ->
           put(RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID, checkpointId)
         }
+        putRuntimeExecutionOwnershipMetadata(entry.task.metadata)
         putAll(managedProcessReconnectMetadata(recoveryPlan))
       }
     }
+  }
+
+  private fun MutableMap<String, String>.putRuntimeExecutionOwnershipMetadata(
+    sourceMetadata: Map<String, String>,
+  ) {
+    put(
+      RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER,
+      sourceMetadata[RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS,
+    )
+    put(
+      RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_PROCESS_SEPARATE,
+      sourceMetadata[RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_PROCESS_SEPARATE]
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: false.toString(),
+    )
   }
 
   private fun managedProcessReconnectMetadata(
@@ -918,7 +938,25 @@ internal class RecoveryAwareQueueSnapshotStore(
       ?.trim()
       ?.takeIf(String::isNotBlank)
       ?.let { checkpointId -> put(RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID, checkpointId) }
+    copyTrimmedMetadata(
+      source = rewrittenEntry.task.metadata,
+      key = RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER,
+    )
+    copyTrimmedMetadata(
+      source = rewrittenEntry.task.metadata,
+      key = RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_PROCESS_SEPARATE,
+    )
     putAll(managedProcessReconnectMetadata(recoveryPlan))
+  }
+
+  private fun MutableMap<String, String>.copyTrimmedMetadata(
+    source: Map<String, String>,
+    key: String,
+  ) {
+    source[key]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { value -> put(key, value) }
   }
 
   private fun recoveryJournalBasis(metadata: Map<String, String>): Map<String, String> =
