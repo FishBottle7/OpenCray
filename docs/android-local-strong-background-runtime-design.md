@@ -1002,7 +1002,7 @@ Exit criteria:
 
 ## Open Questions
 
-1. Should generic agent execution use `specialUse` foreground service type for Android 14+ builds, or should foreground keepalive be restricted to a narrower task class for policy safety?
+1. Should any distribution channel override the default `specialUse` runtime foreground type with narrower workload-specific types, and if so which workloads must be detached-but-not-foreground?
 2. Should approval-needed state keep the runtime in foreground mode, or should it downgrade to a high-priority notification plus dormant checkpoint state?
 3. Should recurring schedules support full cron syntax, or should the first release stay with `at`, `after`, and `rrule`?
 4. When a scheduled trigger fires into a busy session, should the default conflict policy be queue-behind or skip?
