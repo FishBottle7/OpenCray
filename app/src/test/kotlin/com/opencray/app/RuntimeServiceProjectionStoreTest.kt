@@ -103,6 +103,8 @@ class RuntimeServiceProjectionStoreTest {
             taskId = "task-repair",
             detailId = "managed-process-repair",
             repairAfterEpochMs = 4_500L,
+            runtimeExecutionOwnershipTier = "runtime_process",
+            durableRuntimeControllerId = "durable-controller-repair",
           ),
         ),
       ),

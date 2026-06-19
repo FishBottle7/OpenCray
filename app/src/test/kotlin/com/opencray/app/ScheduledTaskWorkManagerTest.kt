@@ -169,7 +169,11 @@ class ScheduledTaskWorkManagerTest {
           runId = "run-scheduled-evidence",
           lifecycleState = QueueTaskLifecycleState.QUEUED,
           taskState = AgentTaskState.QUEUED,
-          metadata = mapOf(ScheduledTaskMetadataKeys.SCHEDULE_ID to "schedule-evidence"),
+          metadata = mapOf(
+            ScheduledTaskMetadataKeys.SCHEDULE_ID to "schedule-evidence",
+            RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER to "runtime_process",
+            RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID to "durable-controller-evidence",
+          ),
         ),
       ),
     )
@@ -188,6 +192,8 @@ class ScheduledTaskWorkManagerTest {
     assertEquals(RuntimeServiceTarget.DETACHED_BACKGROUND, item.target)
     assertEquals("run-scheduled-evidence", item.runId)
     assertEquals("task-scheduled-evidence", item.taskId)
+    assertEquals("runtime_process", item.runtimeExecutionOwnershipTier)
+    assertEquals("durable-controller-evidence", item.durableRuntimeControllerId)
   }
 
   @Test
@@ -217,6 +223,9 @@ class ScheduledTaskWorkManagerTest {
               "retry_scheduled",
             RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS to
               "2500",
+            RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER to "runtime_process",
+            RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID to
+              "durable-controller-reconnect-hold",
           ),
         ),
       ),
@@ -238,6 +247,8 @@ class ScheduledTaskWorkManagerTest {
     assertEquals("task-reconnect-hold", item.taskId)
     assertEquals("process-from-queue", item.detailId)
     assertEquals(2_500L, item.repairAfterEpochMs)
+    assertEquals("runtime_process", item.runtimeExecutionOwnershipTier)
+    assertEquals("durable-controller-reconnect-hold", item.durableRuntimeControllerId)
     assertEquals(
       emptySet<RuntimeServiceTarget>(),
       dueInterruptedRunRepairTargets(

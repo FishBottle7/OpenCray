@@ -14,9 +14,10 @@ import androidx.work.Worker
 import androidx.work.WorkerParameters
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY
 import com.opencray.runtime.process.ManagedProcessSnapshot
-import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.process.ManagedProcessRestoreMode
+import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
 import java.util.concurrent.TimeUnit
@@ -309,6 +310,8 @@ internal data class InterruptedRunRepairEvidence(
   val taskId: String? = null,
   val detailId: String? = null,
   val repairAfterEpochMs: Long? = null,
+  val runtimeExecutionOwnershipTier: String? = null,
+  val durableRuntimeControllerId: String? = null,
 ) {
   init {
     require(sessionId.isNotBlank()) { "InterruptedRunRepairEvidence sessionId must not be blank." }
@@ -323,6 +326,12 @@ internal data class InterruptedRunRepairEvidence(
     }
     require(repairAfterEpochMs == null || repairAfterEpochMs >= 0L) {
       "InterruptedRunRepairEvidence repairAfterEpochMs must be >= 0."
+    }
+    require(runtimeExecutionOwnershipTier == null || runtimeExecutionOwnershipTier.isNotBlank()) {
+      "InterruptedRunRepairEvidence runtimeExecutionOwnershipTier must not be blank."
+    }
+    require(durableRuntimeControllerId == null || durableRuntimeControllerId.isNotBlank()) {
+      "InterruptedRunRepairEvidence durableRuntimeControllerId must not be blank."
     }
   }
 }
@@ -458,6 +467,8 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
             target = runtimeServiceTargetForTask(taskSnapshot.task),
             runId = runIdForTask(taskSnapshot),
             taskId = taskSnapshot.task.id,
+            runtimeExecutionOwnershipTier = runtimeExecutionOwnershipTierForTask(taskSnapshot),
+            durableRuntimeControllerId = durableRuntimeControllerIdForTask(taskSnapshot),
           )
         }
     }
@@ -546,6 +557,14 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
         taskId = process.taskId,
         detailId = process.processId,
         repairAfterEpochMs = managedProcessReconnectRetryAfterEpochMs(process),
+        runtimeExecutionOwnershipTier = taskSnapshotForManagedProcess(
+          process = process,
+          taskSnapshots = taskSnapshots,
+        )?.let(::runtimeExecutionOwnershipTierForTask),
+        durableRuntimeControllerId = durableRuntimeControllerIdForManagedProcess(
+          process = process,
+          taskSnapshots = taskSnapshots,
+        ),
       )
     }
   return evidence.withManagedProcessReconnectBackoff()
@@ -657,8 +676,41 @@ private fun managedProcessReconnectRepairEvidenceForQueueTask(
       taskId = taskSnapshot.task.id,
       detailId = processId,
       repairAfterEpochMs = repairAfterEpochMs,
+      runtimeExecutionOwnershipTier = runtimeExecutionOwnershipTierForTask(taskSnapshot),
+      durableRuntimeControllerId = durableRuntimeControllerIdForTask(taskSnapshot),
     )
   }
+}
+
+private fun runtimeExecutionOwnershipTierForTask(
+  taskSnapshot: SessionQueueTaskSnapshot,
+): String? = taskSnapshot.task.metadata[RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER]
+  ?.trim()
+  ?.takeIf(String::isNotBlank)
+
+private fun durableRuntimeControllerIdForTask(
+  taskSnapshot: SessionQueueTaskSnapshot,
+): String? = taskSnapshot.task.metadata[RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID]
+  ?.trim()
+  ?.takeIf(String::isNotBlank)
+
+private fun durableRuntimeControllerIdForManagedProcess(
+  process: ManagedProcessSnapshot,
+  taskSnapshots: List<SessionQueueTaskSnapshot>,
+): String? = taskSnapshotForManagedProcess(
+  process = process,
+  taskSnapshots = taskSnapshots,
+)?.let(::durableRuntimeControllerIdForTask)
+  ?: process.metadata[MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY]
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+
+private fun taskSnapshotForManagedProcess(
+  process: ManagedProcessSnapshot,
+  taskSnapshots: List<SessionQueueTaskSnapshot>,
+): SessionQueueTaskSnapshot? = taskSnapshots.firstOrNull { taskSnapshot ->
+  taskSnapshot.task.id == process.taskId ||
+    process.processId in managedProcessReconnectProcessIdsForTask(taskSnapshot)
 }
 
 private fun managedProcessReconnectProcessIdsForTask(

@@ -201,6 +201,8 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
                 taskId = "task-a",
                 detailId = "checkpoint-a",
                 repairAfterEpochMs = 9_500L,
+                runtimeExecutionOwnershipTier = "runtime_process",
+                durableRuntimeControllerId = "durable-controller-a",
               ),
             ),
           ),
@@ -221,6 +223,8 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertEquals("interactive", evidence["target"])
     assertEquals("checkpoint-a", evidence["detailId"])
     assertEquals(9_500L, evidence["repairAfterEpochMs"])
+    assertEquals("runtime_process", evidence["runtimeExecutionOwnershipTier"])
+    assertEquals("durable-controller-a", evidence["durableRuntimeControllerId"])
   }
 
   @Test

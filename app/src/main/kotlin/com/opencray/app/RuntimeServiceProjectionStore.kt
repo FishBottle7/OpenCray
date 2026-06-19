@@ -439,6 +439,8 @@ private data class PersistedInterruptedRunRepairEvidence(
   val taskId: String? = null,
   val detailId: String? = null,
   val repairAfterEpochMs: Long? = null,
+  val runtimeExecutionOwnershipTier: String? = null,
+  val durableRuntimeControllerId: String? = null,
 )
 
 private fun LocalRuntimeServerState.toPersistedRecord(): PersistedLocalRuntimeServerState =
@@ -527,6 +529,8 @@ private fun InterruptedRunRepairEvidence.toPersistedRecord():
     taskId = taskId,
     detailId = detailId,
     repairAfterEpochMs = repairAfterEpochMs,
+    runtimeExecutionOwnershipTier = runtimeExecutionOwnershipTier,
+    durableRuntimeControllerId = durableRuntimeControllerId,
   )
 
 private fun PersistedRuntimeServiceInterruptedRunRepairProjection.toSnapshot():
@@ -620,6 +624,12 @@ private fun PersistedInterruptedRunRepairEvidence.toSnapshot(
       taskId = taskId,
       detailId = detailId,
       repairAfterEpochMs = repairAfterEpochMs,
+      runtimeExecutionOwnershipTier = runtimeExecutionOwnershipTier
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
+      durableRuntimeControllerId = durableRuntimeControllerId
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
     )
   }.getOrNull()
 }
