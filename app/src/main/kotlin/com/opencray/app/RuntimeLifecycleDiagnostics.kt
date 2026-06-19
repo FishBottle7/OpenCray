@@ -13,6 +13,9 @@ internal object RunLifecycleMetadataKeys {
   const val RUNTIME_OWNER_ID: String = "_host.runtimeOwnerId"
   const val RUNTIME_CONTROLLER_ID: String = "_host.runtimeControllerId"
   const val DURABLE_RUNTIME_CONTROLLER_ID: String = "_host.durableRuntimeControllerId"
+  const val RUNTIME_EXECUTION_OWNERSHIP_TIER: String = "_host.runtimeExecutionOwnershipTier"
+  const val RUNTIME_CONTROLLER_PROCESS_SEPARATE: String =
+    "_host.runtimeControllerProcessSeparate"
   const val RUN_ATTEMPT: String = "_host.runAttempt"
   const val RECOVERED_FROM_CHECKPOINT_ID: String = "_host.recoveredFromCheckpointId"
   const val RECOVERY_ACTION: String = "_host.recoveryAction"
@@ -28,6 +31,10 @@ internal object RunLifecycleMetadataKeys {
     "_host.managedProcessReconnectAttemptCount"
   const val SUBMISSION_SOURCE: String = "_host.submissionSource"
   const val PREAPPROVED_TOOL_NAME: String = "_host.preapprovedToolName"
+}
+
+internal object RuntimeExecutionOwnershipTiers {
+  const val RUNTIME_PROCESS: String = "runtime_process"
 }
 
 internal object RunLifecycleRecoveryReasons {
@@ -75,6 +82,11 @@ internal data class HostRuntimeLifecycleDescriptor(
     put(RunLifecycleMetadataKeys.RUNTIME_OWNER_ID, runtimeOwnerId)
     put(RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_ID, runtimeControllerId)
     put(RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID, durableRuntimeControllerId)
+    put(
+      RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER,
+      RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS,
+    )
+    put(RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_PROCESS_SEPARATE, false.toString())
     put(RunLifecycleMetadataKeys.RUN_ATTEMPT, INITIAL_RUN_ATTEMPT.toString())
     submissionSource
       ?.trim()
@@ -102,6 +114,8 @@ internal data class RunLifecycleDiagnostics(
   val runtimeOwnerId: String? = null,
   val runtimeControllerId: String? = null,
   val durableRuntimeControllerId: String? = null,
+  val runtimeExecutionOwnershipTier: String? = null,
+  val runtimeControllerProcessSeparate: Boolean? = null,
   val runAttempt: Int? = null,
   val recoveredFromCheckpointId: String? = null,
   val managedProcessReconnectProcessIds: List<String> = emptyList(),
@@ -121,6 +135,8 @@ internal data class RunLifecycleDiagnostics(
       runtimeOwnerId.isNullOrBlank() &&
       runtimeControllerId.isNullOrBlank() &&
       durableRuntimeControllerId.isNullOrBlank() &&
+      runtimeExecutionOwnershipTier.isNullOrBlank() &&
+      runtimeControllerProcessSeparate == null &&
       runAttempt == null &&
       recoveredFromCheckpointId.isNullOrBlank() &&
       managedProcessReconnectProcessIds.isEmpty() &&
@@ -142,6 +158,12 @@ internal data class RunLifecycleDiagnostics(
     durableRuntimeControllerId
       ?.takeIf(String::isNotBlank)
       ?.let { put("durableRuntimeControllerId", it) }
+    runtimeExecutionOwnershipTier
+      ?.takeIf(String::isNotBlank)
+      ?.let { put("runtimeExecutionOwnershipTier", it) }
+    runtimeControllerProcessSeparate?.let { separate ->
+      put("runtimeControllerProcessSeparate", separate)
+    }
     runAttempt?.let { put("runAttempt", it) }
     recoveredFromCheckpointId?.takeIf(String::isNotBlank)?.let { put("recoveredFromCheckpointId", it) }
     if (managedProcessReconnectProcessIds.isNotEmpty()) {
@@ -183,6 +205,14 @@ internal fun runLifecycleDiagnosticsFrom(
     runtimeOwnerId = taskMetadata[RunLifecycleMetadataKeys.RUNTIME_OWNER_ID]?.trim(),
     runtimeControllerId = taskMetadata[RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_ID]?.trim(),
     durableRuntimeControllerId = taskMetadata[RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID]?.trim(),
+    runtimeExecutionOwnershipTier =
+      taskMetadata[RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER]
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
+    runtimeControllerProcessSeparate =
+      taskMetadata[RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_PROCESS_SEPARATE]
+        ?.trim()
+        ?.toBooleanStrictOrNull(),
     runAttempt = taskMetadata[RunLifecycleMetadataKeys.RUN_ATTEMPT]
       ?.trim()
       ?.toIntOrNull()

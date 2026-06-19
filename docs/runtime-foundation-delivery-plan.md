@@ -24,6 +24,8 @@ Managed-process ownership now also carries that durable controller anchor. `Proc
 
 Runtime diagnostics now also expose a derived `runtimeExecutionOwnership` projection with `ownershipTier=runtime_process`, `controllerProcessSeparate=false`, and the current owner/controller/service process ids plus service process placement. This makes the current execution boundary machine-readable for shell/chat/projection fallback without adding a second persistence source, and keeps the stronger controller-process ownership tier explicitly pending.
 
+Run lifecycle metadata now stamps `_host.runtimeExecutionOwnershipTier=runtime_process` and `_host.runtimeControllerProcessSeparate=false`, and `RunLifecycleDiagnostics` projects those values into run snapshots. Per-run diagnostics can now be correlated with the shell/projection ownership head when investigating host rebuilds, while execution remains runtime-process-bound.
+
 ## Goal
 
 This document turns the earlier runtime recovery proposals into a concrete delivery plan for three missing foundations:

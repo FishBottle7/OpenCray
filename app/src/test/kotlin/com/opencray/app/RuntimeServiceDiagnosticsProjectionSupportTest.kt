@@ -244,8 +244,20 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
       "controller-durable-a",
       metadata[RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID],
     )
+    assertEquals(
+      "runtime_process",
+      metadata[RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER],
+    )
+    assertEquals(
+      false.toString(),
+      metadata[RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_PROCESS_SEPARATE],
+    )
     assertEquals("controller-instance-a", diagnostics.runtimeControllerId)
     assertEquals("controller-durable-a", diagnostics.durableRuntimeControllerId)
+    assertEquals("runtime_process", diagnostics.runtimeExecutionOwnershipTier)
+    assertFalse(requireNotNull(diagnostics.runtimeControllerProcessSeparate))
     assertEquals("controller-durable-a", diagnostics.toMap()["durableRuntimeControllerId"])
+    assertEquals("runtime_process", diagnostics.toMap()["runtimeExecutionOwnershipTier"])
+    assertEquals(false, diagnostics.toMap()["runtimeControllerProcessSeparate"])
   }
 }

@@ -79,7 +79,7 @@ private fun MutableMap<String, Any?>.putRuntimeServiceField(
 }
 
 internal data class RuntimeExecutionOwnershipDescriptor(
-  val ownershipTier: String = OWNERSHIP_TIER_RUNTIME_PROCESS,
+  val ownershipTier: String = RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS,
   val controllerProcessSeparate: Boolean = false,
   val executionProcessStartId: String,
   val runtimeOwnerProcessStartId: String,
@@ -113,10 +113,6 @@ internal data class RuntimeExecutionOwnershipDescriptor(
     runtimeServiceProcessMismatchReason?.let { reason ->
       put("runtimeServiceProcessMismatchReason", reason)
     }
-  }
-
-  companion object {
-    const val OWNERSHIP_TIER_RUNTIME_PROCESS: String = "runtime_process"
   }
 }
 
