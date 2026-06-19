@@ -13,6 +13,7 @@ import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
+import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY
 import com.opencray.runtime.process.ManagedProcessSnapshot
@@ -447,10 +448,21 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
   processRegistryFactory: AgentProcessRegistryFactory? = null,
 ): List<InterruptedRunRepairEvidence> {
-  val taskSnapshots = snapshotStoreFactory.forChatSession(sessionId)
-    .load()
-    ?.tasks
-    .orEmpty()
+  val snapshotStore = snapshotStoreFactory.forChatSession(sessionId)
+  val promptCheckpointStore = promptCheckpointStoreFactory.forChatSession(sessionId)
+  val subAgentHandleStore = subAgentHandleStoreFactory.forChatSession(sessionId)
+  val runRecordStore = runRecordStoreFactory?.forChatSession(sessionId)
+  val runEventJournalStore = runEventJournalStoreFactory?.forChatSession(sessionId)
+  val processRegistry = processRegistryFactory?.forChatSession(sessionId)
+  val managedProcesses = processRegistry?.list().orEmpty()
+  val taskSnapshots = repairPreflightTaskSnapshots(
+    sessionId = sessionId,
+    snapshotStore = snapshotStore,
+    promptCheckpointStore = promptCheckpointStore,
+    runRecordStore = runRecordStore,
+    runEventJournalStore = runEventJournalStore,
+    managedProcesses = managedProcesses,
+  )
   val evidence = mutableListOf<InterruptedRunRepairEvidence>()
   taskSnapshots
     .filter(::isPotentialRunRepairQueueTask)
@@ -472,8 +484,7 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
           )
         }
     }
-  promptCheckpointStoreFactory.forChatSession(sessionId)
-    .list()
+  promptCheckpointStore.list()
     .filter(::isPotentialRunRepairCheckpoint)
     .forEach { checkpoint ->
       evidence += InterruptedRunRepairEvidence(
@@ -488,8 +499,7 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
         detailId = checkpoint.checkpointId,
       )
     }
-  subAgentHandleStoreFactory.forChatSession(sessionId)
-    .list()
+  subAgentHandleStore.list()
     .filter(::isPotentialDetachedSubAgentRepairHandle)
     .forEach { handle ->
       evidence += InterruptedRunRepairEvidence(
@@ -501,7 +511,7 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
         detailId = handle.agentId,
       )
     }
-  val runRecords = runRecordStoreFactory?.forChatSession(sessionId)
+  val runRecords = runRecordStore
     ?.list()
     .orEmpty()
   runRecords
@@ -519,7 +529,7 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
       )
     }
   potentialRunRepairJournalTails(
-    journalEntries = runEventJournalStoreFactory?.forChatSession(sessionId)?.list().orEmpty(),
+    journalEntries = runEventJournalStore?.list().orEmpty(),
     terminalRunIds = runRecords
       .filter { record -> record.lastResult != null }
       .mapTo(mutableSetOf(), PersistedAgentRunRecord::runId),
@@ -536,9 +546,7 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
       detailId = entry.eventId,
     )
   }
-  processRegistryFactory?.forChatSession(sessionId)
-    ?.list()
-    .orEmpty()
+  managedProcesses
     .filter(::isPotentialManagedProcessReconnectRepair)
     .forEach { process ->
       evidence += InterruptedRunRepairEvidence(
@@ -568,6 +576,31 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
       )
     }
   return evidence.withManagedProcessReconnectBackoff()
+}
+
+private fun repairPreflightTaskSnapshots(
+  sessionId: String,
+  snapshotStore: SessionQueueSnapshotStore,
+  promptCheckpointStore: PromptCheckpointStore,
+  runRecordStore: AgentRunRecordStore?,
+  runEventJournalStore: RunEventJournalStore?,
+  managedProcesses: List<ManagedProcessSnapshot>,
+): List<SessionQueueTaskSnapshot> {
+  val snapshot = snapshotStore.load() ?: return emptyList()
+  if (runRecordStore == null || runEventJournalStore == null) {
+    return snapshot.tasks
+  }
+  return RecoveryAwareQueueSnapshotStore(
+    sessionId = sessionId,
+    delegate = snapshotStore,
+    runRecordStore = runRecordStore,
+    runEventJournalStore = runEventJournalStore,
+    promptCheckpointStore = promptCheckpointStore,
+    managedProcessesProvider = { managedProcesses },
+  ).restore(
+    snapshot = snapshot,
+    restoreEpochMs = System.currentTimeMillis(),
+  )?.tasks.orEmpty()
 }
 
 internal fun potentialInterruptedRunRepairEvidence(

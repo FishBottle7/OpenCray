@@ -1065,6 +1065,56 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun potentialInterruptedRunRepairEvidenceUsesRecoveryAwareQueueRestoreForTerminalResult() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-terminal-queue")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val runRecordStoreFactory = InMemoryAgentRunRecordStoreFactory()
+    val runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory()
+
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = "task-terminal-queue",
+          runId = "run-terminal-queue",
+          lifecycleState = QueueTaskLifecycleState.RUNNING,
+          taskState = AgentTaskState.RUNNING,
+        ),
+      ),
+    )
+    runRecordStoreFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = "run-terminal-queue",
+        taskId = "task-terminal-queue",
+        acceptedAtEpochMs = 1_000L,
+        lastResult = ExecutionResult(
+          taskId = "task-terminal-queue",
+          status = ExecutionStatus.SUCCESS,
+          stdout = "Done",
+          startedAtEpochMs = 1_000L,
+          finishedAtEpochMs = 1_100L,
+        ),
+      ),
+    )
+
+    val evidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runRecordStoreFactory = runRecordStoreFactory,
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+    )
+
+    assertEquals(emptyList<InterruptedRunRepairEvidence>(), evidence)
+  }
+
+  @Test
   fun hasPotentialInteractiveRunRepairWorkIgnoresFinalJournalOnlySession() {
     val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-final-journal")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
