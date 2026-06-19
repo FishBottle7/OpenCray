@@ -684,9 +684,10 @@ private fun managedProcessReconnectRepairEvidenceForQueueTask(
 
 private fun runtimeExecutionOwnershipTierForTask(
   taskSnapshot: SessionQueueTaskSnapshot,
-): String? = taskSnapshot.task.metadata[RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER]
+): String = taskSnapshot.task.metadata[RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER]
   ?.trim()
   ?.takeIf(String::isNotBlank)
+  ?: RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS
 
 private fun durableRuntimeControllerIdForTask(
   taskSnapshot: SessionQueueTaskSnapshot,

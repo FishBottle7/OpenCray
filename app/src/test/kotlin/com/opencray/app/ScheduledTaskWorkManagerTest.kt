@@ -171,7 +171,6 @@ class ScheduledTaskWorkManagerTest {
           taskState = AgentTaskState.QUEUED,
           metadata = mapOf(
             ScheduledTaskMetadataKeys.SCHEDULE_ID to "schedule-evidence",
-            RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER to "runtime_process",
             RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID to "durable-controller-evidence",
           ),
         ),
@@ -223,7 +222,6 @@ class ScheduledTaskWorkManagerTest {
               "retry_scheduled",
             RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS to
               "2500",
-            RunLifecycleMetadataKeys.RUNTIME_EXECUTION_OWNERSHIP_TIER to "runtime_process",
             RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID to
               "durable-controller-reconnect-hold",
           ),
