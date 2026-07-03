@@ -1660,7 +1660,13 @@ class OpenCrayRuntimeServiceHostTest {
       settingsFacade = RecordingServiceOwnedSettingsFacade(),
       notificationSettingsFacade = com.opencray.app.facade.notifications
         .LocalNotificationSettingsFacade
-        .create(),
+        .create(
+          RuntimeNotificationSettingsStore(
+            com.opencray.persistence.store.file.DirectoryDurableTextStorage(
+              temporaryFolder.newFolder("service-owned-notification-settings"),
+            ),
+          ),
+        ),
       strongBackgroundSettingsAccess = strongBackgroundAccess,
       sandboxSettingsAccess = RecordingSandboxSettingsGatewayAccess(),
       networkSearchConfigFacade = RecordingNetworkSearchConfigFacade(),
@@ -3846,6 +3852,146 @@ class OpenCrayRuntimeServiceHostTest {
     )
     assertNull(fallbackGateway.approvedTaskIdOrRunId)
     assertEquals("binding", serviceClient.loadConnectionState().phase)
+    assertEquals("in_process", serviceClient.loadConnectionState().transport)
+  }
+
+  @Test
+  fun serviceBackedChatRuntimeGatewayKeepsWakeFallbackWhenCommandFallbackTransportIsUnavailable() {
+    val bindingAdapter = RecordingBindingAdapter()
+    val wakeCommands = mutableListOf<OpenCrayChatWriteCommand>()
+    val commandFallbackTransport = object : RuntimeServiceCommandFallbackTransport {
+      override fun dispatchChatWriteCommand(
+        command: OpenCrayChatWriteCommand,
+      ): OpenCrayChatWriteDispatchResult {
+        throw IllegalStateException(
+          "Loopback runtime transport is unavailable for 'v1/approve_chat_approval'.",
+          java.net.ConnectException("refused"),
+        )
+      }
+    }
+    val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { },
+      wakeChatWriteRequester = { command ->
+        wakeCommands += command
+        true
+      },
+      commandFallbackTransport = commandFallbackTransport,
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+      isMainThread = { false },
+    )
+    val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
+      serviceClient = serviceClient,
+      fallbackGateway = RecordingChatRuntimeGateway("fallback"),
+    )
+
+    gateway.approveChatApproval("run-alpha")
+
+    assertEquals(1, bindingAdapter.bindCount)
+    assertEquals(
+      listOf(OpenCrayChatWriteCommand.ApproveChatApproval("run-alpha")),
+      wakeCommands,
+    )
+  }
+
+  @Test
+  fun serviceBackedGatewaysUseCommandFallbackTransportWhenBinderBindFailsOffMainThread() {
+    val bindingAdapter = object : OpenCrayRuntimeServiceBindingAdapter {
+      var bindCount = 0
+
+      override fun bind(
+        context: android.content.Context,
+        intent: Intent,
+        connection: ServiceConnection,
+        flags: Int,
+      ): Boolean {
+        bindCount += 1
+        return false
+      }
+
+      override fun unbind(
+        context: android.content.Context,
+        connection: ServiceConnection,
+      ) = Unit
+    }
+    val chatCommands = mutableListOf<OpenCrayChatWriteCommand>()
+    val skillsCommands = mutableListOf<OpenCraySkillsWriteCommand>()
+    val settingsCommands = mutableListOf<OpenCraySettingsWriteCommand>()
+    val commandFallbackTransport = object : RuntimeServiceCommandFallbackTransport {
+      override fun dispatchChatWriteCommand(
+        command: OpenCrayChatWriteCommand,
+      ): OpenCrayChatWriteDispatchResult {
+        chatCommands += command
+        return OpenCrayChatWriteDispatchResult.Payload(
+          mapOf("source" to "command-fallback-chat"),
+        )
+      }
+
+      override fun dispatchSkillsWriteCommand(
+        command: OpenCraySkillsWriteCommand,
+      ): OpenCraySkillsWriteDispatchResult {
+        skillsCommands += command
+        return OpenCraySkillsWriteDispatchResult.Message("command-fallback-skills")
+      }
+
+      override fun dispatchSettingsWriteCommand(
+        command: OpenCraySettingsWriteCommand,
+      ): OpenCraySettingsWriteDispatchResult {
+        settingsCommands += command
+        return OpenCraySettingsWriteDispatchResult.Payload(
+          mapOf("source" to "command-fallback-settings"),
+        )
+      }
+    }
+    val fallbackChatGateway = RecordingChatRuntimeGateway("fallback")
+    val fallbackSkillsGateway = RecordingSkillsGateway("fallback")
+    val fallbackSettingsGateway = RecordingSettingsGateway("fallback")
+    val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { },
+      commandFallbackTransport = commandFallbackTransport,
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+      isMainThread = { false },
+    )
+    val chatGateway = ServiceBackedOpenCrayChatRuntimeGateway(
+      serviceClient = serviceClient,
+      fallbackGateway = fallbackChatGateway,
+    )
+    val skillsGateway = ServiceBackedOpenCraySkillsGateway(
+      serviceClient = serviceClient,
+      fallbackGateway = fallbackSkillsGateway,
+    )
+    val settingsGateway = ServiceBackedOpenCraySettingsGateway(
+      serviceClient = serviceClient,
+      fallbackGateway = fallbackSettingsGateway,
+    )
+
+    val chatResult = chatGateway.submitChatMessage("through command fallback", emptyList())
+    val skillsResult = skillsGateway.installSkillSource("fallback-source", "selected")
+    val settingsResult = settingsGateway.performStrongBackgroundAction("repair")
+
+    assertEquals(3, bindingAdapter.bindCount)
+    assertEquals("command-fallback-chat", chatResult?.get("source"))
+    val submittedCommand = chatCommands.single() as OpenCrayChatWriteCommand.SubmitChatMessage
+    assertEquals("through command fallback", submittedCommand.text)
+    assertEquals("command-fallback-skills", skillsResult)
+    assertEquals(
+      OpenCraySkillsWriteCommand.InstallSkillSource("fallback-source", "selected"),
+      skillsCommands.single(),
+    )
+    assertEquals("command-fallback-settings", settingsResult["source"])
+    assertEquals(
+      OpenCraySettingsWriteCommand.PerformStrongBackgroundAction("repair"),
+      settingsCommands.single(),
+    )
+    assertNull(fallbackChatGateway.submittedText)
+    assertNull(fallbackSkillsGateway.lastInstalledSourceRef)
+    assertNull(fallbackSettingsGateway.lastStrongBackgroundActionId)
+    assertEquals("fallback", serviceClient.loadConnectionState().phase)
     assertEquals("in_process", serviceClient.loadConnectionState().transport)
   }
 

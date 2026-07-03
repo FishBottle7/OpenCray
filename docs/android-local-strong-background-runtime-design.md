@@ -1,6 +1,6 @@
 # Android Local Strong Background Runtime Design
 
-Last updated: 2026-06-09
+Last updated: 2026-07-04
 
 ## Status
 
@@ -95,8 +95,8 @@ But the background product surface is still incomplete:
 - binder-pending chat projection now also reads durable managed-process state through a passive `projection_only` restore mode, so non-owner UI fallback no longer marks reconnectable running processes interrupted just because binder attach has not completed yet
 - binder-backed service shell diagnostics now also derive `hostLifecycle` from the live service shell plus runtime-owner/controller identities instead of minting a synthetic host descriptor, so attached-shell diagnostics point at the real detached runtime shell instance
 - when Android returns a remote `BinderProxy` instead of a same-process binder endpoint, the client now reports an explicit `invalid_binder` state and leaves read continuity to the higher-level projection gateway seam instead of inventing a lower-level loopback transport mode
-- caller-side runtime-service composition now removes low-level loopback HTTP read and command fallback from `main` code entirely; projection snapshot plus explicit projection-only gateway assembly remain the built-in caller-side fallback path
-- service-backed chat/skills/settings writes now require binder-backed dispatch, and the old low-level caller-side command fallback escape hatch is gone from `main` code
+- caller-side runtime-service composition keeps low-level loopback HTTP out of read fallback; projection snapshot plus explicit projection-only gateway assembly remain the built-in caller-side read fallback path
+- service-backed chat/skills/settings writes now prefer binder-backed dispatch but can use target-scoped service-owned loopback command fallback from background threads when binder attach fails; main-thread writes still fail fast, and chat fire-and-forget commands keep the foreground wake fallback if loopback is not yet listening
 - caller-side projection fallback assembly now resolves through explicit `OpenCrayProjectionGatewayBundleFactory` plus configurable client/service-backed gateway-bundle factories, so the remaining binder-pending fallback seam is isolated above the low-level binder client
 - service-backed chat/runtime observers now also use passive connection-state observation like shell/skills/settings, so simply opening the runtime page no longer starts or binds the service just to watch projection fallback
 - projection shell/chat fallback built from the same client bundle now shares one explicit `HostRuntimeLifecycleDescriptor`, which removes avoidable diagnostics churn when the UI bounces between fallback surfaces before binder attach
@@ -925,6 +925,7 @@ Status:
 - the binding client now also exposes an explicit `dispose()` path that clears listener state, cancels pending idle-release work, resets cached binder state, and unbinds when needed, so caller-side runtime reset can sever stale transport before the next retained-controller bootstrap
 - the service shell now also exposes stable target-scoped delegating binder endpoints across shell reset, so an already bound client can keep using the same binder handle after same-service runtime reset and still land on the rebuilt target shell instead of a stale bootstrap-local endpoint
 - background-thread service writes now also tolerate a longer cold-bind window before surfacing `binder_pending`, while the remaining main-thread callers still fail fast rather than freezing the UI
+- if that longer background-thread bind window still ends without a binder endpoint, chat/skills/settings write dispatch can fall through to the target-scoped loopback command transport owned by the runtime service; unavailable loopback returns control to the existing chat wake path rather than hiding an eventual foreground wake behind a connection error
 - the runtime-service gateway bundle now routes chat/skills/settings writes through normalized gateway command surfaces, carries chat snapshot invalidation on the service-owned chat gateway itself, and no longer constructs `OpenCrayHostRuntime` during service bootstrap
 - that same gateway-bundle dependency surface now also carries explicit owner-observation, chat-mutation, and chat-submission runtime-access facets plus a dedicated `RuntimeServiceApprovalDecisionAccess`, so long-lived service-owned gateway wiring no longer retains a monolithic `OpenCrayRuntimeHostAccess` handle or raw approval lambdas after bootstrap
 - the process-retained `RuntimeServiceBootstrapAssembly` now also keeps only explicit `runtimeOwnerLifecycle`, `runtimeHostAccess`, and `runtimeReplayAccess` facets instead of the old monolithic runtime-owner access bundle, which further reduces what the same-process execution controller keeps alive across service-shell recreation

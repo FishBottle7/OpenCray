@@ -306,6 +306,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     AndroidOpenCrayRuntimeServiceBindingAdapter,
   private val startRequester: (Context) -> Unit,
   private val wakeChatWriteRequester: (OpenCrayChatWriteCommand) -> Boolean = { false },
+  private val commandFallbackTransport: RuntimeServiceCommandFallbackTransport? = null,
   private val mainThreadPoster: MainThreadPoster =
     HandlerMainThreadPoster(Handler(Looper.getMainLooper())),
   private val bindingReleaseDelayMs: Long = DEFAULT_BINDING_RELEASE_DELAY_MS,
@@ -487,6 +488,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     command: OpenCrayChatWriteCommand,
   ): OpenCrayChatWriteDispatchResult? = dispatchWithBinder(
     binderDispatch = { binderAccess?.dispatchChatWriteCommand(command) },
+    commandFallback = { commandFallbackTransport?.dispatchChatWriteCommand(command) },
     wakeFallback = {
       if (wakeChatWriteRequester(command)) {
         OpenCrayChatWriteDispatchResult.Completed
@@ -512,6 +514,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     command: OpenCraySkillsWriteCommand,
   ): OpenCraySkillsWriteDispatchResult? = dispatchWithBinder(
     binderDispatch = { binderAccess?.dispatchSkillsWriteCommand(command) },
+    commandFallback = { commandFallbackTransport?.dispatchSkillsWriteCommand(command) },
   )
 
   override fun loadSettingsGateway(): OpenCraySettingsGateway? =
@@ -530,6 +533,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     command: OpenCraySettingsWriteCommand,
   ): OpenCraySettingsWriteDispatchResult? = dispatchWithBinder(
     binderDispatch = { binderAccess?.dispatchSettingsWriteCommand(command) },
+    commandFallback = { commandFallbackTransport?.dispatchSettingsWriteCommand(command) },
   )
 
   override fun observeConnectionState(listener: (RuntimeServiceConnectionState) -> Unit): () -> Unit =
@@ -614,6 +618,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
 
   private inline fun <T> dispatchWithBinder(
     binderDispatch: () -> T?,
+    noinline commandFallback: (() -> T?)? = null,
     noinline wakeFallback: (() -> T?)? = null,
   ): T? {
     ensureStartedAndBinding()
@@ -621,11 +626,28 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
       binderDispatch()
         ?: run {
           awaitBindingAccess(SERVICE_GATEWAY_BIND_AWAIT_TIMEOUT_MS)
-          binderDispatch() ?: wakeFallback?.invoke()
+          binderDispatch()
+            ?: commandFallback?.takeUnless { isMainThread() }?.invokeIfAvailable()
+            ?: wakeFallback?.invoke()
         }
     } finally {
       scheduleBindingReleaseIfIdle()
     }
+  }
+
+  private fun <T> (() -> T?).invokeIfAvailable(): T? = try {
+    invoke()
+  } catch (throwable: IllegalStateException) {
+    if (throwable.isLoopbackTransportUnavailable()) {
+      null
+    } else {
+      throw throwable
+    }
+  }
+
+  private fun IllegalStateException.isLoopbackTransportUnavailable(): Boolean {
+    val message = message.orEmpty()
+    return message.startsWith("Loopback runtime transport is unavailable")
   }
 
   private fun registerConnectionObserver(

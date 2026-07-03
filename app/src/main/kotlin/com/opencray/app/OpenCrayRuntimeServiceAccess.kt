@@ -115,6 +115,9 @@ private object AndroidBindingRuntimeServiceClientProvider : RuntimeServiceClient
     wakeChatWriteRequester = { command ->
       bootstrap.chatWriteWakeRequester(context.applicationContext, command)
     },
+    commandFallbackTransport = LoopbackHttpRuntimeServiceCommandFallbackTransport(
+      requestClient = openCrayLocalRuntimeLoopbackHttpClientForTarget(bootstrap.target),
+    ),
   )
 }
 

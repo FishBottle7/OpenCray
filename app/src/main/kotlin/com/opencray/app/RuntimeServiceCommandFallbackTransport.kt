@@ -36,7 +36,9 @@ internal data class RuntimeServiceReadFallbackGatewayBundle(
 )
 
 internal fun loopbackRuntimeServiceReadFallbackGatewayBundle(
-  requestClient: OpenCrayLocalRuntimeLoopbackHttpClient = OpenCrayLocalRuntimeLoopbackHttpClient(),
+  target: RuntimeServiceTarget = RuntimeServiceTarget.INTERACTIVE,
+  requestClient: OpenCrayLocalRuntimeLoopbackHttpClient =
+    openCrayLocalRuntimeLoopbackHttpClientForTarget(target),
   mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
 ): RuntimeServiceReadFallbackGatewayBundle {
   val commandTransport = LoopbackHttpRuntimeServiceCommandFallbackTransport(
@@ -64,6 +66,14 @@ internal fun loopbackRuntimeServiceReadFallbackGatewayBundle(
     ),
   )
 }
+
+internal fun openCrayLocalRuntimeLoopbackHttpClientForTarget(
+  target: RuntimeServiceTarget,
+): OpenCrayLocalRuntimeLoopbackHttpClient = OpenCrayLocalRuntimeLoopbackHttpClient(
+  baseUrlProvider = {
+    "http://127.0.0.1:${localRuntimeLoopbackPortForTarget(target)}/"
+  },
+)
 
 internal class LoopbackHttpRuntimeServiceCommandFallbackTransport(
   private val requestClient: OpenCrayLocalRuntimeLoopbackHttpClient = OpenCrayLocalRuntimeLoopbackHttpClient(),
