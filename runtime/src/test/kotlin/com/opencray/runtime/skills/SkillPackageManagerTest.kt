@@ -1,6 +1,9 @@
 package com.opencray.runtime.skills
 
 import java.io.File
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -225,6 +228,75 @@ class SkillPackageManagerTest {
     assertEquals(
       listOf("find-skills", "review-skills"),
       manifestStore.load().installations.map { entry -> entry.skillId },
+    )
+  }
+
+  @Test
+  fun concurrentRemoteInstallsPreserveManifestEntries() {
+    val managedRoot = temporaryFolder.newFolder("managed-remote-concurrent")
+    val catalogRoot = temporaryFolder.newFolder("catalog-remote-concurrent")
+    val manifestFile = File(temporaryFolder.root, "skills-manifest-remote-concurrent.json")
+    val firstManifestStore = SkillInstallManifestStore.fromFile(manifestFile)
+    val secondManifestStore = SkillInstallManifestStore.fromFile(manifestFile)
+    val fetchReady = CountDownLatch(2)
+    val continueFetch = CountDownLatch(1)
+    val beforeFetchWrite = {
+      fetchReady.countDown()
+      if (!continueFetch.await(5, TimeUnit.SECONDS)) {
+        throw IllegalStateException("Timed out waiting for concurrent fetch release.")
+      }
+    }
+    val firstManager = SkillPackageManager(
+      managedRoot = managedRoot,
+      catalogRoot = catalogRoot,
+      manifestStore = firstManifestStore,
+      remoteSourceFetcher = FakeRemoteSkillSourceFetcher(
+        skillDirectoryName = "skills/find-skills",
+        skillName = "find-skills",
+        beforeWrite = beforeFetchWrite,
+      ),
+      clock = { 56_000L },
+    )
+    val secondManager = SkillPackageManager(
+      managedRoot = managedRoot,
+      catalogRoot = catalogRoot,
+      manifestStore = secondManifestStore,
+      remoteSourceFetcher = FakeRemoteSkillSourceFetcher(
+        skillDirectoryName = "skills/review-skills",
+        skillName = "review-skills",
+        beforeWrite = beforeFetchWrite,
+      ),
+      clock = { 57_000L },
+    )
+    val firstResult = AtomicReference<SkillPackageInstallAttempt>()
+    val secondResult = AtomicReference<SkillPackageInstallAttempt>()
+    val failure = AtomicReference<Throwable>()
+    val firstThread = Thread {
+      runCatching {
+        firstResult.set(firstManager.installFromRemoteSource("roin-orca/skills@find-skills"))
+      }.onFailure { error -> failure.compareAndSet(null, error) }
+    }
+    val secondThread = Thread {
+      runCatching {
+        secondResult.set(secondManager.installFromRemoteSource("roin-orca/skills@review-skills"))
+      }.onFailure { error -> failure.compareAndSet(null, error) }
+    }
+
+    firstThread.start()
+    secondThread.start()
+    assertTrue(fetchReady.await(5, TimeUnit.SECONDS))
+    continueFetch.countDown()
+    firstThread.join(5_000)
+    secondThread.join(5_000)
+
+    assertFalse(firstThread.isAlive)
+    assertFalse(secondThread.isAlive)
+    failure.get()?.let { throw AssertionError("Concurrent install failed.", it) }
+    assertTrue(firstResult.get().succeeded)
+    assertTrue(secondResult.get().succeeded)
+    assertEquals(
+      listOf("find-skills", "review-skills"),
+      SkillInstallManifestStore.fromFile(manifestFile).load().installations.map { entry -> entry.skillId },
     )
   }
 
@@ -517,6 +589,7 @@ class SkillPackageManagerTest {
     private val descriptionProvider: () -> String = { description },
     private val resolvedCommitShaProvider: () -> String = { "deadbeef" },
     private val extraSkills: List<FakeRemoteSkill> = emptyList(),
+    private val beforeWrite: () -> Unit = {},
   ) : RemoteSkillSourceFetcher {
     var fetchCount: Int = 0
 
@@ -527,6 +600,7 @@ class SkillPackageManagerTest {
       fetchCount += 1
       val repositoryRoot = File(stagingRoot, "repo")
       val skillDirectory = File(repositoryRoot, skillDirectoryName)
+      beforeWrite()
       if (!skillDirectory.exists()) {
         skillDirectory.mkdirs()
       }

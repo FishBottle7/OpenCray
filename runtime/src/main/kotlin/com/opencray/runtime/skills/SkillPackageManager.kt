@@ -4,6 +4,8 @@ import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.RecordStorageUpdate
+import com.opencray.persistence.store.file.updateRecord
 import com.opencray.skills.LoadedSkill
 import com.opencray.skills.SkillLoader
 import java.io.File
@@ -241,6 +243,20 @@ class SkillInstallManifestStore private constructor(
     )
   }
 
+  fun <T> update(
+    update: (SkillInstallManifest) -> SkillInstallManifestStoreUpdate<T>,
+  ): T = storage.updateRecord(
+    name = fileName,
+    serializer = SkillInstallManifest.serializer(),
+  ) { current ->
+    val updated = update(current ?: SkillInstallManifest())
+    RecordStorageUpdate(
+      value = updated.manifest,
+      result = updated.result,
+      write = updated.write,
+    )
+  }
+
   companion object {
     fun fromFile(file: File): SkillInstallManifestStore {
       val absoluteFile = file.absoluteFile
@@ -253,6 +269,12 @@ class SkillInstallManifestStore private constructor(
     }
   }
 }
+
+data class SkillInstallManifestStoreUpdate<T>(
+  val manifest: SkillInstallManifest,
+  val result: T,
+  val write: Boolean = true,
+)
 
 class SkillPackageManager(
   private val managedRoot: File,
@@ -329,24 +351,31 @@ class SkillPackageManager(
   }
 
   fun refreshManifest(): SkillInstallManifest {
-    val existing = manifestStore.load()
-    val normalizedInstallations = existing.installations
-      .filter { entry ->
-        val installRoot = File(entry.installRootPath)
-        installRoot.exists() && isInsideManagedRoot(installRoot)
+    return manifestStore.update { existing ->
+      val normalizedInstallations = existing.installations
+        .filter { entry ->
+          val installRoot = File(entry.installRootPath)
+          installRoot.exists() && isInsideManagedRoot(installRoot)
+        }
+        .sortedBy(SkillInstallManifestEntry::skillId)
+      if (normalizedInstallations == existing.installations) {
+        return@update SkillInstallManifestStoreUpdate(
+          manifest = existing,
+          result = existing,
+          write = false,
+        )
       }
-      .sortedBy(SkillInstallManifestEntry::skillId)
-    if (normalizedInstallations == existing.installations) {
-      return existing
+      val now = clock()
+      val updated = existing.copy(
+        recordVersion = existing.recordVersion + 1L,
+        updatedAtEpochMs = now,
+        installations = normalizedInstallations,
+      )
+      SkillInstallManifestStoreUpdate(
+        manifest = updated,
+        result = updated,
+      )
     }
-    val now = clock()
-    val updated = existing.copy(
-      recordVersion = existing.recordVersion + 1L,
-      updatedAtEpochMs = now,
-      installations = normalizedInstallations,
-    )
-    manifestStore.save(updated)
-    return updated
   }
 
   fun installFromCatalog(skillId: String): SkillPackageInstallResult? {
@@ -354,7 +383,7 @@ class SkillPackageManager(
     if (normalizedSkillId.isEmpty()) {
       return null
     }
-    val manifest = refreshManifest()
+    refreshManifest()
     val catalogSkill = loadCatalogSkill(normalizedSkillId) ?: return null
     val sourceDirectory = File(catalogSkill.source.skillDirectoryPath)
     if (!sourceDirectory.isDirectory) {
@@ -365,7 +394,6 @@ class SkillPackageManager(
     val staged = stageSkillDirectory(sourceDirectory)
     try {
       return installValidatedSkill(
-        manifest = manifest,
         stagedSkillDirectory = staged.skillDirectory,
         expectedSkillId = normalizedSkillId,
         sourceType = SkillInstallSourceType.LOCAL_CATALOG.wireValue,
@@ -390,7 +418,7 @@ class SkillPackageManager(
       errorMessage = "Source '$sourceRef' is not a supported remote skill source.",
     )
     return try {
-      val manifest = refreshManifest()
+      refreshManifest()
       ensureManagedRoot()
       val stagingRoot = File(stagingRootPath(), UUID.randomUUID().toString())
       val fetched = remoteSourceFetcher.fetch(
@@ -407,7 +435,6 @@ class SkillPackageManager(
         val skillDirectory = File(selection.source.skillDirectoryPath)
         SkillPackageInstallAttempt(
           result = installValidatedSkill(
-            manifest = manifest,
             stagedSkillDirectory = skillDirectory,
             expectedSkillId = selection.name,
             sourceType = resolvedSource.sourceType.wireValue,
@@ -588,7 +615,7 @@ class SkillPackageManager(
         errorMessage = "Local skill source '$sourceRef' was not found.",
       )
     return try {
-      val manifest = refreshManifest()
+      refreshManifest()
       ensureManagedRoot()
       val selection = selectSkillFromRoot(
         searchRoot = normalizedSource,
@@ -601,7 +628,6 @@ class SkillPackageManager(
       try {
         SkillPackageInstallAttempt(
           result = installValidatedSkill(
-            manifest = manifest,
             stagedSkillDirectory = staged.skillDirectory,
             expectedSkillId = selection.name,
             sourceType = SkillInstallSourceType.LOCAL_PATH.wireValue,
@@ -720,12 +746,9 @@ class SkillPackageManager(
       )
     }.toMutableList()
     if (manifestEntries.isNotEmpty()) {
-      manifestStore.save(
-        manifest.copy(
-          recordVersion = manifest.recordVersion + 1L,
-          updatedAtEpochMs = checkedAtEpochMs,
-          installations = updatedEntriesById.values.sortedBy(SkillInstallManifestEntry::skillId),
-        ),
+      persistCheckedManifestEntries(
+        skillIds = manifestEntries.mapTo(linkedSetOf(), SkillInstallManifestEntry::skillId),
+        checkedAtEpochMs = checkedAtEpochMs,
       )
     }
     val missingProvenanceSkillIds = when {
@@ -810,26 +833,68 @@ class SkillPackageManager(
     if (!installedSkillDirectory.exists() || !installedSkillDirectory.deleteRecursively()) {
       return null
     }
-    val now = clock()
-    val updatedInstallations = manifest.installations
-      .filterNot { entry -> entry.skillId == normalizedSkillId }
-      .sortedBy(SkillInstallManifestEntry::skillId)
-    val manifestEntryRemoved = updatedInstallations.size != manifest.installations.size
-    if (manifestEntryRemoved) {
-      manifestStore.save(
-        manifest.copy(
-          recordVersion = manifest.recordVersion + 1L,
-          updatedAtEpochMs = now,
-          installations = updatedInstallations,
-        ),
-      )
-    }
+    val manifestEntryRemoved = removeManifestEntry(normalizedSkillId)
     return SkillPackageRemoveResult(
       skillId = normalizedSkillId,
       removedDirectory = installedSkillDirectory,
       manifestEntryRemoved = manifestEntryRemoved,
     )
   }
+
+  private fun persistCheckedManifestEntries(
+    skillIds: Set<String>,
+    checkedAtEpochMs: Long,
+  ) {
+    manifestStore.update { existing ->
+      val updatedInstallations = existing.installations.map { entry ->
+        if (entry.skillId in skillIds) {
+          entry.copy(lastCheckedAtEpochMs = checkedAtEpochMs)
+        } else {
+          entry
+        }
+      }
+      if (updatedInstallations == existing.installations) {
+        return@update SkillInstallManifestStoreUpdate(
+          manifest = existing,
+          result = Unit,
+          write = false,
+        )
+      }
+      val updated = existing.copy(
+        recordVersion = existing.recordVersion + 1L,
+        updatedAtEpochMs = checkedAtEpochMs,
+        installations = updatedInstallations.sortedBy(SkillInstallManifestEntry::skillId),
+      )
+      SkillInstallManifestStoreUpdate(
+        manifest = updated,
+        result = Unit,
+      )
+    }
+  }
+
+  private fun removeManifestEntry(skillId: String): Boolean =
+    manifestStore.update { existing ->
+      val updatedInstallations = existing.installations
+        .filterNot { entry -> entry.skillId == skillId }
+        .sortedBy(SkillInstallManifestEntry::skillId)
+      val removed = updatedInstallations.size != existing.installations.size
+      if (!removed) {
+        return@update SkillInstallManifestStoreUpdate(
+          manifest = existing,
+          result = false,
+          write = false,
+        )
+      }
+      val updated = existing.copy(
+        recordVersion = existing.recordVersion + 1L,
+        updatedAtEpochMs = clock(),
+        installations = updatedInstallations,
+      )
+      SkillInstallManifestStoreUpdate(
+        manifest = updated,
+        result = true,
+      )
+    }
 
   private fun checkManifestEntry(
     entry: SkillInstallManifestEntry,
@@ -1144,7 +1209,6 @@ class SkillPackageManager(
   }
 
   private fun installValidatedSkill(
-    manifest: SkillInstallManifest,
     stagedSkillDirectory: File,
     expectedSkillId: String,
     sourceType: String,
@@ -1167,58 +1231,66 @@ class SkillPackageManager(
       targetDirectory = targetDirectory,
     )
     val now = clock()
-    val entry = SkillInstallManifestEntry(
+    val manifestEntry = saveManifestEntry(
       skillId = validatedSkill.name,
       installRootPath = canonicalInvariantPath(targetDirectory),
       sourceType = sourceType,
       sourceRef = sourceRef,
       sourcePath = sourcePath,
-      selectedSkillName = validatedSkill.name,
       sourceRelativePath = sourceRelativePath,
       resolvedRevision = resolvedRevision,
       resolvedCommitSha = resolvedCommitSha,
       contentHash = computeDirectoryHash(targetDirectory),
-      installedAtEpochMs = manifest.installations
-        .firstOrNull { installation -> installation.skillId == validatedSkill.name }
-        ?.installedAtEpochMs
-        ?: now,
       updatedAtEpochMs = now,
-      lastCheckedAtEpochMs = now,
     )
-    saveManifestEntry(existing = manifest, entry = entry, updatedAtEpochMs = now)
     return SkillPackageInstallResult(
       skillId = validatedSkill.name,
       installedSkill = validatedSkill,
       targetDirectory = targetDirectory,
-      manifestEntry = entry,
+      manifestEntry = manifestEntry,
     )
   }
 
   private fun saveManifestEntry(
-    existing: SkillInstallManifest,
-    entry: SkillInstallManifestEntry,
+    skillId: String,
+    installRootPath: String,
+    sourceType: String,
+    sourceRef: String,
+    sourcePath: String?,
+    sourceRelativePath: String?,
+    resolvedRevision: String?,
+    resolvedCommitSha: String?,
+    contentHash: String,
     updatedAtEpochMs: Long,
-  ) {
-    saveManifestSnapshot(
-      existing = existing,
+  ): SkillInstallManifestEntry = manifestStore.update { existing ->
+    val entry = SkillInstallManifestEntry(
+      skillId = skillId,
+      installRootPath = installRootPath,
+      sourceType = sourceType,
+      sourceRef = sourceRef,
+      sourcePath = sourcePath,
+      selectedSkillName = skillId,
+      sourceRelativePath = sourceRelativePath,
+      resolvedRevision = resolvedRevision,
+      resolvedCommitSha = resolvedCommitSha,
+      contentHash = contentHash,
+      installedAtEpochMs = existing.installations
+        .firstOrNull { installation -> installation.skillId == skillId }
+        ?.installedAtEpochMs
+        ?: updatedAtEpochMs,
+      updatedAtEpochMs = updatedAtEpochMs,
+      lastCheckedAtEpochMs = updatedAtEpochMs,
+    )
+    val updated = existing.copy(
+      recordVersion = existing.recordVersion + 1L,
       updatedAtEpochMs = updatedAtEpochMs,
       installations = (
         existing.installations.filterNot { installation -> installation.skillId == entry.skillId } + entry
         ).sortedBy(SkillInstallManifestEntry::skillId),
     )
-  }
-
-  private fun saveManifestSnapshot(
-    existing: SkillInstallManifest,
-    updatedAtEpochMs: Long,
-    installations: List<SkillInstallManifestEntry>,
-  ) {
-    manifestStore.save(
-      existing.copy(
-        recordVersion = existing.recordVersion + 1L,
-        updatedAtEpochMs = updatedAtEpochMs,
-        installations = installations,
-      ),
+    SkillInstallManifestStoreUpdate(
+      manifest = updated,
+      result = entry,
     )
   }
 
@@ -1361,8 +1433,8 @@ class SkillPackageManager(
       try {
         val staged = stageSkillDirectory(File(skill.source.skillDirectoryPath))
         try {
+          refreshManifest()
           val result = installValidatedSkill(
-            manifest = refreshManifest(),
             stagedSkillDirectory = staged.skillDirectory,
             expectedSkillId = skill.name,
             sourceType = sourceType,
