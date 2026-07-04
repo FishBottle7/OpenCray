@@ -313,6 +313,7 @@ internal data class InterruptedRunRepairEvidence(
   val repairAfterEpochMs: Long? = null,
   val runtimeExecutionOwnershipTier: String? = null,
   val durableRuntimeControllerId: String? = null,
+  val managedProcessContinuationBasis: String? = null,
 ) {
   init {
     require(sessionId.isNotBlank()) { "InterruptedRunRepairEvidence sessionId must not be blank." }
@@ -333,6 +334,9 @@ internal data class InterruptedRunRepairEvidence(
     }
     require(durableRuntimeControllerId == null || durableRuntimeControllerId.isNotBlank()) {
       "InterruptedRunRepairEvidence durableRuntimeControllerId must not be blank."
+    }
+    require(managedProcessContinuationBasis == null || managedProcessContinuationBasis.isNotBlank()) {
+      "InterruptedRunRepairEvidence managedProcessContinuationBasis must not be blank."
     }
   }
 }
@@ -565,6 +569,7 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
         taskId = process.taskId,
         detailId = process.processId,
         repairAfterEpochMs = managedProcessReconnectRetryAfterEpochMs(process),
+        managedProcessContinuationBasis = ManagedProcessContinuationBases.RECONNECT_HOLD,
         runtimeExecutionOwnershipTier = taskSnapshotForManagedProcess(
           process = process,
           taskSnapshots = taskSnapshots,
@@ -711,6 +716,8 @@ private fun managedProcessReconnectRepairEvidenceForQueueTask(
       repairAfterEpochMs = repairAfterEpochMs,
       runtimeExecutionOwnershipTier = runtimeExecutionOwnershipTierForTask(taskSnapshot),
       durableRuntimeControllerId = durableRuntimeControllerIdForTask(taskSnapshot),
+      managedProcessContinuationBasis = managedProcessContinuationBasisForTask(taskSnapshot)
+        ?: ManagedProcessContinuationBases.RECONNECT_HOLD,
     )
   }
 }
@@ -763,6 +770,12 @@ private fun managedProcessReconnectRetryAfterEpochMsForTask(
 ]
   ?.trim()
   ?.toLongOrNull()
+
+private fun managedProcessContinuationBasisForTask(
+  taskSnapshot: SessionQueueTaskSnapshot,
+): String? = taskSnapshot.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS]
+  ?.trim()
+  ?.takeIf(String::isNotBlank)
 
 private fun List<InterruptedRunRepairEvidence>.withManagedProcessReconnectBackoff():
   List<InterruptedRunRepairEvidence> {

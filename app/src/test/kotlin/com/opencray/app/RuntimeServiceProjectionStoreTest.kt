@@ -105,6 +105,7 @@ class RuntimeServiceProjectionStoreTest {
             repairAfterEpochMs = 4_500L,
             runtimeExecutionOwnershipTier = "runtime_process",
             durableRuntimeControllerId = "durable-controller-repair",
+            managedProcessContinuationBasis = ManagedProcessContinuationBases.RECONNECT_HOLD,
           ),
         ),
       ),

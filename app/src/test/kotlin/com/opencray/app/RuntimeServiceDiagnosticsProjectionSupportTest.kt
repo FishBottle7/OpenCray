@@ -195,14 +195,16 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
             "session-a" to listOf(
               InterruptedRunRepairEvidence(
                 sessionId = "session-a",
-                kind = InterruptedRunRepairEvidenceKind.PROMPT_CHECKPOINT,
+                kind = InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
                 target = RuntimeServiceTarget.INTERACTIVE,
                 runId = "run-a",
                 taskId = "task-a",
-                detailId = "checkpoint-a",
+                detailId = "process-a",
                 repairAfterEpochMs = 9_500L,
                 runtimeExecutionOwnershipTier = "runtime_process",
                 durableRuntimeControllerId = "durable-controller-a",
+                managedProcessContinuationBasis =
+                  ManagedProcessContinuationBases.CHECKPOINT_RESUME,
               ),
             ),
           ),
@@ -219,12 +221,13 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertEquals(9_500L, repair["nextRepairAfterEpochMs"])
     val evidenceBySession = repair["repairEvidenceBySession"] as Map<*, *>
     val evidence = (evidenceBySession["session-a"] as List<*>).single() as Map<*, *>
-    assertEquals("prompt_checkpoint", evidence["kind"])
+    assertEquals("managed_process_reconnect", evidence["kind"])
     assertEquals("interactive", evidence["target"])
-    assertEquals("checkpoint-a", evidence["detailId"])
+    assertEquals("process-a", evidence["detailId"])
     assertEquals(9_500L, evidence["repairAfterEpochMs"])
     assertEquals("runtime_process", evidence["runtimeExecutionOwnershipTier"])
     assertEquals("durable-controller-a", evidence["durableRuntimeControllerId"])
+    assertEquals("checkpoint_resume", evidence["managedProcessContinuationBasis"])
   }
 
   @Test
