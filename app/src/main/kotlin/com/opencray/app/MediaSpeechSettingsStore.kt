@@ -2,10 +2,18 @@ package com.opencray.app
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.opencray.persistence.PersistenceSchemaVersion
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.RecordStorageUpdate
+import com.opencray.persistence.store.file.updateRecord
+import java.io.File
+import kotlinx.serialization.Serializable
 import org.json.JSONObject
 
 private const val DEFAULT_MEDIA_SPEECH_SETTINGS_PREFERENCES =
   "opencray.media-speech-settings"
+private const val MEDIA_SPEECH_SETTINGS_FILE_NAME = "media-speech-settings.json"
 
 internal object MediaSpeechSettingsStoreKeys {
   const val STATE = "state"
@@ -279,6 +287,86 @@ internal class SharedPreferencesMediaSpeechSettingsKeyValueStore(
   override fun clear() {
     sharedPreferences.edit().clear().apply()
   }
+
+  fun hasAnyPersistedSetting(): Boolean =
+    MEDIA_SPEECH_SETTING_KEYS.any(sharedPreferences::contains)
+}
+
+internal class FileBackedMediaSpeechSettingsKeyValueStore(
+  private val storage: DurableTextStorage,
+  private val clock: () -> Long = System::currentTimeMillis,
+) : MediaSpeechSettingsKeyValueStore {
+  private val lock = Any()
+
+  override fun getString(key: String): String? = synchronized(lock) {
+    loadRecord().values[key]
+  }
+
+  override fun putString(key: String, value: String) {
+    synchronized(lock) {
+      updateValues { values ->
+        values + (key to value)
+      }
+    }
+  }
+
+  override fun clear() {
+    synchronized(lock) {
+      storage.delete(MEDIA_SPEECH_SETTINGS_FILE_NAME)
+    }
+  }
+
+  fun migrateFromLegacyIfEmpty(legacyStore: MediaSpeechSettingsKeyValueStore) {
+    synchronized(lock) {
+      if (hasPersistedRecord()) {
+        return
+      }
+      val legacyState = legacyStore.getString(MediaSpeechSettingsStoreKeys.STATE)
+        ?: return
+      updateValues { values ->
+        values + (MediaSpeechSettingsStoreKeys.STATE to legacyState)
+      }
+    }
+  }
+
+  private fun hasPersistedRecord(): Boolean =
+    !storage.readText(MEDIA_SPEECH_SETTINGS_FILE_NAME).isNullOrBlank()
+
+  private fun loadRecord(): PersistedMediaSpeechSettingsRecord =
+    storage.updateRecord(
+      name = MEDIA_SPEECH_SETTINGS_FILE_NAME,
+      serializer = PersistedMediaSpeechSettingsRecord.serializer(),
+    ) { persisted ->
+      val existing = persisted ?: PersistedMediaSpeechSettingsRecord()
+      val repaired = existing.normalized()
+      RecordStorageUpdate(
+        value = repaired,
+        result = repaired,
+        write = persisted != null && repaired != existing,
+      )
+    }
+
+  private fun updateValues(
+    update: (Map<String, String>) -> Map<String, String>,
+  ) {
+    val now = clock()
+    storage.updateRecord(
+      name = MEDIA_SPEECH_SETTINGS_FILE_NAME,
+      serializer = PersistedMediaSpeechSettingsRecord.serializer(),
+    ) { persisted ->
+      val existing = (persisted ?: PersistedMediaSpeechSettingsRecord()).normalized()
+      val updatedValues = update(existing.values)
+        .filterKeys(MEDIA_SPEECH_SETTING_KEYS::contains)
+      RecordStorageUpdate(
+        value = existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = now,
+          values = updatedValues,
+        ),
+        result = Unit,
+      )
+    }
+  }
 }
 
 internal class MediaSpeechSettingsStore(
@@ -311,10 +399,39 @@ internal class MediaSpeechSettingsStore(
     fun fromContext(
       context: Context,
       preferencesName: String = DEFAULT_MEDIA_SPEECH_SETTINGS_PREFERENCES,
-    ): MediaSpeechSettingsStore = MediaSpeechSettingsStore(
-      keyValueStore = SharedPreferencesMediaSpeechSettingsKeyValueStore(
-        context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE),
-      ),
-    )
+    ): MediaSpeechSettingsStore {
+      val appContext = context.applicationContext
+      val fileBackedStore = FileBackedMediaSpeechSettingsKeyValueStore(
+        storage = DirectoryDurableTextStorage(
+          File(
+            appContext.filesDir,
+            FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+          ),
+        ),
+      )
+      val legacyStore = SharedPreferencesMediaSpeechSettingsKeyValueStore(
+        appContext.getSharedPreferences(preferencesName, Context.MODE_PRIVATE),
+      )
+      if (legacyStore.hasAnyPersistedSetting()) {
+        fileBackedStore.migrateFromLegacyIfEmpty(legacyStore)
+      }
+      return MediaSpeechSettingsStore(keyValueStore = fileBackedStore)
+    }
   }
 }
+
+@Serializable
+private data class PersistedMediaSpeechSettingsRecord(
+  val schemaVersion: Int = PersistenceSchemaVersion.CURRENT,
+  val recordVersion: Long = 0L,
+  val updatedAtEpochMs: Long = 0L,
+  val values: Map<String, String> = emptyMap(),
+) {
+  fun normalized(): PersistedMediaSpeechSettingsRecord = copy(
+    values = values.filterKeys(MEDIA_SPEECH_SETTING_KEYS::contains),
+  )
+}
+
+private val MEDIA_SPEECH_SETTING_KEYS: Set<String> = setOf(
+  MediaSpeechSettingsStoreKeys.STATE,
+)
