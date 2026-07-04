@@ -1897,9 +1897,32 @@ class RecoveryAwareQueueSnapshotStoreTest {
       "managed_process_observation_checkpoint_resume",
       restoredTask.task.metadata[METADATA_RECOVERY_REASON],
     )
+    assertEquals(
+      ManagedProcessContinuationBases.CHECKPOINT_RESUME,
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS],
+    )
+    val diagnostics = runLifecycleDiagnosticsFrom(restoredTask.task.metadata)
+    assertEquals(ManagedProcessContinuationBases.CHECKPOINT_RESUME, diagnostics.managedProcessContinuationBasis)
+    assertEquals(
+      ManagedProcessContinuationBases.CHECKPOINT_RESUME,
+      diagnostics.toMap()["managedProcessContinuationBasis"],
+    )
     assertEquals(5_000L, restoredTask.task.updatedAtEpochMs)
     assertNull(restoredTask.lastErrorCode)
     assertNull(restoredTask.lastErrorMessage)
+
+    val recoveryMetadata = runEventJournalStore.listForRun(runId)
+      .single { entry -> entry.kind == PersistedAgentRunEventKind.RECOVERY }
+      .payload
+      .resultMetadata
+    assertEquals(
+      "resume_from_checkpoint",
+      recoveryMetadata[RunLifecycleMetadataKeys.RECOVERY_ACTION],
+    )
+    assertEquals(
+      ManagedProcessContinuationBases.CHECKPOINT_RESUME,
+      recoveryMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS],
+    )
   }
 
   @Test
@@ -2058,10 +2081,15 @@ class RecoveryAwareQueueSnapshotStoreTest {
       "1",
       restoredTask.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_ATTEMPT_COUNT],
     )
+    assertEquals(
+      ManagedProcessContinuationBases.RECONNECT_HOLD,
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS],
+    )
     val diagnostics = runLifecycleDiagnosticsFrom(restoredTask.task.metadata)
     assertEquals(listOf(processId), diagnostics.managedProcessReconnectProcessIds)
     assertEquals("retry_scheduled", diagnostics.managedProcessReconnectRecoveryState)
     assertEquals(9_000L, diagnostics.managedProcessReconnectRetryAfterEpochMs)
+    assertEquals(ManagedProcessContinuationBases.RECONNECT_HOLD, diagnostics.managedProcessContinuationBasis)
     assertNull(restoredTask.lastErrorCode)
     assertNull(restoredTask.lastErrorMessage)
 
@@ -2084,6 +2112,10 @@ class RecoveryAwareQueueSnapshotStoreTest {
     assertEquals(
       "9000",
       recoveryMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS],
+    )
+    assertEquals(
+      ManagedProcessContinuationBases.RECONNECT_HOLD,
+      recoveryMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS],
     )
   }
 

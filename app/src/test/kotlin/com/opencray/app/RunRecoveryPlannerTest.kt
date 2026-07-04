@@ -336,6 +336,7 @@ class RunRecoveryPlannerTest {
 
     assertEquals(RunRecoveryAction.RESUME_RECONNECT_PROCESS, plan.action)
     assertEquals("live_managed_process_detected", plan.reasonCode)
+    assertEquals(ManagedProcessContinuationBases.RECONNECT_HOLD, plan.managedProcessContinuationBasis)
     assertFalse(plan.safeToAutoResume)
     assertTrue(plan.requiresUserAction)
   }
@@ -404,6 +405,11 @@ class RunRecoveryPlannerTest {
     assertEquals("managed_process_observation_checkpoint_resume", plan.reasonCode)
     assertEquals(PromptCheckpointKind.COMMENTARY_EMITTED, plan.checkpointKind)
     assertEquals("tool_call", plan.journalTailKind)
+    assertEquals(ManagedProcessContinuationBases.CHECKPOINT_RESUME, plan.managedProcessContinuationBasis)
+    assertEquals(
+      ManagedProcessContinuationBases.CHECKPOINT_RESUME,
+      plan.toMap()["managedProcessContinuationBasis"],
+    )
     assertTrue(plan.safeToAutoResume)
     assertFalse(plan.requiresUserAction)
   }
@@ -477,6 +483,7 @@ class RunRecoveryPlannerTest {
     assertEquals("retry_scheduled", plan.managedProcessReconnectRecoveryState)
     assertEquals(9_000L, plan.managedProcessReconnectRetryAfterEpochMs)
     assertEquals(2, plan.managedProcessReconnectAttemptCount)
+    assertEquals(ManagedProcessContinuationBases.RECONNECT_HOLD, plan.managedProcessContinuationBasis)
     assertFalse(plan.safeToAutoResume)
     assertTrue(plan.requiresUserAction)
     assertEquals(
@@ -484,6 +491,10 @@ class RunRecoveryPlannerTest {
       plan.toMap()["managedProcessReconnectProcessIds"],
     )
     assertEquals("retry_scheduled", plan.toMap()["managedProcessReconnectRecoveryState"])
+    assertEquals(
+      ManagedProcessContinuationBases.RECONNECT_HOLD,
+      plan.toMap()["managedProcessContinuationBasis"],
+    )
   }
 
   @Test
@@ -557,6 +568,7 @@ class RunRecoveryPlannerTest {
     assertEquals("attached_live", plan.managedProcessReconnectRecoveryState)
     assertNull(plan.managedProcessReconnectRetryAfterEpochMs)
     assertEquals(2, plan.managedProcessReconnectAttemptCount)
+    assertEquals(ManagedProcessContinuationBases.LIVE_REATTACH, plan.managedProcessContinuationBasis)
   }
 
   @Test

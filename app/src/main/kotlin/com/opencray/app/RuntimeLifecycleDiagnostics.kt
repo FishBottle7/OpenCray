@@ -29,12 +29,20 @@ internal object RunLifecycleMetadataKeys {
     "_host.managedProcessReconnectRetryAfterEpochMs"
   const val MANAGED_PROCESS_RECONNECT_ATTEMPT_COUNT: String =
     "_host.managedProcessReconnectAttemptCount"
+  const val MANAGED_PROCESS_CONTINUATION_BASIS: String =
+    "_host.managedProcessContinuationBasis"
   const val SUBMISSION_SOURCE: String = "_host.submissionSource"
   const val PREAPPROVED_TOOL_NAME: String = "_host.preapprovedToolName"
 }
 
 internal object RuntimeExecutionOwnershipTiers {
   const val RUNTIME_PROCESS: String = "runtime_process"
+}
+
+internal object ManagedProcessContinuationBases {
+  const val CHECKPOINT_RESUME: String = "checkpoint_resume"
+  const val LIVE_REATTACH: String = "live_reattach"
+  const val RECONNECT_HOLD: String = "reconnect_hold"
 }
 
 internal object RunLifecycleRecoveryReasons {
@@ -123,6 +131,7 @@ internal data class RunLifecycleDiagnostics(
   val managedProcessReconnectRecoveryState: String? = null,
   val managedProcessReconnectRetryAfterEpochMs: Long? = null,
   val managedProcessReconnectAttemptCount: Int? = null,
+  val managedProcessContinuationBasis: String? = null,
   val submissionSource: String? = null,
   val recoveryReason: String? = null,
   val queueRestoreEpochMs: Long? = null,
@@ -144,6 +153,7 @@ internal data class RunLifecycleDiagnostics(
       managedProcessReconnectRecoveryState.isNullOrBlank() &&
       managedProcessReconnectRetryAfterEpochMs == null &&
       managedProcessReconnectAttemptCount == null &&
+      managedProcessContinuationBasis.isNullOrBlank() &&
       submissionSource.isNullOrBlank() &&
       recoveryReason.isNullOrBlank() &&
       queueRestoreEpochMs == null &&
@@ -179,6 +189,9 @@ internal data class RunLifecycleDiagnostics(
       ?.let { put("managedProcessReconnectRetryAfterEpochMs", it) }
     managedProcessReconnectAttemptCount
       ?.let { put("managedProcessReconnectAttemptCount", it) }
+    managedProcessContinuationBasis
+      ?.takeIf(String::isNotBlank)
+      ?.let { put("managedProcessContinuationBasis", it) }
     submissionSource?.takeIf(String::isNotBlank)?.let { put("submissionSource", it) }
     recoveryReason?.takeIf(String::isNotBlank)?.let { put("recoveryReason", it) }
     queueRestoreEpochMs?.let { put("queueRestoreEpochMs", it) }
@@ -242,6 +255,10 @@ internal fun runLifecycleDiagnosticsFrom(
         ?.trim()
         ?.toIntOrNull()
         ?.takeIf { attempt -> attempt > 0 },
+    managedProcessContinuationBasis =
+      taskMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS]
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
     submissionSource = taskMetadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE]?.trim(),
     recoveryReason = recoveryReason,
     queueRestoreEpochMs = taskMetadata[METADATA_QUEUE_RESTORE_EPOCH_MS]?.toLongOrNull(),

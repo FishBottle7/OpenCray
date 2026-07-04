@@ -50,6 +50,7 @@ internal data class RunRecoveryPlan(
   val managedProcessReconnectRecoveryState: String? = null,
   val managedProcessReconnectRetryAfterEpochMs: Long? = null,
   val managedProcessReconnectAttemptCount: Int? = null,
+  val managedProcessContinuationBasis: String? = null,
 ) {
   fun toMap(): Map<String, Any?> = buildMap {
     put("action", action.name.lowercase())
@@ -67,6 +68,7 @@ internal data class RunRecoveryPlan(
     managedProcessReconnectRecoveryState?.let { put("managedProcessReconnectRecoveryState", it) }
     managedProcessReconnectRetryAfterEpochMs?.let { put("managedProcessReconnectRetryAfterEpochMs", it) }
     managedProcessReconnectAttemptCount?.let { put("managedProcessReconnectAttemptCount", it) }
+    managedProcessContinuationBasis?.let { put("managedProcessContinuationBasis", it) }
   }
 }
 
@@ -110,6 +112,7 @@ internal class RunRecoveryPlanner {
         checkpointKind = checkpoint.checkpointKind,
         approvalState = input.approvalState,
         journalTailKind = journalTailKind,
+        managedProcessContinuationBasis = ManagedProcessContinuationBases.CHECKPOINT_RESUME,
       )
     }
 
@@ -443,6 +446,7 @@ internal class RunRecoveryPlanner {
       managedProcessReconnectRecoveryState = evidence.recoveryState,
       managedProcessReconnectRetryAfterEpochMs = evidence.retryAfterEpochMs,
       managedProcessReconnectAttemptCount = evidence.attemptCount,
+      managedProcessContinuationBasis = evidence.continuationBasis,
     )
   }
 
@@ -468,6 +472,11 @@ internal class RunRecoveryPlanner {
       attemptCount = liveProcesses
         .mapNotNull { process -> process.reconnectAttemptCount() }
         .maxOrNull(),
+      continuationBasis = if (liveProcesses.hasStableLiveReconnectEvidence()) {
+        ManagedProcessContinuationBases.LIVE_REATTACH
+      } else {
+        ManagedProcessContinuationBases.RECONNECT_HOLD
+      },
     )
   }
 
@@ -497,6 +506,12 @@ internal class RunRecoveryPlanner {
 
   private fun ManagedProcessSnapshot.reconnectAttemptCount(): Int? =
     reconnectSnapshotEvidence().attemptCount
+
+  private fun List<ManagedProcessSnapshot>.hasStableLiveReconnectEvidence(): Boolean =
+    isNotEmpty() && all { process ->
+      process.reconnectStatus() == "attached" ||
+        process.reconnectRecoveryState() == "attached_live"
+    }
 
   private fun runNeedsTerminalRepair(
     run: AgentRunSnapshot,
@@ -554,4 +569,5 @@ private data class ManagedProcessReconnectEvidence(
   val recoveryState: String? = null,
   val retryAfterEpochMs: Long? = null,
   val attemptCount: Int? = null,
+  val continuationBasis: String? = null,
 )

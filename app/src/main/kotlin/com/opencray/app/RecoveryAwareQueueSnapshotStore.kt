@@ -718,6 +718,7 @@ internal class RecoveryAwareQueueSnapshotStore(
             key != RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RECOVERY_STATE &&
             key != RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS &&
             key != RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_ATTEMPT_COUNT &&
+            key != RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS &&
             (
               recoveryPlan?.action != RunRecoveryAction.RESUME_FROM_CHECKPOINT ||
                 (
@@ -753,7 +754,7 @@ internal class RecoveryAwareQueueSnapshotStore(
           put(RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID, checkpointId)
         }
         putRuntimeExecutionOwnershipMetadata(entry.task.metadata)
-        putAll(managedProcessReconnectMetadata(recoveryPlan))
+        putAll(managedProcessRecoveryMetadata(recoveryPlan))
       }
     }
   }
@@ -777,14 +778,21 @@ internal class RecoveryAwareQueueSnapshotStore(
     )
   }
 
-  private fun managedProcessReconnectMetadata(
+  private fun managedProcessRecoveryMetadata(
     recoveryPlan: RunRecoveryPlan?,
   ): Map<String, String> {
-    if (recoveryPlan?.action != RunRecoveryAction.RESUME_RECONNECT_PROCESS) {
-      return emptyMap()
-    }
+    val plan = recoveryPlan ?: return emptyMap()
     return buildMap {
-      recoveryPlan.managedProcessReconnectProcessIds
+      plan.managedProcessContinuationBasis
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { basis ->
+          put(RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS, basis)
+        }
+      if (plan.action != RunRecoveryAction.RESUME_RECONNECT_PROCESS) {
+        return@buildMap
+      }
+      plan.managedProcessReconnectProcessIds
         .takeIf { processIds -> processIds.isNotEmpty() }
         ?.let { processIds ->
           put(
@@ -792,26 +800,26 @@ internal class RecoveryAwareQueueSnapshotStore(
             processIds.joinToString(","),
           )
         }
-      recoveryPlan.managedProcessReconnectStatus
+      plan.managedProcessReconnectStatus
         ?.trim()
         ?.takeIf(String::isNotBlank)
         ?.let { status ->
           put(RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_STATUS, status)
         }
-      recoveryPlan.managedProcessReconnectRecoveryState
+      plan.managedProcessReconnectRecoveryState
         ?.trim()
         ?.takeIf(String::isNotBlank)
         ?.let { recoveryState ->
           put(RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RECOVERY_STATE, recoveryState)
         }
-      recoveryPlan.managedProcessReconnectRetryAfterEpochMs
+      plan.managedProcessReconnectRetryAfterEpochMs
         ?.let { retryAfterEpochMs ->
           put(
             RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS,
             retryAfterEpochMs.toString(),
           )
         }
-      recoveryPlan.managedProcessReconnectAttemptCount
+      plan.managedProcessReconnectAttemptCount
         ?.let { attemptCount ->
           put(
             RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_ATTEMPT_COUNT,
@@ -946,7 +954,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       source = rewrittenEntry.task.metadata,
       key = RunLifecycleMetadataKeys.RUNTIME_CONTROLLER_PROCESS_SEPARATE,
     )
-    putAll(managedProcessReconnectMetadata(recoveryPlan))
+    putAll(managedProcessRecoveryMetadata(recoveryPlan))
   }
 
   private fun MutableMap<String, String>.copyTrimmedMetadata(
@@ -1173,6 +1181,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS,
       RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_STATUS,
       RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RECOVERY_STATE,
+      RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS,
     )
   }
 }
