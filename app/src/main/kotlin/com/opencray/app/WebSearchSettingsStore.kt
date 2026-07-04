@@ -2,11 +2,19 @@ package com.opencray.app
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.opencray.persistence.PersistenceSchemaVersion
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.RecordStorageUpdate
+import com.opencray.persistence.store.file.updateRecord
+import java.io.File
 import java.util.UUID
+import kotlinx.serialization.Serializable
 import org.json.JSONArray
 import org.json.JSONObject
 
 private const val DEFAULT_WEB_SEARCH_SETTINGS_PREFERENCES = "opencray.web-search-settings"
+private const val WEB_SEARCH_SETTINGS_FILE_NAME = "web-search-settings.json"
 
 internal object WebSearchSettingsStoreKeys {
   const val SLOTS = "slots"
@@ -153,6 +161,86 @@ internal class SharedPreferencesWebSearchSettingsKeyValueStore(
   override fun clear() {
     sharedPreferences.edit().clear().apply()
   }
+
+  fun hasAnyPersistedSetting(): Boolean =
+    WEB_SEARCH_SETTING_KEYS.any(sharedPreferences::contains)
+}
+
+internal class FileBackedWebSearchSettingsKeyValueStore(
+  private val storage: DurableTextStorage,
+  private val clock: () -> Long = System::currentTimeMillis,
+) : WebSearchSettingsKeyValueStore {
+  private val lock = Any()
+
+  override fun getString(key: String): String? = synchronized(lock) {
+    loadRecord().values[key]
+  }
+
+  override fun putString(key: String, value: String) {
+    synchronized(lock) {
+      updateValues { values ->
+        values + (key to value)
+      }
+    }
+  }
+
+  override fun clear() {
+    synchronized(lock) {
+      storage.delete(WEB_SEARCH_SETTINGS_FILE_NAME)
+    }
+  }
+
+  fun migrateFromLegacyIfEmpty(legacyStore: WebSearchSettingsKeyValueStore) {
+    synchronized(lock) {
+      if (hasPersistedRecord()) {
+        return
+      }
+      val legacySlots = legacyStore.getString(WebSearchSettingsStoreKeys.SLOTS)
+        ?: return
+      updateValues { values ->
+        values + (WebSearchSettingsStoreKeys.SLOTS to legacySlots)
+      }
+    }
+  }
+
+  private fun hasPersistedRecord(): Boolean =
+    !storage.readText(WEB_SEARCH_SETTINGS_FILE_NAME).isNullOrBlank()
+
+  private fun loadRecord(): PersistedWebSearchSettingsRecord =
+    storage.updateRecord(
+      name = WEB_SEARCH_SETTINGS_FILE_NAME,
+      serializer = PersistedWebSearchSettingsRecord.serializer(),
+    ) { persisted ->
+      val existing = persisted ?: PersistedWebSearchSettingsRecord()
+      val repaired = existing.normalized()
+      RecordStorageUpdate(
+        value = repaired,
+        result = repaired,
+        write = persisted != null && repaired != existing,
+      )
+    }
+
+  private fun updateValues(
+    update: (Map<String, String>) -> Map<String, String>,
+  ) {
+    val now = clock()
+    storage.updateRecord(
+      name = WEB_SEARCH_SETTINGS_FILE_NAME,
+      serializer = PersistedWebSearchSettingsRecord.serializer(),
+    ) { persisted ->
+      val existing = (persisted ?: PersistedWebSearchSettingsRecord()).normalized()
+      val updatedValues = update(existing.values)
+        .filterKeys(WEB_SEARCH_SETTING_KEYS::contains)
+      RecordStorageUpdate(
+        value = existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = now,
+          values = updatedValues,
+        ),
+        result = Unit,
+      )
+    }
+  }
 }
 
 internal class WebSearchSettingsStore(
@@ -200,10 +288,39 @@ internal class WebSearchSettingsStore(
     fun fromContext(
       context: Context,
       preferencesName: String = DEFAULT_WEB_SEARCH_SETTINGS_PREFERENCES,
-    ): WebSearchSettingsStore = WebSearchSettingsStore(
-      keyValueStore = SharedPreferencesWebSearchSettingsKeyValueStore(
-        context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE),
-      ),
-    )
+    ): WebSearchSettingsStore {
+      val appContext = context.applicationContext
+      val fileBackedStore = FileBackedWebSearchSettingsKeyValueStore(
+        storage = DirectoryDurableTextStorage(
+          File(
+            appContext.filesDir,
+            FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+          ),
+        ),
+      )
+      val legacyStore = SharedPreferencesWebSearchSettingsKeyValueStore(
+        appContext.getSharedPreferences(preferencesName, Context.MODE_PRIVATE),
+      )
+      if (legacyStore.hasAnyPersistedSetting()) {
+        fileBackedStore.migrateFromLegacyIfEmpty(legacyStore)
+      }
+      return WebSearchSettingsStore(keyValueStore = fileBackedStore)
+    }
   }
 }
+
+@Serializable
+private data class PersistedWebSearchSettingsRecord(
+  val schemaVersion: Int = PersistenceSchemaVersion.CURRENT,
+  val recordVersion: Long = 0L,
+  val updatedAtEpochMs: Long = 0L,
+  val values: Map<String, String> = emptyMap(),
+) {
+  fun normalized(): PersistedWebSearchSettingsRecord = copy(
+    values = values.filterKeys(WEB_SEARCH_SETTING_KEYS::contains),
+  )
+}
+
+private val WEB_SEARCH_SETTING_KEYS: Set<String> = setOf(
+  WebSearchSettingsStoreKeys.SLOTS,
+)
