@@ -2,13 +2,21 @@ package com.opencray.app
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.opencray.persistence.PersistenceSchemaVersion
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.RecordStorageUpdate
+import com.opencray.persistence.store.file.updateRecord
 import com.opencray.policy.ExternalAccessMode
 import com.opencray.policy.SafetyAutomationMode
 import com.opencray.policy.ToolPolicyOverride
 import com.opencray.policy.WorkspaceAccessProfile
 import com.opencray.runtime.subagent.SubAgentContextMode
+import java.io.File
+import kotlinx.serialization.Serializable
 
 private const val DEFAULT_SAFETY_SETTINGS_PREFERENCES = "opencray.safety-settings"
+private const val SAFETY_SETTINGS_FILE_NAME = "safety-settings.json"
 
 internal object SafetySettingsStoreKeys {
   const val AUTOMATION_MODE_ID = "automation_mode_id"
@@ -95,6 +103,151 @@ internal interface SafetySettingsKeyValueStore {
   )
 
   fun clear()
+
+  fun loadState(defaults: SafetySettingsState = SafetySettingsState()): SafetySettingsState =
+    defaults.copy(
+      automationMode = SafetyAutomationMode.fromWireValue(
+        getString(SafetySettingsStoreKeys.AUTOMATION_MODE_ID),
+      ),
+      rollbackJournalEnabled =
+        getBoolean(SafetySettingsStoreKeys.ROLLBACK_JOURNAL_ENABLED)
+          ?: defaults.rollbackJournalEnabled,
+      maxFilesPerBatch =
+        getInt(SafetySettingsStoreKeys.MAX_FILES_PER_BATCH)
+          ?: defaults.maxFilesPerBatch,
+      maxAgentTurns =
+        getInt(SafetySettingsStoreKeys.MAX_AGENT_TURNS)
+          ?: defaults.maxAgentTurns,
+      maxToolCalls =
+        getInt(SafetySettingsStoreKeys.MAX_TOOL_CALLS)
+          ?: defaults.maxToolCalls,
+      undoWindowHours =
+        getInt(SafetySettingsStoreKeys.UNDO_WINDOW_HOURS)
+          ?: defaults.undoWindowHours,
+      fileChangesPolicy = ToolPolicyOverride.fromWireValue(
+        getString(SafetySettingsStoreKeys.FILE_CHANGES_POLICY_ID),
+      ),
+      fileDeletesPolicy = ToolPolicyOverride.fromWireValue(
+        getString(SafetySettingsStoreKeys.FILE_DELETES_POLICY_ID),
+      ),
+      shellCommandsPolicy = ToolPolicyOverride.fromWireValue(
+        getString(SafetySettingsStoreKeys.SHELL_COMMANDS_POLICY_ID),
+      ),
+      externalAccessMode = ExternalAccessMode.fromWireValue(
+        getString(SafetySettingsStoreKeys.EXTERNAL_ACCESS_MODE_ID),
+      ),
+      photoLibraryEnabled =
+        getBoolean(SafetySettingsStoreKeys.PHOTO_LIBRARY_ENABLED)
+          ?: defaults.photoLibraryEnabled,
+      downloadsEnabled =
+        getBoolean(SafetySettingsStoreKeys.DOWNLOADS_ENABLED)
+          ?: defaults.downloadsEnabled,
+      documentsEnabled =
+        getBoolean(SafetySettingsStoreKeys.DOCUMENTS_ENABLED)
+          ?: defaults.documentsEnabled,
+      recordingsEnabled =
+        getBoolean(SafetySettingsStoreKeys.RECORDINGS_ENABLED)
+          ?: defaults.recordingsEnabled,
+      workspaceAccessProfile = WorkspaceAccessProfile.fromWireValue(
+        getString(SafetySettingsStoreKeys.WORKSPACE_ACCESS_PROFILE_ID),
+      ),
+      readOnlyOutsideWorkspace =
+        getBoolean(SafetySettingsStoreKeys.READ_ONLY_OUTSIDE_WORKSPACE)
+          ?: defaults.readOnlyOutsideWorkspace,
+      memoryToolsEnabled =
+        getBoolean(SafetySettingsStoreKeys.MEMORY_TOOLS_ENABLED)
+          ?: defaults.memoryToolsEnabled,
+      subAgentContextDefaultMode =
+        PublicSubAgentContextPolicySettings.publicModeFromWireValue(
+          getString(SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_DEFAULT_MODE_ID),
+        ) ?: defaults.subAgentContextDefaultMode,
+      subAgentContextProfileOverrides =
+        PublicSubAgentContextPolicySettings.decodeOverridesFromPreferenceValue(
+          getString(SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_PROFILE_OVERRIDES),
+        ).ifEmpty { defaults.subAgentContextProfileOverrides },
+    ).sanitized()
+
+  fun saveState(state: SafetySettingsState) {
+    val sanitized = state.sanitized()
+    putString(
+      SafetySettingsStoreKeys.AUTOMATION_MODE_ID,
+      sanitized.automationMode.wireValue,
+    )
+    putBoolean(
+      SafetySettingsStoreKeys.ROLLBACK_JOURNAL_ENABLED,
+      sanitized.rollbackJournalEnabled,
+    )
+    putInt(
+      SafetySettingsStoreKeys.MAX_FILES_PER_BATCH,
+      sanitized.maxFilesPerBatch,
+    )
+    putInt(
+      SafetySettingsStoreKeys.MAX_AGENT_TURNS,
+      sanitized.maxAgentTurns,
+    )
+    putInt(
+      SafetySettingsStoreKeys.MAX_TOOL_CALLS,
+      sanitized.maxToolCalls,
+    )
+    putInt(
+      SafetySettingsStoreKeys.UNDO_WINDOW_HOURS,
+      sanitized.undoWindowHours,
+    )
+    putString(
+      SafetySettingsStoreKeys.FILE_CHANGES_POLICY_ID,
+      sanitized.fileChangesPolicy.wireValue,
+    )
+    putString(
+      SafetySettingsStoreKeys.FILE_DELETES_POLICY_ID,
+      sanitized.fileDeletesPolicy.wireValue,
+    )
+    putString(
+      SafetySettingsStoreKeys.SHELL_COMMANDS_POLICY_ID,
+      sanitized.shellCommandsPolicy.wireValue,
+    )
+    putString(
+      SafetySettingsStoreKeys.EXTERNAL_ACCESS_MODE_ID,
+      sanitized.externalAccessMode.wireValue,
+    )
+    putBoolean(
+      SafetySettingsStoreKeys.PHOTO_LIBRARY_ENABLED,
+      sanitized.photoLibraryEnabled,
+    )
+    putBoolean(
+      SafetySettingsStoreKeys.DOWNLOADS_ENABLED,
+      sanitized.downloadsEnabled,
+    )
+    putBoolean(
+      SafetySettingsStoreKeys.DOCUMENTS_ENABLED,
+      sanitized.documentsEnabled,
+    )
+    putBoolean(
+      SafetySettingsStoreKeys.RECORDINGS_ENABLED,
+      sanitized.recordingsEnabled,
+    )
+    putString(
+      SafetySettingsStoreKeys.WORKSPACE_ACCESS_PROFILE_ID,
+      sanitized.workspaceAccessProfile.wireValue,
+    )
+    putBoolean(
+      SafetySettingsStoreKeys.READ_ONLY_OUTSIDE_WORKSPACE,
+      sanitized.readOnlyOutsideWorkspace,
+    )
+    putBoolean(
+      SafetySettingsStoreKeys.MEMORY_TOOLS_ENABLED,
+      sanitized.memoryToolsEnabled,
+    )
+    putString(
+      SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_DEFAULT_MODE_ID,
+      sanitized.subAgentContextDefaultMode?.wireValue.orEmpty(),
+    )
+    putString(
+      SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_PROFILE_OVERRIDES,
+      PublicSubAgentContextPolicySettings.encodeOverridesToPreferenceValue(
+        sanitized.subAgentContextProfileOverrides,
+      ),
+    )
+  }
 }
 
 internal class InMemorySafetySettingsKeyValueStore(
@@ -172,154 +325,130 @@ internal class SharedPreferencesSafetySettingsKeyValueStore(
   override fun clear() {
     sharedPreferences.edit().clear().apply()
   }
+
+  fun hasAnyPersistedSetting(): Boolean =
+    SAFETY_SETTING_KEYS.any(sharedPreferences::contains)
+}
+
+internal class FileBackedSafetySettingsKeyValueStore(
+  private val storage: DurableTextStorage,
+  private val clock: () -> Long = System::currentTimeMillis,
+) : SafetySettingsKeyValueStore {
+  private val lock = Any()
+
+  override fun getBoolean(key: String): Boolean? =
+    getString(key)?.toBooleanStrictOrNull()
+
+  override fun putBoolean(
+    key: String,
+    value: Boolean,
+  ) {
+    putString(key, value.toString())
+  }
+
+  override fun getInt(key: String): Int? =
+    getString(key)?.toIntOrNull()
+
+  override fun putInt(
+    key: String,
+    value: Int,
+  ) {
+    putString(key, value.toString())
+  }
+
+  override fun getString(key: String): String? = synchronized(lock) {
+    loadRecord().values[key]
+  }
+
+  override fun putString(
+    key: String,
+    value: String,
+  ) {
+    synchronized(lock) {
+      updateValues { values ->
+        values + (key to value)
+      }
+    }
+  }
+
+  override fun loadState(defaults: SafetySettingsState): SafetySettingsState =
+    synchronized(lock) {
+      loadRecord().toState(defaults)
+    }
+
+  override fun saveState(state: SafetySettingsState) {
+    synchronized(lock) {
+      val values = valuesForState(state.sanitized())
+      updateValues { values }
+    }
+  }
+
+  override fun clear() {
+    synchronized(lock) {
+      storage.delete(SAFETY_SETTINGS_FILE_NAME)
+    }
+  }
+
+  fun migrateFromLegacyIfEmpty(
+    legacyStore: SafetySettingsKeyValueStore,
+    defaults: SafetySettingsState = SafetySettingsState(),
+  ) {
+    synchronized(lock) {
+      if (hasPersistedRecord()) {
+        return
+      }
+      updateValues { valuesForState(legacyStore.loadState(defaults)) }
+    }
+  }
+
+  private fun hasPersistedRecord(): Boolean =
+    !storage.readText(SAFETY_SETTINGS_FILE_NAME).isNullOrBlank()
+
+  private fun loadRecord(): PersistedSafetySettingsRecord =
+    storage.updateRecord(
+      name = SAFETY_SETTINGS_FILE_NAME,
+      serializer = PersistedSafetySettingsRecord.serializer(),
+    ) { persisted ->
+      val existing = persisted ?: PersistedSafetySettingsRecord()
+      val repaired = existing.normalized()
+      RecordStorageUpdate(
+        value = repaired,
+        result = repaired,
+        write = persisted != null && repaired != existing,
+      )
+    }
+
+  private fun updateValues(
+    update: (Map<String, String>) -> Map<String, String>,
+  ) {
+    val now = clock()
+    storage.updateRecord(
+      name = SAFETY_SETTINGS_FILE_NAME,
+      serializer = PersistedSafetySettingsRecord.serializer(),
+    ) { persisted ->
+      val existing = (persisted ?: PersistedSafetySettingsRecord()).normalized()
+      val updatedValues = update(existing.values)
+        .filterKeys(SAFETY_SETTING_KEYS::contains)
+      RecordStorageUpdate(
+        value = existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = now,
+          values = updatedValues,
+        ),
+        result = Unit,
+      )
+    }
+  }
 }
 
 internal class SafetySettingsStore(
   private val keyValueStore: SafetySettingsKeyValueStore,
 ) {
   fun load(defaults: SafetySettingsState = SafetySettingsState()): SafetySettingsState =
-    defaults.copy(
-      automationMode = SafetyAutomationMode.fromWireValue(
-        keyValueStore.getString(SafetySettingsStoreKeys.AUTOMATION_MODE_ID),
-      ),
-      rollbackJournalEnabled =
-        keyValueStore.getBoolean(SafetySettingsStoreKeys.ROLLBACK_JOURNAL_ENABLED)
-          ?: defaults.rollbackJournalEnabled,
-      maxFilesPerBatch =
-        keyValueStore.getInt(SafetySettingsStoreKeys.MAX_FILES_PER_BATCH)
-          ?: defaults.maxFilesPerBatch,
-      maxAgentTurns =
-        keyValueStore.getInt(SafetySettingsStoreKeys.MAX_AGENT_TURNS)
-          ?: defaults.maxAgentTurns,
-      maxToolCalls =
-        keyValueStore.getInt(SafetySettingsStoreKeys.MAX_TOOL_CALLS)
-          ?: defaults.maxToolCalls,
-      undoWindowHours =
-        keyValueStore.getInt(SafetySettingsStoreKeys.UNDO_WINDOW_HOURS)
-          ?: defaults.undoWindowHours,
-      fileChangesPolicy = ToolPolicyOverride.fromWireValue(
-        keyValueStore.getString(SafetySettingsStoreKeys.FILE_CHANGES_POLICY_ID),
-      ),
-      fileDeletesPolicy = ToolPolicyOverride.fromWireValue(
-        keyValueStore.getString(SafetySettingsStoreKeys.FILE_DELETES_POLICY_ID),
-      ),
-      shellCommandsPolicy = ToolPolicyOverride.fromWireValue(
-        keyValueStore.getString(SafetySettingsStoreKeys.SHELL_COMMANDS_POLICY_ID),
-      ),
-      externalAccessMode = ExternalAccessMode.fromWireValue(
-        keyValueStore.getString(SafetySettingsStoreKeys.EXTERNAL_ACCESS_MODE_ID),
-      ),
-      photoLibraryEnabled =
-        keyValueStore.getBoolean(SafetySettingsStoreKeys.PHOTO_LIBRARY_ENABLED)
-          ?: defaults.photoLibraryEnabled,
-      downloadsEnabled =
-        keyValueStore.getBoolean(SafetySettingsStoreKeys.DOWNLOADS_ENABLED)
-          ?: defaults.downloadsEnabled,
-      documentsEnabled =
-        keyValueStore.getBoolean(SafetySettingsStoreKeys.DOCUMENTS_ENABLED)
-          ?: defaults.documentsEnabled,
-      recordingsEnabled =
-        keyValueStore.getBoolean(SafetySettingsStoreKeys.RECORDINGS_ENABLED)
-          ?: defaults.recordingsEnabled,
-      workspaceAccessProfile = WorkspaceAccessProfile.fromWireValue(
-        keyValueStore.getString(SafetySettingsStoreKeys.WORKSPACE_ACCESS_PROFILE_ID),
-      ),
-      readOnlyOutsideWorkspace =
-        keyValueStore.getBoolean(SafetySettingsStoreKeys.READ_ONLY_OUTSIDE_WORKSPACE)
-          ?: defaults.readOnlyOutsideWorkspace,
-      memoryToolsEnabled =
-        keyValueStore.getBoolean(SafetySettingsStoreKeys.MEMORY_TOOLS_ENABLED)
-          ?: defaults.memoryToolsEnabled,
-      subAgentContextDefaultMode =
-        PublicSubAgentContextPolicySettings.publicModeFromWireValue(
-          keyValueStore.getString(SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_DEFAULT_MODE_ID),
-        ) ?: defaults.subAgentContextDefaultMode,
-      subAgentContextProfileOverrides =
-        PublicSubAgentContextPolicySettings.decodeOverridesFromPreferenceValue(
-          keyValueStore.getString(SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_PROFILE_OVERRIDES),
-        ).ifEmpty { defaults.subAgentContextProfileOverrides },
-    ).sanitized()
+    keyValueStore.loadState(defaults)
 
   fun save(state: SafetySettingsState) {
-    val sanitized = state.sanitized()
-    keyValueStore.putString(
-      SafetySettingsStoreKeys.AUTOMATION_MODE_ID,
-      sanitized.automationMode.wireValue,
-    )
-    keyValueStore.putBoolean(
-      SafetySettingsStoreKeys.ROLLBACK_JOURNAL_ENABLED,
-      sanitized.rollbackJournalEnabled,
-    )
-    keyValueStore.putInt(
-      SafetySettingsStoreKeys.MAX_FILES_PER_BATCH,
-      sanitized.maxFilesPerBatch,
-    )
-    keyValueStore.putInt(
-      SafetySettingsStoreKeys.MAX_AGENT_TURNS,
-      sanitized.maxAgentTurns,
-    )
-    keyValueStore.putInt(
-      SafetySettingsStoreKeys.MAX_TOOL_CALLS,
-      sanitized.maxToolCalls,
-    )
-    keyValueStore.putInt(
-      SafetySettingsStoreKeys.UNDO_WINDOW_HOURS,
-      sanitized.undoWindowHours,
-    )
-    keyValueStore.putString(
-      SafetySettingsStoreKeys.FILE_CHANGES_POLICY_ID,
-      sanitized.fileChangesPolicy.wireValue,
-    )
-    keyValueStore.putString(
-      SafetySettingsStoreKeys.FILE_DELETES_POLICY_ID,
-      sanitized.fileDeletesPolicy.wireValue,
-    )
-    keyValueStore.putString(
-      SafetySettingsStoreKeys.SHELL_COMMANDS_POLICY_ID,
-      sanitized.shellCommandsPolicy.wireValue,
-    )
-    keyValueStore.putString(
-      SafetySettingsStoreKeys.EXTERNAL_ACCESS_MODE_ID,
-      sanitized.externalAccessMode.wireValue,
-    )
-    keyValueStore.putBoolean(
-      SafetySettingsStoreKeys.PHOTO_LIBRARY_ENABLED,
-      sanitized.photoLibraryEnabled,
-    )
-    keyValueStore.putBoolean(
-      SafetySettingsStoreKeys.DOWNLOADS_ENABLED,
-      sanitized.downloadsEnabled,
-    )
-    keyValueStore.putBoolean(
-      SafetySettingsStoreKeys.DOCUMENTS_ENABLED,
-      sanitized.documentsEnabled,
-    )
-    keyValueStore.putBoolean(
-      SafetySettingsStoreKeys.RECORDINGS_ENABLED,
-      sanitized.recordingsEnabled,
-    )
-    keyValueStore.putString(
-      SafetySettingsStoreKeys.WORKSPACE_ACCESS_PROFILE_ID,
-      sanitized.workspaceAccessProfile.wireValue,
-    )
-    keyValueStore.putBoolean(
-      SafetySettingsStoreKeys.READ_ONLY_OUTSIDE_WORKSPACE,
-      sanitized.readOnlyOutsideWorkspace,
-    )
-    keyValueStore.putBoolean(
-      SafetySettingsStoreKeys.MEMORY_TOOLS_ENABLED,
-      sanitized.memoryToolsEnabled,
-    )
-    keyValueStore.putString(
-      SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_DEFAULT_MODE_ID,
-      sanitized.subAgentContextDefaultMode?.wireValue.orEmpty(),
-    )
-    keyValueStore.putString(
-      SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_PROFILE_OVERRIDES,
-      PublicSubAgentContextPolicySettings.encodeOverridesToPreferenceValue(
-        sanitized.subAgentContextProfileOverrides,
-      ),
-    )
+    keyValueStore.saveState(state)
   }
 
   fun clear() {
@@ -330,10 +459,115 @@ internal class SafetySettingsStore(
     fun fromContext(
       context: Context,
       preferencesName: String = DEFAULT_SAFETY_SETTINGS_PREFERENCES,
-    ): SafetySettingsStore = SafetySettingsStore(
-      keyValueStore = SharedPreferencesSafetySettingsKeyValueStore(
-        context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE),
-      ),
-    )
+    ): SafetySettingsStore {
+      val appContext = context.applicationContext
+      val fileBackedStore = FileBackedSafetySettingsKeyValueStore(
+        storage = DirectoryDurableTextStorage(
+          File(
+            appContext.filesDir,
+            FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+          ),
+        ),
+      )
+      val legacyStore = SharedPreferencesSafetySettingsKeyValueStore(
+        appContext.getSharedPreferences(preferencesName, Context.MODE_PRIVATE),
+      )
+      if (legacyStore.hasAnyPersistedSetting()) {
+        fileBackedStore.migrateFromLegacyIfEmpty(legacyStore)
+      }
+      return SafetySettingsStore(keyValueStore = fileBackedStore)
+    }
   }
 }
+
+@Serializable
+private data class PersistedSafetySettingsRecord(
+  val schemaVersion: Int = PersistenceSchemaVersion.CURRENT,
+  val recordVersion: Long = 0L,
+  val updatedAtEpochMs: Long = 0L,
+  val values: Map<String, String> = emptyMap(),
+) {
+  fun normalized(): PersistedSafetySettingsRecord = copy(
+    values = values.filterKeys(SAFETY_SETTING_KEYS::contains),
+  )
+
+  fun toState(defaults: SafetySettingsState): SafetySettingsState {
+    val legacy = PersistedSafetySettingsKeyValueStore(values)
+    return legacy.loadState(defaults)
+  }
+}
+
+private class PersistedSafetySettingsKeyValueStore(
+  private val values: Map<String, String>,
+) : SafetySettingsKeyValueStore {
+  override fun getBoolean(key: String): Boolean? = values[key]?.toBooleanStrictOrNull()
+
+  override fun putBoolean(
+    key: String,
+    value: Boolean,
+  ) = Unit
+
+  override fun getInt(key: String): Int? = values[key]?.toIntOrNull()
+
+  override fun putInt(
+    key: String,
+    value: Int,
+  ) = Unit
+
+  override fun getString(key: String): String? = values[key]
+
+  override fun putString(
+    key: String,
+    value: String,
+  ) = Unit
+
+  override fun clear() = Unit
+}
+
+private fun valuesForState(state: SafetySettingsState): Map<String, String> = linkedMapOf(
+  SafetySettingsStoreKeys.AUTOMATION_MODE_ID to state.automationMode.wireValue,
+  SafetySettingsStoreKeys.ROLLBACK_JOURNAL_ENABLED to state.rollbackJournalEnabled.toString(),
+  SafetySettingsStoreKeys.MAX_FILES_PER_BATCH to state.maxFilesPerBatch.toString(),
+  SafetySettingsStoreKeys.MAX_AGENT_TURNS to state.maxAgentTurns.toString(),
+  SafetySettingsStoreKeys.MAX_TOOL_CALLS to state.maxToolCalls.toString(),
+  SafetySettingsStoreKeys.UNDO_WINDOW_HOURS to state.undoWindowHours.toString(),
+  SafetySettingsStoreKeys.FILE_CHANGES_POLICY_ID to state.fileChangesPolicy.wireValue,
+  SafetySettingsStoreKeys.FILE_DELETES_POLICY_ID to state.fileDeletesPolicy.wireValue,
+  SafetySettingsStoreKeys.SHELL_COMMANDS_POLICY_ID to state.shellCommandsPolicy.wireValue,
+  SafetySettingsStoreKeys.EXTERNAL_ACCESS_MODE_ID to state.externalAccessMode.wireValue,
+  SafetySettingsStoreKeys.PHOTO_LIBRARY_ENABLED to state.photoLibraryEnabled.toString(),
+  SafetySettingsStoreKeys.DOWNLOADS_ENABLED to state.downloadsEnabled.toString(),
+  SafetySettingsStoreKeys.DOCUMENTS_ENABLED to state.documentsEnabled.toString(),
+  SafetySettingsStoreKeys.RECORDINGS_ENABLED to state.recordingsEnabled.toString(),
+  SafetySettingsStoreKeys.WORKSPACE_ACCESS_PROFILE_ID to state.workspaceAccessProfile.wireValue,
+  SafetySettingsStoreKeys.READ_ONLY_OUTSIDE_WORKSPACE to state.readOnlyOutsideWorkspace.toString(),
+  SafetySettingsStoreKeys.MEMORY_TOOLS_ENABLED to state.memoryToolsEnabled.toString(),
+  SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_DEFAULT_MODE_ID to
+    state.subAgentContextDefaultMode?.wireValue.orEmpty(),
+  SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_PROFILE_OVERRIDES to
+    PublicSubAgentContextPolicySettings.encodeOverridesToPreferenceValue(
+      state.subAgentContextProfileOverrides,
+    ),
+)
+
+private val SAFETY_SETTING_KEYS: Set<String> = setOf(
+  SafetySettingsStoreKeys.AUTOMATION_MODE_ID,
+  SafetySettingsStoreKeys.ROLLBACK_JOURNAL_ENABLED,
+  SafetySettingsStoreKeys.MAX_FILES_PER_BATCH,
+  SafetySettingsStoreKeys.MAX_AGENT_TURNS,
+  SafetySettingsStoreKeys.MAX_TOOL_CALLS,
+  SafetySettingsStoreKeys.UNDO_WINDOW_HOURS,
+  SafetySettingsStoreKeys.FILE_CHANGES_POLICY_ID,
+  SafetySettingsStoreKeys.FILE_DELETES_POLICY_ID,
+  SafetySettingsStoreKeys.SHELL_COMMANDS_POLICY_ID,
+  SafetySettingsStoreKeys.EXTERNAL_ACCESS_MODE_ID,
+  SafetySettingsStoreKeys.PHOTO_LIBRARY_ENABLED,
+  SafetySettingsStoreKeys.DOWNLOADS_ENABLED,
+  SafetySettingsStoreKeys.DOCUMENTS_ENABLED,
+  SafetySettingsStoreKeys.RECORDINGS_ENABLED,
+  SafetySettingsStoreKeys.WORKSPACE_ACCESS_PROFILE_ID,
+  SafetySettingsStoreKeys.READ_ONLY_OUTSIDE_WORKSPACE,
+  SafetySettingsStoreKeys.MEMORY_TOOLS_ENABLED,
+  SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_DEFAULT_MODE_ID,
+  SafetySettingsStoreKeys.SUB_AGENT_CONTEXT_PROFILE_OVERRIDES,
+)

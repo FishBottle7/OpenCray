@@ -1,16 +1,22 @@
 package com.opencray.app
 
 import com.opencray.app.facade.safety.LocalSafetySettingsFacade
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import com.opencray.policy.ExternalAccessMode
 import com.opencray.policy.SafetyAutomationMode
 import com.opencray.policy.ToolPolicyOverride
 import com.opencray.policy.WorkspaceAccessProfile
+import org.junit.Rule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 class SafetySettingsStoreTest {
+  @get:Rule
+  val temporaryFolder: TemporaryFolder = TemporaryFolder()
+
   @Test
   fun loadDefaultsMatchPrototypeBaseline() {
     val store = SafetySettingsStore(InMemorySafetySettingsKeyValueStore())
@@ -62,6 +68,88 @@ class SafetySettingsStoreTest {
     store.save(saved)
 
     assertEquals(saved, store.load())
+  }
+
+  @Test
+  fun fileBackedStoreSharesStateAcrossInstances() {
+    val directory = temporaryFolder.newFolder("safety-settings-file-backed")
+    val firstStore = SafetySettingsStore(
+      FileBackedSafetySettingsKeyValueStore(
+        storage = DirectoryDurableTextStorage(directory),
+        clock = { 100L },
+      ),
+    )
+    val saved = SafetySettingsState(
+      automationMode = SafetyAutomationMode.DEV,
+      rollbackJournalEnabled = false,
+      maxFilesPerBatch = 6,
+      maxAgentTurns = 7,
+      maxToolCalls = 8,
+      undoWindowHours = 9,
+      fileChangesPolicy = ToolPolicyOverride.ALLOW,
+      fileDeletesPolicy = ToolPolicyOverride.ASK,
+      shellCommandsPolicy = ToolPolicyOverride.BLOCK,
+      externalAccessMode = ExternalAccessMode.BLOCK_ALL,
+      photoLibraryEnabled = false,
+      downloadsEnabled = false,
+      documentsEnabled = true,
+      recordingsEnabled = true,
+      workspaceAccessProfile = WorkspaceAccessProfile.OPEN,
+      readOnlyOutsideWorkspace = false,
+      memoryToolsEnabled = false,
+    )
+
+    firstStore.save(saved)
+
+    val secondStore = SafetySettingsStore(
+      FileBackedSafetySettingsKeyValueStore(
+        storage = DirectoryDurableTextStorage(directory),
+        clock = { 200L },
+      ),
+    )
+    assertEquals(saved.sanitized(), secondStore.load())
+
+    secondStore.clear()
+
+    assertEquals(SafetySettingsState(), firstStore.load())
+  }
+
+  @Test
+  fun fileBackedStoreMigratesLegacyStateOnlyWhenEmpty() {
+    val directory = temporaryFolder.newFolder("safety-settings-migration")
+    val legacyKeyValueStore = InMemorySafetySettingsKeyValueStore()
+    val legacyStore = SafetySettingsStore(legacyKeyValueStore)
+    val legacyState = SafetySettingsState(
+      automationMode = SafetyAutomationMode.SAFE,
+      maxFilesPerBatch = 4,
+      fileDeletesPolicy = ToolPolicyOverride.BLOCK,
+      workspaceAccessProfile = WorkspaceAccessProfile.ASK,
+      memoryToolsEnabled = false,
+    )
+    legacyStore.save(legacyState)
+    val fileBackedKeyValueStore = FileBackedSafetySettingsKeyValueStore(
+      storage = DirectoryDurableTextStorage(directory),
+      clock = { 300L },
+    )
+
+    fileBackedKeyValueStore.migrateFromLegacyIfEmpty(legacyKeyValueStore)
+
+    val fileBackedStore = SafetySettingsStore(fileBackedKeyValueStore)
+    assertEquals(legacyState.sanitized(), fileBackedStore.load())
+
+    val durableState = SafetySettingsState(
+      automationMode = SafetyAutomationMode.DEV,
+      maxFilesPerBatch = 12,
+      fileDeletesPolicy = ToolPolicyOverride.ALLOW,
+      workspaceAccessProfile = WorkspaceAccessProfile.OPEN,
+      memoryToolsEnabled = true,
+    )
+    fileBackedStore.save(durableState)
+    legacyStore.save(legacyState.copy(maxFilesPerBatch = 99))
+
+    fileBackedKeyValueStore.migrateFromLegacyIfEmpty(legacyKeyValueStore)
+
+    assertEquals(durableState.sanitized(), fileBackedStore.load())
   }
 
   @Test
