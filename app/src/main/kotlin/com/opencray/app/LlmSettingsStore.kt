@@ -2,15 +2,23 @@ package com.opencray.app
 
 import android.content.Context
 import android.content.SharedPreferences
+import com.opencray.persistence.PersistenceSchemaVersion
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.RecordStorageUpdate
+import com.opencray.persistence.store.file.updateRecord
 import com.opencray.runtime.context.ModelContextBudgetPreset
+import java.io.File
 import java.net.URI
 import java.util.UUID
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlinx.serialization.Serializable
 import org.json.JSONArray
 import org.json.JSONObject
 
 private const val DEFAULT_LLM_SETTINGS_PREFERENCES = "opencray.llm-settings"
+private const val LLM_SETTINGS_FILE_NAME = "llm-settings.json"
 
 internal object LlmSettingsStoreKeys {
   const val ENABLED = "enabled"
@@ -403,7 +411,263 @@ internal interface LlmSettingsKeyValueStore {
   fun putString(key: String, value: String)
 
   fun clear()
+
+  fun loadState(defaults: LlmSettingsState = LlmSettingsState()): LlmSettingsState =
+    defaults.copy(
+      enabled = getBoolean(LlmSettingsStoreKeys.ENABLED) ?: defaults.enabled,
+      streamingEnabled =
+        getBoolean(LlmSettingsStoreKeys.STREAMING_ENABLED)
+          ?: defaults.streamingEnabled,
+      providerMode =
+        getString(LlmSettingsStoreKeys.PROVIDER_MODE) ?: defaults.providerMode,
+      providerId = getString(LlmSettingsStoreKeys.PROVIDER_ID)
+        ?: LlmSettingsState.inferProviderId(
+          getString(LlmSettingsStoreKeys.BASE_URL) ?: defaults.baseUrl,
+        ),
+      protocol = getString(LlmSettingsStoreKeys.PROTOCOL) ?: defaults.protocol,
+      providerName = getString(LlmSettingsStoreKeys.PROVIDER_NAME) ?: defaults.providerName,
+      providerNotes = getString(LlmSettingsStoreKeys.PROVIDER_NOTES) ?: defaults.providerNotes,
+      baseUrl = getString(LlmSettingsStoreKeys.BASE_URL) ?: defaults.baseUrl,
+      apiKey = getString(LlmSettingsStoreKeys.API_KEY) ?: defaults.apiKey,
+      model = getString(LlmSettingsStoreKeys.MODEL) ?: defaults.model,
+      reasoningEffort = getString(LlmSettingsStoreKeys.REASONING_EFFORT) ?: defaults.reasoningEffort,
+      systemPrompt = getString(LlmSettingsStoreKeys.SYSTEM_PROMPT) ?: defaults.systemPrompt,
+      openAiPromptCacheKeyStrategy =
+        getString(LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_KEY_STRATEGY)
+          ?: defaults.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention =
+        getString(LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_RETENTION)
+          ?: defaults.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled =
+        getBoolean(LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHING_ENABLED)
+          ?: defaults.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl =
+        getString(LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHE_TTL)
+          ?: defaults.anthropicPromptCacheTtl,
+      contextBudgetPreset =
+        getString(LlmSettingsStoreKeys.CONTEXT_BUDGET_PRESET)
+          ?: defaults.contextBudgetPreset,
+      contextBudgetReservedOutputTokens = optionalIntValueFromStore(
+        keyValueStore = this,
+        key = LlmSettingsStoreKeys.CONTEXT_BUDGET_RESERVED_OUTPUT_TOKENS,
+        defaultValue = defaults.contextBudgetReservedOutputTokens,
+      ),
+      contextBudgetSafetyMarginTokens = optionalIntValueFromStore(
+        keyValueStore = this,
+        key = LlmSettingsStoreKeys.CONTEXT_BUDGET_SAFETY_MARGIN_TOKENS,
+        defaultValue = defaults.contextBudgetSafetyMarginTokens,
+      ),
+      contextBudgetEffectiveInputPercent = optionalDoubleValueFromStore(
+        keyValueStore = this,
+        key = LlmSettingsStoreKeys.CONTEXT_BUDGET_EFFECTIVE_INPUT_PERCENT,
+        defaultValue = defaults.contextBudgetEffectiveInputPercent,
+      ),
+      selectedOnDeviceModelId =
+        getString(LlmSettingsStoreKeys.SELECTED_ON_DEVICE_MODEL_ID)
+          ?: defaults.selectedOnDeviceModelId,
+      onDeviceMaxContextWindow =
+        getString(LlmSettingsStoreKeys.ON_DEVICE_MAX_CONTEXT_WINDOW)
+          ?.toIntOrNull()
+          ?: defaults.onDeviceMaxContextWindow,
+      onDeviceMaxTokens =
+        getString(LlmSettingsStoreKeys.ON_DEVICE_MAX_TOKENS)
+          ?.toIntOrNull()
+          ?: defaults.onDeviceMaxTokens,
+      onDeviceTopK =
+        getString(LlmSettingsStoreKeys.ON_DEVICE_TOP_K)
+          ?.toIntOrNull()
+          ?: defaults.onDeviceTopK,
+      onDeviceTopP =
+        getString(LlmSettingsStoreKeys.ON_DEVICE_TOP_P)
+          ?.toDoubleOrNull()
+          ?: defaults.onDeviceTopP,
+      onDeviceTemperature =
+        getString(LlmSettingsStoreKeys.ON_DEVICE_TEMPERATURE)
+          ?.toDoubleOrNull()
+          ?: defaults.onDeviceTemperature,
+      onDeviceAccelerator =
+        getString(LlmSettingsStoreKeys.ON_DEVICE_ACCELERATOR)
+          ?: defaults.onDeviceAccelerator,
+      onDeviceThinkingEnabled =
+        getBoolean(LlmSettingsStoreKeys.ON_DEVICE_THINKING_ENABLED)
+          ?: defaults.onDeviceThinkingEnabled,
+      onDeviceLiteModeEnabled =
+        getBoolean(LlmSettingsStoreKeys.ON_DEVICE_LITE_MODE_ENABLED)
+          ?: defaults.onDeviceLiteModeEnabled,
+    ).sanitized()
+
+  fun saveState(
+    state: LlmSettingsState,
+    selectedProviderOptionId: String,
+  ) {
+    val values = valuesForLlmState(
+      state = state,
+      selectedProviderOptionId = selectedProviderOptionId,
+    )
+    values.forEach { (key, value) ->
+      if (key in LLM_BOOLEAN_SETTING_KEYS) {
+        putBoolean(key, value.toBooleanStrictOrNull() ?: false)
+      } else {
+        putString(key, value)
+      }
+    }
+  }
 }
+
+@Serializable
+private data class PersistedLlmSettingsRecord(
+  val schemaVersion: Int = PersistenceSchemaVersion.CURRENT,
+  val recordVersion: Long = 0L,
+  val updatedAtEpochMs: Long = 0L,
+  val values: Map<String, String> = emptyMap(),
+) {
+  fun normalized(): PersistedLlmSettingsRecord = copy(
+    values = values.filterKeys(LLM_SETTING_KEYS::contains),
+  )
+
+  fun toState(defaults: LlmSettingsState): LlmSettingsState {
+    val legacy = PersistedLlmSettingsKeyValueStore(values)
+    return legacy.loadState(defaults)
+  }
+}
+
+private class PersistedLlmSettingsKeyValueStore(
+  private val values: Map<String, String>,
+) : LlmSettingsKeyValueStore {
+  override fun getBoolean(key: String): Boolean? = values[key]?.toBooleanStrictOrNull()
+
+  override fun putBoolean(key: String, value: Boolean) = Unit
+
+  override fun getString(key: String): String? = values[key]
+
+  override fun putString(key: String, value: String) = Unit
+
+  override fun clear() = Unit
+}
+
+private fun optionalIntValueFromStore(
+  keyValueStore: LlmSettingsKeyValueStore,
+  key: String,
+  defaultValue: Int?,
+): Int? = when (val rawValue = keyValueStore.getString(key)) {
+  null -> defaultValue
+  else -> rawValue.trim().takeIf(String::isNotBlank)?.toIntOrNull()
+}
+
+private fun optionalDoubleValueFromStore(
+  keyValueStore: LlmSettingsKeyValueStore,
+  key: String,
+  defaultValue: Double?,
+): Double? = when (val rawValue = keyValueStore.getString(key)) {
+  null -> defaultValue
+  else -> rawValue.trim().takeIf(String::isNotBlank)?.toDoubleOrNull()
+}
+
+private fun valuesForLlmState(
+  state: LlmSettingsState,
+  selectedProviderOptionId: String,
+): Map<String, String> {
+  val resolved = state.sanitized()
+  val sanitized = resolved.copy(enabled = resolved.isConfigured())
+  return linkedMapOf(
+    LlmSettingsStoreKeys.ENABLED to sanitized.enabled.toString(),
+    LlmSettingsStoreKeys.STREAMING_ENABLED to sanitized.streamingEnabled.toString(),
+    LlmSettingsStoreKeys.PROVIDER_MODE to sanitized.providerMode,
+    LlmSettingsStoreKeys.PROVIDER_ID to sanitized.providerId,
+    LlmSettingsStoreKeys.SELECTED_PROVIDER_OPTION_ID to
+      selectedProviderOptionId.trim().ifBlank { sanitized.providerId },
+    LlmSettingsStoreKeys.PROTOCOL to sanitized.protocol,
+    LlmSettingsStoreKeys.PROVIDER_NAME to sanitized.providerName,
+    LlmSettingsStoreKeys.PROVIDER_NOTES to sanitized.providerNotes,
+    LlmSettingsStoreKeys.BASE_URL to sanitized.baseUrl,
+    LlmSettingsStoreKeys.API_KEY to sanitized.apiKey,
+    LlmSettingsStoreKeys.MODEL to sanitized.model,
+    LlmSettingsStoreKeys.REASONING_EFFORT to sanitized.reasoningEffort,
+    LlmSettingsStoreKeys.SYSTEM_PROMPT to sanitized.systemPrompt,
+    LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_KEY_STRATEGY to
+      sanitized.openAiPromptCacheKeyStrategy,
+    LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_RETENTION to
+      sanitized.openAiPromptCacheRetention,
+    LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHING_ENABLED to
+      sanitized.anthropicPromptCachingEnabled.toString(),
+    LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHE_TTL to
+      sanitized.anthropicPromptCacheTtl,
+    LlmSettingsStoreKeys.CONTEXT_BUDGET_PRESET to sanitized.contextBudgetPreset,
+    LlmSettingsStoreKeys.CONTEXT_BUDGET_RESERVED_OUTPUT_TOKENS to
+      sanitized.contextBudgetReservedOutputTokens?.toString().orEmpty(),
+    LlmSettingsStoreKeys.CONTEXT_BUDGET_SAFETY_MARGIN_TOKENS to
+      sanitized.contextBudgetSafetyMarginTokens?.toString().orEmpty(),
+    LlmSettingsStoreKeys.CONTEXT_BUDGET_EFFECTIVE_INPUT_PERCENT to
+      sanitized.contextBudgetEffectiveInputPercent?.toString().orEmpty(),
+    LlmSettingsStoreKeys.SELECTED_ON_DEVICE_MODEL_ID to sanitized.selectedOnDeviceModelId,
+    LlmSettingsStoreKeys.ON_DEVICE_MAX_CONTEXT_WINDOW to
+      sanitized.onDeviceMaxContextWindow.toString(),
+    LlmSettingsStoreKeys.ON_DEVICE_MAX_TOKENS to sanitized.onDeviceMaxTokens.toString(),
+    LlmSettingsStoreKeys.ON_DEVICE_TOP_K to sanitized.onDeviceTopK.toString(),
+    LlmSettingsStoreKeys.ON_DEVICE_TOP_P to sanitized.onDeviceTopP.toString(),
+    LlmSettingsStoreKeys.ON_DEVICE_TEMPERATURE to sanitized.onDeviceTemperature.toString(),
+    LlmSettingsStoreKeys.ON_DEVICE_ACCELERATOR to sanitized.onDeviceAccelerator,
+    LlmSettingsStoreKeys.ON_DEVICE_THINKING_ENABLED to sanitized.onDeviceThinkingEnabled.toString(),
+    LlmSettingsStoreKeys.ON_DEVICE_LITE_MODE_ENABLED to
+      sanitized.onDeviceLiteModeEnabled.toString(),
+  )
+}
+
+private fun valuesFromLlmStore(
+  store: LlmSettingsKeyValueStore,
+): Map<String, String> = buildMap {
+  LLM_BOOLEAN_SETTING_KEYS.forEach { key ->
+    store.getBoolean(key)?.let { value ->
+      put(key, value.toString())
+    }
+  }
+  LLM_STRING_SETTING_KEYS.forEach { key ->
+    store.getString(key)?.let { value ->
+      put(key, value)
+    }
+  }
+}
+
+private val LLM_BOOLEAN_SETTING_KEYS: Set<String> = setOf(
+  LlmSettingsStoreKeys.ENABLED,
+  LlmSettingsStoreKeys.STREAMING_ENABLED,
+  LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHING_ENABLED,
+  LlmSettingsStoreKeys.ON_DEVICE_THINKING_ENABLED,
+  LlmSettingsStoreKeys.ON_DEVICE_LITE_MODE_ENABLED,
+)
+
+private val LLM_STRING_SETTING_KEYS: Set<String> = setOf(
+  LlmSettingsStoreKeys.PROVIDER_MODE,
+  LlmSettingsStoreKeys.PROVIDER_ID,
+  LlmSettingsStoreKeys.SELECTED_PROVIDER_OPTION_ID,
+  LlmSettingsStoreKeys.PROTOCOL,
+  LlmSettingsStoreKeys.PROVIDER_NAME,
+  LlmSettingsStoreKeys.PROVIDER_NOTES,
+  LlmSettingsStoreKeys.BASE_URL,
+  LlmSettingsStoreKeys.API_KEY,
+  LlmSettingsStoreKeys.MODEL,
+  LlmSettingsStoreKeys.REASONING_EFFORT,
+  LlmSettingsStoreKeys.SYSTEM_PROMPT,
+  LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_KEY_STRATEGY,
+  LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_RETENTION,
+  LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHE_TTL,
+  LlmSettingsStoreKeys.CONTEXT_BUDGET_PRESET,
+  LlmSettingsStoreKeys.CONTEXT_BUDGET_RESERVED_OUTPUT_TOKENS,
+  LlmSettingsStoreKeys.CONTEXT_BUDGET_SAFETY_MARGIN_TOKENS,
+  LlmSettingsStoreKeys.CONTEXT_BUDGET_EFFECTIVE_INPUT_PERCENT,
+  LlmSettingsStoreKeys.SELECTED_ON_DEVICE_MODEL_ID,
+  LlmSettingsStoreKeys.ON_DEVICE_MAX_CONTEXT_WINDOW,
+  LlmSettingsStoreKeys.ON_DEVICE_MAX_TOKENS,
+  LlmSettingsStoreKeys.ON_DEVICE_TOP_K,
+  LlmSettingsStoreKeys.ON_DEVICE_TOP_P,
+  LlmSettingsStoreKeys.ON_DEVICE_TEMPERATURE,
+  LlmSettingsStoreKeys.ON_DEVICE_ACCELERATOR,
+  LlmSettingsStoreKeys.SAVED_CUSTOM_PROVIDERS,
+  LlmSettingsStoreKeys.AGENT_CAPABILITY_CACHE,
+)
+
+private val LLM_SETTING_KEYS: Set<String> =
+  LLM_BOOLEAN_SETTING_KEYS + LLM_STRING_SETTING_KEYS
 
 internal class InMemoryLlmSettingsKeyValueStore(
   private val values: LinkedHashMap<String, String> = linkedMapOf(),
@@ -445,91 +709,122 @@ internal class SharedPreferencesLlmSettingsKeyValueStore(
   override fun clear() {
     sharedPreferences.edit().clear().apply()
   }
+
+  fun hasAnyPersistedSetting(): Boolean =
+    LLM_SETTING_KEYS.any(sharedPreferences::contains)
+}
+
+internal class FileBackedLlmSettingsKeyValueStore(
+  private val storage: DurableTextStorage,
+  private val clock: () -> Long = System::currentTimeMillis,
+) : LlmSettingsKeyValueStore {
+  private val lock = Any()
+
+  override fun getBoolean(key: String): Boolean? =
+    getString(key)?.toBooleanStrictOrNull()
+
+  override fun putBoolean(key: String, value: Boolean) {
+    putString(key, value.toString())
+  }
+
+  override fun getString(key: String): String? = synchronized(lock) {
+    loadRecord().values[key]
+  }
+
+  override fun putString(key: String, value: String) {
+    synchronized(lock) {
+      updateValues { values ->
+        values + (key to value)
+      }
+    }
+  }
+
+  override fun loadState(defaults: LlmSettingsState): LlmSettingsState =
+    synchronized(lock) {
+      loadRecord().toState(defaults)
+    }
+
+  override fun saveState(
+    state: LlmSettingsState,
+    selectedProviderOptionId: String,
+  ) {
+    synchronized(lock) {
+      val values = valuesForLlmState(
+        state = state,
+        selectedProviderOptionId = selectedProviderOptionId,
+      )
+      updateValues { existingValues ->
+        existingValues + values
+      }
+    }
+  }
+
+  override fun clear() {
+    synchronized(lock) {
+      storage.delete(LLM_SETTINGS_FILE_NAME)
+    }
+  }
+
+  fun migrateFromLegacyIfEmpty(legacyStore: LlmSettingsKeyValueStore) {
+    synchronized(lock) {
+      if (hasPersistedRecord()) {
+        return
+      }
+      val legacyValues = valuesFromLlmStore(legacyStore)
+      if (legacyValues.isEmpty()) {
+        return
+      }
+      updateValues { values ->
+        values + legacyValues
+      }
+    }
+  }
+
+  private fun hasPersistedRecord(): Boolean =
+    !storage.readText(LLM_SETTINGS_FILE_NAME).isNullOrBlank()
+
+  private fun loadRecord(): PersistedLlmSettingsRecord =
+    storage.updateRecord(
+      name = LLM_SETTINGS_FILE_NAME,
+      serializer = PersistedLlmSettingsRecord.serializer(),
+    ) { persisted ->
+      val existing = persisted ?: PersistedLlmSettingsRecord()
+      val repaired = existing.normalized()
+      RecordStorageUpdate(
+        value = repaired,
+        result = repaired,
+        write = persisted != null && repaired != existing,
+      )
+    }
+
+  private fun updateValues(
+    update: (Map<String, String>) -> Map<String, String>,
+  ) {
+    val now = clock()
+    storage.updateRecord(
+      name = LLM_SETTINGS_FILE_NAME,
+      serializer = PersistedLlmSettingsRecord.serializer(),
+    ) { persisted ->
+      val existing = (persisted ?: PersistedLlmSettingsRecord()).normalized()
+      val updatedValues = update(existing.values)
+        .filterKeys(LLM_SETTING_KEYS::contains)
+      RecordStorageUpdate(
+        value = existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = now,
+          values = updatedValues,
+        ),
+        result = Unit,
+      )
+    }
+  }
 }
 
 internal class LlmSettingsStore(
   private val keyValueStore: LlmSettingsKeyValueStore,
 ) {
   fun load(defaults: LlmSettingsState = LlmSettingsState()): LlmSettingsState {
-    val resolved = defaults.copy(
-      enabled = keyValueStore.getBoolean(LlmSettingsStoreKeys.ENABLED) ?: defaults.enabled,
-      streamingEnabled =
-        keyValueStore.getBoolean(LlmSettingsStoreKeys.STREAMING_ENABLED)
-          ?: defaults.streamingEnabled,
-      providerMode =
-        keyValueStore.getString(LlmSettingsStoreKeys.PROVIDER_MODE) ?: defaults.providerMode,
-      providerId = keyValueStore.getString(LlmSettingsStoreKeys.PROVIDER_ID)
-        ?: LlmSettingsState.inferProviderId(
-          keyValueStore.getString(LlmSettingsStoreKeys.BASE_URL) ?: defaults.baseUrl,
-        ),
-      protocol = keyValueStore.getString(LlmSettingsStoreKeys.PROTOCOL) ?: defaults.protocol,
-      providerName = keyValueStore.getString(LlmSettingsStoreKeys.PROVIDER_NAME) ?: defaults.providerName,
-      providerNotes = keyValueStore.getString(LlmSettingsStoreKeys.PROVIDER_NOTES) ?: defaults.providerNotes,
-      baseUrl = keyValueStore.getString(LlmSettingsStoreKeys.BASE_URL) ?: defaults.baseUrl,
-      apiKey = keyValueStore.getString(LlmSettingsStoreKeys.API_KEY) ?: defaults.apiKey,
-      model = keyValueStore.getString(LlmSettingsStoreKeys.MODEL) ?: defaults.model,
-      reasoningEffort = keyValueStore.getString(LlmSettingsStoreKeys.REASONING_EFFORT) ?: defaults.reasoningEffort,
-      systemPrompt = keyValueStore.getString(LlmSettingsStoreKeys.SYSTEM_PROMPT) ?: defaults.systemPrompt,
-      openAiPromptCacheKeyStrategy =
-        keyValueStore.getString(LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_KEY_STRATEGY)
-          ?: defaults.openAiPromptCacheKeyStrategy,
-      openAiPromptCacheRetention =
-        keyValueStore.getString(LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_RETENTION)
-          ?: defaults.openAiPromptCacheRetention,
-      anthropicPromptCachingEnabled =
-        keyValueStore.getBoolean(LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHING_ENABLED)
-          ?: defaults.anthropicPromptCachingEnabled,
-      anthropicPromptCacheTtl =
-        keyValueStore.getString(LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHE_TTL)
-          ?: defaults.anthropicPromptCacheTtl,
-      contextBudgetPreset =
-        keyValueStore.getString(LlmSettingsStoreKeys.CONTEXT_BUDGET_PRESET)
-          ?: defaults.contextBudgetPreset,
-      contextBudgetReservedOutputTokens = optionalIntValue(
-        key = LlmSettingsStoreKeys.CONTEXT_BUDGET_RESERVED_OUTPUT_TOKENS,
-        defaultValue = defaults.contextBudgetReservedOutputTokens,
-      ),
-      contextBudgetSafetyMarginTokens = optionalIntValue(
-        key = LlmSettingsStoreKeys.CONTEXT_BUDGET_SAFETY_MARGIN_TOKENS,
-        defaultValue = defaults.contextBudgetSafetyMarginTokens,
-      ),
-      contextBudgetEffectiveInputPercent = optionalDoubleValue(
-        key = LlmSettingsStoreKeys.CONTEXT_BUDGET_EFFECTIVE_INPUT_PERCENT,
-        defaultValue = defaults.contextBudgetEffectiveInputPercent,
-      ),
-      selectedOnDeviceModelId =
-        keyValueStore.getString(LlmSettingsStoreKeys.SELECTED_ON_DEVICE_MODEL_ID)
-          ?: defaults.selectedOnDeviceModelId,
-      onDeviceMaxContextWindow =
-        keyValueStore.getString(LlmSettingsStoreKeys.ON_DEVICE_MAX_CONTEXT_WINDOW)
-          ?.toIntOrNull()
-          ?: defaults.onDeviceMaxContextWindow,
-      onDeviceMaxTokens =
-        keyValueStore.getString(LlmSettingsStoreKeys.ON_DEVICE_MAX_TOKENS)
-          ?.toIntOrNull()
-          ?: defaults.onDeviceMaxTokens,
-      onDeviceTopK =
-        keyValueStore.getString(LlmSettingsStoreKeys.ON_DEVICE_TOP_K)
-          ?.toIntOrNull()
-          ?: defaults.onDeviceTopK,
-      onDeviceTopP =
-        keyValueStore.getString(LlmSettingsStoreKeys.ON_DEVICE_TOP_P)
-          ?.toDoubleOrNull()
-          ?: defaults.onDeviceTopP,
-      onDeviceTemperature =
-        keyValueStore.getString(LlmSettingsStoreKeys.ON_DEVICE_TEMPERATURE)
-          ?.toDoubleOrNull()
-          ?: defaults.onDeviceTemperature,
-      onDeviceAccelerator =
-        keyValueStore.getString(LlmSettingsStoreKeys.ON_DEVICE_ACCELERATOR)
-          ?: defaults.onDeviceAccelerator,
-      onDeviceThinkingEnabled =
-        keyValueStore.getBoolean(LlmSettingsStoreKeys.ON_DEVICE_THINKING_ENABLED)
-          ?: defaults.onDeviceThinkingEnabled,
-      onDeviceLiteModeEnabled =
-        keyValueStore.getBoolean(LlmSettingsStoreKeys.ON_DEVICE_LITE_MODE_ENABLED)
-          ?: defaults.onDeviceLiteModeEnabled,
-    ).sanitized()
+    val resolved = keyValueStore.loadState(defaults).sanitized()
     return resolved.copy(
       enabled = resolved.isConfigured(),
       agentCapability = if (resolved.isOnDeviceProviderMode()) {
@@ -554,97 +849,9 @@ internal class LlmSettingsStore(
   ) {
     val resolved = state.sanitized()
     val sanitized = resolved.copy(enabled = resolved.isConfigured())
-    keyValueStore.putBoolean(LlmSettingsStoreKeys.ENABLED, sanitized.enabled)
-    keyValueStore.putBoolean(
-      LlmSettingsStoreKeys.STREAMING_ENABLED,
-      sanitized.streamingEnabled,
-    )
-    keyValueStore.putString(LlmSettingsStoreKeys.PROVIDER_MODE, sanitized.providerMode)
-    keyValueStore.putBoolean(
-      LlmSettingsStoreKeys.STREAMING_ENABLED,
-      sanitized.streamingEnabled,
-    )
-    keyValueStore.putString(LlmSettingsStoreKeys.PROVIDER_MODE, sanitized.providerMode)
-    keyValueStore.putString(LlmSettingsStoreKeys.PROVIDER_ID, sanitized.providerId)
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.SELECTED_PROVIDER_OPTION_ID,
-      selectedProviderOptionId.trim().ifBlank { sanitized.providerId },
-    )
-    keyValueStore.putString(LlmSettingsStoreKeys.PROTOCOL, sanitized.protocol)
-    keyValueStore.putString(LlmSettingsStoreKeys.PROVIDER_NAME, sanitized.providerName)
-    keyValueStore.putString(LlmSettingsStoreKeys.PROVIDER_NOTES, sanitized.providerNotes)
-    keyValueStore.putString(LlmSettingsStoreKeys.BASE_URL, sanitized.baseUrl)
-    keyValueStore.putString(LlmSettingsStoreKeys.API_KEY, sanitized.apiKey)
-    keyValueStore.putString(LlmSettingsStoreKeys.MODEL, sanitized.model)
-    keyValueStore.putString(LlmSettingsStoreKeys.REASONING_EFFORT, sanitized.reasoningEffort)
-    keyValueStore.putString(LlmSettingsStoreKeys.SYSTEM_PROMPT, sanitized.systemPrompt)
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_KEY_STRATEGY,
-      sanitized.openAiPromptCacheKeyStrategy,
-    )
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.OPENAI_PROMPT_CACHE_RETENTION,
-      sanitized.openAiPromptCacheRetention,
-    )
-    keyValueStore.putBoolean(
-      LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHING_ENABLED,
-      sanitized.anthropicPromptCachingEnabled,
-    )
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.ANTHROPIC_PROMPT_CACHE_TTL,
-      sanitized.anthropicPromptCacheTtl,
-    )
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.CONTEXT_BUDGET_PRESET,
-      sanitized.contextBudgetPreset,
-    )
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.CONTEXT_BUDGET_RESERVED_OUTPUT_TOKENS,
-      sanitized.contextBudgetReservedOutputTokens?.toString().orEmpty(),
-    )
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.CONTEXT_BUDGET_SAFETY_MARGIN_TOKENS,
-      sanitized.contextBudgetSafetyMarginTokens?.toString().orEmpty(),
-    )
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.CONTEXT_BUDGET_EFFECTIVE_INPUT_PERCENT,
-      sanitized.contextBudgetEffectiveInputPercent?.toString().orEmpty(),
-    )
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.SELECTED_ON_DEVICE_MODEL_ID,
-      sanitized.selectedOnDeviceModelId,
-    )
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.ON_DEVICE_MAX_CONTEXT_WINDOW,
-      sanitized.onDeviceMaxContextWindow.toString(),
-    )
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.ON_DEVICE_MAX_TOKENS,
-      sanitized.onDeviceMaxTokens.toString(),
-    )
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.ON_DEVICE_TOP_K,
-      sanitized.onDeviceTopK.toString(),
-    )
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.ON_DEVICE_TOP_P,
-      sanitized.onDeviceTopP.toString(),
-    )
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.ON_DEVICE_TEMPERATURE,
-      sanitized.onDeviceTemperature.toString(),
-    )
-    keyValueStore.putString(
-      LlmSettingsStoreKeys.ON_DEVICE_ACCELERATOR,
-      sanitized.onDeviceAccelerator,
-    )
-    keyValueStore.putBoolean(
-      LlmSettingsStoreKeys.ON_DEVICE_THINKING_ENABLED,
-      sanitized.onDeviceThinkingEnabled,
-    )
-    keyValueStore.putBoolean(
-      LlmSettingsStoreKeys.ON_DEVICE_LITE_MODE_ENABLED,
-      sanitized.onDeviceLiteModeEnabled,
+    keyValueStore.saveState(
+      state = sanitized,
+      selectedProviderOptionId = selectedProviderOptionId,
     )
     if (sanitized.agentCapability.wasVerified) {
       saveAgentCapability(sanitized.agentCapability)
@@ -746,22 +953,6 @@ internal class LlmSettingsStore(
     }
   }
 
-  private fun optionalIntValue(
-    key: String,
-    defaultValue: Int?,
-  ): Int? = when (val rawValue = keyValueStore.getString(key)) {
-    null -> defaultValue
-    else -> rawValue.trim().takeIf(String::isNotBlank)?.toIntOrNull()
-  }
-
-  private fun optionalDoubleValue(
-    key: String,
-    defaultValue: Double?,
-  ): Double? = when (val rawValue = keyValueStore.getString(key)) {
-    null -> defaultValue
-    else -> rawValue.trim().takeIf(String::isNotBlank)?.toDoubleOrNull()
-  }
-
   private fun saveAgentCapabilityCache(entries: List<LlmAgentCapabilitySnapshot>) {
     val normalized = JSONArray().apply {
       entries
@@ -778,10 +969,23 @@ internal class LlmSettingsStore(
     fun fromContext(
       context: Context,
       preferencesName: String = DEFAULT_LLM_SETTINGS_PREFERENCES,
-    ): LlmSettingsStore = LlmSettingsStore(
-      keyValueStore = SharedPreferencesLlmSettingsKeyValueStore(
-        context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE),
-      ),
-    )
+    ): LlmSettingsStore {
+      val appContext = context.applicationContext
+      val fileBackedStore = FileBackedLlmSettingsKeyValueStore(
+        storage = DirectoryDurableTextStorage(
+          File(
+            appContext.filesDir,
+            FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+          ),
+        ),
+      )
+      val legacyStore = SharedPreferencesLlmSettingsKeyValueStore(
+        appContext.getSharedPreferences(preferencesName, Context.MODE_PRIVATE),
+      )
+      if (legacyStore.hasAnyPersistedSetting()) {
+        fileBackedStore.migrateFromLegacyIfEmpty(legacyStore)
+      }
+      return LlmSettingsStore(keyValueStore = fileBackedStore)
+    }
   }
 }

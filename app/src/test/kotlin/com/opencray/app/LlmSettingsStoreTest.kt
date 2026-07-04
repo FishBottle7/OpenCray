@@ -1,12 +1,18 @@
 package com.opencray.app
 
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 class LlmSettingsStoreTest {
+  @get:Rule
+  val temporaryFolder: TemporaryFolder = TemporaryFolder()
+
   @Test
   fun loadInfersProviderFromLegacyBaseUrlWhenProviderIdMissing() {
     val store = LlmSettingsStore(
@@ -120,6 +126,130 @@ class LlmSettingsStoreTest {
     store.save(saved)
 
     assertEquals(saved.sanitized(), store.load())
+  }
+
+  @Test
+  fun fileBackedStoreSharesStateAcrossInstances() {
+    val directory = temporaryFolder.newFolder("llm-settings-file-backed")
+    val firstStore = LlmSettingsStore(
+      FileBackedLlmSettingsKeyValueStore(
+        storage = DirectoryDurableTextStorage(directory),
+        clock = { 100L },
+      ),
+    )
+    val saved = LlmSettingsState(
+      enabled = true,
+      streamingEnabled = false,
+      providerId = "custom",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      providerName = "Proxy",
+      providerNotes = "Runtime route",
+      baseUrl = "https://proxy.example/v1",
+      apiKey = "token",
+      model = "gpt-5-mini",
+      reasoningEffort = "high",
+      systemPrompt = "Be direct.",
+      contextBudgetPreset = "expanded",
+      contextBudgetReservedOutputTokens = 2048,
+      contextBudgetSafetyMarginTokens = 1024,
+      contextBudgetEffectiveInputPercent = 0.8,
+    )
+    val customProvider = SavedCustomLlmProvider.create(
+      existingId = "saved-custom-file",
+      protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+      providerName = "Proxy",
+      providerNotes = "Runtime route",
+      baseUrl = "https://proxy.example/v1",
+      apiKey = "token",
+      model = "gpt-5-mini",
+    )
+    val capability = LlmAgentCapabilitySnapshot(
+      routeFingerprint = llmRouteFingerprint(
+        protocol = LlmProviderProtocols.OPENAI_RESPONSES,
+        baseUrl = "https://proxy.example/v1",
+        model = "gpt-5-mini",
+      ),
+      verifiedAtEpochMs = 1234L,
+      nativeToolCallingAvailable = true,
+    )
+
+    firstStore.save(saved, selectedProviderOptionId = "saved-custom-file")
+    firstStore.saveSavedCustomProviders(listOf(customProvider))
+    firstStore.saveAgentCapability(capability)
+
+    val secondStore = LlmSettingsStore(
+      FileBackedLlmSettingsKeyValueStore(
+        storage = DirectoryDurableTextStorage(directory),
+        clock = { 200L },
+      ),
+    )
+    val loaded = secondStore.load()
+
+    assertEquals(saved.sanitized().copy(agentCapability = loaded.agentCapability), loaded)
+    assertEquals("saved-custom-file", secondStore.loadSelectedProviderOptionId("fallback"))
+    assertEquals(listOf(customProvider), secondStore.loadSavedCustomProviders())
+    assertEquals(capability, loaded.agentCapability)
+
+    secondStore.clear()
+
+    assertFalse(firstStore.load().enabled)
+    assertTrue(firstStore.loadSavedCustomProviders().isEmpty())
+  }
+
+  @Test
+  fun fileBackedStoreMigratesLegacyStateOnlyWhenEmpty() {
+    val directory = temporaryFolder.newFolder("llm-settings-migration")
+    val legacyKeyValueStore = InMemoryLlmSettingsKeyValueStore()
+    val legacyStore = LlmSettingsStore(legacyKeyValueStore)
+    val legacyState = LlmSettingsState(
+      enabled = true,
+      providerId = "custom",
+      protocol = LlmProviderProtocols.ANTHROPIC,
+      providerName = "Legacy",
+      baseUrl = "https://api.legacy.example",
+      apiKey = "legacy-token",
+      model = "claude-3-7-sonnet",
+      streamingEnabled = false,
+    )
+    val legacyProvider = SavedCustomLlmProvider.create(
+      existingId = "saved-custom-legacy",
+      protocol = LlmProviderProtocols.ANTHROPIC,
+      providerName = "Legacy",
+      providerNotes = "Migrated",
+      baseUrl = "https://api.legacy.example",
+      apiKey = "legacy-token",
+      model = "claude-3-7-sonnet",
+    )
+    legacyStore.save(legacyState, selectedProviderOptionId = "saved-custom-legacy")
+    legacyStore.saveSavedCustomProviders(listOf(legacyProvider))
+    val fileBackedKeyValueStore = FileBackedLlmSettingsKeyValueStore(
+      storage = DirectoryDurableTextStorage(directory),
+      clock = { 300L },
+    )
+
+    fileBackedKeyValueStore.migrateFromLegacyIfEmpty(legacyKeyValueStore)
+
+    val fileBackedStore = LlmSettingsStore(fileBackedKeyValueStore)
+    assertEquals(legacyState.sanitized(), fileBackedStore.load())
+    assertEquals("saved-custom-legacy", fileBackedStore.loadSelectedProviderOptionId("fallback"))
+    assertEquals(listOf(legacyProvider), fileBackedStore.loadSavedCustomProviders())
+
+    val durableState = LlmSettingsState(
+      enabled = true,
+      providerId = "custom",
+      protocol = LlmProviderProtocols.OPENAI,
+      providerName = "Durable",
+      baseUrl = "https://api.durable.example/v1",
+      apiKey = "durable-token",
+      model = "durable-model",
+    )
+    fileBackedStore.save(durableState, selectedProviderOptionId = "durable-option")
+    legacyStore.save(legacyState.copy(model = "newer-legacy-model"))
+
+    fileBackedKeyValueStore.migrateFromLegacyIfEmpty(legacyKeyValueStore)
+
+    assertEquals(durableState.sanitized(), fileBackedStore.load())
+    assertEquals("durable-option", fileBackedStore.loadSelectedProviderOptionId("fallback"))
   }
 
   @Test
