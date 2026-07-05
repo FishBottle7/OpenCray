@@ -1,8 +1,15 @@
 package com.opencray.app.facade.skills
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.opencray.app.AppSkillsStorage
+import com.opencray.app.FileBackedAgentQueueSnapshotStoreFactory
 import com.opencray.app.OpenCrayLocaleManager
+import com.opencray.persistence.PersistenceSchemaVersion
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.RecordStorageUpdate
+import com.opencray.persistence.store.file.updateRecord
 import com.opencray.runtime.skills.SkillPackageBatchInstallAttempt
 import com.opencray.runtime.skills.SkillPackageCheckReport
 import com.opencray.runtime.skills.SkillInstallManifestStore
@@ -13,10 +20,12 @@ import com.opencray.runtime.skills.SkillSourceInspectionAttempt
 import com.opencray.skills.LoadedSkill
 import com.opencray.skills.SkillLoader
 import java.io.File
+import kotlinx.serialization.Serializable
 import org.opencray.app.R
 
 private const val PREFERENCES_NAME = "opencray.skills.workspace"
 private const val PREF_PREFIX_ENABLED = "enabled:"
+private const val SKILL_ENABLEMENT_FILE_NAME = "skill-enablement.json"
 
 private const val INSTALL_SOURCE_CURATED = "curated-library"
 private const val INSTALL_SOURCE_LOCAL = "local-path"
@@ -25,6 +34,158 @@ private const val INSTALL_SOURCE_GITLAB = "gitlab-url"
 private const val DEFAULT_REMOTE_SKILL_SEARCH_LIMIT = 12
 private const val MAX_REMOTE_SKILL_SEARCH_LIMIT = 20
 private val WINDOWS_ABSOLUTE_PATH_REGEX: Regex = Regex("^[A-Za-z]:[\\\\/].+")
+
+internal interface SkillEnablementStateStore {
+  fun isEnabled(skillId: String): Boolean
+
+  fun setEnabled(skillId: String, enabled: Boolean)
+
+  fun remove(skillId: String)
+
+  fun explicitEnablement(): Map<String, Boolean>
+}
+
+internal class SharedPreferencesSkillEnablementStateStore(
+  private val sharedPreferences: SharedPreferences,
+) : SkillEnablementStateStore {
+  override fun isEnabled(skillId: String): Boolean =
+    sharedPreferences.getBoolean(preferenceKey(skillId), true)
+
+  override fun setEnabled(skillId: String, enabled: Boolean) {
+    sharedPreferences.edit().putBoolean(preferenceKey(skillId), enabled).apply()
+  }
+
+  override fun remove(skillId: String) {
+    sharedPreferences.edit().remove(preferenceKey(skillId)).apply()
+  }
+
+  override fun explicitEnablement(): Map<String, Boolean> =
+    sharedPreferences.all.mapNotNull { (key, value) ->
+      val skillId = key.removePrefix(PREF_PREFIX_ENABLED)
+        .takeIf { key.startsWith(PREF_PREFIX_ENABLED) }
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: return@mapNotNull null
+      val enabled = value as? Boolean ?: return@mapNotNull null
+      skillId to enabled
+    }.toMap()
+}
+
+internal class FileBackedSkillEnablementStateStore(
+  private val storage: DurableTextStorage,
+  private val clock: () -> Long = System::currentTimeMillis,
+) : SkillEnablementStateStore {
+  private val lock = Any()
+
+  override fun isEnabled(skillId: String): Boolean = synchronized(lock) {
+    loadRecord().enabledBySkillId[skillId.trim()] ?: true
+  }
+
+  override fun setEnabled(skillId: String, enabled: Boolean) {
+    val normalizedSkillId = skillId.trim().takeIf(String::isNotBlank) ?: return
+    synchronized(lock) {
+      updateValues { values -> values + (normalizedSkillId to enabled) }
+    }
+  }
+
+  override fun remove(skillId: String) {
+    val normalizedSkillId = skillId.trim().takeIf(String::isNotBlank) ?: return
+    synchronized(lock) {
+      updateValues { values -> values - normalizedSkillId }
+    }
+  }
+
+  override fun explicitEnablement(): Map<String, Boolean> = synchronized(lock) {
+    loadRecord().enabledBySkillId
+  }
+
+  fun migrateFromLegacyIfEmpty(legacyStore: SkillEnablementStateStore) {
+    synchronized(lock) {
+      if (hasPersistedRecord()) {
+        return
+      }
+      val legacyValues = legacyStore.explicitEnablement()
+      if (legacyValues.isEmpty()) {
+        return
+      }
+      updateValues { values -> values + legacyValues }
+    }
+  }
+
+  private fun hasPersistedRecord(): Boolean =
+    !storage.readText(SKILL_ENABLEMENT_FILE_NAME).isNullOrBlank()
+
+  private fun loadRecord(): PersistedSkillEnablementRecord =
+    storage.updateRecord(
+      name = SKILL_ENABLEMENT_FILE_NAME,
+      serializer = PersistedSkillEnablementRecord.serializer(),
+    ) { persisted ->
+      val existing = persisted ?: PersistedSkillEnablementRecord()
+      val repaired = existing.normalized()
+      RecordStorageUpdate(
+        value = repaired,
+        result = repaired,
+        write = persisted != null && repaired != existing,
+      )
+    }
+
+  private fun updateValues(
+    update: (Map<String, Boolean>) -> Map<String, Boolean>,
+  ) {
+    val now = clock()
+    storage.updateRecord(
+      name = SKILL_ENABLEMENT_FILE_NAME,
+      serializer = PersistedSkillEnablementRecord.serializer(),
+    ) { persisted ->
+      val existing = (persisted ?: PersistedSkillEnablementRecord()).normalized()
+      val updatedValues = update(existing.enabledBySkillId)
+        .filterKeys { skillId -> skillId.isNotBlank() }
+      RecordStorageUpdate(
+        value = existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = now,
+          enabledBySkillId = updatedValues,
+        ),
+        result = Unit,
+      )
+    }
+  }
+}
+
+private fun createSkillEnablementStateStore(context: Context): SkillEnablementStateStore {
+  val appContext = context.applicationContext
+  val fileBackedStore = FileBackedSkillEnablementStateStore(
+    storage = DirectoryDurableTextStorage(
+      File(
+        appContext.filesDir,
+        FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+      ),
+    ),
+  )
+  val legacyStore = SharedPreferencesSkillEnablementStateStore(
+    appContext.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE),
+  )
+  if (legacyStore.explicitEnablement().isNotEmpty()) {
+    fileBackedStore.migrateFromLegacyIfEmpty(legacyStore)
+  }
+  return fileBackedStore
+}
+
+private fun preferenceKey(skillName: String): String = PREF_PREFIX_ENABLED + skillName.trim()
+
+@Serializable
+private data class PersistedSkillEnablementRecord(
+  val schemaVersion: Int = PersistenceSchemaVersion.CURRENT,
+  val recordVersion: Long = 0L,
+  val updatedAtEpochMs: Long = 0L,
+  val enabledBySkillId: Map<String, Boolean> = emptyMap(),
+) {
+  fun normalized(): PersistedSkillEnablementRecord = copy(
+    enabledBySkillId = enabledBySkillId
+      .mapKeys { entry -> entry.key.trim() }
+      .filterKeys(String::isNotBlank),
+  )
+}
 
 data class SkillsSnapshot(
   val installedSkills: List<InstalledSkillSnapshot>,
@@ -120,7 +281,7 @@ interface SkillsFacade {
 internal class LocalSkillsFacade private constructor(
   private val context: Context,
 ) : SkillsFacade {
-  private val preferences = context.getSharedPreferences(PREFERENCES_NAME, Context.MODE_PRIVATE)
+  private val skillEnablementStore = createSkillEnablementStateStore(context)
   private val managedRoot = AppSkillsStorage.managedSkillsRootForContext(context)
   private val catalogRoot = AppSkillsStorage.catalogSkillsRootForContext(context)
   private val packageManager = SkillPackageManager(
@@ -215,7 +376,7 @@ internal class LocalSkillsFacade private constructor(
     if (!installed) {
       return false
     }
-    preferences.edit().putBoolean(preferenceKey(skillName), enabled).apply()
+    skillEnablementStore.setEnabled(skillName, enabled)
     return true
   }
 
@@ -298,7 +459,7 @@ internal class LocalSkillsFacade private constructor(
     val result = runCatching {
       packageManager.removeInstalledSkill(skillId)
     }.getOrNull() ?: return false
-    preferences.edit().remove(preferenceKey(result.skillId)).apply()
+    skillEnablementStore.remove(result.skillId)
     return true
   }
 
@@ -340,7 +501,7 @@ internal class LocalSkillsFacade private constructor(
       description = skill.metadata.skillSpec.description,
       body = skill.document.markdownBody,
       sourceDirectoryPath = sourceDirectory.invariantSeparatorsPath,
-      isEnabled = preferences.getBoolean(preferenceKey(skill.name), true),
+      isEnabled = skillEnablementStore.isEnabled(skill.name),
       canDelete = isInsideManagedRoot(sourceDirectory),
     )
   }
@@ -368,7 +529,7 @@ internal class LocalSkillsFacade private constructor(
         description = localSkill.metadata.skillSpec.description,
         body = localSkill.document.markdownBody,
         sourceDirectoryPath = sourceDirectory.invariantSeparatorsPath,
-        isEnabled = preferences.getBoolean(preferenceKey(localSkill.name), true),
+        isEnabled = skillEnablementStore.isEnabled(localSkill.name),
         canDelete = isInsideManagedRoot(sourceDirectory),
       )
     }
@@ -383,13 +544,13 @@ internal class LocalSkillsFacade private constructor(
       description = remoteResult.skill.metadata.skillSpec.description,
       body = remoteResult.skill.document.markdownBody,
       sourceDirectoryPath = remoteResult.sourcePath,
-      isEnabled = preferences.getBoolean(preferenceKey(remoteResult.skill.name), true),
+      isEnabled = skillEnablementStore.isEnabled(remoteResult.skill.name),
       canDelete = false,
     )
   }
 
   override fun enabledSkillRoots(): List<File> = loadManagedSkills()
-    .filter { skill -> preferences.getBoolean(preferenceKey(skill.name), true) }
+    .filter { skill -> skillEnablementStore.isEnabled(skill.name) }
     .map { skill -> File(skill.source.skillDirectoryPath) }
     .filter(File::exists)
     .sortedBy { file -> file.invariantSeparatorsPath }
@@ -413,7 +574,7 @@ internal class LocalSkillsFacade private constructor(
       id = skill.name,
       name = skill.name,
       description = skill.metadata.skillSpec.description,
-      isEnabled = preferences.getBoolean(preferenceKey(skill.name), true),
+      isEnabled = skillEnablementStore.isEnabled(skill.name),
       sourceDirectoryPath = sourceDirectory.invariantSeparatorsPath,
       canDelete = isInsideManagedRoot(sourceDirectory),
     )
@@ -550,10 +711,8 @@ internal class LocalSkillsFacade private constructor(
     return SkillLoader.load(root).loadedSkills
   }
 
-  private fun preferenceKey(skillName: String): String = PREF_PREFIX_ENABLED + skillName
-
   private fun enableInstalledSkill(skillId: String) {
-    preferences.edit().putBoolean(preferenceKey(skillId), true).apply()
+    skillEnablementStore.setEnabled(skillId, true)
   }
 
   private fun isInsideManagedRoot(candidate: File): Boolean {

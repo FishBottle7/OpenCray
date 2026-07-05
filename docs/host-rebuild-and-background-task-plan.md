@@ -369,6 +369,7 @@ Current state:
 - media/speech settings now default to the runtime-root durable update path instead of defaulting to process-local `SharedPreferences`, so settings UI saves and runtime-process media tool routing use the same process-safe media/STT provider state after legacy migration
 - app-language settings now default to the runtime-root durable update path instead of defaulting to process-local `SharedPreferences`, so settings UI saves, projection fallback, and runtime-localized labels use the same process-safe language state after legacy migration
 - app-shell navigation state now defaults to the runtime-root durable update path instead of defaulting to process-local `SharedPreferences`, so app launches plus service/projection shell readers use the same process-safe selected tab/settings subpage state after legacy migration
+- skills enablement state now defaults to the runtime-root durable update path instead of defaulting to process-local `SharedPreferences`, so app-process toggles, service-owned skills reads, projection fallback, and runtime tool-surface loading use the same process-safe enabled/disabled map after legacy migration
 - mid-loop supplement append/consume now uses that same process-safe update primitive, so host/service rebuild paths do not lose newer supplement input while consuming an older pending set
 - transcript fallback append/replace/repair now uses that same process-safe update primitive, so host/service rebuild paths do not lose newer transcript fallback events while journal-backed replay remains preferred
 
