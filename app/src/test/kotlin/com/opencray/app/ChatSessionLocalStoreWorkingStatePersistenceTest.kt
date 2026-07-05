@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import com.opencray.persistence.store.file.JsonFileChatWorkspaceStore
 import com.opencray.runtime.workingstate.WorkingState
 import com.opencray.runtime.workingstate.WorkingStateEntry
 import com.opencray.runtime.workingstate.WorkingStateObjective
@@ -63,6 +64,47 @@ class ChatSessionLocalStoreWorkingStatePersistenceTest {
     )
 
     assertTrue(ChatSessionLocalStore(directory).loadWorkingState(sessionId).isEmpty)
+  }
+
+  @Test
+  fun replaceWorkingStatePreservesConcurrentWorkspaceExtensions() {
+    val directory = temporaryFolder.newFolder("chat-store-working-state-concurrent-extension")
+    val rawStore = JsonFileChatWorkspaceStore(directory)
+    var sessionId: String? = null
+    var injectedConcurrentExtension = false
+    var clock = 1_700_000_000_000L
+    val store = ChatSessionLocalStore(
+      directory = directory,
+      nowEpochMs = {
+        val now = clock++
+        if (!injectedConcurrentExtension && sessionId != null) {
+          injectedConcurrentExtension = true
+          val current = requireNotNull(rawStore.load())
+          rawStore.save(
+            current.copy(
+              extensions = current.extensions + ("concurrent.marker" to "foreground"),
+              recordVersion = current.recordVersion + 1,
+              updatedAtEpochMs = now,
+            ),
+          )
+        }
+        now
+      },
+    )
+    sessionId = store.loadState().activeSession.sessionId
+    val activeSessionId = requireNotNull(sessionId)
+    val workingState = WorkingState(
+      objective = WorkingStateObjective(primaryGoal = "Preserve concurrent extensions."),
+    )
+
+    store.replaceWorkingState(
+      sessionId = activeSessionId,
+      workingState = workingState,
+    )
+
+    val restoredWorkspace = requireNotNull(rawStore.load())
+    assertEquals("foreground", restoredWorkspace.extensions["concurrent.marker"])
+    assertEquals(workingState, ChatSessionLocalStore(directory).loadWorkingState(activeSessionId))
   }
 
   @Test

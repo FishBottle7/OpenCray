@@ -670,26 +670,38 @@ internal open class ChatSessionLocalStore(
     if (sessionId.isBlank()) {
       return
     }
-    val workspace = loadWorkspaceOrCreate()
-    if (workspace.sessions.none { session -> session.sessionId == sessionId }) {
-      return
+    loadWorkspaceOrCreate()
+    val now = nowEpochMs()
+    workspaceStore.update { workspace ->
+      if (workspace == null || workspace.sessions.none { session -> session.sessionId == sessionId }) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = Unit,
+          write = false,
+        )
+      }
+      val key = nativeWebSearchApprovalExtensionKey(sessionId)
+      val updatedExtensions = if (approved) {
+        workspace.extensions + (key to "true")
+      } else {
+        workspace.extensions - key
+      }
+      if (updatedExtensions == workspace.extensions) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = Unit,
+          write = false,
+        )
+      }
+      ChatWorkspaceStoreUpdate(
+        record = workspace.copy(
+          extensions = updatedExtensions,
+          recordVersion = workspace.recordVersion + 1,
+          updatedAtEpochMs = now,
+        ),
+        result = Unit,
+      )
     }
-    val key = nativeWebSearchApprovalExtensionKey(sessionId)
-    val updatedExtensions = if (approved) {
-      workspace.extensions + (key to "true")
-    } else {
-      workspace.extensions - key
-    }
-    if (updatedExtensions == workspace.extensions) {
-      return
-    }
-    workspaceStore.save(
-      workspace.copy(
-        extensions = updatedExtensions,
-        recordVersion = workspace.recordVersion + 1,
-        updatedAtEpochMs = nowEpochMs(),
-      ),
-    )
   }
 
   fun setSessionScopedStatePresent(
@@ -699,26 +711,38 @@ internal open class ChatSessionLocalStore(
     if (sessionId.isBlank()) {
       return
     }
-    val workspace = loadWorkspaceOrCreate()
-    if (workspace.sessions.none { session -> session.sessionId == sessionId }) {
-      return
+    loadWorkspaceOrCreate()
+    val now = nowEpochMs()
+    workspaceStore.update { workspace ->
+      if (workspace == null || workspace.sessions.none { session -> session.sessionId == sessionId }) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = Unit,
+          write = false,
+        )
+      }
+      val key = sessionScopedStateExtensionKey(sessionId)
+      val updatedExtensions = if (present) {
+        workspace.extensions + (key to "true")
+      } else {
+        workspace.extensions - key
+      }
+      if (updatedExtensions == workspace.extensions) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = Unit,
+          write = false,
+        )
+      }
+      ChatWorkspaceStoreUpdate(
+        record = workspace.copy(
+          extensions = updatedExtensions,
+          recordVersion = workspace.recordVersion + 1,
+          updatedAtEpochMs = now,
+        ),
+        result = Unit,
+      )
     }
-    val key = sessionScopedStateExtensionKey(sessionId)
-    val updatedExtensions = if (present) {
-      workspace.extensions + (key to "true")
-    } else {
-      workspace.extensions - key
-    }
-    if (updatedExtensions == workspace.extensions) {
-      return
-    }
-    workspaceStore.save(
-      workspace.copy(
-        extensions = updatedExtensions,
-        recordVersion = workspace.recordVersion + 1,
-        updatedAtEpochMs = nowEpochMs(),
-      ),
-    )
   }
 
   fun replaceTodos(
@@ -730,6 +754,7 @@ internal open class ChatSessionLocalStore(
     }
     loadWorkspaceOrCreate()
     val normalizedTodos = normalizeTodos(todos)
+    val now = nowEpochMs()
     workspaceStore.update { workspace ->
       if (workspace == null || workspace.sessions.none { session -> session.sessionId == sessionId }) {
         return@update ChatWorkspaceStoreUpdate(
@@ -742,7 +767,7 @@ internal open class ChatSessionLocalStore(
         workspace = workspace,
         sessionId = sessionId,
         todos = normalizedTodos,
-        updatedAtEpochMs = nowEpochMs(),
+        updatedAtEpochMs = now,
       )
       ChatWorkspaceStoreUpdate(
         record = updatedWorkspace,
@@ -759,20 +784,28 @@ internal open class ChatSessionLocalStore(
     if (sessionId.isBlank()) {
       return
     }
-    val workspace = loadWorkspaceOrCreate()
-    if (workspace.sessions.none { session -> session.sessionId == sessionId }) {
-      return
+    loadWorkspaceOrCreate()
+    val now = nowEpochMs()
+    workspaceStore.update { workspace ->
+      if (workspace == null || workspace.sessions.none { session -> session.sessionId == sessionId }) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = Unit,
+          write = false,
+        )
+      }
+      val updatedWorkspace = workspaceWithWorkingState(
+        workspace = workspace,
+        sessionId = sessionId,
+        workingState = workingState,
+        updatedAtEpochMs = now,
+      )
+      ChatWorkspaceStoreUpdate(
+        record = updatedWorkspace,
+        result = Unit,
+        write = updatedWorkspace != workspace,
+      )
     }
-    val updatedWorkspace = workspaceWithWorkingState(
-      workspace = workspace,
-      sessionId = sessionId,
-      workingState = workingState,
-      updatedAtEpochMs = nowEpochMs(),
-    )
-    if (updatedWorkspace == workspace) {
-      return
-    }
-    workspaceStore.save(updatedWorkspace)
   }
 
   fun enqueuePendingUserInput(
@@ -786,7 +819,7 @@ internal open class ChatSessionLocalStore(
     }
     require(sessionId.isNotBlank()) { "enqueuePendingUserInput sessionId must not be blank." }
 
-    val workspace = loadWorkspaceOrCreate()
+    loadWorkspaceOrCreate()
     val now = nowEpochMs()
     val entry = PendingUserInputEntry(
       queueId = "queued-user-$now-${UUID.randomUUID().toString().take(8)}",
@@ -794,14 +827,25 @@ internal open class ChatSessionLocalStore(
       attachments = attachments,
       createdAtEpochMs = now,
     )
-    workspaceStore.save(
-      workspaceWithPendingUserInputs(
+    workspaceStore.update { workspace ->
+      if (workspace == null) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = entry,
+          write = false,
+        )
+      }
+      val updatedWorkspace = workspaceWithPendingUserInputs(
         workspace = workspace,
         sessionId = sessionId,
         inputs = pendingUserInputsFrom(workspace = workspace, sessionId = sessionId) + entry,
         updatedAtEpochMs = now,
-      ),
-    )
+      )
+      ChatWorkspaceStoreUpdate(
+        record = updatedWorkspace,
+        result = entry,
+      )
+    }
     return entry
   }
 
@@ -821,66 +865,100 @@ internal open class ChatSessionLocalStore(
       "appendPendingUserInputAsSubmittedTurn assistantPlaceholderText must not be blank."
     }
 
-    val workspace = loadWorkspaceOrCreate()
-    val currentPending = pendingUserInputsFrom(workspace = workspace, sessionId = sessionId)
-    val consumed = currentPending.firstOrNull { entry -> entry.queueId == queueId } ?: return null
-    val currentSession = workspace.sessions.firstOrNull { it.sessionId == sessionId } ?: activeSessionFrom(workspace)
-      ?: createSessionInternal(workspace).activeSession
+    loadWorkspaceOrCreate()
     val now = nowEpochMs()
-    val userMessage = ChatTranscriptMessageEntry(
-      messageId = messageId(ChatTranscriptRole.USER.name.lowercase()),
-      role = ChatTranscriptRole.USER,
-      text = consumed.text.ifBlank { null },
-      attachments = consumed.attachments,
-      createdAtEpochMs = now,
-    )
-    val assistantMessage = ChatTranscriptMessageEntry(
-      messageId = assistantMessageId,
-      role = ChatTranscriptRole.ASSISTANT,
-      text = normalizedAssistantText,
-      createdAtEpochMs = now,
-    )
-    val updatedMessages = currentSession.messages + listOf(userMessage, assistantMessage)
-    val updatedSession = currentSession.copy(
-      title = titleForSession(currentSession.title, updatedMessages),
-      messages = updatedMessages,
-      updatedAtEpochMs = now,
-    )
-    val updatedWorkspace = workspaceWithPendingUserInputs(
-      workspace = replaceSession(
-        workspace = workspace,
-        updatedSession = updatedSession,
-        activeSessionId = preservedActiveSessionId(
-          workspace = workspace,
-          fallbackSessionId = updatedSession.sessionId,
-        ),
+    return workspaceStore.update { workspace ->
+      if (workspace == null) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = null,
+          write = false,
+        )
+      }
+      val currentPending = pendingUserInputsFrom(workspace = workspace, sessionId = sessionId)
+      val consumed = currentPending.firstOrNull { entry -> entry.queueId == queueId }
+        ?: return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = null,
+          write = false,
+        )
+      val currentSession = workspace.sessions.firstOrNull { it.sessionId == sessionId } ?: activeSessionFrom(workspace)
+        ?: return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = null,
+          write = false,
+        )
+      val userMessage = ChatTranscriptMessageEntry(
+        messageId = messageId(ChatTranscriptRole.USER.name.lowercase()),
+        role = ChatTranscriptRole.USER,
+        text = consumed.text.ifBlank { null },
+        attachments = consumed.attachments,
+        createdAtEpochMs = now,
+      )
+      val assistantMessage = ChatTranscriptMessageEntry(
+        messageId = assistantMessageId,
+        role = ChatTranscriptRole.ASSISTANT,
+        text = normalizedAssistantText,
+        createdAtEpochMs = now,
+      )
+      val updatedMessages = currentSession.messages + listOf(userMessage, assistantMessage)
+      val updatedSession = currentSession.copy(
+        title = titleForSession(currentSession.title, updatedMessages),
+        messages = updatedMessages,
         updatedAtEpochMs = now,
-      ),
-      sessionId = sessionId,
-      inputs = currentPending.filterNot { entry -> entry.queueId == queueId },
-      updatedAtEpochMs = now,
-    )
-    workspaceStore.save(updatedWorkspace)
-    return consumed
+      )
+      val updatedWorkspace = workspaceWithPendingUserInputs(
+        workspace = replaceSession(
+          workspace = workspace,
+          updatedSession = updatedSession,
+          activeSessionId = preservedActiveSessionId(
+            workspace = workspace,
+            fallbackSessionId = updatedSession.sessionId,
+          ),
+          updatedAtEpochMs = now,
+        ),
+        sessionId = sessionId,
+        inputs = currentPending.filterNot { entry -> entry.queueId == queueId },
+        updatedAtEpochMs = now,
+      )
+      ChatWorkspaceStoreUpdate(
+        record = updatedWorkspace,
+        result = consumed,
+      )
+    }
   }
 
   fun clearPendingUserInputs(sessionId: String) {
     if (sessionId.isBlank()) {
       return
     }
-    val workspace = loadWorkspaceOrCreate()
-    val key = pendingUserInputExtensionKey(sessionId)
-    if (key !in workspace.extensions) {
-      return
-    }
+    loadWorkspaceOrCreate()
     val now = nowEpochMs()
-    workspaceStore.save(
-      workspace.copy(
-        extensions = workspace.extensions - key,
-        recordVersion = workspace.recordVersion + 1,
-        updatedAtEpochMs = now,
-      ),
-    )
+    workspaceStore.update { workspace ->
+      if (workspace == null) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = Unit,
+          write = false,
+        )
+      }
+      val key = pendingUserInputExtensionKey(sessionId)
+      if (key !in workspace.extensions) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = Unit,
+          write = false,
+        )
+      }
+      ChatWorkspaceStoreUpdate(
+        record = workspace.copy(
+          extensions = workspace.extensions - key,
+          recordVersion = workspace.recordVersion + 1,
+          updatedAtEpochMs = now,
+        ),
+        result = Unit,
+      )
+    }
   }
 
   fun mergeVoiceAttachmentMetadata(
