@@ -81,6 +81,38 @@ class AppAgentSessionTaskRuntimeFactoryWorkingStateTest {
   }
 
   @Test
+  fun workingStateStoreForSessionRestoresFileBackedRuntimeStateAcrossFactoryRecreation() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-file-working-state"))
+    val runtimeRoot = temporaryFolder.newFolder("runtime-root-file-working-state")
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-file-working-state").toPath()
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val workingState = WorkingState(
+      objective = WorkingStateObjective(
+        primaryGoal = "Persist runtime working state.",
+        currentSubgoal = "Survive production runtime factory recreation.",
+        status = "in_progress",
+      ),
+    )
+
+    fun createFactory(): AppAgentSessionTaskRuntimeFactory {
+      val workingStateStoreFactory = FileBackedWorkingStateStoreFactory(runtimeRoot)
+      return AppAgentSessionTaskRuntimeFactory(
+        llmSettingsProvider = { LlmSettingsState() },
+        sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+        soulProfileProvider = { null },
+        workspaceRootsProvider = { setOf(workspaceRoot) },
+        skillsRootsProvider = { emptyList() },
+        mcpReportProvider = { null },
+        workingStateStoreProvider = workingStateStoreFactory::forChatSession,
+      )
+    }
+
+    createFactory().workingStateStoreForSession(sessionId).replace(workingState)
+
+    assertEquals(workingState, createFactory().workingStateStoreForSession(sessionId).snapshot())
+  }
+
+  @Test
   fun prepareSessionContextLoadsPersistedWorkingStateIntoSessionContext() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-working-state-context"))
     val sessionId = chatStore.loadState().activeSession.sessionId

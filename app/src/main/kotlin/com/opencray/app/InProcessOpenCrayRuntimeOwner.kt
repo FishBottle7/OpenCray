@@ -245,6 +245,7 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
   val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext)
   val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext)
   val subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext)
+  val workingStateStoreFactory = FileBackedWorkingStateStoreFactory.fromContext(appContext)
   val processRegistryFactory = FileBackedAgentProcessRegistryFactory(
     runtimeRootDirectory = runtimeRootDirectory,
     controllerFactory = managedProcessControllerFactory,
@@ -356,6 +357,7 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
         sessionId = sessionId,
       )
     },
+    workingStateStoreProvider = workingStateStoreFactory::forChatSession,
     processRegistryProvider = processRegistryFactory::forChatSession,
     transcriptStoreProvider = transcriptStoreFactory::forChatSession,
     supplementStoreProvider = supplementStoreFactory::forChatSession,
