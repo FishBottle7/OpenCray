@@ -6,12 +6,14 @@ internal fun openCrayLocalRuntimeServerProviders(
   chatRuntimeGatewayProvider: () -> OpenCrayChatRuntimeGateway,
   skillsGatewayProvider: () -> OpenCraySkillsGateway,
   settingsGatewayProvider: () -> OpenCraySettingsGateway,
+  runtimeOwnerWriteGuard: () -> Boolean = { true },
 ): OpenCrayLocalRuntimeServerProviders = OpenCrayLocalRuntimeServerProviders(
   localGatewayProvider = localGatewayProvider,
   shellGatewayProvider = shellGatewayProvider,
   chatRuntimeGatewayProvider = chatRuntimeGatewayProvider,
   skillsGatewayProvider = skillsGatewayProvider,
   settingsGatewayProvider = settingsGatewayProvider,
+  runtimeOwnerWriteGuard = runtimeOwnerWriteGuard,
 )
 
 internal fun openCrayLocalRuntimeServerProviders(
@@ -27,10 +29,12 @@ internal fun openCrayLocalRuntimeServerProviders(
 internal fun openCrayLocalRuntimeServerProviders(
   localGatewayProvider: () -> OpenCrayLocalHostGateway,
   gatewayBundle: OpenCrayRuntimeServiceGatewayBundle,
+  runtimeOwnerWriteGuard: () -> Boolean = { true },
 ): OpenCrayLocalRuntimeServerProviders = openCrayLocalRuntimeServerProviders(
   localGatewayProvider = localGatewayProvider,
   shellGatewayProvider = { gatewayBundle.shellGateway },
   chatRuntimeGatewayProvider = { gatewayBundle.chatRuntimeGateway },
   skillsGatewayProvider = { gatewayBundle.skillsGateway },
   settingsGatewayProvider = { gatewayBundle.settingsGateway },
+  runtimeOwnerWriteGuard = runtimeOwnerWriteGuard,
 )

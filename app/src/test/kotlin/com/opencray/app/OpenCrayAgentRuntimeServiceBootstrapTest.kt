@@ -2230,9 +2230,13 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     var capturedLoopbackContext: Context? = null
     var capturedLoopbackTarget: RuntimeServiceTarget? = null
     var capturedLoopbackTransportCoordinator: RuntimeServiceTransportCoordinator? = null
+    var capturedRuntimeOwnerWriteGuard: (() -> Boolean)? = null
     var loopbackStartCallCount = 0
     var loopbackDisposeCallCount = 0
     val transportCoordinator = DefaultRuntimeServiceTransportCoordinator()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator(
+      ownerLeaseAcquired = false,
+    )
     val factory = DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
       loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory {
           appContext,
@@ -2240,10 +2244,12 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           localGatewayProvider,
           gatewayBundle,
           resolvedTransportCoordinator,
+          runtimeOwnerWriteGuard,
         ->
         capturedLoopbackContext = appContext
         capturedLoopbackTarget = runtimeTarget
         capturedLoopbackTransportCoordinator = resolvedTransportCoordinator
+        capturedRuntimeOwnerWriteGuard = runtimeOwnerWriteGuard
         assertSame(expectedGatewayBundle, gatewayBundle)
         assertTrue(
           runCatching { resolvedTransportCoordinator.currentGatewayBundle() }.exceptionOrNull()
@@ -2264,7 +2270,9 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       appContext = context,
       runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
       localGatewayProvider = { NoOpLocalHostGateway() },
-      gatewayDependencies = serviceHost.toRuntimeServiceBootstrapState().gatewayDependencies,
+      gatewayDependencies = serviceHost.toRuntimeServiceBootstrapState().gatewayDependencies.copy(
+        runtimeServiceOwnerWriteGuard = projectionCoordinator::tryAcquireOwnerLease,
+      ),
       runtimeServiceGatewayBundleFactory = RuntimeServiceGatewayBundleFactory {
           appContext,
           gatewayDependencies,
@@ -2300,6 +2308,8 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertSame(context, capturedLoopbackContext)
     assertEquals(RuntimeServiceTarget.INTERACTIVE, capturedLoopbackTarget)
     assertSame(transportCoordinator, capturedLoopbackTransportCoordinator)
+    assertEquals(false, capturedRuntimeOwnerWriteGuard?.invoke())
+    assertEquals(1, projectionCoordinator.ownerLeaseAcquireCallCount)
     assertTrue(
       runCatching { transportCoordinator.currentGatewayBundle() }.exceptionOrNull()
         is IllegalStateException,
@@ -2327,7 +2337,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     }
     var loopbackCreateCount = 0
     val bootstrap = DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
-      loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory { _, _, _, gatewayBundle, _ ->
+      loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory { _, _, _, gatewayBundle, _, _ ->
         loopbackCreateCount += 1
         assertSame(contenderGatewayBundle, gatewayBundle)
         RuntimeServiceLoopbackBootstrap()
@@ -2374,7 +2384,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     var loopbackStartCount = 0
     var loopbackDisposeCount = 0
     val bootstrap = DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
-      loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory { _, _, _, gatewayBundle, resolvedTransportCoordinator ->
+      loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory { _, _, _, gatewayBundle, resolvedTransportCoordinator, _ ->
         assertSame(contenderGatewayBundle, gatewayBundle)
         assertSame(retainedGatewayBundle, resolvedTransportCoordinator.currentGatewayBundle())
         RuntimeServiceLoopbackBootstrap(
@@ -2432,7 +2442,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     }
     var loopbackStartCount = 0
     val bootstrap = DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
-      loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory { _, _, _, gatewayBundle, resolvedTransportCoordinator ->
+      loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory { _, _, _, gatewayBundle, resolvedTransportCoordinator, _ ->
         assertSame(contenderGatewayBundle, gatewayBundle)
         assertSame(retainedGatewayBundle, resolvedTransportCoordinator.currentGatewayBundle())
         RuntimeServiceLoopbackBootstrap(
@@ -2486,7 +2496,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     var loopbackStartCount = 0
     val expectedFailure = IllegalStateException("loopback_start_failed")
     val bootstrap = DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
-      loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory { _, _, _, gatewayBundle, resolvedTransportCoordinator ->
+      loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory { _, _, _, gatewayBundle, resolvedTransportCoordinator, _ ->
         assertSame(contenderGatewayBundle, gatewayBundle)
         assertSame(retainedGatewayBundle, resolvedTransportCoordinator.currentGatewayBundle())
         RuntimeServiceLoopbackBootstrap(
@@ -2568,6 +2578,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       },
       gatewayBundle = gatewayBundle,
       transportCoordinator = transportCoordinator,
+      runtimeOwnerWriteGuard = { true },
     )
     try {
       bootstrap.ensureStarted()
@@ -2639,6 +2650,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       localGatewayProvider = { NoOpLocalHostGateway() },
       gatewayBundle = gatewayBundle,
       transportCoordinator = transportCoordinator,
+      runtimeOwnerWriteGuard = { true },
     )
 
     try {
@@ -2688,6 +2700,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       transportCoordinator = DefaultRuntimeServiceTransportCoordinator().apply {
         bindGatewayBundle(gatewayBundle)
       },
+      runtimeOwnerWriteGuard = { true },
     )
 
     try {

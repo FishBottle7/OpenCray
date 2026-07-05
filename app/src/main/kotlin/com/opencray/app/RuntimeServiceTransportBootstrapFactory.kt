@@ -47,6 +47,7 @@ internal class DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
       localGatewayProvider = localGatewayProvider,
       gatewayBundle = gatewayBundle,
       transportCoordinator = transportCoordinator,
+      runtimeOwnerWriteGuard = gatewayDependencies.runtimeServiceOwnerWriteGuard,
     )
     val lock = Any()
     var starting = false

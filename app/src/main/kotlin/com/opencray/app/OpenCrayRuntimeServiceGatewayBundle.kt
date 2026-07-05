@@ -311,6 +311,7 @@ internal data class RuntimeServiceGatewayBundleDependencies(
   val approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot,
   val approvalDecisionAccess: RuntimeServiceApprovalDecisionAccess,
   val runtimeServiceOwnerLeaseProvider: () -> RuntimeServiceOwnerLease? = { null },
+  val runtimeServiceOwnerWriteGuard: () -> Boolean = { true },
   val onDeviceWarmupPlanner: (String) -> OnDeviceLlmWarmupSpec? = { null },
 ) {
   val runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor

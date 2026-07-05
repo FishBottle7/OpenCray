@@ -121,6 +121,37 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun postRoutesRejectWhenRuntimeOwnerWriteGuardFails() {
+    val chatGateway = RecordingChatRuntimeGateway()
+    var guardCallCount = 0
+    val server = localRuntimeServer(
+      chatRuntimeGatewayResolver = { chatGateway },
+      runtimeOwnerWriteGuard = {
+        guardCallCount += 1
+        false
+      },
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/submit_chat_message",
+        """{"text":"blocked by owner guard"}""",
+      )
+      val payload = JSONObject(response.body)
+
+      assertEquals(409, response.statusCode)
+      assertEquals("runtime_owner_lease_unavailable", payload.getString("error"))
+      assertEquals(1, guardCallCount)
+      assertEquals(null, chatGateway.submittedText)
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun exposesFilesSnapshotOverLoopbackHttp() {
     val server = localRuntimeServer(
       workspaceSnapshotProvider = {
@@ -2707,6 +2738,7 @@ class OpenCrayLocalRuntimeServerTest {
     chatRuntimeGatewayResolver: ((OpenCrayHostRuntime) -> OpenCrayChatRuntimeGateway)? = null,
     skillsGatewayResolver: ((OpenCrayHostRuntime) -> OpenCraySkillsGateway)? = null,
     settingsGatewayResolver: ((OpenCrayHostRuntime) -> OpenCraySettingsGateway)? = null,
+    runtimeOwnerWriteGuard: () -> Boolean = { true },
     workspaceSnapshotProvider: () -> Map<String, Any?> = {
       WorkspaceTreeSnapshot(
         rootName = AppAgentWorkspace.DIRECTORY_NAME,
@@ -2772,6 +2804,7 @@ class OpenCrayLocalRuntimeServerTest {
       chatRuntimeGatewayResolver = chatRuntimeGatewayResolver ?: { hostRuntime -> hostRuntime },
       skillsGatewayResolver = skillsGatewayResolver ?: { hostRuntime -> hostRuntime },
       settingsGatewayResolver = settingsGatewayResolver ?: { hostRuntime -> hostRuntime },
+      runtimeOwnerWriteGuard = runtimeOwnerWriteGuard,
     )
   }
 
@@ -2783,6 +2816,7 @@ class OpenCrayLocalRuntimeServerTest {
     settingsGatewayResolver: (OpenCrayHostRuntime) -> OpenCraySettingsGateway = { it },
     requestedPort: Int = 0,
     shutdownExecutorOnClose: Boolean = true,
+    runtimeOwnerWriteGuard: () -> Boolean = { true },
   ): OpenCrayLocalRuntimeServer = OpenCrayLocalRuntimeServer(
     localGatewayProvider = { hostRuntimeProvider() },
     shellGatewayProvider = { shellGatewayResolver(hostRuntimeProvider()) },
@@ -2791,6 +2825,7 @@ class OpenCrayLocalRuntimeServerTest {
     settingsGatewayProvider = { settingsGatewayResolver(hostRuntimeProvider()) },
     requestedPort = requestedPort,
     shutdownExecutorOnClose = shutdownExecutorOnClose,
+    runtimeOwnerWriteGuard = runtimeOwnerWriteGuard,
   )
 
   private fun localRuntimeServerWithLocalGateway(

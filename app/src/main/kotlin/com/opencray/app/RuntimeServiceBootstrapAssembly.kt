@@ -278,6 +278,7 @@ private fun RuntimeServiceBootstrapAssembly.toGatewayBundleDependencies(
     approvedReadRootsProvider = bootstrapContext.approvedReadRootsProvider,
     approvalDecisionAccess = approvalDecisionAccess,
     onDeviceWarmupPlanner = runtimeServicePort.onDeviceWarmupPlanner,
+    runtimeServiceOwnerWriteGuard = projectionCoordinator::tryAcquireOwnerLease,
   )
 }
 

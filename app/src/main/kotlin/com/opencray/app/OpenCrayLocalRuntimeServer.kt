@@ -67,6 +67,7 @@ internal class OpenCrayLocalRuntimeServer(
   private val bindAddress: InetAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS,
   private val executor: ExecutorService = Executors.newCachedThreadPool(),
   private val shutdownExecutorOnClose: Boolean = false,
+  private val runtimeOwnerWriteGuard: () -> Boolean = { true },
 ) {
   @Volatile
   private var serverSocket: ServerSocket? = null
@@ -198,6 +199,12 @@ internal class OpenCrayLocalRuntimeServer(
   }
 
   private fun dispatch(request: LocalRuntimeRequest): LocalRuntimeResponse {
+    if (request.method == "POST" && !runtimeOwnerWriteGuard()) {
+      return LocalRuntimeResponse(
+        statusCode = 409,
+        body = mapOf("error" to "runtime_owner_lease_unavailable"),
+      )
+    }
     val localGateway = localGatewayProvider()
     val shellGateway = shellGatewayProvider()
     val chatRuntimeGateway = chatRuntimeGatewayProvider()
@@ -798,6 +805,7 @@ internal class OpenCrayLocalRuntimeServer(
     when (statusCode) {
       200 -> "OK"
       400 -> "Bad Request"
+      409 -> "Conflict"
       404 -> "Not Found"
       500 -> "Internal Server Error"
       else -> "OK"
@@ -819,6 +827,7 @@ internal data class OpenCrayLocalRuntimeServerProviders(
   val chatRuntimeGatewayProvider: () -> OpenCrayChatRuntimeGateway,
   val skillsGatewayProvider: () -> OpenCraySkillsGateway,
   val settingsGatewayProvider: () -> OpenCraySettingsGateway,
+  val runtimeOwnerWriteGuard: () -> Boolean = { true },
 )
 
 internal fun localRuntimeLoopbackPortForTarget(

@@ -14,6 +14,7 @@ internal fun interface RuntimeServiceLoopbackBootstrapFactory {
     localGatewayProvider: () -> OpenCrayLocalHostGateway,
     gatewayBundle: OpenCrayRuntimeServiceGatewayBundle,
     transportCoordinator: RuntimeServiceTransportCoordinator,
+    runtimeOwnerWriteGuard: () -> Boolean,
   ): RuntimeServiceLoopbackBootstrap
 }
 
@@ -29,6 +30,7 @@ internal class DefaultRuntimeServiceLoopbackBootstrapFactory(
         settingsGatewayProvider = providers.settingsGatewayProvider,
         requestedPort = localRuntimeLoopbackPortForTarget(runtimeTarget),
         shutdownExecutorOnClose = true,
+        runtimeOwnerWriteGuard = providers.runtimeOwnerWriteGuard,
       ).also(OpenCrayLocalRuntimeServer::ensureStarted)
     },
 ) : RuntimeServiceLoopbackBootstrapFactory {
@@ -38,6 +40,7 @@ internal class DefaultRuntimeServiceLoopbackBootstrapFactory(
     localGatewayProvider: () -> OpenCrayLocalHostGateway,
     gatewayBundle: OpenCrayRuntimeServiceGatewayBundle,
     transportCoordinator: RuntimeServiceTransportCoordinator,
+    runtimeOwnerWriteGuard: () -> Boolean,
   ): RuntimeServiceLoopbackBootstrap {
     val serverLock = Any()
     var server: OpenCrayLocalRuntimeServer? = null
@@ -53,6 +56,7 @@ internal class DefaultRuntimeServiceLoopbackBootstrapFactory(
               chatRuntimeGatewayProvider = { gatewayBundle.chatRuntimeGateway },
               skillsGatewayProvider = { gatewayBundle.skillsGateway },
               settingsGatewayProvider = { gatewayBundle.settingsGateway },
+              runtimeOwnerWriteGuard = runtimeOwnerWriteGuard,
             ),
           ).also { created ->
             server = created
