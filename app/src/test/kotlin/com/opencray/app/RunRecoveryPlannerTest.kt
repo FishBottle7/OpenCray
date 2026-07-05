@@ -11,7 +11,9 @@ import com.opencray.runtime.OpenCraySerializableToolCall
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCrayToolCallEvent
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
 import com.opencray.runtime.process.ManagedProcessReconnectState
+import com.opencray.runtime.process.ManagedProcessRestoreScope
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
 import org.junit.Assert.assertEquals
@@ -450,6 +452,10 @@ class RunRecoveryPlannerTest {
                   retryAfterEpochMs = 9_000L,
                   attemptCount = 2,
                 ),
+                metadata = mapOf(
+                  MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY to
+                    ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+                ),
               ),
             ),
           ),
@@ -484,6 +490,7 @@ class RunRecoveryPlannerTest {
     assertEquals(9_000L, plan.managedProcessReconnectRetryAfterEpochMs)
     assertEquals(2, plan.managedProcessReconnectAttemptCount)
     assertEquals(ManagedProcessContinuationBases.RECONNECT_HOLD, plan.managedProcessContinuationBasis)
+    assertEquals(ManagedProcessRestoreScope.CROSS_PROCESS.wireValue, plan.managedProcessRestoreScope)
     assertFalse(plan.safeToAutoResume)
     assertTrue(plan.requiresUserAction)
     assertEquals(
@@ -494,6 +501,10 @@ class RunRecoveryPlannerTest {
     assertEquals(
       ManagedProcessContinuationBases.RECONNECT_HOLD,
       plan.toMap()["managedProcessContinuationBasis"],
+    )
+    assertEquals(
+      ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+      plan.toMap()["managedProcessRestoreScope"],
     )
   }
 
@@ -528,6 +539,8 @@ class RunRecoveryPlannerTest {
                   "sandboxCommandReconnectRecoveryState" to "attached_live",
                   "sandboxCommandReconnectRetryable" to "false",
                   "sandboxCommandReconnectAttemptCount" to "2",
+                  MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY to
+                    ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
                 ),
               ),
             ),
@@ -569,6 +582,10 @@ class RunRecoveryPlannerTest {
     assertNull(plan.managedProcessReconnectRetryAfterEpochMs)
     assertEquals(2, plan.managedProcessReconnectAttemptCount)
     assertEquals(ManagedProcessContinuationBases.LIVE_REATTACH, plan.managedProcessContinuationBasis)
+    assertEquals(
+      ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+      plan.managedProcessRestoreScope,
+    )
   }
 
   @Test

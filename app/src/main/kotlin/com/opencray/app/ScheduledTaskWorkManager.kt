@@ -16,6 +16,7 @@ import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessRestoreMode
 import com.opencray.runtime.process.ManagedProcessStatus
@@ -314,6 +315,7 @@ internal data class InterruptedRunRepairEvidence(
   val runtimeExecutionOwnershipTier: String? = null,
   val durableRuntimeControllerId: String? = null,
   val managedProcessContinuationBasis: String? = null,
+  val managedProcessRestoreScope: String? = null,
 ) {
   init {
     require(sessionId.isNotBlank()) { "InterruptedRunRepairEvidence sessionId must not be blank." }
@@ -337,6 +339,9 @@ internal data class InterruptedRunRepairEvidence(
     }
     require(managedProcessContinuationBasis == null || managedProcessContinuationBasis.isNotBlank()) {
       "InterruptedRunRepairEvidence managedProcessContinuationBasis must not be blank."
+    }
+    require(managedProcessRestoreScope == null || managedProcessRestoreScope.isNotBlank()) {
+      "InterruptedRunRepairEvidence managedProcessRestoreScope must not be blank."
     }
   }
 }
@@ -570,6 +575,7 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
         detailId = process.processId,
         repairAfterEpochMs = managedProcessReconnectRetryAfterEpochMs(process),
         managedProcessContinuationBasis = ManagedProcessContinuationBases.RECONNECT_HOLD,
+        managedProcessRestoreScope = managedProcessRestoreScopeForManagedProcess(process),
         runtimeExecutionOwnershipTier = taskSnapshotForManagedProcess(
           process = process,
           taskSnapshots = taskSnapshots,
@@ -718,6 +724,7 @@ private fun managedProcessReconnectRepairEvidenceForQueueTask(
       durableRuntimeControllerId = durableRuntimeControllerIdForTask(taskSnapshot),
       managedProcessContinuationBasis = managedProcessContinuationBasisForTask(taskSnapshot)
         ?: ManagedProcessContinuationBases.RECONNECT_HOLD,
+      managedProcessRestoreScope = managedProcessRestoreScopeForTask(taskSnapshot),
     )
   }
 }
@@ -774,6 +781,18 @@ private fun managedProcessReconnectRetryAfterEpochMsForTask(
 private fun managedProcessContinuationBasisForTask(
   taskSnapshot: SessionQueueTaskSnapshot,
 ): String? = taskSnapshot.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS]
+  ?.trim()
+  ?.takeIf(String::isNotBlank)
+
+private fun managedProcessRestoreScopeForTask(
+  taskSnapshot: SessionQueueTaskSnapshot,
+): String? = taskSnapshot.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_SCOPE]
+  ?.trim()
+  ?.takeIf(String::isNotBlank)
+
+private fun managedProcessRestoreScopeForManagedProcess(
+  process: ManagedProcessSnapshot,
+): String? = process.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY]
   ?.trim()
   ?.takeIf(String::isNotBlank)
 

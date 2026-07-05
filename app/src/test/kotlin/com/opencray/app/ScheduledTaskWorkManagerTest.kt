@@ -16,8 +16,10 @@ import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.process.AgentProcessRegistry
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
 import com.opencray.runtime.process.ManagedProcessDeliveredObservationState
 import com.opencray.runtime.process.ManagedProcessReconnectState
+import com.opencray.runtime.process.ManagedProcessRestoreScope
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
@@ -224,6 +226,8 @@ class ScheduledTaskWorkManagerTest {
               "2500",
             RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS to
               ManagedProcessContinuationBases.RECONNECT_HOLD,
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_SCOPE to
+              ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
             RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID to
               "durable-controller-reconnect-hold",
           ),
@@ -250,6 +254,7 @@ class ScheduledTaskWorkManagerTest {
     assertEquals("runtime_process", item.runtimeExecutionOwnershipTier)
     assertEquals("durable-controller-reconnect-hold", item.durableRuntimeControllerId)
     assertEquals(ManagedProcessContinuationBases.RECONNECT_HOLD, item.managedProcessContinuationBasis)
+    assertEquals(ManagedProcessRestoreScope.CROSS_PROCESS.wireValue, item.managedProcessRestoreScope)
     assertEquals(
       emptySet<RuntimeServiceTarget>(),
       dueInterruptedRunRepairTargets(
@@ -369,6 +374,10 @@ class ScheduledTaskWorkManagerTest {
         reconnectingManagedProcessSnapshot(
           processId = "process-reconnect",
           taskId = "task-managed-reconnect",
+          metadata = mapOf(
+            MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY to
+              ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+          ),
         ),
       ),
     )
@@ -403,6 +412,10 @@ class ScheduledTaskWorkManagerTest {
     assertEquals("run-managed-reconnect", item.runId)
     assertEquals("task-managed-reconnect", item.taskId)
     assertEquals("process-reconnect", item.detailId)
+    assertEquals(
+      ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+      item.managedProcessRestoreScope,
+    )
   }
 
   @Test

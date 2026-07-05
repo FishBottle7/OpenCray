@@ -31,6 +31,8 @@ internal object RunLifecycleMetadataKeys {
     "_host.managedProcessReconnectAttemptCount"
   const val MANAGED_PROCESS_CONTINUATION_BASIS: String =
     "_host.managedProcessContinuationBasis"
+  const val MANAGED_PROCESS_RESTORE_SCOPE: String =
+    "_host.managedProcessRestoreScope"
   const val SUBMISSION_SOURCE: String = "_host.submissionSource"
   const val PREAPPROVED_TOOL_NAME: String = "_host.preapprovedToolName"
 }
@@ -132,6 +134,7 @@ internal data class RunLifecycleDiagnostics(
   val managedProcessReconnectRetryAfterEpochMs: Long? = null,
   val managedProcessReconnectAttemptCount: Int? = null,
   val managedProcessContinuationBasis: String? = null,
+  val managedProcessRestoreScope: String? = null,
   val submissionSource: String? = null,
   val recoveryReason: String? = null,
   val queueRestoreEpochMs: Long? = null,
@@ -154,6 +157,7 @@ internal data class RunLifecycleDiagnostics(
       managedProcessReconnectRetryAfterEpochMs == null &&
       managedProcessReconnectAttemptCount == null &&
       managedProcessContinuationBasis.isNullOrBlank() &&
+      managedProcessRestoreScope.isNullOrBlank() &&
       submissionSource.isNullOrBlank() &&
       recoveryReason.isNullOrBlank() &&
       queueRestoreEpochMs == null &&
@@ -192,6 +196,9 @@ internal data class RunLifecycleDiagnostics(
     managedProcessContinuationBasis
       ?.takeIf(String::isNotBlank)
       ?.let { put("managedProcessContinuationBasis", it) }
+    managedProcessRestoreScope
+      ?.takeIf(String::isNotBlank)
+      ?.let { put("managedProcessRestoreScope", it) }
     submissionSource?.takeIf(String::isNotBlank)?.let { put("submissionSource", it) }
     recoveryReason?.takeIf(String::isNotBlank)?.let { put("recoveryReason", it) }
     queueRestoreEpochMs?.let { put("queueRestoreEpochMs", it) }
@@ -257,6 +264,10 @@ internal fun runLifecycleDiagnosticsFrom(
         ?.takeIf { attempt -> attempt > 0 },
     managedProcessContinuationBasis =
       taskMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS]
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
+    managedProcessRestoreScope =
+      taskMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_SCOPE]
         ?.trim()
         ?.takeIf(String::isNotBlank),
     submissionSource = taskMetadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE]?.trim(),

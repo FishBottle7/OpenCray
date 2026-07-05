@@ -30,7 +30,9 @@ import com.opencray.runtime.OpenCraySerializableModelAction
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
 import com.opencray.runtime.process.ManagedProcessReconnectState
+import com.opencray.runtime.process.ManagedProcessRestoreScope
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
 import kotlinx.serialization.json.Json
@@ -2043,6 +2045,10 @@ class RecoveryAwareQueueSnapshotStoreTest {
               retryAfterEpochMs = 9_000L,
               attemptCount = 1,
             ),
+            metadata = mapOf(
+              MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY to
+                ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+            ),
           ),
         )
       },
@@ -2085,11 +2091,16 @@ class RecoveryAwareQueueSnapshotStoreTest {
       ManagedProcessContinuationBases.RECONNECT_HOLD,
       restoredTask.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS],
     )
+    assertEquals(
+      ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_SCOPE],
+    )
     val diagnostics = runLifecycleDiagnosticsFrom(restoredTask.task.metadata)
     assertEquals(listOf(processId), diagnostics.managedProcessReconnectProcessIds)
     assertEquals("retry_scheduled", diagnostics.managedProcessReconnectRecoveryState)
     assertEquals(9_000L, diagnostics.managedProcessReconnectRetryAfterEpochMs)
     assertEquals(ManagedProcessContinuationBases.RECONNECT_HOLD, diagnostics.managedProcessContinuationBasis)
+    assertEquals(ManagedProcessRestoreScope.CROSS_PROCESS.wireValue, diagnostics.managedProcessRestoreScope)
     assertNull(restoredTask.lastErrorCode)
     assertNull(restoredTask.lastErrorMessage)
 
@@ -2116,6 +2127,10 @@ class RecoveryAwareQueueSnapshotStoreTest {
     assertEquals(
       ManagedProcessContinuationBases.RECONNECT_HOLD,
       recoveryMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS],
+    )
+    assertEquals(
+      ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+      recoveryMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_SCOPE],
     )
   }
 

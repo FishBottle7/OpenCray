@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import com.opencray.runtime.process.ManagedProcessRestoreScope
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Rule
@@ -106,6 +107,7 @@ class RuntimeServiceProjectionStoreTest {
             runtimeExecutionOwnershipTier = "runtime_process",
             durableRuntimeControllerId = "durable-controller-repair",
             managedProcessContinuationBasis = ManagedProcessContinuationBases.RECONNECT_HOLD,
+            managedProcessRestoreScope = ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
           ),
         ),
       ),

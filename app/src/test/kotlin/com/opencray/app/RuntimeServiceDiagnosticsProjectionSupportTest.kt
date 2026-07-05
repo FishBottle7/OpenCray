@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import com.opencray.runtime.process.ManagedProcessRestoreScope
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -205,6 +206,7 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
                 durableRuntimeControllerId = "durable-controller-a",
                 managedProcessContinuationBasis =
                   ManagedProcessContinuationBases.CHECKPOINT_RESUME,
+                managedProcessRestoreScope = ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
               ),
             ),
           ),
@@ -228,6 +230,7 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertEquals("runtime_process", evidence["runtimeExecutionOwnershipTier"])
     assertEquals("durable-controller-a", evidence["durableRuntimeControllerId"])
     assertEquals("checkpoint_resume", evidence["managedProcessContinuationBasis"])
+    assertEquals("cross_process", evidence["managedProcessRestoreScope"])
   }
 
   @Test
