@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import com.opencray.persistence.model.ChatAttachmentEntry
+import com.opencray.persistence.model.ChatAttachmentKind
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.store.file.JsonFileChatWorkspaceStore
 import org.junit.Assert.assertEquals
@@ -91,5 +93,69 @@ class ChatSessionLocalStoreTranscriptProcessSafetyTest {
     assertEquals("foreground", restoredWorkspace.extensions["concurrent.marker"])
     val restoredSession = requireNotNull(ChatSessionLocalStore(directory).loadSession(activeSessionId))
     assertEquals(assistantMessageId, restoredSession.messages.last().messageId)
+  }
+
+  @Test
+  fun mergeVoiceAttachmentMetadataPreservesConcurrentWorkspaceExtensions() {
+    val directory = temporaryFolder.newFolder("chat-store-voice-metadata-concurrent-extension")
+    val setupStore = ChatSessionLocalStore(directory)
+    val sessionId = setupStore.loadState().activeSession.sessionId
+    setupStore.appendUserMessage(
+      sessionId = sessionId,
+      text = "Voice note",
+      commandLabel = null,
+      attachments = listOf(
+        ChatAttachmentEntry(
+          attachmentId = "voice-attachment",
+          kind = ChatAttachmentKind.VOICE,
+          displayName = "voice.m4a",
+          localPath = ".opencray/chat-media/$sessionId/message/voice.m4a",
+          mimeType = "audio/mp4",
+          contentSha256 = "abc123",
+        ),
+      ),
+    )
+    val rawStore = JsonFileChatWorkspaceStore(directory)
+    var injectedConcurrentExtension = false
+    var clock = requireNotNull(rawStore.load()).updatedAtEpochMs + 1
+    val store = ChatSessionLocalStore(
+      directory = directory,
+      nowEpochMs = {
+        val now = clock++
+        if (!injectedConcurrentExtension) {
+          injectedConcurrentExtension = true
+          val current = requireNotNull(rawStore.load())
+          rawStore.save(
+            current.copy(
+              extensions = current.extensions + ("concurrent.marker" to "foreground"),
+              recordVersion = current.recordVersion + 1,
+              updatedAtEpochMs = now,
+            ),
+          )
+        }
+        now
+      },
+    )
+
+    val changed = store.mergeVoiceAttachmentMetadata(
+      contentSha256 = " ABC123 ",
+      metadata = AppAgentWorkspaceVoiceMetadata(
+        durationMs = 2_400L,
+        waveformBars = listOf(10, 20, 30),
+        transcriptText = "Voice transcript",
+      ),
+    )
+
+    val restoredWorkspace = requireNotNull(rawStore.load())
+    val restoredAttachment = requireNotNull(ChatSessionLocalStore(directory).loadSession(sessionId))
+      .messages
+      .last()
+      .attachments
+      .single()
+    assertEquals(true, changed)
+    assertEquals("foreground", restoredWorkspace.extensions["concurrent.marker"])
+    assertEquals(2_400L, restoredAttachment.durationMs)
+    assertEquals(listOf(10, 20, 30), restoredAttachment.waveformBars)
+    assertEquals("Voice transcript", restoredAttachment.transcriptText)
   }
 }

@@ -993,69 +993,82 @@ internal open class ChatSessionLocalStore(
       return false
     }
 
-    val workspace = loadWorkspaceOrCreate()
-    var changed = false
+    loadWorkspaceOrCreate()
     val now = nowEpochMs()
-    val updatedSessions = workspace.sessions.map { session ->
-      var sessionChanged = false
-      val updatedMessages = session.messages.map { message ->
-        var messageChanged = false
-        val updatedAttachments = message.attachments.map attachmentLoop@ { attachment ->
-          if (
-            attachment.kind != com.opencray.persistence.model.ChatAttachmentKind.VOICE ||
-            attachment.contentSha256?.trim()?.lowercase() != normalizedSha
-          ) {
-            return@attachmentLoop attachment
-          }
-          val mergedDuration = attachment.durationMs ?: normalizedMetadata.durationMs
-          val mergedWaveformBars = if (attachment.waveformBars.isEmpty()) {
-            normalizedMetadata.waveformBars
-          } else {
-            attachment.waveformBars
-          }
-          val mergedTranscript = attachment.transcriptText ?: normalizedMetadata.transcriptText
-          if (
-            mergedDuration == attachment.durationMs &&
-            mergedWaveformBars == attachment.waveformBars &&
-            mergedTranscript == attachment.transcriptText
-          ) {
-            return@attachmentLoop attachment
-          }
-          changed = true
-          messageChanged = true
-          attachment.copy(
-            durationMs = mergedDuration,
-            waveformBars = mergedWaveformBars,
-            transcriptText = mergedTranscript,
-          )
-        }
-        if (messageChanged) {
-          sessionChanged = true
-          message.copy(attachments = updatedAttachments)
-        } else {
-          message
-        }
-      }
-      if (sessionChanged) {
-        session.copy(
-          messages = updatedMessages,
-          updatedAtEpochMs = maxOf(session.updatedAtEpochMs, now),
+    return workspaceStore.update { workspace ->
+      if (workspace == null) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = false,
+          write = false,
         )
-      } else {
-        session
       }
+      var changed = false
+      val updatedSessions = workspace.sessions.map { session ->
+        var sessionChanged = false
+        val updatedMessages = session.messages.map { message ->
+          var messageChanged = false
+          val updatedAttachments = message.attachments.map attachmentLoop@ { attachment ->
+            if (
+              attachment.kind != com.opencray.persistence.model.ChatAttachmentKind.VOICE ||
+              attachment.contentSha256?.trim()?.lowercase() != normalizedSha
+            ) {
+              return@attachmentLoop attachment
+            }
+            val mergedDuration = attachment.durationMs ?: normalizedMetadata.durationMs
+            val mergedWaveformBars = if (attachment.waveformBars.isEmpty()) {
+              normalizedMetadata.waveformBars
+            } else {
+              attachment.waveformBars
+            }
+            val mergedTranscript = attachment.transcriptText ?: normalizedMetadata.transcriptText
+            if (
+              mergedDuration == attachment.durationMs &&
+              mergedWaveformBars == attachment.waveformBars &&
+              mergedTranscript == attachment.transcriptText
+            ) {
+              return@attachmentLoop attachment
+            }
+            changed = true
+            messageChanged = true
+            attachment.copy(
+              durationMs = mergedDuration,
+              waveformBars = mergedWaveformBars,
+              transcriptText = mergedTranscript,
+            )
+          }
+          if (messageChanged) {
+            sessionChanged = true
+            message.copy(attachments = updatedAttachments)
+          } else {
+            message
+          }
+        }
+        if (sessionChanged) {
+          session.copy(
+            messages = updatedMessages,
+            updatedAtEpochMs = maxOf(session.updatedAtEpochMs, now),
+          )
+        } else {
+          session
+        }
+      }
+      if (!changed) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = false,
+          write = false,
+        )
+      }
+      ChatWorkspaceStoreUpdate(
+        record = workspace.copy(
+          sessions = updatedSessions.sortedByDescending { session -> session.updatedAtEpochMs },
+          recordVersion = workspace.recordVersion + 1,
+          updatedAtEpochMs = maxOf(workspace.updatedAtEpochMs, now),
+        ),
+        result = true,
+      )
     }
-    if (!changed) {
-      return false
-    }
-    workspaceStore.save(
-      workspace.copy(
-        sessions = updatedSessions.sortedByDescending { session -> session.updatedAtEpochMs },
-        recordVersion = workspace.recordVersion + 1,
-        updatedAtEpochMs = maxOf(workspace.updatedAtEpochMs, now),
-      ),
-    )
-    return true
   }
 
   private fun appendMessage(
