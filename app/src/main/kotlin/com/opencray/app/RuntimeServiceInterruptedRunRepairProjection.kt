@@ -6,6 +6,7 @@ internal data class RuntimeServiceInterruptedRunRepairProjection(
   val repairedSessionIds: List<String> = emptyList(),
   val repairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
   val nextRepairAfterEpochMs: Long? = null,
+  val nextRepairReason: String? = null,
   val recordedAtEpochMs: Long = System.currentTimeMillis(),
 ) {
   fun snapshotMap(): Map<String, Any?> = buildMap {
@@ -14,6 +15,7 @@ internal data class RuntimeServiceInterruptedRunRepairProjection(
     put("resumedSessionIds", resumedSessionIds)
     put("repairedSessionIds", repairedSessionIds)
     nextRepairAfterEpochMs?.let { put("nextRepairAfterEpochMs", it) }
+    nextRepairReason?.let { put("nextRepairReason", it) }
     put(
       "repairEvidenceBySession",
       repairEvidenceBySession.mapValues { entry ->
@@ -32,6 +34,7 @@ internal fun RuntimeServiceBootstrapResult.toInterruptedRunRepairProjection(
     repairedSessionIds = repairedSessionIds,
     repairEvidenceBySession = repairEvidenceBySession,
     nextRepairAfterEpochMs = nextRepairAfterEpochMs,
+    nextRepairReason = nextRepairReason,
     recordedAtEpochMs = recordedAtEpochMs,
   )
 
@@ -44,6 +47,7 @@ internal fun RuntimeServiceInterruptedRunRepairResult.toInterruptedRunRepairProj
     repairedSessionIds = repairedSessionIds,
     repairEvidenceBySession = repairEvidenceBySession,
     nextRepairAfterEpochMs = nextRepairAfterEpochMs,
+    nextRepairReason = nextRepairReason,
     recordedAtEpochMs = recordedAtEpochMs,
   )
 

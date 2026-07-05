@@ -604,6 +604,10 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       assertEquals(emptyList<String>(), runtimeManager.resumedSessionIds)
       assertEquals(retryAfterEpochMs, assembly.bootstrapResult.nextRepairAfterEpochMs)
       assertEquals(
+        ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+        assembly.bootstrapResult.nextRepairReason,
+      )
+      assertEquals(
         listOf(InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT),
         assembly.bootstrapResult.repairEvidenceBySession
           .getValue(reconnectSessionId)

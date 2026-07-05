@@ -39,6 +39,7 @@ internal object ScheduledTaskRepairReasons {
   const val WORK_MANAGER: String = "work_manager"
   const val PERIODIC: String = "periodic"
   const val BROADCAST: String = "broadcast"
+  const val INTERRUPTED_RUN_RETRY: String = "interrupted_run_retry"
   const val MANAGED_PROCESS_RECONNECT: String = "managed_process_reconnect"
   const val OWNER_LEASE_EXPIRED: String = "owner_lease_expired"
 }
@@ -748,6 +749,7 @@ internal fun scheduledTaskTriggerReasonForRepair(
   ScheduledTaskRepairReasons.APP_START,
   ScheduledTaskRepairReasons.PERIODIC,
   ScheduledTaskRepairReasons.BROADCAST,
+  ScheduledTaskRepairReasons.INTERRUPTED_RUN_RETRY,
   ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
   ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED,
   -> ScheduledTaskTriggerReasons.REPAIR

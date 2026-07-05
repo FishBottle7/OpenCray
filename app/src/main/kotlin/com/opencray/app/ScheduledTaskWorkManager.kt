@@ -684,24 +684,63 @@ internal fun nextInterruptedRunRepairDelayMs(
   nowEpochMs = nowEpochMs,
 )?.let { repairAfterEpochMs -> repairAfterEpochMs - nowEpochMs }
 
+internal data class InterruptedRunRepairRetry(
+  val repairAfterEpochMs: Long,
+  val repairReason: String,
+)
+
 internal fun nextInterruptedRunRepairAfterEpochMs(
   evidence: List<InterruptedRunRepairEvidence>,
   nowEpochMs: Long,
-): Long? = evidence
-  .mapNotNull(InterruptedRunRepairEvidence::repairAfterEpochMs)
-  .filter { repairAfterEpochMs -> repairAfterEpochMs > nowEpochMs }
-  .minOrNull()
+): Long? = nextInterruptedRunRepairRetry(
+  evidence = evidence,
+  nowEpochMs = nowEpochMs,
+)?.repairAfterEpochMs
+
+internal fun nextInterruptedRunRepairRetry(
+  evidence: List<InterruptedRunRepairEvidence>,
+  nowEpochMs: Long,
+): InterruptedRunRepairRetry? = evidence
+  .mapNotNull { item ->
+    item.repairAfterEpochMs
+      ?.takeIf { candidateEpochMs -> candidateEpochMs > nowEpochMs }
+      ?.let { candidateEpochMs ->
+        InterruptedRunRepairRetry(
+          repairAfterEpochMs = candidateEpochMs,
+          repairReason = delayedRepairReasonForEvidence(item),
+        )
+      }
+  }
+  .minWithOrNull(
+    compareBy<InterruptedRunRepairRetry> { retry -> retry.repairAfterEpochMs }
+      .thenBy { retry -> delayedRepairReasonPriority(retry.repairReason) },
+  )
+
+private fun delayedRepairReasonForEvidence(
+  evidence: InterruptedRunRepairEvidence,
+): String = when (evidence.kind) {
+  InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT ->
+    ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT
+  else -> ScheduledTaskRepairReasons.INTERRUPTED_RUN_RETRY
+}
+
+private fun delayedRepairReasonPriority(repairReason: String): Int =
+  when (repairReason) {
+    ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT -> 0
+    else -> 1
+  }
 
 internal fun scheduleNextInterruptedRunRepairRetry(
   workScheduler: ScheduledWorkScheduler,
   nextRepairAfterEpochMs: Long?,
+  repairReason: String = ScheduledTaskRepairReasons.INTERRUPTED_RUN_RETRY,
   nowEpochMs: Long = System.currentTimeMillis(),
 ): Boolean {
   val retryAtEpochMs = nextRepairAfterEpochMs
     ?.takeIf { repairAfterEpochMs -> repairAfterEpochMs > nowEpochMs }
     ?: return false
   workScheduler.enqueueRepair(
-    reason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+    reason = repairReason,
     initialDelayMs = retryAtEpochMs - nowEpochMs,
   )
   return true

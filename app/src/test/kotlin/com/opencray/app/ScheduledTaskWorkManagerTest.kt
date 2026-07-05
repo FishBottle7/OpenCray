@@ -563,15 +563,62 @@ class ScheduledTaskWorkManagerTest {
       delayedRepairWorkName(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT) ==
         delayedRepairWorkName(ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED),
     )
+    assertFalse(
+      delayedRepairWorkName(ScheduledTaskRepairReasons.INTERRUPTED_RUN_RETRY) ==
+        delayedRepairWorkName(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT),
+    )
   }
 
   @Test
-  fun scheduleNextInterruptedRunRepairRetryEnqueuesManagedProcessReconnectRepair() {
+  fun nextInterruptedRunRepairRetryCarriesReasonForEarliestFutureEvidence() {
+    val retry = nextInterruptedRunRepairRetry(
+      evidence = listOf(
+        InterruptedRunRepairEvidence(
+          sessionId = "session-generic",
+          kind = InterruptedRunRepairEvidenceKind.PROMPT_CHECKPOINT,
+          target = RuntimeServiceTarget.INTERACTIVE,
+          repairAfterEpochMs = 2_750L,
+        ),
+        InterruptedRunRepairEvidence(
+          sessionId = "session-managed",
+          kind = InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+          target = RuntimeServiceTarget.INTERACTIVE,
+          repairAfterEpochMs = 2_500L,
+        ),
+      ),
+      nowEpochMs = 2_000L,
+    )
+
+    assertEquals(2_500L, retry?.repairAfterEpochMs)
+    assertEquals(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT, retry?.repairReason)
+  }
+
+  @Test
+  fun nextInterruptedRunRepairRetryUsesGenericReasonForNonManagedEvidence() {
+    val retry = nextInterruptedRunRepairRetry(
+      evidence = listOf(
+        InterruptedRunRepairEvidence(
+          sessionId = "session-generic",
+          kind = InterruptedRunRepairEvidenceKind.PROMPT_CHECKPOINT,
+          target = RuntimeServiceTarget.INTERACTIVE,
+          repairAfterEpochMs = 2_500L,
+        ),
+      ),
+      nowEpochMs = 2_000L,
+    )
+
+    assertEquals(2_500L, retry?.repairAfterEpochMs)
+    assertEquals(ScheduledTaskRepairReasons.INTERRUPTED_RUN_RETRY, retry?.repairReason)
+  }
+
+  @Test
+  fun scheduleNextInterruptedRunRepairRetryEnqueuesRequestedRepairReason() {
     val workScheduler = RecordingScheduledWorkScheduler()
 
     val scheduled = scheduleNextInterruptedRunRepairRetry(
       workScheduler = workScheduler,
       nextRepairAfterEpochMs = 2_500L,
+      repairReason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
       nowEpochMs = 2_000L,
     )
 

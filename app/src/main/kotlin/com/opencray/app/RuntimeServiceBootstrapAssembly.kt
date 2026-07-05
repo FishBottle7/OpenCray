@@ -81,6 +81,7 @@ internal data class RuntimeServiceBootstrapResult(
   val repairedSessionIds: List<String>,
   val repairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
   val nextRepairAfterEpochMs: Long? = null,
+  val nextRepairReason: String? = null,
 )
 
 internal data class RuntimeServiceInterruptedRunRepairResult(
@@ -89,6 +90,7 @@ internal data class RuntimeServiceInterruptedRunRepairResult(
   val repairedSessionIds: List<String>,
   val repairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
   val nextRepairAfterEpochMs: Long? = null,
+  val nextRepairReason: String? = null,
 )
 
 internal fun RuntimeServiceBootstrapAssembly.toRuntimeServiceBootstrapState(
@@ -138,6 +140,7 @@ internal fun createRuntimeServiceBootstrapAssembly(
   scheduleNextInterruptedRunRepairRetry(
     workScheduler = bootstrap.scheduledWorkScheduler,
     nextRepairAfterEpochMs = bootstrapResult.nextRepairAfterEpochMs,
+    repairReason = bootstrapResult.nextRepairReason ?: ScheduledTaskRepairReasons.INTERRUPTED_RUN_RETRY,
   )
   resyncEnabledScheduledTasks(
     specStore = bootstrap.scheduledTaskSpecStore,
@@ -372,6 +375,7 @@ private fun RuntimeServiceBootstrapAssembly.toWakeCommandDispatcherDependencies(
         scheduleNextInterruptedRunRepairRetry(
           workScheduler = scheduledWorkScheduler,
           nextRepairAfterEpochMs = result.nextRepairAfterEpochMs,
+          repairReason = result.nextRepairReason ?: ScheduledTaskRepairReasons.INTERRUPTED_RUN_RETRY,
         )
       }
     },
@@ -483,15 +487,17 @@ internal fun bootstrapRuntimeServiceSessions(
     )
   }
 
+  val nextRepairRetry = nextInterruptedRunRepairRetry(
+    evidence = repairEvidenceBySession.values.flatten(),
+    nowEpochMs = nowEpochMs,
+  )
   return RuntimeServiceBootstrapResult(
     scannedSessionIds = knownSessionIds,
     resumedSessionIds = resumedSessionIds,
     repairedSessionIds = repairedSessionIds,
     repairEvidenceBySession = repairEvidenceBySession,
-    nextRepairAfterEpochMs = nextInterruptedRunRepairAfterEpochMs(
-      evidence = repairEvidenceBySession.values.flatten(),
-      nowEpochMs = nowEpochMs,
-    ),
+    nextRepairAfterEpochMs = nextRepairRetry?.repairAfterEpochMs,
+    nextRepairReason = nextRepairRetry?.repairReason,
   )
 }
 
@@ -557,15 +563,17 @@ internal fun resumeInterruptedRuntimeServiceRuns(
     )
   }
 
+  val nextRepairRetry = nextInterruptedRunRepairRetry(
+    evidence = repairEvidenceBySession.values.flatten(),
+    nowEpochMs = nowEpochMs,
+  )
   return RuntimeServiceInterruptedRunRepairResult(
     scannedSessionIds = knownSessionIds,
     resumedSessionIds = resumedSessionIds,
     repairedSessionIds = repairedSessionIds,
     repairEvidenceBySession = repairEvidenceBySession,
-    nextRepairAfterEpochMs = nextInterruptedRunRepairAfterEpochMs(
-      evidence = repairEvidenceBySession.values.flatten(),
-      nowEpochMs = nowEpochMs,
-    ),
+    nextRepairAfterEpochMs = nextRepairRetry?.repairAfterEpochMs,
+    nextRepairReason = nextRepairRetry?.repairReason,
   )
 }
 
