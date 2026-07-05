@@ -10,6 +10,26 @@ import org.opencray.app.R
 
 class RuntimeNotificationCoordinatorTest {
   @Test
+  fun terminalNotificationActionsForInterruptedRunExposeRetryAction() {
+    assertEquals(
+      listOf(
+        RuntimeTerminalNotificationAction(
+          command = OpenCrayChatWriteCommand.RetryChatRun("run-terminal"),
+          labelResId = R.string.runtime_notification_action_retry,
+          runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+          requestKey = "retry-interrupted:session-terminal:task-terminal:run-terminal",
+        ),
+      ),
+      terminalNotificationActionsForModel(terminalModel(interrupted = true)),
+    )
+  }
+
+  @Test
+  fun terminalNotificationActionsForCompletedRunAreEmpty() {
+    assertTrue(terminalNotificationActionsForModel(terminalModel(interrupted = false)).isEmpty())
+  }
+
+  @Test
   fun scheduleNotificationActionsForAcceptedRunExposeCancelRunAction() {
     val actions = scheduleNotificationActionsForOutcome(
       outcome = ScheduledTaskDispatchOutcome(
@@ -116,5 +136,18 @@ class RuntimeNotificationCoordinatorTest {
     policy = ScheduledTaskPolicy(notifyOnQueued = true),
     createdAtEpochMs = 1_000L,
     updatedAtEpochMs = 1_000L,
+  )
+
+  private fun terminalModel(
+    interrupted: Boolean,
+  ): RuntimeTerminalNotificationModel = RuntimeTerminalNotificationModel(
+    sessionId = "session-terminal",
+    sessionTitle = "Terminal session",
+    runId = "run-terminal",
+    taskId = "task-terminal",
+    runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    title = "Terminal",
+    body = "Terminal body",
+    interrupted = interrupted,
   )
 }

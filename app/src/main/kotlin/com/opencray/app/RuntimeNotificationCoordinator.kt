@@ -62,9 +62,17 @@ internal data class RuntimeTerminalNotificationModel(
   val sessionTitle: String,
   val runId: String,
   val taskId: String,
+  val runtimeTarget: RuntimeServiceTarget,
   val title: String,
   val body: String,
   val interrupted: Boolean,
+)
+
+internal data class RuntimeTerminalNotificationAction(
+  val command: OpenCrayChatWriteCommand,
+  val labelResId: Int,
+  val runtimeTarget: RuntimeServiceTarget,
+  val requestKey: String,
 )
 
 internal data class RuntimeScheduleNotificationModel(
@@ -523,6 +531,7 @@ internal class RuntimeNotificationCoordinator(
         ?.takeIf(String::isNotBlank)
         ?: task.id,
       taskId = task.id,
+      runtimeTarget = runtimeServiceTargetForNotificationTask(task),
       title = localizedContext.getString(titleResId),
       body = previewText,
       interrupted = interrupted,
@@ -704,39 +713,48 @@ internal class RuntimeNotificationCoordinator(
 
   private fun buildTerminalNotification(
     model: RuntimeTerminalNotificationModel,
-  ): Notification = NotificationCompat.Builder(
-    localizedContext,
-    RuntimeNotificationChannelRegistry.CHANNEL_RUNTIME_COMPLETION,
-  )
-    .setSmallIcon(
-      if (model.interrupted) android.R.drawable.stat_notify_error else android.R.drawable.stat_notify_more,
+  ): Notification {
+    val builder = NotificationCompat.Builder(
+      localizedContext,
+      RuntimeNotificationChannelRegistry.CHANNEL_RUNTIME_COMPLETION,
     )
-    .setContentTitle(model.title)
-    .setContentText(model.body)
-    .setSubText(model.sessionTitle)
-    .setContentIntent(openChatPendingIntent(model.sessionId))
-    .setAutoCancel(true)
-    .setOnlyAlertOnce(true)
-    .setCategory(
-      if (model.interrupted) NotificationCompat.CATEGORY_ERROR else NotificationCompat.CATEGORY_STATUS,
-    )
-    .setPriority(
-      if (model.interrupted) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT,
-    )
-    .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-    .setStyle(NotificationCompat.BigTextStyle().bigText(model.body))
-    .addAction(
-      0,
-      localizedContext.getString(
-        if (model.interrupted) {
-          R.string.runtime_notification_action_review
-        } else {
-          R.string.runtime_notification_action_open
-        },
-      ),
-      openChatPendingIntent(model.sessionId),
-    )
-    .build()
+      .setSmallIcon(
+        if (model.interrupted) android.R.drawable.stat_notify_error else android.R.drawable.stat_notify_more,
+      )
+      .setContentTitle(model.title)
+      .setContentText(model.body)
+      .setSubText(model.sessionTitle)
+      .setContentIntent(openChatPendingIntent(model.sessionId))
+      .setAutoCancel(true)
+      .setOnlyAlertOnce(true)
+      .setCategory(
+        if (model.interrupted) NotificationCompat.CATEGORY_ERROR else NotificationCompat.CATEGORY_STATUS,
+      )
+      .setPriority(
+        if (model.interrupted) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT,
+      )
+      .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+      .setStyle(NotificationCompat.BigTextStyle().bigText(model.body))
+      .addAction(
+        0,
+        localizedContext.getString(
+          if (model.interrupted) {
+            R.string.runtime_notification_action_review
+          } else {
+            R.string.runtime_notification_action_open
+          },
+        ),
+        openChatPendingIntent(model.sessionId),
+      )
+    terminalNotificationActionsForModel(model).forEach { action ->
+      builder.addAction(
+        0,
+        localizedContext.getString(action.labelResId),
+        terminalNotificationActionPendingIntent(action),
+      )
+    }
+    return builder.build()
+  }
 
   private fun buildScheduleNotification(
     model: RuntimeScheduleNotificationModel,
@@ -1034,6 +1052,15 @@ internal class RuntimeNotificationCoordinator(
     target = action.runtimeTarget,
   )
 
+  private fun terminalNotificationActionPendingIntent(
+    action: RuntimeTerminalNotificationAction,
+  ): PendingIntent = runtimeServiceAccessGateway.chatWriteActionPendingIntent(
+    context = appContext,
+    command = action.command,
+    requestCode = stableRequestCode(action.requestKey),
+    target = action.runtimeTarget,
+  )
+
   private fun knownSessionIds(): List<String> {
     return knownChatSessionIds(chatSessionStore)
   }
@@ -1162,6 +1189,22 @@ internal class RuntimeNotificationCoordinator(
 internal fun runtimeServiceTargetForNotificationTask(
   task: AgentTask,
 ): RuntimeServiceTarget = runtimeServiceTargetForTask(task)
+
+internal fun terminalNotificationActionsForModel(
+  model: RuntimeTerminalNotificationModel,
+): List<RuntimeTerminalNotificationAction> {
+  if (!model.interrupted) {
+    return emptyList()
+  }
+  return listOf(
+    RuntimeTerminalNotificationAction(
+      command = OpenCrayChatWriteCommand.RetryChatRun(model.runId),
+      labelResId = R.string.runtime_notification_action_retry,
+      runtimeTarget = model.runtimeTarget,
+      requestKey = "retry-interrupted:${model.sessionId}:${model.taskId}:${model.runId}",
+    ),
+  )
+}
 
 internal fun scheduleNotificationOpenDestination(): AppShellDestination =
   AppShellDestination(

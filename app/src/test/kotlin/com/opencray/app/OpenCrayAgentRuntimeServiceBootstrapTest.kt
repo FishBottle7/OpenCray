@@ -368,6 +368,46 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun defaultRuntimeServiceAccessGatewayDelegatesChatWriteActionPendingIntent() {
+    val context = MinimalContext()
+    val endpoint = RecordingRuntimeServiceEndpoint()
+    val gateway = DefaultRuntimeServiceAccessGateway(
+      RuntimeServiceAccessDependencies(
+        runtimeServiceStarter = recordingStarter,
+        runtimeServiceClientProvider = RuntimeServiceClientProvider { _, _ ->
+          error("Client provider should not be used in this test.")
+        },
+        runtimeServiceEndpoint = endpoint,
+      ),
+    )
+
+    val failure = runCatching {
+      gateway.chatWriteActionPendingIntent(
+        context = context,
+        command = OpenCrayChatWriteCommand.RetryChatRun("run-retry-action"),
+        requestCode = 61_337,
+        target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      )
+    }.exceptionOrNull()
+
+    assertEquals(
+      "Chat write action pending intent should not be used in this test.",
+      failure?.message,
+    )
+    assertEquals(
+      listOf(
+        RecordedChatWriteActionPendingIntent(
+          contextPackageName = "org.opencray.app",
+          command = OpenCrayChatWriteCommand.RetryChatRun("run-retry-action"),
+          requestCode = 61_337,
+          target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+        ),
+      ),
+      endpoint.chatWriteActionPendingIntentRequests,
+    )
+  }
+
+  @Test
   fun createRuntimeOwnerBootstrapUsesInjectedBootstrapFactoryWithoutTouchingLegacyRegistry() {
     val root = temporaryFolder.newFolder("runtime-owner-access").toPath()
     val dependencies = testRuntimeDependencies(
@@ -6644,6 +6684,13 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     val foreground: Boolean,
   )
 
+  private data class RecordedChatWriteActionPendingIntent(
+    val contextPackageName: String,
+    val command: OpenCrayChatWriteCommand,
+    val requestCode: Int,
+    val target: RuntimeServiceTarget,
+  )
+
   private class RecordingRuntimeServiceEndpoint : RuntimeServiceEndpoint {
     val baseIntentSentinel: Intent = Intent()
     val scheduledTaskIntentSentinel: Intent = Intent()
@@ -6663,6 +6710,8 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     val resetRuntimeTargets = mutableListOf<RuntimeServiceTarget>()
     val resumeInterruptedRunsReasons = mutableListOf<String>()
     val resumeInterruptedRunsTargets = mutableListOf<RuntimeServiceTarget>()
+    val chatWriteActionPendingIntentRequests =
+      mutableListOf<RecordedChatWriteActionPendingIntent>()
 
     override fun baseIntent(
       context: Context,
@@ -6728,6 +6777,21 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       requestCode: Int,
       target: RuntimeServiceTarget,
     ): android.app.PendingIntent = error("Approval pending intent should not be used in this test.")
+
+    override fun chatWriteActionPendingIntent(
+      context: Context,
+      command: OpenCrayChatWriteCommand,
+      requestCode: Int,
+      target: RuntimeServiceTarget,
+    ): android.app.PendingIntent {
+      chatWriteActionPendingIntentRequests += RecordedChatWriteActionPendingIntent(
+        contextPackageName = context.packageName,
+        command = command,
+        requestCode = requestCode,
+        target = target,
+      )
+      error("Chat write action pending intent should not be used in this test.")
+    }
 
     override fun scheduleNotificationActionPendingIntent(
       context: Context,

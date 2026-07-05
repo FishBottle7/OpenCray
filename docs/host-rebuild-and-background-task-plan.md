@@ -428,6 +428,7 @@ What is now safer:
 - detached/runtime-process and projection-only readers no longer rely only on process-local synchronization for the managed-process registry; session-level registry read/modify/write operations now take a directory-scoped JVM lock plus OS file lock, so concurrent owners do not lose durable managed-process snapshots while reconnect or passive projection is in flight
 - active managed-process registry restore now respects reconnect backoff deadlines before reconnecting or interrupt-repairing a restored running process, so a future `retryAfterEpochMs` remains an observable hold instead of being bypassed by registry construction or first read
 - managed-process owner identity now includes the durable runtime-controller id for diagnostics while restore scope continues to depend on live process/controller ids, so a stable target identity no longer blurs true live-controller reattachment semantics
+- interrupted terminal notifications can now wake the resolved runtime target through the existing `RetryChatRun` command, so explicit user retry after a host rebuild or service recreate no longer depends on first reopening the chat UI
 
 What we still cannot distinguish with confidence:
 
