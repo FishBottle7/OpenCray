@@ -28,7 +28,7 @@ internal open class ChatSessionLocalStore(
 
   fun loadState(): ChatSessionsState {
     val workspace = loadWorkspaceOrCreate()
-    val activeSession = activeSessionFrom(workspace) ?: createSessionInternal(workspace).activeSession
+    val activeSession = checkNotNull(activeSessionFrom(workspace)) { "Expected chat workspace to have an active session." }
     return ChatSessionsState(
       sessions = sessionsForUi(workspaceStore.load() ?: workspace),
       activeSession = activeSession,
@@ -36,14 +36,32 @@ internal open class ChatSessionLocalStore(
   }
 
   fun createSession(): ChatSessionsState {
-    val workspace = loadWorkspaceOrCreate()
-    val reusableSession = reusableEmptySessionFrom(workspace)
-    return if (reusableSession == null) {
-      createSessionInternal(workspace)
-    } else {
-      reuseEmptySessionInternal(
-        workspace = workspace,
-        session = reusableSession,
+    loadWorkspaceOrCreate()
+    val now = nowEpochMs()
+    return workspaceStore.update { workspace ->
+      val currentWorkspace = workspace ?: workspaceWithNewSession(
+        workspace = seedWorkspaceRecord(now),
+        now = now,
+      ).workspace
+      val reusableSession = reusableEmptySessionFrom(currentWorkspace)
+      val updated = if (reusableSession == null) {
+        workspaceWithNewSession(
+          workspace = currentWorkspace,
+          now = now,
+        )
+      } else {
+        workspaceWithReusedEmptySession(
+          workspace = currentWorkspace,
+          session = reusableSession,
+          now = now,
+        )
+      }
+      ChatWorkspaceStoreUpdate(
+        record = updated.workspace,
+        result = ChatSessionsState(
+          sessions = sessionsForUi(updated.workspace),
+          activeSession = updated.session,
+        ),
       )
     }
   }
@@ -82,99 +100,142 @@ internal open class ChatSessionLocalStore(
   }
 
   fun selectSession(sessionId: String): ChatSessionsState {
-    val workspace = loadWorkspaceOrCreate()
-    val activeSession = workspace.sessions.firstOrNull { it.sessionId == sessionId } ?: activeSessionFrom(workspace)
-      ?: createSessionInternal(workspace).activeSession
-    val updatedWorkspace = workspace.copy(
-      activeSessionId = activeSession.sessionId,
-      recordVersion = workspace.recordVersion + 1,
-      updatedAtEpochMs = maxOf(nowEpochMs(), workspace.updatedAtEpochMs),
-    )
-    workspaceStore.save(updatedWorkspace)
-    return ChatSessionsState(
-      sessions = sessionsForUi(updatedWorkspace),
-      activeSession = activeSession,
-    )
-  }
-
-  fun copySession(sessionId: String): ChatSessionsState {
-    val workspace = loadWorkspaceOrCreate()
-    val activeSession = activeSessionFrom(workspace) ?: createSessionInternal(workspace).activeSession
-    val sourceSession = workspace.sessions.firstOrNull { it.sessionId == sessionId }
-      ?: return ChatSessionsState(
-        sessions = sessionsForUi(workspace),
-        activeSession = activeSession,
-      )
+    loadWorkspaceOrCreate()
     val now = nowEpochMs()
-    val copiedSessionId = "session-${now}-${UUID.randomUUID().toString().take(8)}"
-    val copiedSession = sourceSession.copy(
-      sessionId = copiedSessionId,
-      title = copyTitleFor(sourceSession.title),
-      createdAtEpochMs = now,
-      updatedAtEpochMs = now,
-    )
-    val updatedWorkspace = workspace.copy(
-      sessions = (workspace.sessions.filterNot { it.sessionId == copiedSessionId } + copiedSession)
-        .sortedByDescending { it.updatedAtEpochMs },
-      activeSessionId = copiedSessionId,
-      extensions = copySessionExtensions(
-        extensions = workspace.extensions,
-        sourceSessionId = sourceSession.sessionId,
-        targetSessionId = copiedSessionId,
-        includeWorkingState = true,
-      ),
-      recordVersion = workspace.recordVersion + 1,
-      updatedAtEpochMs = now,
-    )
-    workspaceStore.save(updatedWorkspace)
-    return ChatSessionsState(
-      sessions = sessionsForUi(updatedWorkspace),
-      activeSession = copiedSession,
-    )
-  }
-
-  fun deleteSession(sessionId: String): ChatSessionsState {
-    val workspace = loadWorkspaceOrCreate()
-    val activeSession = activeSessionFrom(workspace) ?: createSessionInternal(workspace).activeSession
-    if (workspace.sessions.none { session -> session.sessionId == sessionId }) {
-      return ChatSessionsState(
-        sessions = sessionsForUi(workspace),
-        activeSession = activeSession,
+    return workspaceStore.update { workspace ->
+      val current = workspaceAndActiveSessionForUpdate(
+        workspace = workspace,
+        now = now,
       )
-    }
-    val remainingSessions = workspace.sessions.filterNot { session -> session.sessionId == sessionId }
-    if (remainingSessions.isEmpty()) {
-      return createSessionInternal(
-        workspace.copy(
-          sessions = emptyList(),
-          activeSessionId = null,
-          updatedAtEpochMs = nowEpochMs(),
+      val currentWorkspace = current.workspace
+      val activeSession = currentWorkspace.sessions.firstOrNull { it.sessionId == sessionId }
+        ?: current.session
+      val updatedWorkspace = currentWorkspace.copy(
+        activeSessionId = activeSession.sessionId,
+        recordVersion = currentWorkspace.recordVersion + 1,
+        updatedAtEpochMs = maxOf(now, currentWorkspace.updatedAtEpochMs),
+      )
+      ChatWorkspaceStoreUpdate(
+        record = updatedWorkspace,
+        result = ChatSessionsState(
+          sessions = sessionsForUi(updatedWorkspace),
+          activeSession = activeSession,
         ),
       )
     }
+  }
+
+  fun copySession(sessionId: String): ChatSessionsState {
+    loadWorkspaceOrCreate()
     val now = nowEpochMs()
-    val nextActiveSession = remainingSessions.firstOrNull { session ->
-      session.sessionId == workspace.activeSessionId
-    } ?: remainingSessions.maxByOrNull { it.updatedAtEpochMs }
-      ?: remainingSessions.first()
-    val updatedWorkspace = workspace.copy(
-      sessions = remainingSessions.sortedByDescending { it.updatedAtEpochMs },
-      activeSessionId = nextActiveSession.sessionId,
-      extensions = workspace.extensions -
-        pendingUserInputExtensionKey(sessionId) -
-        todoExtensionKey(sessionId) -
-        archivedTodoExtensionKey(sessionId) -
-        workingStateExtensionKey(sessionId) -
-        nativeWebSearchApprovalExtensionKey(sessionId) -
-        sessionScopedStateExtensionKey(sessionId),
-      recordVersion = workspace.recordVersion + 1,
-      updatedAtEpochMs = now,
-    )
-    workspaceStore.save(updatedWorkspace)
-    return ChatSessionsState(
-      sessions = sessionsForUi(updatedWorkspace),
-      activeSession = nextActiveSession,
-    )
+    return workspaceStore.update { workspace ->
+      val current = workspaceAndActiveSessionForUpdate(
+        workspace = workspace,
+        now = now,
+      )
+      val currentWorkspace = current.workspace
+      val sourceSession = currentWorkspace.sessions.firstOrNull { it.sessionId == sessionId }
+        ?: return@update ChatWorkspaceStoreUpdate(
+          record = currentWorkspace,
+          result = ChatSessionsState(
+            sessions = sessionsForUi(currentWorkspace),
+            activeSession = current.session,
+          ),
+          write = false,
+        )
+      val copiedAt = maxOf(now, currentWorkspace.updatedAtEpochMs)
+      val copiedSessionId = "session-${copiedAt}-${UUID.randomUUID().toString().take(8)}"
+      val copiedSession = sourceSession.copy(
+        sessionId = copiedSessionId,
+        title = copyTitleFor(sourceSession.title),
+        createdAtEpochMs = copiedAt,
+        updatedAtEpochMs = copiedAt,
+      )
+      val updatedWorkspace = currentWorkspace.copy(
+        sessions = (currentWorkspace.sessions.filterNot { it.sessionId == copiedSessionId } + copiedSession)
+          .sortedByDescending { it.updatedAtEpochMs },
+        activeSessionId = copiedSessionId,
+        extensions = copySessionExtensions(
+          extensions = currentWorkspace.extensions,
+          sourceSessionId = sourceSession.sessionId,
+          targetSessionId = copiedSessionId,
+          includeWorkingState = true,
+        ),
+        recordVersion = currentWorkspace.recordVersion + 1,
+        updatedAtEpochMs = copiedAt,
+      )
+      ChatWorkspaceStoreUpdate(
+        record = updatedWorkspace,
+        result = ChatSessionsState(
+          sessions = sessionsForUi(updatedWorkspace),
+          activeSession = copiedSession,
+        ),
+      )
+    }
+  }
+
+  fun deleteSession(sessionId: String): ChatSessionsState {
+    loadWorkspaceOrCreate()
+    val now = nowEpochMs()
+    return workspaceStore.update { workspace ->
+      val current = workspaceAndActiveSessionForUpdate(
+        workspace = workspace,
+        now = now,
+      )
+      val currentWorkspace = current.workspace
+      if (currentWorkspace.sessions.none { session -> session.sessionId == sessionId }) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = currentWorkspace,
+          result = ChatSessionsState(
+            sessions = sessionsForUi(currentWorkspace),
+            activeSession = current.session,
+          ),
+          write = false,
+        )
+      }
+      val remainingSessions = currentWorkspace.sessions.filterNot { session -> session.sessionId == sessionId }
+      if (remainingSessions.isEmpty()) {
+        val replacement = workspaceWithNewSession(
+          workspace = currentWorkspace.copy(
+            sessions = emptyList(),
+            activeSessionId = null,
+            updatedAtEpochMs = maxOf(currentWorkspace.updatedAtEpochMs, now),
+          ),
+          now = now,
+        )
+        return@update ChatWorkspaceStoreUpdate(
+          record = replacement.workspace,
+          result = ChatSessionsState(
+            sessions = sessionsForUi(replacement.workspace),
+            activeSession = replacement.session,
+          ),
+        )
+      }
+      val nextActiveSession = remainingSessions.firstOrNull { session ->
+        session.sessionId == currentWorkspace.activeSessionId
+      } ?: remainingSessions.maxByOrNull { it.updatedAtEpochMs }
+        ?: remainingSessions.first()
+      val updatedWorkspace = currentWorkspace.copy(
+        sessions = remainingSessions.sortedByDescending { it.updatedAtEpochMs },
+        activeSessionId = nextActiveSession.sessionId,
+        extensions = currentWorkspace.extensions -
+          pendingUserInputExtensionKey(sessionId) -
+          todoExtensionKey(sessionId) -
+          archivedTodoExtensionKey(sessionId) -
+          workingStateExtensionKey(sessionId) -
+          nativeWebSearchApprovalExtensionKey(sessionId) -
+          sessionScopedStateExtensionKey(sessionId),
+        recordVersion = currentWorkspace.recordVersion + 1,
+        updatedAtEpochMs = maxOf(currentWorkspace.updatedAtEpochMs, now),
+      )
+      ChatWorkspaceStoreUpdate(
+        record = updatedWorkspace,
+        result = ChatSessionsState(
+          sessions = sessionsForUi(updatedWorkspace),
+          activeSession = nextActiveSession,
+        ),
+      )
+    }
   }
 
   fun appendUserMessage(sessionId: String, text: String): ChatSessionsState {
@@ -237,28 +298,8 @@ internal open class ChatSessionLocalStore(
       "insertMessageBefore requires text or attachments."
     }
 
-    val workspace = loadWorkspaceOrCreate()
-    val currentSession = workspace.sessions.firstOrNull { it.sessionId == sessionId } ?: activeSessionFrom(workspace)
-      ?: createSessionInternal(workspace).activeSession
-    val anchorIndex = currentSession.messages.indexOfFirst { message ->
-      message.messageId == normalizedAnchorMessageId
-    }
-    if (anchorIndex < 0) {
-      return ChatSessionsState(
-        sessions = sessionsForUi(workspace),
-        activeSession = currentSession,
-      )
-    }
     val normalizedMessageId = messageId?.trim()?.takeIf(String::isNotBlank)
-    if (
-      normalizedMessageId != null &&
-      currentSession.messages.any { message -> message.messageId == normalizedMessageId }
-    ) {
-      return ChatSessionsState(
-        sessions = sessionsForUi(workspace),
-        activeSession = currentSession,
-      )
-    }
+    loadWorkspaceOrCreate()
     val now = nowEpochMs()
     val insertedMessage = ChatTranscriptMessageEntry(
       messageId = normalizedMessageId ?: messageId(role.name.lowercase()),
@@ -267,29 +308,58 @@ internal open class ChatSessionLocalStore(
       attachments = attachments,
       createdAtEpochMs = createdAtEpochMs ?: now,
     )
-    val updatedMessages = buildList(currentSession.messages.size + 1) {
-      addAll(currentSession.messages.take(anchorIndex))
-      add(insertedMessage)
-      addAll(currentSession.messages.drop(anchorIndex))
-    }
-    val updatedSession = currentSession.copy(
-      messages = updatedMessages,
-      updatedAtEpochMs = now,
-    )
-    val updatedWorkspace = replaceSession(
-      workspace = workspace,
-      updatedSession = updatedSession,
-      activeSessionId = preservedActiveSessionId(
+    return workspaceStore.update { workspace ->
+      val current = workspaceAndActiveSessionForUpdate(
         workspace = workspace,
-        fallbackSessionId = updatedSession.sessionId,
-      ),
-      updatedAtEpochMs = now,
-    )
-    workspaceStore.save(updatedWorkspace)
-    return ChatSessionsState(
-      sessions = sessionsForUi(updatedWorkspace),
-      activeSession = updatedSession,
-    )
+        now = now,
+      )
+      val currentWorkspace = current.workspace
+      val currentSession = currentWorkspace.sessions.firstOrNull { it.sessionId == sessionId } ?: current.session
+      val anchorIndex = currentSession.messages.indexOfFirst { message ->
+        message.messageId == normalizedAnchorMessageId
+      }
+      if (
+        anchorIndex < 0 ||
+        normalizedMessageId != null &&
+        currentSession.messages.any { message -> message.messageId == normalizedMessageId }
+      ) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = currentWorkspace,
+          result = ChatSessionsState(
+            sessions = sessionsForUi(currentWorkspace),
+            activeSession = currentSession,
+          ),
+          write = false,
+        )
+      }
+      val sessionUpdatedAt = maxOf(currentSession.updatedAtEpochMs, now)
+      val workspaceUpdatedAt = maxOf(currentWorkspace.updatedAtEpochMs, sessionUpdatedAt)
+      val updatedMessages = buildList(currentSession.messages.size + 1) {
+        addAll(currentSession.messages.take(anchorIndex))
+        add(insertedMessage)
+        addAll(currentSession.messages.drop(anchorIndex))
+      }
+      val updatedSession = currentSession.copy(
+        messages = updatedMessages,
+        updatedAtEpochMs = sessionUpdatedAt,
+      )
+      val updatedWorkspace = replaceSession(
+        workspace = currentWorkspace,
+        updatedSession = updatedSession,
+        activeSessionId = preservedActiveSessionId(
+          workspace = currentWorkspace,
+          fallbackSessionId = updatedSession.sessionId,
+        ),
+        updatedAtEpochMs = workspaceUpdatedAt,
+      )
+      ChatWorkspaceStoreUpdate(
+        record = updatedWorkspace,
+        result = ChatSessionsState(
+          sessions = sessionsForUi(updatedWorkspace),
+          activeSession = updatedSession,
+        ),
+      )
+    }
   }
 
   fun replaceMessage(
@@ -304,47 +374,61 @@ internal open class ChatSessionLocalStore(
       "replaceMessage requires text or attachments."
     }
 
-    val workspace = loadWorkspaceOrCreate()
-    val currentSession = workspace.sessions.firstOrNull { it.sessionId == sessionId } ?: activeSessionFrom(workspace)
-      ?: createSessionInternal(workspace).activeSession
-    if (currentSession.messages.none { message -> message.messageId == messageId }) {
-      return ChatSessionsState(
-        sessions = sessionsForUi(workspace),
-        activeSession = currentSession,
+    loadWorkspaceOrCreate()
+    val now = nowEpochMs()
+    return workspaceStore.update { workspace ->
+      val current = workspaceAndActiveSessionForUpdate(
+        workspace = workspace,
+        now = now,
+      )
+      val currentWorkspace = current.workspace
+      val currentSession = currentWorkspace.sessions.firstOrNull { it.sessionId == sessionId } ?: current.session
+      if (currentSession.messages.none { message -> message.messageId == messageId }) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = currentWorkspace,
+          result = ChatSessionsState(
+            sessions = sessionsForUi(currentWorkspace),
+            activeSession = currentSession,
+          ),
+          write = false,
+        )
+      }
+      val sessionUpdatedAt = maxOf(currentSession.updatedAtEpochMs, now)
+      val workspaceUpdatedAt = maxOf(currentWorkspace.updatedAtEpochMs, sessionUpdatedAt)
+      val updatedMessages = currentSession.messages.map { message ->
+        if (message.messageId == messageId) {
+          message.copy(
+            role = role,
+            text = trimmed.ifBlank { null },
+            promptTemplateRefId = null,
+            commandLabel = null,
+            attachments = attachments,
+          )
+        } else {
+          message
+        }
+      }
+      val updatedSession = currentSession.copy(
+        messages = updatedMessages,
+        updatedAtEpochMs = sessionUpdatedAt,
+      )
+      val updatedWorkspace = replaceSession(
+        workspace = currentWorkspace,
+        updatedSession = updatedSession,
+        activeSessionId = preservedActiveSessionId(
+          workspace = currentWorkspace,
+          fallbackSessionId = updatedSession.sessionId,
+        ),
+        updatedAtEpochMs = workspaceUpdatedAt,
+      )
+      ChatWorkspaceStoreUpdate(
+        record = updatedWorkspace,
+        result = ChatSessionsState(
+          sessions = sessionsForUi(updatedWorkspace),
+          activeSession = updatedSession,
+        ),
       )
     }
-    val now = nowEpochMs()
-    val updatedMessages = currentSession.messages.map { message ->
-      if (message.messageId == messageId) {
-        message.copy(
-          role = role,
-          text = trimmed.ifBlank { null },
-          promptTemplateRefId = null,
-          commandLabel = null,
-          attachments = attachments,
-        )
-      } else {
-        message
-      }
-    }
-    val updatedSession = currentSession.copy(
-      messages = updatedMessages,
-      updatedAtEpochMs = now,
-    )
-    val updatedWorkspace = replaceSession(
-      workspace = workspace,
-      updatedSession = updatedSession,
-      activeSessionId = preservedActiveSessionId(
-        workspace = workspace,
-        fallbackSessionId = updatedSession.sessionId,
-      ),
-      updatedAtEpochMs = now,
-    )
-    workspaceStore.save(updatedWorkspace)
-    return ChatSessionsState(
-      sessions = sessionsForUi(updatedWorkspace),
-      activeSession = updatedSession,
-    )
   }
 
   fun replaceMessageAndPruneTail(
@@ -356,41 +440,55 @@ internal open class ChatSessionLocalStore(
     val trimmed = text.trim()
     require(trimmed.isNotEmpty()) { "replaceMessageAndPruneTail text must not be blank." }
 
-    val workspace = loadWorkspaceOrCreate()
-    val currentSession = workspace.sessions.firstOrNull { it.sessionId == sessionId } ?: activeSessionFrom(workspace)
-      ?: createSessionInternal(workspace).activeSession
-    val messageIndex = currentSession.messages.indexOfFirst { message -> message.messageId == messageId }
-    if (messageIndex < 0) {
-      return ChatSessionsState(
-        sessions = sessionsForUi(workspace),
-        activeSession = currentSession,
+    loadWorkspaceOrCreate()
+    val now = nowEpochMs()
+    return workspaceStore.update { workspace ->
+      val current = workspaceAndActiveSessionForUpdate(
+        workspace = workspace,
+        now = now,
+      )
+      val currentWorkspace = current.workspace
+      val currentSession = currentWorkspace.sessions.firstOrNull { it.sessionId == sessionId } ?: current.session
+      val messageIndex = currentSession.messages.indexOfFirst { message -> message.messageId == messageId }
+      if (messageIndex < 0) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = currentWorkspace,
+          result = ChatSessionsState(
+            sessions = sessionsForUi(currentWorkspace),
+            activeSession = currentSession,
+          ),
+          write = false,
+        )
+      }
+
+      val sessionUpdatedAt = maxOf(currentSession.updatedAtEpochMs, now)
+      val workspaceUpdatedAt = maxOf(currentWorkspace.updatedAtEpochMs, sessionUpdatedAt)
+      val updatedMessages = currentSession.messages.take(messageIndex) + currentSession.messages[messageIndex].copy(
+        role = role,
+        text = trimmed,
+        promptTemplateRefId = null,
+      )
+      val updatedSession = currentSession.copy(
+        messages = updatedMessages,
+        updatedAtEpochMs = sessionUpdatedAt,
+      )
+      val updatedWorkspace = replaceSession(
+        workspace = currentWorkspace,
+        updatedSession = updatedSession,
+        activeSessionId = preservedActiveSessionId(
+          workspace = currentWorkspace,
+          fallbackSessionId = updatedSession.sessionId,
+        ),
+        updatedAtEpochMs = workspaceUpdatedAt,
+      )
+      ChatWorkspaceStoreUpdate(
+        record = updatedWorkspace,
+        result = ChatSessionsState(
+          sessions = sessionsForUi(updatedWorkspace),
+          activeSession = updatedSession,
+        ),
       )
     }
-
-    val updatedMessages = currentSession.messages.take(messageIndex) + currentSession.messages[messageIndex].copy(
-      role = role,
-      text = trimmed,
-      promptTemplateRefId = null,
-    )
-    val now = nowEpochMs()
-    val updatedSession = currentSession.copy(
-      messages = updatedMessages,
-      updatedAtEpochMs = now,
-    )
-    val updatedWorkspace = replaceSession(
-      workspace = workspace,
-      updatedSession = updatedSession,
-      activeSessionId = preservedActiveSessionId(
-        workspace = workspace,
-        fallbackSessionId = updatedSession.sessionId,
-      ),
-      updatedAtEpochMs = now,
-    )
-    workspaceStore.save(updatedWorkspace)
-    return ChatSessionsState(
-      sessions = sessionsForUi(updatedWorkspace),
-      activeSession = updatedSession,
-    )
   }
 
   fun deleteMessage(
@@ -408,115 +506,141 @@ internal open class ChatSessionLocalStore(
     val normalizedMessageIds = messageIds
       .mapTo(linkedSetOf()) { messageId -> messageId.trim() }
       .filterTo(linkedSetOf(), String::isNotBlank)
-    val workspace = loadWorkspaceOrCreate()
-    val currentSession = workspace.sessions.firstOrNull { it.sessionId == sessionId } ?: activeSessionFrom(workspace)
-      ?: createSessionInternal(workspace).activeSession
+    loadWorkspaceOrCreate()
     val now = nowEpochMs()
-    val updatedMessages = currentSession.messages.filterNot { it.messageId in normalizedMessageIds }
-    val updatedSession = currentSession.copy(
-      messages = updatedMessages,
-      updatedAtEpochMs = now,
-    )
-    val updatedWorkspace = replaceSession(
-      workspace = workspace,
-      updatedSession = updatedSession,
-      activeSessionId = preservedActiveSessionId(
+    return workspaceStore.update { workspace ->
+      val current = workspaceAndActiveSessionForUpdate(
         workspace = workspace,
-        fallbackSessionId = updatedSession.sessionId,
-      ),
-      updatedAtEpochMs = now,
-    )
-    workspaceStore.save(updatedWorkspace)
-    return ChatSessionsState(
-      sessions = sessionsForUi(updatedWorkspace),
-      activeSession = updatedSession,
-    )
+        now = now,
+      )
+      val currentWorkspace = current.workspace
+      val currentSession = currentWorkspace.sessions.firstOrNull { it.sessionId == sessionId } ?: current.session
+      val sessionUpdatedAt = maxOf(currentSession.updatedAtEpochMs, now)
+      val workspaceUpdatedAt = maxOf(currentWorkspace.updatedAtEpochMs, sessionUpdatedAt)
+      val updatedMessages = currentSession.messages.filterNot { it.messageId in normalizedMessageIds }
+      val updatedSession = currentSession.copy(
+        messages = updatedMessages,
+        updatedAtEpochMs = sessionUpdatedAt,
+      )
+      val updatedWorkspace = replaceSession(
+        workspace = currentWorkspace,
+        updatedSession = updatedSession,
+        activeSessionId = preservedActiveSessionId(
+          workspace = currentWorkspace,
+          fallbackSessionId = updatedSession.sessionId,
+        ),
+        updatedAtEpochMs = workspaceUpdatedAt,
+      )
+      ChatWorkspaceStoreUpdate(
+        record = updatedWorkspace,
+        result = ChatSessionsState(
+          sessions = sessionsForUi(updatedWorkspace),
+          activeSession = updatedSession,
+        ),
+      )
+    }
   }
 
   fun recallMessageCascade(
     sessionId: String,
     messageId: String,
   ): ChatSessionsState {
-    val workspace = loadWorkspaceOrCreate()
-    val currentSession = workspace.sessions.firstOrNull { it.sessionId == sessionId } ?: activeSessionFrom(workspace)
-      ?: createSessionInternal(workspace).activeSession
-    val recallIndex = currentSession.messages.indexOfFirst { message -> message.messageId == messageId }
-    if (recallIndex < 0) {
-      return ChatSessionsState(
-        sessions = sessionsForUi(workspace),
-        activeSession = currentSession,
-      )
-    }
-
-    val recalledMessage = currentSession.messages[recallIndex]
-    if (recalledMessage.role != ChatTranscriptRole.USER) {
-      return ChatSessionsState(
-        sessions = sessionsForUi(workspace),
-        activeSession = currentSession,
-      )
-    }
-
+    loadWorkspaceOrCreate()
     val now = nowEpochMs()
-    val updatedSession = currentSession.copy(
-      messages = currentSession.messages.take(recallIndex),
-      updatedAtEpochMs = now,
-    )
-    val updatedWorkspace = replaceSession(
-      workspace = workspace,
-      updatedSession = updatedSession,
-      activeSessionId = preservedActiveSessionId(
+    return workspaceStore.update { workspace ->
+      val current = workspaceAndActiveSessionForUpdate(
         workspace = workspace,
-        fallbackSessionId = updatedSession.sessionId,
-      ),
-      updatedAtEpochMs = now,
-    )
-    workspaceStore.save(updatedWorkspace)
-    return ChatSessionsState(
-      sessions = sessionsForUi(updatedWorkspace),
-      activeSession = updatedSession,
-    )
+        now = now,
+      )
+      val currentWorkspace = current.workspace
+      val currentSession = currentWorkspace.sessions.firstOrNull { it.sessionId == sessionId } ?: current.session
+      val recallIndex = currentSession.messages.indexOfFirst { message -> message.messageId == messageId }
+      val recalledMessage = currentSession.messages.getOrNull(recallIndex)
+      if (recallIndex < 0 || recalledMessage?.role != ChatTranscriptRole.USER) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = currentWorkspace,
+          result = ChatSessionsState(
+            sessions = sessionsForUi(currentWorkspace),
+            activeSession = currentSession,
+          ),
+          write = false,
+        )
+      }
+
+      val sessionUpdatedAt = maxOf(currentSession.updatedAtEpochMs, now)
+      val workspaceUpdatedAt = maxOf(currentWorkspace.updatedAtEpochMs, sessionUpdatedAt)
+      val updatedSession = currentSession.copy(
+        messages = currentSession.messages.take(recallIndex),
+        updatedAtEpochMs = sessionUpdatedAt,
+      )
+      val updatedWorkspace = replaceSession(
+        workspace = currentWorkspace,
+        updatedSession = updatedSession,
+        activeSessionId = preservedActiveSessionId(
+          workspace = currentWorkspace,
+          fallbackSessionId = updatedSession.sessionId,
+        ),
+        updatedAtEpochMs = workspaceUpdatedAt,
+      )
+      ChatWorkspaceStoreUpdate(
+        record = updatedWorkspace,
+        result = ChatSessionsState(
+          sessions = sessionsForUi(updatedWorkspace),
+          activeSession = updatedSession,
+        ),
+      )
+    }
   }
 
   fun branchSessionFromMessage(
     sessionId: String,
     messageId: String,
   ): ChatSessionsState {
-    val workspace = loadWorkspaceOrCreate()
-    val sourceSession = workspace.sessions.firstOrNull { it.sessionId == sessionId } ?: activeSessionFrom(workspace)
-      ?: createSessionInternal(workspace).activeSession
-    val branchUntilIndex = sourceSession.messages.indexOfFirst { it.messageId == messageId }
-    val branchMessages = if (branchUntilIndex >= 0) {
-      sourceSession.messages.take(branchUntilIndex + 1)
-    } else {
-      sourceSession.messages
-    }
+    loadWorkspaceOrCreate()
     val now = nowEpochMs()
-    val branchSessionId = "session-${now}-${UUID.randomUUID().toString().take(8)}"
-    val branchSession = ChatTranscriptSessionEntry(
-      sessionId = branchSessionId,
-      title = branchTitleFor(sourceSession.title),
-      createdAtEpochMs = now,
-      updatedAtEpochMs = now,
-      messages = branchMessages,
-    )
-    val updatedWorkspace = workspace.copy(
-      sessions = (workspace.sessions.filterNot { it.sessionId == branchSessionId } + branchSession)
-        .sortedByDescending { it.updatedAtEpochMs },
-      activeSessionId = branchSessionId,
-      extensions = copySessionExtensions(
-        extensions = workspace.extensions,
-        sourceSessionId = sourceSession.sessionId,
-        targetSessionId = branchSessionId,
-        includeWorkingState = false,
-      ),
-      recordVersion = workspace.recordVersion + 1,
-      updatedAtEpochMs = now,
-    )
-    workspaceStore.save(updatedWorkspace)
-    return ChatSessionsState(
-      sessions = sessionsForUi(updatedWorkspace),
-      activeSession = branchSession,
-    )
+    return workspaceStore.update { workspace ->
+      val current = workspaceAndActiveSessionForUpdate(
+        workspace = workspace,
+        now = now,
+      )
+      val currentWorkspace = current.workspace
+      val sourceSession = currentWorkspace.sessions.firstOrNull { it.sessionId == sessionId } ?: current.session
+      val branchUntilIndex = sourceSession.messages.indexOfFirst { it.messageId == messageId }
+      val branchMessages = if (branchUntilIndex >= 0) {
+        sourceSession.messages.take(branchUntilIndex + 1)
+      } else {
+        sourceSession.messages
+      }
+      val branchedAt = maxOf(now, currentWorkspace.updatedAtEpochMs)
+      val branchSessionId = "session-${branchedAt}-${UUID.randomUUID().toString().take(8)}"
+      val branchSession = ChatTranscriptSessionEntry(
+        sessionId = branchSessionId,
+        title = branchTitleFor(sourceSession.title),
+        createdAtEpochMs = branchedAt,
+        updatedAtEpochMs = branchedAt,
+        messages = branchMessages,
+      )
+      val updatedWorkspace = currentWorkspace.copy(
+        sessions = (currentWorkspace.sessions.filterNot { it.sessionId == branchSessionId } + branchSession)
+          .sortedByDescending { it.updatedAtEpochMs },
+        activeSessionId = branchSessionId,
+        extensions = copySessionExtensions(
+          extensions = currentWorkspace.extensions,
+          sourceSessionId = sourceSession.sessionId,
+          targetSessionId = branchSessionId,
+          includeWorkingState = false,
+        ),
+        recordVersion = currentWorkspace.recordVersion + 1,
+        updatedAtEpochMs = branchedAt,
+      )
+      ChatWorkspaceStoreUpdate(
+        record = updatedWorkspace,
+        result = ChatSessionsState(
+          sessions = sessionsForUi(updatedWorkspace),
+          activeSession = branchSession,
+        ),
+      )
+    }
   }
 
   fun appendAssistantPlaceholder(sessionId: String, text: String): ChatSessionsState {
@@ -1132,53 +1256,25 @@ internal open class ChatSessionLocalStore(
     return loadWorkspaceOrCreate().promptTemplates.firstOrNull { template -> template.templateId == templateId }?.body
   }
 
-  private fun createSessionInternal(workspace: ChatWorkspaceRecord): ChatSessionsState {
+  private fun loadWorkspaceOrCreate(): ChatWorkspaceRecord = workspaceStore.update { workspace ->
+    val existingActiveSession = workspace?.let(::activeSessionFrom)
+    if (workspace != null && existingActiveSession != null) {
+      return@update ChatWorkspaceStoreUpdate(
+        record = workspace,
+        result = workspace,
+        write = false,
+      )
+    }
     val now = nowEpochMs()
+    val currentWorkspace = workspace ?: seedWorkspaceRecord(now)
     val created = workspaceWithNewSession(
-      workspace = workspace,
+      workspace = currentWorkspace,
       now = now,
     )
-    workspaceStore.save(created.workspace)
-    return ChatSessionsState(
-      sessions = sessionsForUi(created.workspace),
-      activeSession = created.session,
+    ChatWorkspaceStoreUpdate(
+      record = created.workspace,
+      result = created.workspace,
     )
-  }
-
-  private fun reuseEmptySessionInternal(
-    workspace: ChatWorkspaceRecord,
-    session: ChatTranscriptSessionEntry,
-  ): ChatSessionsState {
-    val now = nowEpochMs()
-    val reusedSession = session.copy(
-      title = DEFAULT_SESSION_TITLE,
-      createdAtEpochMs = now,
-      updatedAtEpochMs = now,
-    )
-    val updatedWorkspace = replaceSession(
-      workspace = workspace,
-      updatedSession = reusedSession,
-      activeSessionId = reusedSession.sessionId,
-      updatedAtEpochMs = now,
-    )
-    workspaceStore.save(updatedWorkspace)
-    return ChatSessionsState(
-      sessions = sessionsForUi(updatedWorkspace),
-      activeSession = reusedSession,
-    )
-  }
-
-  private fun loadWorkspaceOrCreate(): ChatWorkspaceRecord = workspaceStore.load() ?: createWorkspaceWithSeedSession()
-
-  private fun createWorkspaceWithSeedSession(): ChatWorkspaceRecord {
-    val now = nowEpochMs()
-    workspaceStore.save(
-      workspaceWithNewSession(
-        workspace = seedWorkspaceRecord(now),
-        now = now,
-      ).workspace,
-    )
-    return checkNotNull(workspaceStore.load()) { "Expected chat workspace to be created." }
   }
 
   private fun seedWorkspaceRecord(now: Long): ChatWorkspaceRecord = ChatWorkspaceRecord(
@@ -1218,6 +1314,25 @@ internal open class ChatSessionLocalStore(
     }
   }
 
+  private fun workspaceAndActiveSessionForUpdate(
+    workspace: ChatWorkspaceRecord?,
+    now: Long,
+  ): CreatedChatSessionWorkspace {
+    val currentWorkspace = workspace ?: seedWorkspaceRecord(now)
+    val activeSession = activeSessionFrom(currentWorkspace)
+    return if (activeSession == null) {
+      workspaceWithNewSession(
+        workspace = currentWorkspace,
+        now = now,
+      )
+    } else {
+      CreatedChatSessionWorkspace(
+        workspace = currentWorkspace,
+        session = activeSession,
+      )
+    }
+  }
+
   private fun workspaceWithNewSession(
     workspace: ChatWorkspaceRecord,
     now: Long,
@@ -1246,6 +1361,29 @@ internal open class ChatSessionLocalStore(
         updatedAtEpochMs = maxOf(workspace.updatedAtEpochMs, now),
       ),
       session = session,
+    )
+  }
+
+  private fun workspaceWithReusedEmptySession(
+    workspace: ChatWorkspaceRecord,
+    session: ChatTranscriptSessionEntry,
+    now: Long,
+  ): CreatedChatSessionWorkspace {
+    val reusedAt = maxOf(now, workspace.updatedAtEpochMs)
+    val reusedSession = session.copy(
+      title = DEFAULT_SESSION_TITLE,
+      createdAtEpochMs = reusedAt,
+      updatedAtEpochMs = reusedAt,
+    )
+    val updatedWorkspace = replaceSession(
+      workspace = workspace,
+      updatedSession = reusedSession,
+      activeSessionId = reusedSession.sessionId,
+      updatedAtEpochMs = reusedAt,
+    )
+    return CreatedChatSessionWorkspace(
+      workspace = updatedWorkspace,
+      session = reusedSession,
     )
   }
 
