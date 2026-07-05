@@ -222,8 +222,12 @@ class ScheduledTaskWorkManagerTest {
               "process-from-queue",
             RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RECOVERY_STATE to
               "retry_scheduled",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_STATUS to
+              "connecting",
             RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS to
               "2500",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_ATTEMPT_COUNT to
+              "3",
             RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS to
               ManagedProcessContinuationBases.RECONNECT_HOLD,
             RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_SCOPE to
@@ -253,6 +257,9 @@ class ScheduledTaskWorkManagerTest {
     assertEquals(2_500L, item.repairAfterEpochMs)
     assertEquals("runtime_process", item.runtimeExecutionOwnershipTier)
     assertEquals("durable-controller-reconnect-hold", item.durableRuntimeControllerId)
+    assertEquals("connecting", item.managedProcessReconnectStatus)
+    assertEquals("retry_scheduled", item.managedProcessReconnectRecoveryState)
+    assertEquals(3, item.managedProcessReconnectAttemptCount)
     assertEquals(ManagedProcessContinuationBases.RECONNECT_HOLD, item.managedProcessContinuationBasis)
     assertEquals(ManagedProcessRestoreScope.CROSS_PROCESS.wireValue, item.managedProcessRestoreScope)
     assertEquals(
@@ -377,6 +384,7 @@ class ScheduledTaskWorkManagerTest {
           metadata = mapOf(
             MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY to
               ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+            "sandboxCommandReconnectAttemptCount" to "2",
           ),
         ),
       ),
@@ -412,6 +420,9 @@ class ScheduledTaskWorkManagerTest {
     assertEquals("run-managed-reconnect", item.runId)
     assertEquals("task-managed-reconnect", item.taskId)
     assertEquals("process-reconnect", item.detailId)
+    assertEquals("connecting", item.managedProcessReconnectStatus)
+    assertEquals("retry_scheduled", item.managedProcessReconnectRecoveryState)
+    assertEquals(2, item.managedProcessReconnectAttemptCount)
     assertEquals(
       ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
       item.managedProcessRestoreScope,

@@ -439,6 +439,9 @@ private data class PersistedInterruptedRunRepairEvidence(
   val taskId: String? = null,
   val detailId: String? = null,
   val repairAfterEpochMs: Long? = null,
+  val managedProcessReconnectStatus: String? = null,
+  val managedProcessReconnectRecoveryState: String? = null,
+  val managedProcessReconnectAttemptCount: Int? = null,
   val runtimeExecutionOwnershipTier: String? = null,
   val durableRuntimeControllerId: String? = null,
   val managedProcessContinuationBasis: String? = null,
@@ -531,6 +534,9 @@ private fun InterruptedRunRepairEvidence.toPersistedRecord():
     taskId = taskId,
     detailId = detailId,
     repairAfterEpochMs = repairAfterEpochMs,
+    managedProcessReconnectStatus = managedProcessReconnectStatus,
+    managedProcessReconnectRecoveryState = managedProcessReconnectRecoveryState,
+    managedProcessReconnectAttemptCount = managedProcessReconnectAttemptCount,
     runtimeExecutionOwnershipTier = runtimeExecutionOwnershipTier,
     durableRuntimeControllerId = durableRuntimeControllerId,
     managedProcessContinuationBasis = managedProcessContinuationBasis,
@@ -628,6 +634,14 @@ private fun PersistedInterruptedRunRepairEvidence.toSnapshot(
       taskId = taskId,
       detailId = detailId,
       repairAfterEpochMs = repairAfterEpochMs,
+      managedProcessReconnectStatus = managedProcessReconnectStatus
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
+      managedProcessReconnectRecoveryState = managedProcessReconnectRecoveryState
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
+      managedProcessReconnectAttemptCount = managedProcessReconnectAttemptCount
+        ?.takeIf { attempt -> attempt > 0 },
       runtimeExecutionOwnershipTier = runtimeExecutionOwnershipTier
         ?.trim()
         ?.takeIf(String::isNotBlank),

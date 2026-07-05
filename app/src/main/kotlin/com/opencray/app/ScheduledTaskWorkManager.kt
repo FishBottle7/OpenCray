@@ -312,6 +312,9 @@ internal data class InterruptedRunRepairEvidence(
   val taskId: String? = null,
   val detailId: String? = null,
   val repairAfterEpochMs: Long? = null,
+  val managedProcessReconnectStatus: String? = null,
+  val managedProcessReconnectRecoveryState: String? = null,
+  val managedProcessReconnectAttemptCount: Int? = null,
   val runtimeExecutionOwnershipTier: String? = null,
   val durableRuntimeControllerId: String? = null,
   val managedProcessContinuationBasis: String? = null,
@@ -330,6 +333,21 @@ internal data class InterruptedRunRepairEvidence(
     }
     require(repairAfterEpochMs == null || repairAfterEpochMs >= 0L) {
       "InterruptedRunRepairEvidence repairAfterEpochMs must be >= 0."
+    }
+    require(managedProcessReconnectStatus == null || managedProcessReconnectStatus.isNotBlank()) {
+      "InterruptedRunRepairEvidence managedProcessReconnectStatus must not be blank."
+    }
+    require(
+      managedProcessReconnectRecoveryState == null ||
+        managedProcessReconnectRecoveryState.isNotBlank(),
+    ) {
+      "InterruptedRunRepairEvidence managedProcessReconnectRecoveryState must not be blank."
+    }
+    require(
+      managedProcessReconnectAttemptCount == null ||
+        managedProcessReconnectAttemptCount > 0,
+    ) {
+      "InterruptedRunRepairEvidence managedProcessReconnectAttemptCount must be > 0."
     }
     require(runtimeExecutionOwnershipTier == null || runtimeExecutionOwnershipTier.isNotBlank()) {
       "InterruptedRunRepairEvidence runtimeExecutionOwnershipTier must not be blank."
@@ -574,6 +592,11 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
         taskId = process.taskId,
         detailId = process.processId,
         repairAfterEpochMs = managedProcessReconnectRetryAfterEpochMs(process),
+        managedProcessReconnectStatus = managedProcessReconnectStatusForManagedProcess(process),
+        managedProcessReconnectRecoveryState =
+          managedProcessReconnectRecoveryStateForManagedProcess(process),
+        managedProcessReconnectAttemptCount =
+          managedProcessReconnectAttemptCountForManagedProcess(process),
         managedProcessContinuationBasis = ManagedProcessContinuationBases.RECONNECT_HOLD,
         managedProcessRestoreScope = managedProcessRestoreScopeForManagedProcess(process),
         runtimeExecutionOwnershipTier = taskSnapshotForManagedProcess(
@@ -720,6 +743,9 @@ private fun managedProcessReconnectRepairEvidenceForQueueTask(
       taskId = taskSnapshot.task.id,
       detailId = processId,
       repairAfterEpochMs = repairAfterEpochMs,
+      managedProcessReconnectStatus = managedProcessReconnectStatusForTask(taskSnapshot),
+      managedProcessReconnectRecoveryState = managedProcessReconnectRecoveryStateForTask(taskSnapshot),
+      managedProcessReconnectAttemptCount = managedProcessReconnectAttemptCountForTask(taskSnapshot),
       runtimeExecutionOwnershipTier = runtimeExecutionOwnershipTierForTask(taskSnapshot),
       durableRuntimeControllerId = durableRuntimeControllerIdForTask(taskSnapshot),
       managedProcessContinuationBasis = managedProcessContinuationBasisForTask(taskSnapshot)
@@ -777,6 +803,25 @@ private fun managedProcessReconnectRetryAfterEpochMsForTask(
 ]
   ?.trim()
   ?.toLongOrNull()
+
+private fun managedProcessReconnectStatusForTask(
+  taskSnapshot: SessionQueueTaskSnapshot,
+): String? = taskSnapshot.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_STATUS]
+  ?.trim()
+  ?.takeIf(String::isNotBlank)
+
+private fun managedProcessReconnectRecoveryStateForTask(
+  taskSnapshot: SessionQueueTaskSnapshot,
+): String? = taskSnapshot.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RECOVERY_STATE]
+  ?.trim()
+  ?.takeIf(String::isNotBlank)
+
+private fun managedProcessReconnectAttemptCountForTask(
+  taskSnapshot: SessionQueueTaskSnapshot,
+): Int? = taskSnapshot.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_ATTEMPT_COUNT]
+  ?.trim()
+  ?.toIntOrNull()
+  ?.takeIf { attempt -> attempt > 0 }
 
 private fun managedProcessContinuationBasisForTask(
   taskSnapshot: SessionQueueTaskSnapshot,
@@ -968,6 +1013,19 @@ private fun runIdForManagedProcess(
 private fun managedProcessReconnectRetryAfterEpochMs(
   process: ManagedProcessSnapshot,
 ): Long? = process.reconnectSnapshotEvidence().retryAfterEpochMs
+
+private fun managedProcessReconnectStatusForManagedProcess(
+  process: ManagedProcessSnapshot,
+): String? = process.reconnectSnapshotEvidence().status
+
+private fun managedProcessReconnectRecoveryStateForManagedProcess(
+  process: ManagedProcessSnapshot,
+): String? = process.reconnectSnapshotEvidence().recoveryState
+
+private fun managedProcessReconnectAttemptCountForManagedProcess(
+  process: ManagedProcessSnapshot,
+): Int? = process.reconnectSnapshotEvidence().attemptCount
+  ?.takeIf { attempt -> attempt > 0 }
 
 private fun runIdForTask(
   taskSnapshot: SessionQueueTaskSnapshot,

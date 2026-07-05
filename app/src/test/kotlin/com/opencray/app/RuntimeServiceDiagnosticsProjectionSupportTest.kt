@@ -202,6 +202,9 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
                 taskId = "task-a",
                 detailId = "process-a",
                 repairAfterEpochMs = 9_500L,
+                managedProcessReconnectStatus = "connecting",
+                managedProcessReconnectRecoveryState = "retry_scheduled",
+                managedProcessReconnectAttemptCount = 4,
                 runtimeExecutionOwnershipTier = "runtime_process",
                 durableRuntimeControllerId = "durable-controller-a",
                 managedProcessContinuationBasis =
@@ -227,6 +230,9 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertEquals("interactive", evidence["target"])
     assertEquals("process-a", evidence["detailId"])
     assertEquals(9_500L, evidence["repairAfterEpochMs"])
+    assertEquals("connecting", evidence["managedProcessReconnectStatus"])
+    assertEquals("retry_scheduled", evidence["managedProcessReconnectRecoveryState"])
+    assertEquals(4, evidence["managedProcessReconnectAttemptCount"])
     assertEquals("runtime_process", evidence["runtimeExecutionOwnershipTier"])
     assertEquals("durable-controller-a", evidence["durableRuntimeControllerId"])
     assertEquals("checkpoint_resume", evidence["managedProcessContinuationBasis"])

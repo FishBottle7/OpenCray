@@ -55,6 +55,9 @@ internal fun InterruptedRunRepairEvidence.snapshotMap(): Map<String, Any?> = bui
   taskId?.let { put("taskId", it) }
   detailId?.let { put("detailId", it) }
   repairAfterEpochMs?.let { put("repairAfterEpochMs", it) }
+  managedProcessReconnectStatus?.let { put("managedProcessReconnectStatus", it) }
+  managedProcessReconnectRecoveryState?.let { put("managedProcessReconnectRecoveryState", it) }
+  managedProcessReconnectAttemptCount?.let { put("managedProcessReconnectAttemptCount", it) }
   runtimeExecutionOwnershipTier?.let { put("runtimeExecutionOwnershipTier", it) }
   durableRuntimeControllerId?.let { put("durableRuntimeControllerId", it) }
   managedProcessContinuationBasis?.let { put("managedProcessContinuationBasis", it) }
