@@ -4,6 +4,7 @@ import com.opencray.persistence.migration.JsonMigration
 import com.opencray.persistence.migration.NoOpJsonMigration
 import com.opencray.persistence.model.ChatWorkspaceRecord
 import com.opencray.persistence.store.ChatWorkspaceStore
+import com.opencray.persistence.store.ChatWorkspaceStoreUpdate
 import java.io.File
 
 class JsonFileChatWorkspaceStore(
@@ -26,6 +27,21 @@ class JsonFileChatWorkspaceStore(
       serializer = ChatWorkspaceRecord.serializer(),
       value = record,
       storage = storage,
+    )
+  }
+
+  override fun <R> update(
+    transform: (ChatWorkspaceRecord?) -> ChatWorkspaceStoreUpdate<R>,
+  ): R = storage.updateRecord(
+    name = fileName,
+    serializer = ChatWorkspaceRecord.serializer(),
+    migration = migration,
+  ) { current ->
+    val updated = transform(current)
+    RecordStorageUpdate(
+      value = updated.record,
+      result = updated.result,
+      write = updated.write,
     )
   }
 

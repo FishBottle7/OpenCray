@@ -8,6 +8,7 @@ import com.opencray.persistence.model.ChatTranscriptMessageEntry
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.model.ChatTranscriptSessionEntry
 import com.opencray.persistence.model.ChatWorkspaceRecord
+import com.opencray.persistence.store.ChatWorkspaceStoreUpdate
 import com.opencray.persistence.store.file.JsonFileChatWorkspaceStore
 import com.opencray.runtime.AgentTodoEntry
 import com.opencray.runtime.AgentTodoStatus
@@ -727,20 +728,28 @@ internal open class ChatSessionLocalStore(
     if (sessionId.isBlank()) {
       return
     }
-    val workspace = loadWorkspaceOrCreate()
-    if (workspace.sessions.none { session -> session.sessionId == sessionId }) {
-      return
+    loadWorkspaceOrCreate()
+    val normalizedTodos = normalizeTodos(todos)
+    workspaceStore.update { workspace ->
+      if (workspace == null || workspace.sessions.none { session -> session.sessionId == sessionId }) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = Unit,
+          write = false,
+        )
+      }
+      val updatedWorkspace = workspaceWithTodos(
+        workspace = workspace,
+        sessionId = sessionId,
+        todos = normalizedTodos,
+        updatedAtEpochMs = nowEpochMs(),
+      )
+      ChatWorkspaceStoreUpdate(
+        record = updatedWorkspace,
+        result = Unit,
+        write = updatedWorkspace != workspace,
+      )
     }
-    val updatedWorkspace = workspaceWithTodos(
-      workspace = workspace,
-      sessionId = sessionId,
-      todos = normalizeTodos(todos),
-      updatedAtEpochMs = nowEpochMs(),
-    )
-    if (updatedWorkspace == workspace) {
-      return
-    }
-    workspaceStore.save(updatedWorkspace)
   }
 
   fun replaceWorkingState(
