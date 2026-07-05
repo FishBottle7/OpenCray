@@ -13,6 +13,7 @@ import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
@@ -53,6 +54,7 @@ internal data class RunRecoveryPlan(
   val managedProcessReconnectAttemptCount: Int? = null,
   val managedProcessContinuationBasis: String? = null,
   val managedProcessRestoreScope: String? = null,
+  val managedProcessRestoreDecision: String? = null,
 ) {
   fun toMap(): Map<String, Any?> = buildMap {
     put("action", action.name.lowercase())
@@ -72,6 +74,7 @@ internal data class RunRecoveryPlan(
     managedProcessReconnectAttemptCount?.let { put("managedProcessReconnectAttemptCount", it) }
     managedProcessContinuationBasis?.let { put("managedProcessContinuationBasis", it) }
     managedProcessRestoreScope?.let { put("managedProcessRestoreScope", it) }
+    managedProcessRestoreDecision?.let { put("managedProcessRestoreDecision", it) }
   }
 }
 
@@ -451,6 +454,7 @@ internal class RunRecoveryPlanner {
       managedProcessReconnectAttemptCount = evidence.attemptCount,
       managedProcessContinuationBasis = evidence.continuationBasis,
       managedProcessRestoreScope = evidence.restoreScope,
+      managedProcessRestoreDecision = evidence.restoreDecision,
     )
   }
 
@@ -487,6 +491,12 @@ internal class RunRecoveryPlanner {
         .sorted()
         .joinToString(",")
         .takeIf(String::isNotBlank),
+      restoreDecision = liveProcesses
+        .mapNotNull { process -> process.managedProcessRestoreDecision() }
+        .distinct()
+        .sorted()
+        .joinToString(",")
+        .takeIf(String::isNotBlank),
     )
   }
 
@@ -519,6 +529,11 @@ internal class RunRecoveryPlanner {
 
   private fun ManagedProcessSnapshot.managedProcessRestoreScope(): String? =
     metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+
+  private fun ManagedProcessSnapshot.managedProcessRestoreDecision(): String? =
+    metadata[MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY]
       ?.trim()
       ?.takeIf(String::isNotBlank)
 
@@ -586,4 +601,5 @@ private data class ManagedProcessReconnectEvidence(
   val attemptCount: Int? = null,
   val continuationBasis: String? = null,
   val restoreScope: String? = null,
+  val restoreDecision: String? = null,
 )

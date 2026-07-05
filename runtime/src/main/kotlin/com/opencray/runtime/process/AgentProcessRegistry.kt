@@ -166,7 +166,24 @@ enum class ManagedProcessRestoreScope {
   }
 }
 
+@Serializable
+enum class ManagedProcessRestoreDecision {
+  RECONNECT_ATTEMPTED,
+  RECONNECT_DEFERRED,
+  INTERRUPTED_NO_CONTROLLER,
+  ;
+
+  val wireValue: String
+    get() = name.lowercase()
+
+  companion object {
+    fun fromWireValue(value: String?): ManagedProcessRestoreDecision? =
+      entries.firstOrNull { decision -> decision.wireValue == value?.trim()?.lowercase() }
+  }
+}
+
 const val MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY: String = "managedProcessRestoreScope"
+const val MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY: String = "managedProcessRestoreDecision"
 const val MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY: String =
   "managedProcessRestoreCurrentProcessStartId"
 const val MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY: String =
@@ -688,6 +705,7 @@ class FileBackedAgentProcessRegistry(
         metadata = snapshot.metadata + managedProcessRestoreMetadata(
           snapshot = snapshot,
           runtimeIdentity = runtimeIdentity,
+          decision = ManagedProcessRestoreDecision.RECONNECT_DEFERRED,
         ),
       )
     }
@@ -701,6 +719,7 @@ class FileBackedAgentProcessRegistry(
       metadata = snapshot.metadata + managedProcessRestoreMetadata(
         snapshot = snapshot,
         runtimeIdentity = runtimeIdentity,
+        decision = ManagedProcessRestoreDecision.INTERRUPTED_NO_CONTROLLER,
       ) + mapOf(
         "restoredFromDurableStore" to "true",
         "restoredTerminalState" to "interrupted",
@@ -825,6 +844,7 @@ class FileBackedAgentProcessRegistry(
       metadata = snapshot.metadata + managedProcessRestoreMetadata(
         snapshot = snapshot,
         runtimeIdentity = runtimeIdentity,
+        decision = ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED,
       ),
     )
     val controller = reconnectableControllerFactory?.reconnect(reconnectSnapshot) ?: return null
@@ -886,6 +906,7 @@ private fun buildControllerScopeId(
 private fun managedProcessRestoreMetadata(
   snapshot: ManagedProcessSnapshot,
   runtimeIdentity: ManagedProcessRuntimeIdentity,
+  decision: ManagedProcessRestoreDecision? = null,
 ): Map<String, String> = buildMap {
   put(
     MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY,
@@ -894,6 +915,9 @@ private fun managedProcessRestoreMetadata(
       runtimeIdentity = runtimeIdentity,
     ).wireValue,
   )
+  decision?.let { restoreDecision ->
+    put(MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY, restoreDecision.wireValue)
+  }
   runtimeIdentity.processStartId
     ?.trim()
     ?.takeIf(String::isNotBlank)

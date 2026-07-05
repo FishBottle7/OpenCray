@@ -271,6 +271,10 @@ class FileBackedAgentProcessRegistryTest {
       restored.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY],
     )
     assertEquals(
+      ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
+      restored.metadata[MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY],
+    )
+    assertEquals(
       "process-1",
       restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY],
     )
@@ -336,6 +340,10 @@ class FileBackedAgentProcessRegistryTest {
     assertEquals(
       ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
       restored.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY],
+    )
+    assertEquals(
+      ManagedProcessRestoreDecision.INTERRUPTED_NO_CONTROLLER.wireValue,
+      restored.metadata[MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY],
     )
     assertEquals(
       "process-2",
@@ -514,6 +522,10 @@ class FileBackedAgentProcessRegistryTest {
       ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
       restored.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY],
     )
+    assertEquals(
+      ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
+      restored.metadata[MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY],
+    )
     assertEquals(1, delegateFactory.reconnectCount)
   }
 
@@ -674,6 +686,10 @@ class FileBackedAgentProcessRegistryTest {
     assertEquals(
       ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
       deferred.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY],
+    )
+    assertEquals(
+      ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue,
+      deferred.metadata[MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY],
     )
     assertEquals(1, factory.reconnectCount)
 

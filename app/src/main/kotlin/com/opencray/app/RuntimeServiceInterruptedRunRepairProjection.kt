@@ -62,6 +62,7 @@ internal fun InterruptedRunRepairEvidence.snapshotMap(): Map<String, Any?> = bui
   durableRuntimeControllerId?.let { put("durableRuntimeControllerId", it) }
   managedProcessContinuationBasis?.let { put("managedProcessContinuationBasis", it) }
   managedProcessRestoreScope?.let { put("managedProcessRestoreScope", it) }
+  managedProcessRestoreDecision?.let { put("managedProcessRestoreDecision", it) }
 }
 
 internal val InterruptedRunRepairEvidenceKind.wireValue: String

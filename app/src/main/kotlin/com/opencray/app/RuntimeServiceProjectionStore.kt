@@ -446,6 +446,7 @@ private data class PersistedInterruptedRunRepairEvidence(
   val durableRuntimeControllerId: String? = null,
   val managedProcessContinuationBasis: String? = null,
   val managedProcessRestoreScope: String? = null,
+  val managedProcessRestoreDecision: String? = null,
 )
 
 private fun LocalRuntimeServerState.toPersistedRecord(): PersistedLocalRuntimeServerState =
@@ -541,6 +542,7 @@ private fun InterruptedRunRepairEvidence.toPersistedRecord():
     durableRuntimeControllerId = durableRuntimeControllerId,
     managedProcessContinuationBasis = managedProcessContinuationBasis,
     managedProcessRestoreScope = managedProcessRestoreScope,
+    managedProcessRestoreDecision = managedProcessRestoreDecision,
   )
 
 private fun PersistedRuntimeServiceInterruptedRunRepairProjection.toSnapshot():
@@ -652,6 +654,9 @@ private fun PersistedInterruptedRunRepairEvidence.toSnapshot(
         ?.trim()
         ?.takeIf(String::isNotBlank),
       managedProcessRestoreScope = managedProcessRestoreScope
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
+      managedProcessRestoreDecision = managedProcessRestoreDecision
         ?.trim()
         ?.takeIf(String::isNotBlank),
     )

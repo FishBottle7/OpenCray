@@ -16,6 +16,7 @@ import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessRestoreMode
@@ -319,6 +320,7 @@ internal data class InterruptedRunRepairEvidence(
   val durableRuntimeControllerId: String? = null,
   val managedProcessContinuationBasis: String? = null,
   val managedProcessRestoreScope: String? = null,
+  val managedProcessRestoreDecision: String? = null,
 ) {
   init {
     require(sessionId.isNotBlank()) { "InterruptedRunRepairEvidence sessionId must not be blank." }
@@ -360,6 +362,9 @@ internal data class InterruptedRunRepairEvidence(
     }
     require(managedProcessRestoreScope == null || managedProcessRestoreScope.isNotBlank()) {
       "InterruptedRunRepairEvidence managedProcessRestoreScope must not be blank."
+    }
+    require(managedProcessRestoreDecision == null || managedProcessRestoreDecision.isNotBlank()) {
+      "InterruptedRunRepairEvidence managedProcessRestoreDecision must not be blank."
     }
   }
 }
@@ -599,6 +604,7 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
           managedProcessReconnectAttemptCountForManagedProcess(process),
         managedProcessContinuationBasis = ManagedProcessContinuationBases.RECONNECT_HOLD,
         managedProcessRestoreScope = managedProcessRestoreScopeForManagedProcess(process),
+        managedProcessRestoreDecision = managedProcessRestoreDecisionForManagedProcess(process),
         runtimeExecutionOwnershipTier = taskSnapshotForManagedProcess(
           process = process,
           taskSnapshots = taskSnapshots,
@@ -751,6 +757,7 @@ private fun managedProcessReconnectRepairEvidenceForQueueTask(
       managedProcessContinuationBasis = managedProcessContinuationBasisForTask(taskSnapshot)
         ?: ManagedProcessContinuationBases.RECONNECT_HOLD,
       managedProcessRestoreScope = managedProcessRestoreScopeForTask(taskSnapshot),
+      managedProcessRestoreDecision = managedProcessRestoreDecisionForTask(taskSnapshot),
     )
   }
 }
@@ -835,9 +842,21 @@ private fun managedProcessRestoreScopeForTask(
   ?.trim()
   ?.takeIf(String::isNotBlank)
 
+private fun managedProcessRestoreDecisionForTask(
+  taskSnapshot: SessionQueueTaskSnapshot,
+): String? = taskSnapshot.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_DECISION]
+  ?.trim()
+  ?.takeIf(String::isNotBlank)
+
 private fun managedProcessRestoreScopeForManagedProcess(
   process: ManagedProcessSnapshot,
 ): String? = process.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY]
+  ?.trim()
+  ?.takeIf(String::isNotBlank)
+
+private fun managedProcessRestoreDecisionForManagedProcess(
+  process: ManagedProcessSnapshot,
+): String? = process.metadata[MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY]
   ?.trim()
   ?.takeIf(String::isNotBlank)
 

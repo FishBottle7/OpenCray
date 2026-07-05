@@ -16,9 +16,11 @@ import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.process.AgentProcessRegistry
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
 import com.opencray.runtime.process.ManagedProcessDeliveredObservationState
 import com.opencray.runtime.process.ManagedProcessReconnectState
+import com.opencray.runtime.process.ManagedProcessRestoreDecision
 import com.opencray.runtime.process.ManagedProcessRestoreScope
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
@@ -232,6 +234,8 @@ class ScheduledTaskWorkManagerTest {
               ManagedProcessContinuationBases.RECONNECT_HOLD,
             RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_SCOPE to
               ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_DECISION to
+              ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue,
             RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID to
               "durable-controller-reconnect-hold",
           ),
@@ -262,6 +266,7 @@ class ScheduledTaskWorkManagerTest {
     assertEquals(3, item.managedProcessReconnectAttemptCount)
     assertEquals(ManagedProcessContinuationBases.RECONNECT_HOLD, item.managedProcessContinuationBasis)
     assertEquals(ManagedProcessRestoreScope.CROSS_PROCESS.wireValue, item.managedProcessRestoreScope)
+    assertEquals(ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue, item.managedProcessRestoreDecision)
     assertEquals(
       emptySet<RuntimeServiceTarget>(),
       dueInterruptedRunRepairTargets(
@@ -384,6 +389,8 @@ class ScheduledTaskWorkManagerTest {
           metadata = mapOf(
             MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY to
               ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+            MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY to
+              ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
             "sandboxCommandReconnectAttemptCount" to "2",
           ),
         ),
@@ -426,6 +433,10 @@ class ScheduledTaskWorkManagerTest {
     assertEquals(
       ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
       item.managedProcessRestoreScope,
+    )
+    assertEquals(
+      ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
+      item.managedProcessRestoreDecision,
     )
   }
 

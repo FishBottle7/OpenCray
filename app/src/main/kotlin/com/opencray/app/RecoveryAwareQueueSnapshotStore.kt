@@ -720,6 +720,7 @@ internal class RecoveryAwareQueueSnapshotStore(
             key != RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_ATTEMPT_COUNT &&
             key != RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS &&
             key != RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_SCOPE &&
+            key != RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_DECISION &&
             (
               recoveryPlan?.action != RunRecoveryAction.RESUME_FROM_CHECKPOINT ||
                 (
@@ -795,6 +796,12 @@ internal class RecoveryAwareQueueSnapshotStore(
         ?.takeIf(String::isNotBlank)
         ?.let { restoreScope ->
           put(RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_SCOPE, restoreScope)
+        }
+      plan.managedProcessRestoreDecision
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { restoreDecision ->
+          put(RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_DECISION, restoreDecision)
         }
       if (plan.action != RunRecoveryAction.RESUME_RECONNECT_PROCESS) {
         return@buildMap
@@ -1190,6 +1197,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RECOVERY_STATE,
       RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS,
       RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_SCOPE,
+      RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_DECISION,
     )
   }
 }
