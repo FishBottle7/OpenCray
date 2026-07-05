@@ -873,26 +873,48 @@ private fun List<InterruptedRunRepairEvidence>.withManagedProcessReconnectBackof
     if (evidence.kind == InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT) {
       evidence
     } else {
-      reconnectBackoffForEvidence(
+      reconnectBackoffEvidenceForEvidence(
         evidence = evidence,
         reconnectEvidence = reconnectEvidence,
-      )?.let { repairAfterEpochMs ->
-        evidence.copy(repairAfterEpochMs = repairAfterEpochMs)
+      )?.let { reconnect ->
+        evidence.withReconnectBackoffEvidence(reconnect)
       } ?: evidence
     }
   }
 }
 
-private fun reconnectBackoffForEvidence(
+private fun reconnectBackoffEvidenceForEvidence(
   evidence: InterruptedRunRepairEvidence,
   reconnectEvidence: List<InterruptedRunRepairEvidence>,
-): Long? = reconnectEvidence
+): InterruptedRunRepairEvidence? = reconnectEvidence
   .filter { reconnect -> reconnect.sharesRunOrTaskIdentityWith(evidence) }
-  .mapNotNull(InterruptedRunRepairEvidence::repairAfterEpochMs)
-  .minOrNull()
-  ?.let { reconnectRepairAfterEpochMs ->
-    maxOf(evidence.repairAfterEpochMs ?: 0L, reconnectRepairAfterEpochMs)
-  }
+  .filter { reconnect -> reconnect.repairAfterEpochMs != null }
+  .minWithOrNull(
+    compareBy<InterruptedRunRepairEvidence> { reconnect ->
+      reconnect.repairAfterEpochMs ?: Long.MAX_VALUE
+    }.thenBy { reconnect -> reconnect.detailId.orEmpty() },
+  )
+
+private fun InterruptedRunRepairEvidence.withReconnectBackoffEvidence(
+  reconnect: InterruptedRunRepairEvidence,
+): InterruptedRunRepairEvidence {
+  val reconnectRepairAfterEpochMs = reconnect.repairAfterEpochMs ?: return this
+  return copy(
+    repairAfterEpochMs = maxOf(repairAfterEpochMs ?: 0L, reconnectRepairAfterEpochMs),
+    managedProcessReconnectStatus = managedProcessReconnectStatus
+      ?: reconnect.managedProcessReconnectStatus,
+    managedProcessReconnectRecoveryState = managedProcessReconnectRecoveryState
+      ?: reconnect.managedProcessReconnectRecoveryState,
+    managedProcessReconnectAttemptCount = managedProcessReconnectAttemptCount
+      ?: reconnect.managedProcessReconnectAttemptCount,
+    managedProcessContinuationBasis = managedProcessContinuationBasis
+      ?: reconnect.managedProcessContinuationBasis,
+    managedProcessRestoreScope = managedProcessRestoreScope
+      ?: reconnect.managedProcessRestoreScope,
+    managedProcessRestoreDecision = managedProcessRestoreDecision
+      ?: reconnect.managedProcessRestoreDecision,
+  )
+}
 
 private fun InterruptedRunRepairEvidence.sharesRunOrTaskIdentityWith(
   other: InterruptedRunRepairEvidence,

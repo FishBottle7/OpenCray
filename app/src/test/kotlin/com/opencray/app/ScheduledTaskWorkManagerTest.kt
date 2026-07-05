@@ -307,8 +307,20 @@ class ScheduledTaskWorkManagerTest {
             RunLifecycleMetadataKeys.RECOVERY_ACTION to "resume_reconnect_process",
             RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS to
               "process-reconnect-record",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_STATUS to
+              "connecting",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RECOVERY_STATE to
+              "retry_scheduled",
             RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS to
               "2500",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_ATTEMPT_COUNT to
+              "3",
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS to
+              ManagedProcessContinuationBases.RECONNECT_HOLD,
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_SCOPE to
+              ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+            RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_DECISION to
+              ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue,
           ),
         ),
       ),
@@ -351,12 +363,18 @@ class ScheduledTaskWorkManagerTest {
       assertEquals("task-reconnect-record", item.taskId)
       assertEquals(2_500L, item.repairAfterEpochMs)
     }
-    assertEquals(
-      ManagedProcessContinuationBases.RECONNECT_HOLD,
-      evidence
-        .first { item -> item.kind == InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT }
-        .managedProcessContinuationBasis,
-    )
+    val reconnectEvidence = evidence
+      .first { item -> item.kind == InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT }
+    val runRecordEvidence = evidence
+      .first { item -> item.kind == InterruptedRunRepairEvidenceKind.RUN_RECORD }
+    listOf(reconnectEvidence, runRecordEvidence).forEach { item ->
+      assertEquals("connecting", item.managedProcessReconnectStatus)
+      assertEquals("retry_scheduled", item.managedProcessReconnectRecoveryState)
+      assertEquals(3, item.managedProcessReconnectAttemptCount)
+      assertEquals(ManagedProcessContinuationBases.RECONNECT_HOLD, item.managedProcessContinuationBasis)
+      assertEquals(ManagedProcessRestoreScope.CROSS_PROCESS.wireValue, item.managedProcessRestoreScope)
+      assertEquals(ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue, item.managedProcessRestoreDecision)
+    }
     assertEquals(
       emptySet<RuntimeServiceTarget>(),
       dueInterruptedRunRepairTargets(
