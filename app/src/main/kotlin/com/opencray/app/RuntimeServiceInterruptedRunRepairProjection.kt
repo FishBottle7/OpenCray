@@ -77,6 +77,7 @@ internal val InterruptedRunRepairEvidenceKind.wireValue: String
     InterruptedRunRepairEvidenceKind.RUN_RECORD -> "run_record"
     InterruptedRunRepairEvidenceKind.JOURNAL_TAIL -> "journal_tail"
     InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT -> "managed_process_reconnect"
+    InterruptedRunRepairEvidenceKind.RUNTIME_PROJECTION_WORK -> "runtime_projection_work"
   }
 
 internal fun interruptedRunRepairEvidenceKindFromWireValue(

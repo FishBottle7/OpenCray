@@ -55,6 +55,84 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun potentialInterruptedRunRepairEvidenceUsesRuntimeProjectionWorkForUnrepresentedSession() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-evidence-runtime-projection")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+
+    val evidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runtimeServiceProjectionSnapshots = mapOf(
+        RuntimeServiceTarget.DETACHED_BACKGROUND to runtimeProjectionSnapshot(
+          activeSessionIds = listOf("session-projection", "session-projection"),
+          pendingWorkSessionIds = listOf(" "),
+          liveManagedProcessSessionIds = listOf("session-projection-managed"),
+        ),
+      ),
+    )
+
+    assertEquals(
+      listOf(
+        InterruptedRunRepairEvidenceKind.RUNTIME_PROJECTION_WORK,
+        InterruptedRunRepairEvidenceKind.RUNTIME_PROJECTION_WORK,
+      ),
+      evidence.map(InterruptedRunRepairEvidence::kind),
+    )
+    assertEquals(
+      listOf("session-projection", "session-projection-managed"),
+      evidence.map(InterruptedRunRepairEvidence::sessionId),
+    )
+    evidence.forEach { item ->
+      assertEquals(RuntimeServiceTarget.DETACHED_BACKGROUND, item.target)
+      assertEquals(RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS, item.runtimeExecutionOwnershipTier)
+      assertEquals("durable-controller-projection", item.durableRuntimeControllerId)
+    }
+  }
+
+  @Test
+  fun potentialInterruptedRunRepairEvidencePrefersDurableEvidenceOverRuntimeProjectionWork() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-evidence-runtime-projection-durable")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val sessionId = "session-projection-durable"
+
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = "task-projection-durable",
+          runId = "run-projection-durable",
+          lifecycleState = QueueTaskLifecycleState.RUNNING,
+          taskState = AgentTaskState.RUNNING,
+        ),
+      ),
+    )
+
+    val evidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runtimeServiceProjectionSnapshots = mapOf(
+        RuntimeServiceTarget.DETACHED_BACKGROUND to runtimeProjectionSnapshot(
+          activeSessionIds = listOf(sessionId),
+        ),
+      ),
+    )
+
+    assertEquals(listOf(InterruptedRunRepairEvidenceKind.QUEUE_TASK), evidence.map { it.kind })
+    assertEquals(sessionId, evidence.single().sessionId)
+  }
+
+  @Test
   fun hasPotentialInteractiveRunRepairWorkReturnsTrueForNonTerminalQueueTaskInKnownSession() {
     val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-queued")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
@@ -1408,6 +1486,44 @@ class ScheduledTaskWorkManagerTest {
       ) + metadata,
     ),
     lifecycleState = lifecycleState,
+  )
+
+  private fun runtimeProjectionSnapshot(
+    activeSessionIds: List<String> = emptyList(),
+    pendingWorkSessionIds: List<String> = emptyList(),
+    liveManagedProcessSessionIds: List<String> = emptyList(),
+    liveSubAgentSessionIds: List<String> = emptyList(),
+  ): RuntimeServiceProjectionSnapshot = RuntimeServiceProjectionSnapshot(
+    runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
+      controllerInstanceId = "controller-projection",
+      durableControllerId = "durable-controller-projection",
+    ),
+    runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(
+      runtimeOwnerId = "runtime-owner-projection",
+      runtimeControllerId = "controller-projection",
+      durableRuntimeControllerId = "durable-controller-projection",
+    ),
+    runtimeOwnerWorkSummary = RuntimeOwnerWorkSummary(
+      trackedSessionCount = activeSessionIds.size +
+        pendingWorkSessionIds.size +
+        liveManagedProcessSessionIds.size +
+        liveSubAgentSessionIds.size,
+      activeRunCount = activeSessionIds.size,
+      activeSessionIds = activeSessionIds,
+      pendingWorkSessionIds = pendingWorkSessionIds,
+      liveManagedProcessSessionIds = liveManagedProcessSessionIds,
+      liveSubAgentSessionIds = liveSubAgentSessionIds,
+    ),
+    serviceLifecycle = RuntimeServiceLifecycleDescriptor(),
+    serviceWorkState = RuntimeServiceWorkState(
+      hasActiveWork = activeSessionIds.isNotEmpty() || pendingWorkSessionIds.isNotEmpty(),
+      activeRunCount = activeSessionIds.size,
+      activeSessionCount = activeSessionIds.size,
+      pendingWorkSessionCount = pendingWorkSessionIds.size,
+      liveManagedProcessSessionCount = liveManagedProcessSessionIds.size,
+      liveSubAgentSessionCount = liveSubAgentSessionIds.size,
+    ),
+    serviceKeepAliveState = RuntimeServiceKeepAliveState(),
   )
 
   private fun backgroundSubAgentHandle(

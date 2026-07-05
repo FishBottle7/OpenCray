@@ -376,6 +376,7 @@ internal enum class InterruptedRunRepairEvidenceKind {
   RUN_RECORD,
   JOURNAL_TAIL,
   MANAGED_PROCESS_RECONNECT,
+  RUNTIME_PROJECTION_WORK,
 }
 
 internal fun potentialInterruptedRunRepairTargets(
@@ -410,6 +411,8 @@ internal fun potentialInterruptedRunRepairEvidence(
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
   processRegistryFactory: AgentProcessRegistryFactory? = null,
+  runtimeServiceProjectionSnapshots: Map<RuntimeServiceTarget, RuntimeServiceProjectionSnapshot> =
+    emptyMap(),
 ): List<InterruptedRunRepairEvidence> {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
@@ -432,6 +435,9 @@ internal fun potentialInterruptedRunRepairEvidence(
       processRegistryFactory = processRegistryFactory,
     )
   }
+  val sessionsWithDurableEvidence = evidence.mapTo(mutableSetOf()) { item -> item.sessionId }
+  evidence += runtimeServiceProjectionRepairEvidence(runtimeServiceProjectionSnapshots)
+    .filterNot { item -> item.sessionId in sessionsWithDurableEvidence }
   return evidence
 }
 
@@ -658,7 +664,19 @@ internal fun potentialInterruptedRunRepairEvidence(
       context = appContext,
       restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
     ),
+    runtimeServiceProjectionSnapshots = runtimeServiceProjectionSnapshotsFromContext(appContext),
   )
+}
+
+private fun runtimeServiceProjectionSnapshotsFromContext(
+  context: Context,
+): Map<RuntimeServiceTarget, RuntimeServiceProjectionSnapshot> {
+  val factory = FileBackedRuntimeServiceProjectionStoreFactory.fromContext(context)
+  return RuntimeServiceTarget.entries
+    .mapNotNull { target ->
+      factory.create(target).loadSnapshot()?.let { snapshot -> target to snapshot }
+    }
+    .toMap()
 }
 
 internal fun dueInterruptedRunRepairTargets(
@@ -800,6 +818,45 @@ private fun managedProcessReconnectRepairEvidenceForQueueTask(
     )
   }
 }
+
+private fun runtimeServiceProjectionRepairEvidence(
+  snapshotsByTarget: Map<RuntimeServiceTarget, RuntimeServiceProjectionSnapshot>,
+): List<InterruptedRunRepairEvidence> = snapshotsByTarget.flatMap { (target, snapshot) ->
+  runtimeServiceProjectionRepairSessionIds(snapshot).map { sessionId ->
+    InterruptedRunRepairEvidence(
+      sessionId = sessionId,
+      kind = InterruptedRunRepairEvidenceKind.RUNTIME_PROJECTION_WORK,
+      target = target,
+      runtimeExecutionOwnershipTier = RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS,
+      durableRuntimeControllerId = durableRuntimeControllerIdForProjection(snapshot),
+    )
+  }
+}
+
+private fun runtimeServiceProjectionRepairSessionIds(
+  snapshot: RuntimeServiceProjectionSnapshot,
+): List<String> = buildSet {
+  addRuntimeProjectionSessionIds(snapshot.runtimeOwnerWorkSummary.activeSessionIds)
+  addRuntimeProjectionSessionIds(snapshot.runtimeOwnerWorkSummary.pendingWorkSessionIds)
+  addRuntimeProjectionSessionIds(snapshot.runtimeOwnerWorkSummary.liveManagedProcessSessionIds)
+  addRuntimeProjectionSessionIds(snapshot.runtimeOwnerWorkSummary.liveSubAgentSessionIds)
+}.toList()
+
+private fun MutableSet<String>.addRuntimeProjectionSessionIds(sessionIds: List<String>) {
+  sessionIds.mapNotNullTo(this) { sessionId ->
+    sessionId.trim().takeIf(String::isNotBlank)
+  }
+}
+
+private fun durableRuntimeControllerIdForProjection(
+  snapshot: RuntimeServiceProjectionSnapshot,
+): String? = snapshot.runtimeControllerLifecycle
+  ?.durableControllerId
+  ?.trim()
+  ?.takeIf(String::isNotBlank)
+  ?: snapshot.runtimeOwnerLifecycle.durableRuntimeControllerId
+    .trim()
+    .takeIf(String::isNotBlank)
 
 private fun runtimeExecutionOwnershipTierForTask(
   taskSnapshot: SessionQueueTaskSnapshot,
