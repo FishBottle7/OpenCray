@@ -93,7 +93,7 @@ internal class OpenCrayRuntimeServiceEnvironment(
         runtimeOwnerBootstrapProvider = this.runtimeOwnerBootstrapProvider,
         runtimeControllerIdentityStoreProvider =
           runtimeControllerIdentityStoreProvider
-            ?: defaultEnvironmentRuntimeControllerIdentityStoreProvider(),
+            ?: defaultRuntimeControllerIdentityStoreProvider(),
       )
   }
 
@@ -138,12 +138,6 @@ internal class OpenCrayRuntimeServiceEnvironment(
         }
     }
   }
-}
-
-private fun defaultEnvironmentRuntimeControllerIdentityStoreProvider():
-  (Context) -> RuntimeControllerIdentityStore {
-  val store = inMemoryRuntimeControllerIdentityStore()
-  return { store }
 }
 
 internal interface OpenCrayRuntimeServiceEnvironmentOwner {

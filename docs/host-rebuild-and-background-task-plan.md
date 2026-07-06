@@ -1,6 +1,6 @@
 # Host Rebuild And Background Task Plan
 
-Last updated: 2026-07-05
+Last updated: 2026-07-06
 
 ## Status
 
@@ -348,7 +348,7 @@ Current state:
 - app bootstrap no longer eagerly starts `OpenCrayAgentRuntimeService`; it only performs app-level bootstrap plus repair/schedule registration, including one-shot app-start repair and unique periodic repair registration. When the runtime service is later started by an explicit wake or binder-demanding path, that service bootstraps the local loopback server on `onCreate()`
 - execution now routes through a dedicated `:runtime` Android `Service` host boundary rather than directly through a UI-owned host facade
 - runtime-service lifecycle/projection diagnostics now include expected and observed service process identity, and runtime-service bootstrap now rejects a misplaced main-process or secondary-process shell before it can create runtime ownership
-- runtime-process controller lifecycle now has a target-scoped durable controller identity persisted under the runtime storage root; projection snapshots and task lifecycle metadata expose it separately as `durableControllerId` / `_host.durableRuntimeControllerId` while the existing per-instance `runtimeControllerId` remains unchanged for managed-process restore scope
+- runtime-process controller lifecycle now has a target-scoped durable controller identity persisted under the runtime storage root by default whenever the Android context exposes `filesDir`; projection snapshots and task lifecycle metadata expose it separately as `durableControllerId` / `_host.durableRuntimeControllerId` while the existing per-instance `runtimeControllerId` remains unchanged for managed-process restore scope
 - shell/chat/projection diagnostics now include a derived `runtimeExecutionOwnership` map that reports the current `runtime_process` tier, `controllerProcessSeparate=false`, owner/controller/service process ids, and service process placement without adding another persisted ownership record
 - run lifecycle metadata now also stamps the same ownership tier through `_host.runtimeExecutionOwnershipTier` plus `_host.runtimeControllerProcessSeparate`; recovery-aware queue rewrites backfill those fields for older restored tasks and durable `RECOVERY` journal markers, and `RunLifecycleDiagnostics` projects the same values into run snapshots
 - runtime foreground service startup now declares and uses Android 14+ `specialUse` rather than the narrower `dataSync` type: the manifest has the permission/type/subtype property, and the foreground adapter supplies `FOREGROUND_SERVICE_TYPE_SPECIAL_USE` through a replaceable resolver on Android 14+

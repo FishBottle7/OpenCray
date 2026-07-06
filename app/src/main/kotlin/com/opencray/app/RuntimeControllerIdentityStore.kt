@@ -16,6 +16,9 @@ internal interface RuntimeControllerIdentityStore {
 internal fun inMemoryRuntimeControllerIdentityStore(): RuntimeControllerIdentityStore =
   InMemoryRuntimeControllerIdentityStore()
 
+internal fun defaultRuntimeControllerIdentityStoreProvider():
+  (Context) -> RuntimeControllerIdentityStore = DefaultRuntimeControllerIdentityStoreProvider()
+
 internal class FileBackedRuntimeControllerIdentityStore(
   private val storage: DurableTextStorage,
 ) : RuntimeControllerIdentityStore {
@@ -83,6 +86,32 @@ internal class FileBackedRuntimeControllerIdentityStore(
       )
     }
   }
+}
+
+private class DefaultRuntimeControllerIdentityStoreProvider :
+  (Context) -> RuntimeControllerIdentityStore {
+  private val lock = Any()
+  private val fallbackStore = inMemoryRuntimeControllerIdentityStore()
+  private val fileBackedStoresByRoot = linkedMapOf<String, RuntimeControllerIdentityStore>()
+
+  override fun invoke(context: Context): RuntimeControllerIdentityStore {
+    val filesDir = resolveFilesDir(context) ?: return fallbackStore
+    val runtimeRoot = File(
+      filesDir,
+      FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+    )
+    val rootKey = runtimeRoot.absoluteFile.path
+    return synchronized(lock) {
+      fileBackedStoresByRoot.getOrPut(rootKey) {
+        FileBackedRuntimeControllerIdentityStore.fromRootDirectory(runtimeRoot)
+      }
+    }
+  }
+
+  private fun resolveFilesDir(context: Context): File? =
+    runCatching { context.filesDir }
+      .getOrNull()
+      ?.takeIf { filesDir -> filesDir.path.isNotBlank() }
 }
 
 private class InMemoryRuntimeControllerIdentityStore : RuntimeControllerIdentityStore {

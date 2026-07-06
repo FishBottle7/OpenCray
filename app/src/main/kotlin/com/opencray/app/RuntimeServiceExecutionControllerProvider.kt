@@ -70,8 +70,7 @@ internal fun createRuntimeServiceExecutionController(
   localRuntimeServerStateProvider: (() -> LocalRuntimeServerState?)? = null,
   runtimeServiceRetainedShellControlFactory: (Context) -> RuntimeServiceRetainedShellControl =
     ::createRuntimeServiceRetainedShellControl,
-  runtimeControllerIdentityStore: RuntimeControllerIdentityStore =
-    inMemoryRuntimeControllerIdentityStore(),
+  runtimeControllerIdentityStore: RuntimeControllerIdentityStore? = null,
   runtimeExecutionDependenciesLoader: RuntimeExecutionDependenciesLoader,
   runtimeOwnerBootstrapProvider: RuntimeOwnerBootstrapProvider,
   bootstrapFactory: RuntimeServiceBootstrapFactory =
@@ -83,8 +82,12 @@ internal fun createRuntimeServiceExecutionController(
   runtimeServiceProcessBootstrap(applicationContext)
   val executionDependencies = runtimeExecutionDependenciesLoader.load(applicationContext)
   val runtimeOwnerDependencies = executionDependencies.runtimeOwnerBootstrapDependencies
+  val resolvedRuntimeControllerIdentityStore = runtimeControllerIdentityStore
+    ?: defaultRuntimeControllerIdentityStoreProvider()(applicationContext)
   val runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
-    durableControllerId = runtimeControllerIdentityStore.controllerIdForTarget(runtimeTarget),
+    durableControllerId = resolvedRuntimeControllerIdentityStore.controllerIdForTarget(
+      runtimeTarget,
+    ),
   )
   val runtimeOwnerBootstrap = runtimeOwnerBootstrapProvider.resolve(
     runtimeOwnerDependencies,
@@ -190,9 +193,3 @@ internal fun defaultRuntimeServiceExecutionControllerResolver(
       )
     },
   )
-
-private fun defaultRuntimeControllerIdentityStoreProvider():
-  (Context) -> RuntimeControllerIdentityStore {
-  val store = inMemoryRuntimeControllerIdentityStore()
-  return { store }
-}

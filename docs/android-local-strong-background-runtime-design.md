@@ -1,6 +1,6 @@
 # Android Local Strong Background Runtime Design
 
-Last updated: 2026-07-05
+Last updated: 2026-07-06
 
 ## Status
 
@@ -87,7 +87,7 @@ Today OpenCray already has a service-host boundary:
 - the retained runtime-service bootstrap assembly and process-scoped execution-controller provider now also receive that local runtime-server state through an explicit provider seam instead of peeking the registry during assembly creation, which keeps the retained detached-runtime path transport-neutral and removes one more same-process singleton dependency from service recreate
 - client-side runtime-service start and base bind-intent lookup now route through the environment-owned `RuntimeServiceAccessGateway`, so caller-side transport wiring no longer holds a direct reference to the concrete Android service-intent builder
 - runtime-service bind/start/repair/approval intents now also resolve through a dedicated `RuntimeServiceIntentFactory` file with an injectable component provider, and caller-side access now only consumes endpoint-built intents instead of hand-encoding wake/start actions or extras in the access facade
-- the runtime-process execution controller now also resolves a target-scoped durable controller identity from file-backed runtime storage in production; `controllerInstanceId` remains a per-controller-instance value for managed-process restore scope, while `durableControllerId` and `_host.durableRuntimeControllerId` give diagnostics, projection fallback, and repair evidence a stable per-target ownership anchor across service/controller recreate
+- the runtime-process execution controller now also resolves a target-scoped durable controller identity from file-backed runtime storage by default whenever `filesDir` is available; `controllerInstanceId` remains a per-controller-instance value for managed-process restore scope, while `durableControllerId` and `_host.durableRuntimeControllerId` give diagnostics, projection fallback, and repair evidence a stable per-target ownership anchor across service/controller recreate
 - shell/chat/projection diagnostics now also carry a derived `runtimeExecutionOwnership` map that declares the current `runtime_process` ownership tier, `controllerProcessSeparate=false`, and the observed owner/controller/service process ids plus service process placement, so a fallback reader can tell this is still runtime-process isolation rather than a stronger controller/process split
 - run lifecycle metadata now also stamps `_host.runtimeExecutionOwnershipTier=runtime_process` and `_host.runtimeControllerProcessSeparate=false`, recovery-aware queue rewrites backfill those fields into older restored tasks plus durable `RECOVERY` journal markers, and run diagnostics project those values so individual runs can be correlated with the same ownership tier visible in shell/projection diagnostics
 - the runtime service manifest now declares the Android 14+ `specialUse` foreground-service type plus its subtype property, and foreground updates route through a small service-type resolver instead of hardcoding `dataSync`
@@ -876,7 +876,7 @@ The current rollout already uses:
 - an explicit runtime-service intent descriptor parser that derives wake dispatch, reset intent, and bootstrap-foreground requirements from one normalized command model instead of scattering those action checks across shell and wake paths
 - schedule notification retry/manual-run, snooze, and disable actions that route through that same command model and detached runtime target instead of holding direct object references from the notification
 - interrupted terminal notification Retry actions that route through the same chat-write wake command model and the run's resolved runtime target instead of holding direct object references from the notification; the wake also carries the terminal task id so the service dispatcher can cancel the stale interrupted notification after retry dispatch
-- a file-backed, target-scoped runtime-controller identity store under the runtime storage root; the identity is projected through runtime-controller lifecycle snapshots, host lifecycle diagnostics, and task metadata without replacing the per-instance controller id used by managed-process restore scope
+- a file-backed, target-scoped runtime-controller identity store under the runtime storage root; environment and execution-controller defaults use it when the Android context has `filesDir`, with only no-filesDir test stubs falling back to in-process identity; the identity is projected through runtime-controller lifecycle snapshots, host lifecycle diagnostics, and task metadata without replacing the per-instance controller id used by managed-process restore scope
 
 as a dedicated process for stronger isolation from UI crashes and Flutter engine churn.
 

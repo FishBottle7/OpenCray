@@ -1675,6 +1675,50 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun processScopedRuntimeServiceExecutionControllerProviderDefaultsToFilesDirBackedControllerIdentity() {
+    val runtimeRoot = temporaryFolder
+      .newFolder("execution-controller-default-durable-identity")
+      .toPath()
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat-session").toFile())
+    val runtimeDependencies = testRuntimeDependencies(
+      root = runtimeRoot,
+      chatStore = chatStore,
+    )
+    val runtimeManager = RecordingAgentSessionRuntimeManager()
+
+    fun createProvider(): ProcessScopedRuntimeServiceExecutionControllerProvider =
+      ProcessScopedRuntimeServiceExecutionControllerProvider(
+        runtimeServiceProcessBootstrap = { },
+        runtimeServiceRetainedShellControlFactory = { testRuntimeServiceRetainedShellControl() },
+        runtimeExecutionDependenciesLoader = RuntimeExecutionDependenciesLoader {
+          runtimeExecutionDependencies(runtimeDependencies)
+        },
+        runtimeOwnerBootstrapProvider =
+          RuntimeOwnerBootstrapProvider { _, runtimeControllerLifecycle ->
+            runtimeOwnerBootstrapFor(
+              testRuntimeAccess(
+                lifecycleDescriptor = HostRuntimeLifecycleDescriptor(
+                  runtimeControllerId = runtimeControllerLifecycle.controllerInstanceId,
+                  durableRuntimeControllerId = runtimeControllerLifecycle.durableControllerId,
+                ),
+                sessionRuntimeManager = runtimeManager,
+              ),
+            )
+          },
+        bootstrapFactory = testRuntimeServiceBootstrapFactory(),
+      )
+
+    val first = createProvider().resolve(runtimeDependencies.appContext)
+    val second = createProvider().resolve(runtimeDependencies.appContext)
+
+    val firstLifecycle = requireNotNull(first.runtimeControllerLifecycle)
+    val secondLifecycle = requireNotNull(second.runtimeControllerLifecycle)
+
+    assertNotEquals(firstLifecycle.controllerInstanceId, secondLifecycle.controllerInstanceId)
+    assertEquals(firstLifecycle.durableControllerId, secondLifecycle.durableControllerId)
+  }
+
+  @Test
   fun processScopedRuntimeServiceExecutionControllerProviderSwapPinsReplacementAndDisposesPreviousController() {
     val context = MinimalContext()
     val runtimeRoot = temporaryFolder.newFolder("execution-controller-provider-swap").toPath()

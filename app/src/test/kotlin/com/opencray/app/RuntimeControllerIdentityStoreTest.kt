@@ -1,5 +1,8 @@
 package com.opencray.app
 
+import android.content.Context
+import android.content.ContextWrapper
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Rule
@@ -32,5 +35,45 @@ class RuntimeControllerIdentityStoreTest {
     val interactiveId = store.controllerIdForTarget(RuntimeServiceTarget.INTERACTIVE)
 
     assertNotEquals(detachedId, interactiveId)
+  }
+
+  @Test
+  fun defaultProviderUsesFileBackedStoreWhenFilesDirIsAvailable() {
+    val filesDir = temporaryFolder.newFolder("runtime-controller-default-files")
+    val context = FilesDirContext(filesDir)
+    val firstProvider = defaultRuntimeControllerIdentityStoreProvider()
+    val secondProvider = defaultRuntimeControllerIdentityStoreProvider()
+
+    val firstId = firstProvider(context)
+      .controllerIdForTarget(RuntimeServiceTarget.DETACHED_BACKGROUND)
+    val secondId = secondProvider(context)
+      .controllerIdForTarget(RuntimeServiceTarget.DETACHED_BACKGROUND)
+
+    assertEquals(firstId, secondId)
+  }
+
+  @Test
+  fun defaultProviderFallsBackToInMemoryStoreWhenFilesDirIsUnavailable() {
+    val provider = defaultRuntimeControllerIdentityStoreProvider()
+    val context = MinimalContext()
+
+    val firstId = provider(context)
+      .controllerIdForTarget(RuntimeServiceTarget.DETACHED_BACKGROUND)
+    val secondId = provider(context)
+      .controllerIdForTarget(RuntimeServiceTarget.DETACHED_BACKGROUND)
+
+    assertEquals(firstId, secondId)
+  }
+
+  private class MinimalContext : ContextWrapper(null) {
+    override fun getApplicationContext(): Context = this
+  }
+
+  private class FilesDirContext(
+    private val resolvedFilesDir: File,
+  ) : ContextWrapper(null) {
+    override fun getApplicationContext(): Context = this
+
+    override fun getFilesDir(): File = resolvedFilesDir
   }
 }
