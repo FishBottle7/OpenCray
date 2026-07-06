@@ -220,7 +220,28 @@ interface McpRegistryStore {
   fun load(): McpRegistryRecord?
   fun save(record: McpRegistryRecord)
   fun clear(): Boolean
+
+  fun <T> update(
+    transform: (McpRegistryRecord?) -> McpRegistryStoreUpdate<T>,
+  ): T {
+    val updated = transform(load())
+    if (updated.write) {
+      val record = updated.record
+      if (record == null) {
+        clear()
+      } else {
+        save(record)
+      }
+    }
+    return updated.result
+  }
 }
+
+data class McpRegistryStoreUpdate<T>(
+  val record: McpRegistryRecord?,
+  val result: T,
+  val write: Boolean = true,
+)
 
 class InMemoryMcpRegistryStore(
   initialRecord: McpRegistryRecord? = null,
@@ -244,47 +265,61 @@ class McpRegistry(
   private val store: McpRegistryStore,
   private val now: () -> Long = { System.currentTimeMillis() },
 ) {
-  private var record: McpRegistryRecord = store.load() ?: McpRegistryRecord(createdAtEpochMs = now())
+  private var record: McpRegistryRecord = loadRecord()
 
-  fun snapshot(): McpRegistryRecord = record
+  fun snapshot(): McpRegistryRecord {
+    record = loadRecord()
+    return record
+  }
 
-  fun list(): List<McpRegistryServerRecord> = record.servers
+  fun list(): List<McpRegistryServerRecord> = snapshot().servers
 
-  fun get(id: String): McpRegistryServerRecord? = record.servers.firstOrNull { it.id == id }
+  fun get(id: String): McpRegistryServerRecord? =
+    snapshot().servers.firstOrNull { it.id == id }
 
   fun add(spec: McpServerSpec): McpRegistryServerRecord {
     val timestamp = now()
-    val existing = get(spec.id)
-    val nextServer = existing?.refreshSpec(spec, timestamp) ?: McpRegistryServerRecord(
-      spec = spec,
-      registeredAtEpochMs = timestamp,
-      updatedAtEpochMs = timestamp,
-    )
-    persist(server = nextServer, timestamp = timestamp)
-    return nextServer
+    return updateRegistry(timestamp) { current ->
+      val existing = current.servers.firstOrNull { it.id == spec.id }
+      val nextServer = existing?.refreshSpec(spec, timestamp) ?: McpRegistryServerRecord(
+        spec = spec,
+        registeredAtEpochMs = timestamp,
+        updatedAtEpochMs = timestamp,
+      )
+      val updatedServers = (current.servers.filterNot { it.id == nextServer.id } + nextServer)
+        .sortedBy { it.id }
+      current.copy(
+        servers = updatedServers,
+        updatedAtEpochMs = timestamp,
+        recordVersion = current.recordVersion + 1,
+      ) to nextServer
+    }
   }
 
   fun remove(id: String): Boolean {
-    val remaining = record.servers.filterNot { it.id == id }
-    if (remaining.size == record.servers.size) return false
-
-    if (remaining.isEmpty()) {
-      record = record.copy(
-        servers = emptyList(),
-        updatedAtEpochMs = now(),
-        recordVersion = record.recordVersion + 1,
+    val timestamp = now()
+    return store.update { currentRecord ->
+      val current = currentRecord ?: McpRegistryRecord(createdAtEpochMs = timestamp)
+      val remaining = current.servers.filterNot { it.id == id }
+      if (remaining.size == current.servers.size) {
+        record = current
+        return@update McpRegistryStoreUpdate(
+          record = current,
+          result = false,
+          write = false,
+        )
+      }
+      val nextRecord = current.copy(
+        servers = remaining.sortedBy { it.id },
+        updatedAtEpochMs = timestamp,
+        recordVersion = current.recordVersion + 1,
       )
-      store.save(record)
-      return true
+      record = nextRecord
+      McpRegistryStoreUpdate(
+        record = nextRecord,
+        result = true,
+      )
     }
-
-    record = record.copy(
-      servers = remaining.sortedBy { it.id },
-      updatedAtEpochMs = now(),
-      recordVersion = record.recordVersion + 1,
-    )
-    store.save(record)
-    return true
   }
 
   fun enable(id: String): McpRegistryServerRecord = mutate(id) { server, timestamp ->
@@ -303,25 +338,34 @@ class McpRegistry(
     id: String,
     transform: (McpRegistryServerRecord, Long) -> McpRegistryServerRecord,
   ): McpRegistryServerRecord {
-    val existing = get(id) ?: error("Unknown MCP server '$id'.")
     val timestamp = now()
-    val updated = transform(existing, timestamp)
-    persist(server = updated, timestamp = timestamp)
-    return updated
+    return updateRegistry(timestamp) { current ->
+      val existing = current.servers.firstOrNull { it.id == id }
+        ?: error("Unknown MCP server '$id'.")
+      val updated = transform(existing, timestamp)
+      val updatedServers = (current.servers.filterNot { it.id == updated.id } + updated)
+        .sortedBy { it.id }
+      current.copy(
+        servers = updatedServers,
+        updatedAtEpochMs = timestamp,
+        recordVersion = current.recordVersion + 1,
+      ) to updated
+    }
   }
 
-  private fun persist(
-    server: McpRegistryServerRecord,
-    timestamp: Long,
-  ) {
-    val updatedServers = (record.servers.filterNot { it.id == server.id } + server)
-      .sortedBy { it.id }
+  private fun loadRecord(): McpRegistryRecord =
+    store.load() ?: McpRegistryRecord(createdAtEpochMs = now())
 
-    record = record.copy(
-      servers = updatedServers,
-      updatedAtEpochMs = timestamp,
-      recordVersion = record.recordVersion + 1,
+  private fun <T> updateRegistry(
+    timestamp: Long,
+    transform: (McpRegistryRecord) -> Pair<McpRegistryRecord, T>,
+  ): T = store.update { currentRecord ->
+    val current = currentRecord ?: McpRegistryRecord(createdAtEpochMs = timestamp)
+    val (nextRecord, result) = transform(current)
+    record = nextRecord
+    McpRegistryStoreUpdate(
+      record = nextRecord,
+      result = result,
     )
-    store.save(record)
   }
 }

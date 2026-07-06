@@ -111,6 +111,26 @@ class McpManagerTest {
     )
   }
 
+  @Test
+  fun RegistryMutations_mergeAgainstCurrentStoreRecord() {
+    var now = 1_710_000_200_000L
+    val store = InMemoryMcpRegistryStore()
+    val firstRegistry = McpRegistry(store) { now++ }
+    firstRegistry.add(fixtureServer(id = "first-local"))
+
+    val secondRegistry = McpRegistry(store) { now++ }
+    secondRegistry.add(fixtureServer(id = "second-local"))
+
+    firstRegistry.add(fixtureServer(id = "third-local"))
+    assertTrue(firstRegistry.remove("first-local"))
+
+    val reloadedRegistry = McpRegistry(store) { now++ }
+    assertEquals(
+      listOf("second-local", "third-local"),
+      reloadedRegistry.list().map(McpRegistryServerRecord::id),
+    )
+  }
+
   private fun fixtureServer(
     id: String,
     auth: McpAuthSpec? = null,

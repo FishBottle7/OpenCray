@@ -18,6 +18,7 @@ import com.opencray.mcp.McpRegistry
 import com.opencray.mcp.McpRegistryRecord
 import com.opencray.mcp.McpRegistryServerRecord
 import com.opencray.mcp.McpRegistryStore
+import com.opencray.mcp.McpRegistryStoreUpdate
 import com.opencray.mcp.McpServerAuthState
 import com.opencray.mcp.McpServerAuthStatus
 import com.opencray.mcp.McpToolExposure
@@ -276,28 +277,34 @@ internal class LocalMcpSettingsFacade private constructor(
   }
 
   private fun ensureSeeded() {
-    val existing = registryStore.load()
-    val seededServers = seedRecords(
-      createdAtEpochMs = existing?.createdAtEpochMs ?: nowEpochMs(),
-    )
-    val mergedServers = (seededServers + existing?.servers.orEmpty())
-      .associateBy(McpRegistryServerRecord::id)
-      .values
-      .sortedBy(McpRegistryServerRecord::id)
-    if (existing != null && mergedServers.size == existing.servers.size) {
-      return
+    registryStore.update { existing ->
+      val seededServers = seedRecords(
+        createdAtEpochMs = existing?.createdAtEpochMs ?: nowEpochMs(),
+      )
+      val mergedServers = (seededServers + existing?.servers.orEmpty())
+        .associateBy(McpRegistryServerRecord::id)
+        .values
+        .sortedBy(McpRegistryServerRecord::id)
+      if (existing != null && mergedServers.size == existing.servers.size) {
+        return@update McpRegistryStoreUpdate(
+          record = existing,
+          result = Unit,
+          write = false,
+        )
+      }
+      val now = nowEpochMs()
+      McpRegistryStoreUpdate(
+        record = McpRegistryRecord(
+          servers = mergedServers,
+          createdAtEpochMs = existing?.createdAtEpochMs ?: now,
+          updatedAtEpochMs = now,
+          recordVersion = (existing?.recordVersion ?: 0L) + 1L,
+          termuxMetadata = existing?.termuxMetadata.orEmpty(),
+          extensions = existing?.extensions.orEmpty(),
+        ),
+        result = Unit,
+      )
     }
-    val now = nowEpochMs()
-    registryStore.save(
-      McpRegistryRecord(
-        servers = mergedServers,
-        createdAtEpochMs = existing?.createdAtEpochMs ?: now,
-        updatedAtEpochMs = now,
-        recordVersion = (existing?.recordVersion ?: 0L) + 1L,
-        termuxMetadata = existing?.termuxMetadata.orEmpty(),
-        extensions = existing?.extensions.orEmpty(),
-      ),
-    )
   }
 
   private fun seedRecords(createdAtEpochMs: Long): List<McpRegistryServerRecord> = listOf(

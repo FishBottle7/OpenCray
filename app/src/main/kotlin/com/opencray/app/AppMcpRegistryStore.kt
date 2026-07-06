@@ -3,7 +3,9 @@ package com.opencray.app
 import android.content.Context
 import com.opencray.mcp.McpRegistryRecord
 import com.opencray.mcp.McpRegistryStore
+import com.opencray.mcp.McpRegistryStoreUpdate
 import com.opencray.persistence.PersistenceJson
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
 
@@ -13,21 +15,38 @@ internal class AppMcpRegistryStore(
   private val storage = DirectoryDurableTextStorage(directory)
 
   override fun load(): McpRegistryRecord? {
-    val text = storage.readText(FILE_NAME) ?: return null
-    if (text.isBlank()) {
-      return null
-    }
-    return PersistenceJson.instance.decodeFromString(McpRegistryRecord.serializer(), text)
+    return decodeRecord(storage.readText(FILE_NAME))
   }
 
   override fun save(record: McpRegistryRecord) {
     storage.writeText(
       FILE_NAME,
-      PersistenceJson.instance.encodeToString(McpRegistryRecord.serializer(), record),
+      encodeRecord(record),
     )
   }
 
   override fun clear(): Boolean = storage.delete(FILE_NAME)
+
+  override fun <T> update(
+    transform: (McpRegistryRecord?) -> McpRegistryStoreUpdate<T>,
+  ): T = storage.updateText(FILE_NAME) { currentText ->
+    val updated = transform(decodeRecord(currentText))
+    DurableTextUpdate(
+      text = updated.record?.let(::encodeRecord),
+      result = updated.result,
+      write = updated.write,
+    )
+  }
+
+  private fun decodeRecord(text: String?): McpRegistryRecord? {
+    if (text.isNullOrBlank()) {
+      return null
+    }
+    return PersistenceJson.instance.decodeFromString(McpRegistryRecord.serializer(), text)
+  }
+
+  private fun encodeRecord(record: McpRegistryRecord): String =
+    PersistenceJson.instance.encodeToString(McpRegistryRecord.serializer(), record)
 
   companion object {
     private const val DIRECTORY_NAME = "mcp-settings-state"
