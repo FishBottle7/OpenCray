@@ -74,6 +74,7 @@ Last updated: 2026-04-05
   - 已新增 workspace sync 状态落盘
     - 本地状态文件位置：`.opencray/sandbox-sync/e2b-workspace-sync-state.json`
     - 当前会记录 `sandboxId`、`remoteWorkspaceRoot` 和上次成功同步的文件元数据
+    - 当前状态文件已改走共享 durable text storage 的 sidecar 文件锁与原子替换路径，避免 sticky session reconnect / runtime-process recreate 时继续依赖独立直写
   - 已接入 sticky session 下的执行前增量上传
     - 第二次及后续执行会基于 `relativePath + size + modifiedAt` 只上传变化文件
     - 当前 metadata 会回传 `workspaceUploadMode`、`workspaceUnchangedFiles`、`workspacePendingRemoteDeleteFiles`
