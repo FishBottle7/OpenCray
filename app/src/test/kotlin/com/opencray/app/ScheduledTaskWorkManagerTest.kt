@@ -399,6 +399,8 @@ class ScheduledTaskWorkManagerTest {
               ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
             RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_DECISION to
               ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue,
+            RunLifecycleMetadataKeys.DURABLE_RUNTIME_CONTROLLER_ID to
+              "durable-controller-reconnect-record",
           ),
         ),
       ),
@@ -449,6 +451,8 @@ class ScheduledTaskWorkManagerTest {
       assertEquals("connecting", item.managedProcessReconnectStatus)
       assertEquals("retry_scheduled", item.managedProcessReconnectRecoveryState)
       assertEquals(3, item.managedProcessReconnectAttemptCount)
+      assertEquals("runtime_process", item.runtimeExecutionOwnershipTier)
+      assertEquals("durable-controller-reconnect-record", item.durableRuntimeControllerId)
       assertEquals(ManagedProcessContinuationBases.RECONNECT_HOLD, item.managedProcessContinuationBasis)
       assertEquals(ManagedProcessRestoreScope.CROSS_PROCESS.wireValue, item.managedProcessRestoreScope)
       assertEquals(ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue, item.managedProcessRestoreDecision)

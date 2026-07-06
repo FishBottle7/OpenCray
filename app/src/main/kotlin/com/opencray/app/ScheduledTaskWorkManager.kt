@@ -1016,6 +1016,10 @@ private fun InterruptedRunRepairEvidence.withReconnectBackoffEvidence(
       ?: reconnect.managedProcessReconnectRecoveryState,
     managedProcessReconnectAttemptCount = managedProcessReconnectAttemptCount
       ?: reconnect.managedProcessReconnectAttemptCount,
+    runtimeExecutionOwnershipTier = runtimeExecutionOwnershipTier
+      ?: reconnect.runtimeExecutionOwnershipTier,
+    durableRuntimeControllerId = durableRuntimeControllerId
+      ?: reconnect.durableRuntimeControllerId,
     managedProcessContinuationBasis = managedProcessContinuationBasis
       ?: reconnect.managedProcessContinuationBasis,
     managedProcessRestoreScope = managedProcessRestoreScope
