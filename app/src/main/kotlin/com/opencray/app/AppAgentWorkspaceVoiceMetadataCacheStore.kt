@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
 import java.nio.file.Path
@@ -11,11 +12,10 @@ import kotlinx.serialization.json.Json
 
 internal class AppAgentWorkspaceVoiceMetadataCacheStore(
   directory: File,
-  private val nowEpochMs: () -> Long = System::currentTimeMillis,
+  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory),
   private val json: Json = Json { ignoreUnknownKeys = true },
+  private val nowEpochMs: () -> Long = System::currentTimeMillis,
 ) {
-  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
-  private var loaded = false
   private var entries: MutableMap<String, AppAgentWorkspaceVoiceMetadataCacheEntry> = linkedMapOf()
 
   @Synchronized
@@ -24,7 +24,7 @@ internal class AppAgentWorkspaceVoiceMetadataCacheStore(
     if (key.isEmpty()) {
       return null
     }
-    ensureLoaded()
+    replaceEntriesLocked(loadSnapshot())
     val entry = entries[key] ?: return null
     return AppAgentWorkspaceVoiceMetadata(
       durationMs = entry.durationMs,
@@ -40,46 +40,43 @@ internal class AppAgentWorkspaceVoiceMetadataCacheStore(
       return
     }
     val normalized = metadata.normalized().takeIf { candidate -> candidate.hasMeaningfulData() } ?: return
-    ensureLoaded()
     val updatedEntry = AppAgentWorkspaceVoiceMetadataCacheEntry(
       durationMs = normalized.durationMs,
       waveformBars = normalized.waveformBars,
       transcriptText = normalized.transcriptText,
       updatedAtEpochMs = nowEpochMs(),
     )
-    if (entries[key] == updatedEntry) {
-      return
+    val updatedSnapshot = storage.updateText(FILE_NAME) { currentText ->
+      val currentEntries = LinkedHashMap(decodeSnapshot(currentText)?.entries ?: emptyMap())
+      currentEntries[key] = updatedEntry
+      val snapshot = AppAgentWorkspaceVoiceMetadataCacheSnapshot(
+        entries = currentEntries.toMap(),
+      )
+      DurableTextUpdate(
+        text = json.encodeToString(snapshot),
+        result = snapshot,
+      )
     }
-    entries[key] = updatedEntry
-    storage.writeText(
-      FILE_NAME,
-      json.encodeToString(
-        AppAgentWorkspaceVoiceMetadataCacheSnapshot(
-          entries = entries.toMap(),
-        ),
-      ),
-    )
+    replaceEntriesLocked(updatedSnapshot)
   }
 
   @Synchronized
   fun clear() {
-    loaded = true
     entries = linkedMapOf()
     storage.delete(FILE_NAME)
   }
 
-  private fun ensureLoaded() {
-    if (loaded) {
-      return
-    }
-    loaded = true
-    val snapshot = storage.readText(FILE_NAME)
-      ?.takeIf(String::isNotBlank)
-      ?.let { raw ->
-        runCatching {
-          json.decodeFromString<AppAgentWorkspaceVoiceMetadataCacheSnapshot>(raw)
-        }.getOrNull()
-      }
+  private fun loadSnapshot(): AppAgentWorkspaceVoiceMetadataCacheSnapshot? =
+    decodeSnapshot(storage.readText(FILE_NAME))
+
+  private fun decodeSnapshot(text: String?): AppAgentWorkspaceVoiceMetadataCacheSnapshot? {
+    val encoded = text?.takeIf(String::isNotBlank) ?: return null
+    return runCatching {
+      json.decodeFromString<AppAgentWorkspaceVoiceMetadataCacheSnapshot>(encoded)
+    }.getOrNull()
+  }
+
+  private fun replaceEntriesLocked(snapshot: AppAgentWorkspaceVoiceMetadataCacheSnapshot?) {
     entries = LinkedHashMap(snapshot?.entries ?: emptyMap())
   }
 
