@@ -3,10 +3,11 @@ package com.opencray.app
 import com.opencray.runtime.OpenCraySoulVisualIdentity
 import com.opencray.runtime.soul.SoulProfileExtensionKeys
 import com.opencray.runtime.soul.SoulVisualIdentitySupport
-import java.nio.charset.StandardCharsets
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption
 import kotlin.io.path.isRegularFile
 
 internal data class WorkspaceSoulDocument(
@@ -18,6 +19,9 @@ internal data class WorkspaceSoulDocument(
 
 internal class WorkspaceSoulProfileStore(
   private val soulExtensionFactory: PersonalizationSoulExtensionFactory = PersonalizationSoulExtensionFactory(),
+  private val storageFactory: (Path) -> DurableTextStorage = { directory ->
+    DirectoryDurableTextStorage(directory.toFile())
+  },
 ) {
   fun loadSoulDocument(workspaceRoot: Path?): WorkspaceSoulDocument? {
     val file = workspaceRoot
@@ -43,10 +47,12 @@ internal class WorkspaceSoulProfileStore(
     relativePath: String = SOUL_FILE_NAME,
   ): WorkspaceSoulDocument? {
     val normalizedFile = soulFile?.toAbsolutePath()?.normalize() ?: return null
-    if (!normalizedFile.isRegularFile()) {
+    if (Files.exists(normalizedFile) && !normalizedFile.isRegularFile()) {
       return null
     }
-    val content = String(Files.readAllBytes(normalizedFile), StandardCharsets.UTF_8)
+    val content = storageFor(normalizedFile)
+      .readText(fileNameFor(normalizedFile))
+      ?: return null
     return WorkspaceSoulDocument(
       file = normalizedFile,
       relativePath = relativePath,
@@ -81,22 +87,19 @@ internal class WorkspaceSoulProfileStore(
     profile: WorkspaceSoulProfile,
   ) {
     val normalizedFile = soulFile.toAbsolutePath().normalize()
-    val parent = requireNotNull(normalizedFile.parent) {
-      "SOUL.md must have a parent directory."
+    storageFor(normalizedFile).updateText(fileNameFor(normalizedFile)) { currentText ->
+      val existingProfile = currentText
+        ?.takeIf(String::isNotBlank)
+        ?.let(::parseSoulProfile)
+      val updatedProfile = mergedProfile(
+        existingProfile = existingProfile,
+        incomingProfile = profile,
+      )
+      DurableTextUpdate(
+        text = renderDocument(updatedProfile),
+        result = Unit,
+      )
     }
-    Files.createDirectories(parent)
-    val existingProfile = loadSoulProfileFile(normalizedFile)
-    val updatedProfile = mergedProfile(
-      existingProfile = existingProfile,
-      incomingProfile = profile,
-    )
-    Files.write(
-      normalizedFile,
-      renderDocument(updatedProfile).toByteArray(StandardCharsets.UTF_8),
-      StandardOpenOption.CREATE,
-      StandardOpenOption.TRUNCATE_EXISTING,
-      StandardOpenOption.WRITE,
-    )
   }
 
   fun saveSoulVisualIdentity(
@@ -145,11 +148,22 @@ internal class WorkspaceSoulProfileStore(
 
   fun clearSoulProfileFile(soulFile: Path?): Boolean {
     val normalizedFile = soulFile?.toAbsolutePath()?.normalize() ?: return false
-    if (!Files.exists(normalizedFile)) {
-      return false
+    return storageFor(normalizedFile).updateText(fileNameFor(normalizedFile)) { currentText ->
+      DurableTextUpdate(
+        text = null,
+        result = currentText != null,
+      )
     }
-    return Files.deleteIfExists(normalizedFile)
   }
+
+  private fun storageFor(normalizedFile: Path): DurableTextStorage {
+    val parent = requireNotNull(normalizedFile.parent) {
+      "SOUL.md must have a parent directory."
+    }
+    return storageFactory(parent)
+  }
+
+  private fun fileNameFor(normalizedFile: Path): String = normalizedFile.fileName.toString()
 
   private fun mergedProfile(
     existingProfile: WorkspaceSoulProfile?,

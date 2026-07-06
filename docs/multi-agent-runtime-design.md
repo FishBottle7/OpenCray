@@ -662,6 +662,7 @@ Recommended files to add:
 Current implementation note:
 
 - `AgentConfigStore` still writes `agents/<agentId>/private/agent-config.json`, but save/clear now use shared durable text storage and the locked update primitive so foreground bootstrap and service/runtime agent-scope readers do not race through direct truncate writes.
+- `WorkspaceSoulProfileStore` still writes public workspace `SOUL.md` and private `agents/<agentId>/private/SOUL.md`, but save/clear now use shared durable text storage; save merges current frontmatter inside the locked update callback, so profile edits no longer split load/merge/write across process boundaries.
 
 Recommended refactors:
 

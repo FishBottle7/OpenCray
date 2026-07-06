@@ -5,6 +5,8 @@ import com.opencray.runtime.OpenCrayImageReferenceRole
 import com.opencray.runtime.OpenCrayImageReferenceStorageScope
 import com.opencray.runtime.OpenCraySoulVisualIdentity
 import com.opencray.runtime.soul.SoulProfileExtensionKeys
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import org.junit.Assert.assertEquals
@@ -158,6 +160,56 @@ class WorkspaceSoulProfileStoreTest {
   }
 
   @Test
+  fun saveSoulProfileUsesDurableUpdateCurrentTextWhenMergingExistingExtensions() {
+    val storage = StaleReadSoulTextStorage()
+    val store = WorkspaceSoulProfileStore(storageFactory = { storage })
+    val soulFile = temporaryFolder.root.toPath()
+      .resolve("durable-soul")
+      .resolve("SOUL.md")
+
+    store.saveSoulProfileFile(
+      soulFile = soulFile,
+      profile = WorkspaceSoulProfile(
+        presetName = "STEADY",
+        customLabel = "Original",
+        customGuidance = "Original guidance.",
+        extensions = mapOf("signature_style" to "old"),
+      ),
+    )
+    val staleSnapshot = storage.currentText
+    store.saveSoulProfileFile(
+      soulFile = soulFile,
+      profile = WorkspaceSoulProfile(
+        presetName = "STEADY",
+        customLabel = "Current",
+        customGuidance = "Current guidance.",
+        extensions = mapOf("signature_style" to "current"),
+      ),
+    )
+    storage.returnStaleTextOnNextRead(staleSnapshot)
+
+    store.saveSoulProfileFile(
+      soulFile = soulFile,
+      profile = WorkspaceSoulProfile(
+        presetName = "WARM",
+        customLabel = "Updated",
+        customGuidance = "Updated guidance.",
+      ),
+    )
+
+    assertEquals(3, storage.updateTextCallCount)
+    assertTrue(storage.hasPendingStaleRead)
+    storage.clearPendingStaleRead()
+    val profile = requireNotNull(store.loadSoulProfileFile(soulFile))
+    assertEquals("current", profile.extensions["signature_style"])
+
+    assertTrue(store.clearSoulProfileFile(soulFile))
+
+    assertEquals(4, storage.updateTextCallCount)
+    assertNull(store.loadSoulProfileFile(soulFile))
+  }
+
+  @Test
   fun saveSoulProfileLetsExplicitManagedExtensionsOverridePresetDefaults() {
     val workspaceRoot = temporaryFolder.newFolder("workspace-soul-managed-override").toPath()
 
@@ -258,6 +310,20 @@ class WorkspaceSoulProfileStoreTest {
   }
 
   @Test
+  fun loadSoulDocumentKeepsBlankSoulFileAsDocumentWithoutProfile() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-soul-blank").toPath()
+    Files.write(
+      workspaceRoot.resolve("SOUL.md"),
+      "\n".toByteArray(StandardCharsets.UTF_8),
+    )
+
+    val document = requireNotNull(store.loadSoulDocument(workspaceRoot))
+
+    assertEquals("\n", document.content)
+    assertNull(document.profile)
+  }
+
+  @Test
   fun clearSoulProfileDeletesWorkspaceSoulFile() {
     val workspaceRoot = temporaryFolder.newFolder("workspace-soul-clear").toPath()
 
@@ -322,5 +388,55 @@ class WorkspaceSoulProfileStoreTest {
     assertEquals("", profile.customLabel)
     assertEquals("", profile.customGuidance)
     assertEquals("Dark hair and a precise expression.", profile.visualIdentity?.portraitSummary)
+  }
+}
+
+private class StaleReadSoulTextStorage : DurableTextStorage {
+  private var text: String? = null
+  private var staleReadText: String? = null
+  var hasPendingStaleRead: Boolean = false
+    private set
+  var updateTextCallCount: Int = 0
+    private set
+
+  val currentText: String?
+    get() = text
+
+  fun returnStaleTextOnNextRead(staleText: String?) {
+    staleReadText = staleText
+    hasPendingStaleRead = true
+  }
+
+  fun clearPendingStaleRead() {
+    staleReadText = null
+    hasPendingStaleRead = false
+  }
+
+  override fun readText(name: String): String? {
+    if (!hasPendingStaleRead) {
+      return text
+    }
+    hasPendingStaleRead = false
+    return staleReadText
+  }
+
+  override fun writeText(name: String, text: String) {
+    error("Soul profile mutations should use updateText.")
+  }
+
+  override fun delete(name: String): Boolean {
+    error("Soul profile mutations should use updateText.")
+  }
+
+  override fun <T> updateText(
+    name: String,
+    update: (String?) -> DurableTextUpdate<T>,
+  ): T {
+    updateTextCallCount += 1
+    val updated = update(text)
+    if (updated.write) {
+      text = updated.text
+    }
+    return updated.result
   }
 }
