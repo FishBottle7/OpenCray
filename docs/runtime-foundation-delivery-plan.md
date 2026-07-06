@@ -18,6 +18,7 @@ The shared `DirectoryDurableTextStorage` path now also wraps file read/write/del
 
 E2B sticky workspace sync state now also stores its reusable workspace file manifest through `DirectoryDurableTextStorage` under the workspace `.opencray/sandbox-sync` directory, and save/clear use the same locked durable update primitive as the other process-safe runtime stores.
 Generic JSON record save helpers now also use durable text `updateText`, so full-record saves for session/soul/chat workspace stores no longer bypass the shared atomic replace path with direct `writeText`.
+Skill install manifest direct save now also uses durable text `updateText`, so future skills paths cannot bypass the process-safe manifest update contract with direct `writeText`.
 LiteRT on-device model install save/delete now also merge through the same locked durable update path, so foreground settings actions and background download workers do not overwrite each other's model install records by saving a stale manifest.
 Memory debug action audit append now also updates through the locked durable read-modify-write path, so overlapping runtime/service debug actions do not drop another action's audit entry by saving an older audit record.
 Agent registry create/update/select/archive now also merge through the locked durable update path, so foreground agent management and service/runtime agent-scope reads do not lose active-agent or descriptor changes through stale registry writes.

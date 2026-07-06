@@ -3,6 +3,7 @@ package com.opencray.runtime.skills
 import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import com.opencray.persistence.store.file.RecordStorageUpdate
 import com.opencray.persistence.store.file.updateRecord
@@ -218,7 +219,7 @@ data class SkillPackageUpdateReport(
     get() = results.count { result -> result.status == SkillPackageUpdateStatus.FAILED }
 }
 
-class SkillInstallManifestStore private constructor(
+class SkillInstallManifestStore internal constructor(
   private val storage: DurableTextStorage,
   private val fileName: String,
 ) {
@@ -234,13 +235,16 @@ class SkillInstallManifestStore private constructor(
   }
 
   fun save(manifest: SkillInstallManifest) {
-    storage.writeText(
-      fileName,
-      PersistenceJson.instance.encodeToString(
-        serializer = SkillInstallManifest.serializer(),
-        value = manifest,
-      ),
+    val encoded = PersistenceJson.instance.encodeToString(
+      serializer = SkillInstallManifest.serializer(),
+      value = manifest,
     )
+    storage.updateText(fileName) {
+      DurableTextUpdate(
+        text = encoded,
+        result = Unit,
+      )
+    }
   }
 
   fun <T> update(

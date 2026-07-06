@@ -1,5 +1,7 @@
 package com.opencray.runtime.skills
 
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -16,6 +18,24 @@ import org.junit.rules.TemporaryFolder
 class SkillPackageManagerTest {
   @get:Rule
   val temporaryFolder: TemporaryFolder = TemporaryFolder()
+
+  @Test
+  fun manifestStoreSaveUsesDurableUpdatePrimitive() {
+    val storage = UpdateOnlyDurableTextStorage()
+    val manifestStore = SkillInstallManifestStore(
+      storage = storage,
+      fileName = "skills-manifest.json",
+    )
+    val manifest = SkillInstallManifest(
+      recordVersion = 1L,
+      updatedAtEpochMs = 1_000L,
+    )
+
+    manifestStore.save(manifest)
+
+    assertEquals(manifest, manifestStore.load())
+    assertEquals(1, storage.updateTextCallCount)
+  }
 
   @Test
   fun installFromCatalogCopiesSkillAndWritesManifest() {
@@ -581,6 +601,34 @@ class SkillPackageManagerTest {
 
   private fun canonicalInvariantPath(file: File): String =
     runCatching { file.canonicalPath }.getOrDefault(file.absolutePath).replace('\\', '/')
+
+  private class UpdateOnlyDurableTextStorage : DurableTextStorage {
+    private var text: String? = null
+    var updateTextCallCount: Int = 0
+      private set
+
+    override fun readText(name: String): String? = text
+
+    override fun writeText(name: String, text: String) {
+      error("Skill install manifest mutations should use updateText.")
+    }
+
+    override fun delete(name: String): Boolean {
+      error("Skill install manifest mutations should use updateText.")
+    }
+
+    override fun <T> updateText(
+      name: String,
+      update: (String?) -> DurableTextUpdate<T>,
+    ): T {
+      updateTextCallCount += 1
+      val updated = update(text)
+      if (updated.write) {
+        text = updated.text
+      }
+      return updated.result
+    }
+  }
 
   private class FakeRemoteSkillSourceFetcher(
     private val skillDirectoryName: String,

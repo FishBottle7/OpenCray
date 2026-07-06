@@ -16,6 +16,8 @@ Runtime notification settings save/clear now also use that locked durable update
 
 Generic JSON record save helpers now also use that locked durable update primitive, so full-record saves for session/soul/chat workspace stores no longer bypass the shared atomic replace path with direct `writeText`.
 
+Skill install manifest direct save now also uses the locked durable update primitive, so future skills paths cannot bypass the process-safe manifest merge/update contract with a direct `writeText`.
+
 Managed-process registry snapshots now also save through durable text `updateText`, so reconnect/backoff state persistence no longer depends on direct `writeText` inside the file-backed registry.
 
 E2B sticky workspace sync state now also persists its reusable file manifest through the shared durable text storage under the workspace `.opencray/sandbox-sync` directory, so host rebuild or runtime-process recreate no longer depends on a separate direct writer or direct save/delete call for that sandbox reconnect hint.
@@ -382,7 +384,7 @@ Current state:
 - scheduled spec and scheduled run-record list/get normalization repair now also use the same process-safe durable update primitive, so schedule repair or notification actions do not race by re-saving older repaired schedule snapshots over newer schedule state
 - scheduled run-record deletion/pruning now uses the same process-safe durable update primitive as run-record upsert, so deleting a schedule's history does not race by re-saving an older snapshot over unrelated schedule run records
 - scheduled trigger sync-state replace/clear now uses the same process-safe durable update primitive after the cross-process resync transaction computes the target synced-id set, so app bootstrap, repair, and runtime-side notification action resyncs do not persist trigger state through a direct file overwrite path
-- skill install manifest refresh/check/install/remove now uses the same process-safe durable update primitive, so service-owned skills commands from overlapping app/runtime paths do not lose another skill's newer manifest entry
+- skill install manifest save/refresh/check/install/remove now uses the same process-safe durable update primitive, so service-owned skills commands from overlapping app/runtime paths do not lose another skill's newer manifest entry
 - agent run-record list/normalization repair now also uses that same process-safe durable update primitive, so host rebuild or projection fallback does not race by re-saving an older repaired run-record snapshot over a newer run record
 - per-agent config save/clear now uses shared durable text storage with the same process-safe update primitive, so foreground agent bootstrap and service/runtime agent-scope reads do not depend on direct truncate writes for `agent-config.json`
 - workspace and agent-private `SOUL.md` profile save/clear now use shared durable text storage with the same process-safe update primitive, so profile save merges observe the current durable frontmatter under lock instead of splitting load/merge/write
