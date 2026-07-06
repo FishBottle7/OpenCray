@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.nio.file.Path
 import kotlinx.serialization.Serializable
@@ -23,6 +25,7 @@ internal data class E2BWorkspaceSyncStateSnapshot(
 
 internal class E2BWorkspaceSyncStateStore(
   private val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
+  private val storageFactory: (Path) -> DurableTextStorage = ::defaultE2BWorkspaceSyncStateStorage,
 ) {
   fun load(workspaceRoot: Path): E2BWorkspaceSyncStateSnapshot? {
     val encoded = storage(workspaceRoot).readText(WORKSPACE_SYNC_STATE_FILE_NAME)
@@ -41,25 +44,36 @@ internal class E2BWorkspaceSyncStateStore(
     workspaceRoot: Path,
     snapshot: E2BWorkspaceSyncStateSnapshot,
   ) {
-    storage(workspaceRoot).writeText(
-      WORKSPACE_SYNC_STATE_FILE_NAME,
-      json.encodeToString(E2BWorkspaceSyncStateSnapshot.serializer(), snapshot),
-    )
+    val encoded = json.encodeToString(E2BWorkspaceSyncStateSnapshot.serializer(), snapshot)
+    storage(workspaceRoot).updateText(WORKSPACE_SYNC_STATE_FILE_NAME) {
+      DurableTextUpdate(
+        text = encoded,
+        result = Unit,
+      )
+    }
   }
 
   fun clear(workspaceRoot: Path) {
-    storage(workspaceRoot).delete(WORKSPACE_SYNC_STATE_FILE_NAME)
+    storage(workspaceRoot).updateText(WORKSPACE_SYNC_STATE_FILE_NAME) {
+      DurableTextUpdate(
+        text = null,
+        result = Unit,
+      )
+    }
   }
 
-  private fun storage(workspaceRoot: Path): DirectoryDurableTextStorage =
-    DirectoryDurableTextStorage(
-      workspaceRoot
-        .toAbsolutePath()
-        .normalize()
-        .resolve(".opencray")
-        .resolve("sandbox-sync")
-        .toFile(),
-    )
+  private fun storage(workspaceRoot: Path): DurableTextStorage =
+    storageFactory(workspaceRoot)
 }
+
+private fun defaultE2BWorkspaceSyncStateStorage(workspaceRoot: Path): DurableTextStorage =
+  DirectoryDurableTextStorage(
+    workspaceRoot
+      .toAbsolutePath()
+      .normalize()
+      .resolve(".opencray")
+      .resolve("sandbox-sync")
+      .toFile(),
+  )
 
 private const val WORKSPACE_SYNC_STATE_FILE_NAME: String = "e2b-workspace-sync-state.json"
