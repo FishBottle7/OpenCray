@@ -708,6 +708,56 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun scheduleNextInterruptedRunRepairRetryEnqueuesEvidenceDerivedRepairReason() {
+    val genericScheduler = RecordingScheduledWorkScheduler()
+    val managedScheduler = RecordingScheduledWorkScheduler()
+
+    assertTrue(
+      scheduleNextInterruptedRunRepairRetry(
+        workScheduler = genericScheduler,
+        evidence = listOf(
+          InterruptedRunRepairEvidence(
+            sessionId = "session-generic",
+            kind = InterruptedRunRepairEvidenceKind.PROMPT_CHECKPOINT,
+            target = RuntimeServiceTarget.INTERACTIVE,
+            repairAfterEpochMs = 2_500L,
+          ),
+        ),
+        nowEpochMs = 2_000L,
+      ),
+    )
+    assertTrue(
+      scheduleNextInterruptedRunRepairRetry(
+        workScheduler = managedScheduler,
+        evidence = listOf(
+          InterruptedRunRepairEvidence(
+            sessionId = "session-managed",
+            kind = InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+            target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+            repairAfterEpochMs = 2_750L,
+          ),
+          InterruptedRunRepairEvidence(
+            sessionId = "session-generic-later",
+            kind = InterruptedRunRepairEvidenceKind.PROMPT_CHECKPOINT,
+            target = RuntimeServiceTarget.INTERACTIVE,
+            repairAfterEpochMs = 3_000L,
+          ),
+        ),
+        nowEpochMs = 2_000L,
+      ),
+    )
+
+    assertEquals(
+      listOf(ScheduledTaskRepairReasons.INTERRUPTED_RUN_RETRY to 500L),
+      genericScheduler.repairRequests,
+    )
+    assertEquals(
+      listOf(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT to 750L),
+      managedScheduler.repairRequests,
+    )
+  }
+
+  @Test
   fun scheduleNextInterruptedRunRepairRetryIgnoresMissingOrDueDeadline() {
     val workScheduler = RecordingScheduledWorkScheduler()
 

@@ -211,15 +211,11 @@ internal class ScheduledTaskRepairWorker(
         evidence = interruptedRunRepairEvidence,
         nowEpochMs = nowEpochMs,
       )
-      nextInterruptedRunRepairDelayMs(
+      scheduleNextInterruptedRunRepairRetry(
+        workScheduler = WorkManagerScheduledWorkScheduler.fromContext(applicationContext),
         evidence = interruptedRunRepairEvidence,
         nowEpochMs = nowEpochMs,
-      )?.let { delayMs ->
-        WorkManagerScheduledWorkScheduler.fromContext(applicationContext).enqueueRepair(
-          reason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
-          initialDelayMs = delayMs,
-        )
-      }
+      )
       val scheduledRepairStarted = when {
         !hasDueCommands -> true
         else -> runtimeEnvironment.runtimeServiceAccessGateway.repairSchedules(
@@ -762,6 +758,23 @@ internal fun scheduleNextInterruptedRunRepairRetry(
     initialDelayMs = retryAtEpochMs - nowEpochMs,
   )
   return true
+}
+
+internal fun scheduleNextInterruptedRunRepairRetry(
+  workScheduler: ScheduledWorkScheduler,
+  evidence: List<InterruptedRunRepairEvidence>,
+  nowEpochMs: Long = System.currentTimeMillis(),
+): Boolean {
+  val nextRetry = nextInterruptedRunRepairRetry(
+    evidence = evidence,
+    nowEpochMs = nowEpochMs,
+  ) ?: return false
+  return scheduleNextInterruptedRunRepairRetry(
+    workScheduler = workScheduler,
+    nextRepairAfterEpochMs = nextRetry.repairAfterEpochMs,
+    repairReason = nextRetry.repairReason,
+    nowEpochMs = nowEpochMs,
+  )
 }
 
 internal fun startInterruptedRunRepairTargets(
