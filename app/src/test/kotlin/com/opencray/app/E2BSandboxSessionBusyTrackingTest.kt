@@ -261,7 +261,6 @@ class E2BSandboxSessionBusyTrackingTest {
       },
       durableRunningRequestIdsProvider = durableE2BNativeRunningRequestIdsProvider(
         runtimeRootDirectory = runtimeRootDirectory,
-        json = json,
       ),
     )
     val service = E2BSandboxSessionInfoService(
@@ -295,6 +294,61 @@ class E2BSandboxSessionBusyTrackingTest {
     assertEquals(SandboxSessionCloseOutcome.BUSY, closeResult.outcome)
     assertEquals("proc-native-durable", closeResult.blockingRequestId)
     assertEquals(0, deleteSandboxCount.get())
+  }
+
+  @Test
+  fun durableNativeRunningRequestIdsProviderUsesRegistryProjectionNormalization() {
+    val workspaceRoot = temporaryFolder.newFolder("e2b-durable-registry-normalized").toPath()
+    val runtimeRootDirectory = temporaryFolder.newFolder("e2b-durable-normalized-runtime-root")
+    val sessionDirectory = Files.createDirectory(runtimeRootDirectory.toPath().resolve("session-normalized"))
+    val staleRunningSnapshot = ManagedProcessSnapshot(
+      processId = "proc-native-normalized",
+      taskId = "task-native-normalized",
+      command = "npm",
+      args = listOf("run", "dev"),
+      workingDirectory = workspaceRoot.toString(),
+      status = ManagedProcessStatus.RUNNING,
+      processStarted = true,
+      timeoutMs = 120_000L,
+      startedAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_500L,
+      metadata = mapOf(
+        "runtimeBackend" to "e2b_envd_native_command",
+        "sandboxProvider" to SandboxProviderId.E2B.wireValue,
+        "sandboxId" to "sb-normalized",
+        "sandboxCommandBackendResolvedKind" to "provider_native",
+        "sandboxCommandNativeProtocol" to "envd_connect_process_v1",
+      ),
+    )
+    val newerTerminalSnapshot = staleRunningSnapshot.copy(
+      status = ManagedProcessStatus.SUCCESS,
+      exitCode = 0,
+      startedAtEpochMs = 2_000L,
+      updatedAtEpochMs = 2_500L,
+      finishedAtEpochMs = 2_500L,
+    )
+    val registryPayload = buildJsonObject {
+      put("schemaVersion", 1)
+      put("recordVersion", 1)
+      put("updatedAtEpochMs", 2_500L)
+      put(
+        "snapshots",
+        json.encodeToJsonElement(
+          serializer = kotlinx.serialization.builtins.ListSerializer(ManagedProcessSnapshot.serializer()),
+          value = listOf(staleRunningSnapshot, newerTerminalSnapshot),
+        ),
+      )
+    }
+    Files.write(
+      sessionDirectory.resolve("managed-process-registry.json"),
+      registryPayload.toString().toByteArray(StandardCharsets.UTF_8),
+    )
+
+    val runningRequestIds = durableE2BNativeRunningRequestIdsProvider(
+      runtimeRootDirectory = runtimeRootDirectory,
+    )("sb-normalized")
+
+    assertEquals(emptyList<String>(), runningRequestIds)
   }
 
   private fun sandboxSettings(): ResolvedSandboxSettings = ResolvedSandboxSettings(

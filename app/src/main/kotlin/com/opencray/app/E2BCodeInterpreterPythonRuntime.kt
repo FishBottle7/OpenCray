@@ -9,7 +9,9 @@ import com.opencray.runtime.SandboxPreviewProbeStatus
 import com.opencray.runtime.SandboxSessionCloseOutcome
 import com.opencray.runtime.SandboxSessionCloseResult
 import com.opencray.runtime.PythonScriptRuntime
+import com.opencray.runtime.process.FileBackedAgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessRestoreMode
 import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.process.withNormalizedRemoteState
 import java.io.BufferedReader
@@ -38,7 +40,6 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -2114,7 +2115,6 @@ internal object SharedE2BSandboxActivityTracker : E2BSandboxActivityTracker {
 
 internal fun durableE2BNativeRunningRequestIdsProvider(
   runtimeRootDirectory: File,
-  json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
 ): (String) -> List<String> = { sandboxId ->
   val normalizedSandboxId = sandboxId.trim()
   if (normalizedSandboxId.isBlank()) {
@@ -2123,13 +2123,18 @@ internal fun durableE2BNativeRunningRequestIdsProvider(
     runtimeRootDirectory.listFiles()
       ?.asSequence()
       ?.filter(File::isDirectory)
-      ?.map { sessionDirectory -> File(sessionDirectory, DURABLE_MANAGED_PROCESS_REGISTRY_FILE_NAME) }
-      ?.filter(File::isFile)
-      ?.flatMap { registryFile ->
-        readDurableManagedProcessSnapshots(
-          registryFile = registryFile,
-          json = json,
-        ).asSequence()
+      ?.filter { sessionDirectory ->
+        File(sessionDirectory, DURABLE_MANAGED_PROCESS_REGISTRY_FILE_NAME).isFile
+      }
+      ?.flatMap { sessionDirectory ->
+        runCatching {
+          FileBackedAgentProcessRegistry(
+            directory = sessionDirectory,
+            restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
+          ).list().asSequence()
+        }.getOrElse {
+          emptySequence()
+        }
       }
       ?.map(ManagedProcessSnapshot::withNormalizedRemoteState)
       ?.filter { snapshot ->
@@ -2140,24 +2145,6 @@ internal fun durableE2BNativeRunningRequestIdsProvider(
       ?.sorted()
       ?.toList()
       ?: emptyList()
-  }
-}
-
-private fun readDurableManagedProcessSnapshots(
-  registryFile: File,
-  json: Json,
-): List<ManagedProcessSnapshot> {
-  val encoded = runCatching { registryFile.readText(StandardCharsets.UTF_8) }.getOrNull()
-    ?.trim()
-    ?.takeIf(String::isNotBlank)
-    ?: return emptyList()
-  val payload = runCatching { json.parseToJsonElement(encoded).jsonObject }.getOrNull()
-    ?: return emptyList()
-  val snapshots = payload["snapshots"] as? JsonArray ?: return emptyList()
-  return snapshots.mapNotNull { snapshotPayload ->
-    runCatching {
-      json.decodeFromJsonElement(ManagedProcessSnapshot.serializer(), snapshotPayload)
-    }.getOrNull()
   }
 }
 
