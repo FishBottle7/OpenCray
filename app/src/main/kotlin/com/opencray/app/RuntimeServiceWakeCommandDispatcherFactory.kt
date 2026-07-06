@@ -58,9 +58,12 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
     }
     when (val command = wakeIntentParser.parse(intent)) {
       is RuntimeServiceWakeIntentCommand.ChatWrite -> {
-        gatewayBundle.dispatchChatWriteCommand(command.command)
-        terminalNotificationDismisser(appContext, command.terminalNotificationTaskId)
-        refreshAndPersist()
+        try {
+          gatewayBundle.dispatchChatWriteCommand(command.command)
+          terminalNotificationDismisser(appContext, command.terminalNotificationTaskId)
+        } finally {
+          refreshAndPersist()
+        }
       }
 
       is RuntimeServiceWakeIntentCommand.Notification -> {

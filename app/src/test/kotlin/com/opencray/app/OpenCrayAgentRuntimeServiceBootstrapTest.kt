@@ -5246,6 +5246,47 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun defaultWakeDispatcherPersistsProjectionButKeepsTerminalNotificationWhenRetryChatWriteFails() {
+    val context = MinimalContext()
+    val dismissedTerminalTaskIds = mutableListOf<String?>()
+    val gatewayBundle = testServiceGatewayBundle(
+      retryChatRun = {
+        error("retry dispatch failed")
+      },
+    )
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
+      appContext = context,
+      dispatcherDependencies = testServiceHost(
+        temporaryFolder.newFolder("wake-dispatcher-chat-write-retry-failure"),
+      ).toRuntimeServiceBootstrapState().wakeCommandDispatcherDependencies,
+      gatewayBundle = gatewayBundle,
+      projectionCoordinator = projectionCoordinator,
+      wakeIntentParser = RuntimeServiceWakeIntentParser {
+        RuntimeServiceWakeIntentCommand.ChatWrite(
+          command = OpenCrayChatWriteCommand.RetryChatRun("run-retry-failed-wake"),
+          terminalNotificationTaskId = "task-retry-failed-wake",
+        )
+      },
+      approvalNotificationDismisser = { _, _ -> },
+      terminalNotificationDismisser = { _, taskId ->
+        dismissedTerminalTaskIds += taskId
+      },
+    )
+
+    val failure = runCatching {
+      dispatcher.dispatch(null)
+    }.exceptionOrNull()
+
+    assertTrue(failure is IllegalStateException)
+    assertTrue(dismissedTerminalTaskIds.isEmpty())
+    assertEquals(1, projectionCoordinator.persistCallCount)
+    assertTrue(projectionCoordinator.scheduledDispatchOutcomes.isEmpty())
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
   fun defaultWakeDispatcherSkipsWriteWhenOwnerLeaseIsNotHeld() {
     val context = MinimalContext()
     var interruptedTaskIdOrRunId: String? = null
