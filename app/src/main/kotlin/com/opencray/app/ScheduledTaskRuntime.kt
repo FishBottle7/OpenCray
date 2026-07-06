@@ -765,26 +765,44 @@ internal class ScheduledTaskWakeReceiver : BroadcastReceiver() {
     context: Context,
     intent: Intent?,
   ) {
-    val runtimeEnvironment = openCrayRuntimeServiceEnvironment(context.applicationContext)
-    val scheduleId = intent?.getStringExtra(EXTRA_SCHEDULE_ID)
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?: return
-    val scheduledForEpochMs = intent.getLongExtra(EXTRA_SCHEDULED_FOR_EPOCH_MS, -1L)
-      .takeIf { value -> value >= 0L }
-      ?: return
-    val wakeCommand = ScheduledTaskWakeCommand(
-      scheduleId = scheduleId,
-      scheduleRunId = scheduledTaskRunId(scheduleId, scheduledForEpochMs),
-      triggeredAtEpochMs = System.currentTimeMillis(),
-      triggerReason = ScheduledTaskTriggerReasons.ALARM,
-    )
-    runtimeEnvironment.runtimeServiceAccessGateway.startScheduledTask(
-      context.applicationContext,
-      wakeCommand,
-      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
-    )
+    dispatchScheduledTaskAlarmWake(context, intent)
   }
+}
+
+internal fun dispatchScheduledTaskAlarmWake(
+  context: Context,
+  intent: Intent?,
+  runtimeEnvironmentProvider: (Context) -> OpenCrayRuntimeServiceEnvironment =
+    { appContext -> openCrayRuntimeServiceEnvironment(appContext) },
+  fallbackSchedulerProvider: (Context) -> ScheduledWorkScheduler =
+    { appContext -> WorkManagerScheduledWorkScheduler.fromContext(appContext) },
+  nowEpochMsProvider: () -> Long = System::currentTimeMillis,
+): Boolean {
+  val appContext = context.applicationContext
+  val runtimeEnvironment = runtimeEnvironmentProvider(appContext)
+  val scheduleId = intent?.getStringExtra(EXTRA_SCHEDULE_ID)
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: return false
+  val scheduledForEpochMs = intent.getLongExtra(EXTRA_SCHEDULED_FOR_EPOCH_MS, -1L)
+    .takeIf { value -> value >= 0L }
+    ?: return false
+  val nowEpochMs = nowEpochMsProvider()
+  val wakeCommand = ScheduledTaskWakeCommand(
+    scheduleId = scheduleId,
+    scheduleRunId = scheduledTaskRunId(scheduleId, scheduledForEpochMs),
+    triggeredAtEpochMs = nowEpochMs,
+    triggerReason = ScheduledTaskTriggerReasons.ALARM,
+  )
+  val started = runtimeEnvironment.runtimeServiceAccessGateway.startScheduledTask(
+    appContext,
+    wakeCommand,
+    target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+  )
+  if (!started) {
+    fallbackSchedulerProvider(appContext).scheduleWake(scheduleId, nowEpochMs)
+  }
+  return started
 }
 
 internal fun parseScheduledTaskWakeCommand(intent: Intent?): ScheduledTaskWakeCommand? {

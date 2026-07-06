@@ -1155,6 +1155,80 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun scheduledTaskAlarmWakeRequeuesWorkFallbackWhenServiceStartIsRejected() {
+    val recordedCommands = mutableListOf<ScheduledTaskWakeCommand>()
+    val recordedTargets = mutableListOf<RuntimeServiceTarget>()
+    val workScheduler = RecordingScheduledWorkScheduler()
+    val context = RuntimeEnvironmentContext(
+      environment = OpenCrayRuntimeServiceEnvironment(
+        projectionHostLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+        runtimeServiceAccessGateway = object : RuntimeServiceAccessGateway {
+          override fun ensureClient(
+            context: Context,
+            target: RuntimeServiceTarget,
+          ): OpenCrayRuntimeServiceClient = error("Unexpected client access.")
+
+          override fun startScheduledTask(
+            context: Context,
+            command: ScheduledTaskWakeCommand,
+            target: RuntimeServiceTarget,
+          ): Boolean {
+            recordedCommands += command
+            recordedTargets += target
+            return false
+          }
+
+          override fun repairSchedules(
+            context: Context,
+            repairReason: String,
+            target: RuntimeServiceTarget,
+          ): Boolean = error("Unexpected schedule repair.")
+
+          override fun resumeInterruptedRuns(
+            context: Context,
+            repairReason: String,
+            target: RuntimeServiceTarget,
+          ): Boolean = error("Unexpected interrupted-run repair.")
+
+          override fun approvalActionPendingIntent(
+            context: Context,
+            action: String,
+            sessionId: String,
+            taskId: String,
+            runId: String,
+            requestCode: Int,
+            target: RuntimeServiceTarget,
+          ): android.app.PendingIntent = error("Unexpected approval pending intent.")
+        },
+      ),
+    )
+
+    val started = dispatchScheduledTaskAlarmWake(
+      context,
+      RecordingCommandIntent()
+        .putExtra(EXTRA_SCHEDULE_ID, "schedule-retry-fallback")
+        .putExtra(EXTRA_SCHEDULED_FOR_EPOCH_MS, 55L),
+      fallbackSchedulerProvider = { workScheduler },
+      nowEpochMsProvider = { 1_234L },
+    )
+
+    assertFalse(started)
+    assertEquals(
+      listOf(RuntimeServiceTarget.DETACHED_BACKGROUND),
+      recordedTargets,
+    )
+    assertEquals("schedule-retry-fallback", recordedCommands.single().scheduleId)
+    assertEquals(
+      ScheduledTaskTriggerReasons.ALARM,
+      recordedCommands.single().triggerReason,
+    )
+    assertEquals(
+      listOf("schedule-retry-fallback" to 1_234L),
+      workScheduler.wakeRequests,
+    )
+  }
+
+  @Test
   fun repairSchedulesOnlyRequestsServiceWakeWithoutCreatingRuntimeHost() {
     val context = MinimalContext()
 
@@ -7229,12 +7303,15 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     }
 
   private class RecordingScheduledWorkScheduler : ScheduledWorkScheduler {
+    val wakeRequests = mutableListOf<Pair<String, Long>>()
     val repairRequests = mutableListOf<Pair<String, Long>>()
 
     override fun scheduleWake(
       scheduleId: String,
       triggerAtEpochMs: Long,
-    ) = Unit
+    ) {
+      wakeRequests += scheduleId to triggerAtEpochMs
+    }
 
     override fun cancel(scheduleId: String) = Unit
 

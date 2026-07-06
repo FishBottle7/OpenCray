@@ -626,6 +626,7 @@ Already landed in app process:
 - scheduled task registry, durable spec storage, and run records
 - `AlarmManager` wake path plus `WorkManager` wake and repair path
 - scheduled trigger sync now registers the next concrete wake with both `AlarmManager` and the `WorkManager` wake fallback, so a resynced enabled schedule is not dependent on the exact-alarm path alone for process-death survivability
+- `AlarmManager` scheduled wake delivery now also falls back to the `WorkManager` wake bridge when the foreground runtime-service start request returns `false`, so an exact alarm delivery that cannot start `:runtime` is requeued into the durable wake path instead of being silently consumed
 - `WorkManager` scheduled wake delivery now preserves the foreground-service start result: if the runtime-service start request is rejected or otherwise returns `false`, `ScheduledTaskWakeWorker` reports `Result.retry()` instead of treating the wake as successfully delivered
 - runtime-service wake entrypoints for scheduled dispatch, schedule repair, and interrupted-run resume repair
 - runtime-service command envelopes with explicit version/kind checks that reject mismatched explicit command versions before foreground/reset dispatch
