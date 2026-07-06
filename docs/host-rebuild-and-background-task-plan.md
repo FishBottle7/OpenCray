@@ -14,6 +14,8 @@ The shared durable text store now also uses per-file sidecar OS locks for read/w
 
 Runtime notification settings save/clear now also use that locked durable update primitive directly, so quiet-hours, delivery-mode, and channel-toggle snapshots no longer go through direct write/delete calls.
 
+Generic JSON record save helpers now also use that locked durable update primitive, so full-record saves for session/soul/chat workspace stores no longer bypass the shared atomic replace path with direct `writeText`.
+
 Managed-process registry snapshots now also save through durable text `updateText`, so reconnect/backoff state persistence no longer depends on direct `writeText` inside the file-backed registry.
 
 E2B sticky workspace sync state now also persists its reusable file manifest through the shared durable text storage under the workspace `.opencray/sandbox-sync` directory, so host rebuild or runtime-process recreate no longer depends on a separate direct writer for that sandbox reconnect hint.

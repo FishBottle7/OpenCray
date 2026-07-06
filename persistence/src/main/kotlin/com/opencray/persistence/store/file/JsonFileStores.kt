@@ -202,7 +202,12 @@ internal fun <T : Any> writeRecord(
   value: T,
 ) {
   val encoded = PersistenceJson.instance.encodeToString(serializer, value)
-  storage.writeText(name, encoded)
+  storage.updateText(name) {
+    DurableTextUpdate(
+      text = encoded,
+      result = Unit,
+    )
+  }
 }
 
 data class RecordStorageUpdate<T : Any, R>(
