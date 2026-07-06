@@ -75,6 +75,73 @@ class AppSettingsImageAssetStoreTest {
   }
 
   @Test
+  fun importImageMergesCurrentDurableIndexWhenStoreCacheIsStale() {
+    val directory = temporaryFolder.newFolder("settings-image-assets-merge")
+    val sourceRoot = temporaryFolder.newFolder("settings-source-merge").toPath()
+    val firstStore = AppSettingsImageAssetStore(
+      directory = directory,
+      nowEpochMs = { 100L },
+    )
+    val secondStore = AppSettingsImageAssetStore(
+      directory = directory,
+      nowEpochMs = { 200L },
+    )
+    val firstPath = writeFile(sourceRoot, "first.png", byteArrayOf(1))
+    val secondPath = writeFile(sourceRoot, "second.png", byteArrayOf(2))
+    val thirdPath = writeFile(sourceRoot, "third.png", byteArrayOf(3))
+
+    assertNotNull(
+      firstStore.importImage(
+        sourcePath = firstPath,
+        displayName = "first.png",
+        mimeType = "image/png",
+      ),
+    )
+    assertNotNull(
+      secondStore.importImage(
+        sourcePath = secondPath,
+        displayName = "second.png",
+        mimeType = "image/png",
+      ),
+    )
+    assertNotNull(
+      firstStore.importImage(
+        sourcePath = thirdPath,
+        displayName = "third.png",
+        mimeType = "image/png",
+      ),
+    )
+
+    val reloadedStore = AppSettingsImageAssetStore(directory = directory)
+    assertEquals(
+      setOf("first.png", "second.png", "third.png"),
+      reloadedStore.list().map(AppSettingsImageAsset::displayName).toSet(),
+    )
+  }
+
+  @Test
+  fun listRefreshesDurableIndexAcrossStoreInstances() {
+    val directory = temporaryFolder.newFolder("settings-image-assets-refresh")
+    val sourceRoot = temporaryFolder.newFolder("settings-source-refresh").toPath()
+    val firstStore = AppSettingsImageAssetStore(directory = directory)
+    val secondStore = AppSettingsImageAssetStore(directory = directory)
+
+    assertTrue(firstStore.list().isEmpty())
+    assertNotNull(
+      secondStore.importImage(
+        sourcePath = writeFile(sourceRoot, "later.png", byteArrayOf(9)),
+        displayName = "later.png",
+        mimeType = "image/png",
+      ),
+    )
+
+    assertEquals(
+      listOf("later.png"),
+      firstStore.list().map(AppSettingsImageAsset::displayName),
+    )
+  }
+
+  @Test
   fun importImageRejectsUnsupportedNonImageFiles() {
     val store = AppSettingsImageAssetStore(
       directory = temporaryFolder.newFolder("settings-image-assets-non-image"),
@@ -96,10 +163,11 @@ class AppSettingsImageAssetStoreTest {
   private fun writeFile(
     root: Path,
     relativePath: String,
+    bytes: ByteArray = byteArrayOf(1, 2, 3, 4),
   ): Path {
     val target = root.resolve(relativePath).normalize()
     Files.createDirectories(requireNotNull(target.parent))
-    Files.write(target, byteArrayOf(1, 2, 3, 4))
+    Files.write(target, bytes)
     return target
   }
 }

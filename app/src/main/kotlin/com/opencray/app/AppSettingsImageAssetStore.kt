@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
 import java.net.URLConnection
@@ -49,7 +50,6 @@ internal class AppSettingsImageAssetStore(
 ) {
   private val root: Path = directory.toPath().toAbsolutePath().normalize()
   private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
-  private var loaded: Boolean = false
   private var entries: MutableMap<String, AppSettingsImageAssetStoreEntry> = linkedMapOf()
 
   @Synchronized
@@ -78,7 +78,7 @@ internal class AppSettingsImageAssetStore(
     }
     val sha256 = sha256Hex(normalizedSourcePath)
     val assetId = "settings-${sha256.take(12)}"
-    ensureLoaded()
+    refreshEntriesLocked()
     entries[assetId]?.let { existingEntry ->
       resolveEntryPath(existingEntry.relativePath)?.let {
         return existingEntry.toAsset()
@@ -110,15 +110,13 @@ internal class AppSettingsImageAssetStore(
       sizeBytes = Files.size(destination),
       createdAtEpochMs = nowEpochMs(),
     )
-    entries[assetId] = entry
-    persistLocked()
-    return entry.toAsset()
+    return persistEntryLocked(entry)
   }
 
   @Synchronized
   fun load(assetId: String): AppSettingsImageAsset? {
     val normalizedAssetId = assetId.trim().takeIf(String::isNotBlank) ?: return null
-    ensureLoaded()
+    refreshEntriesLocked()
     val entry = entries[normalizedAssetId] ?: return null
     return resolveEntryPath(entry.relativePath)?.let { entry.toAsset() }
   }
@@ -126,7 +124,7 @@ internal class AppSettingsImageAssetStore(
   @Synchronized
   fun resolveImageHandle(assetId: String): AppResolvedImageAssetHandle? {
     val normalizedAssetId = assetId.trim().takeIf(String::isNotBlank) ?: return null
-    ensureLoaded()
+    refreshEntriesLocked()
     val entry = entries[normalizedAssetId] ?: return null
     val resolvedPath = resolveEntryPath(entry.relativePath) ?: return null
     return AppResolvedImageAssetHandle(
@@ -138,36 +136,40 @@ internal class AppSettingsImageAssetStore(
 
   @Synchronized
   fun list(): List<AppSettingsImageAsset> {
-    ensureLoaded()
+    refreshEntriesLocked()
     return entries.values
       .filter { entry -> resolveEntryPath(entry.relativePath) != null }
       .map(AppSettingsImageAssetStoreEntry::toAsset)
   }
 
-  private fun ensureLoaded() {
-    if (loaded) {
-      return
-    }
-    loaded = true
-    val snapshot = storage.readText(INDEX_FILE_NAME)
-      ?.takeIf(String::isNotBlank)
-      ?.let { raw ->
-        runCatching {
-          json.decodeFromString<AppSettingsImageAssetStoreSnapshot>(raw)
-        }.getOrNull()
-      }
-    entries = LinkedHashMap(snapshot?.entries ?: emptyMap())
+  private fun refreshEntriesLocked() {
+    entries = LinkedHashMap(decodeSnapshot(storage.readText(INDEX_FILE_NAME)).entries)
   }
 
-  private fun persistLocked() {
-    storage.writeText(
-      INDEX_FILE_NAME,
-      json.encodeToString(
+  private fun persistEntryLocked(
+    entry: AppSettingsImageAssetStoreEntry,
+  ): AppSettingsImageAsset = storage.updateText(INDEX_FILE_NAME) { currentText ->
+    val currentEntries = LinkedHashMap(decodeSnapshot(currentText).entries)
+    val retainedEntry = currentEntries[entry.assetId]
+      ?.takeIf { existingEntry -> resolveEntryPath(existingEntry.relativePath) != null }
+      ?: entry
+    currentEntries[entry.assetId] = retainedEntry
+    entries = currentEntries
+    DurableTextUpdate(
+      text = json.encodeToString(
         AppSettingsImageAssetStoreSnapshot(
-          entries = entries.toMap(),
+          entries = currentEntries.toMap(),
         ),
       ),
+      result = retainedEntry.toAsset(),
     )
+  }
+
+  private fun decodeSnapshot(raw: String?): AppSettingsImageAssetStoreSnapshot {
+    val normalized = raw?.takeIf(String::isNotBlank) ?: return AppSettingsImageAssetStoreSnapshot()
+    return runCatching {
+      json.decodeFromString<AppSettingsImageAssetStoreSnapshot>(normalized)
+    }.getOrNull() ?: AppSettingsImageAssetStoreSnapshot()
   }
 
   private fun resolveEntryPath(relativePath: String): Path? {
