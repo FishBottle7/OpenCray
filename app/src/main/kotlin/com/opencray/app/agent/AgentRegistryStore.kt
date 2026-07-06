@@ -2,6 +2,8 @@ package com.opencray.app.agent
 
 import android.content.Context
 import com.opencray.persistence.PersistenceJson
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
 import kotlinx.serialization.Serializable
@@ -26,17 +28,11 @@ internal data class AgentRegistryRecord(
 
 internal class AgentRegistryStore(
   directory: File,
+  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory),
   private val nowEpochMs: () -> Long = System::currentTimeMillis,
 ) {
-  private val storage = DirectoryDurableTextStorage(directory)
-
   fun load(): AgentRegistryRecord? {
-    val text = storage.readText(FILE_NAME) ?: return null
-    if (text.isBlank()) {
-      return null
-    }
-    return PersistenceJson.instance.decodeFromString(AgentRegistryRecord.serializer(), text)
-      .normalizedRegistryRecord()
+    return decodeRegistryRecord(storage.readText(FILE_NAME))
   }
 
   fun list(includeArchived: Boolean = false): List<AgentDescriptor> =
@@ -62,8 +58,8 @@ internal class AgentRegistryStore(
   fun create(
     descriptor: AgentDescriptor,
     makeActive: Boolean = false,
-  ): AgentRegistryRecord {
-    val current = loadOrEmpty()
+  ): AgentRegistryRecord = storage.updateText(FILE_NAME) { currentText ->
+    val current = loadOrEmpty(currentText)
     require(current.agents.none { existing -> existing.agentId == descriptor.agentId }) {
       "Agent already exists in registry: ${descriptor.agentId}"
     }
@@ -78,7 +74,7 @@ internal class AgentRegistryStore(
       normalizedDescriptor.isArchived -> null
       else -> normalizedDescriptor.agentId
     }
-    return persist(
+    writeRegistryRecord(
       current = current,
       agents = updatedAgents,
       activeAgentId = nextActiveAgentId,
@@ -89,8 +85,8 @@ internal class AgentRegistryStore(
   fun update(
     descriptor: AgentDescriptor,
     makeActive: Boolean = false,
-  ): AgentRegistryRecord {
-    val current = loadOrEmpty()
+  ): AgentRegistryRecord = storage.updateText(FILE_NAME) { currentText ->
+    val current = loadOrEmpty(currentText)
     val existing = current.agents.firstOrNull { entry -> entry.agentId == descriptor.agentId }
       ?: throw IllegalArgumentException("Agent does not exist in registry: ${descriptor.agentId}")
     val now = nowEpochMs().coerceAtLeast(descriptor.updatedAtEpochMs)
@@ -113,7 +109,7 @@ internal class AgentRegistryStore(
       current.activeAgentId == null && !normalizedDescriptor.isArchived -> normalizedDescriptor.agentId
       else -> current.activeAgentId
     }
-    return persist(
+    writeRegistryRecord(
       current = current,
       agents = updatedAgents,
       activeAgentId = nextActiveAgentId,
@@ -121,19 +117,19 @@ internal class AgentRegistryStore(
     )
   }
 
-  fun select(agentId: String): AgentRegistryRecord {
+  fun select(agentId: String): AgentRegistryRecord = storage.updateText(FILE_NAME) { currentText ->
     val normalizedAgentId = AgentPathResolver.normalizeAgentId(agentId)
-    val current = loadOrEmpty()
+    val current = loadOrEmpty(currentText)
     val descriptor = current.agents.firstOrNull { entry -> entry.agentId == normalizedAgentId }
       ?: throw IllegalArgumentException("Agent does not exist in registry: $normalizedAgentId")
     require(!descriptor.isArchived) {
       "Archived agent cannot become active: $normalizedAgentId"
     }
     if (current.activeAgentId == normalizedAgentId) {
-      return current
+      return@updateText keepRegistryRecord(current)
     }
     val now = nowEpochMs().coerceAtLeast(current.updatedAtEpochMs)
-    return persist(
+    writeRegistryRecord(
       current = current,
       agents = current.agents,
       activeAgentId = normalizedAgentId,
@@ -141,13 +137,13 @@ internal class AgentRegistryStore(
     )
   }
 
-  fun archive(agentId: String): AgentRegistryRecord {
+  fun archive(agentId: String): AgentRegistryRecord = storage.updateText(FILE_NAME) { currentText ->
     val normalizedAgentId = AgentPathResolver.normalizeAgentId(agentId)
-    val current = loadOrEmpty()
+    val current = loadOrEmpty(currentText)
     val existing = current.agents.firstOrNull { entry -> entry.agentId == normalizedAgentId }
       ?: throw IllegalArgumentException("Agent does not exist in registry: $normalizedAgentId")
     if (existing.isArchived) {
-      return current
+      return@updateText keepRegistryRecord(current)
     }
     val now = nowEpochMs().coerceAtLeast(existing.updatedAtEpochMs)
     val archivedDescriptor = existing.copy(
@@ -162,7 +158,7 @@ internal class AgentRegistryStore(
     } else {
       current.activeAgentId
     }
-    return persist(
+    writeRegistryRecord(
       current = current,
       agents = updatedAgents,
       activeAgentId = nextActiveAgentId,
@@ -172,8 +168,8 @@ internal class AgentRegistryStore(
 
   fun clear(): Boolean = storage.delete(FILE_NAME)
 
-  private fun loadOrEmpty(): AgentRegistryRecord {
-    val loaded = load()
+  private fun loadOrEmpty(text: String?): AgentRegistryRecord {
+    val loaded = decodeRegistryRecord(text)
     if (loaded != null) {
       return loaded
     }
@@ -187,12 +183,12 @@ internal class AgentRegistryStore(
     )
   }
 
-  private fun persist(
+  private fun writeRegistryRecord(
     current: AgentRegistryRecord,
     agents: List<AgentDescriptor>,
     activeAgentId: String?,
     updatedAtEpochMs: Long,
-  ): AgentRegistryRecord {
+  ): DurableTextUpdate<AgentRegistryRecord> {
     val normalizedActiveAgentId = activeAgentId?.takeIf { candidate ->
       agents.any { descriptor -> descriptor.agentId == candidate && !descriptor.isArchived }
     }
@@ -203,11 +199,27 @@ internal class AgentRegistryStore(
       updatedAtEpochMs = updatedAtEpochMs,
       recordVersion = current.recordVersion + 1L,
     )
-    storage.writeText(
-      FILE_NAME,
-      PersistenceJson.instance.encodeToString(AgentRegistryRecord.serializer(), updated),
+    return DurableTextUpdate(
+      text = PersistenceJson.instance.encodeToString(AgentRegistryRecord.serializer(), updated),
+      result = updated,
     )
-    return updated
+  }
+
+  private fun keepRegistryRecord(
+    record: AgentRegistryRecord,
+  ): DurableTextUpdate<AgentRegistryRecord> = DurableTextUpdate(
+    text = null,
+    result = record,
+    write = false,
+  )
+
+  private fun decodeRegistryRecord(text: String?): AgentRegistryRecord? {
+    val encoded = text ?: return null
+    if (encoded.isBlank()) {
+      return null
+    }
+    return PersistenceJson.instance.decodeFromString(AgentRegistryRecord.serializer(), encoded)
+      .normalizedRegistryRecord()
   }
 
   private fun AgentRegistryRecord.normalizedRegistryRecord(): AgentRegistryRecord {

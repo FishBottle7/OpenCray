@@ -1,5 +1,7 @@
 package com.opencray.app.agent
 
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -89,5 +91,87 @@ class AgentRegistryStoreTest {
     assertEquals("high", persisted.plasticity)
     assertEquals("agent-original", updated.activeAgentId)
     assertFalse(persisted.isArchived)
+  }
+
+  @Test
+  fun mutationsUseAtomicStorageUpdatePath() {
+    var now = 300L
+    val storage = UpdateOnlyAgentRegistryTextStorage()
+    val store = AgentRegistryStore(
+      directory = temporaryFolder.newFolder("registry-update-path"),
+      nowEpochMs = { now++ },
+      storage = storage,
+    )
+    val first = agentDescriptor("agent-first", displayName = "First")
+    val second = agentDescriptor("agent-second", displayName = "Second")
+
+    store.create(first, makeActive = false)
+    store.create(second, makeActive = false)
+    store.update(second.copy(displayName = "Second renamed"), makeActive = true)
+    store.select("agent-second")
+    store.archive("agent-second")
+
+    assertEquals("agent-first", store.activeAgentId())
+    assertEquals("Second renamed", store.loadAgent("agent-second")?.displayName)
+    assertTrue(store.loadAgent("agent-second")?.isArchived == true)
+    assertEquals(5, storage.updateTextCallCount)
+    assertEquals(4, storage.appliedWriteCount)
+    assertEquals(0, storage.writeTextCallCount)
+    assertTrue(storage.deletedNames.isEmpty())
+  }
+
+  private fun agentDescriptor(
+    agentId: String,
+    displayName: String,
+  ): AgentDescriptor = AgentDescriptor(
+    agentId = agentId,
+    displayName = displayName,
+    createdAtEpochMs = 30L,
+    updatedAtEpochMs = 30L,
+    presetName = "STEADY",
+    plasticity = "medium",
+    activeSessionId = "session-$agentId",
+  )
+}
+
+private class UpdateOnlyAgentRegistryTextStorage : DurableTextStorage {
+  var updateTextCallCount: Int = 0
+    private set
+  var appliedWriteCount: Int = 0
+    private set
+  var writeTextCallCount: Int = 0
+    private set
+  val deletedNames = mutableListOf<String>()
+
+  private var textByName = linkedMapOf<String, String>()
+
+  override fun readText(name: String): String? = textByName[name]
+
+  override fun writeText(name: String, text: String) {
+    writeTextCallCount += 1
+    error("Agent registry mutations should use updateText.")
+  }
+
+  override fun delete(name: String): Boolean {
+    deletedNames += name
+    return textByName.remove(name) != null
+  }
+
+  override fun <T> updateText(
+    name: String,
+    update: (String?) -> DurableTextUpdate<T>,
+  ): T {
+    updateTextCallCount += 1
+    val updated = update(textByName[name])
+    if (updated.write) {
+      appliedWriteCount += 1
+      val updatedText = updated.text
+      if (updatedText == null) {
+        textByName.remove(name)
+      } else {
+        textByName[name] = updatedText
+      }
+    }
+    return updated.result
   }
 }
