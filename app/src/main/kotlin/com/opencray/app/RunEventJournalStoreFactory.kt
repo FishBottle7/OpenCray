@@ -407,12 +407,12 @@ private class FileBackedRunEventJournalStore(
     )
     val normalized = normalizeJournalEntry(decoded)
     if (normalized != decoded) {
-      file.writeText(
-        PersistenceJson.instance.encodeToString(
+      replaceJournalEntryAtomically(
+        file = file,
+        text = PersistenceJson.instance.encodeToString(
           serializer = PersistedRunJournalEntry.serializer(),
           value = normalized,
         ),
-        Charsets.UTF_8,
       )
     }
     normalized
@@ -435,10 +435,26 @@ private class FileBackedRunEventJournalStore(
     if (file.exists()) {
       throw IOException("Run journal entry already exists: ${file.path}")
     }
-    val tmp = Files.createTempFile(file.parentFile.toPath(), "${file.name}.", ".tmp").toFile()
+    val parentDirectory = file.parentFile
+      ?: throw IOException("Run journal entry must have a parent directory: ${file.path}")
+    val tmp = Files.createTempFile(parentDirectory.toPath(), "${file.name}.", ".tmp").toFile()
     try {
       tmp.writeText(text, Charsets.UTF_8)
       replaceAtomically(tmp = tmp, destination = file)
+    } finally {
+      if (tmp.exists()) {
+        tmp.delete()
+      }
+    }
+  }
+
+  private fun replaceJournalEntryAtomically(file: File, text: String) {
+    val parentDirectory = file.parentFile
+      ?: throw IOException("Run journal entry must have a parent directory: ${file.path}")
+    val tmp = Files.createTempFile(parentDirectory.toPath(), "${file.name}.", ".tmp").toFile()
+    try {
+      tmp.writeText(text, Charsets.UTF_8)
+      replaceExistingAtomically(tmp = tmp, destination = file)
     } finally {
       if (tmp.exists()) {
         tmp.delete()
@@ -457,6 +473,23 @@ private class FileBackedRunEventJournalStore(
       Files.move(
         tmp.toPath(),
         destination.toPath(),
+      )
+    }
+  }
+
+  private fun replaceExistingAtomically(tmp: File, destination: File) {
+    try {
+      Files.move(
+        tmp.toPath(),
+        destination.toPath(),
+        StandardCopyOption.ATOMIC_MOVE,
+        StandardCopyOption.REPLACE_EXISTING,
+      )
+    } catch (_: AtomicMoveNotSupportedException) {
+      Files.move(
+        tmp.toPath(),
+        destination.toPath(),
+        StandardCopyOption.REPLACE_EXISTING,
       )
     }
   }

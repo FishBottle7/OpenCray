@@ -401,6 +401,13 @@ class RunEventJournalStoreFactoryTest {
         ?: true,
     )
     assertFalse(journalFile.readText().contains(encodedPayloadForRecord(legacyToolResultPayload())))
+    val journalFileDirectory = checkNotNull(journalFile.parentFile)
+    assertTrue(
+      journalFileDirectory
+        .listFiles()
+        .orEmpty()
+        .none { file -> file.name.endsWith(".tmp") },
+    )
   }
 
   private fun legacyToolResultPayload(): String = """
