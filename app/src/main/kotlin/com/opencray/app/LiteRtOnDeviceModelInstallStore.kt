@@ -2,6 +2,8 @@ package com.opencray.app
 
 import android.content.Context
 import com.opencray.persistence.PersistenceJson
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
 import kotlinx.serialization.Serializable
@@ -53,62 +55,70 @@ private data class LiteRtOnDeviceModelInstallManifest(
 )
 
 internal open class LiteRtOnDeviceModelInstallStore(
-  private val directory: File,
+  directory: File,
+  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory),
 ) {
-  private val storage = DirectoryDurableTextStorage(directory)
-  private val lock = Any()
-
   open fun load(modelId: String): LiteRtOnDeviceModelInstallRecord? {
     val normalizedModelId = modelId.trim().lowercase().takeIf(String::isNotBlank) ?: return null
     return loadAll().firstOrNull { record -> record.modelId == normalizedModelId }
   }
 
-  open fun loadAll(): List<LiteRtOnDeviceModelInstallRecord> = synchronized(lock) {
-    val raw = storage.readText(INDEX_FILE_NAME)
+  open fun loadAll(): List<LiteRtOnDeviceModelInstallRecord> =
+    decodeManifestRecords(storage.readText(INDEX_FILE_NAME))
+
+  open fun save(record: LiteRtOnDeviceModelInstallRecord) {
+    val normalized = record.sanitized()
+    storage.updateText(INDEX_FILE_NAME) { currentText ->
+      val updated = decodeManifestRecords(currentText)
+        .filterNot { existing -> existing.modelId == normalized.modelId }
+        .plus(normalized)
+        .sortedBy(LiteRtOnDeviceModelInstallRecord::modelId)
+      DurableTextUpdate(
+        text = encodeManifestRecords(updated),
+        result = Unit,
+      )
+    }
+  }
+
+  open fun delete(modelId: String) {
+    val normalizedModelId = modelId.trim().lowercase().takeIf(String::isNotBlank) ?: return
+    storage.updateText(INDEX_FILE_NAME) { currentText ->
+      val updated = decodeManifestRecords(currentText)
+        .filterNot { record -> record.modelId == normalizedModelId }
+      DurableTextUpdate(
+        text = encodeManifestRecords(updated),
+        result = Unit,
+      )
+    }
+  }
+
+  open fun clear(): Boolean = storage.delete(INDEX_FILE_NAME)
+
+  private fun decodeManifestRecords(raw: String?): List<LiteRtOnDeviceModelInstallRecord> {
+    val encoded = raw
       ?.takeIf(String::isNotBlank)
-      ?: return@synchronized emptyList()
+      ?: return emptyList()
     val decoded = runCatching {
       PersistenceJson.instance.decodeFromString(
         LiteRtOnDeviceModelInstallManifest.serializer(),
-        raw,
+        encoded,
       )
     }.getOrElse {
-      return@synchronized emptyList()
+      return emptyList()
     }
-    decoded.records
+    return decoded.records
       .map(LiteRtOnDeviceModelInstallRecord::sanitized)
       .distinctBy(LiteRtOnDeviceModelInstallRecord::modelId)
       .sortedBy(LiteRtOnDeviceModelInstallRecord::modelId)
   }
 
-  open fun save(record: LiteRtOnDeviceModelInstallRecord) = synchronized(lock) {
-    val normalized = record.sanitized()
-    val updated = loadAll()
-      .filterNot { existing -> existing.modelId == normalized.modelId }
-      .plus(normalized)
-      .sortedBy(LiteRtOnDeviceModelInstallRecord::modelId)
-    persistLocked(updated)
-  }
-
-  open fun delete(modelId: String) = synchronized(lock) {
-    val normalizedModelId = modelId.trim().lowercase().takeIf(String::isNotBlank) ?: return@synchronized
-    val updated = loadAll().filterNot { record -> record.modelId == normalizedModelId }
-    persistLocked(updated)
-  }
-
-  open fun clear(): Boolean = synchronized(lock) {
-    storage.delete(INDEX_FILE_NAME)
-  }
-
-  private fun persistLocked(records: List<LiteRtOnDeviceModelInstallRecord>) {
-    storage.writeText(
-      INDEX_FILE_NAME,
-      PersistenceJson.instance.encodeToString(
-        LiteRtOnDeviceModelInstallManifest.serializer(),
-        LiteRtOnDeviceModelInstallManifest(records = records),
-      ),
+  private fun encodeManifestRecords(
+    records: List<LiteRtOnDeviceModelInstallRecord>,
+  ): String =
+    PersistenceJson.instance.encodeToString(
+      LiteRtOnDeviceModelInstallManifest.serializer(),
+      LiteRtOnDeviceModelInstallManifest(records = records),
     )
-  }
 
   companion object {
     private const val INDEX_FILE_NAME: String = "install-state.json"
