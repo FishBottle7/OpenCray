@@ -4,6 +4,7 @@ import android.content.Context
 import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
 import kotlinx.serialization.Serializable
@@ -31,6 +32,14 @@ internal interface RuntimeServiceProjectionStore {
 internal fun inMemoryRuntimeServiceProjectionStore(): RuntimeServiceProjectionStore =
   InMemoryRuntimeServiceProjectionStore()
 
+internal fun fileBackedRuntimeServiceProjectionStore(
+  storage: DurableTextStorage,
+  target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
+): RuntimeServiceProjectionStore = FileBackedRuntimeServiceProjectionStore(
+  storage = storage,
+  fileName = runtimeServiceProjectionFileNameForTarget(target),
+)
+
 internal class FileBackedRuntimeServiceProjectionStoreFactory(
   private val runtimeRootDirectory: File,
 ) {
@@ -42,7 +51,7 @@ internal class FileBackedRuntimeServiceProjectionStoreFactory(
     }
     return FileBackedRuntimeServiceProjectionStore(
       storage = DirectoryDurableTextStorage(runtimeRootDirectory),
-      fileName = fileNameForTarget(target),
+      fileName = runtimeServiceProjectionFileNameForTarget(target),
     )
   }
 
@@ -55,10 +64,11 @@ internal class FileBackedRuntimeServiceProjectionStoreFactory(
         ),
       )
 
-    private fun fileNameForTarget(target: RuntimeServiceTarget): String =
-      "runtime-service-projection-${target.wireValue}.json"
   }
 }
+
+private fun runtimeServiceProjectionFileNameForTarget(target: RuntimeServiceTarget): String =
+  "runtime-service-projection-${target.wireValue}.json"
 
 internal fun OpenCrayRuntimeServiceBridgeSnapshot.toProjectionSnapshot(): RuntimeServiceProjectionSnapshot =
   RuntimeServiceProjectionSnapshot(
@@ -102,13 +112,14 @@ private class FileBackedRuntimeServiceProjectionStore(
 
   override fun saveSnapshot(snapshot: RuntimeServiceProjectionSnapshot) {
     synchronized(lock) {
-      storage.writeText(
-        fileName,
-        PersistenceJson.instance.encodeToString(
-          serializer = PersistedRuntimeServiceProjectionRecord.serializer(),
-          value = snapshot.toPersistedRecord(),
-        ),
-      )
+      storage.updateText(fileName) { currentText ->
+        val currentSnapshot = decodeRecordOrNull(currentText)?.toSnapshot()
+        val mergedSnapshot = snapshot.withRetainedNewerCollateral(currentSnapshot)
+        DurableTextUpdate(
+          text = encodeRecord(mergedSnapshot.toPersistedRecord()),
+          result = Unit,
+        )
+      }
     }
   }
 
@@ -119,16 +130,74 @@ private class FileBackedRuntimeServiceProjectionStore(
   }
 
   private fun loadRecord(): PersistedRuntimeServiceProjectionRecord? {
-    val encoded = storage.readText(fileName).orEmpty().trim()
-    if (encoded.isBlank()) {
-      return null
-    }
-    return PersistenceJson.instance.decodeFromString(
-      deserializer = PersistedRuntimeServiceProjectionRecord.serializer(),
-      string = encoded,
-    )
+    return decodeRecord(storage.readText(fileName))
   }
 }
+
+private fun RuntimeServiceProjectionSnapshot.withRetainedNewerCollateral(
+  currentSnapshot: RuntimeServiceProjectionSnapshot?,
+): RuntimeServiceProjectionSnapshot {
+  if (currentSnapshot == null) {
+    return this
+  }
+  return copy(
+    runtimeServiceOwnerLease = runtimeServiceOwnerLease.newerProjectionThan(
+      currentSnapshot.runtimeServiceOwnerLease,
+    ),
+    lastInterruptedRunRepair = lastInterruptedRunRepair.newerProjectionThan(
+      currentSnapshot.lastInterruptedRunRepair,
+    ),
+  )
+}
+
+private fun RuntimeServiceOwnerLease?.newerProjectionThan(
+  current: RuntimeServiceOwnerLease?,
+): RuntimeServiceOwnerLease? = when {
+  this == null -> current
+  current == null -> this
+  projectionUpdatedAtEpochMs() >= current.projectionUpdatedAtEpochMs() -> this
+  else -> current
+}
+
+private fun RuntimeServiceOwnerLease.projectionUpdatedAtEpochMs(): Long = maxOf(
+  heartbeatAtEpochMs,
+  releasedAtEpochMs ?: 0L,
+  lastAcquireFailure?.attemptedAtEpochMs ?: 0L,
+)
+
+private fun RuntimeServiceInterruptedRunRepairProjection?.newerProjectionThan(
+  current: RuntimeServiceInterruptedRunRepairProjection?,
+): RuntimeServiceInterruptedRunRepairProjection? = when {
+  this == null -> current
+  current == null -> this
+  recordedAtEpochMs >= current.recordedAtEpochMs -> this
+  else -> current
+}
+
+private fun decodeRecord(
+  encoded: String?,
+): PersistedRuntimeServiceProjectionRecord? {
+  val normalized = encoded.orEmpty().trim()
+  if (normalized.isBlank()) {
+    return null
+  }
+  return PersistenceJson.instance.decodeFromString(
+    deserializer = PersistedRuntimeServiceProjectionRecord.serializer(),
+    string = normalized,
+  )
+}
+
+private fun decodeRecordOrNull(
+  encoded: String?,
+): PersistedRuntimeServiceProjectionRecord? = runCatching {
+  decodeRecord(encoded)
+}.getOrNull()
+
+private fun encodeRecord(record: PersistedRuntimeServiceProjectionRecord): String =
+  PersistenceJson.instance.encodeToString(
+    serializer = PersistedRuntimeServiceProjectionRecord.serializer(),
+    value = record,
+  )
 
 private fun RuntimeServiceProjectionSnapshot.toPersistedRecord():
   PersistedRuntimeServiceProjectionRecord = PersistedRuntimeServiceProjectionRecord(
