@@ -3,6 +3,7 @@ package com.opencray.app
 import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
 import kotlinx.serialization.Serializable
@@ -10,24 +11,21 @@ import kotlinx.serialization.Serializable
 internal class MemoryDebugActionAuditStore(
   directory: File,
   private val maxEntries: Int = DEFAULT_MAX_ENTRIES,
+  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory),
 ) {
-  private val lock = Any()
-  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
-
   init {
     require(maxEntries >= 1) { "MemoryDebugActionAuditStore maxEntries must be >= 1." }
   }
 
-  fun list(): List<MemoryDebugActionAuditEntry> = synchronized(lock) {
-    loadRecord().entries.sortedWith(
+  fun list(): List<MemoryDebugActionAuditEntry> =
+    loadRecord(storage.readText(FILE_NAME)).entries.sortedWith(
       compareByDescending<MemoryDebugActionAuditEntry>(MemoryDebugActionAuditEntry::occurredAtEpochMs)
         .thenBy(MemoryDebugActionAuditEntry::entryId),
     )
-  }
 
   fun append(entry: MemoryDebugActionAuditEntry) {
-    synchronized(lock) {
-      val existing = loadRecord()
+    storage.updateText(FILE_NAME) { currentText ->
+      val existing = loadRecord(currentText)
       val retainedEntries = (
         existing.entries.filterNot { persisted -> persisted.entryId == entry.entryId } + entry
         )
@@ -54,12 +52,10 @@ internal class MemoryDebugActionAuditStore(
     }
   }
 
-  fun clear(): Boolean = synchronized(lock) {
-    storage.delete(FILE_NAME)
-  }
+  fun clear(): Boolean = storage.delete(FILE_NAME)
 
-  private fun loadRecord(): MemoryDebugActionAuditRecord {
-    val encoded = storage.readText(FILE_NAME).orEmpty().trim()
+  private fun loadRecord(text: String?): MemoryDebugActionAuditRecord {
+    val encoded = text.orEmpty().trim()
     if (encoded.isBlank()) {
       return MemoryDebugActionAuditRecord()
     }
@@ -69,15 +65,16 @@ internal class MemoryDebugActionAuditStore(
     )
   }
 
-  private fun saveRecord(record: MemoryDebugActionAuditRecord) {
-    storage.writeText(
-      FILE_NAME,
-      PersistenceJson.instance.encodeToString(
+  private fun saveRecord(
+    record: MemoryDebugActionAuditRecord,
+  ): DurableTextUpdate<Unit> =
+    DurableTextUpdate(
+      text = PersistenceJson.instance.encodeToString(
         serializer = MemoryDebugActionAuditRecord.serializer(),
         value = record,
       ),
+      result = Unit,
     )
-  }
 
   @Serializable
   private data class MemoryDebugActionAuditRecord(
