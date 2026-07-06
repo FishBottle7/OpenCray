@@ -130,7 +130,7 @@ private class FileBackedRuntimeServiceProjectionStore(
   }
 
   private fun loadRecord(): PersistedRuntimeServiceProjectionRecord? {
-    return decodeRecord(storage.readText(fileName))
+    return decodeRecordOrNull(storage.readText(fileName))
   }
 }
 

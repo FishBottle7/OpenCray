@@ -411,6 +411,7 @@ Current state:
 - telemetry/privacy-guard settings now default to the runtime-root durable update path instead of defaulting to process-local `SharedPreferences`, so settings UI saves, service-owned settings reads, and projection fallback use the same process-safe telemetry/privacy state after legacy migration
 - mid-loop supplement append/consume now uses that same process-safe update primitive, so host/service rebuild paths do not lose newer supplement input while consuming an older pending set
 - transcript fallback append/replace/repair now uses that same process-safe update primitive, so host/service rebuild paths do not lose newer transcript fallback events while journal-backed replay remains preferred
+- malformed runtime-service projection snapshots now load as missing instead of throwing, so host rebuild and binder-unavailable diagnostics can fall back to queue, journal, registry, or work-summary evidence until the service rewrites a clean projection snapshot
 
 Conclusion:
 

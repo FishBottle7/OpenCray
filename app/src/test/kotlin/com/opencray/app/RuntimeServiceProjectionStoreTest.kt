@@ -236,6 +236,23 @@ class RuntimeServiceProjectionStoreTest {
     assertEquals(newerRepair, loaded.lastInterruptedRunRepair)
   }
 
+  @Test
+  fun fileBackedProjectionStoreTreatsCorruptSnapshotAsMissingAndCanRecover() {
+    val storage = StaleReadDurableTextStorage()
+    val store = fileBackedRuntimeServiceProjectionStore(
+      storage = storage,
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    )
+    storage.writeText("ignored", "{not-json")
+
+    assertNull(store.loadSnapshot())
+
+    val expected = projectionSnapshot(activeRunCount = 2)
+    store.saveSnapshot(expected)
+
+    assertEquals(expected, store.loadSnapshot())
+  }
+
   private fun projectionSnapshot(
     activeRunCount: Int,
   ): RuntimeServiceProjectionSnapshot = RuntimeServiceProjectionSnapshot(
