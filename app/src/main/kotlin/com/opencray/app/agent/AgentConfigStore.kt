@@ -2,28 +2,32 @@ package com.opencray.app.agent
 
 import android.content.Context
 import com.opencray.persistence.PersistenceJson
-import java.nio.charset.StandardCharsets
-import java.nio.file.Files
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption
 import kotlinx.serialization.SerializationException
 
 internal class AgentConfigStore(
   private val pathResolver: AgentPathResolver,
+  private val storageFactory: (Path) -> DurableTextStorage = { privateRoot ->
+    DirectoryDurableTextStorage(privateRoot.toFile())
+  },
 ) {
   fun load(agentId: String): AgentConfig? {
-    val file = fileFor(agentId)
-    if (!Files.exists(file)) {
-      return null
-    }
-    val text = String(Files.readAllBytes(file), StandardCharsets.UTF_8)
+    val paths = pathResolver.resolve(agentId)
+    val text = storageFor(paths).readText(AgentPathResolver.PRIVATE_CONFIG_FILE_NAME)
+      ?: return null
     if (text.isBlank()) {
       return null
     }
     return try {
       PersistenceJson.instance.decodeFromString(AgentConfig.serializer(), text)
     } catch (error: SerializationException) {
-      throw IllegalStateException("Failed to decode persisted agent config: $file", error)
+      throw IllegalStateException(
+        "Failed to decode persisted agent config: ${paths.privateConfigFile}",
+        error,
+      )
     }
   }
 
@@ -34,23 +38,27 @@ internal class AgentConfigStore(
     require(config.agentId == AgentPathResolver.normalizeAgentId(agentId)) {
       "AgentConfig must be saved under its owning agent id."
     }
-    val file = fileFor(agentId)
-    val parent = requireNotNull(file.parent) {
-      "Agent config file must have a parent directory."
+    val paths = pathResolver.resolve(agentId)
+    storageFor(paths).updateText(AgentPathResolver.PRIVATE_CONFIG_FILE_NAME) {
+      DurableTextUpdate(
+        text = PersistenceJson.instance.encodeToString(AgentConfig.serializer(), config),
+        result = Unit,
+      )
     }
-    Files.createDirectories(parent)
-    Files.write(
-      file,
-      PersistenceJson.instance.encodeToString(AgentConfig.serializer(), config).toByteArray(StandardCharsets.UTF_8),
-      StandardOpenOption.CREATE,
-      StandardOpenOption.TRUNCATE_EXISTING,
-      StandardOpenOption.WRITE,
-    )
   }
 
-  fun clear(agentId: String): Boolean = Files.deleteIfExists(fileFor(agentId))
+  fun clear(agentId: String): Boolean {
+    val paths = pathResolver.resolve(agentId)
+    return storageFor(paths).updateText(AgentPathResolver.PRIVATE_CONFIG_FILE_NAME) { currentText ->
+      DurableTextUpdate(
+        text = null,
+        result = currentText != null,
+      )
+    }
+  }
 
-  private fun fileFor(agentId: String): Path = pathResolver.resolve(agentId).privateConfigFile
+  private fun storageFor(paths: AgentStoragePaths): DurableTextStorage =
+    storageFactory(paths.privateRoot)
 
   companion object {
     fun fromContext(context: Context): AgentConfigStore =

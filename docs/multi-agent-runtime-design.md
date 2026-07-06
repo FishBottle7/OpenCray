@@ -659,6 +659,10 @@ Recommended files to add:
 - `app/src/main/kotlin/com/opencray/app/agent/AgentConfigStore.kt`
 - `app/src/main/kotlin/com/opencray/app/agent/AgentSoulProfileStore.kt`
 
+Current implementation note:
+
+- `AgentConfigStore` still writes `agents/<agentId>/private/agent-config.json`, but save/clear now use shared durable text storage and the locked update primitive so foreground bootstrap and service/runtime agent-scope readers do not race through direct truncate writes.
+
 Recommended refactors:
 
 - refactor `WorkspaceSoulProfileStore` into a path-based implementation that can back both:
