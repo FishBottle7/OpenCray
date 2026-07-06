@@ -3,6 +3,8 @@ package com.opencray.app
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.AgentTaskType
+import com.opencray.core.contracts.ExecutionResult
+import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
@@ -12,6 +14,8 @@ import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
 import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.process.ManagedProcessRestoreDecision
+import com.opencray.runtime.process.ManagedProcessRestoreScope
 import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
 import com.opencray.runtime.subagent.SubAgentHandleState
 import org.junit.Assert.assertEquals
@@ -386,6 +390,199 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
   }
 
   @Test
+  fun bootstrapRuntimeServiceSessionsKeepsProjectedReconnectEvidenceWithoutDurableStores() {
+    val root = temporaryFolder.newFolder("runtime-service-bootstrap-projected-reconnect")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val projectedSessionId = "session-projected-bootstrap-reconnect"
+    val activeSession = RecordingRuntimeSessionAccess(activeSessionId, runs = emptyList())
+    val projectedSession = RecordingRuntimeSessionAccess(projectedSessionId, runs = emptyList())
+    val runtimeAccess = runtimeAccessForSessions(listOf(activeSession, projectedSession))
+
+    val result = bootstrapRuntimeServiceSessions(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+      runtimeReplayAccess = runtimeAccess.replayAccess,
+      projectedRepairEvidenceBySession = projectedReconnectEvidenceBySession(
+        sessionId = projectedSessionId,
+        runId = "run-projected-bootstrap-reconnect",
+        taskId = "task-projected-bootstrap-reconnect",
+        processId = "process-projected-bootstrap-reconnect",
+      ),
+      nowEpochMs = 2_000L,
+    )
+
+    assertTrue(projectedSessionId in result.scannedSessionIds)
+    assertEquals(emptyList<String>(), result.resumedSessionIds)
+    assertEquals(0, projectedSession.resumeCallCount)
+    assertEquals(2_500L, result.nextRepairAfterEpochMs)
+    assertEquals(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT, result.nextRepairReason)
+    val evidence = result.repairEvidenceBySession.getValue(projectedSessionId)
+    assertEquals(
+      listOf(InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT),
+      evidence.map { it.kind },
+    )
+    val reconnectEvidence = evidence.single()
+    assertEquals(2_500L, reconnectEvidence.repairAfterEpochMs)
+    assertEquals("connecting", reconnectEvidence.managedProcessReconnectStatus)
+    assertEquals("retry_scheduled", reconnectEvidence.managedProcessReconnectRecoveryState)
+    assertEquals(2, reconnectEvidence.managedProcessReconnectAttemptCount)
+    assertEquals(
+      RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS,
+      reconnectEvidence.runtimeExecutionOwnershipTier,
+    )
+    assertEquals("durable-controller-projected-reconnect", reconnectEvidence.durableRuntimeControllerId)
+    assertEquals(
+      ManagedProcessContinuationBases.RECONNECT_HOLD,
+      reconnectEvidence.managedProcessContinuationBasis,
+    )
+    assertEquals(
+      ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+      reconnectEvidence.managedProcessRestoreScope,
+    )
+    assertEquals(
+      ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue,
+      reconnectEvidence.managedProcessRestoreDecision,
+    )
+  }
+
+  @Test
+  fun resumeInterruptedRuntimeServiceRunsDefersRunRecordWithProjectedReconnectBackoff() {
+    val root = temporaryFolder.newFolder("runtime-service-repair-projected-reconnect-run-record")
+    val runtimeRoot = root.resolve("runtime")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val reconnectSessionId = "session-projected-run-record-reconnect"
+    val runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val runRecord = PersistedAgentRunRecord(
+      runId = "run-projected-run-record-reconnect",
+      taskId = "task-projected-run-record-reconnect",
+      acceptedAtEpochMs = 1_000L,
+      managedProcessIds = listOf("process-projected-run-record-reconnect"),
+      lastEvent = com.opencray.runtime.OpenCrayAssistantEvent(
+        runId = "run-projected-run-record-reconnect",
+        taskId = "task-projected-run-record-reconnect",
+        turn = 0,
+        text = "Waiting for projected reconnect.",
+        isFinal = false,
+        emittedAtEpochMs = 1_100L,
+      ).toPersistedRecord(),
+    )
+    runRecordStoreFactory.forChatSession(reconnectSessionId).upsert(runRecord)
+    val activeSession = RecordingRuntimeSessionAccess(activeSessionId, runs = emptyList())
+    val reconnectSession = RecordingRuntimeSessionAccess(reconnectSessionId, runs = emptyList())
+    val runtimeAccess = runtimeAccessForSessions(listOf(activeSession, reconnectSession))
+
+    val result = resumeInterruptedRuntimeServiceRuns(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+      runtimeReplayAccess = runtimeAccess.replayAccess,
+      snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot),
+      promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot),
+      subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory(runtimeRoot),
+      runRecordStoreFactory = runRecordStoreFactory,
+      projectedRepairEvidenceBySession = projectedReconnectEvidenceBySession(
+        sessionId = reconnectSessionId,
+        runId = runRecord.runId,
+        taskId = runRecord.taskId,
+        processId = "process-projected-run-record-reconnect",
+      ),
+      nowEpochMs = 2_000L,
+    )
+
+    assertTrue(reconnectSessionId in result.scannedSessionIds)
+    assertEquals(emptyList<String>(), result.resumedSessionIds)
+    assertEquals(0, reconnectSession.resumeCallCount)
+    assertEquals(2_500L, result.nextRepairAfterEpochMs)
+    assertEquals(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT, result.nextRepairReason)
+    val evidence = result.repairEvidenceBySession.getValue(reconnectSessionId)
+    assertEquals(
+      listOf(
+        InterruptedRunRepairEvidenceKind.RUN_RECORD,
+        InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+      ),
+      evidence.map { it.kind },
+    )
+    val runRecordEvidence = evidence.first { item ->
+      item.kind == InterruptedRunRepairEvidenceKind.RUN_RECORD
+    }
+    assertEquals(2_500L, runRecordEvidence.repairAfterEpochMs)
+    assertEquals("connecting", runRecordEvidence.managedProcessReconnectStatus)
+    assertEquals("retry_scheduled", runRecordEvidence.managedProcessReconnectRecoveryState)
+    assertEquals(2, runRecordEvidence.managedProcessReconnectAttemptCount)
+    assertEquals(
+      RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS,
+      runRecordEvidence.runtimeExecutionOwnershipTier,
+    )
+    assertEquals("durable-controller-projected-reconnect", runRecordEvidence.durableRuntimeControllerId)
+    assertEquals(
+      ManagedProcessContinuationBases.RECONNECT_HOLD,
+      runRecordEvidence.managedProcessContinuationBasis,
+    )
+    assertEquals(
+      ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+      runRecordEvidence.managedProcessRestoreScope,
+    )
+    assertEquals(
+      ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue,
+      runRecordEvidence.managedProcessRestoreDecision,
+    )
+  }
+
+  @Test
+  fun resumeInterruptedRuntimeServiceRunsIgnoresProjectedReconnectForTerminalRunRecord() {
+    val root = temporaryFolder.newFolder("runtime-service-repair-projected-reconnect-terminal")
+    val runtimeRoot = root.resolve("runtime")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val terminalSessionId = "session-projected-terminal-reconnect"
+    val runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val terminalRecord = PersistedAgentRunRecord(
+      runId = "run-projected-terminal-reconnect",
+      taskId = "task-projected-terminal-reconnect",
+      acceptedAtEpochMs = 1_000L,
+      managedProcessIds = listOf("process-projected-terminal-reconnect"),
+      lastResult = ExecutionResult(
+        taskId = "task-projected-terminal-reconnect",
+        status = ExecutionStatus.SUCCESS,
+        stdout = "done",
+        stderr = "",
+        errorMessage = null,
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_500L,
+      ),
+    )
+    runRecordStoreFactory.forChatSession(terminalSessionId).upsert(terminalRecord)
+    val activeSession = RecordingRuntimeSessionAccess(activeSessionId, runs = emptyList())
+    val terminalSession = RecordingRuntimeSessionAccess(terminalSessionId, runs = emptyList())
+    val runtimeAccess = runtimeAccessForSessions(listOf(activeSession, terminalSession))
+
+    val result = resumeInterruptedRuntimeServiceRuns(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+      runtimeReplayAccess = runtimeAccess.replayAccess,
+      snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot),
+      promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot),
+      subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory(runtimeRoot),
+      runRecordStoreFactory = runRecordStoreFactory,
+      projectedRepairEvidenceBySession = projectedReconnectEvidenceBySession(
+        sessionId = terminalSessionId,
+        runId = terminalRecord.runId,
+        taskId = terminalRecord.taskId,
+        processId = "process-projected-terminal-reconnect",
+      ),
+      nowEpochMs = 2_000L,
+    )
+
+    assertTrue(terminalSessionId in result.scannedSessionIds)
+    assertEquals(emptyList<String>(), result.resumedSessionIds)
+    assertEquals(0, terminalSession.resumeCallCount)
+    assertEquals(null, result.nextRepairAfterEpochMs)
+    assertEquals(null, result.nextRepairReason)
+    assertEquals(null, result.repairEvidenceBySession[terminalSessionId])
+  }
+
+  @Test
   fun resumeInterruptedRuntimeServiceRunsScansDurableRunRecordOnlySessions() {
     val root = temporaryFolder.newFolder("runtime-service-interactive-repair-run-record")
     val runtimeRoot = root.resolve("runtime")
@@ -611,6 +808,57 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     )
     assertEquals(0, recoverySession.ensureProcessingCallCount)
   }
+
+  private fun runtimeAccessForSessions(
+    sessions: List<RecordingRuntimeSessionAccess>,
+    repairedSessions: MutableList<String> = mutableListOf(),
+  ): OpenCrayRuntimeOwnerAccess = OpenCrayRuntimeOwnerAccess(
+    lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+    hostAccess = RecordingRuntimeHostAccess(
+      sessions = sessions.associateBy(RecordingRuntimeSessionAccess::sessionId),
+    ),
+    transcriptMessagesProvider = { emptyList<RuntimeConversationMessage>() },
+    memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
+      memoryStore = InMemoryMemoryStore(),
+    ),
+    replayAccess = OpenCrayRuntimeReplayAccess(
+      approvalRejectionRecorder = { _, _, _, _, _, _ -> },
+      approvalApprovedRecorder = { _, _, _, _, _, _ -> },
+      subAgentReplayRecorder = { _, _ -> },
+      runCancellationRecorder = { _, _, _, _, _ -> },
+      terminalReplayRepairer = { sessionId, _ ->
+        repairedSessions += sessionId
+      },
+    ),
+  )
+
+  private fun projectedReconnectEvidenceBySession(
+    sessionId: String,
+    runId: String,
+    taskId: String,
+    processId: String,
+    repairAfterEpochMs: Long = 2_500L,
+  ): Map<String, List<InterruptedRunRepairEvidence>> = mapOf(
+    sessionId to listOf(
+      InterruptedRunRepairEvidence(
+        sessionId = sessionId,
+        kind = InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+        target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+        runId = runId,
+        taskId = taskId,
+        detailId = processId,
+        repairAfterEpochMs = repairAfterEpochMs,
+        managedProcessReconnectStatus = "connecting",
+        managedProcessReconnectRecoveryState = "retry_scheduled",
+        managedProcessReconnectAttemptCount = 2,
+        runtimeExecutionOwnershipTier = RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS,
+        durableRuntimeControllerId = "durable-controller-projected-reconnect",
+        managedProcessContinuationBasis = ManagedProcessContinuationBases.RECONNECT_HOLD,
+        managedProcessRestoreScope = ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+        managedProcessRestoreDecision = ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue,
+      ),
+    ),
+  )
 
   private class RecordingRuntimeHostAccess(
     private val sessions: Map<String, RecordingRuntimeSessionAccess>,

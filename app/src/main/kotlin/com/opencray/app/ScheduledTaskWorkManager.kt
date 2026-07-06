@@ -993,7 +993,7 @@ private fun managedProcessRestoreDecisionForManagedProcess(
   ?.trim()
   ?.takeIf(String::isNotBlank)
 
-private fun List<InterruptedRunRepairEvidence>.withManagedProcessReconnectBackoff():
+internal fun List<InterruptedRunRepairEvidence>.withManagedProcessReconnectBackoff():
   List<InterruptedRunRepairEvidence> {
   val reconnectEvidence = filter { evidence ->
     evidence.kind == InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT &&

@@ -136,6 +136,10 @@ internal fun createRuntimeServiceBootstrapAssembly(
       context = appContext,
       restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
     ),
+    projectedRepairEvidenceBySession = projectedInterruptedRunRepairEvidenceBySession(
+      appContext = appContext,
+      runtimeTarget = runtimeTarget,
+    ),
   )
   scheduleNextInterruptedRunRepairRetry(
     workScheduler = bootstrap.scheduledWorkScheduler,
@@ -371,6 +375,10 @@ private fun RuntimeServiceBootstrapAssembly.toWakeCommandDispatcherDependencies(
           context = bootstrapContext.localizedContext.applicationContext,
           restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
         ),
+        projectedRepairEvidenceBySession = projectedInterruptedRunRepairEvidenceBySession(
+          appContext = bootstrapContext.localizedContext.applicationContext,
+          runtimeTarget = runtimeTarget,
+        ),
       ).also { result ->
         scheduleNextInterruptedRunRepairRetry(
           workScheduler = scheduledWorkScheduler,
@@ -435,6 +443,7 @@ internal fun bootstrapRuntimeServiceSessions(
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
   processRegistryFactory: AgentProcessRegistryFactory? = null,
+  projectedRepairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
   nowEpochMs: Long = System.currentTimeMillis(),
 ): RuntimeServiceBootstrapResult {
   val knownSessionIds = recoveryCandidateSessionIds(
@@ -445,6 +454,7 @@ internal fun bootstrapRuntimeServiceSessions(
     runRecordStoreFactory = runRecordStoreFactory,
     runEventJournalStoreFactory = runEventJournalStoreFactory,
     processRegistryFactory = processRegistryFactory,
+    projectedRepairEvidenceBySession = projectedRepairEvidenceBySession,
   )
   val resumedSessionIds = mutableListOf<String>()
   val repairedSessionIds = mutableListOf<String>()
@@ -461,17 +471,25 @@ internal fun bootstrapRuntimeServiceSessions(
       runEventJournalStoreFactory = runEventJournalStoreFactory,
       processRegistryFactory = processRegistryFactory,
     )
-    val dueDurableRepairEvidence = dueInterruptedRunRepairEvidence(
-      evidence = durableRepairEvidence,
+    val repairEvidence = mergedInterruptedRunRepairEvidence(
+      durableRepairEvidence = durableRepairEvidence,
+      projectedRepairEvidence = projectedRepairEvidenceForSession(
+        sessionId = sessionId,
+        projectedRepairEvidenceBySession = projectedRepairEvidenceBySession,
+        runRecordStoreFactory = runRecordStoreFactory,
+      ),
+    )
+    val dueRepairEvidence = dueInterruptedRunRepairEvidence(
+      evidence = repairEvidence,
       nowEpochMs = nowEpochMs,
     )
-    if (durableRepairEvidence.isNotEmpty()) {
-      repairEvidenceBySession[sessionId] = durableRepairEvidence
+    if (repairEvidence.isNotEmpty()) {
+      repairEvidenceBySession[sessionId] = repairEvidence
     }
     val shouldResume = session.hasPendingWork() ||
       session.hasLiveManagedProcesses() ||
       session.hasLiveSubAgentWork() ||
-      dueDurableRepairEvidence.isNotEmpty()
+      dueRepairEvidence.isNotEmpty()
     if (!shouldResume) {
       return@forEach
     }
@@ -511,6 +529,7 @@ internal fun resumeInterruptedRuntimeServiceRuns(
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
   processRegistryFactory: AgentProcessRegistryFactory? = null,
+  projectedRepairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
   nowEpochMs: Long = System.currentTimeMillis(),
 ): RuntimeServiceInterruptedRunRepairResult {
   val knownSessionIds = recoveryCandidateSessionIds(
@@ -521,6 +540,7 @@ internal fun resumeInterruptedRuntimeServiceRuns(
     runRecordStoreFactory = runRecordStoreFactory,
     runEventJournalStoreFactory = runEventJournalStoreFactory,
     processRegistryFactory = processRegistryFactory,
+    projectedRepairEvidenceBySession = projectedRepairEvidenceBySession,
   )
   val resumedSessionIds = mutableListOf<String>()
   val repairedSessionIds = mutableListOf<String>()
@@ -538,16 +558,24 @@ internal fun resumeInterruptedRuntimeServiceRuns(
       runEventJournalStoreFactory = runEventJournalStoreFactory,
       processRegistryFactory = processRegistryFactory,
     )
-    val dueDurableRepairEvidence = dueInterruptedRunRepairEvidence(
-      evidence = durableRepairEvidence,
+    val repairEvidence = mergedInterruptedRunRepairEvidence(
+      durableRepairEvidence = durableRepairEvidence,
+      projectedRepairEvidence = projectedRepairEvidenceForSession(
+        sessionId = sessionId,
+        projectedRepairEvidenceBySession = projectedRepairEvidenceBySession,
+        runRecordStoreFactory = runRecordStoreFactory,
+      ),
+    )
+    val dueRepairEvidence = dueInterruptedRunRepairEvidence(
+      evidence = repairEvidence,
       nowEpochMs = nowEpochMs,
     )
-    if (durableRepairEvidence.isNotEmpty()) {
-      repairEvidenceBySession[sessionId] = durableRepairEvidence
+    if (repairEvidence.isNotEmpty()) {
+      repairEvidenceBySession[sessionId] = repairEvidence
     }
     val shouldResume = runs.any(AgentRunSnapshot::isActive) ||
       session.hasLiveSubAgentWork() ||
-      dueDurableRepairEvidence.isNotEmpty()
+      dueRepairEvidence.isNotEmpty()
     if (!shouldResume) {
       return@forEach
     }
@@ -604,6 +632,51 @@ private fun durableInteractiveRepairEvidenceForSession(
   )
 }
 
+private fun projectedInterruptedRunRepairEvidenceBySession(
+  appContext: Context,
+  runtimeTarget: RuntimeServiceTarget,
+): Map<String, List<InterruptedRunRepairEvidence>> =
+  runCatching {
+    FileBackedRuntimeServiceProjectionStoreFactory
+      .fromContext(appContext)
+      .create(runtimeTarget)
+      .loadSnapshot()
+      ?.lastInterruptedRunRepair
+      ?.repairEvidenceBySession
+      .orEmpty()
+  }.getOrDefault(emptyMap())
+
+private fun mergedInterruptedRunRepairEvidence(
+  durableRepairEvidence: List<InterruptedRunRepairEvidence>,
+  projectedRepairEvidence: List<InterruptedRunRepairEvidence>,
+): List<InterruptedRunRepairEvidence> =
+  (durableRepairEvidence + projectedRepairEvidence)
+    .distinct()
+    .withManagedProcessReconnectBackoff()
+
+private fun projectedRepairEvidenceForSession(
+  sessionId: String,
+  projectedRepairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>>,
+  runRecordStoreFactory: AgentRunRecordStoreFactory?,
+): List<InterruptedRunRepairEvidence> {
+  val projectedRepairEvidence = projectedRepairEvidenceBySession[sessionId].orEmpty()
+  if (projectedRepairEvidence.isEmpty() || runRecordStoreFactory == null) {
+    return projectedRepairEvidence
+  }
+  val terminalRunIds = runCatching {
+    runRecordStoreFactory.forChatSession(sessionId)
+      .list()
+      .filter { record -> record.lastResult != null }
+      .mapTo(mutableSetOf(), PersistedAgentRunRecord::runId)
+  }.getOrDefault(emptySet())
+  if (terminalRunIds.isEmpty()) {
+    return projectedRepairEvidence
+  }
+  return projectedRepairEvidence.filterNot { evidence ->
+    evidence.runId != null && evidence.runId in terminalRunIds
+  }
+}
+
 internal fun recoveryCandidateSessionIds(
   chatSessionStore: ChatSessionLocalStore,
   snapshotStoreFactory: AgentQueueSnapshotStoreFactory?,
@@ -612,6 +685,7 @@ internal fun recoveryCandidateSessionIds(
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
   processRegistryFactory: AgentProcessRegistryFactory? = null,
+  projectedRepairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
 ): List<String> = buildSet {
   addAll(knownChatSessionIds(chatSessionStore))
   snapshotStoreFactory?.knownSessionIds()?.let(::addAll)
@@ -620,4 +694,5 @@ internal fun recoveryCandidateSessionIds(
   runRecordStoreFactory?.knownSessionIds()?.let(::addAll)
   runEventJournalStoreFactory?.knownSessionIds()?.let(::addAll)
   processRegistryFactory?.knownSessionIds()?.let(::addAll)
+  addAll(projectedRepairEvidenceBySession.keys)
 }.toList()
