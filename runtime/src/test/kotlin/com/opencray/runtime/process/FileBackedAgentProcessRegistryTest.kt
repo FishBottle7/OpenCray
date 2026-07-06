@@ -3,6 +3,8 @@ package com.opencray.runtime.process
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.persistence.PersistenceSchemaVersion
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.runtime.PythonExecRequest
 import com.opencray.runtime.PythonScriptRuntime
 import java.io.File
@@ -902,6 +904,51 @@ class FileBackedAgentProcessRegistryTest {
   }
 
   @Test
+  fun fileBackedRegistryPersistsSnapshotsThroughDurableUpdatePrimitive() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-update-primitive")
+    val storage = UpdateOnlyDurableTextStorage()
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      storage = storage,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        FakeManagedProcessController(
+          snapshot = runningSnapshot(processId = request.processId, taskId = request.taskId),
+          awaitSnapshot = successSnapshot(processId = request.processId, taskId = request.taskId),
+        )
+      },
+    )
+
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-update",
+        taskId = "task-update",
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        timeoutMs = 120_000L,
+        requestedAtEpochMs = 1_000L,
+      ),
+    )
+
+    assertEquals(1, storage.updateTextCallCount)
+    assertTrue(storage.currentText.orEmpty().contains("proc-update"))
+    val updateCallsAfterStart = storage.updateTextCallCount
+
+    registry.wait("proc-update", 250L)
+
+    assertTrue(storage.updateTextCallCount > updateCallsAfterStart)
+    assertTrue(storage.currentText.orEmpty().contains("SUCCESS"))
+
+    val restored = FileBackedAgentProcessRegistry(
+      directory = directory,
+      storage = storage,
+    ).read("proc-update")
+
+    assertNotNull(restored)
+    assertEquals(ManagedProcessStatus.SUCCESS, restored!!.status)
+  }
+
+  @Test
   fun concurrentFileBackedOwnersDoNotLoseManagedProcessSnapshots() {
     val directory = temporaryFolder.newFolder("durable-process-registry-concurrent-owners")
     val ownerCount = 8
@@ -1019,6 +1066,37 @@ class FileBackedAgentProcessRegistryTest {
     }
 
     override fun terminate(): ManagedProcessSnapshot = currentSnapshot
+  }
+
+  private class UpdateOnlyDurableTextStorage : DurableTextStorage {
+    private var text: String? = null
+    var updateTextCallCount: Int = 0
+      private set
+
+    val currentText: String?
+      get() = text
+
+    override fun readText(name: String): String? = text
+
+    override fun writeText(name: String, text: String) {
+      error("Managed process registry mutations should use updateText.")
+    }
+
+    override fun delete(name: String): Boolean {
+      error("Managed process registry mutations should use updateText.")
+    }
+
+    override fun <T> updateText(
+      name: String,
+      update: (String?) -> DurableTextUpdate<T>,
+    ): T {
+      updateTextCallCount += 1
+      val updated = update(text)
+      if (updated.write) {
+        text = updated.text
+      }
+      return updated.result
+    }
   }
 
   private class CompletingPythonScriptRuntime : PythonScriptRuntime {

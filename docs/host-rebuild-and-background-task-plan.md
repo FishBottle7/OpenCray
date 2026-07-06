@@ -14,6 +14,8 @@ The shared durable text store now also uses per-file sidecar OS locks for read/w
 
 Runtime notification settings save/clear now also use that locked durable update primitive directly, so quiet-hours, delivery-mode, and channel-toggle snapshots no longer go through direct write/delete calls.
 
+Managed-process registry snapshots now also save through durable text `updateText`, so reconnect/backoff state persistence no longer depends on direct `writeText` inside the file-backed registry.
+
 E2B sticky workspace sync state now also persists its reusable file manifest through the shared durable text storage under the workspace `.opencray/sandbox-sync` directory, so host rebuild or runtime-process recreate no longer depends on a separate direct writer for that sandbox reconnect hint.
 LiteRT on-device model install state now also uses that locked durable update path for save/delete, preventing foreground settings actions and background download workers from dropping another model record through stale manifest writes.
 Memory debug action audit append now also uses the locked durable update path, preventing overlapping service/runtime debug actions from dropping another audit entry through stale record writes.

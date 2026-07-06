@@ -3,6 +3,7 @@ package com.opencray.runtime.process
 import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
 import java.io.RandomAccessFile
@@ -434,6 +435,7 @@ class InMemoryAgentProcessRegistry(
 
 class FileBackedAgentProcessRegistry(
   private val directory: File,
+  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory),
   private val controllerFactory: ManagedProcessControllerFactory = LocalManagedProcessControllerFactory(),
   private val config: AgentProcessRegistryConfig = AgentProcessRegistryConfig(),
   private val runtimeIdentity: ManagedProcessRuntimeIdentity = ManagedProcessRuntimeIdentity(),
@@ -441,7 +443,6 @@ class FileBackedAgentProcessRegistry(
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) : AgentProcessRegistry {
   private val lock = Any()
-  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
   private val controllerScopeId: String = buildControllerScopeId(
     directory = directory,
     runtimeIdentity = runtimeIdentity,
@@ -728,13 +729,15 @@ class FileBackedAgentProcessRegistry(
   }
 
   private fun saveRecordLocked(record: ManagedProcessRegistryRecord) {
-    storage.writeText(
-      FILE_NAME,
-      PersistenceJson.instance.encodeToString(
-        serializer = ManagedProcessRegistryRecord.serializer(),
-        value = record,
-      ),
-    )
+    storage.updateText(FILE_NAME) {
+      DurableTextUpdate(
+        text = PersistenceJson.instance.encodeToString(
+          serializer = ManagedProcessRegistryRecord.serializer(),
+          value = record,
+        ),
+        result = Unit,
+      )
+    }
   }
 
   private fun synchronizeControllersLocked(retainedProcessIds: Set<String>) {
