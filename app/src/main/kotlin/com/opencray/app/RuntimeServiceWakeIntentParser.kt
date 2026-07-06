@@ -162,7 +162,7 @@ internal class DefaultRuntimeServiceIntentDescriptorParser(
     )?.let { command ->
       RuntimeServiceWakeIntentCommand.ChatWrite(
         command = command,
-        terminalNotificationTaskId = notificationTaskIdReader(intent),
+        terminalNotificationTaskId = terminalNotificationTaskIdForChatWriteWake(commandKind, intent),
       )
     }
 
@@ -218,6 +218,14 @@ internal class DefaultRuntimeServiceIntentDescriptorParser(
         else -> null
       }
 
+    else -> null
+  }
+
+  private fun terminalNotificationTaskIdForChatWriteWake(
+    commandKind: String,
+    intent: Intent?,
+  ): String? = when (commandKind) {
+    COMMAND_KIND_CHAT_WRITE_RETRY_RUN -> notificationTaskIdReader(intent)
     else -> null
   }
 }
