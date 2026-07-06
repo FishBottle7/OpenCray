@@ -7,6 +7,7 @@ import androidx.work.Constraints
 import androidx.work.Data
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.ExistingWorkPolicy
+import androidx.work.ListenableWorker
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -163,22 +164,30 @@ internal class ScheduledTaskWakeWorker(
       .takeIf { value -> value >= 0L }
       ?: return Result.failure()
     return runCatching {
-      runtimeEnvironment.runtimeServiceAccessGateway.startScheduledTask(
-        applicationContext,
-        ScheduledTaskWakeCommand(
-          scheduleId = scheduleId,
-          scheduleRunId = scheduledTaskRunId(scheduleId, scheduledForEpochMs),
-          triggeredAtEpochMs = System.currentTimeMillis(),
-          triggerReason = ScheduledTaskTriggerReasons.WORK_MANAGER,
+      scheduledTaskWakeWorkResult(
+        runtimeEnvironment.runtimeServiceAccessGateway.startScheduledTask(
+          applicationContext,
+          ScheduledTaskWakeCommand(
+            scheduleId = scheduleId,
+            scheduleRunId = scheduledTaskRunId(scheduleId, scheduledForEpochMs),
+            triggeredAtEpochMs = System.currentTimeMillis(),
+            triggerReason = ScheduledTaskTriggerReasons.WORK_MANAGER,
+          ),
+          target = RuntimeServiceTarget.DETACHED_BACKGROUND,
         ),
-        target = RuntimeServiceTarget.DETACHED_BACKGROUND,
       )
-      Result.success()
     }.getOrElse {
       Result.retry()
     }
   }
 }
+
+internal fun scheduledTaskWakeWorkResult(serviceStartRequested: Boolean): ListenableWorker.Result =
+  if (serviceStartRequested) {
+    ListenableWorker.Result.success()
+  } else {
+    ListenableWorker.Result.retry()
+  }
 
 internal class ScheduledTaskRepairWorker(
   appContext: Context,

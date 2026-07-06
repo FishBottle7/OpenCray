@@ -33,7 +33,7 @@ internal object OpenCrayRuntimeServiceAccess {
     context: Context,
     command: ScheduledTaskWakeCommand,
     target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
-  ) = compatGateway.startScheduledTask(context, command, target)
+  ): Boolean = compatGateway.startScheduledTask(context, command, target)
 
   fun repairSchedules(
     context: Context,

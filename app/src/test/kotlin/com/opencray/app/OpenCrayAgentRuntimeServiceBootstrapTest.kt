@@ -150,9 +150,10 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
             context: Context,
             command: ScheduledTaskWakeCommand,
             target: RuntimeServiceTarget,
-          ) {
+          ): Boolean {
             recordedCommands += command
             recordedTargets += target
+            return true
           }
 
           override fun repairSchedules(
@@ -996,12 +997,36 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       targetSessionId = "session-alpha",
     )
 
-    OpenCrayRuntimeServiceAccess.startScheduledTask(context, command)
+    val started = OpenCrayRuntimeServiceAccess.startScheduledTask(context, command)
 
+    assertTrue(started)
     val startedRequest = recordingStarter.startedRequests.single()
     assertTrue(startedRequest.foreground)
     assertSame(recordingEndpoint.scheduledTaskIntentSentinel, startedRequest.intent)
     assertEquals(listOf(command), recordingEndpoint.scheduledCommands)
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
+  fun startScheduledTaskReturnsFalseWhenServiceWakeIsRejected() {
+    val context = MinimalContext()
+    val command = ScheduledTaskWakeCommand(
+      scheduleId = "schedule-rejected",
+      scheduleRunId = "schedule-run-rejected",
+      triggeredAtEpochMs = 5678L,
+      triggerReason = ScheduledTaskTriggerReasons.WORK_MANAGER,
+    )
+    recordingStarter.throwOnStart = true
+
+    val started = OpenCrayRuntimeServiceAccess.startScheduledTask(context, command)
+
+    assertFalse(started)
+    val startAttempt = recordingStarter.startAttempts.single()
+    assertTrue(startAttempt.foreground)
+    assertSame(recordingEndpoint.scheduledTaskIntentSentinel, startAttempt.intent)
+    assertEquals(listOf(command), recordingEndpoint.scheduledCommands)
+    assertTrue(recordingStarter.startedRequests.isEmpty())
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
   }
@@ -1080,9 +1105,10 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
             context: Context,
             command: ScheduledTaskWakeCommand,
             target: RuntimeServiceTarget,
-          ) {
+          ): Boolean {
             recordedCommands += command
             recordedTargets += target
+            return true
           }
 
           override fun repairSchedules(

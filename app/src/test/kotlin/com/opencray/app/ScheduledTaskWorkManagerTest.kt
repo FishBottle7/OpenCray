@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.Intent
+import androidx.work.ListenableWorker
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.AgentTaskType
@@ -52,6 +53,18 @@ class ScheduledTaskWorkManagerTest {
     )
     assertEquals(null, scheduledTaskRepairReasonForAction("custom.action.UNKNOWN"))
     assertEquals(null, scheduledTaskRepairReasonForAction(null))
+  }
+
+  @Test
+  fun scheduledTaskWakeWorkResultRetriesRejectedServiceWake() {
+    assertEquals(
+      ListenableWorker.Result.success().javaClass,
+      scheduledTaskWakeWorkResult(serviceStartRequested = true).javaClass,
+    )
+    assertEquals(
+      ListenableWorker.Result.retry().javaClass,
+      scheduledTaskWakeWorkResult(serviceStartRequested = false).javaClass,
+    )
   }
 
   @Test

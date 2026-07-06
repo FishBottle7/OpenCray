@@ -463,7 +463,7 @@ class RuntimeServiceProjectionCoordinatorTest {
       context: Context,
       command: ScheduledTaskWakeCommand,
       target: RuntimeServiceTarget,
-    ) = Unit
+    ): Boolean = true
 
     override fun repairSchedules(
       context: Context,

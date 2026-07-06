@@ -561,7 +561,7 @@ class OpenCrayGatewayBundleFactoryTest {
           context: Context,
           command: ScheduledTaskWakeCommand,
           target: RuntimeServiceTarget,
-        ) = error("Unexpected scheduled task wake.")
+        ): Boolean = error("Unexpected scheduled task wake.")
 
         override fun repairSchedules(
           context: Context,

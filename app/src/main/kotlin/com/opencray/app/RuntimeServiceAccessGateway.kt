@@ -13,7 +13,7 @@ internal interface RuntimeServiceAccessGateway {
     context: Context,
     command: ScheduledTaskWakeCommand,
     target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
-  )
+  ): Boolean
 
   fun repairSchedules(
     context: Context,
@@ -85,10 +85,10 @@ internal class DefaultRuntimeServiceAccessGateway(
     context: Context,
     command: ScheduledTaskWakeCommand,
     target: RuntimeServiceTarget,
-  ) {
+  ): Boolean {
     val appContext = context.applicationContext
     val dependencies = accessDependencies
-    dependencies.runtimeServiceStarter.start(
+    return dependencies.runtimeServiceStarter.start(
       context = appContext,
       intent = dependencies.runtimeServiceEndpoint.scheduledTaskIntent(
         appContext,
