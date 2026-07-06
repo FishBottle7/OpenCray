@@ -4,6 +4,7 @@ import android.content.Context
 import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
 import java.io.RandomAccessFile
@@ -87,7 +88,7 @@ private class InMemoryScheduledTaskTriggerSyncStateStore :
   }
 }
 
-private class FileBackedScheduledTaskTriggerSyncStateStore(
+internal class FileBackedScheduledTaskTriggerSyncStateStore(
   private val storage: DurableTextStorage,
   private val runtimeRootDirectory: File,
 ) : ScheduledTaskTriggerSyncStateStore {
@@ -106,17 +107,27 @@ private class FileBackedScheduledTaskTriggerSyncStateStore(
         .map(String::trim)
         .filter(String::isNotBlank)
         .toCollection(linkedSetOf())
-      saveRecord(
-        ScheduledTaskTriggerSyncStateRecord(
-          scheduleIds = normalized.toList(),
-        ),
-      )
+      storage.updateText(TRIGGER_SYNC_STATE_FILE_NAME) {
+        DurableTextUpdate(
+          text = encodeRecord(
+            ScheduledTaskTriggerSyncStateRecord(
+              scheduleIds = normalized.toList(),
+            ),
+          ),
+          result = Unit,
+        )
+      }
     }
   }
 
   override fun clear() {
     synchronized(lock) {
-      storage.delete(TRIGGER_SYNC_STATE_FILE_NAME)
+      storage.updateText(TRIGGER_SYNC_STATE_FILE_NAME) {
+        DurableTextUpdate(
+          text = null,
+          result = Unit,
+        )
+      }
     }
   }
 
@@ -134,15 +145,11 @@ private class FileBackedScheduledTaskTriggerSyncStateStore(
     )
   }
 
-  private fun saveRecord(record: ScheduledTaskTriggerSyncStateRecord) {
-    storage.writeText(
-      TRIGGER_SYNC_STATE_FILE_NAME,
-      PersistenceJson.instance.encodeToString(
-        ScheduledTaskTriggerSyncStateRecord.serializer(),
-        record,
-      ),
+  private fun encodeRecord(record: ScheduledTaskTriggerSyncStateRecord): String =
+    PersistenceJson.instance.encodeToString(
+      ScheduledTaskTriggerSyncStateRecord.serializer(),
+      record,
     )
-  }
 }
 
 @Serializable

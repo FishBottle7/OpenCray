@@ -632,6 +632,35 @@ class ScheduledTaskRuntimeTest {
   }
 
   @Test
+  fun fileBackedTriggerSyncStateStoreMutationsUseDurableUpdatePath() {
+    val storage = StaleReadDurableTextStorage()
+    val store = FileBackedScheduledTaskTriggerSyncStateStore(
+      storage = storage,
+      runtimeRootDirectory = temporaryFolder.newFolder("scheduled-trigger-sync-update"),
+    )
+
+    store.replaceScheduleIds(linkedSetOf("schedule-old"))
+    val staleSnapshot = storage.currentText
+    store.replaceScheduleIds(linkedSetOf("schedule-current"))
+    storage.returnStaleTextOnNextRead(staleSnapshot)
+
+    store.replaceScheduleIds(linkedSetOf(" schedule-new ", "", "schedule-other"))
+
+    assertEquals(3, storage.updateTextCallCount)
+    assertTrue(storage.hasPendingStaleRead)
+    storage.clearPendingStaleRead()
+    assertEquals(
+      linkedSetOf("schedule-new", "schedule-other"),
+      store.loadScheduleIds(),
+    )
+
+    store.clear()
+
+    assertEquals(4, storage.updateTextCallCount)
+    assertTrue(store.loadScheduleIds().isEmpty())
+  }
+
+  @Test
   fun resyncEnabledScheduledTasksExecutesUnderTriggerSyncResyncLock() {
     val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
     val registrar = RecordingScheduledTriggerRegistrar()
