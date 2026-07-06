@@ -383,6 +383,30 @@ class RunRecoveryPlannerTest {
           run = interruptedRestoreRun().copy(
             hasLiveManagedProcesses = true,
             hasAutoResumeEligibleManagedProcesses = true,
+            managedProcesses = listOf(
+              ManagedProcessSnapshot(
+                processId = processId,
+                taskId = "task-1",
+                command = "server",
+                status = ManagedProcessStatus.RUNNING,
+                processStarted = true,
+                timeoutMs = 300_000L,
+                startedAtEpochMs = 90L,
+                updatedAtEpochMs = 150L,
+                reconnectState = ManagedProcessReconnectState(
+                  status = "attached",
+                  recoveryState = "attached_live",
+                  retryable = false,
+                  attemptCount = 1,
+                ),
+                metadata = mapOf(
+                  MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY to
+                    ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
+                  MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY to
+                    ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+                ),
+              ),
+            ),
           ),
           checkpoint = checkpoint,
           lastJournalEvent = OpenCrayToolCallEvent(
@@ -413,6 +437,22 @@ class RunRecoveryPlannerTest {
     assertEquals(
       ManagedProcessContinuationBases.CHECKPOINT_RESUME,
       plan.toMap()["managedProcessContinuationBasis"],
+    )
+    assertEquals(
+      ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+      plan.managedProcessRestoreScope,
+    )
+    assertEquals(
+      ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
+      plan.managedProcessRestoreDecision,
+    )
+    assertEquals(
+      ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+      plan.toMap()["managedProcessRestoreScope"],
+    )
+    assertEquals(
+      ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
+      plan.toMap()["managedProcessRestoreDecision"],
     )
     assertTrue(plan.safeToAutoResume)
     assertFalse(plan.requiresUserAction)

@@ -1754,6 +1754,12 @@ class RecoveryAwareQueueSnapshotStoreTest {
             timeoutMs = 300_000L,
             startedAtEpochMs = 1_050L,
             updatedAtEpochMs = 1_300L,
+            metadata = mapOf(
+              MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY to
+                ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
+              MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY to
+                ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+            ),
           ),
         )
       },
@@ -1905,8 +1911,24 @@ class RecoveryAwareQueueSnapshotStoreTest {
       ManagedProcessContinuationBases.CHECKPOINT_RESUME,
       restoredTask.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS],
     )
+    assertEquals(
+      ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_SCOPE],
+    )
+    assertEquals(
+      ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_DECISION],
+    )
     val diagnostics = runLifecycleDiagnosticsFrom(restoredTask.task.metadata)
     assertEquals(ManagedProcessContinuationBases.CHECKPOINT_RESUME, diagnostics.managedProcessContinuationBasis)
+    assertEquals(
+      ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+      diagnostics.managedProcessRestoreScope,
+    )
+    assertEquals(
+      ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
+      diagnostics.managedProcessRestoreDecision,
+    )
     assertEquals(
       ManagedProcessContinuationBases.CHECKPOINT_RESUME,
       diagnostics.toMap()["managedProcessContinuationBasis"],
@@ -1926,6 +1948,14 @@ class RecoveryAwareQueueSnapshotStoreTest {
     assertEquals(
       ManagedProcessContinuationBases.CHECKPOINT_RESUME,
       recoveryMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS],
+    )
+    assertEquals(
+      ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+      recoveryMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_SCOPE],
+    )
+    assertEquals(
+      ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
+      recoveryMetadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RESTORE_DECISION],
     )
   }
 

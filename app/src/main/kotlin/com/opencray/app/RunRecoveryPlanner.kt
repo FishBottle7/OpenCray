@@ -108,6 +108,7 @@ internal class RunRecoveryPlanner {
         event = input.lastJournalEvent,
       )
     ) {
+      val managedProcessEvidence = managedProcessReconnectEvidence(run)
       return RunRecoveryPlan(
         action = RunRecoveryAction.RESUME_FROM_CHECKPOINT,
         reasonCode = "managed_process_observation_checkpoint_resume",
@@ -119,6 +120,8 @@ internal class RunRecoveryPlanner {
         approvalState = input.approvalState,
         journalTailKind = journalTailKind,
         managedProcessContinuationBasis = ManagedProcessContinuationBases.CHECKPOINT_RESUME,
+        managedProcessRestoreScope = managedProcessEvidence.restoreScope,
+        managedProcessRestoreDecision = managedProcessEvidence.restoreDecision,
       )
     }
 
