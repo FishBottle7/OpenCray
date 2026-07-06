@@ -5,6 +5,7 @@ import android.content.Intent
 internal sealed interface RuntimeServiceWakeIntentCommand {
   data class ChatWrite(
     val command: OpenCrayChatWriteCommand,
+    val terminalNotificationTaskId: String? = null,
   ) : RuntimeServiceWakeIntentCommand
 
   data class Notification(
@@ -158,7 +159,12 @@ internal class DefaultRuntimeServiceIntentDescriptorParser(
     -> parseRuntimeServiceChatWriteWakeCommand(
       commandKind = commandKind,
       identifier = chatWriteIdentifierReader(intent),
-    )?.let(RuntimeServiceWakeIntentCommand::ChatWrite)
+    )?.let { command ->
+      RuntimeServiceWakeIntentCommand.ChatWrite(
+        command = command,
+        terminalNotificationTaskId = notificationTaskIdReader(intent),
+      )
+    }
 
     COMMAND_KIND_APPROVE_APPROVAL,
     COMMAND_KIND_REJECT_APPROVAL,

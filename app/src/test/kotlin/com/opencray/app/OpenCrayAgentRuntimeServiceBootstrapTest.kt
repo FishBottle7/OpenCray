@@ -387,6 +387,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         command = OpenCrayChatWriteCommand.RetryChatRun("run-retry-action"),
         requestCode = 61_337,
         target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+        terminalNotificationTaskId = "task-retry-action",
       )
     }.exceptionOrNull()
 
@@ -401,6 +402,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           command = OpenCrayChatWriteCommand.RetryChatRun("run-retry-action"),
           requestCode = 61_337,
           target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+          terminalNotificationTaskId = "task-retry-action",
         ),
       ),
       endpoint.chatWriteActionPendingIntentRequests,
@@ -5160,6 +5162,46 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun defaultWakeDispatcherDismissesTerminalNotificationAfterRetryChatWriteWake() {
+    val context = MinimalContext()
+    var retriedTaskIdOrRunId: String? = null
+    val dismissedTerminalTaskIds = mutableListOf<String?>()
+    val gatewayBundle = testServiceGatewayBundle(
+      retryChatRun = { identifier ->
+        retriedTaskIdOrRunId = identifier
+      },
+    )
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
+      appContext = context,
+      dispatcherDependencies = testServiceHost(
+        temporaryFolder.newFolder("wake-dispatcher-chat-write-retry"),
+      ).toRuntimeServiceBootstrapState().wakeCommandDispatcherDependencies,
+      gatewayBundle = gatewayBundle,
+      projectionCoordinator = projectionCoordinator,
+      wakeIntentParser = RuntimeServiceWakeIntentParser {
+        RuntimeServiceWakeIntentCommand.ChatWrite(
+          command = OpenCrayChatWriteCommand.RetryChatRun("run-retry-wake"),
+          terminalNotificationTaskId = "task-retry-wake",
+        )
+      },
+      approvalNotificationDismisser = { _, _ -> },
+      terminalNotificationDismisser = { _, taskId ->
+        dismissedTerminalTaskIds += taskId
+      },
+    )
+
+    dispatcher.dispatch(null)
+
+    assertEquals("run-retry-wake", retriedTaskIdOrRunId)
+    assertEquals(listOf("task-retry-wake"), dismissedTerminalTaskIds)
+    assertEquals(1, projectionCoordinator.persistCallCount)
+    assertTrue(projectionCoordinator.scheduledDispatchOutcomes.isEmpty())
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
   fun defaultWakeDispatcherSkipsWriteWhenOwnerLeaseIsNotHeld() {
     val context = MinimalContext()
     var interruptedTaskIdOrRunId: String? = null
@@ -5673,6 +5715,29 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(
       RuntimeServiceWakeIntentCommand.ChatWrite(
         OpenCrayChatWriteCommand.InterruptChatRun("run-transport"),
+      ),
+      parsed.wakeCommand,
+    )
+    assertFalse(parsed.requestsRuntimeReset)
+    assertTrue(parsed.requiresBootstrapForeground)
+  }
+
+  @Test
+  fun defaultIntentDescriptorParserCarriesTerminalNotificationTaskForChatWriteWake() {
+    val parsed = DefaultRuntimeServiceIntentDescriptorParser(
+      notificationCommandParser = { null },
+      scheduledTaskWakeCommandParser = { null },
+      commandKindReader = { COMMAND_KIND_CHAT_WRITE_RETRY_RUN },
+      commandVersionReader = { RUNTIME_SERVICE_COMMAND_VERSION_CURRENT },
+      actionReader = { ACTION_DISPATCH_CHAT_WRITE },
+      chatWriteIdentifierReader = { "run-terminal-retry" },
+      notificationTaskIdReader = { "task-terminal-retry" },
+    ).parse(null)
+
+    assertEquals(
+      RuntimeServiceWakeIntentCommand.ChatWrite(
+        command = OpenCrayChatWriteCommand.RetryChatRun("run-terminal-retry"),
+        terminalNotificationTaskId = "task-terminal-retry",
       ),
       parsed.wakeCommand,
     )
@@ -6689,6 +6754,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     val command: OpenCrayChatWriteCommand,
     val requestCode: Int,
     val target: RuntimeServiceTarget,
+    val terminalNotificationTaskId: String?,
   )
 
   private class RecordingRuntimeServiceEndpoint : RuntimeServiceEndpoint {
@@ -6783,12 +6849,14 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       command: OpenCrayChatWriteCommand,
       requestCode: Int,
       target: RuntimeServiceTarget,
+      terminalNotificationTaskId: String?,
     ): android.app.PendingIntent {
       chatWriteActionPendingIntentRequests += RecordedChatWriteActionPendingIntent(
         contextPackageName = context.packageName,
         command = command,
         requestCode = requestCode,
         target = target,
+        terminalNotificationTaskId = terminalNotificationTaskId,
       )
       error("Chat write action pending intent should not be used in this test.")
     }
@@ -7103,6 +7171,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     notifyChatSnapshotsChanged: () -> Unit = {},
     refreshSandboxSessionInfo: () -> Unit = {},
     interruptChatRun: (String) -> Unit = {},
+    retryChatRun: (String) -> Unit = {},
     refreshSkills: () -> String = { "" },
     saveNotificationSettings: (Map<String, Any?>) -> Map<String, Any?> = { emptyMap() },
     dispose: () -> Unit = {},
@@ -7195,7 +7264,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
 
         override fun interruptChatRun(taskIdOrRunId: String) = interruptChatRun(taskIdOrRunId)
 
-        override fun retryChatRun(taskIdOrRunId: String) = Unit
+        override fun retryChatRun(taskIdOrRunId: String) = retryChatRun(taskIdOrRunId)
 
         override fun notifyChatSnapshotsChanged() = notifyChatSnapshotsChanged()
       },

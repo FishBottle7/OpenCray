@@ -73,6 +73,7 @@ internal data class RuntimeTerminalNotificationAction(
   val labelResId: Int,
   val runtimeTarget: RuntimeServiceTarget,
   val requestKey: String,
+  val terminalNotificationTaskId: String? = null,
 )
 
 internal data class RuntimeScheduleNotificationModel(
@@ -1059,6 +1060,7 @@ internal class RuntimeNotificationCoordinator(
     command = action.command,
     requestCode = stableRequestCode(action.requestKey),
     target = action.runtimeTarget,
+    terminalNotificationTaskId = action.terminalNotificationTaskId,
   )
 
   private fun knownSessionIds(): List<String> {
@@ -1139,7 +1141,7 @@ internal class RuntimeNotificationCoordinator(
     approvalNotificationIdForTask(taskId)
 
   private fun terminalNotificationId(taskId: String, interrupted: Boolean): Int =
-    (if (interrupted) 52_700 else 52_300) + notificationStableHash(taskId, modulo = 4_000)
+    terminalNotificationIdForTask(taskId, interrupted)
 
   private fun scheduleNotificationId(scheduleId: String, outcome: String): Int =
     53_100 + notificationStableHash("$scheduleId:$outcome", modulo = 4_000)
@@ -1170,6 +1172,18 @@ internal class RuntimeNotificationCoordinator(
 
     private fun terminalNotificationDeliveryKey(runId: String): String = "terminal:$runId"
 
+    internal fun dismissTerminalInterruptedNotification(
+      context: Context,
+      taskId: String?,
+    ) {
+      val normalizedTaskId = taskId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: return
+      context.getSystemService(NotificationManager::class.java)
+        ?.cancel(terminalNotificationIdForTask(normalizedTaskId, interrupted = true))
+    }
+
     private fun terminalNotificationFingerprint(
       terminalModel: RuntimeTerminalNotificationModel,
       updatedAtEpochMs: Long,
@@ -1183,6 +1197,9 @@ internal class RuntimeNotificationCoordinator(
 
     private fun notificationStableHash(key: String, modulo: Int): Int =
       (key.hashCode().absoluteValue % modulo).coerceAtLeast(0)
+
+    private fun terminalNotificationIdForTask(taskId: String, interrupted: Boolean): Int =
+      (if (interrupted) 52_700 else 52_300) + notificationStableHash(taskId, modulo = 4_000)
   }
 }
 
@@ -1202,6 +1219,7 @@ internal fun terminalNotificationActionsForModel(
       labelResId = R.string.runtime_notification_action_retry,
       runtimeTarget = model.runtimeTarget,
       requestKey = "retry-interrupted:${model.sessionId}:${model.taskId}:${model.runId}",
+      terminalNotificationTaskId = model.taskId,
     ),
   )
 }

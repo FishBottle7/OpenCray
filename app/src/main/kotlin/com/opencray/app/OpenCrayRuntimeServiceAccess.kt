@@ -78,6 +78,7 @@ internal interface RuntimeServiceEndpoint {
     command: OpenCrayChatWriteCommand,
     requestCode: Int,
     target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
+    terminalNotificationTaskId: String? = null,
   ): PendingIntent = error("Runtime service chat write actions are unavailable.")
 
   fun scheduleNotificationActionPendingIntent(
@@ -214,6 +215,7 @@ private object AndroidRuntimeServiceEndpoint : RuntimeServiceEndpoint {
     command: OpenCrayChatWriteCommand,
     requestCode: Int,
     target: RuntimeServiceTarget,
+    terminalNotificationTaskId: String?,
   ): PendingIntent = PendingIntent.getService(
     context,
     requestCode,
@@ -221,7 +223,14 @@ private object AndroidRuntimeServiceEndpoint : RuntimeServiceEndpoint {
       context = context,
       command = command,
       target = target,
-    ) ?: error("Unsupported runtime service chat write action."),
+    )?.apply {
+      terminalNotificationTaskId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { taskId ->
+          putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_TASK_ID, taskId)
+        }
+    } ?: error("Unsupported runtime service chat write action."),
     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
   )
 

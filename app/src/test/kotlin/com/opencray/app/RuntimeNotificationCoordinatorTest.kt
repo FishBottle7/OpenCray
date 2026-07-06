@@ -18,6 +18,7 @@ class RuntimeNotificationCoordinatorTest {
           labelResId = R.string.runtime_notification_action_retry,
           runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
           requestKey = "retry-interrupted:session-terminal:task-terminal:run-terminal",
+          terminalNotificationTaskId = "task-terminal",
         ),
       ),
       terminalNotificationActionsForModel(terminalModel(interrupted = true)),

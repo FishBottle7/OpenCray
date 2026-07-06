@@ -42,6 +42,7 @@ internal interface RuntimeServiceAccessGateway {
     command: OpenCrayChatWriteCommand,
     requestCode: Int,
     target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
+    terminalNotificationTaskId: String? = null,
   ): PendingIntent = error("Runtime service chat write actions are unavailable.")
 
   fun scheduleNotificationActionPendingIntent(
@@ -157,11 +158,13 @@ internal class DefaultRuntimeServiceAccessGateway(
     command: OpenCrayChatWriteCommand,
     requestCode: Int,
     target: RuntimeServiceTarget,
+    terminalNotificationTaskId: String?,
   ): PendingIntent = accessDependencies.runtimeServiceEndpoint.chatWriteActionPendingIntent(
     context = context.applicationContext,
     command = command,
     requestCode = requestCode,
     target = target,
+    terminalNotificationTaskId = terminalNotificationTaskId,
   )
 
   override fun scheduleNotificationActionPendingIntent(

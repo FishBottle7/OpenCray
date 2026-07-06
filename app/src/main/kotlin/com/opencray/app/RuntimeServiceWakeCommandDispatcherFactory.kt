@@ -48,6 +48,8 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
     DefaultRuntimeServiceWakeIntentParser(),
   private val approvalNotificationDismisser: (Context, String?) -> Unit =
     { context, taskId -> RuntimeNotificationCoordinator.dismissApprovalNotification(context, taskId) },
+  private val terminalNotificationDismisser: (Context, String?) -> Unit =
+    { context, taskId -> RuntimeNotificationCoordinator.dismissTerminalInterruptedNotification(context, taskId) },
   private val nowEpochMsProvider: () -> Long = System::currentTimeMillis,
 ) : RuntimeServiceWakeCommandDispatcher {
   override fun dispatch(intent: Intent?) {
@@ -57,6 +59,7 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
     when (val command = wakeIntentParser.parse(intent)) {
       is RuntimeServiceWakeIntentCommand.ChatWrite -> {
         gatewayBundle.dispatchChatWriteCommand(command.command)
+        terminalNotificationDismisser(appContext, command.terminalNotificationTaskId)
         refreshAndPersist()
       }
 
