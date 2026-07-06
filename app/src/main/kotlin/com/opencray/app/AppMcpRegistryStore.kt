@@ -5,27 +5,34 @@ import com.opencray.mcp.McpRegistryRecord
 import com.opencray.mcp.McpRegistryStore
 import com.opencray.mcp.McpRegistryStoreUpdate
 import com.opencray.persistence.PersistenceJson
+import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
 
 internal class AppMcpRegistryStore(
   directory: File,
+  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory),
 ) : McpRegistryStore {
-  private val storage = DirectoryDurableTextStorage(directory)
-
   override fun load(): McpRegistryRecord? {
     return decodeRecord(storage.readText(FILE_NAME))
   }
 
   override fun save(record: McpRegistryRecord) {
-    storage.writeText(
-      FILE_NAME,
-      encodeRecord(record),
-    )
+    storage.updateText(FILE_NAME) {
+      DurableTextUpdate(
+        text = encodeRecord(record),
+        result = Unit,
+      )
+    }
   }
 
-  override fun clear(): Boolean = storage.delete(FILE_NAME)
+  override fun clear(): Boolean = storage.updateText(FILE_NAME) { currentText ->
+    DurableTextUpdate(
+      text = null,
+      result = currentText != null,
+    )
+  }
 
   override fun <T> update(
     transform: (McpRegistryRecord?) -> McpRegistryStoreUpdate<T>,
