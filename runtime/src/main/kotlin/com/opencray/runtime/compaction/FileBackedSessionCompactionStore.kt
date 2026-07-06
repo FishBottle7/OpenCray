@@ -3,32 +3,42 @@ package com.opencray.runtime.compaction
 import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
 import kotlinx.serialization.Serializable
 
 class FileBackedSessionCompactionStore(
   directory: File,
+  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory),
+  private val clock: () -> Long = System::currentTimeMillis,
 ) : SessionCompactionStore {
   private val lock = Any()
-  private val storage: DurableTextStorage = DirectoryDurableTextStorage(directory)
 
   override fun load(): DurableCompactionState = synchronized(lock) {
     loadRecord().toState()
   }
 
   override fun save(state: DurableCompactionState) {
-    synchronized(lock) {
-      val existing = loadRecord()
-      saveRecord(
-        existing.copy(
-          recordVersion = existing.recordVersion + 1L,
-          updatedAtEpochMs = System.currentTimeMillis(),
-          entries = state.entries,
-        ),
-      )
-    }
+    update { state }
   }
+
+  override fun update(transform: (DurableCompactionState) -> DurableCompactionState): DurableCompactionState =
+    synchronized(lock) {
+      storage.updateText(FILE_NAME) { currentText ->
+        val existing = decodeRecord(currentText)
+        val updatedState = transform(existing.toState())
+        val updatedRecord = existing.copy(
+          recordVersion = existing.recordVersion + 1L,
+          updatedAtEpochMs = clock(),
+          entries = updatedState.entries,
+        )
+        DurableTextUpdate(
+          text = encodeRecord(updatedRecord),
+          result = updatedState,
+        )
+      }
+    }
 
   override fun clear() {
     synchronized(lock) {
@@ -37,7 +47,11 @@ class FileBackedSessionCompactionStore(
   }
 
   private fun loadRecord(): SessionCompactionRecord {
-    val encoded = storage.readText(FILE_NAME).orEmpty().trim()
+    return decodeRecord(storage.readText(FILE_NAME))
+  }
+
+  private fun decodeRecord(text: String?): SessionCompactionRecord {
+    val encoded = text.orEmpty().trim()
     if (encoded.isBlank()) {
       return SessionCompactionRecord()
     }
@@ -47,15 +61,11 @@ class FileBackedSessionCompactionStore(
     )
   }
 
-  private fun saveRecord(record: SessionCompactionRecord) {
-    storage.writeText(
-      FILE_NAME,
-      PersistenceJson.instance.encodeToString(
-        serializer = SessionCompactionRecord.serializer(),
-        value = record,
-      ),
+  private fun encodeRecord(record: SessionCompactionRecord): String =
+    PersistenceJson.instance.encodeToString(
+      serializer = SessionCompactionRecord.serializer(),
+      value = record,
     )
-  }
 
   @Serializable
   private data class SessionCompactionRecord(

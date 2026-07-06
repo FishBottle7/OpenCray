@@ -63,6 +63,59 @@ class DurableCompactionCoordinatorTest {
   }
 
   @Test
+  fun compactIfNeededAppendsAgainstStoreUpdateCurrentState() {
+    val transcriptStore = InMemorySessionTranscriptStore()
+    transcriptStore.seedIfEmpty(
+      listOf(
+        user("User request 1"),
+        assistant("Assistant reply 1"),
+        user("User request 2"),
+        assistant("Assistant reply 2"),
+        user("User request 3"),
+        assistant("Assistant reply 3"),
+        user("User request 4"),
+        assistant("Assistant reply 4"),
+      ),
+    )
+    val compactionStore = UpdatingCompactionStoreWithStaleLoad(
+      staleLoadState = DurableCompactionState(),
+      currentState = DurableCompactionState(
+        entries = listOf(
+          DurableCompactionEntry(
+            text = "Concurrent summary already persisted.",
+            compactedMessageCount = 5,
+            compactedAtEpochMs = 4_000L,
+          ),
+        ),
+      ),
+    )
+    val coordinator = DurableCompactionCoordinator(
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 4,
+          maxCharsPerMessage = 200,
+        ),
+      ),
+      clock = { 5_000L },
+    )
+
+    val context = coordinator.compactIfNeeded(
+      transcriptStore = transcriptStore,
+      compactionStore = compactionStore,
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+    )
+
+    assertEquals(1, compactionStore.updateCallCount)
+    assertEquals(0, compactionStore.saveCallCount)
+    val persistedEntries = compactionStore.current().entries
+    assertEquals("Concurrent summary already persisted.", persistedEntries.first().text)
+    assertTrue(persistedEntries.last().text.contains("Compacted 4 older message(s)"))
+    assertEquals(listOf(5, 4), persistedEntries.map { entry -> entry.compactedMessageCount })
+    assertEquals(2, context.trace.includedSummaryCount)
+    assertEquals(9, context.trace.totalCompactedMessageCount)
+  }
+
+  @Test
   fun compactMidTurnStoresSummaryWithMaintenanceTaskAndEntryTrace() {
     val transcriptStore = InMemorySessionTranscriptStore()
     transcriptStore.seedIfEmpty(
@@ -261,4 +314,35 @@ class DurableCompactionCoordinatorTest {
       role = RuntimeConversationRole.ASSISTANT,
       content = content,
     )
+
+  private class UpdatingCompactionStoreWithStaleLoad(
+    private val staleLoadState: DurableCompactionState,
+    currentState: DurableCompactionState,
+  ) : SessionCompactionStore {
+    private var state = currentState
+    var updateCallCount: Int = 0
+      private set
+    var saveCallCount: Int = 0
+      private set
+
+    override fun load(): DurableCompactionState = staleLoadState
+
+    override fun save(state: DurableCompactionState) {
+      saveCallCount += 1
+      error("Compaction append should use SessionCompactionStore.update.")
+    }
+
+    override fun update(transform: (DurableCompactionState) -> DurableCompactionState): DurableCompactionState {
+      updateCallCount += 1
+      val updated = transform(state)
+      state = updated
+      return updated
+    }
+
+    override fun clear() {
+      state = DurableCompactionState()
+    }
+
+    fun current(): DurableCompactionState = state
+  }
 }

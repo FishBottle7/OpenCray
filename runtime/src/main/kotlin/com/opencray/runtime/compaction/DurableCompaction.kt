@@ -295,6 +295,12 @@ interface SessionCompactionStore {
 
   fun save(state: DurableCompactionState)
 
+  fun update(transform: (DurableCompactionState) -> DurableCompactionState): DurableCompactionState {
+    val updated = transform(load())
+    save(updated)
+    return updated
+  }
+
   fun clear()
 }
 
@@ -309,6 +315,13 @@ class InMemorySessionCompactionStore : SessionCompactionStore {
       this.state = state
     }
   }
+
+  override fun update(transform: (DurableCompactionState) -> DurableCompactionState): DurableCompactionState =
+    synchronized(lock) {
+      val updated = transform(state)
+      state = updated
+      updated
+    }
 
   override fun clear() {
     synchronized(lock) {
@@ -408,12 +421,13 @@ class DurableCompactionCoordinator(
         remoteCompactionMetadata = remoteCompactionMetadata,
       )
     val compactedAtEpochMs = clock()
-    val updatedState = durableCompactionPolicy.append(
-      existing = currentState,
-      summary = summary,
-      compactedAtEpochMs = compactedAtEpochMs,
-    )
-    compactionStore.save(updatedState)
+    val updatedState = compactionStore.update { latestState ->
+      durableCompactionPolicy.append(
+        existing = latestState,
+        summary = summary,
+        compactedAtEpochMs = compactedAtEpochMs,
+      )
+    }
     transcriptStore.replace(selection.window.messages)
     return toContext(
       rendered = renderer.render(updatedState),
