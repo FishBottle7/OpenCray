@@ -1,7 +1,8 @@
 package com.opencray.app
 
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
-import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -88,6 +89,35 @@ class RuntimeNotificationSettingsStoreTest {
   }
 
   @Test
+  fun saveAndClearUseDurableUpdatePath() {
+    val storage = StaleReadDurableTextStorage()
+    val store = RuntimeNotificationSettingsStore(storage)
+
+    store.save(RuntimeNotificationSettingsState(masterEnabled = true))
+    val staleSnapshot = storage.currentText
+    store.save(RuntimeNotificationSettingsState(taskFinishedEnabled = false))
+    storage.returnStaleTextOnNextRead(staleSnapshot)
+    val expected = RuntimeNotificationSettingsState(
+      masterEnabled = false,
+      quietHoursStartMinutes = -10,
+      quietHoursEndMinutes = (25 * 60) + 5,
+      taskFinishedEnabled = true,
+    )
+
+    store.save(expected)
+
+    assertEquals(3, storage.updateTextCallCount)
+    assertTrue(storage.hasPendingStaleRead)
+    storage.clearPendingStaleRead()
+    assertEquals(expected.sanitized(), store.load())
+
+    store.clear()
+
+    assertEquals(4, storage.updateTextCallCount)
+    assertEquals(RuntimeNotificationSettingsState(), store.load())
+  }
+
+  @Test
   fun quietHoursHandlesCrossMidnightRanges() {
     val state = RuntimeNotificationSettingsState(
       quietHoursEnabled = true,
@@ -160,5 +190,57 @@ class RuntimeNotificationSettingsStoreTest {
         minutesOfDay = 12 * 60,
       ),
     )
+  }
+
+  private class StaleReadDurableTextStorage : DurableTextStorage {
+    private var text: String? = null
+    private var staleReadText: String? = null
+    var hasPendingStaleRead: Boolean = false
+      private set
+    var updateTextCallCount: Int = 0
+      private set
+
+    val currentText: String?
+      get() = text
+
+    fun returnStaleTextOnNextRead(staleText: String?) {
+      staleReadText = staleText
+      hasPendingStaleRead = true
+    }
+
+    fun clearPendingStaleRead() {
+      staleReadText = null
+      hasPendingStaleRead = false
+    }
+
+    override fun readText(name: String): String? {
+      if (!hasPendingStaleRead) {
+        return text
+      }
+      hasPendingStaleRead = false
+      return staleReadText
+    }
+
+    override fun writeText(name: String, text: String) {
+      this.text = text
+    }
+
+    override fun delete(name: String): Boolean {
+      val hadText = text != null
+      text = null
+      return hadText
+    }
+
+    override fun <T> updateText(
+      name: String,
+      update: (String?) -> DurableTextUpdate<T>,
+    ): T {
+      updateTextCallCount += 1
+      val updated = update(text)
+      if (updated.write) {
+        text = updated.text
+      }
+      return updated.result
+    }
   }
 }

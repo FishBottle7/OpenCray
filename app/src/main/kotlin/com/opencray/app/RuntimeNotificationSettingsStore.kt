@@ -4,6 +4,7 @@ import android.content.Context
 import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
 import kotlinx.serialization.Serializable
@@ -81,19 +82,23 @@ internal class RuntimeNotificationSettingsStore(
   fun save(state: RuntimeNotificationSettingsState) {
     synchronized(lock) {
       val sanitized = state.sanitized()
-      storage.writeText(
-        RUNTIME_NOTIFICATION_SETTINGS_FILE_NAME,
-        PersistenceJson.instance.encodeToString(
-          serializer = PersistedRuntimeNotificationSettingsRecord.serializer(),
-          value = PersistedRuntimeNotificationSettingsRecord.fromState(sanitized),
-        ),
-      )
+      storage.updateText(RUNTIME_NOTIFICATION_SETTINGS_FILE_NAME) {
+        DurableTextUpdate(
+          text = encodeRecord(PersistedRuntimeNotificationSettingsRecord.fromState(sanitized)),
+          result = Unit,
+        )
+      }
     }
   }
 
   fun clear() {
     synchronized(lock) {
-      storage.delete(RUNTIME_NOTIFICATION_SETTINGS_FILE_NAME)
+      storage.updateText(RUNTIME_NOTIFICATION_SETTINGS_FILE_NAME) {
+        DurableTextUpdate(
+          text = null,
+          result = Unit,
+        )
+      }
     }
   }
 
@@ -109,6 +114,12 @@ internal class RuntimeNotificationSettingsStore(
       )
     }.getOrNull()
   }
+
+  private fun encodeRecord(record: PersistedRuntimeNotificationSettingsRecord): String =
+    PersistenceJson.instance.encodeToString(
+      serializer = PersistedRuntimeNotificationSettingsRecord.serializer(),
+      value = record,
+    )
 
   companion object {
     fun fromContext(
