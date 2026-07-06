@@ -627,10 +627,12 @@ class FileBackedAgentProcessRegistry(
     if (encoded.isBlank()) {
       return ManagedProcessRegistryRecord()
     }
-    return PersistenceJson.instance.decodeFromString(
-      deserializer = ManagedProcessRegistryRecord.serializer(),
-      string = encoded,
-    )
+    return runCatching {
+      PersistenceJson.instance.decodeFromString(
+        deserializer = ManagedProcessRegistryRecord.serializer(),
+        string = encoded,
+      )
+    }.getOrDefault(ManagedProcessRegistryRecord())
   }
 
   private fun loadNormalizedRecordLocked(): ManagedProcessRegistryRecord {

@@ -102,6 +102,45 @@ class FileBackedAgentProcessRegistryTest {
   }
 
   @Test
+  fun corruptRegistrySnapshotLoadsAsEmptyAndNextMutationRecoversFile() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-corrupt")
+    val registryFile = File(directory, FileBackedAgentProcessRegistry.FILE_NAME)
+    registryFile.writeText("{ not-json")
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        FakeManagedProcessController(
+          snapshot = successSnapshot(
+            processId = request.processId,
+            taskId = request.taskId,
+          ),
+        )
+      },
+    )
+
+    assertEquals(emptyList<ManagedProcessSnapshot>(), registry.list())
+
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-recovered",
+        taskId = "task-recovered",
+        command = "echo",
+        args = listOf("ok"),
+        timeoutMs = 30_000L,
+        requestedAtEpochMs = 1_000L,
+      ),
+    )
+
+    val restored = FileBackedAgentProcessRegistry(directory = directory).read("proc-recovered")
+    val recoveredText = registryFile.readText()
+
+    assertNotNull(restored)
+    assertEquals(ManagedProcessStatus.SUCCESS, restored!!.status)
+    assertTrue(recoveredText.contains("proc-recovered"))
+    assertTrue(!recoveredText.contains("not-json"))
+  }
+
+  @Test
   fun restoredRunningSnapshotIsRepairedToInterruptedFailure() {
     val directory = temporaryFolder.newFolder("durable-process-registry-running")
     val runtimeIdentity = ManagedProcessRuntimeIdentity(
