@@ -824,6 +824,35 @@ class ScheduledTaskRuntimeTest {
   }
 
   @Test
+  fun defaultScheduledTriggerRegistrarAlsoSchedulesWorkManagerWakeFallback() {
+    val alarmScheduler = RecordingScheduledAlarmScheduler()
+    val workScheduler = RecordingScheduledWorkScheduler()
+    val registrar = DefaultScheduledTriggerRegistrar(
+      alarmScheduler = alarmScheduler,
+      workScheduler = workScheduler,
+      clock = { 5_000L },
+    )
+    val spec = scheduledTaskSpec(
+      sessionId = "session-work-fallback",
+      scheduleId = "schedule-work-fallback",
+    ).copy(
+      trigger = ScheduledTrigger.At(atEpochMs = 12_000L),
+      updatedAtEpochMs = 5_000L,
+    )
+
+    registrar.syncSpec(spec)
+
+    assertEquals(
+      listOf(ScheduledAlarmRequest("schedule-work-fallback", 12_000L, true)),
+      alarmScheduler.scheduledRequests,
+    )
+    assertEquals(
+      listOf("schedule-work-fallback" to 12_000L),
+      workScheduler.scheduledWakeRequests,
+    )
+  }
+
+  @Test
   fun defaultScheduledTriggerRegistrarSchedulesSnoozedSpecAtDeferralTime() {
     val alarmScheduler = RecordingScheduledAlarmScheduler()
     val workScheduler = RecordingScheduledWorkScheduler()
@@ -846,7 +875,10 @@ class ScheduledTaskRuntimeTest {
       listOf(ScheduledAlarmRequest("schedule-snooze-sync", 10_000L, true)),
       alarmScheduler.scheduledRequests,
     )
-    assertTrue(workScheduler.scheduledWakeRequests.isEmpty())
+    assertEquals(
+      listOf("schedule-snooze-sync" to 10_000L),
+      workScheduler.scheduledWakeRequests,
+    )
   }
 
   @Test

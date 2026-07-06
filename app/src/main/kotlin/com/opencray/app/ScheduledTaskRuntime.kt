@@ -157,6 +157,10 @@ internal class DefaultScheduledTriggerRegistrar(
             exact = requiresExactScheduling(spec.trigger),
           ),
         )
+        workScheduler.scheduleWake(
+          scheduleId = spec.scheduleId,
+          triggerAtEpochMs = nextAtEpochMs,
+        )
       }
     }
   }

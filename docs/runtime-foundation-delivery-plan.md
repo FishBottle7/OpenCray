@@ -625,6 +625,7 @@ Already landed in app process:
 
 - scheduled task registry, durable spec storage, and run records
 - `AlarmManager` wake path plus `WorkManager` wake and repair path
+- scheduled trigger sync now registers the next concrete wake with both `AlarmManager` and the `WorkManager` wake fallback, so a resynced enabled schedule is not dependent on the exact-alarm path alone for process-death survivability
 - runtime-service wake entrypoints for scheduled dispatch, schedule repair, and interrupted-run resume repair
 - runtime-service command envelopes with explicit version/kind checks that reject mismatched explicit command versions before foreground/reset dispatch
 - shared durable text storage now uses per-file sidecar OS locks around read/write/delete/update, key JSON read-modify-write stores built on `DirectoryDurableTextStorage` now update under one file lock instead of split load/save operations, scheduled run-record deletion/pruning now uses the same locked update path instead of a stale load/save snapshot, runtime notification-delivery dedupe writes now preserve newer terminal-notification fingerprints written by overlapping foreground/service/repair flows, mid-loop supplement append/consume now preserves newer injected supplements across overlapping foreground/service/repair paths, and transcript fallback append/replace/repair no longer overwrites newer transcript events from another owner path
