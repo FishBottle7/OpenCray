@@ -95,6 +95,96 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun potentialInterruptedRunRepairEvidenceRestoresProjectionManagedProcessReconnectEvidence() {
+    val root = temporaryFolder.newFolder(
+      "scheduled-task-repair-evidence-runtime-projection-reconnect",
+    )
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val sessionId = "session-projection-reconnect"
+
+    val evidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runtimeServiceProjectionSnapshots = mapOf(
+        RuntimeServiceTarget.DETACHED_BACKGROUND to runtimeProjectionSnapshot(
+          activeSessionIds = listOf(sessionId),
+          lastInterruptedRunRepair = RuntimeServiceInterruptedRunRepairProjection(
+            repairEvidenceBySession = mapOf(
+              sessionId to listOf(
+                InterruptedRunRepairEvidence(
+                  sessionId = sessionId,
+                  kind = InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+                  target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+                  runId = "run-projection-reconnect",
+                  taskId = "task-projection-reconnect",
+                  detailId = "process-projection-reconnect",
+                  repairAfterEpochMs = 2_500L,
+                  managedProcessReconnectStatus = "connecting",
+                  managedProcessReconnectRecoveryState = "retry_scheduled",
+                  managedProcessReconnectAttemptCount = 4,
+                  managedProcessContinuationBasis = ManagedProcessContinuationBases.RECONNECT_HOLD,
+                  managedProcessRestoreScope = ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+                  managedProcessRestoreDecision =
+                    ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue,
+                ),
+              ),
+            ),
+            nextRepairAfterEpochMs = 2_500L,
+            nextRepairReason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+            recordedAtEpochMs = 2_000L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(1, evidence.size)
+    val item = evidence.single()
+    assertEquals(InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT, item.kind)
+    assertEquals(RuntimeServiceTarget.DETACHED_BACKGROUND, item.target)
+    assertEquals(sessionId, item.sessionId)
+    assertEquals("run-projection-reconnect", item.runId)
+    assertEquals("task-projection-reconnect", item.taskId)
+    assertEquals("process-projection-reconnect", item.detailId)
+    assertEquals(2_500L, item.repairAfterEpochMs)
+    assertEquals("connecting", item.managedProcessReconnectStatus)
+    assertEquals("retry_scheduled", item.managedProcessReconnectRecoveryState)
+    assertEquals(4, item.managedProcessReconnectAttemptCount)
+    assertEquals(
+      RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS,
+      item.runtimeExecutionOwnershipTier,
+    )
+    assertEquals("durable-controller-projection", item.durableRuntimeControllerId)
+    assertEquals(
+      ManagedProcessContinuationBases.RECONNECT_HOLD,
+      item.managedProcessContinuationBasis,
+    )
+    assertEquals(ManagedProcessRestoreScope.CROSS_PROCESS.wireValue, item.managedProcessRestoreScope)
+    assertEquals(
+      ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue,
+      item.managedProcessRestoreDecision,
+    )
+    assertEquals(
+      emptySet<RuntimeServiceTarget>(),
+      dueInterruptedRunRepairTargets(
+        evidence = evidence,
+        nowEpochMs = 2_000L,
+      ),
+    )
+    assertEquals(
+      500L,
+      nextInterruptedRunRepairDelayMs(
+        evidence = evidence,
+        nowEpochMs = 2_000L,
+      ),
+    )
+  }
+
+  @Test
   fun potentialInterruptedRunRepairEvidencePrefersDurableEvidenceOverRuntimeProjectionWork() {
     val root = temporaryFolder.newFolder("scheduled-task-repair-evidence-runtime-projection-durable")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
@@ -1547,6 +1637,7 @@ class ScheduledTaskWorkManagerTest {
     pendingWorkSessionIds: List<String> = emptyList(),
     liveManagedProcessSessionIds: List<String> = emptyList(),
     liveSubAgentSessionIds: List<String> = emptyList(),
+    lastInterruptedRunRepair: RuntimeServiceInterruptedRunRepairProjection? = null,
   ): RuntimeServiceProjectionSnapshot = RuntimeServiceProjectionSnapshot(
     runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
       controllerInstanceId = "controller-projection",
@@ -1578,6 +1669,7 @@ class ScheduledTaskWorkManagerTest {
       liveSubAgentSessionCount = liveSubAgentSessionIds.size,
     ),
     serviceKeepAliveState = RuntimeServiceKeepAliveState(),
+    lastInterruptedRunRepair = lastInterruptedRunRepair,
   )
 
   private fun backgroundSubAgentHandle(

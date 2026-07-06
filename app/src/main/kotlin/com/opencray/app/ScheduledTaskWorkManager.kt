@@ -835,15 +835,39 @@ private fun managedProcessReconnectRepairEvidenceForQueueTask(
 private fun runtimeServiceProjectionRepairEvidence(
   snapshotsByTarget: Map<RuntimeServiceTarget, RuntimeServiceProjectionSnapshot>,
 ): List<InterruptedRunRepairEvidence> = snapshotsByTarget.flatMap { (target, snapshot) ->
-  runtimeServiceProjectionRepairSessionIds(snapshot).map { sessionId ->
-    InterruptedRunRepairEvidence(
-      sessionId = sessionId,
-      kind = InterruptedRunRepairEvidenceKind.RUNTIME_PROJECTION_WORK,
-      target = target,
-      runtimeExecutionOwnershipTier = RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS,
-      durableRuntimeControllerId = durableRuntimeControllerIdForProjection(snapshot),
-    )
-  }
+  val projectedRepairEvidence = runtimeServiceProjectionInterruptedRepairEvidence(snapshot)
+  val sessionsWithProjectedRepairEvidence = projectedRepairEvidence
+    .mapTo(mutableSetOf()) { evidence -> evidence.sessionId }
+  projectedRepairEvidence + runtimeServiceProjectionRepairSessionIds(snapshot)
+    .filterNot { sessionId -> sessionId in sessionsWithProjectedRepairEvidence }
+    .map { sessionId ->
+      InterruptedRunRepairEvidence(
+        sessionId = sessionId,
+        kind = InterruptedRunRepairEvidenceKind.RUNTIME_PROJECTION_WORK,
+        target = target,
+        runtimeExecutionOwnershipTier = RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS,
+        durableRuntimeControllerId = durableRuntimeControllerIdForProjection(snapshot),
+      )
+    }
+}
+
+private fun runtimeServiceProjectionInterruptedRepairEvidence(
+  snapshot: RuntimeServiceProjectionSnapshot,
+): List<InterruptedRunRepairEvidence> {
+  val durableRuntimeControllerId = durableRuntimeControllerIdForProjection(snapshot)
+  return snapshot.lastInterruptedRunRepair
+    ?.repairEvidenceBySession
+    ?.values
+    ?.flatten()
+    ?.map { evidence ->
+      evidence.copy(
+        runtimeExecutionOwnershipTier = evidence.runtimeExecutionOwnershipTier
+          ?: RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS,
+        durableRuntimeControllerId = evidence.durableRuntimeControllerId
+          ?: durableRuntimeControllerId,
+      )
+    }
+    .orEmpty()
 }
 
 private fun runtimeServiceProjectionRepairSessionIds(
