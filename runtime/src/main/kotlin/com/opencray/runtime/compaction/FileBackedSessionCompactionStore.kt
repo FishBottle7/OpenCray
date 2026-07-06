@@ -55,10 +55,12 @@ class FileBackedSessionCompactionStore(
     if (encoded.isBlank()) {
       return SessionCompactionRecord()
     }
-    return PersistenceJson.instance.decodeFromString(
-      deserializer = SessionCompactionRecord.serializer(),
-      string = encoded,
-    )
+    return runCatching {
+      PersistenceJson.instance.decodeFromString(
+        deserializer = SessionCompactionRecord.serializer(),
+        string = encoded,
+      )
+    }.getOrDefault(SessionCompactionRecord())
   }
 
   private fun encodeRecord(record: SessionCompactionRecord): String =

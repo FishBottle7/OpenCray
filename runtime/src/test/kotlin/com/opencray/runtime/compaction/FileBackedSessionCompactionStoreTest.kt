@@ -2,6 +2,7 @@ package com.opencray.runtime.compaction
 
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.DurableTextUpdate
+import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -37,6 +38,30 @@ class FileBackedSessionCompactionStoreTest {
     assertEquals(2, storage.updateTextCallCount)
     assertEquals(0, storage.writeTextCallCount)
     assertTrue(storage.deletedNames.isEmpty())
+  }
+
+  @Test
+  fun corruptSnapshotLoadsAsEmptyAndNextUpdateRecoversFile() {
+    val directory = temporaryFolder.newFolder("runtime-compaction-store-corrupt")
+    val compactionFile = File(directory, "runtime-compaction.json")
+    compactionFile.writeText("{ not-json")
+    val store = FileBackedSessionCompactionStore(
+      directory = directory,
+      clock = { 2_000L },
+    )
+
+    assertEquals(emptyList<DurableCompactionEntry>(), store.load().entries)
+
+    val updated = store.update {
+      DurableCompactionState(
+        entries = listOf(entry("recovered", compactedAtEpochMs = 2_000L)),
+      )
+    }
+    val recoveredText = compactionFile.readText()
+
+    assertEquals(listOf("recovered"), updated.entries.map { item -> item.text })
+    assertTrue(recoveredText.contains("recovered"))
+    assertTrue(!recoveredText.contains("not-json"))
   }
 
   private fun entry(
