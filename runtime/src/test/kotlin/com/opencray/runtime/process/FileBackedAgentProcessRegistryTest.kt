@@ -226,6 +226,93 @@ class FileBackedAgentProcessRegistryTest {
   }
 
   @Test
+  fun sameProcessNewControllerRestoreReattachesLiveControllerWithoutReconnectFactory() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-same-process-live-reattach")
+    val ownerIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-live-reattach",
+      runtimeControllerId = "controller-live-1",
+      durableRuntimeControllerId = "durable-controller-live",
+    )
+    val restoredRuntimeIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-live-reattach",
+      runtimeControllerId = "controller-live-2",
+      durableRuntimeControllerId = "durable-controller-live",
+    )
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        FakeManagedProcessController(
+          snapshot = runningSnapshot(
+            processId = request.processId,
+            taskId = request.taskId,
+            ownerIdentity = request.ownerIdentity,
+          ),
+          awaitSnapshot = successSnapshot(
+            processId = request.processId,
+            taskId = request.taskId,
+            ownerIdentity = request.ownerIdentity,
+          ),
+        )
+      },
+      runtimeIdentity = ownerIdentity,
+    )
+
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-live-reattach",
+        taskId = "task-live-reattach",
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        timeoutMs = 120_000L,
+        requestedAtEpochMs = 1_000L,
+        ownerIdentity = ownerIdentity,
+      ),
+    )
+
+    val restoredRegistry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      runtimeIdentity = restoredRuntimeIdentity,
+    )
+    val restored = restoredRegistry.read("proc-live-reattach")
+
+    assertNotNull(restored)
+    assertEquals(ManagedProcessStatus.RUNNING, restored!!.status)
+    assertNull(restored.errorCode)
+    assertNull(restored.finishedAtEpochMs)
+    assertEquals(
+      ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+      restored.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY],
+    )
+    assertEquals(
+      ManagedProcessRestoreDecision.LIVE_CONTROLLER_REATTACHED.wireValue,
+      restored.metadata[MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY],
+    )
+    assertEquals(
+      "process-live-reattach",
+      restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY],
+    )
+    assertEquals(
+      "controller-live-2",
+      restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY],
+    )
+    assertEquals(
+      "durable-controller-live",
+      restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY],
+    )
+
+    val waited = restoredRegistry.wait("proc-live-reattach", 250L)
+
+    assertNotNull(waited)
+    assertEquals(ManagedProcessStatus.SUCCESS, waited!!.status)
+    assertEquals("server ready", waited.stdout)
+    assertEquals(
+      ManagedProcessRestoreDecision.LIVE_CONTROLLER_REATTACHED.wireValue,
+      waited.metadata[MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY],
+    )
+  }
+
+  @Test
   fun sameProcessNewControllerRestoreReconnectsAndStampsRestoreScopeMetadata() {
     val directory = temporaryFolder.newFolder("durable-process-registry-same-process-new-controller")
     val ownerIdentity = ManagedProcessRuntimeIdentity(
