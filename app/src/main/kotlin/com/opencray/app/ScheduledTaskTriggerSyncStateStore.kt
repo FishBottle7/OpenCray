@@ -139,10 +139,12 @@ internal class FileBackedScheduledTaskTriggerSyncStateStore(
     if (encoded.isBlank()) {
       return ScheduledTaskTriggerSyncStateRecord()
     }
-    return PersistenceJson.instance.decodeFromString(
-      ScheduledTaskTriggerSyncStateRecord.serializer(),
-      encoded,
-    )
+    return runCatching {
+      PersistenceJson.instance.decodeFromString(
+        ScheduledTaskTriggerSyncStateRecord.serializer(),
+        encoded,
+      )
+    }.getOrDefault(ScheduledTaskTriggerSyncStateRecord())
   }
 
   private fun encodeRecord(record: ScheduledTaskTriggerSyncStateRecord): String =

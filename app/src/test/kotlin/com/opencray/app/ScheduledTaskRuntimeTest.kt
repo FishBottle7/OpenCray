@@ -661,6 +661,24 @@ class ScheduledTaskRuntimeTest {
   }
 
   @Test
+  fun fileBackedTriggerSyncStateStoreTreatsCorruptSnapshotAsEmptyAndRecoversOnReplace() {
+    val storage = StaleReadDurableTextStorage()
+    val store = FileBackedScheduledTaskTriggerSyncStateStore(
+      storage = storage,
+      runtimeRootDirectory = temporaryFolder.newFolder("scheduled-trigger-sync-corrupt"),
+    )
+    storage.writeText("scheduled-task-trigger-sync-state-v2.json", "{ not-json")
+
+    assertTrue(store.loadScheduleIds().isEmpty())
+
+    store.replaceScheduleIds(linkedSetOf("schedule-recovered"))
+
+    assertEquals(linkedSetOf("schedule-recovered"), store.loadScheduleIds())
+    assertTrue(storage.currentText.orEmpty().contains("schedule-recovered"))
+    assertTrue(!storage.currentText.orEmpty().contains("not-json"))
+  }
+
+  @Test
   fun resyncEnabledScheduledTasksExecutesUnderTriggerSyncResyncLock() {
     val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
     val registrar = RecordingScheduledTriggerRegistrar()
