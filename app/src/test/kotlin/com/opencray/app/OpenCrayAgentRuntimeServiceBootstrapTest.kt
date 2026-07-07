@@ -3738,6 +3738,51 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun runtimeServiceShellControllerSchedulesOwnerLeaseRetryWhenStartCommandLosesLease() {
+    val context = MinimalContext()
+    val mainHandler = Handler()
+    val service = TestRuntimeService()
+    val executionCoordinator = RecordingRuntimeServiceExecutionCoordinator()
+    val wakeDispatcher = RecordingRuntimeServiceWakeCommandDispatcher()
+    val retryTargets = mutableListOf<RuntimeServiceTarget>()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator(
+      ownerLeaseAcquireResults = listOf(true, false, false),
+    )
+    val bootstrap = OpenCrayAgentRuntimeServiceBootstrap(
+      shellControlBundle = defaultShellControlBundle(),
+      transportBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
+        gatewayBundle = testServiceGatewayBundle(),
+      ),
+      executionCoordinator = executionCoordinator,
+      wakeCommandDispatcher = wakeDispatcher,
+      binderEndpoint = RecordingRuntimeServiceBinderEndpoint(),
+      projectionCoordinator = projectionCoordinator,
+    )
+    val controller = runtimeServiceShellController(
+      service = service,
+      appContext = context,
+      mainHandler = mainHandler,
+      bootstrapDependencies = defaultRuntimeBootstrapDependencies,
+      serviceBootstrapFactory = { _, _, _, _ -> bootstrap },
+      ownerLeaseRetryScheduler = { target -> retryTargets += target },
+    )
+
+    val attached = controller.attach()
+    val startResult = controller.onStartCommand(
+      intent = Intent("runtime-shell-start"),
+      startId = 12,
+    )
+
+    assertTrue(attached)
+    assertEquals(Service.START_NOT_STICKY, startResult)
+    assertEquals(listOf(RuntimeServiceTarget.DETACHED_BACKGROUND), retryTargets)
+    assertEquals(3, projectionCoordinator.ownerLeaseAcquireCallCount)
+    assertEquals(1, executionCoordinator.attachCallCount)
+    assertTrue(executionCoordinator.startIds.isEmpty())
+    assertEquals(0, wakeDispatcher.dispatchCallCount)
+  }
+
+  @Test
   fun runtimeServiceBootstrapAttachFailsWhenOwnerLeaseIsNotHeld() {
     val executionCoordinator = RecordingRuntimeServiceExecutionCoordinator()
     val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator(
@@ -7945,6 +7990,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
 
   private class RecordingRuntimeServiceProjectionCoordinator(
     private val ownerLeaseAcquired: Boolean = true,
+    private val ownerLeaseAcquireResults: List<Boolean> = emptyList(),
   ) : RuntimeServiceProjectionCoordinator {
     var bindCallCount: Int = 0
       private set
@@ -7982,7 +8028,8 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
 
     override fun tryAcquireOwnerLease(): Boolean {
       ownerLeaseAcquireCallCount += 1
-      return ownerLeaseAcquired
+      return ownerLeaseAcquireResults.getOrNull(ownerLeaseAcquireCallCount - 1)
+        ?: ownerLeaseAcquired
     }
   }
 

@@ -122,6 +122,9 @@ private class DefaultRuntimeServiceShellController(
     bootstrap.onStartCommand(intent, startId)
     return runtimeServiceStartResult(
       shellStateAccess = bootstrap,
+      onOwnerLeaseDenied = {
+        ownerLeaseRetryScheduler(target)
+      },
     )
   }
 
@@ -202,8 +205,10 @@ private class DefaultRuntimeServiceShellController(
 
 internal fun runtimeServiceStartResult(
   shellStateAccess: RuntimeServiceShellStateAccess,
+  onOwnerLeaseDenied: () -> Unit = {},
 ): Int {
   if (!shellStateAccess.ownsRuntimeServiceStartResult()) {
+    onOwnerLeaseDenied()
     return Service.START_NOT_STICKY
   }
   val keepAliveState = shellStateAccess.currentKeepAliveState()
