@@ -7,6 +7,9 @@ import android.security.keystore.KeyProperties
 import com.opencray.persistence.security.AndroidKeystoreSecretVault
 import com.opencray.persistence.security.CredentialRef
 import com.opencray.persistence.security.SecretValue
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import java.io.File
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.util.Base64
@@ -17,7 +20,7 @@ import javax.crypto.spec.GCMParameterSpec
 
 private const val DEFAULT_SECRET_VAULT_PREFERENCES = "opencray.secret-vault"
 
-private interface SecretVaultKeyValueStore {
+internal interface SecretVaultKeyValueStore {
   fun getString(key: String): String?
 
   fun putString(key: String, value: String)
@@ -25,7 +28,7 @@ private interface SecretVaultKeyValueStore {
   fun remove(key: String): Boolean
 }
 
-private class SharedPreferencesSecretVaultKeyValueStore(
+internal class SharedPreferencesSecretVaultKeyValueStore(
   private val sharedPreferences: SharedPreferences,
 ) : SecretVaultKeyValueStore {
   override fun getString(key: String): String? =
@@ -39,6 +42,51 @@ private class SharedPreferencesSecretVaultKeyValueStore(
     val existed = sharedPreferences.contains(key)
     sharedPreferences.edit().remove(key).apply()
     return existed
+  }
+}
+
+internal class FileBackedSecretVaultKeyValueStore(
+  private val storage: DurableTextStorage,
+) : SecretVaultKeyValueStore {
+  override fun getString(key: String): String? =
+    storage.readText(fileNameForKey(key))
+      ?.takeIf(String::isNotBlank)
+
+  override fun putString(key: String, value: String) {
+    storage.writeText(fileNameForKey(key), value)
+  }
+
+  override fun remove(key: String): Boolean =
+    storage.delete(fileNameForKey(key))
+
+  private fun fileNameForKey(key: String): String =
+    "secret-${sha256Hex(key)}.txt"
+}
+
+internal class MigratingSecretVaultKeyValueStore(
+  private val primary: SecretVaultKeyValueStore,
+  private val legacy: SecretVaultKeyValueStore?,
+) : SecretVaultKeyValueStore {
+  override fun getString(key: String): String? {
+    val primaryValue = primary.getString(key)
+    if (primaryValue != null) {
+      return primaryValue
+    }
+    val legacyValue = legacy?.getString(key) ?: return null
+    primary.putString(key, legacyValue)
+    legacy.remove(key)
+    return legacyValue
+  }
+
+  override fun putString(key: String, value: String) {
+    primary.putString(key, value)
+    legacy?.remove(key)
+  }
+
+  override fun remove(key: String): Boolean {
+    val removedPrimary = primary.remove(key)
+    val removedLegacy = legacy?.remove(key) ?: false
+    return removedPrimary || removedLegacy
   }
 }
 
@@ -144,11 +192,6 @@ internal class AndroidKeystoreSharedPreferencesSecretVault private constructor(
   private fun base64Decode(value: String): ByteArray =
     Base64.getDecoder().decode(value)
 
-  private fun sha256Hex(value: String): String =
-    MessageDigest.getInstance("SHA-256")
-      .digest(value.toByteArray(Charsets.UTF_8))
-      .joinToString(separator = "") { byte -> "%02x".format(byte) }
-
   private data class CipherPayload(
     val iv: ByteArray,
     val cipherText: ByteArray,
@@ -165,10 +208,23 @@ internal class AndroidKeystoreSharedPreferencesSecretVault private constructor(
     fun fromContext(
       context: Context,
       preferencesName: String = DEFAULT_SECRET_VAULT_PREFERENCES,
-    ): AndroidKeystoreSharedPreferencesSecretVault = AndroidKeystoreSharedPreferencesSecretVault(
-      keyValueStore = SharedPreferencesSecretVaultKeyValueStore(
-        context.getSharedPreferences(preferencesName, Context.MODE_PRIVATE),
-      ),
-    )
+    ): AndroidKeystoreSharedPreferencesSecretVault {
+      val appContext = context.applicationContext
+      return AndroidKeystoreSharedPreferencesSecretVault(
+        keyValueStore = MigratingSecretVaultKeyValueStore(
+          primary = FileBackedSecretVaultKeyValueStore(
+            DirectoryDurableTextStorage(File(appContext.filesDir, preferencesName)),
+          ),
+          legacy = SharedPreferencesSecretVaultKeyValueStore(
+            appContext.getSharedPreferences(preferencesName, Context.MODE_PRIVATE),
+          ),
+        ),
+      )
+    }
   }
 }
+
+private fun sha256Hex(value: String): String =
+  MessageDigest.getInstance("SHA-256")
+    .digest(value.toByteArray(Charsets.UTF_8))
+    .joinToString(separator = "") { byte -> "%02x".format(byte) }

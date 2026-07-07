@@ -16,6 +16,8 @@ The shared durable text store now also uses per-file sidecar OS locks for read/w
 
 Runtime notification settings save/clear now also use that locked durable update primitive directly, so quiet-hours, delivery-mode, and channel-toggle snapshots no longer go through direct write/delete calls.
 
+Android Keystore secret-vault ciphertext payloads now also use the runtime-root durable text store as the primary payload backend with SharedPreferences read-through migration, so host rebuild and runtime-process credential reads no longer depend on cross-process preference caching for encrypted API-key payloads.
+
 Generic JSON record save helpers now also use that locked durable update primitive, so full-record saves for session/soul/chat workspace stores no longer bypass the shared atomic replace path with direct `writeText`.
 
 Skill install manifest direct save now also uses the locked durable update primitive, so future skills paths cannot bypass the process-safe manifest merge/update contract with a direct `writeText`. Malformed manifests now load as empty and recover on the next locked mutation instead of blocking runtime skills startup.
