@@ -112,8 +112,16 @@ internal class FileBackedSkillEnablementStateStore(
     }
   }
 
-  private fun hasPersistedRecord(): Boolean =
-    !storage.readText(SKILL_ENABLEMENT_FILE_NAME).isNullOrBlank()
+  private fun hasPersistedRecord(): Boolean = storage.updateRecord(
+    name = SKILL_ENABLEMENT_FILE_NAME,
+    serializer = PersistedSkillEnablementRecord.serializer(),
+  ) { persisted ->
+    RecordStorageUpdate(
+      value = persisted,
+      result = persisted != null,
+      write = false,
+    )
+  }
 
   private fun loadRecord(): PersistedSkillEnablementRecord =
     storage.updateRecord(

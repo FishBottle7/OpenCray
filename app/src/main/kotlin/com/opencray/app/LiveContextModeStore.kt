@@ -110,8 +110,16 @@ internal class FileBackedLiveContextModeKeyValueStore(
     }
   }
 
-  private fun hasPersistedRecord(): Boolean =
-    !storage.readText(LIVE_CONTEXT_MODE_FILE_NAME).isNullOrBlank()
+  private fun hasPersistedRecord(): Boolean = storage.updateRecord(
+    name = LIVE_CONTEXT_MODE_FILE_NAME,
+    serializer = PersistedLiveContextModeRecord.serializer(),
+  ) { persisted ->
+    RecordStorageUpdate(
+      value = persisted,
+      result = persisted != null,
+      write = false,
+    )
+  }
 
   private fun loadRecord(): PersistedLiveContextModeRecord =
     storage.updateRecord(

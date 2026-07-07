@@ -59,6 +59,23 @@ class SkillEnablementStateStoreTest {
   }
 
   @Test
+  fun migratesLegacySkillEnablementWhenDurableRecordIsMalformed() {
+    val runtimeRoot = temporaryFolder.newFolder("skill-enablement-malformed-migration")
+    val storage = DirectoryDurableTextStorage(runtimeRoot)
+    storage.writeText("skill-enablement.json", "{not-json")
+    val store = FileBackedSkillEnablementStateStore(
+      storage = storage,
+      clock = { 1_000L },
+    )
+
+    store.migrateFromLegacyIfEmpty(
+      MapSkillEnablementStateStore(mapOf("voice-notes" to false)),
+    )
+
+    assertFalse(store.isEnabled("voice-notes"))
+  }
+
+  @Test
   fun migrationDoesNotOverwriteExistingDurableRecord() {
     val runtimeRoot = temporaryFolder.newFolder("skill-enablement-existing")
     val store = FileBackedSkillEnablementStateStore(

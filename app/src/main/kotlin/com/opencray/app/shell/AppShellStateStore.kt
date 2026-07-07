@@ -113,8 +113,16 @@ class FileBackedAppShellKeyValueStore(
     }
   }
 
-  private fun hasPersistedRecord(): Boolean =
-    !storage.readText(APP_SHELL_STATE_FILE_NAME).isNullOrBlank()
+  private fun hasPersistedRecord(): Boolean = storage.updateRecord(
+    name = APP_SHELL_STATE_FILE_NAME,
+    serializer = PersistedAppShellStateRecord.serializer(),
+  ) { persisted ->
+    RecordStorageUpdate(
+      value = persisted,
+      result = persisted != null,
+      write = false,
+    )
+  }
 
   private fun loadRecord(): PersistedAppShellStateRecord =
     storage.updateRecord(

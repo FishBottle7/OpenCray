@@ -100,6 +100,30 @@ class TelemetrySettingsPersistenceTest {
     assertFalse(restored.privacyGuard.isChecked)
   }
 
+  @Test
+  fun fileBackedStoreMigratesLegacyStateWhenDurableRecordIsMalformed() {
+    val defaults = defaultTelemetryState()
+    val runtimeRoot = temporaryFolder.newFolder("telemetry-settings-malformed-migration")
+    val storage = DirectoryDurableTextStorage(runtimeRoot)
+    storage.writeText("telemetry-settings.json", "{not-json")
+    val legacyStore = InMemoryTelemetrySettingsKeyValueStore(
+      mapOf(
+        TelemetrySettingsStoreKeys.TELEMETRY_ENABLED to true,
+        TelemetrySettingsStoreKeys.PRIVACY_GUARD_ENABLED to false,
+      ),
+    )
+    val fileBackedStore = FileBackedTelemetrySettingsKeyValueStore(
+      storage = storage,
+      clock = { 1_000L },
+    )
+
+    fileBackedStore.migrateFromLegacyIfEmpty(legacyStore)
+
+    val restored = TelemetrySettingsStore(fileBackedStore).load(defaults)
+    assertTrue(restored.telemetry.isChecked)
+    assertFalse(restored.privacyGuard.isChecked)
+  }
+
   private fun defaultTelemetryState(): TelemetryTogglesState = TelemetryTogglesState(
     title = "Privacy & Telemetry",
     subtitle = "Review what changes and what stays local.",

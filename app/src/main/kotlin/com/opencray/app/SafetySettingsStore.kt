@@ -401,8 +401,16 @@ internal class FileBackedSafetySettingsKeyValueStore(
     }
   }
 
-  private fun hasPersistedRecord(): Boolean =
-    !storage.readText(SAFETY_SETTINGS_FILE_NAME).isNullOrBlank()
+  private fun hasPersistedRecord(): Boolean = storage.updateRecord(
+    name = SAFETY_SETTINGS_FILE_NAME,
+    serializer = PersistedSafetySettingsRecord.serializer(),
+  ) { persisted ->
+    RecordStorageUpdate(
+      value = persisted,
+      result = persisted != null,
+      write = false,
+    )
+  }
 
   private fun loadRecord(): PersistedSafetySettingsRecord =
     storage.updateRecord(

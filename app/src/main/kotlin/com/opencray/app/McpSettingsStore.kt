@@ -94,8 +94,16 @@ internal class FileBackedMcpSettingsKeyValueStore(
     }
   }
 
-  private fun hasPersistedRecord(): Boolean =
-    !storage.readText(MCP_SETTINGS_FILE_NAME).isNullOrBlank()
+  private fun hasPersistedRecord(): Boolean = storage.updateRecord(
+    name = MCP_SETTINGS_FILE_NAME,
+    serializer = PersistedMcpSettingsRecord.serializer(),
+  ) { persisted ->
+    RecordStorageUpdate(
+      value = persisted,
+      result = persisted != null,
+      write = false,
+    )
+  }
 
   private fun loadRecord(): PersistedMcpSettingsRecord =
     storage.updateRecord(

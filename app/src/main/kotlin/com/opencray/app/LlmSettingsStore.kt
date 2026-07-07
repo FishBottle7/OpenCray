@@ -780,8 +780,16 @@ internal class FileBackedLlmSettingsKeyValueStore(
     }
   }
 
-  private fun hasPersistedRecord(): Boolean =
-    !storage.readText(LLM_SETTINGS_FILE_NAME).isNullOrBlank()
+  private fun hasPersistedRecord(): Boolean = storage.updateRecord(
+    name = LLM_SETTINGS_FILE_NAME,
+    serializer = PersistedLlmSettingsRecord.serializer(),
+  ) { persisted ->
+    RecordStorageUpdate(
+      value = persisted,
+      result = persisted != null,
+      write = false,
+    )
+  }
 
   private fun loadRecord(): PersistedLlmSettingsRecord =
     storage.updateRecord(

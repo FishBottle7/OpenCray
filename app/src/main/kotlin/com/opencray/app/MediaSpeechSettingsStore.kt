@@ -329,8 +329,16 @@ internal class FileBackedMediaSpeechSettingsKeyValueStore(
     }
   }
 
-  private fun hasPersistedRecord(): Boolean =
-    !storage.readText(MEDIA_SPEECH_SETTINGS_FILE_NAME).isNullOrBlank()
+  private fun hasPersistedRecord(): Boolean = storage.updateRecord(
+    name = MEDIA_SPEECH_SETTINGS_FILE_NAME,
+    serializer = PersistedMediaSpeechSettingsRecord.serializer(),
+  ) { persisted ->
+    RecordStorageUpdate(
+      value = persisted,
+      result = persisted != null,
+      write = false,
+    )
+  }
 
   private fun loadRecord(): PersistedMediaSpeechSettingsRecord =
     storage.updateRecord(

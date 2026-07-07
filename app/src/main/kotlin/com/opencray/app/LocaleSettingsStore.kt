@@ -113,8 +113,16 @@ internal class FileBackedLocaleSettingsKeyValueStore(
     }
   }
 
-  private fun hasPersistedRecord(): Boolean =
-    !storage.readText(LOCALE_SETTINGS_FILE_NAME).isNullOrBlank()
+  private fun hasPersistedRecord(): Boolean = storage.updateRecord(
+    name = LOCALE_SETTINGS_FILE_NAME,
+    serializer = PersistedLocaleSettingsRecord.serializer(),
+  ) { persisted ->
+    RecordStorageUpdate(
+      value = persisted,
+      result = persisted != null,
+      write = false,
+    )
+  }
 
   private fun loadRecord(): PersistedLocaleSettingsRecord =
     storage.updateRecord(

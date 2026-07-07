@@ -94,4 +94,31 @@ class AppShellStateStoreTest {
       AppShellStateStore(fileBackedStore).load(),
     )
   }
+
+  @Test
+  fun fileBackedStoreMigratesLegacyStateWhenDurableRecordIsMalformed() {
+    val runtimeRoot = temporaryFolder.newFolder("app-shell-state-malformed-migration")
+    val storage = DirectoryDurableTextStorage(runtimeRoot)
+    storage.writeText("app-shell-state.json", "{not-json")
+    val legacyStore = InMemoryAppShellKeyValueStore(
+      mapOf(
+        AppShellStateStoreKeys.SELECTED_TAB to AppShellTab.SETTINGS.name,
+        AppShellStateStoreKeys.SETTINGS_SUBPAGE to SettingsSubpage.NOTIFICATIONS_BACKGROUND.name,
+      ),
+    )
+    val fileBackedStore = FileBackedAppShellKeyValueStore(
+      storage = storage,
+      clock = { 1_000L },
+    )
+
+    fileBackedStore.migrateFromLegacyIfEmpty(legacyStore)
+
+    assertEquals(
+      AppShellDestination(
+        selectedTab = AppShellTab.SETTINGS,
+        settingsSubpage = SettingsSubpage.NOTIFICATIONS_BACKGROUND,
+      ),
+      AppShellStateStore(fileBackedStore).load(),
+    )
+  }
 }

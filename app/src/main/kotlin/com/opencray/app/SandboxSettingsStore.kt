@@ -302,8 +302,16 @@ internal class FileBackedSandboxSettingsKeyValueStore(
     }
   }
 
-  private fun hasPersistedRecord(): Boolean =
-    !storage.readText(SANDBOX_SETTINGS_FILE_NAME).isNullOrBlank()
+  private fun hasPersistedRecord(): Boolean = storage.updateRecord(
+    name = SANDBOX_SETTINGS_FILE_NAME,
+    serializer = PersistedSandboxSettingsRecord.serializer(),
+  ) { persisted ->
+    RecordStorageUpdate(
+      value = persisted,
+      result = persisted != null,
+      write = false,
+    )
+  }
 
   private fun loadRecord(): PersistedSandboxSettingsRecord =
     storage.updateRecord(

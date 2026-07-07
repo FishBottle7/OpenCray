@@ -203,8 +203,16 @@ internal class FileBackedWebSearchSettingsKeyValueStore(
     }
   }
 
-  private fun hasPersistedRecord(): Boolean =
-    !storage.readText(WEB_SEARCH_SETTINGS_FILE_NAME).isNullOrBlank()
+  private fun hasPersistedRecord(): Boolean = storage.updateRecord(
+    name = WEB_SEARCH_SETTINGS_FILE_NAME,
+    serializer = PersistedWebSearchSettingsRecord.serializer(),
+  ) { persisted ->
+    RecordStorageUpdate(
+      value = persisted,
+      result = persisted != null,
+      write = false,
+    )
+  }
 
   private fun loadRecord(): PersistedWebSearchSettingsRecord =
     storage.updateRecord(

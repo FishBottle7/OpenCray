@@ -111,8 +111,16 @@ class FileBackedTelemetrySettingsKeyValueStore(
     }
   }
 
-  private fun hasPersistedRecord(): Boolean =
-    !storage.readText(TELEMETRY_SETTINGS_FILE_NAME).isNullOrBlank()
+  private fun hasPersistedRecord(): Boolean = storage.updateRecord(
+    name = TELEMETRY_SETTINGS_FILE_NAME,
+    serializer = PersistedTelemetrySettingsRecord.serializer(),
+  ) { persisted ->
+    RecordStorageUpdate(
+      value = persisted,
+      result = persisted != null,
+      write = false,
+    )
+  }
 
   private fun loadRecord(): PersistedTelemetrySettingsRecord =
     storage.updateRecord(

@@ -117,8 +117,16 @@ internal class FileBackedE2BSandboxSessionKeyValueStore(
     }
   }
 
-  private fun hasPersistedRecord(): Boolean =
-    !storage.readText(E2B_SANDBOX_SESSION_FILE_NAME).isNullOrBlank()
+  private fun hasPersistedRecord(): Boolean = storage.updateRecord(
+    name = E2B_SANDBOX_SESSION_FILE_NAME,
+    serializer = PersistedE2BSandboxSessionRecord.serializer(),
+  ) { persisted ->
+    RecordStorageUpdate(
+      value = persisted,
+      result = persisted != null,
+      write = false,
+    )
+  }
 
   private fun loadRecord(): PersistedE2BSandboxSessionRecord =
     storage.updateRecord(
