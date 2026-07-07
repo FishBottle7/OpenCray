@@ -5,6 +5,7 @@ import com.opencray.persistence.migration.NoOpJsonMigration
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.DurableTextUpdate
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class JsonFileStoresTest {
@@ -37,10 +38,49 @@ class JsonFileStoresTest {
     )
   }
 
+  @Test
+  fun updateRecordTreatsMalformedCurrentTextAsMissingAndRecoversFile() {
+    val storage = UpdateOnlyDurableTextStorage()
+    val record = SessionRecord(
+      sessionId = "session-recovered",
+      agentId = "agent-1",
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+    )
+    storage.seed("""{"sessionId":"broken"}garbage""")
+
+    val result = storage.updateRecord(
+      name = "session.json",
+      serializer = SessionRecord.serializer(),
+      migration = NoOpJsonMigration,
+    ) { current ->
+      assertNull(current)
+      RecordStorageUpdate(
+        value = record,
+        result = "recovered",
+      )
+    }
+
+    assertEquals("recovered", result)
+    assertEquals(
+      record,
+      readRecord(
+        storage = storage,
+        name = "session.json",
+        serializer = SessionRecord.serializer(),
+        migration = NoOpJsonMigration,
+      ),
+    )
+  }
+
   private class UpdateOnlyDurableTextStorage : DurableTextStorage {
     private var text: String? = null
     var updateTextCallCount: Int = 0
       private set
+
+    fun seed(text: String?) {
+      this.text = text
+    }
 
     override fun readText(name: String): String? = text
 

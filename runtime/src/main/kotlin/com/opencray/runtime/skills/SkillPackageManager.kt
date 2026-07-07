@@ -228,10 +228,12 @@ class SkillInstallManifestStore internal constructor(
     if (encoded.isBlank()) {
       return SkillInstallManifest()
     }
-    return PersistenceJson.instance.decodeFromString(
-      deserializer = SkillInstallManifest.serializer(),
-      string = encoded,
-    )
+    return runCatching {
+      PersistenceJson.instance.decodeFromString(
+        deserializer = SkillInstallManifest.serializer(),
+        string = encoded,
+      )
+    }.getOrDefault(SkillInstallManifest())
   }
 
   fun save(manifest: SkillInstallManifest) {

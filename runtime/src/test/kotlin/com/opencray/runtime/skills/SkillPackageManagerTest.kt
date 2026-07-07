@@ -38,6 +38,32 @@ class SkillPackageManagerTest {
   }
 
   @Test
+  fun manifestStoreTreatsMalformedManifestAsEmptyAndRecoversOnUpdate() {
+    val manifestFile = File(temporaryFolder.root, "skills-manifest-corrupt.json")
+    manifestFile.writeText("{ not-json")
+    val manifestStore = SkillInstallManifestStore.fromFile(manifestFile)
+
+    assertTrue(manifestStore.load().installations.isEmpty())
+
+    val result = manifestStore.update { current ->
+      assertTrue(current.installations.isEmpty())
+      SkillInstallManifestStoreUpdate(
+        manifest = current.copy(
+          recordVersion = current.recordVersion + 1L,
+          updatedAtEpochMs = 2_000L,
+        ),
+        result = "recovered",
+      )
+    }
+    val recovered = manifestStore.load()
+
+    assertEquals("recovered", result)
+    assertEquals(1L, recovered.recordVersion)
+    assertEquals(2_000L, recovered.updatedAtEpochMs)
+    assertTrue(!manifestFile.readText().contains("not-json"))
+  }
+
+  @Test
   fun installFromCatalogCopiesSkillAndWritesManifest() {
     val managedRoot = temporaryFolder.newFolder("managed")
     val catalogRoot = temporaryFolder.newFolder("catalog")

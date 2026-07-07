@@ -249,16 +249,13 @@ private fun <T : Any> decodeRecordOrNull(
   val encoded = text?.trim().orEmpty()
   if (encoded.isBlank()) return null
 
-  val schemaVersion = extractSchemaVersion(encoded)
-  val migrated = if (schemaVersion == PersistenceSchemaVersion.CURRENT) {
-    encoded
-  } else {
-    migration.migrate(schemaVersion, encoded)
-  }
-
-  return try {
+  return runCatching {
+    val schemaVersion = extractSchemaVersion(encoded)
+    val migrated = if (schemaVersion == PersistenceSchemaVersion.CURRENT) {
+      encoded
+    } else {
+      migration.migrate(schemaVersion, encoded)
+    }
     PersistenceJson.instance.decodeFromString(serializer, migrated)
-  } catch (e: SerializationException) {
-    throw IllegalStateException("Failed to decode persisted record: $name", e)
-  }
+  }.getOrNull()
 }
