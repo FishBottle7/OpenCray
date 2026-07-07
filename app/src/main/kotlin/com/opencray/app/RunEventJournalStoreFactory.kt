@@ -299,24 +299,14 @@ private class FileBackedRunEventJournalStore(
   }
 
   override fun list(): List<PersistedRunJournalEntry> = withJournalLock {
-    journalDirectory.listFiles()
-      ?.asSequence()
-      ?.filter(File::isDirectory)
-      ?.flatMap { runDirectory -> runDirectory.listFiles().orEmpty().asSequence() }
-      ?.filter { file -> file.isFile && file.name.endsWith(FILE_SUFFIX) }
-      ?.mapNotNull(::decodeJournalEntry)
-      ?.sortedWith(PERSISTED_JOURNAL_ENTRY_COMPARATOR)
-      ?.toList()
-      .orEmpty()
+    journalEntryFilesLocked()
+      .mapNotNull(::decodeJournalEntry)
+      .sortedWith(PERSISTED_JOURNAL_ENTRY_COMPARATOR)
+      .toList()
   }
 
   override fun hasEntries(): Boolean = withJournalLock {
-    journalDirectory.listFiles()
-      ?.asSequence()
-      ?.filter(File::isDirectory)
-      ?.flatMap { runDirectory -> runDirectory.listFiles().orEmpty().asSequence() }
-      ?.any { file -> file.isFile && file.name.endsWith(FILE_SUFFIX) }
-      ?: false
+    journalEntryFilesLocked().any { file -> decodeJournalEntry(file) != null }
   }
 
   override fun listForRun(runId: String): List<PersistedRunJournalEntry> =
@@ -337,6 +327,14 @@ private class FileBackedRunEventJournalStore(
       ?.toList()
       .orEmpty()
   }
+
+  private fun journalEntryFilesLocked(): Sequence<File> =
+    journalDirectory.listFiles()
+      ?.asSequence()
+      ?.filter(File::isDirectory)
+      ?.flatMap { runDirectory -> runDirectory.listFiles().orEmpty().asSequence() }
+      ?.filter { file -> file.isFile && file.name.endsWith(FILE_SUFFIX) }
+      ?: emptySequence()
 
   override fun clear() {
     withJournalLock {

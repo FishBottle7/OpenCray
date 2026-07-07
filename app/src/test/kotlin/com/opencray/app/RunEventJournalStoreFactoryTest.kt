@@ -150,6 +150,64 @@ class RunEventJournalStoreFactoryTest {
   }
 
   @Test
+  fun knownSessionIdsIgnoresSessionsWithOnlyMalformedJournalFiles() {
+    val runtimeRoot = temporaryFolder.newFolder("runtime-journal-store-malformed-known-sessions")
+    val factory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    factory.forChatSession("session-malformed")
+    val malformedFile = journalFileFor(
+      sessionDirectory = factory.directoryForSession("session-malformed"),
+      runId = "run-malformed",
+      seq = 1L,
+      kind = "assistant_phase",
+    )
+    malformedFile.parentFile?.mkdirs()
+    malformedFile.writeText("{not-json", Charsets.UTF_8)
+
+    val restoredFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val restoredStore = restoredFactory.forChatSession("session-malformed")
+
+    assertFalse(restoredStore.hasEntries())
+    assertTrue(restoredStore.list().isEmpty())
+    assertTrue(restoredStore.listForRun("run-malformed").isEmpty())
+    assertTrue(restoredFactory.knownSessionIds().isEmpty())
+  }
+
+  @Test
+  fun fileBackedStoreCanAppendAfterMalformedJournalFile() {
+    val runtimeRoot = temporaryFolder.newFolder("runtime-journal-store-malformed-append")
+    val factory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    factory.forChatSession("session-malformed")
+    val malformedFile = journalFileFor(
+      sessionDirectory = factory.directoryForSession("session-malformed"),
+      runId = "run-malformed",
+      seq = 1L,
+      kind = "assistant_phase",
+    )
+    malformedFile.parentFile?.mkdirs()
+    malformedFile.writeText("{not-json", Charsets.UTF_8)
+
+    val restoredFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val restoredStore = restoredFactory.forChatSession("session-malformed")
+    val appended = restoredStore.append(
+      OpenCrayAssistantEvent(
+        runId = "run-malformed",
+        taskId = "task-malformed",
+        turn = 1,
+        text = "Recovered after malformed journal file.",
+        isFinal = false,
+        stage = "repair",
+        emittedAtEpochMs = 200L,
+      ),
+    )
+    val entries = restoredStore.listForRun("run-malformed")
+
+    assertEquals(2L, appended.seq)
+    assertEquals(1, entries.size)
+    assertEquals(2L, entries.single().seq)
+    assertTrue(restoredFactory.knownSessionIds().contains("session-malformed"))
+  }
+
+  @Test
   fun fileBackedStoreClearsEntriesWithoutListingLockSidecar() {
     val runtimeRoot = temporaryFolder.newFolder("runtime-journal-store-clear")
     val factory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
@@ -417,4 +475,17 @@ class RunEventJournalStoreFactoryTest {
   private fun encodedPayloadForRecord(payload: String): String = payload
     .replace("\\", "\\\\")
     .replace("\"", "\\\"")
+
+  private fun journalFileFor(
+    sessionDirectory: File,
+    runId: String,
+    seq: Long,
+    kind: String,
+  ): File = File(
+    File(
+      sessionDirectory,
+      "run-journal/run-${FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(runId)}",
+    ),
+    "${seq.toString().padStart(12, '0')}-$kind.json",
+  )
 }
