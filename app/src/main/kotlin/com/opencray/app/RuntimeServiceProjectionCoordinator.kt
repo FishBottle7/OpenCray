@@ -156,6 +156,7 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
     val workStateDisposer: (() -> Unit)?
     val runtimeOwnerDisposer: (() -> Unit)?
     val ownerLeaseToRelease: RuntimeServiceOwnerLease?
+    val releasedProjectionState: ReleasedOwnerLeaseProjectionState?
     synchronized(lock) {
       if (disposed) {
         return
@@ -168,6 +169,16 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
       ownerLeaseHeartbeatTask?.cancel()
       ownerLeaseHeartbeatTask = null
       currentKeepAliveState = RuntimeServiceKeepAliveState()
+      releasedProjectionState = if (ownerLeaseToRelease != null) {
+        ReleasedOwnerLeaseProjectionState(
+          serviceLifecycle = boundServiceLifecycle ?: activeServiceLifecycle,
+          runtimeOwnerLifecycle = runtimeOwnerLifecycle,
+          ownerObservationAccess = ownerObservationAccess,
+          interruptedRunRepair = lastInterruptedRunRepair,
+        )
+      } else {
+        null
+      }
       workStateDisposer = serviceWorkStateObservationDisposer
       runtimeOwnerDisposer = runtimeOwnerProjectionObservationDisposer
       serviceWorkStateObservationDisposer = null
@@ -175,7 +186,19 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
       boundServiceLifecycle = null
       activeServiceLifecycle = null
     }
-    ownerLeaseToRelease?.let(ownerLeaseStore::release)
+    val persistedReleasedLease = ownerLeaseToRelease?.let(ownerLeaseStore::release)
+    if (
+      ownerLeaseToRelease != null &&
+        persistedReleasedLease != null &&
+        persistedReleasedLease.sameRuntimeServiceOwnerAs(ownerLeaseToRelease) &&
+        persistedReleasedLease.phase == RuntimeServiceOwnerLease.PHASE_RELEASED &&
+        releasedProjectionState?.serviceLifecycle != null
+    ) {
+      persistReleasedOwnerLeaseProjection(
+        releasedLease = persistedReleasedLease,
+        projectionState = releasedProjectionState,
+      )
+    }
     runtimeNotificationCoordinator?.dispose()
     runtimeOwnerDisposer?.invoke()
     workStateDisposer?.invoke()
@@ -335,6 +358,52 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
     persistProjectionSnapshot()
     scheduleOwnerLeaseHeartbeat()
   }
+
+  private fun persistReleasedOwnerLeaseProjection(
+    releasedLease: RuntimeServiceOwnerLease,
+    projectionState: ReleasedOwnerLeaseProjectionState,
+  ) {
+    val serviceLifecycle = projectionState.serviceLifecycle ?: return
+    val workSummary = projectionState.ownerObservationAccess.activeWorkSummary()
+    projectionStore.saveSnapshot(
+      RuntimeServiceProjectionSnapshot(
+        localRuntimeServerState = localRuntimeServerStateProvider(),
+        runtimeControllerLifecycle = runtimeControllerLifecycle,
+        runtimeOwnerLifecycle = projectionState.runtimeOwnerLifecycle,
+        runtimeOwnerWorkSummary = workSummary,
+        serviceLifecycle = serviceLifecycle,
+        serviceWorkState = RuntimeServiceWorkState(
+          phase = RuntimeServiceWorkState.PHASE_IDLE,
+          hasActiveWork = false,
+          activeRunCount = 0,
+          activeSessionCount = 0,
+          pendingWorkSessionCount = 0,
+          liveManagedProcessSessionCount = 0,
+          liveSubAgentSessionCount = 0,
+          keepAliveRequired = false,
+          keepAliveReason = null,
+          changedAtEpochMs = releasedLease.releasedAtEpochMs ?: releasedLease.heartbeatAtEpochMs,
+          activeSinceEpochMs = null,
+          idleSinceEpochMs = releasedLease.releasedAtEpochMs ?: releasedLease.heartbeatAtEpochMs,
+        ),
+        serviceKeepAliveState = RuntimeServiceKeepAliveState(
+          phase = RuntimeServiceKeepAliveState.PHASE_DESTROYED,
+          stopScheduled = false,
+          stopDeadlineEpochMs = null,
+          changedAtEpochMs = releasedLease.releasedAtEpochMs ?: releasedLease.heartbeatAtEpochMs,
+        ),
+        runtimeServiceOwnerLease = releasedLease,
+        lastInterruptedRunRepair = projectionState.interruptedRunRepair,
+      ),
+    )
+  }
+
+  private data class ReleasedOwnerLeaseProjectionState(
+    val serviceLifecycle: RuntimeServiceLifecycleDescriptor?,
+    val runtimeOwnerLifecycle: HostRuntimeLifecycleDescriptor,
+    val ownerObservationAccess: RuntimeOwnerObservationAccess,
+    val interruptedRunRepair: RuntimeServiceInterruptedRunRepairProjection?,
+  )
 }
 
 private fun defaultRuntimeServiceOwnerLeaseHeartbeatScheduler(): RuntimeServiceDelayScheduler =

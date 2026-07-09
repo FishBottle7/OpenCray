@@ -157,6 +157,14 @@ class RuntimeServiceProjectionCoordinatorTest {
     assertEquals(10_090L, releasedLease.heartbeatAtEpochMs)
     assertEquals(10_090L, releasedLease.expiresAtEpochMs)
     assertEquals(10_090L, releasedLease.releasedAtEpochMs)
+    val releasedProjection = checkNotNull(projectionStore.loadSnapshot())
+    val projectedReleasedLease = checkNotNull(releasedProjection.runtimeServiceOwnerLease)
+    assertEquals(releasedLease, projectedReleasedLease)
+    assertEquals(RuntimeServiceOwnerLease.PHASE_RELEASED, projectedReleasedLease.phase)
+    assertEquals(
+      RuntimeServiceKeepAliveState.PHASE_DESTROYED,
+      releasedProjection.serviceKeepAliveState.phase,
+    )
     assertTrue(heartbeatScheduler.tasks.last().cancelled)
   }
 
@@ -258,6 +266,107 @@ class RuntimeServiceProjectionCoordinatorTest {
     assertEquals(10_050L, refreshedBlockedLease.lastAcquireFailure?.attemptedAtEpochMs)
     assertNull(coordinator.currentOwnerLease())
     assertNull(projectionStore.loadSnapshot())
+  }
+
+  @Test
+  fun projectionCoordinatorDisposeDoesNotOverwriteReplacementOwnerProjection() {
+    var now = 10_000L
+    val projectionStore = inMemoryRuntimeServiceProjectionStore()
+    val ownerLeaseStore = inMemoryRuntimeServiceOwnerLeaseStore()
+    val heartbeatScheduler = RecordingRuntimeServiceDelayScheduler()
+    val runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(
+      processStartId = "process-owner",
+      processStartedAtEpochMs = 9_000L,
+      runtimeOwnerId = "runtime-owner-a",
+      runtimeControllerId = "runtime-controller-a",
+      durableRuntimeControllerId = "runtime-controller-durable",
+    )
+    val ownerAccess = RecordingRuntimeNotificationHostAccess(runtimeOwnerLifecycle)
+    val coordinator = DefaultRuntimeServiceProjectionCoordinator(
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
+        processStartId = "process-controller",
+        processStartedAtEpochMs = 8_000L,
+        controllerInstanceId = "runtime-controller-a",
+        durableControllerId = "runtime-controller-durable",
+        controllerCreatedAtEpochMs = 8_500L,
+      ),
+      clock = { now },
+      ownerLeaseDurationMs = 100L,
+      ownerLeaseHeartbeatIntervalMs = 25L,
+      runtimeOwnerLifecycle = runtimeOwnerLifecycle,
+      ownerObservationAccess = ownerAccess,
+      notificationHostAccess = ownerAccess,
+      serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
+        workSummaryProvider = ownerAccess::activeWorkSummary,
+        clock = { now },
+      ),
+      appContext = ContextWrapper(null),
+      localizedContext = ContextWrapper(null),
+      chatSessionStore = ChatSessionLocalStore(
+        temporaryFolder.newFolder("chat-session-store-replaced-owner-dispose"),
+      ),
+      scheduledTaskSpecStore = inMemoryScheduledTaskSpecStoreFactory().create(),
+      scheduledTaskRunRecordStore = inMemoryScheduledTaskRunRecordStoreFactory().create(),
+      runtimeServiceAccessGateway = NoOpRuntimeServiceAccessGateway,
+      projectionStore = projectionStore,
+      ownerLeaseStore = ownerLeaseStore,
+      ownerLeaseHeartbeatScheduler = heartbeatScheduler,
+      runtimeNotificationCoordinator = null,
+    )
+    coordinator.bindServiceLifecycle(
+      RuntimeServiceLifecycleDescriptor(
+        serviceInstanceId = "runtime-service-a",
+        serviceCreatedAtEpochMs = 9_500L,
+        serviceProcess = runtimeServiceProcessDescriptor(
+          packageName = "org.opencray.app",
+          processName = "org.opencray.app:runtime",
+        ),
+      ),
+    )
+    coordinator.start()
+
+    val firstLease = checkNotNull(
+      ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND),
+    )
+    now = 10_250L
+    val replacementLease = ownerLeaseStore.save(
+      firstLease.copy(
+        processStartId = "process-replacement-owner",
+        controllerInstanceId = "runtime-controller-b",
+        runtimeOwnerId = "runtime-owner-b",
+        runtimeControllerId = "runtime-controller-b",
+        serviceInstanceId = "runtime-service-b",
+        acquiredAtEpochMs = 10_200L,
+        heartbeatAtEpochMs = 10_250L,
+        expiresAtEpochMs = 10_350L,
+      ),
+    )
+    assertEquals("runtime-owner-b", replacementLease.runtimeOwnerId)
+    projectionStore.saveSnapshot(
+      checkNotNull(projectionStore.loadSnapshot()).copy(
+        runtimeOwnerLifecycle = runtimeOwnerLifecycle.copy(
+          runtimeOwnerId = "runtime-owner-b",
+          runtimeControllerId = "runtime-controller-b",
+        ),
+        serviceLifecycle = RuntimeServiceLifecycleDescriptor(
+          serviceInstanceId = "runtime-service-b",
+          serviceCreatedAtEpochMs = 10_200L,
+          serviceProcess = runtimeServiceProcessDescriptor(
+            packageName = "org.opencray.app",
+            processName = "org.opencray.app:runtime",
+          ),
+        ),
+        runtimeServiceOwnerLease = replacementLease,
+      ),
+    )
+
+    now = 10_260L
+    coordinator.dispose()
+
+    assertEquals(replacementLease, ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+    assertEquals(replacementLease, projectionStore.loadSnapshot()?.runtimeServiceOwnerLease)
+    assertEquals(RuntimeServiceOwnerLease.PHASE_HELD, projectionStore.loadSnapshot()?.runtimeServiceOwnerLease?.phase)
   }
 
   @Test
