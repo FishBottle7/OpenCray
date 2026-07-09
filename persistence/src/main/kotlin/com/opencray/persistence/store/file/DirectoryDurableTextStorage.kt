@@ -74,7 +74,7 @@ class DirectoryDurableTextStorage(
 
   private fun ensureDirectory() {
     if (!directory.exists()) {
-      if (!directory.mkdirs()) {
+      if (!directory.mkdirs() && !directory.isDirectory) {
         throw IOException("Failed to create persistence directory: ${directory.path}")
       }
     }
@@ -112,7 +112,10 @@ class DirectoryDurableTextStorage(
     }
 
   private fun writeTextLocked(file: File, text: String) {
-    val tmp = Files.createTempFile(file.parentFile.toPath(), "${file.name}.", ".tmp").toFile()
+    val parent = requireNotNull(file.parentFile) {
+      "DurableTextStorage file must have a parent directory: ${file.path}"
+    }
+    val tmp = Files.createTempFile(parent.toPath(), "${file.name}.", ".tmp").toFile()
     try {
       tmp.writeText(text, Charsets.UTF_8)
       replaceAtomically(tmp = tmp, destination = file)
@@ -131,7 +134,10 @@ class DirectoryDurableTextStorage(
     block: () -> T,
   ): T {
     ensureDirectory()
-    val lockFile = File(file.parentFile, "${file.name}.lock")
+    val parent = requireNotNull(file.parentFile) {
+      "DurableTextStorage file must have a parent directory: ${file.path}"
+    }
+    val lockFile = File(parent, "${file.name}.lock")
     RandomAccessFile(lockFile, "rw").use { randomAccessFile ->
       randomAccessFile.channel.use { channel ->
         channel.lock().use {

@@ -18,7 +18,7 @@ class DirectoryDurableTextStorageTest {
 
   @Test
   fun writeTextOnWindowsDoesNotReuseFixedSiblingTmpFileName() {
-    assumeTrue(System.getProperty("os.name").startsWith("Windows", ignoreCase = true))
+    assumeTrue(System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true))
     val directory = temporaryFolder.newFolder("durable-text-storage")
     val storage = DirectoryDurableTextStorage(directory)
     val legacyTmpFile = File(directory, "chat-workspace.json.tmp")
@@ -61,6 +61,19 @@ class DirectoryDurableTextStorageTest {
   }
 
   @Test
+  fun writeTextToleratesDirectoryCreatedByConcurrentOwner() {
+    val directory = ConcurrentlyCreatedDirectory(
+      File(temporaryFolder.root, "durable-text-storage-concurrent-create").path,
+    )
+    val storage = DirectoryDurableTextStorage(directory)
+
+    storage.writeText("runtime-runs.json", """{"runs":[]}""")
+
+    assertEquals("""{"runs":[]}""", storage.readText("runtime-runs.json"))
+    assertEquals(1, directory.mkdirsCallCount)
+  }
+
+  @Test
   fun updateTextReadsAndWritesUnderLockSidecar() {
     val directory = temporaryFolder.newFolder("durable-text-storage-update")
     val storage = DirectoryDurableTextStorage(directory)
@@ -94,5 +107,23 @@ class DirectoryDurableTextStorageTest {
     assertFalse(result)
     assertFalse(File(directory, "runtime-runs.json").exists())
     assertTrue(File(directory, "runtime-runs.json.lock").exists())
+  }
+
+  private class ConcurrentlyCreatedDirectory(path: String) : File(path) {
+    var mkdirsCallCount: Int = 0
+      private set
+
+    override fun exists(): Boolean =
+      if (mkdirsCallCount == 0) {
+        false
+      } else {
+        super.exists()
+      }
+
+    override fun mkdirs(): Boolean {
+      mkdirsCallCount += 1
+      super.mkdirs()
+      return false
+    }
   }
 }
