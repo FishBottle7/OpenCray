@@ -418,6 +418,73 @@ class FileBackedAgentProcessRegistryTest {
   }
 
   @Test
+  fun reconnectRestoreStampsMetadataEvenWhenBackendDropsInputMetadata() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-reconnect-metadata-drop")
+    val ownerIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-metadata-drop-owner",
+      runtimeControllerId = "controller-metadata-drop-owner",
+      durableRuntimeControllerId = "durable-controller-metadata-drop",
+    )
+    val restoredRuntimeIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "process-metadata-drop-restored",
+      runtimeControllerId = "controller-metadata-drop-restored",
+      durableRuntimeControllerId = "durable-controller-metadata-drop",
+    )
+    val factory = MetadataDroppingReconnectFakeManagedProcessControllerFactory()
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = factory,
+      runtimeIdentity = ownerIdentity,
+    )
+
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = "proc-metadata-drop",
+        taskId = "task-metadata-drop",
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = ".",
+        timeoutMs = 120_000L,
+        requestedAtEpochMs = 1_000L,
+        ownerIdentity = ownerIdentity,
+      ),
+    )
+
+    ManagedProcessControllerRegistry.clearForTest()
+
+    val restored = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = factory,
+      runtimeIdentity = restoredRuntimeIdentity,
+    ).read("proc-metadata-drop")
+
+    assertNotNull(restored)
+    assertEquals(ManagedProcessStatus.RUNNING, restored!!.status)
+    assertEquals("true", restored.metadata["reconnectedWithoutInputMetadata"])
+    assertEquals(
+      ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+      restored.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY],
+    )
+    assertEquals(
+      ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
+      restored.metadata[MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY],
+    )
+    assertEquals(
+      "process-metadata-drop-restored",
+      restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY],
+    )
+    assertEquals(
+      "controller-metadata-drop-restored",
+      restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY],
+    )
+    assertEquals(
+      "durable-controller-metadata-drop",
+      restored.metadata[MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY],
+    )
+    assertEquals(1, factory.reconnectCount)
+  }
+
+  @Test
   fun crossProcessRestoreRepairsInterruptedSnapshotAndStampsRestoreScopeMetadata() {
     val directory = temporaryFolder.newFolder("durable-process-registry-cross-process")
     val ownerIdentity = ManagedProcessRuntimeIdentity(
@@ -1268,6 +1335,34 @@ class FileBackedAgentProcessRegistryTest {
           metadata = running.metadata + mapOf(
             "sandboxCommandReconnectRecoveryState" to "completed",
           ),
+        ),
+      )
+    }
+  }
+
+  private inner class MetadataDroppingReconnectFakeManagedProcessControllerFactory :
+    ReconnectableManagedProcessControllerFactory {
+    var reconnectCount: Int = 0
+      private set
+
+    override fun start(request: ManagedProcessStartRequest): ManagedProcessController =
+      FakeManagedProcessController(
+        snapshot = runningSnapshot(
+          processId = request.processId,
+          taskId = request.taskId,
+          ownerIdentity = request.ownerIdentity,
+        ),
+      )
+
+    override fun reconnect(snapshot: ManagedProcessSnapshot): ManagedProcessController {
+      reconnectCount += 1
+      return FakeManagedProcessController(
+        snapshot = runningSnapshot(
+          processId = snapshot.processId,
+          taskId = snapshot.taskId,
+          ownerIdentity = snapshot.ownerIdentity,
+        ).copy(
+          metadata = mapOf("reconnectedWithoutInputMetadata" to "true"),
         ),
       )
     }

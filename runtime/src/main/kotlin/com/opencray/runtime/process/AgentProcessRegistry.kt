@@ -864,9 +864,7 @@ class FileBackedAgentProcessRegistry(
             liveSnapshot = lookup.controller.snapshot(),
           )
       }?.let { lookup -> return lookup }
-    return reconnectControllerForSnapshot(snapshot)?.let { controller ->
-      ManagedProcessControllerLookup(controller = controller)
-    }
+    return reconnectControllerForSnapshot(snapshot)
   }
 
   private fun reconnectRecoveryState(snapshot: ManagedProcessSnapshot): String? =
@@ -934,7 +932,7 @@ class FileBackedAgentProcessRegistry(
 
   private fun reconnectControllerForSnapshot(
     snapshot: ManagedProcessSnapshot,
-  ): ManagedProcessController? {
+  ): ManagedProcessControllerLookup? {
     if (snapshot.status != ManagedProcessStatus.RUNNING) {
       return null
     }
@@ -953,7 +951,10 @@ class FileBackedAgentProcessRegistry(
       processId = snapshot.processId,
       controller = controller,
     )
-    return controller
+    return ManagedProcessControllerLookup(
+      controller = controller,
+      restoreDecision = ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED,
+    )
   }
 
   private fun shouldDeferRetryableReconnect(
