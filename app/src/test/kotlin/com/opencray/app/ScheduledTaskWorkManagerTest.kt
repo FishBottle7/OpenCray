@@ -198,6 +198,116 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun potentialInterruptedRunRepairEvidenceMergesProjectionReconnectIntoDurableRunRecord() {
+    val root = temporaryFolder.newFolder(
+      "scheduled-task-repair-evidence-runtime-projection-run-record",
+    )
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val runRecordStoreFactory = InMemoryAgentRunRecordStoreFactory()
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+
+    runRecordStoreFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = "run-projection-reconnect-record",
+        taskId = "task-projection-reconnect-record",
+        acceptedAtEpochMs = 1_000L,
+        lastEvent = OpenCrayAssistantEvent(
+          runId = "run-projection-reconnect-record",
+          taskId = "task-projection-reconnect-record",
+          turn = 0,
+          text = "Waiting for projected process reconnect.",
+          isFinal = false,
+          emittedAtEpochMs = 1_100L,
+        ).toPersistedRecord(),
+      ),
+    )
+
+    val evidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runRecordStoreFactory = runRecordStoreFactory,
+      runtimeServiceProjectionSnapshots = mapOf(
+        RuntimeServiceTarget.DETACHED_BACKGROUND to runtimeProjectionSnapshot(
+          activeSessionIds = listOf(sessionId),
+          lastInterruptedRunRepair = RuntimeServiceInterruptedRunRepairProjection(
+            repairEvidenceBySession = mapOf(
+              sessionId to listOf(
+                InterruptedRunRepairEvidence(
+                  sessionId = sessionId,
+                  kind = InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+                  target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+                  runId = "run-projection-reconnect-record",
+                  taskId = "task-projection-reconnect-record",
+                  detailId = "process-projection-reconnect-record",
+                  repairAfterEpochMs = 2_500L,
+                  managedProcessReconnectStatus = "connecting",
+                  managedProcessReconnectRecoveryState = "retry_scheduled",
+                  managedProcessReconnectAttemptCount = 6,
+                  runtimeExecutionOwnershipTier = RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS,
+                  durableRuntimeControllerId = "durable-controller-projection",
+                  managedProcessContinuationBasis = ManagedProcessContinuationBases.RECONNECT_HOLD,
+                  managedProcessRestoreScope = ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+                  managedProcessRestoreDecision =
+                    ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue,
+                ),
+              ),
+            ),
+            nextRepairAfterEpochMs = 2_500L,
+            nextRepairReason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+            recordedAtEpochMs = 2_000L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(
+      listOf(
+        InterruptedRunRepairEvidenceKind.RUN_RECORD,
+        InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+      ),
+      evidence.map(InterruptedRunRepairEvidence::kind),
+    )
+    val runRecordEvidence = evidence
+      .first { item -> item.kind == InterruptedRunRepairEvidenceKind.RUN_RECORD }
+    val reconnectEvidence = evidence
+      .first { item -> item.kind == InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT }
+    listOf(runRecordEvidence, reconnectEvidence).forEach { item ->
+      assertEquals(RuntimeServiceTarget.DETACHED_BACKGROUND, item.target)
+      assertEquals("run-projection-reconnect-record", item.runId)
+      assertEquals("task-projection-reconnect-record", item.taskId)
+      assertEquals(2_500L, item.repairAfterEpochMs)
+      assertEquals("connecting", item.managedProcessReconnectStatus)
+      assertEquals("retry_scheduled", item.managedProcessReconnectRecoveryState)
+      assertEquals(6, item.managedProcessReconnectAttemptCount)
+      assertEquals(RuntimeExecutionOwnershipTiers.RUNTIME_PROCESS, item.runtimeExecutionOwnershipTier)
+      assertEquals("durable-controller-projection", item.durableRuntimeControllerId)
+      assertEquals(ManagedProcessContinuationBases.RECONNECT_HOLD, item.managedProcessContinuationBasis)
+      assertEquals(ManagedProcessRestoreScope.CROSS_PROCESS.wireValue, item.managedProcessRestoreScope)
+      assertEquals(ManagedProcessRestoreDecision.RECONNECT_DEFERRED.wireValue, item.managedProcessRestoreDecision)
+    }
+    assertEquals("process-projection-reconnect-record", reconnectEvidence.detailId)
+    assertEquals(
+      emptySet<RuntimeServiceTarget>(),
+      dueInterruptedRunRepairTargets(
+        evidence = evidence,
+        nowEpochMs = 2_000L,
+      ),
+    )
+    assertEquals(
+      ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+      nextInterruptedRunRepairRetry(
+        evidence = evidence,
+        nowEpochMs = 2_000L,
+      )?.repairReason,
+    )
+  }
+
+  @Test
   fun potentialInterruptedRunRepairEvidencePrefersDurableEvidenceOverRuntimeProjectionWork() {
     val root = temporaryFolder.newFolder("scheduled-task-repair-evidence-runtime-projection-durable")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))

@@ -1,6 +1,6 @@
 # Host Rebuild And Background Task Plan
 
-Last updated: 2026-07-07
+Last updated: 2026-07-09
 
 ## Status
 
@@ -47,6 +47,7 @@ Malformed managed-process registry snapshots now load as empty records, so proje
 Reconnect-delayed same-run/task collateral evidence now also inherits the reconnect hold's runtime ownership tier and durable runtime-controller id when missing, so host-rebuild reports keep the controller anchor on run-record or journal-tail evidence that was deferred by managed-process backoff.
 Projection-only repair preflight now also rehydrates the last service-side interrupted-run repair projection before falling back to generic runtime work-summary evidence. If local queue/run-record/journal/process-registry stores are missing but the target-scoped projection still carries `MANAGED_PROCESS_RECONNECT` evidence, WorkManager preserves the typed reconnect deadline, status, attempt count, restore scope/decision, ownership tier, and durable controller anchor instead of waking repair ahead of `retryAfterEpochMs`.
 Runtime-service bootstrap/resume scans now consume that same target-scoped projected repair evidence before returning their next delayed repair result. Projected evidence is merged with durable queue/run-record/journal/process-registry evidence and reuses the managed-process reconnect backoff inheritance path, while terminal run records filter stale projected reconnect evidence for the completed run.
+Scheduler repair preflight now also keeps projected `MANAGED_PROCESS_RECONNECT` evidence for sessions that already have weaker durable run-record or journal-tail repair hints. Those weak hints inherit the projected retry deadline, reconnect diagnostics, restore scope/decision, durable controller id, runtime ownership tier, and target before due-target selection, so a detached managed-process reconnect hold is not lost or rerouted to generic interactive repair merely because a local run record survived.
 
 ## Implementation Progress
 

@@ -440,10 +440,9 @@ internal fun potentialInterruptedRunRepairEvidence(
       processRegistryFactory = processRegistryFactory,
     )
   }
-  val sessionsWithDurableEvidence = evidence.mapTo(mutableSetOf()) { item -> item.sessionId }
-  evidence += runtimeServiceProjectionRepairEvidence(runtimeServiceProjectionSnapshots)
-    .filterNot { item -> item.sessionId in sessionsWithDurableEvidence }
-  return evidence
+  return evidence.withRuntimeProjectionRepairEvidence(
+    runtimeServiceProjectionRepairEvidence(runtimeServiceProjectionSnapshots),
+  )
 }
 
 internal fun hasPotentialInteractiveRunRepairWorkForSession(
@@ -860,6 +859,45 @@ private fun runtimeServiceProjectionRepairEvidence(
     }
 }
 
+private fun List<InterruptedRunRepairEvidence>.withRuntimeProjectionRepairEvidence(
+  projectionEvidence: List<InterruptedRunRepairEvidence>,
+): List<InterruptedRunRepairEvidence> {
+  if (projectionEvidence.isEmpty()) {
+    return this
+  }
+  val durableSessionIds = mapTo(mutableSetOf()) { evidence -> evidence.sessionId }
+  val durableReconnectEvidence = filter { evidence ->
+    evidence.kind == InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT
+  }
+  val retainedProjectionEvidence = projectionEvidence.filter { projection ->
+    projection.sessionId !in durableSessionIds ||
+      (
+        projection.kind == InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT &&
+          durableReconnectEvidence.none { durable -> durable.matchesReconnectEvidence(projection) }
+        )
+  }
+  if (retainedProjectionEvidence.isEmpty()) {
+    return this
+  }
+  return (this + retainedProjectionEvidence).withManagedProcessReconnectBackoff()
+}
+
+private fun InterruptedRunRepairEvidence.matchesReconnectEvidence(
+  other: InterruptedRunRepairEvidence,
+): Boolean {
+  if (
+    kind != InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT ||
+    other.kind != InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT
+  ) {
+    return false
+  }
+  val sameDetailId = sessionId == other.sessionId &&
+    detailId != null &&
+    other.detailId != null &&
+    detailId == other.detailId
+  return sameDetailId || sharesRunOrTaskIdentityWith(other)
+}
+
 private fun runtimeServiceProjectionInterruptedRepairEvidence(
   snapshot: RuntimeServiceProjectionSnapshot,
 ): List<InterruptedRunRepairEvidence> {
@@ -1042,6 +1080,7 @@ private fun InterruptedRunRepairEvidence.withReconnectBackoffEvidence(
 ): InterruptedRunRepairEvidence {
   val reconnectRepairAfterEpochMs = reconnect.repairAfterEpochMs ?: return this
   return copy(
+    target = reconnect.target,
     repairAfterEpochMs = maxOf(repairAfterEpochMs ?: 0L, reconnectRepairAfterEpochMs),
     managedProcessReconnectStatus = managedProcessReconnectStatus
       ?: reconnect.managedProcessReconnectStatus,
