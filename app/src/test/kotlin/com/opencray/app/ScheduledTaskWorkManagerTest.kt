@@ -1194,6 +1194,67 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun scheduleNextRuntimeOwnerLeaseExpiryRepairEnqueuesEarliestFutureHeldLease() {
+    val ownerLeaseStore = inMemoryRuntimeServiceOwnerLeaseStore()
+    val workScheduler = RecordingScheduledWorkScheduler()
+    ownerLeaseStore.save(
+      heldRuntimeOwnerLease(
+        target = RuntimeServiceTarget.INTERACTIVE,
+        heartbeatAtEpochMs = 2_000L,
+        leaseDurationMs = 7_000L,
+      ),
+    )
+    ownerLeaseStore.save(
+      heldRuntimeOwnerLease(
+        target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+        heartbeatAtEpochMs = 2_500L,
+        leaseDurationMs = 5_000L,
+      ),
+    )
+
+    val scheduled = scheduleNextRuntimeOwnerLeaseExpiryRepair(
+      nowEpochMs = 4_000L,
+      ownerLeaseStore = ownerLeaseStore,
+      workScheduler = workScheduler,
+    )
+
+    assertTrue(scheduled)
+    assertEquals(
+      listOf(ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED to 3_500L),
+      workScheduler.repairRequests,
+    )
+  }
+
+  @Test
+  fun scheduleNextRuntimeOwnerLeaseExpiryRepairIgnoresExpiredAndReleasedLeases() {
+    val ownerLeaseStore = inMemoryRuntimeServiceOwnerLeaseStore()
+    val workScheduler = RecordingScheduledWorkScheduler()
+    ownerLeaseStore.save(
+      heldRuntimeOwnerLease(
+        target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+        heartbeatAtEpochMs = 1_000L,
+        leaseDurationMs = 1_000L,
+      ),
+    )
+    val releasedLease = heldRuntimeOwnerLease(
+      target = RuntimeServiceTarget.INTERACTIVE,
+      heartbeatAtEpochMs = 2_500L,
+      leaseDurationMs = 5_000L,
+    )
+    ownerLeaseStore.save(releasedLease)
+    ownerLeaseStore.release(releasedLease.released(3_000L))
+
+    val scheduled = scheduleNextRuntimeOwnerLeaseExpiryRepair(
+      nowEpochMs = 4_000L,
+      ownerLeaseStore = ownerLeaseStore,
+      workScheduler = workScheduler,
+    )
+
+    assertFalse(scheduled)
+    assertEquals(emptyList<Pair<String, Long>>(), workScheduler.repairRequests)
+  }
+
+  @Test
   fun potentialInterruptedRunRepairTargetsRoutesDetachedControlQueueTaskToDetachedBackground() {
     val root = temporaryFolder.newFolder("scheduled-task-repair-target-detached-control")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
@@ -1942,6 +2003,39 @@ class ScheduledTaskWorkManagerTest {
     ),
     serviceKeepAliveState = RuntimeServiceKeepAliveState(),
     lastInterruptedRunRepair = lastInterruptedRunRepair,
+  )
+
+  private fun heldRuntimeOwnerLease(
+    target: RuntimeServiceTarget,
+    heartbeatAtEpochMs: Long,
+    leaseDurationMs: Long,
+  ): RuntimeServiceOwnerLease = runtimeServiceOwnerLease(
+    target = target,
+    runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
+      processStartId = "process-${target.wireValue}",
+      processStartedAtEpochMs = 1_000L,
+      controllerInstanceId = "controller-${target.wireValue}",
+      durableControllerId = "durable-controller-${target.wireValue}",
+      controllerCreatedAtEpochMs = 1_200L,
+    ),
+    runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(
+      processStartId = "process-${target.wireValue}",
+      processStartedAtEpochMs = 1_000L,
+      hostInstanceId = "host-${target.wireValue}",
+      runtimeOwnerId = "owner-${target.wireValue}",
+      runtimeControllerId = "controller-${target.wireValue}",
+      hostCreatedAtEpochMs = 1_200L,
+      durableRuntimeControllerId = "durable-controller-${target.wireValue}",
+    ),
+    serviceLifecycle = RuntimeServiceLifecycleDescriptor(
+      processStartId = "process-${target.wireValue}",
+      processStartedAtEpochMs = 1_000L,
+      serviceInstanceId = "service-${target.wireValue}",
+      serviceCreatedAtEpochMs = 1_300L,
+    ),
+    acquiredAtEpochMs = 2_000L,
+    heartbeatAtEpochMs = heartbeatAtEpochMs,
+    leaseDurationMs = leaseDurationMs,
   )
 
   private fun backgroundSubAgentHandle(

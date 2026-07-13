@@ -218,6 +218,12 @@ internal class ScheduledTaskRepairWorker(
       val runtimeServiceProjectionSnapshots = runtimeServiceProjectionSnapshotsFromContext(
         applicationContext,
       )
+      val workScheduler = WorkManagerScheduledWorkScheduler.fromContext(applicationContext)
+      scheduleNextRuntimeOwnerLeaseExpiryRepair(
+        nowEpochMs = nowEpochMs,
+        ownerLeaseStore = FileBackedRuntimeServiceOwnerLeaseStore.fromContext(applicationContext),
+        workScheduler = workScheduler,
+      )
       val interruptedRunRepairEvidence = potentialInterruptedRunRepairEvidence(
         context = applicationContext,
         runtimeServiceProjectionSnapshots = runtimeServiceProjectionSnapshots,
@@ -228,7 +234,7 @@ internal class ScheduledTaskRepairWorker(
         nowEpochMs = nowEpochMs,
       )
       scheduleNextInterruptedRunRepairRetry(
-        workScheduler = WorkManagerScheduledWorkScheduler.fromContext(applicationContext),
+        workScheduler = workScheduler,
         evidence = interruptedRunRepairEvidence,
         runtimeServiceProjectionSnapshots = runtimeServiceProjectionSnapshots,
         nowEpochMs = nowEpochMs,
