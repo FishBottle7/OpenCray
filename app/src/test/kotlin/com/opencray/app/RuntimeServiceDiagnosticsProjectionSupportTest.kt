@@ -218,6 +218,7 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
           ),
           nextRepairAfterEpochMs = 9_500L,
           nextRepairReason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+          requestedRepairReason = ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED,
           recordedAtEpochMs = 9_000L,
         ),
       )
@@ -229,6 +230,7 @@ class RuntimeServiceDiagnosticsProjectionSupportTest {
     assertEquals(listOf("session-a"), repair["resumedSessionIds"])
     assertEquals(9_500L, repair["nextRepairAfterEpochMs"])
     assertEquals("managed_process_reconnect", repair["nextRepairReason"])
+    assertEquals("owner_lease_expired", repair["requestedRepairReason"])
     val evidenceBySession = repair["repairEvidenceBySession"] as Map<*, *>
     val evidence = (evidenceBySession["session-a"] as List<*>).single() as Map<*, *>
     assertEquals("managed_process_reconnect", evidence["kind"])

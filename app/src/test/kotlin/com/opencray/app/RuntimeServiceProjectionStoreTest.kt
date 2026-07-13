@@ -121,6 +121,7 @@ class RuntimeServiceProjectionStoreTest {
       ),
       nextRepairAfterEpochMs = 4_500L,
       nextRepairReason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+      requestedRepairReason = ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED,
       recordedAtEpochMs = 4_200L,
     )
     val expected = projectionSnapshot(activeRunCount = 1).copy(

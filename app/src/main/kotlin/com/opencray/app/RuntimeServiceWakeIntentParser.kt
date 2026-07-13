@@ -20,7 +20,9 @@ internal sealed interface RuntimeServiceWakeIntentCommand {
     val repairReason: String,
   ) : RuntimeServiceWakeIntentCommand
 
-  data object ResumeInterruptedRuns : RuntimeServiceWakeIntentCommand
+  data class ResumeInterruptedRuns(
+    val repairReason: String,
+  ) : RuntimeServiceWakeIntentCommand
 }
 
 internal data class RuntimeServiceIntentDescriptor(
@@ -201,7 +203,9 @@ internal class DefaultRuntimeServiceIntentDescriptorParser(
       RuntimeServiceWakeIntentCommand.RepairSchedules(normalizedRepairReason(repairReasonReader(intent)))
 
     COMMAND_KIND_RESUME_INTERRUPTED_RUNS ->
-      RuntimeServiceWakeIntentCommand.ResumeInterruptedRuns
+      RuntimeServiceWakeIntentCommand.ResumeInterruptedRuns(
+        repairReason = normalizedRepairReason(repairReasonReader(intent)),
+      )
 
     COMMAND_KIND_RESET_RUNTIME,
     null,
@@ -210,7 +214,9 @@ internal class DefaultRuntimeServiceIntentDescriptorParser(
       ?: scheduledTaskWakeCommandParser(intent)
         ?.let(RuntimeServiceWakeIntentCommand::ScheduledTask)
       ?: when (action) {
-        ACTION_RESUME_INTERRUPTED_RUNS -> RuntimeServiceWakeIntentCommand.ResumeInterruptedRuns
+        ACTION_RESUME_INTERRUPTED_RUNS -> RuntimeServiceWakeIntentCommand.ResumeInterruptedRuns(
+          repairReason = normalizedRepairReason(repairReasonReader(intent)),
+        )
         ACTION_REPAIR_SCHEDULES -> RuntimeServiceWakeIntentCommand.RepairSchedules(
           normalizedRepairReason(repairReasonReader(intent)),
         )

@@ -498,6 +498,7 @@ private data class PersistedRuntimeServiceInterruptedRunRepairProjection(
     emptyMap(),
   val nextRepairAfterEpochMs: Long? = null,
   val nextRepairReason: String? = null,
+  val requestedRepairReason: String? = null,
 )
 
 @Serializable
@@ -595,6 +596,7 @@ private fun RuntimeServiceInterruptedRunRepairProjection.toPersistedRecord():
     },
     nextRepairAfterEpochMs = nextRepairAfterEpochMs,
     nextRepairReason = nextRepairReason,
+    requestedRepairReason = requestedRepairReason,
   )
 
 private fun InterruptedRunRepairEvidence.toPersistedRecord():
@@ -634,6 +636,7 @@ private fun PersistedRuntimeServiceInterruptedRunRepairProjection.toSnapshot():
     repairEvidenceBySession = evidenceBySession,
     nextRepairAfterEpochMs = nextRepairAfterEpochMs,
     nextRepairReason = nextRepairReason,
+    requestedRepairReason = requestedRepairReason,
     recordedAtEpochMs = recordedAtEpochMs,
   )
 }

@@ -3215,7 +3215,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     var capturedContext: Context? = null
     var capturedScheduledTaskDispatcherDependencies: ScheduledTaskDispatcherDependencies? = null
     var capturedScheduledTaskRepairDependencies: ScheduledTaskRepairDependencies? = null
-    var capturedResumeInterruptedRuns: (() -> RuntimeServiceInterruptedRunRepairResult)? = null
+    var capturedResumeInterruptedRuns: ((String) -> RuntimeServiceInterruptedRunRepairResult)? = null
     var capturedGatewayBundle: OpenCrayRuntimeServiceGatewayBundle? = null
     var capturedProjectionCoordinator: RuntimeServiceProjectionCoordinator? = null
     val bootstrapResolver = testRuntimeServiceBootstrapDependencies(
@@ -5123,7 +5123,9 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       gatewayBundle = gatewayBundle,
       projectionCoordinator = projectionCoordinator,
       wakeIntentParser = RuntimeServiceWakeIntentParser {
-        RuntimeServiceWakeIntentCommand.ResumeInterruptedRuns
+        RuntimeServiceWakeIntentCommand.ResumeInterruptedRuns(
+          repairReason = ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED,
+        )
       },
       approvalNotificationDismisser = { _, _ -> },
     )
@@ -5134,6 +5136,10 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(
       listOf(fixture.sessionId),
       projectionCoordinator.interruptedRunRepairResults.single().resumedSessionIds,
+    )
+    assertEquals(
+      ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED,
+      projectionCoordinator.interruptedRunRepairResults.single().requestedRepairReason,
     )
     assertEquals(1, projectionCoordinator.persistCallCount)
     assertTrue(projectionCoordinator.scheduledDispatchOutcomes.isEmpty())
@@ -5837,17 +5843,23 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
 
   @Test
   fun defaultWakeIntentParserMapsResumeActionToCommand() {
-    val parser = DefaultRuntimeServiceWakeIntentParser(
-      descriptorParser = DefaultRuntimeServiceIntentDescriptorParser(
-        notificationCommandParser = { null },
-        scheduledTaskWakeCommandParser = { null },
-        actionReader = { ACTION_RESUME_INTERRUPTED_RUNS },
-      ),
+    val parser = DefaultRuntimeServiceWakeIntentParser()
+
+    val parsed = parser.parse(
+      RecordingCommandIntent()
+        .setAction(ACTION_RESUME_INTERRUPTED_RUNS)
+        .putExtra(
+          EXTRA_REPAIR_REASON,
+          ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+        ),
     )
 
-    val parsed = parser.parse(null)
-
-    assertEquals(RuntimeServiceWakeIntentCommand.ResumeInterruptedRuns, parsed)
+    assertEquals(
+      RuntimeServiceWakeIntentCommand.ResumeInterruptedRuns(
+        repairReason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+      ),
+      parsed,
+    )
   }
 
   @Test
@@ -5873,7 +5885,12 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       forceRuntimeResetReader = { true },
     ).parse(null)
 
-    assertEquals(RuntimeServiceWakeIntentCommand.ResumeInterruptedRuns, parsed.wakeCommand)
+    assertEquals(
+      RuntimeServiceWakeIntentCommand.ResumeInterruptedRuns(
+        repairReason = ScheduledTaskRepairReasons.WORK_MANAGER,
+      ),
+      parsed.wakeCommand,
+    )
     assertTrue(parsed.requestsRuntimeReset)
     assertTrue(parsed.requiresBootstrapForeground)
   }

@@ -91,6 +91,7 @@ internal data class RuntimeServiceInterruptedRunRepairResult(
   val repairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
   val nextRepairAfterEpochMs: Long? = null,
   val nextRepairReason: String? = null,
+  val requestedRepairReason: String? = null,
 )
 
 internal fun RuntimeServiceBootstrapAssembly.toRuntimeServiceBootstrapState(
@@ -351,7 +352,7 @@ private fun RuntimeServiceBootstrapAssembly.toWakeCommandDispatcherDependencies(
     scheduledTaskRepairDependencies = toScheduledTaskRepairDependencies(
       scheduledTaskDispatcherDependencies = scheduledTaskDispatcherDependencies,
     ),
-    resumeInterruptedRuns = {
+    resumeInterruptedRuns = { repairReason ->
       resumeInterruptedRuntimeServiceRuns(
         chatSessionStore = bootstrapContext.chatSessionStore,
         runtimeSessionDirectoryAccess = runtimeServicePort.notificationHostAccess,
@@ -379,6 +380,8 @@ private fun RuntimeServiceBootstrapAssembly.toWakeCommandDispatcherDependencies(
           appContext = bootstrapContext.localizedContext.applicationContext,
           runtimeTarget = runtimeTarget,
         ),
+      ).copy(
+        requestedRepairReason = repairReason,
       ).also { result ->
         scheduleNextInterruptedRunRepairRetry(
           workScheduler = scheduledWorkScheduler,

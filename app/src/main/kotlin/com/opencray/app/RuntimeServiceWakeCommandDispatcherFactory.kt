@@ -34,7 +34,7 @@ internal object DefaultRuntimeServiceWakeCommandDispatcherFactory :
 internal data class RuntimeServiceWakeCommandDispatcherDependencies(
   val scheduledTaskDispatcherDependencies: ScheduledTaskDispatcherDependencies,
   val scheduledTaskRepairDependencies: ScheduledTaskRepairDependencies,
-  val resumeInterruptedRuns: () -> RuntimeServiceInterruptedRunRepairResult,
+  val resumeInterruptedRuns: (String) -> RuntimeServiceInterruptedRunRepairResult,
   val approvalDecisionAccess: RuntimeServiceApprovalDecisionAccess,
   val refreshServiceWorkState: () -> RuntimeServiceWorkState,
 )
@@ -75,8 +75,8 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
         refreshAndPersist()
       }
 
-      RuntimeServiceWakeIntentCommand.ResumeInterruptedRuns -> {
-        val result = dispatcherDependencies.resumeInterruptedRuns()
+      is RuntimeServiceWakeIntentCommand.ResumeInterruptedRuns -> {
+        val result = dispatcherDependencies.resumeInterruptedRuns(command.repairReason)
         projectionCoordinator.onInterruptedRunRepairResult(result)
         refreshAndPersist()
       }
