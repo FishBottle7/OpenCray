@@ -849,6 +849,74 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun dueRuntimeServiceProjectionRepairTargetsDefersFutureProjectionDeadline() {
+    val targets = dueRuntimeServiceProjectionRepairTargets(
+      snapshotsByTarget = mapOf(
+        RuntimeServiceTarget.DETACHED_BACKGROUND to runtimeProjectionSnapshot(
+          lastInterruptedRunRepair = RuntimeServiceInterruptedRunRepairProjection(
+            repairEvidenceBySession = emptyMap(),
+            nextRepairAfterEpochMs = 2_500L,
+            nextRepairReason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+            recordedAtEpochMs = 2_000L,
+          ),
+        ),
+      ),
+      nowEpochMs = 2_000L,
+    )
+
+    assertEquals(emptySet<RuntimeServiceTarget>(), targets)
+  }
+
+  @Test
+  fun dueInterruptedRunRepairTargetsUsesDueProjectionDeadlineWithoutEvidence() {
+    val targets = dueInterruptedRunRepairTargets(
+      evidence = emptyList(),
+      runtimeServiceProjectionSnapshots = mapOf(
+        RuntimeServiceTarget.DETACHED_BACKGROUND to runtimeProjectionSnapshot(
+          lastInterruptedRunRepair = RuntimeServiceInterruptedRunRepairProjection(
+            repairEvidenceBySession = emptyMap(),
+            nextRepairAfterEpochMs = 2_500L,
+            nextRepairReason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+            recordedAtEpochMs = 2_000L,
+          ),
+        ),
+      ),
+      nowEpochMs = 2_500L,
+    )
+
+    assertEquals(setOf(RuntimeServiceTarget.DETACHED_BACKGROUND), targets)
+  }
+
+  @Test
+  fun dueInterruptedRunRepairTargetsMergesEvidenceAndProjectionTargets() {
+    val targets = dueInterruptedRunRepairTargets(
+      evidence = listOf(
+        InterruptedRunRepairEvidence(
+          sessionId = "session-interactive",
+          kind = InterruptedRunRepairEvidenceKind.RUN_RECORD,
+          target = RuntimeServiceTarget.INTERACTIVE,
+        ),
+      ),
+      runtimeServiceProjectionSnapshots = mapOf(
+        RuntimeServiceTarget.DETACHED_BACKGROUND to runtimeProjectionSnapshot(
+          lastInterruptedRunRepair = RuntimeServiceInterruptedRunRepairProjection(
+            repairEvidenceBySession = emptyMap(),
+            nextRepairAfterEpochMs = 2_500L,
+            nextRepairReason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+            recordedAtEpochMs = 2_000L,
+          ),
+        ),
+      ),
+      nowEpochMs = 2_500L,
+    )
+
+    assertEquals(
+      setOf(RuntimeServiceTarget.INTERACTIVE, RuntimeServiceTarget.DETACHED_BACKGROUND),
+      targets,
+    )
+  }
+
+  @Test
   fun delayedRepairWorkNameIsPartitionedByReason() {
     assertEquals(
       delayedRepairWorkName(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT),

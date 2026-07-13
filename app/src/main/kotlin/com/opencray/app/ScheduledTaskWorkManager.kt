@@ -224,6 +224,7 @@ internal class ScheduledTaskRepairWorker(
       )
       val interruptedRunRepairTargets = dueInterruptedRunRepairTargets(
         evidence = interruptedRunRepairEvidence,
+        runtimeServiceProjectionSnapshots = runtimeServiceProjectionSnapshots,
         nowEpochMs = nowEpochMs,
       )
       scheduleNextInterruptedRunRepairRetry(
@@ -704,17 +705,36 @@ private fun runtimeServiceProjectionSnapshotsFromContext(
 internal fun dueInterruptedRunRepairTargets(
   evidence: List<InterruptedRunRepairEvidence>,
   nowEpochMs: Long,
-): Set<RuntimeServiceTarget> = dueInterruptedRunRepairEvidence(
-  evidence = evidence,
-  nowEpochMs = nowEpochMs,
-)
-  .mapTo(linkedSetOf(), InterruptedRunRepairEvidence::target)
+  runtimeServiceProjectionSnapshots: Map<RuntimeServiceTarget, RuntimeServiceProjectionSnapshot> =
+    emptyMap(),
+): Set<RuntimeServiceTarget> {
+  val targets = dueInterruptedRunRepairEvidence(
+    evidence = evidence,
+    nowEpochMs = nowEpochMs,
+  ).mapTo(linkedSetOf(), InterruptedRunRepairEvidence::target)
+  targets += dueRuntimeServiceProjectionRepairTargets(
+    snapshotsByTarget = runtimeServiceProjectionSnapshots,
+    nowEpochMs = nowEpochMs,
+  )
+  return targets
+}
 
 internal fun dueInterruptedRunRepairEvidence(
   evidence: List<InterruptedRunRepairEvidence>,
   nowEpochMs: Long,
 ): List<InterruptedRunRepairEvidence> = evidence
   .filter { item -> item.repairAfterEpochMs == null || item.repairAfterEpochMs <= nowEpochMs }
+
+internal fun dueRuntimeServiceProjectionRepairTargets(
+  snapshotsByTarget: Map<RuntimeServiceTarget, RuntimeServiceProjectionSnapshot>,
+  nowEpochMs: Long,
+): Set<RuntimeServiceTarget> = snapshotsByTarget
+  .filter { (_, snapshot) ->
+    val repairAfterEpochMs = snapshot.lastInterruptedRunRepair?.nextRepairAfterEpochMs
+    repairAfterEpochMs != null && repairAfterEpochMs <= nowEpochMs
+  }
+  .keys
+  .toCollection(linkedSetOf())
 
 internal fun nextInterruptedRunRepairDelayMs(
   evidence: List<InterruptedRunRepairEvidence>,
