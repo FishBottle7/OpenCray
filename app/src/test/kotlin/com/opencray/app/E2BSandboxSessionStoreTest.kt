@@ -1,8 +1,14 @@
 package com.opencray.app
 
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -48,6 +54,73 @@ class E2BSandboxSessionStoreTest {
   }
 
   @Test
+  fun fileBackedUpdateSerializesConcurrentSessionMergesAcrossInstances() {
+    val directory = temporaryFolder.newFolder("e2b-sandbox-session-concurrent-update")
+    val firstStore = fileBackedStore(directory, now = 100L)
+    val secondStore = fileBackedStore(directory, now = 200L)
+    firstStore.save(
+      sampleSnapshot("sandbox-concurrent").copy(
+        remoteWorkspaceRoot = null,
+        lastPreviewUrl = null,
+        lastPreviewPort = null,
+      ),
+    )
+    val firstTransformEntered = CountDownLatch(1)
+    val releaseFirstTransform = CountDownLatch(1)
+    val secondUpdateStarted = CountDownLatch(1)
+    val failure = AtomicReference<Throwable?>()
+
+    val firstThread = thread(name = "e2b-session-remote-root-update") {
+      runCatching {
+        firstStore.update { current ->
+          firstTransformEntered.countDown()
+          check(releaseFirstTransform.await(5, TimeUnit.SECONDS))
+          requireNotNull(current).copy(remoteWorkspaceRoot = "/workspace/from-runtime")
+        }
+      }.exceptionOrNull()?.let { error -> failure.compareAndSet(null, error) }
+    }
+    assertTrue(firstTransformEntered.await(5, TimeUnit.SECONDS))
+    val secondThread = thread(name = "e2b-session-preview-update") {
+      runCatching {
+        secondUpdateStarted.countDown()
+        secondStore.update { current ->
+          requireNotNull(current).copy(
+            lastPreviewUrl = "https://preview.example.test",
+            lastPreviewPort = 4173,
+          )
+        }
+      }.exceptionOrNull()?.let { error -> failure.compareAndSet(null, error) }
+    }
+    assertTrue(secondUpdateStarted.await(5, TimeUnit.SECONDS))
+    releaseFirstTransform.countDown()
+    firstThread.join(5_000L)
+    secondThread.join(5_000L)
+
+    assertFalse(firstThread.isAlive)
+    assertFalse(secondThread.isAlive)
+    failure.get()?.let { error -> throw AssertionError("Concurrent session update failed", error) }
+    val persisted = firstStore.load()
+    assertEquals("/workspace/from-runtime", persisted?.remoteWorkspaceRoot)
+    assertEquals("https://preview.example.test", persisted?.lastPreviewUrl)
+    assertEquals(4173, persisted?.lastPreviewPort)
+  }
+
+  @Test
+  fun conditionalUpdateDoesNotClearReplacementSession() {
+    val directory = temporaryFolder.newFolder("e2b-sandbox-session-conditional-clear")
+    val staleOwnerStore = fileBackedStore(directory, now = 300L)
+    val replacementOwnerStore = fileBackedStore(directory, now = 400L)
+    staleOwnerStore.save(sampleSnapshot("sandbox-old"))
+    replacementOwnerStore.save(sampleSnapshot("sandbox-new"))
+
+    staleOwnerStore.update { current ->
+      if (current?.sandboxId == "sandbox-old") null else current
+    }
+
+    assertEquals("sandbox-new", replacementOwnerStore.load()?.sandboxId)
+  }
+
+  @Test
   fun fileBackedStoreMigratesLegacyStateOnlyWhenEmpty() {
     val directory = temporaryFolder.newFolder("e2b-sandbox-session-migration")
     val legacyKeyValueStore = InMemoryE2BSandboxSessionKeyValueStore()
@@ -72,6 +145,16 @@ class E2BSandboxSessionStoreTest {
 
     assertEquals(durableSnapshot, fileBackedStore.load())
   }
+
+  private fun fileBackedStore(
+    directory: java.io.File,
+    now: Long,
+  ): E2BSandboxSessionStore = E2BSandboxSessionStore(
+    FileBackedE2BSandboxSessionKeyValueStore(
+      storage = DirectoryDurableTextStorage(directory),
+      clock = { now },
+    ),
+  )
 
   private fun sampleSnapshot(id: String): E2BSandboxSessionSnapshot = E2BSandboxSessionSnapshot(
     sandboxId = id,

@@ -972,26 +972,39 @@ internal class E2BCodeInterpreterPythonRuntime(
     val activeSession = synchronized(lock) {
       currentStickySession?.takeIf { current -> current.sandboxId == session.sandboxId }
     }
-    val storedSession = sessionStore.load()
-      ?.takeIf { stored -> stored.sandboxId == session.sandboxId }
-    val lifecycleMerged = mergeSessionLifecycle(
-      primary = mergeSessionLifecycle(session, activeSession),
-      secondary = storedSession,
-    )
-    val updated = lifecycleMerged.copy(
-      updatedAtEpochMs = clock(),
-      previewCandidatePorts = mergePreviewCandidatePorts(
-        lifecycleMerged.previewCandidatePorts,
-        activeSession?.previewCandidatePorts.orEmpty(),
-        storedSession?.previewCandidatePorts.orEmpty(),
-      ),
-    )
+    val activeMerged = mergeSessionLifecycle(session, activeSession)
+    val updated = if (persist) {
+      requireNotNull(
+        sessionStore.update { stored ->
+          val matchingStored = stored?.takeIf { current -> current.sandboxId == session.sandboxId }
+          val lifecycleMerged = mergeSessionLifecycle(activeMerged, matchingStored)
+          lifecycleMerged.copy(
+            updatedAtEpochMs = clock(),
+            previewCandidatePorts = mergePreviewCandidatePorts(
+              lifecycleMerged.previewCandidatePorts,
+              activeSession?.previewCandidatePorts.orEmpty(),
+              matchingStored?.previewCandidatePorts.orEmpty(),
+            ),
+          )
+        },
+      )
+    } else {
+      val storedSession = sessionStore.load()
+        ?.takeIf { stored -> stored.sandboxId == session.sandboxId }
+      val lifecycleMerged = mergeSessionLifecycle(activeMerged, storedSession)
+      lifecycleMerged.copy(
+        updatedAtEpochMs = clock(),
+        previewCandidatePorts = mergePreviewCandidatePorts(
+          lifecycleMerged.previewCandidatePorts,
+          activeSession?.previewCandidatePorts.orEmpty(),
+          storedSession?.previewCandidatePorts.orEmpty(),
+        ),
+      )
+    }
     synchronized(lock) {
       currentStickySession = updated
     }
-    if (persist) {
-      sessionStore.save(updated)
-    } else {
+    if (!persist) {
       sessionStore.clear()
     }
     return updated
@@ -1005,9 +1018,13 @@ internal class E2BCodeInterpreterPythonRuntime(
         currentStickySession = null
       }
     }
-    sessionStore.load()?.takeIf { stored -> stored.sandboxId == sandboxId }?.let { stored ->
-      sessionsToClear += stored
-      sessionStore.clear()
+    sessionStore.update { stored ->
+      if (stored?.sandboxId == sandboxId) {
+        sessionsToClear += stored
+        null
+      } else {
+        stored
+      }
     }
     sessionsToClear.forEach(::clearWorkspaceSyncState)
   }

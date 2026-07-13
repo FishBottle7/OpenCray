@@ -237,11 +237,13 @@ internal class E2BSandboxSessionInfoService(
     }?.let { active ->
       activeSessionRecorder(mergePreviewLifecycle(updatedSession, active))
     }
-    sessionStore.load()?.takeIf { stored ->
-      stored.sandboxId == previousSession.sandboxId &&
-        normalizeWorkspaceRoot(stored.workspaceRoot) == requestedWorkspaceRoot
-    }?.let { stored ->
-      sessionStore.save(mergePreviewLifecycle(updatedSession, stored))
+    sessionStore.update { stored ->
+      stored?.takeIf { current ->
+        current.sandboxId == previousSession.sandboxId &&
+          normalizeWorkspaceRoot(current.workspaceRoot) == requestedWorkspaceRoot
+      }?.let { current ->
+        mergePreviewLifecycle(updatedSession, current)
+      } ?: stored
     }
   }
 

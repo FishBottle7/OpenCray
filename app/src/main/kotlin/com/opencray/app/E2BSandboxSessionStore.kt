@@ -44,19 +44,51 @@ internal interface E2BSandboxSessionKeyValueStore {
   fun putString(key: String, value: String)
 
   fun remove(key: String)
+
+  fun updateString(
+    key: String,
+    transform: (String?) -> String?,
+  ): String? {
+    val updated = transform(getString(key))
+    if (updated == null) {
+      remove(key)
+    } else {
+      putString(key, updated)
+    }
+    return updated
+  }
 }
 
 internal class InMemoryE2BSandboxSessionKeyValueStore(
   private val values: LinkedHashMap<String, String> = linkedMapOf(),
 ) : E2BSandboxSessionKeyValueStore {
-  override fun getString(key: String): String? = values[key]
+  private val lock = Any()
+
+  override fun getString(key: String): String? = synchronized(lock) { values[key] }
 
   override fun putString(key: String, value: String) {
-    values[key] = value
+    synchronized(lock) {
+      values[key] = value
+    }
   }
 
   override fun remove(key: String) {
-    values.remove(key)
+    synchronized(lock) {
+      values.remove(key)
+    }
+  }
+
+  override fun updateString(
+    key: String,
+    transform: (String?) -> String?,
+  ): String? = synchronized(lock) {
+    transform(values[key]).also { updated ->
+      if (updated == null) {
+        values.remove(key)
+      } else {
+        values[key] = updated
+      }
+    }
   }
 }
 
@@ -101,6 +133,35 @@ internal class FileBackedE2BSandboxSessionKeyValueStore(
       updateValues { values ->
         values - key
       }
+    }
+  }
+
+  override fun updateString(
+    key: String,
+    transform: (String?) -> String?,
+  ): String? = synchronized(lock) {
+    val now = clock()
+    storage.updateRecord(
+      name = E2B_SANDBOX_SESSION_FILE_NAME,
+      serializer = PersistedE2BSandboxSessionRecord.serializer(),
+    ) { persisted ->
+      val existing = (persisted ?: PersistedE2BSandboxSessionRecord()).normalized()
+      val updatedValue = transform(existing.values[key])
+      val updatedValues = if (updatedValue == null) {
+        existing.values - key
+      } else {
+        existing.values + (key to updatedValue)
+      }.filterKeys(E2B_SANDBOX_SESSION_KEYS::contains)
+      val changed = updatedValues != existing.values
+      RecordStorageUpdate(
+        value = existing.copy(
+          recordVersion = existing.recordVersion + if (changed) 1L else 0L,
+          updatedAtEpochMs = if (changed) now else existing.updatedAtEpochMs,
+          values = updatedValues,
+        ),
+        result = updatedValue,
+        write = changed || (persisted != null && existing != persisted),
+      )
     }
   }
 
@@ -170,23 +231,37 @@ internal class E2BSandboxSessionStore(
   private val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
 ) {
   fun load(): E2BSandboxSessionSnapshot? =
-    keyValueStore.getString(KEY_ACTIVE_SESSION)
-      ?.takeIf(String::isNotBlank)
-      ?.let { raw ->
-        runCatching { json.decodeFromString(E2BSandboxSessionSnapshot.serializer(), raw) }
-          .getOrNull()
-      }
+    decodeSnapshot(keyValueStore.getString(KEY_ACTIVE_SESSION))
 
   fun save(snapshot: E2BSandboxSessionSnapshot) {
     keyValueStore.putString(
       KEY_ACTIVE_SESSION,
-      json.encodeToString(E2BSandboxSessionSnapshot.serializer(), snapshot),
+      encodeSnapshot(snapshot),
     )
   }
+
+  fun update(
+    transform: (E2BSandboxSessionSnapshot?) -> E2BSandboxSessionSnapshot?,
+  ): E2BSandboxSessionSnapshot? = decodeSnapshot(
+    keyValueStore.updateString(KEY_ACTIVE_SESSION) { raw ->
+      transform(decodeSnapshot(raw))?.let(::encodeSnapshot)
+    },
+  )
 
   fun clear() {
     keyValueStore.remove(KEY_ACTIVE_SESSION)
   }
+
+  private fun decodeSnapshot(raw: String?): E2BSandboxSessionSnapshot? =
+    raw
+      ?.takeIf(String::isNotBlank)
+      ?.let { encoded ->
+        runCatching { json.decodeFromString(E2BSandboxSessionSnapshot.serializer(), encoded) }
+          .getOrNull()
+      }
+
+  private fun encodeSnapshot(snapshot: E2BSandboxSessionSnapshot): String =
+    json.encodeToString(E2BSandboxSessionSnapshot.serializer(), snapshot)
 
   companion object {
     fun fromContext(context: Context): E2BSandboxSessionStore {
