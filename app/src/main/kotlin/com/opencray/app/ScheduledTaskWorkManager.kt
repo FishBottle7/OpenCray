@@ -219,10 +219,16 @@ internal class ScheduledTaskRepairWorker(
         applicationContext,
       )
       val workScheduler = WorkManagerScheduledWorkScheduler.fromContext(applicationContext)
+      val ownerLeaseStore = FileBackedRuntimeServiceOwnerLeaseStore.fromContext(applicationContext)
       scheduleNextRuntimeOwnerLeaseExpiryRepair(
         nowEpochMs = nowEpochMs,
-        ownerLeaseStore = FileBackedRuntimeServiceOwnerLeaseStore.fromContext(applicationContext),
+        ownerLeaseStore = ownerLeaseStore,
         workScheduler = workScheduler,
+      )
+      val ownerLeaseRepairTargets = dueRuntimeOwnerLeaseExpiryRepairTargets(
+        targets = RuntimeServiceTarget.entries,
+        ownerLeaseStore = ownerLeaseStore,
+        nowEpochMs = nowEpochMs,
       )
       val interruptedRunRepairEvidence = potentialInterruptedRunRepairEvidence(
         context = applicationContext,
@@ -247,8 +253,18 @@ internal class ScheduledTaskRepairWorker(
           target = RuntimeServiceTarget.DETACHED_BACKGROUND,
         )
       }
+      val ownerLeaseRepairStarted = startInterruptedRunRepairTargets(
+        targets = ownerLeaseRepairTargets,
+        startRepair = { target ->
+          runtimeEnvironment.runtimeServiceAccessGateway.resumeInterruptedRuns(
+            applicationContext,
+            ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED,
+            target = target,
+          )
+        },
+      )
       val interruptedRunRepairStarted = startInterruptedRunRepairTargets(
-        targets = interruptedRunRepairTargets,
+        targets = interruptedRunRepairTargets - ownerLeaseRepairTargets,
         startRepair = { target ->
           runtimeEnvironment.runtimeServiceAccessGateway.resumeInterruptedRuns(
             applicationContext,
@@ -258,7 +274,8 @@ internal class ScheduledTaskRepairWorker(
         },
       )
       when {
-        scheduledRepairStarted && interruptedRunRepairStarted -> Result.success()
+        scheduledRepairStarted && ownerLeaseRepairStarted && interruptedRunRepairStarted ->
+          Result.success()
         else -> Result.retry()
       }
     }.getOrElse {

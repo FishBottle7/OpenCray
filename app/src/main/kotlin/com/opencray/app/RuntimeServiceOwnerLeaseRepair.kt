@@ -64,6 +64,18 @@ internal fun nextRuntimeOwnerLeaseExpiryRepairDelayMs(
   }
   .minOrNull()
 
+internal fun dueRuntimeOwnerLeaseExpiryRepairTargets(
+  targets: Iterable<RuntimeServiceTarget>,
+  ownerLeaseStore: RuntimeServiceOwnerLeaseStore,
+  nowEpochMs: Long,
+): Set<RuntimeServiceTarget> = targets
+  .filter { target ->
+    val lease = ownerLeaseStore.load(target)
+      ?.takeIf { candidate -> candidate.phase == RuntimeServiceOwnerLease.PHASE_HELD }
+    lease != null && lease.isExpiredAt(nowEpochMs)
+  }
+  .toCollection(linkedSetOf())
+
 internal fun runtimeOwnerLeaseExpiryRepairDelayMs(
   lease: RuntimeServiceOwnerLease?,
   nowEpochMs: Long,

@@ -1255,6 +1255,53 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun dueRuntimeOwnerLeaseExpiryRepairTargetsRoutesExpiredHeldLease() {
+    val ownerLeaseStore = inMemoryRuntimeServiceOwnerLeaseStore()
+    ownerLeaseStore.save(
+      heldRuntimeOwnerLease(
+        target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+        heartbeatAtEpochMs = 2_000L,
+        leaseDurationMs = 2_000L,
+      ),
+    )
+    ownerLeaseStore.save(
+      heldRuntimeOwnerLease(
+        target = RuntimeServiceTarget.INTERACTIVE,
+        heartbeatAtEpochMs = 3_000L,
+        leaseDurationMs = 5_000L,
+      ),
+    )
+
+    val targets = dueRuntimeOwnerLeaseExpiryRepairTargets(
+      targets = RuntimeServiceTarget.entries,
+      ownerLeaseStore = ownerLeaseStore,
+      nowEpochMs = 4_000L,
+    )
+
+    assertEquals(setOf(RuntimeServiceTarget.DETACHED_BACKGROUND), targets)
+  }
+
+  @Test
+  fun dueRuntimeOwnerLeaseExpiryRepairTargetsIgnoresReleasedLease() {
+    val ownerLeaseStore = inMemoryRuntimeServiceOwnerLeaseStore()
+    val releasedLease = heldRuntimeOwnerLease(
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      heartbeatAtEpochMs = 2_000L,
+      leaseDurationMs = 2_000L,
+    )
+    ownerLeaseStore.save(releasedLease)
+    ownerLeaseStore.release(releasedLease.released(3_000L))
+
+    val targets = dueRuntimeOwnerLeaseExpiryRepairTargets(
+      targets = RuntimeServiceTarget.entries,
+      ownerLeaseStore = ownerLeaseStore,
+      nowEpochMs = 4_000L,
+    )
+
+    assertEquals(emptySet<RuntimeServiceTarget>(), targets)
+  }
+
+  @Test
   fun potentialInterruptedRunRepairTargetsRoutesDetachedControlQueueTaskToDetachedBackground() {
     val root = temporaryFolder.newFolder("scheduled-task-repair-target-detached-control")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
