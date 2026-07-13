@@ -1156,11 +1156,51 @@ private class ManagedAgentSessionHandle(
 
   override fun resume(): SessionLifecycleState {
     touch()
+    refreshDueManagedProcessReconnectRecovery()
     val state = loop.resume()
     if (hasRunnableWork()) {
       ensureProcessing()
     }
     return state
+  }
+
+  private fun refreshDueManagedProcessReconnectRecovery() {
+    val nowEpochMs = System.currentTimeMillis()
+    val currentSnapshot = loop.snapshot()
+    val dueReconnectHolds = currentSnapshot.tasks.filter { entry ->
+      entry.lifecycleState == QueueTaskLifecycleState.SUSPENDED &&
+        entry.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS] ==
+        ManagedProcessContinuationBases.RECONNECT_HOLD &&
+        (
+          entry.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS]
+            ?.toLongOrNull()
+            ?.let { retryAfterEpochMs -> retryAfterEpochMs <= nowEpochMs }
+            ?: true
+        )
+    }
+    if (dueReconnectHolds.isEmpty()) {
+      return
+    }
+    val refreshedSnapshot = snapshotRestoreTransformer.restore(
+      snapshot = currentSnapshot.copy(tasks = dueReconnectHolds),
+      restoreEpochMs = nowEpochMs,
+    ) ?: return
+    val refreshedByTaskId = refreshedSnapshot.tasks.associateBy { entry -> entry.task.id }
+    dueReconnectHolds.forEach { heldEntry ->
+      val refreshedEntry = refreshedByTaskId[heldEntry.task.id] ?: return@forEach
+      if (
+        refreshedEntry.lifecycleState != QueueTaskLifecycleState.QUEUED ||
+        refreshedEntry.task.metadata[RunLifecycleMetadataKeys.MANAGED_PROCESS_CONTINUATION_BASIS] !=
+        ManagedProcessContinuationBases.CHECKPOINT_RESUME
+      ) {
+        return@forEach
+      }
+      loop.requestResumeTask(
+        taskId = heldEntry.task.id,
+        executionKind = EXECUTION_KIND_CHECKPOINT_RESUME,
+        taskMetadataUpdates = refreshedEntry.task.metadata + CLEARED_MANAGED_PROCESS_RECONNECT_METADATA,
+      )
+    }
   }
 
   override fun snapshot(): SessionQueueSnapshot {
@@ -2016,6 +2056,13 @@ private class ManagedAgentSessionHandle(
 
   private companion object {
     const val RUN_WAIT_POLL_INTERVAL_MS: Long = 50L
+    val CLEARED_MANAGED_PROCESS_RECONNECT_METADATA: Map<String, String> = mapOf(
+      RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS to "",
+      RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_STATUS to "",
+      RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RECOVERY_STATE to "",
+      RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_RETRY_AFTER_EPOCH_MS to "",
+      RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_ATTEMPT_COUNT to "",
+    )
   }
 }
 

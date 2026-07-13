@@ -345,7 +345,9 @@ internal class RunRecoveryPlanner {
     run.errorCode == ERROR_RESTART_REQUIRES_EXPLICIT_RETRY ||
       run.lifecycleDiagnostics.recoveryReason ==
       com.opencray.core.orchestrator.RECOVERY_REASON_HOST_RESTART_INFLIGHT_TASK_INTERRUPTED ||
-      run.errorCode == ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE
+      run.errorCode == ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE ||
+      run.lifecycleDiagnostics.managedProcessContinuationBasis ==
+      ManagedProcessContinuationBases.RECONNECT_HOLD
 
   private fun queuedRunHasUnsafePriorProgress(
     run: AgentRunSnapshot,

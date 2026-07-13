@@ -711,6 +711,7 @@ internal class RecoveryAwareQueueSnapshotStore(
           key != METADATA_QUEUE_RESTORE_EPOCH_MS &&
             key != METADATA_PREVIOUS_LIFECYCLE_STATE &&
             key != METADATA_RECOVERY_REASON &&
+            key != RunLifecycleMetadataKeys.RECOVERY_ACTION &&
             key != RunLifecycleMetadataKeys.RUN_ATTEMPT &&
             key != RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID &&
             key != RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS &&
@@ -739,6 +740,9 @@ internal class RecoveryAwareQueueSnapshotStore(
         put(METADATA_PENDING_EXECUTION_KIND, EXECUTION_KIND_CHECKPOINT_RESUME)
       }
       if (shouldStampRestore) {
+        recoveryPlan?.let { plan ->
+          put(RunLifecycleMetadataKeys.RECOVERY_ACTION, plan.action.name.lowercase())
+        }
         put(METADATA_QUEUE_RESTORE_EPOCH_MS, restoreEpochMs.toString())
         put(METADATA_PREVIOUS_LIFECYCLE_STATE, previousLifecycleState(entry))
         put(

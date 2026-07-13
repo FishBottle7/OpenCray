@@ -459,6 +459,96 @@ class RunRecoveryPlannerTest {
   }
 
   @Test
+  fun stableReconnectHoldManagedProcessObservationPromotesToCheckpointResume() {
+    val processId = "proc-reconnected"
+    val checkpoint = PersistedPromptCheckpoint(
+      sessionId = "session-1",
+      runId = "run-1",
+      taskId = "task-1",
+      checkpointId = "checkpoint-reconnect-hold",
+      checkpointKind = PromptCheckpointKind.COMMENTARY_EMITTED,
+      createdAtEpochMs = 100L,
+      updatedAtEpochMs = 100L,
+      toolName = "ProcessWait",
+      promptResumeState = OpenCrayPromptResumeState(
+        turnIndex = 0,
+        toolCallCount = 0,
+        pendingActions = listOf(
+          OpenCraySerializableModelAction.ToolCall(
+            call = OpenCraySerializableToolCall(
+              id = "oc-call-reconnect-hold",
+              toolName = "ProcessWait",
+              arguments = JsonObject(
+                mapOf(
+                  "process_id" to JsonPrimitive(processId),
+                  "timeout_ms" to JsonPrimitive("250"),
+                ),
+              ),
+            ),
+          ),
+        ),
+        nextActionIndex = 0,
+      ),
+    )
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = runSnapshot(
+            lifecycleState = QueueTaskLifecycleState.SUSPENDED,
+            hasLiveManagedProcesses = true,
+            hasAutoResumeEligibleManagedProcesses = true,
+            diagnostics = RunLifecycleDiagnostics(
+              managedProcessContinuationBasis = ManagedProcessContinuationBases.RECONNECT_HOLD,
+            ),
+          ).copy(
+            managedProcesses = listOf(
+              ManagedProcessSnapshot(
+                processId = processId,
+                taskId = "task-1",
+                command = "server",
+                status = ManagedProcessStatus.RUNNING,
+                processStarted = true,
+                timeoutMs = 300_000L,
+                startedAtEpochMs = 90L,
+                updatedAtEpochMs = 150L,
+                reconnectState = ManagedProcessReconnectState(
+                  status = "attached",
+                  recoveryState = "attached_live",
+                  retryable = false,
+                  attemptCount = 2,
+                ),
+              ),
+            ),
+          ),
+          checkpoint = checkpoint,
+          lastJournalEvent = OpenCrayToolCallEvent(
+            runId = "run-1",
+            taskId = "task-1",
+            turn = 0,
+            call = AgentToolCall(
+              id = "oc-call-reconnect-hold",
+              toolName = "ProcessWait",
+              arguments = JsonObject(
+                mapOf(
+                  "process_id" to JsonPrimitive(processId),
+                  "timeout_ms" to JsonPrimitive("250"),
+                ),
+              ),
+            ),
+            emittedAtEpochMs = 150L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.RESUME_FROM_CHECKPOINT, plan.action)
+    assertEquals("managed_process_observation_checkpoint_resume", plan.reasonCode)
+    assertTrue(plan.safeToAutoResume)
+    assertFalse(plan.requiresUserAction)
+    assertEquals(ManagedProcessContinuationBases.CHECKPOINT_RESUME, plan.managedProcessContinuationBasis)
+  }
+
+  @Test
   fun interruptedRestoreManagedProcessObservationReconnectBackoffPlansReconnectState() {
     val processId = "proc-retry"
     val checkpoint = PersistedPromptCheckpoint(

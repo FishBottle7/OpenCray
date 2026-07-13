@@ -28,6 +28,8 @@ import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCrayPromptResumeState
+import com.opencray.runtime.OpenCraySerializableModelAction
+import com.opencray.runtime.OpenCraySerializableToolCall
 import com.opencray.runtime.OpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
@@ -48,6 +50,8 @@ import com.opencray.runtime.subagent.SubAgentHandleState
 import java.util.concurrent.AbstractExecutorService
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
@@ -1169,6 +1173,151 @@ class AgentSessionRuntimeManagerTest {
     assertTrue(restoredRun.hasLiveManagedProcesses)
     assertTrue(!restoredRun.hasAutoResumeEligibleManagedProcesses)
     assertEquals("live_managed_process_detected", restoredRun.lifecycleDiagnostics.recoveryReason)
+  }
+
+  @Test
+  fun dueManagedProcessReconnectHoldResumesFromCheckpointAfterReconnectStabilizes() {
+    val sessionId = "session-live-process-reconnect-due"
+    val processId = "proc-live-reconnect-due"
+    val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(temporaryFolder.root)
+    val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory(temporaryFolder.root)
+    val firstManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+    val firstHandle = firstManager.forSession(sessionId)
+    val submission = firstHandle.submitPrompt(
+      userText = "wait for the reconnected watcher",
+      pendingMessageId = "pending-live-process-reconnect-due",
+      visibleThroughMessageId = "pending-live-process-reconnect-due",
+      policyDecision = allowDecision(),
+    )
+    overwriteQueueSnapshot(
+      sessionId = sessionId,
+      snapshot = firstHandle.snapshot(),
+      taskId = submission.taskId,
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+    )
+    val observationArguments = JsonObject(
+      mapOf(
+        "process_id" to JsonPrimitive(processId),
+        "timeout_ms" to JsonPrimitive("250"),
+      ),
+    )
+    promptCheckpointStoreFactory.forChatSession(sessionId).upsert(
+      PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = submission.runId,
+        taskId = submission.taskId,
+        checkpointId = "checkpoint-live-process-reconnect-due",
+        checkpointKind = PromptCheckpointKind.COMMENTARY_EMITTED,
+        createdAtEpochMs = 100L,
+        updatedAtEpochMs = 100L,
+        toolName = "ProcessWait",
+        promptResumeState = OpenCrayPromptResumeState(
+          turnIndex = 0,
+          toolCallCount = 0,
+          pendingActions = listOf(
+            OpenCraySerializableModelAction.ToolCall(
+              call = OpenCraySerializableToolCall(
+                id = "oc-call-live-process-reconnect-due",
+                toolName = "ProcessWait",
+                arguments = observationArguments,
+              ),
+            ),
+          ),
+          nextActionIndex = 0,
+        ),
+      ),
+    )
+    runEventJournalStoreFactory.forChatSession(sessionId).append(
+      OpenCrayToolCallEvent(
+        runId = submission.runId,
+        taskId = submission.taskId,
+        turn = 0,
+        call = AgentToolCall(
+          id = "oc-call-live-process-reconnect-due",
+          toolName = "ProcessWait",
+          arguments = observationArguments,
+        ),
+        emittedAtEpochMs = 150L,
+      ),
+    )
+    firstManager.release(sessionId)
+
+    var reconnectAttached = false
+    val restoredExecutor = RecordingExecutorService()
+    val restoredFactory = RecordingRuntimeFactory(
+      managedProcessesProvider = { restoredSessionId ->
+        if (restoredSessionId != sessionId) {
+          emptyList()
+        } else {
+          listOf(
+            managedProcessSnapshot(
+              processId = processId,
+              taskId = submission.taskId,
+              status = ManagedProcessStatus.RUNNING,
+            ).copy(
+              reconnectState = if (reconnectAttached) {
+                ManagedProcessReconnectState(
+                  status = "attached",
+                  recoveryState = "attached_live",
+                  retryable = false,
+                  attemptCount = 2,
+                )
+              } else {
+                ManagedProcessReconnectState(
+                  status = "connecting",
+                  recoveryState = "retry_scheduled",
+                  retryable = true,
+                  retryAfterEpochMs = 1L,
+                  attemptCount = 1,
+                )
+              },
+            ),
+          )
+        }
+      },
+    )
+    val restoredManager = manager(
+      runtimeFactory = restoredFactory,
+      executor = restoredExecutor,
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+    val restoredHandle = restoredManager.forSession(sessionId)
+    val reconnectHold = requireNotNull(restoredHandle.findRun(submission.runId))
+
+    assertEquals(QueueTaskLifecycleState.SUSPENDED, reconnectHold.lifecycleState)
+    assertEquals(
+      ManagedProcessContinuationBases.RECONNECT_HOLD,
+      reconnectHold.lifecycleDiagnostics.managedProcessContinuationBasis,
+    )
+    assertEquals(
+      "resume_reconnect_process",
+      restoredHandle.snapshot().tasks.single()
+        .task.metadata[RunLifecycleMetadataKeys.RECOVERY_ACTION],
+    )
+    reconnectAttached = true
+
+    restoredHandle.resume()
+
+    assertEquals(1, restoredExecutor.pendingCount())
+    restoredExecutor.runNext()
+
+    assertEquals(listOf("wait for the reconnected watcher"), restoredFactory.executedInputs)
+    val completed = requireNotNull(restoredHandle.findRun(submission.runId))
+    assertEquals(QueueTaskLifecycleState.COMPLETED, completed.lifecycleState)
+    assertEquals(
+      ManagedProcessContinuationBases.CHECKPOINT_RESUME,
+      completed.lifecycleDiagnostics.managedProcessContinuationBasis,
+    )
+    assertEquals(
+      "checkpoint-live-process-reconnect-due",
+      completed.lifecycleDiagnostics.recoveredFromCheckpointId,
+    )
   }
 
   @Test

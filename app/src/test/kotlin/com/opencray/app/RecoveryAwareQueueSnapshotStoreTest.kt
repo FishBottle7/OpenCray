@@ -127,6 +127,10 @@ class RecoveryAwareQueueSnapshotStoreTest {
 
     assertEquals(QueueTaskLifecycleState.QUEUED, restoredTask.lifecycleState)
     assertEquals(AgentTaskState.QUEUED, restoredTask.task.state)
+    assertEquals(
+      "resume_from_checkpoint",
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.RECOVERY_ACTION],
+    )
     assertEquals("5000", restoredTask.task.metadata[METADATA_QUEUE_RESTORE_EPOCH_MS])
     assertEquals("running", restoredTask.task.metadata[METADATA_PREVIOUS_LIFECYCLE_STATE])
     assertEquals("durable_general_resume_checkpoint", restoredTask.task.metadata[METADATA_RECOVERY_REASON])
@@ -1890,6 +1894,12 @@ class RecoveryAwareQueueSnapshotStoreTest {
             timeoutMs = 300_000L,
             startedAtEpochMs = 1_050L,
             updatedAtEpochMs = 1_300L,
+            metadata = mapOf(
+              MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY to
+                ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
+              MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY to
+                ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
+            ),
           ),
         )
       },
