@@ -215,7 +215,13 @@ internal class ScheduledTaskRepairWorker(
         nowEpochMs = nowEpochMs,
         repairReason = reason,
       ).isNotEmpty()
-      val interruptedRunRepairEvidence = potentialInterruptedRunRepairEvidence(applicationContext)
+      val runtimeServiceProjectionSnapshots = runtimeServiceProjectionSnapshotsFromContext(
+        applicationContext,
+      )
+      val interruptedRunRepairEvidence = potentialInterruptedRunRepairEvidence(
+        context = applicationContext,
+        runtimeServiceProjectionSnapshots = runtimeServiceProjectionSnapshots,
+      )
       val interruptedRunRepairTargets = dueInterruptedRunRepairTargets(
         evidence = interruptedRunRepairEvidence,
         nowEpochMs = nowEpochMs,
@@ -223,6 +229,7 @@ internal class ScheduledTaskRepairWorker(
       scheduleNextInterruptedRunRepairRetry(
         workScheduler = WorkManagerScheduledWorkScheduler.fromContext(applicationContext),
         evidence = interruptedRunRepairEvidence,
+        runtimeServiceProjectionSnapshots = runtimeServiceProjectionSnapshots,
         nowEpochMs = nowEpochMs,
       )
       val scheduledRepairStarted = when {
@@ -658,6 +665,17 @@ internal fun potentialInterruptedRunRepairEvidence(
 ): List<InterruptedRunRepairEvidence> {
   val appContext = context.applicationContext
   return potentialInterruptedRunRepairEvidence(
+    context = appContext,
+    runtimeServiceProjectionSnapshots = runtimeServiceProjectionSnapshotsFromContext(appContext),
+  )
+}
+
+internal fun potentialInterruptedRunRepairEvidence(
+  context: Context,
+  runtimeServiceProjectionSnapshots: Map<RuntimeServiceTarget, RuntimeServiceProjectionSnapshot>,
+): List<InterruptedRunRepairEvidence> {
+  val appContext = context.applicationContext
+  return potentialInterruptedRunRepairEvidence(
     chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
     snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory.fromContext(appContext),
     promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext),
@@ -668,7 +686,7 @@ internal fun potentialInterruptedRunRepairEvidence(
       context = appContext,
       restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
     ),
-    runtimeServiceProjectionSnapshots = runtimeServiceProjectionSnapshotsFromContext(appContext),
+    runtimeServiceProjectionSnapshots = runtimeServiceProjectionSnapshots,
   )
 }
 
@@ -733,10 +751,32 @@ internal fun nextInterruptedRunRepairRetry(
         )
       }
   }
-  .minWithOrNull(
-    compareBy<InterruptedRunRepairRetry> { retry -> retry.repairAfterEpochMs }
-      .thenBy { retry -> delayedRepairReasonPriority(retry.repairReason) },
-  )
+  .minWithOrNull(INTERRUPTED_RUN_REPAIR_RETRY_COMPARATOR)
+
+internal fun nextRuntimeServiceProjectionRepairRetry(
+  snapshotsByTarget: Map<RuntimeServiceTarget, RuntimeServiceProjectionSnapshot>,
+  nowEpochMs: Long,
+): InterruptedRunRepairRetry? = snapshotsByTarget.values
+  .mapNotNull { snapshot ->
+    val repairProjection = snapshot.lastInterruptedRunRepair ?: return@mapNotNull null
+    val repairAfterEpochMs = repairProjection.nextRepairAfterEpochMs
+      ?.takeIf { candidateEpochMs -> candidateEpochMs > nowEpochMs }
+      ?: return@mapNotNull null
+    InterruptedRunRepairRetry(
+      repairAfterEpochMs = repairAfterEpochMs,
+      repairReason = repairProjection.nextRepairReason
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: ScheduledTaskRepairReasons.INTERRUPTED_RUN_RETRY,
+    )
+  }
+  .minWithOrNull(INTERRUPTED_RUN_REPAIR_RETRY_COMPARATOR)
+
+internal fun earliestInterruptedRunRepairRetry(
+  first: InterruptedRunRepairRetry?,
+  second: InterruptedRunRepairRetry?,
+): InterruptedRunRepairRetry? = listOfNotNull(first, second)
+  .minWithOrNull(INTERRUPTED_RUN_REPAIR_RETRY_COMPARATOR)
 
 private fun delayedRepairReasonForEvidence(
   evidence: InterruptedRunRepairEvidence,
@@ -751,6 +791,10 @@ private fun delayedRepairReasonPriority(repairReason: String): Int =
     ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT -> 0
     else -> 1
   }
+
+private val INTERRUPTED_RUN_REPAIR_RETRY_COMPARATOR =
+  compareBy<InterruptedRunRepairRetry> { retry -> retry.repairAfterEpochMs }
+    .thenBy { retry -> delayedRepairReasonPriority(retry.repairReason) }
 
 internal fun scheduleNextInterruptedRunRepairRetry(
   workScheduler: ScheduledWorkScheduler,
@@ -771,11 +815,21 @@ internal fun scheduleNextInterruptedRunRepairRetry(
 internal fun scheduleNextInterruptedRunRepairRetry(
   workScheduler: ScheduledWorkScheduler,
   evidence: List<InterruptedRunRepairEvidence>,
+  runtimeServiceProjectionSnapshots: Map<RuntimeServiceTarget, RuntimeServiceProjectionSnapshot> =
+    emptyMap(),
   nowEpochMs: Long = System.currentTimeMillis(),
 ): Boolean {
-  val nextRetry = nextInterruptedRunRepairRetry(
+  val evidenceRetry = nextInterruptedRunRepairRetry(
     evidence = evidence,
     nowEpochMs = nowEpochMs,
+  )
+  val projectedRetry = nextRuntimeServiceProjectionRepairRetry(
+    snapshotsByTarget = runtimeServiceProjectionSnapshots,
+    nowEpochMs = nowEpochMs,
+  )
+  val nextRetry = earliestInterruptedRunRepairRetry(
+    first = evidenceRetry,
+    second = projectedRetry,
   ) ?: return false
   return scheduleNextInterruptedRunRepairRetry(
     workScheduler = workScheduler,

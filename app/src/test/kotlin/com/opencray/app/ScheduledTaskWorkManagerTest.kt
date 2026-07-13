@@ -907,6 +907,26 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun nextRuntimeServiceProjectionRepairRetryUsesProjectionDeadlineWithoutEvidence() {
+    val retry = nextRuntimeServiceProjectionRepairRetry(
+      snapshotsByTarget = mapOf(
+        RuntimeServiceTarget.DETACHED_BACKGROUND to runtimeProjectionSnapshot(
+          lastInterruptedRunRepair = RuntimeServiceInterruptedRunRepairProjection(
+            repairEvidenceBySession = emptyMap(),
+            nextRepairAfterEpochMs = 2_500L,
+            nextRepairReason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+            recordedAtEpochMs = 2_000L,
+          ),
+        ),
+      ),
+      nowEpochMs = 2_000L,
+    )
+
+    assertEquals(2_500L, retry?.repairAfterEpochMs)
+    assertEquals(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT, retry?.repairReason)
+  }
+
+  @Test
   fun scheduleNextInterruptedRunRepairRetryEnqueuesRequestedRepairReason() {
     val workScheduler = RecordingScheduledWorkScheduler()
 
@@ -971,6 +991,67 @@ class ScheduledTaskWorkManagerTest {
     assertEquals(
       listOf(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT to 750L),
       managedScheduler.repairRequests,
+    )
+  }
+
+  @Test
+  fun scheduleNextInterruptedRunRepairRetryEnqueuesProjectionDeadlineWhenEvidenceIsMissing() {
+    val workScheduler = RecordingScheduledWorkScheduler()
+
+    val scheduled = scheduleNextInterruptedRunRepairRetry(
+      workScheduler = workScheduler,
+      evidence = emptyList(),
+      runtimeServiceProjectionSnapshots = mapOf(
+        RuntimeServiceTarget.DETACHED_BACKGROUND to runtimeProjectionSnapshot(
+          lastInterruptedRunRepair = RuntimeServiceInterruptedRunRepairProjection(
+            repairEvidenceBySession = emptyMap(),
+            nextRepairAfterEpochMs = 2_500L,
+            nextRepairReason = ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT,
+            recordedAtEpochMs = 2_000L,
+          ),
+        ),
+      ),
+      nowEpochMs = 2_000L,
+    )
+
+    assertTrue(scheduled)
+    assertEquals(
+      listOf(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT to 500L),
+      workScheduler.repairRequests,
+    )
+  }
+
+  @Test
+  fun scheduleNextInterruptedRunRepairRetryKeepsEarlierEvidenceDeadline() {
+    val workScheduler = RecordingScheduledWorkScheduler()
+
+    val scheduled = scheduleNextInterruptedRunRepairRetry(
+      workScheduler = workScheduler,
+      evidence = listOf(
+        InterruptedRunRepairEvidence(
+          sessionId = "session-managed",
+          kind = InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+          target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+          repairAfterEpochMs = 2_500L,
+        ),
+      ),
+      runtimeServiceProjectionSnapshots = mapOf(
+        RuntimeServiceTarget.DETACHED_BACKGROUND to runtimeProjectionSnapshot(
+          lastInterruptedRunRepair = RuntimeServiceInterruptedRunRepairProjection(
+            repairEvidenceBySession = emptyMap(),
+            nextRepairAfterEpochMs = 3_000L,
+            nextRepairReason = ScheduledTaskRepairReasons.INTERRUPTED_RUN_RETRY,
+            recordedAtEpochMs = 2_000L,
+          ),
+        ),
+      ),
+      nowEpochMs = 2_000L,
+    )
+
+    assertTrue(scheduled)
+    assertEquals(
+      listOf(ScheduledTaskRepairReasons.MANAGED_PROCESS_RECONNECT to 500L),
+      workScheduler.repairRequests,
     )
   }
 
