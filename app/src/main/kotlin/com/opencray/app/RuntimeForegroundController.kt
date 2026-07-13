@@ -464,7 +464,9 @@ internal class RuntimeActiveNotificationFactory(
 internal class AndroidRuntimeForegroundServiceAdapter(
   private val service: Service,
   private val notificationFactory: RuntimeActiveNotificationFactory,
-  private val notificationId: Int = NOTIFICATION_ID_RUNTIME_ACTIVE,
+  private val notificationId: Int = runtimeActiveForegroundNotificationId(
+    RuntimeServiceTarget.INTERACTIVE,
+  ),
   private val serviceTypeResolver: RuntimeForegroundServiceTypeResolver =
     RuntimeForegroundServiceTypeResolver(),
 ) : RuntimeForegroundServiceAdapter {
@@ -482,11 +484,17 @@ internal class AndroidRuntimeForegroundServiceAdapter(
     @Suppress("DEPRECATION")
     service.stopForeground(removeNotification)
   }
-
-  private companion object {
-    const val NOTIFICATION_ID_RUNTIME_ACTIVE: Int = 42_601
-  }
 }
+
+internal fun runtimeActiveForegroundNotificationId(
+  target: RuntimeServiceTarget,
+): Int = when (target) {
+  RuntimeServiceTarget.INTERACTIVE -> NOTIFICATION_ID_RUNTIME_ACTIVE_INTERACTIVE
+  RuntimeServiceTarget.DETACHED_BACKGROUND -> NOTIFICATION_ID_RUNTIME_ACTIVE_DETACHED
+}
+
+private const val NOTIFICATION_ID_RUNTIME_ACTIVE_INTERACTIVE: Int = 42_601
+private const val NOTIFICATION_ID_RUNTIME_ACTIVE_DETACHED: Int = 42_602
 
 private fun createOpenAppPendingIntent(
   context: Context,

@@ -5,7 +5,10 @@ import android.content.Context
 import android.content.Intent
 
 internal fun interface RuntimeServiceComponentProvider {
-  fun componentName(context: Context): ComponentName
+  fun componentName(
+    context: Context,
+    target: RuntimeServiceTarget,
+  ): ComponentName
 }
 
 internal fun interface RuntimeServiceIntentBuilder {
@@ -16,8 +19,17 @@ internal fun interface RuntimeServiceIntentBuilder {
 }
 
 private object DefaultRuntimeServiceComponentProvider : RuntimeServiceComponentProvider {
-  override fun componentName(context: Context): ComponentName =
-    ComponentName(context, OpenCrayAgentRuntimeService::class.java)
+  override fun componentName(
+    context: Context,
+    target: RuntimeServiceTarget,
+  ): ComponentName = ComponentName(context, runtimeServiceClassForTarget(target))
+}
+
+internal fun runtimeServiceClassForTarget(
+  target: RuntimeServiceTarget,
+): Class<out android.app.Service> = when (target) {
+  RuntimeServiceTarget.INTERACTIVE -> OpenCrayAgentRuntimeService::class.java
+  RuntimeServiceTarget.DETACHED_BACKGROUND -> OpenCrayDetachedRuntimeService::class.java
 }
 
 private object DefaultRuntimeServiceIntentBuilder : RuntimeServiceIntentBuilder {
@@ -40,7 +52,7 @@ internal class RuntimeServiceIntentFactory(
     val appContext = context.applicationContext
     return intentBuilder.create(
       context = appContext,
-      componentName = componentProvider.componentName(appContext),
+      componentName = componentProvider.componentName(appContext, target),
     ).putExtra(EXTRA_RUNTIME_SERVICE_TARGET, target.wireValue)
   }
 

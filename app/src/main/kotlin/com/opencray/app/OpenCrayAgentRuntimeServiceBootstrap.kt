@@ -95,13 +95,19 @@ internal fun openCrayAgentRuntimeServiceBootstrap(
   mainHandler: Handler,
   target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
   bootstrapDependencies: RuntimeServiceBootstrapDependencies,
-  serviceProcessDescriptorProvider: (Context) -> RuntimeServiceProcessDescriptor = { context ->
-    runtimeServiceProcessDescriptorForContext(context)
+  serviceProcessDescriptorProvider: (
+    Context,
+    RuntimeServiceTarget,
+  ) -> RuntimeServiceProcessDescriptor = { context, resolvedTarget ->
+    runtimeServiceProcessDescriptorForContext(
+      context = context,
+      expectedProcessSuffix = runtimeServiceProcessSuffixForTarget(resolvedTarget),
+    )
   },
 ): OpenCrayAgentRuntimeServiceBootstrap {
   val serviceLifecycle = RuntimeServiceLifecycleDescriptor(
     serviceProcess = requireDedicatedRuntimeServiceProcess(
-      serviceProcessDescriptorProvider(appContext),
+      serviceProcessDescriptorProvider(appContext, target),
     ),
   )
   val resolvedBootstrap = bootstrapDependencies.resolveRuntimeServiceBootstrap(
@@ -114,6 +120,7 @@ internal fun openCrayAgentRuntimeServiceBootstrap(
     service = service,
     context = appContext,
     mainHandler = mainHandler,
+    target = target,
     bootstrapState = bootstrapState,
   )
   val transportBootstrap = bootstrapDependencies.resolveRuntimeServiceTransportBootstrap(

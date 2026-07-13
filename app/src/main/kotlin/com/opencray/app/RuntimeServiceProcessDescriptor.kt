@@ -3,6 +3,14 @@ package com.opencray.app
 import android.content.Context
 
 internal const val RUNTIME_SERVICE_PROCESS_SUFFIX: String = ":runtime"
+internal const val DETACHED_RUNTIME_SERVICE_PROCESS_SUFFIX: String = ":runtime_controller"
+
+internal fun runtimeServiceProcessSuffixForTarget(
+  target: RuntimeServiceTarget,
+): String = when (target) {
+  RuntimeServiceTarget.INTERACTIVE -> RUNTIME_SERVICE_PROCESS_SUFFIX
+  RuntimeServiceTarget.DETACHED_BACKGROUND -> DETACHED_RUNTIME_SERVICE_PROCESS_SUFFIX
+}
 
 internal data class RuntimeServiceProcessDescriptor(
   val packageName: String? = null,
@@ -81,7 +89,7 @@ internal fun requireDedicatedRuntimeServiceProcess(
   val currentProcessName = descriptor.processName ?: "<unknown>"
   val mismatchReason = descriptor.mismatchReason ?: "unknown"
   error(
-    "OpenCrayAgentRuntimeService must run in $expectedProcessName; " +
+    "Runtime service must run in $expectedProcessName; " +
       "current process is $currentProcessName ($mismatchReason).",
   )
 }

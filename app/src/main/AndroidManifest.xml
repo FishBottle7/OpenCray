@@ -90,6 +90,15 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Runs local agent tasks, managed subprocesses, approvals, and scheduled automation that can continue after the UI detaches." />
         </service>
+        <service
+            android:name="com.opencray.app.OpenCrayDetachedRuntimeService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:process=":runtime_controller">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Owns detached local agent tasks, managed subprocesses, approvals, and scheduled automation independently from the interactive runtime." />
+        </service>
         <receiver
             android:name="com.opencray.app.ScheduledTaskWakeReceiver"
             android:exported="false" />

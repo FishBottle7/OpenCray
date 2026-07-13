@@ -74,11 +74,13 @@ internal data class RuntimeServiceBootstrapDependencies(
     service: Service,
     context: Context,
     mainHandler: Handler,
+    target: RuntimeServiceTarget,
     bootstrapState: RuntimeServiceBootstrapState,
   ): RuntimeServiceShellControlBundle = runtimeServiceShellControlBundleFactory.create(
     service = service,
     appContext = context.applicationContext,
     mainHandler = mainHandler,
+    runtimeTarget = target,
     retainedShellControl = bootstrapState.retainedShellControl,
   )
 

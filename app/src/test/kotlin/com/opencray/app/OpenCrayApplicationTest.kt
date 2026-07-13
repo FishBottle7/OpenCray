@@ -66,6 +66,30 @@ class OpenCrayApplicationTest {
   }
 
   @Test
+  fun runtimeServiceProcessSuffixesSeparateInteractiveAndDetachedOwners() {
+    assertEquals(
+      RUNTIME_SERVICE_PROCESS_SUFFIX,
+      runtimeServiceProcessSuffixForTarget(RuntimeServiceTarget.INTERACTIVE),
+    )
+    assertEquals(
+      DETACHED_RUNTIME_SERVICE_PROCESS_SUFFIX,
+      runtimeServiceProcessSuffixForTarget(RuntimeServiceTarget.DETACHED_BACKGROUND),
+    )
+
+    val descriptor = runtimeServiceProcessDescriptor(
+      packageName = "org.opencray.app",
+      processName = "org.opencray.app:runtime_controller",
+      expectedProcessSuffix = runtimeServiceProcessSuffixForTarget(
+        RuntimeServiceTarget.DETACHED_BACKGROUND,
+      ),
+    )
+
+    assertEquals("org.opencray.app:runtime_controller", descriptor.expectedProcessName)
+    assertEquals(true, descriptor.isDedicatedRuntimeProcess)
+    assertEquals(null, descriptor.mismatchReason)
+  }
+
+  @Test
   fun runtimeServiceProcessDescriptorReportsMainProcessMismatch() {
     val descriptor = runtimeServiceProcessDescriptor(
       packageName = "org.opencray.app",
@@ -112,7 +136,7 @@ class OpenCrayApplicationTest {
     }
 
     assertEquals(
-      "OpenCrayAgentRuntimeService must run in org.opencray.app:runtime; " +
+      "Runtime service must run in org.opencray.app:runtime; " +
         "current process is org.opencray.app (main_process).",
       failureMessage,
     )

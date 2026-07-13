@@ -1,10 +1,12 @@
 # Android Local Strong Background Runtime Design
 
-Last updated: 2026-07-09
+Last updated: 2026-07-13
 
 ## Status
 
 Design with partial implementation
+
+Current ownership status: interactive runtime ownership remains in `OpenCrayAgentRuntimeService` under `:runtime`, while detached and scheduled ownership now runs in `OpenCrayDetachedRuntimeService` under the independent `:runtime_controller` process. Target-aware intent construction routes starts, binds, scheduled/repair wakes, and notification actions to the owning component; each component rejects explicit delivery for the other target, bootstrap validates its target-specific process name, and foreground notification ids are target-scoped so either service can stop independently. Durable projection reads and target-scoped loopback command fallback remain the supported remote fallback until a versioned serializable Binder/AIDL controller contract replaces the current process-local Binder object surface.
 
 ## Purpose
 
@@ -830,7 +832,7 @@ Expected behavior:
 - all Tier 1 requirements
 - boot receivers enabled
 - schedule repair enabled
-- optional future dedicated runtime process
+- independent detached runtime process enabled for `DETACHED_BACKGROUND`
 
 Expected behavior:
 
@@ -894,14 +896,15 @@ To preserve that option:
 The current rollout already uses:
 
 - `com.opencray.app:runtime`
+- `com.opencray.app:runtime_controller` for `DETACHED_BACKGROUND`, independently from the interactive service owner
 - an explicit runtime-service intent descriptor parser that derives wake dispatch, reset intent, and bootstrap-foreground requirements from one normalized command model instead of scattering those action checks across shell and wake paths
 - schedule notification retry/manual-run, snooze, and disable actions that route through that same command model and detached runtime target instead of holding direct object references from the notification
 - interrupted terminal notification Retry actions that route through the same chat-write wake command model and the run's resolved runtime target instead of holding direct object references from the notification; the wake also carries the terminal task id so the service dispatcher can refresh projection after the retry attempt and cancel the stale interrupted notification only after successful dispatch
 - a file-backed, target-scoped runtime-controller identity store under the runtime storage root; environment and execution-controller defaults use it when the Android context has `filesDir`, with only no-filesDir test stubs falling back to in-process identity; the identity is projected through runtime-controller lifecycle snapshots, host lifecycle diagnostics, and task metadata without replacing the per-instance controller id used by managed-process restore scope
 
-as a dedicated process for stronger isolation from UI crashes and Flutter engine churn.
+as dedicated processes for stronger isolation from UI crashes and Flutter engine churn.
 
-The remaining design requirement is to preserve a later path from this dedicated service process to an even stronger detached controller/runtime tier if product needs expand.
+The remaining design requirement is to formalize the cross-process controller boundary with a versioned serializable IPC contract and verify controller-process reconnect/repair behavior on device; the detached target already has an independent Android process owner.
 
 ## Rollout Status
 
@@ -941,9 +944,10 @@ Exit criteria:
 Status:
 
 - partially implemented; capability checks, settings actions, and the in-app notifications/background page are already present, the production service shell now runs in a dedicated `:runtime` process, service recreate now reuses a process-singleton execution controller plus service-neutral bootstrap assembly, managed-process restore inside that runtime process is now controller-aware, runtime-level managed-process routing now preserves delegate reconnect support for non-Python-runtime processes, and the retained runtime composition path now resolves through explicit environment-owned seams instead of broad deep fallback helpers, including a narrowed execution-controller dependency bag that no longer carries the full runtime context; periodic repair precheck now also routes persisted scheduled, detached-control, checkpoint-linked, durable background-subagent, reconnect-hold, and matching scheduled/detached journal-tail repair evidence to the matching runtime-service target, while run-record-only and unmatched non-terminal journal-tail-only repair evidence stays conservative `INTERACTIVE` before waking `:runtime`; same-run/task evidence no longer bypasses managed-process reconnect backoff, latest service-side repair scans persist `nextRepairAfterEpochMs` and re-register delayed managed-process reconnect repair from it, and runtime-owner lease heartbeat is now persisted into projection diagnostics, but the overall detached/background runtime still uses a single runtime-process owner/executor and is not yet a stronger controller-isolated runtime
+- process-isolation update: `RuntimeServiceIntentFactory` maps interactive work to `:runtime` and detached/scheduled work to `:runtime_controller`; both service components are single-target shells, reject cross-target delivery, support target-correct sticky restart, and bootstrap only in the expected process. This completes the Android component/process ownership split, while versioned Binder/AIDL controller IPC and device-level remote reconnect verification remain open.
 - approval notification approve/reject actions now wake the service into a service-owned command path instead of going back through a service-local `OpenCrayHostRuntime` facade
 - interrupted terminal notifications now expose Retry through a target-scoped service PendingIntent for the existing chat-write retry wake command, and the service dispatcher dismisses that stale interrupted notification only after successful retry dispatch while still refreshing projection when dispatch fails, so user-driven retry does not require reopening the UI first and failed dispatch remains visible
-- accepted scheduled-run notifications now also expose a Cancel action that wakes `:runtime` through the existing service-owned chat-write interrupt command, so per-run cancellation does not require a UI-side runtime owner
+- accepted scheduled-run notifications now also expose a Cancel action that wakes the run's target-owned service component through the existing service-owned chat-write interrupt command, so detached cancellation lands in `:runtime_controller` and does not require a UI-side runtime owner
 - tapping a schedule notification now opens the existing Notifications & Background settings detail entrypoint while preserving the schedule id in `notificationScheduleId`; a concrete schedule management/detail page keyed by that id is still a later UI slice
 - explicit runtime-service command envelopes now reject mismatched `runtimeServiceCommandVersion` values before wake dispatch, so stale schedule/reset/chat-write intents cannot bypass the typed protocol through action fallback
 - shared durable text storage now also takes per-file sidecar OS locks around read/write/delete/update before atomic replacement, and the queue snapshot, run-record, checkpoint, schedule spec/run-record, transcript fallback, memory, notification-delivery dedupe, session supplement, subagent-handle, skill install manifest, sandbox settings, E2B sandbox-session resume state, safety policy settings, live-context mode settings, network-search settings, MCP master settings, LLM config settings, media/speech settings, and app-language settings read-modify-write paths now use that single-file update primitive; malformed current JSON records in those read-modify-write helpers are treated as missing so the next locked update can recover a valid snapshot, and scheduled run-record deletion/pruning is also folded into that locked update path so foreground, service, and repair processes are less likely to lose concurrent JSON state updates
@@ -1038,9 +1042,9 @@ Exit criteria:
 
 Status:
 
-- partially implemented; the production service already runs in a dedicated `:runtime` process and bootstrap now rejects mismatched service-process placement before creating runtime ownership, while deeper controller/runtime-tier isolation is still pending
+- partially implemented; interactive ownership runs in `:runtime`, detached/scheduled ownership runs independently in `:runtime_controller`, target-aware bootstrap rejects mismatched component targets and process placement before owner creation, and the remaining isolation work is a versioned serializable controller IPC contract plus on-device cross-process reconnect/repair verification
 
-- evaluate dedicated runtime process
+- add versioned Binder/AIDL controller reads and commands without exposing process-local gateway objects
 - continue hardening any remaining direct-file/runtime command edges beyond the now process-safe run journal append path and version-gated explicit command envelopes
 - add richer OEM guidance
 
@@ -1071,7 +1075,7 @@ Exit criteria:
 - ship `at`, `after`, and `rrule` first; cron can be compiled onto the same recurrence model later
 - keep approval decisions durable and actionable from notifications
 - make strong-background setup device-global, while notification behavior remains per-schedule
-- preserve the option for a later dedicated runtime process without blocking the first same-process rollout
+- keep the detached process boundary transport-neutral and add versioned serializable controller IPC without regressing projection/loopback fallback
 
 ## External References
 

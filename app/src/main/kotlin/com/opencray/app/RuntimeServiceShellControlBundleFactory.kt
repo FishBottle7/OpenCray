@@ -22,6 +22,7 @@ internal fun interface RuntimeServiceShellControlBundleFactory {
     service: Service,
     appContext: Context,
     mainHandler: Handler,
+    runtimeTarget: RuntimeServiceTarget,
     retainedShellControl: RuntimeServiceRetainedShellControl,
   ): RuntimeServiceShellControlBundle
 }
@@ -29,11 +30,16 @@ internal fun interface RuntimeServiceShellControlBundleFactory {
 internal class DefaultRuntimeServiceShellControlBundleFactory(
   private val appVisibilitySignalAccessProvider: (Context) -> AppVisibilitySignalAccess =
     ::defaultAppVisibilitySignalAccess,
-  private val runtimeForegroundServiceAdapterFactory: (Service, Context) -> RuntimeForegroundServiceAdapter =
-    { service, context ->
+  private val runtimeForegroundServiceAdapterFactory: (
+    Service,
+    Context,
+    RuntimeServiceTarget,
+  ) -> RuntimeForegroundServiceAdapter =
+    { service, context, target ->
       AndroidRuntimeForegroundServiceAdapter(
         service = service,
         notificationFactory = RuntimeActiveNotificationFactory(context),
+        notificationId = runtimeActiveForegroundNotificationId(target),
       )
     },
   private val stopRequesterProvider: (Service) -> ((Int) -> Boolean) =
@@ -43,10 +49,15 @@ internal class DefaultRuntimeServiceShellControlBundleFactory(
     service: Service,
     appContext: Context,
     mainHandler: Handler,
+    runtimeTarget: RuntimeServiceTarget,
     retainedShellControl: RuntimeServiceRetainedShellControl,
   ): RuntimeServiceShellControlBundle {
     val appVisibilitySignalAccess = appVisibilitySignalAccessProvider(appContext)
-    val runtimeForegroundServiceAdapter = runtimeForegroundServiceAdapterFactory(service, appContext)
+    val runtimeForegroundServiceAdapter = runtimeForegroundServiceAdapterFactory(
+      service,
+      appContext,
+      runtimeTarget,
+    )
     val visibilityCoordinator = RuntimeServiceShellVisibilityCoordinator(
       appVisibleProvider = appVisibilitySignalAccess::currentVisibility,
       visibilityRegistrar = appVisibilitySignalAccess::observe,

@@ -3165,6 +3165,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     var capturedService: android.app.Service? = null
     var capturedContext: Context? = null
     var capturedHandler: Handler? = null
+    var capturedRuntimeTarget: RuntimeServiceTarget? = null
     var capturedRetainedShellControl: RuntimeServiceRetainedShellControl? = null
     val serviceHost = testServiceHost(
       temporaryFolder.newFolder("shell-control-bootstrap-state"),
@@ -3175,12 +3176,14 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
             resolvedService,
             appContext,
             resolvedMainHandler,
+            resolvedRuntimeTarget,
             resolvedRetainedShellControl,
           ->
           factoryCallCount += 1
           capturedService = resolvedService
           capturedContext = appContext
           capturedHandler = resolvedMainHandler
+          capturedRuntimeTarget = resolvedRuntimeTarget
           capturedRetainedShellControl = resolvedRetainedShellControl
           expectedBundle
         },
@@ -3190,6 +3193,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       service = service,
       context = context,
       mainHandler = mainHandler,
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
       bootstrapState = serviceHost.toRuntimeServiceBootstrapState().copy(
         retainedShellControl = retainedShellControl,
       ),
@@ -3199,6 +3203,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertSame(service, capturedService)
     assertSame(context, capturedContext)
     assertSame(mainHandler, capturedHandler)
+    assertEquals(RuntimeServiceTarget.DETACHED_BACKGROUND, capturedRuntimeTarget)
     assertSame(retainedShellControl, capturedRetainedShellControl)
     assertEquals(1, factoryCallCount)
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
@@ -3465,11 +3470,13 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           resolvedService,
           appContext,
           resolvedMainHandler,
+          resolvedRuntimeTarget,
           resolvedRetainedShellControl,
         ->
         capturedService = resolvedService
         capturedContext = appContext
         capturedHandler = resolvedMainHandler
+        assertEquals(DEFAULT_RUNTIME_SERVICE_TARGET, resolvedRuntimeTarget)
         capturedRetainedShellControl = resolvedRetainedShellControl
         expectedShellControlBundle
       },
@@ -3502,7 +3509,9 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       appContext = context,
       mainHandler = mainHandler,
       bootstrapDependencies = bootstrapResolver,
-      serviceProcessDescriptorProvider = { runtimeServiceProcessDescriptorForTest() },
+      serviceProcessDescriptorProvider = { _, target ->
+        runtimeServiceProcessDescriptorForTest(target)
+      },
     )
 
     assertSame(expectedShellControlBundle, resolved.shellControlBundle)
@@ -3529,11 +3538,11 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertTrue(keepAliveListenerRegistered)
     assertTrue(capturedLifecycle?.serviceInstanceId?.isNotBlank() == true)
     assertEquals(
-      "org.opencray.app:runtime",
+      "org.opencray.app:runtime_controller",
       capturedLifecycle?.serviceProcess?.expectedProcessName,
     )
     assertEquals(
-      RUNTIME_SERVICE_PROCESS_SUFFIX,
+      DETACHED_RUNTIME_SERVICE_PROCESS_SUFFIX,
       capturedLifecycle?.serviceProcess?.expectedProcessSuffix,
     )
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
@@ -3551,6 +3560,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     val processDescriptor = runtimeServiceProcessDescriptor(
       packageName = "org.opencray.app",
       processName = "org.opencray.app",
+      expectedProcessSuffix = DETACHED_RUNTIME_SERVICE_PROCESS_SUFFIX,
     )
     var failureMessage: String? = null
 
@@ -3560,14 +3570,14 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         appContext = context,
         mainHandler = Handler(),
         bootstrapDependencies = bootstrapDependencies,
-        serviceProcessDescriptorProvider = { processDescriptor },
+        serviceProcessDescriptorProvider = { _, _ -> processDescriptor },
       )
     } catch (expected: IllegalStateException) {
       failureMessage = expected.message
     }
 
     assertEquals(
-      "OpenCrayAgentRuntimeService must run in org.opencray.app:runtime; " +
+      "Runtime service must run in org.opencray.app:runtime_controller; " +
         "current process is org.opencray.app (main_process).",
       failureMessage,
     )
@@ -4869,6 +4879,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     val service = TestRuntimeService()
     val scheduledActions = mutableListOf<() -> Unit>()
     val stopRequestStartIds = mutableListOf<Int>()
+    val adapterTargets = mutableListOf<RuntimeServiceTarget>()
     val retainedShellControl = RuntimeServiceRetainedShellControl(
       keepAliveController = RuntimeServiceKeepAliveController(
         appVisibleProvider = { true },
@@ -4899,7 +4910,8 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           override fun observe(listener: (Boolean) -> Unit): () -> Unit = { }
         }
       },
-      runtimeForegroundServiceAdapterFactory = { _, _ ->
+      runtimeForegroundServiceAdapterFactory = { _, _, target ->
+        adapterTargets += target
         object : RuntimeForegroundServiceAdapter {
           override fun startOrUpdateForeground(model: RuntimeForegroundNotificationModel) = Unit
 
@@ -4918,6 +4930,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       service = service,
       appContext = context,
       mainHandler = Handler(),
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
       retainedShellControl = retainedShellControl,
     )
 
@@ -4926,6 +4939,11 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     scheduledActions.single().invoke()
 
     assertEquals(listOf(41), stopRequestStartIds)
+    assertEquals(listOf(RuntimeServiceTarget.DETACHED_BACKGROUND), adapterTargets)
+    assertNotEquals(
+      runtimeActiveForegroundNotificationId(RuntimeServiceTarget.INTERACTIVE),
+      runtimeActiveForegroundNotificationId(RuntimeServiceTarget.DETACHED_BACKGROUND),
+    )
   }
 
   @Test
@@ -5741,10 +5759,13 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     serviceLifecycle = serviceLifecycleFactory(),
   ).bootstrapState
 
-  private fun runtimeServiceProcessDescriptorForTest(): RuntimeServiceProcessDescriptor =
+  private fun runtimeServiceProcessDescriptorForTest(
+    target: RuntimeServiceTarget = RuntimeServiceTarget.INTERACTIVE,
+  ): RuntimeServiceProcessDescriptor =
     runtimeServiceProcessDescriptor(
       packageName = "org.opencray.app",
-      processName = "org.opencray.app:runtime",
+      processName = "org.opencray.app${runtimeServiceProcessSuffixForTarget(target)}",
+      expectedProcessSuffix = runtimeServiceProcessSuffixForTarget(target),
     )
 
   private fun guardOnlyRuntimeServiceBootstrapDependencies(
@@ -5779,6 +5800,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       error("unused")
     },
     runtimeServiceShellControlBundleFactory = RuntimeServiceShellControlBundleFactory {
+        _,
         _,
         _,
         _,
@@ -6143,9 +6165,86 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun runtimeServiceIntentFactoryRoutesWakeIntentsToTargetOwnedComponents() {
+    val resolvedTargets = mutableListOf<RuntimeServiceTarget>()
+    val factory = RuntimeServiceIntentFactory(
+      componentProvider = RuntimeServiceComponentProvider { _, target ->
+        resolvedTargets += target
+        android.content.ComponentName("com.opencray.test", "RuntimeService")
+      },
+      intentBuilder = RuntimeServiceIntentBuilder { _, _ ->
+        RecordingCommandIntent()
+      },
+    )
+    val context = MinimalContext()
+
+    factory.baseIntent(
+      context = context,
+      target = RuntimeServiceTarget.INTERACTIVE,
+    )
+    factory.scheduledTaskIntent(
+      context = context,
+      command = ScheduledTaskWakeCommand(
+        scheduleId = "detached-schedule",
+        scheduleRunId = "detached-run",
+        triggeredAtEpochMs = 10L,
+        triggerReason = "alarm",
+        targetSessionId = null,
+      ),
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    )
+
+    assertEquals(
+      listOf(
+        RuntimeServiceTarget.INTERACTIVE,
+        RuntimeServiceTarget.DETACHED_BACKGROUND,
+      ),
+      resolvedTargets,
+    )
+    assertEquals(
+      OpenCrayAgentRuntimeService::class.java,
+      runtimeServiceClassForTarget(RuntimeServiceTarget.INTERACTIVE),
+    )
+    assertEquals(
+      OpenCrayDetachedRuntimeService::class.java,
+      runtimeServiceClassForTarget(RuntimeServiceTarget.DETACHED_BACKGROUND),
+    )
+  }
+
+  @Test
+  fun targetedRuntimeServicesRejectIntentsOwnedByTheOtherRuntimeProcess() {
+    val interactiveIntent = RecordingCommandIntent().apply {
+      putExtra(
+        EXTRA_RUNTIME_SERVICE_TARGET,
+        RuntimeServiceTarget.INTERACTIVE.wireValue,
+      )
+    }
+    val detachedIntent = RecordingCommandIntent().apply {
+      putExtra(
+        EXTRA_RUNTIME_SERVICE_TARGET,
+        RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
+      )
+    }
+    val invalidIntent = RecordingCommandIntent().apply {
+      putExtra(EXTRA_RUNTIME_SERVICE_TARGET, "unknown-runtime-target")
+    }
+    val interactiveService = OpenCrayAgentRuntimeService()
+    val detachedService = OpenCrayDetachedRuntimeService()
+
+    assertTrue(interactiveService.acceptsRuntimeIntent(null))
+    assertTrue(detachedService.acceptsRuntimeIntent(null))
+    assertTrue(interactiveService.acceptsRuntimeIntent(interactiveIntent))
+    assertTrue(detachedService.acceptsRuntimeIntent(detachedIntent))
+    assertFalse(interactiveService.acceptsRuntimeIntent(detachedIntent))
+    assertFalse(detachedService.acceptsRuntimeIntent(interactiveIntent))
+    assertFalse(interactiveService.acceptsRuntimeIntent(invalidIntent))
+    assertFalse(detachedService.acceptsRuntimeIntent(invalidIntent))
+  }
+
+  @Test
   fun runtimeServiceIntentFactoryWritesCommandEnvelopeMetadata() {
     val factory = RuntimeServiceIntentFactory(
-      componentProvider = RuntimeServiceComponentProvider {
+      componentProvider = RuntimeServiceComponentProvider { _, _ ->
         android.content.ComponentName("com.opencray.test", "RuntimeService")
       },
       intentBuilder = RuntimeServiceIntentBuilder { _, _ ->
@@ -6276,7 +6375,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   @Test
   fun runtimeServiceIntentFactoryRoundTripsScheduleNotificationActions() {
     val factory = RuntimeServiceIntentFactory(
-      componentProvider = RuntimeServiceComponentProvider {
+      componentProvider = RuntimeServiceComponentProvider { _, _ ->
         android.content.ComponentName("com.opencray.test", "RuntimeService")
       },
       intentBuilder = RuntimeServiceIntentBuilder { _, _ ->
@@ -6397,7 +6496,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   @Test
   fun runtimeServiceIntentFactoryRoundTripsSupportedChatWriteWakeCommands() {
     val factory = RuntimeServiceIntentFactory(
-      componentProvider = RuntimeServiceComponentProvider {
+      componentProvider = RuntimeServiceComponentProvider { _, _ ->
         android.content.ComponentName("com.opencray.test", "RuntimeService")
       },
       intentBuilder = RuntimeServiceIntentBuilder { _, _ ->
