@@ -10,6 +10,8 @@ Current ownership status: interactive runtime ownership remains in `OpenCrayAgen
 
 Current controller-IPC status: `IRuntimeServiceController` v2 keeps the original v1 protocol/target/projection transact codes stable, adds capability negotiation, and carries bounded schema-versioned chat/skills/settings write commands plus typed results across the process boundary. V1 peers remain valid projection-only controllers. Binder and target-scoped loopback transport now share one structured command codec, while decoded Binder writes still enter the existing owner-gated endpoint for target forwarding, work-state refresh, and projection persistence. Remote adapters continue to expose no process-local gateway objects; missing capabilities fall back to loopback or foreground wake.
 
+Current process-death verification status: an Android instrumentation harness now covers simultaneous `:runtime`/`:runtime_controller` remote binding, v2 write transport, detached-process kill, stale owner-lease expiry, production `owner_lease_expired` repair wake, and rebuilt-owner identity checks. No emulator or device is currently attached, and the AndroidTest source set still has unrelated stale UI resource-id references, so this remains implemented-but-not-executed evidence rather than a completed device validation.
+
 ## Purpose
 
 This document defines an Android-first local execution architecture for:
@@ -1048,6 +1050,8 @@ Status:
 - partially implemented; interactive ownership runs in `:runtime`, detached/scheduled ownership runs independently in `:runtime_controller`, target-aware bootstrap rejects mismatched component targets and process placement before owner creation, and versioned read/write controller IPC now spans that boundary. Remaining isolation work is on-device remote-Binder, process kill/recreate, and broader managed-process reconnect/repair verification.
 
 - verify `IRuntimeServiceController` v2 through a real remote `BinderProxy` with both runtime processes alive, including v1 projection-only negotiation and capability fallback
+- restore the existing AndroidTest UI resource-id baseline before treating source-set compilation as device-test readiness; keep that UI migration separate from runtime isolation work
+- run the checked-in detached-process kill/recreate instrumentation test on an emulator and at least one physical Android device, then retain the observed process/lease/reconnect diagnostics with the release evidence
 - continue hardening any remaining direct-file/runtime command edges beyond the now process-safe run journal append path and version-gated explicit command envelopes
 - add richer OEM guidance
 
