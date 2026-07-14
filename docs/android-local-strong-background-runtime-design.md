@@ -1,6 +1,6 @@
 # Android Local Strong Background Runtime Design
 
-Last updated: 2026-07-14
+Last updated: 2026-07-15
 
 ## Status
 
@@ -8,7 +8,7 @@ Design with partial implementation
 
 Current ownership status: interactive runtime ownership remains in `OpenCrayAgentRuntimeService` under `:runtime`, while detached and scheduled ownership now runs in `OpenCrayDetachedRuntimeService` under the independent `:runtime_controller` process. Target-aware intent construction routes starts, binds, scheduled/repair wakes, and notification actions to the owning component; each component rejects explicit delivery for the other target, bootstrap validates its target-specific process name, and foreground notification ids are target-scoped so either service can stop independently. Durable projection reads and target-scoped loopback command fallback remain supported alongside the versioned controller read path below.
 
-Current controller-IPC status: `IRuntimeServiceController` v1 now provides a real cross-process read path for protocol metadata and a bounded serialized projection snapshot. Clients validate both protocol version and `RuntimeServiceTarget` before accepting a remote Binder, then decode the same schema used by the target-scoped durable projection store. Remote adapters intentionally expose no process-local gateway objects or untyped command calls; chat/skills/settings writes continue through loopback or foreground wake fallback until versioned serializable AIDL command envelopes are implemented.
+Current controller-IPC status: `IRuntimeServiceController` v2 keeps the original v1 protocol/target/projection transact codes stable, adds capability negotiation, and carries bounded schema-versioned chat/skills/settings write commands plus typed results across the process boundary. V1 peers remain valid projection-only controllers. Binder and target-scoped loopback transport now share one structured command codec, while decoded Binder writes still enter the existing owner-gated endpoint for target forwarding, work-state refresh, and projection persistence. Remote adapters continue to expose no process-local gateway objects; missing capabilities fall back to loopback or foreground wake.
 
 ## Purpose
 
@@ -116,7 +116,7 @@ But the background product surface is still incomplete:
 - binder-unavailable shell/chat projection now reads service/runtime status from a file-backed runtime-service projection snapshot rather than consulting a live host-registry bridge, which makes host rebuild UI reads closer to the detached-owner target
 - binder-pending chat projection now also reads durable managed-process state through a passive `projection_only` restore mode, so non-owner UI fallback no longer marks reconnectable running processes interrupted just because binder attach has not completed yet
 - binder-backed service shell diagnostics now also derive `hostLifecycle` from the live service shell plus runtime-owner/controller identities instead of minting a synthetic host descriptor, so attached-shell diagnostics point at the real detached runtime shell instance
-- when Android returns a remote `BinderProxy` instead of a same-process binder endpoint, the client now negotiates `IRuntimeServiceController` protocol version and target identity; matching v1 controllers provide the serialized projection read path, while unsupported, mismatched, or malformed controller binders still report explicit `invalid_binder` and leave read continuity to the durable projection gateway seam
+- when Android returns a remote `BinderProxy` instead of a same-process binder endpoint, the client now negotiates `IRuntimeServiceController` protocol version, target identity, and v2 capabilities; matching v1 controllers remain projection-only, matching v2 controllers can dispatch supported typed writes, and unsupported, mismatched, or malformed controller binders still report explicit `invalid_binder` and leave continuity to durable projection plus loopback/wake fallback
 - caller-side runtime-service composition keeps low-level loopback HTTP out of read fallback; projection snapshot plus explicit projection-only gateway assembly remain the built-in caller-side read fallback path
 - service-backed chat/skills/settings writes now prefer binder-backed dispatch but can use target-scoped service-owned loopback command fallback from background threads when binder attach fails; main-thread writes still fail fast, and chat fire-and-forget commands keep the foreground wake fallback if loopback is not yet listening
 - caller-side projection fallback assembly now resolves through explicit `OpenCrayProjectionGatewayBundleFactory` plus configurable client/service-backed gateway-bundle factories, so the remaining binder-pending fallback seam is isolated above the low-level binder client
@@ -217,7 +217,7 @@ This means "WeChat-like keepalive" can only mean "maximize survivability with su
 
 ### Secondary goals
 
-- preserve a clean upgrade path from same-process service host to a stronger runtime process if needed later
+- preserve a clean upgrade path from target-process ownership to a stronger controller-owned cross-process runtime tier if needed later
 - keep transport-neutral semantics so binder and loopback HTTP remain mere attachment paths
 - keep scheduled work on the same queue, journal, approval, and checkpoint model as interactive work
 
@@ -945,9 +945,9 @@ Exit criteria:
 
 Status:
 
-- partially implemented; capability checks, settings actions, and the in-app notifications/background page are already present, the production service shell now runs in a dedicated `:runtime` process, service recreate now reuses a process-singleton execution controller plus service-neutral bootstrap assembly, managed-process restore inside that runtime process is now controller-aware, runtime-level managed-process routing now preserves delegate reconnect support for non-Python-runtime processes, and the retained runtime composition path now resolves through explicit environment-owned seams instead of broad deep fallback helpers, including a narrowed execution-controller dependency bag that no longer carries the full runtime context; periodic repair precheck now also routes persisted scheduled, detached-control, checkpoint-linked, durable background-subagent, reconnect-hold, and matching scheduled/detached journal-tail repair evidence to the matching runtime-service target, while run-record-only and unmatched non-terminal journal-tail-only repair evidence stays conservative `INTERACTIVE` before waking `:runtime`; same-run/task evidence no longer bypasses managed-process reconnect backoff, latest service-side repair scans persist `nextRepairAfterEpochMs` and re-register delayed managed-process reconnect repair from it, and runtime-owner lease heartbeat is now persisted into projection diagnostics, but the overall detached/background runtime still uses a single runtime-process owner/executor and is not yet a stronger controller-isolated runtime
-- process-isolation update: `RuntimeServiceIntentFactory` maps interactive work to `:runtime` and detached/scheduled work to `:runtime_controller`; both service components are single-target shells, reject cross-target delivery, support target-correct sticky restart, and bootstrap only in the expected process. This completes the Android component/process ownership split, while versioned Binder/AIDL controller IPC and device-level remote reconnect verification remain open.
-- controller-IPC update: the stable shell binder now implements read-only `IRuntimeServiceController` v1, carrying protocol version, target identity, and bounded projection JSON across the process boundary; client negotiation rejects version/target mismatch and retains projection/loopback fallback for unsupported binders and writes
+- partially implemented; capability checks, settings actions, and the in-app notifications/background page are already present, interactive ownership runs in `:runtime`, and detached/scheduled ownership runs independently in `:runtime_controller`. Service recreate reuses a process-singleton execution controller plus service-neutral bootstrap assembly inside each target process, managed-process restore is controller-aware, runtime-level routing preserves delegate reconnect support for non-Python-runtime processes, and the retained composition path resolves through explicit environment-owned seams. Periodic repair precheck routes persisted scheduled, detached-control, checkpoint-linked, durable background-subagent, reconnect-hold, and matching journal-tail evidence to the matching runtime-service target; same-run/task evidence does not bypass reconnect backoff, service-side repair persists `nextRepairAfterEpochMs`, and owner-lease heartbeat is projected. Each target still depends on an in-memory owner/executor inside its process, so real process-death reconnect and repair behavior remains to be verified before claiming a stronger controller-isolated runtime.
+- process-isolation update: `RuntimeServiceIntentFactory` maps interactive work to `:runtime` and detached/scheduled work to `:runtime_controller`; both service components are single-target shells, reject cross-target delivery, support target-correct sticky restart, and bootstrap only in the expected process. This completes the Android component/process ownership split, while device-level remote reconnect and process kill/recreate verification remain open.
+- controller-IPC update: the stable shell binder now implements `IRuntimeServiceController` v2 with v1 read compatibility, capability negotiation, bounded projection JSON, and bounded typed write command/result JSON. Chat, skills, and settings writes share their wire codec with loopback fallback and re-enter the owner-lease-gated binder endpoint after decode; missing capabilities retain projection/loopback/wake fallback.
 - approval notification approve/reject actions now wake the service into a service-owned command path instead of going back through a service-local `OpenCrayHostRuntime` facade
 - interrupted terminal notifications now expose Retry through a target-scoped service PendingIntent for the existing chat-write retry wake command, and the service dispatcher dismisses that stale interrupted notification only after successful retry dispatch while still refreshing projection when dispatch fails, so user-driven retry does not require reopening the UI first and failed dispatch remains visible
 - accepted scheduled-run notifications now also expose a Cancel action that wakes the run's target-owned service component through the existing service-owned chat-write interrupt command, so detached cancellation lands in `:runtime_controller` and does not require a UI-side runtime owner
@@ -1045,9 +1045,9 @@ Exit criteria:
 
 Status:
 
-- partially implemented; interactive ownership runs in `:runtime`, detached/scheduled ownership runs independently in `:runtime_controller`, target-aware bootstrap rejects mismatched component targets and process placement before owner creation, and the remaining isolation work is a versioned serializable controller IPC contract plus on-device cross-process reconnect/repair verification
+- partially implemented; interactive ownership runs in `:runtime`, detached/scheduled ownership runs independently in `:runtime_controller`, target-aware bootstrap rejects mismatched component targets and process placement before owner creation, and versioned read/write controller IPC now spans that boundary. Remaining isolation work is on-device remote-Binder, process kill/recreate, and broader managed-process reconnect/repair verification.
 
-- extend the read-only `IRuntimeServiceController` v1 contract with versioned serializable commands without exposing process-local gateway objects
+- verify `IRuntimeServiceController` v2 through a real remote `BinderProxy` with both runtime processes alive, including v1 projection-only negotiation and capability fallback
 - continue hardening any remaining direct-file/runtime command edges beyond the now process-safe run journal append path and version-gated explicit command envelopes
 - add richer OEM guidance
 
@@ -1078,7 +1078,7 @@ Exit criteria:
 - ship `at`, `after`, and `rrule` first; cron can be compiled onto the same recurrence model later
 - keep approval decisions durable and actionable from notifications
 - make strong-background setup device-global, while notification behavior remains per-schedule
-- keep the detached process boundary transport-neutral and add versioned serializable controller IPC without regressing projection/loopback fallback
+- keep the detached process boundary transport-neutral and verify the versioned serializable controller IPC without regressing projection/loopback fallback
 
 ## External References
 

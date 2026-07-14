@@ -152,6 +152,33 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun updateCheckWriteRouteRejectsWhenRuntimeOwnerWriteGuardFails() {
+    var guardCallCount = 0
+    val server = localRuntimeServer(
+      runtimeOwnerWriteGuard = {
+        guardCallCount += 1
+        false
+      },
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "GET",
+        "/v1/check_installed_skill_updates?skillId=skill-1",
+      )
+      val payload = JSONObject(response.body)
+
+      assertEquals(409, response.statusCode)
+      assertEquals("runtime_owner_lease_unavailable", payload.getString("error"))
+      assertEquals(1, guardCallCount)
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun exposesFilesSnapshotOverLoopbackHttp() {
     val server = localRuntimeServer(
       workspaceSnapshotProvider = {
@@ -2806,6 +2833,64 @@ class OpenCrayLocalRuntimeServerTest {
       settingsGatewayResolver = settingsGatewayResolver ?: { hostRuntime -> hostRuntime },
       runtimeOwnerWriteGuard = runtimeOwnerWriteGuard,
     )
+  }
+
+  @Test
+  fun sharedWriteCommandCodecDrivesLoopbackTransportAcrossRuntimeGateways() {
+    val chatGateway = RecordingChatRuntimeGateway()
+    val skillsGateway = RecordingSkillsGateway()
+    val settingsGateway = RecordingSettingsGateway()
+    val server = localRuntimeServer(
+      chatRuntimeGatewayResolver = { chatGateway },
+      skillsGatewayResolver = { skillsGateway },
+      settingsGatewayResolver = { settingsGateway },
+    )
+    server.ensureStarted()
+    val transport = LoopbackHttpRuntimeServiceCommandFallbackTransport(
+      requestClient = OpenCrayLocalRuntimeLoopbackHttpClient(
+        baseUrlProvider = { "http://127.0.0.1:${server.listeningPort}/" },
+        bootstrapTimeoutMs = 500L,
+        retryDelayMs = 10L,
+      ),
+    )
+
+    try {
+      val chatResult = transport.dispatchChatWriteCommand(
+        OpenCrayChatWriteCommand.SubmitChatMessage(
+          text = "codec chat",
+          attachments = listOf(
+            com.opencray.runtime.OpenCrayFinalAttachment(
+              relativePath = "images/codec.png",
+              displayName = "codec.png",
+            ),
+          ),
+        ),
+      ) as OpenCrayChatWriteDispatchResult.Payload
+      val skillsResult = transport.dispatchSkillsWriteCommand(
+        OpenCraySkillsWriteCommand.InstallSkillSourceBatch(
+          sourceRef = "owner/codec",
+          selectedSkillNames = listOf("skill-a", "skill-b"),
+        ),
+      ) as OpenCraySkillsWriteDispatchResult.Message
+      val updateCheckResult = transport.dispatchSkillsWriteCommand(
+        OpenCraySkillsWriteCommand.CheckInstalledSkillUpdates("skill-codec"),
+      ) as OpenCraySkillsWriteDispatchResult.Message
+      val settingsResult = transport.dispatchSettingsWriteCommand(
+        OpenCraySettingsWriteCommand.PerformStrongBackgroundAction("repair"),
+      ) as OpenCraySettingsWriteDispatchResult.Payload
+
+      assertEquals("codec chat", chatGateway.submittedText)
+      assertEquals("images/codec.png", chatGateway.submittedAttachments.single().relativePath)
+      assertEquals(1, chatResult.value?.get("attachmentCount"))
+      assertEquals("owner/codec", skillsGateway.lastBatchSourceRef)
+      assertEquals(listOf("skill-a", "skill-b"), skillsGateway.lastBatchSkillNames)
+      assertEquals("Installed 2 skills from gateway.", skillsResult.value)
+      assertEquals("Checked skill-codec on gateway.", updateCheckResult.value)
+      assertEquals("repair", settingsGateway.lastStrongBackgroundActionId)
+      assertEquals("gateway-strong-background-action", settingsResult.value["source"])
+    } finally {
+      server.close()
+    }
   }
 
   private fun hostBackedLocalRuntimeServer(

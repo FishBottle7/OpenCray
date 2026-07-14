@@ -2634,12 +2634,12 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun versionedRuntimeServiceBinderAccessAcceptsMatchingTargetAndProjectionPayload() {
+  fun versionedRuntimeServiceBinderAccessKeepsV1ControllerReadOnly() {
     val expected = bridgeSnapshot(
       temporaryFolder.newFolder("versioned-runtime-controller-access"),
     )
     val wireAccess = RecordingRuntimeServiceControllerWireAccess(
-      protocolVersion = RUNTIME_SERVICE_CONTROLLER_PROTOCOL_VERSION,
+      protocolVersion = RUNTIME_SERVICE_CONTROLLER_MIN_PROTOCOL_VERSION,
       runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
       projectionSnapshotJson = encodeRuntimeServiceProjectionSnapshot(
         expected.toProjectionSnapshot(),
@@ -2664,6 +2664,113 @@ class OpenCrayRuntimeServiceHostTest {
       ),
     )
     assertEquals(1, wireAccess.snapshotLoadCount)
+    assertEquals(0, wireAccess.capabilityLoadCount)
+    assertEquals(0, wireAccess.writeCommandJson.size)
+  }
+
+  @Test
+  fun versionedRuntimeServiceBinderAccessDispatchesNegotiatedV2WriteCapabilities() {
+    val expected = bridgeSnapshot(
+      temporaryFolder.newFolder("versioned-runtime-controller-v2-writes"),
+    )
+    val wireAccess = RecordingRuntimeServiceControllerWireAccess(
+      protocolVersion = RUNTIME_SERVICE_CONTROLLER_PROTOCOL_VERSION,
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
+      projectionSnapshotJson = encodeRuntimeServiceProjectionSnapshot(
+        expected.toProjectionSnapshot(),
+      ),
+      supportedCapabilities = RuntimeServiceControllerCapabilities.ALL,
+      writeDispatcher = { commandJson ->
+        when (val decoded = requireNotNull(decodeRuntimeServiceWriteCommand(commandJson))) {
+          is DecodedRuntimeServiceWriteCommand.Chat -> {
+            assertEquals(
+              OpenCrayChatWriteCommand.SubmitChatMessage("remote chat", emptyList()),
+              decoded.command,
+            )
+            encodeRuntimeServiceWriteResult(
+              OpenCrayChatWriteDispatchResult.Payload(mapOf("runId" to "run-remote")),
+            )
+          }
+
+          is DecodedRuntimeServiceWriteCommand.Skills -> {
+            assertEquals(OpenCraySkillsWriteCommand.RefreshSkills, decoded.command)
+            encodeRuntimeServiceWriteResult(
+              OpenCraySkillsWriteDispatchResult.Message("skills-remote"),
+            )
+          }
+
+          is DecodedRuntimeServiceWriteCommand.Settings -> {
+            assertEquals(
+              OpenCraySettingsWriteCommand.PerformStrongBackgroundAction("repair"),
+              decoded.command,
+            )
+            encodeRuntimeServiceWriteResult(
+              OpenCraySettingsWriteDispatchResult.Payload(mapOf("repaired" to true)),
+            )
+          }
+        }
+      },
+    )
+
+    val access = requireNotNull(
+      versionedRuntimeServiceBinderAccess(
+        wireAccess = wireAccess,
+        expectedTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      ),
+    )
+
+    assertEquals(
+      OpenCrayChatWriteDispatchResult.Payload(mapOf("runId" to "run-remote")),
+      access.dispatchChatWriteCommand(
+        OpenCrayChatWriteCommand.SubmitChatMessage("remote chat", emptyList()),
+      ),
+    )
+    assertEquals(
+      OpenCraySkillsWriteDispatchResult.Message("skills-remote"),
+      access.dispatchSkillsWriteCommand(OpenCraySkillsWriteCommand.RefreshSkills),
+    )
+    assertEquals(
+      OpenCraySettingsWriteDispatchResult.Payload(mapOf("repaired" to true)),
+      access.dispatchSettingsWriteCommand(
+        OpenCraySettingsWriteCommand.PerformStrongBackgroundAction("repair"),
+      ),
+    )
+    assertEquals(1, wireAccess.capabilityLoadCount)
+    assertEquals(3, wireAccess.writeCommandJson.size)
+  }
+
+  @Test
+  fun versionedRuntimeServiceBinderAccessSkipsUnnegotiatedV2Writes() {
+    val expected = bridgeSnapshot(
+      temporaryFolder.newFolder("versioned-runtime-controller-v2-read-only"),
+    )
+    val wireAccess = RecordingRuntimeServiceControllerWireAccess(
+      protocolVersion = RUNTIME_SERVICE_CONTROLLER_PROTOCOL_VERSION,
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
+      projectionSnapshotJson = encodeRuntimeServiceProjectionSnapshot(
+        expected.toProjectionSnapshot(),
+      ),
+      supportedCapabilities = RuntimeServiceControllerCapabilities.PROJECTION_READ,
+    )
+
+    val access = requireNotNull(
+      versionedRuntimeServiceBinderAccess(
+        wireAccess = wireAccess,
+        expectedTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      ),
+    )
+
+    assertNull(
+      access.dispatchChatWriteCommand(OpenCrayChatWriteCommand.RefreshSandboxSessionInfo),
+    )
+    assertNull(access.dispatchSkillsWriteCommand(OpenCraySkillsWriteCommand.RefreshSkills))
+    assertNull(
+      access.dispatchSettingsWriteCommand(
+        OpenCraySettingsWriteCommand.PerformStrongBackgroundAction("repair"),
+      ),
+    )
+    assertEquals(1, wireAccess.capabilityLoadCount)
+    assertEquals(0, wireAccess.writeCommandJson.size)
   }
 
   @Test
@@ -2690,9 +2797,19 @@ class OpenCrayRuntimeServiceHostTest {
       ),
       expectedTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
     )
+    val missingProjectionCapability = versionedRuntimeServiceBinderAccess(
+      wireAccess = RecordingRuntimeServiceControllerWireAccess(
+        protocolVersion = RUNTIME_SERVICE_CONTROLLER_PROTOCOL_VERSION,
+        runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
+        projectionSnapshotJson = expectedPayload,
+        supportedCapabilities = RuntimeServiceControllerCapabilities.CHAT_WRITE,
+      ),
+      expectedTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    )
 
     assertNull(versionMismatch)
     assertNull(targetMismatch)
+    assertNull(missingProjectionCapability)
   }
 
   @Test
@@ -7150,17 +7267,33 @@ class OpenCrayRuntimeServiceHostTest {
     private val protocolVersion: Int,
     private val runtimeTarget: String?,
     private val projectionSnapshotJson: String?,
+    private val supportedCapabilities: Long =
+      RuntimeServiceControllerCapabilities.PROJECTION_READ,
+    private val writeDispatcher: (String) -> String? = { null },
   ) : RuntimeServiceControllerWireAccess {
     var snapshotLoadCount: Int = 0
       private set
+    var capabilityLoadCount: Int = 0
+      private set
+    val writeCommandJson = mutableListOf<String>()
 
     override fun protocolVersion(): Int = protocolVersion
 
     override fun runtimeTarget(): String? = runtimeTarget
 
+    override fun capabilities(): Long {
+      capabilityLoadCount += 1
+      return supportedCapabilities
+    }
+
     override fun loadProjectionSnapshotJson(): String? {
       snapshotLoadCount += 1
       return projectionSnapshotJson
+    }
+
+    override fun dispatchWriteCommandJson(commandJson: String): String? {
+      writeCommandJson += commandJson
+      return writeDispatcher(commandJson)
     }
   }
 

@@ -199,7 +199,7 @@ internal class OpenCrayLocalRuntimeServer(
   }
 
   private fun dispatch(request: LocalRuntimeRequest): LocalRuntimeResponse {
-    if (request.method == "POST" && !runtimeOwnerWriteGuard()) {
+    if (request.requiresRuntimeOwnerWriteGuard() && !runtimeOwnerWriteGuard()) {
       return LocalRuntimeResponse(
         statusCode = 409,
         body = mapOf("error" to "runtime_owner_lease_unavailable"),
@@ -925,6 +925,9 @@ private data class LocalRuntimeRequest(
     } else {
       JSONObject(String(body, Charsets.UTF_8))
     }
+
+  fun requiresRuntimeOwnerWriteGuard(): Boolean = method == "POST" ||
+    (method == "GET" && path == "/v1/check_installed_skill_updates")
 }
 
 private data class LocalRuntimeResponse(
