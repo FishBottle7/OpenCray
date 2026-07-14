@@ -199,6 +199,14 @@ private fun encodeRecord(record: PersistedRuntimeServiceProjectionRecord): Strin
     value = record,
   )
 
+internal fun encodeRuntimeServiceProjectionSnapshot(
+  snapshot: RuntimeServiceProjectionSnapshot,
+): String = encodeRecord(snapshot.toPersistedRecord())
+
+internal fun decodeRuntimeServiceProjectionSnapshot(
+  encoded: String?,
+): RuntimeServiceProjectionSnapshot? = decodeRecordOrNull(encoded)?.toSnapshot()
+
 private fun RuntimeServiceProjectionSnapshot.toPersistedRecord():
   PersistedRuntimeServiceProjectionRecord = PersistedRuntimeServiceProjectionRecord(
     updatedAtEpochMs = maxOf(

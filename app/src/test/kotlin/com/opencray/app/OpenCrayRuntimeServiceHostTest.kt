@@ -2634,6 +2634,110 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun versionedRuntimeServiceBinderAccessAcceptsMatchingTargetAndProjectionPayload() {
+    val expected = bridgeSnapshot(
+      temporaryFolder.newFolder("versioned-runtime-controller-access"),
+    )
+    val wireAccess = RecordingRuntimeServiceControllerWireAccess(
+      protocolVersion = RUNTIME_SERVICE_CONTROLLER_PROTOCOL_VERSION,
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
+      projectionSnapshotJson = encodeRuntimeServiceProjectionSnapshot(
+        expected.toProjectionSnapshot(),
+      ),
+    )
+
+    val access = versionedRuntimeServiceBinderAccess(
+      wireAccess = wireAccess,
+      expectedTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    )
+
+    assertNotNull(access)
+    assertEquals(
+      expected.toProjectionSnapshot(),
+      access?.loadSnapshot()?.toProjectionSnapshot(),
+    )
+    assertNull(access?.loadShellGateway())
+    assertNull(access?.loadChatRuntimeGateway())
+    assertNull(
+      access?.dispatchChatWriteCommand(
+        OpenCrayChatWriteCommand.RefreshSandboxSessionInfo,
+      ),
+    )
+    assertEquals(1, wireAccess.snapshotLoadCount)
+  }
+
+  @Test
+  fun versionedRuntimeServiceBinderAccessRejectsVersionOrTargetMismatch() {
+    val expectedPayload = encodeRuntimeServiceProjectionSnapshot(
+      bridgeSnapshot(
+        temporaryFolder.newFolder("versioned-runtime-controller-mismatch"),
+      ).toProjectionSnapshot(),
+    )
+
+    val versionMismatch = versionedRuntimeServiceBinderAccess(
+      wireAccess = RecordingRuntimeServiceControllerWireAccess(
+        protocolVersion = RUNTIME_SERVICE_CONTROLLER_PROTOCOL_VERSION + 1,
+        runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
+        projectionSnapshotJson = expectedPayload,
+      ),
+      expectedTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    )
+    val targetMismatch = versionedRuntimeServiceBinderAccess(
+      wireAccess = RecordingRuntimeServiceControllerWireAccess(
+        protocolVersion = RUNTIME_SERVICE_CONTROLLER_PROTOCOL_VERSION,
+        runtimeTarget = RuntimeServiceTarget.INTERACTIVE.wireValue,
+        projectionSnapshotJson = expectedPayload,
+      ),
+      expectedTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    )
+
+    assertNull(versionMismatch)
+    assertNull(targetMismatch)
+  }
+
+  @Test
+  fun androidBindingClientAcceptsVersionedRemoteBinderAccess() {
+    val expected = bridgeSnapshot(
+      temporaryFolder.newFolder("binding-client-versioned-remote"),
+    )
+    val bindingAdapter = RecordingBindingAdapter()
+    val remoteBinder = Binder()
+    val resolvedTargets = mutableListOf<RuntimeServiceTarget>()
+    val wireAccess = RecordingRuntimeServiceControllerWireAccess(
+      protocolVersion = RUNTIME_SERVICE_CONTROLLER_PROTOCOL_VERSION,
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue,
+      projectionSnapshotJson = encodeRuntimeServiceProjectionSnapshot(
+        expected.toProjectionSnapshot(),
+      ),
+    )
+    val client = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      bindingAdapter = bindingAdapter,
+      startRequester = { },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+      binderAccessResolver = { binder, target ->
+        assertSame(remoteBinder, binder)
+        resolvedTargets += target
+        versionedRuntimeServiceBinderAccess(wireAccess, target)
+      },
+    )
+
+    assertNull(client.loadShellGateway())
+    bindingAdapter.connect(remoteBinder)
+
+    assertEquals("bound", client.loadConnectionState().phase)
+    assertEquals("binder", client.loadConnectionState().transport)
+    assertTrue(client.loadConnectionState().binderAvailable)
+    assertEquals(
+      expected.toProjectionSnapshot(),
+      client.loadSnapshot().diagnosticsSnapshot,
+    )
+    assertEquals(listOf(RuntimeServiceTarget.DETACHED_BACKGROUND), resolvedTargets)
+  }
+
+  @Test
   fun androidBindingClientReportsNullBindingWhenServiceReturnsNoBinder() {
     val expected = bridgeSnapshot(temporaryFolder.newFolder("binding-client-null-binding"))
     val bindingAdapter = RecordingBindingAdapter()
@@ -7039,6 +7143,24 @@ class OpenCrayRuntimeServiceHostTest {
       checkNotNull(connection).onServiceDisconnected(
         ComponentName("org.opencray.app", "OpenCrayAgentRuntimeService"),
       )
+    }
+  }
+
+  private class RecordingRuntimeServiceControllerWireAccess(
+    private val protocolVersion: Int,
+    private val runtimeTarget: String?,
+    private val projectionSnapshotJson: String?,
+  ) : RuntimeServiceControllerWireAccess {
+    var snapshotLoadCount: Int = 0
+      private set
+
+    override fun protocolVersion(): Int = protocolVersion
+
+    override fun runtimeTarget(): String? = runtimeTarget
+
+    override fun loadProjectionSnapshotJson(): String? {
+      snapshotLoadCount += 1
+      return projectionSnapshotJson
     }
   }
 

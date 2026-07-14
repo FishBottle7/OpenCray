@@ -3684,6 +3684,9 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         capturedHandler = resolvedMainHandler
         expectedBootstrap
       },
+      binderEndpointFactory = { _, endpointProvider ->
+        TestDelegatingRuntimeServiceBinderEndpoint(endpointProvider)
+      },
     )
 
     controller.attach()
@@ -4279,6 +4282,9 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           RuntimeServiceTarget.DETACHED_BACKGROUND
         }
       },
+      binderEndpointFactory = { _, endpointProvider ->
+        TestDelegatingRuntimeServiceBinderEndpoint(endpointProvider)
+      },
     )
 
     controller.attach(RuntimeServiceTarget.DETACHED_BACKGROUND)
@@ -4356,6 +4362,9 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       runtimeTargetReader = { DEFAULT_RUNTIME_SERVICE_TARGET },
       runtimeResetRequested = { true },
       bootstrapForegroundRequested = { false },
+      binderEndpointFactory = { _, endpointProvider ->
+        TestDelegatingRuntimeServiceBinderEndpoint(endpointProvider)
+      },
     )
 
     controller.attach()
@@ -8171,6 +8180,18 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       dispatchedChatWriteCommands += command
       return dispatchChatWriteCommandHandler?.invoke(command)
     }
+  }
+
+  private class TestDelegatingRuntimeServiceBinderEndpoint(
+    private val endpointProvider: () -> RuntimeServiceBinderEndpoint,
+  ) : Binder(), RuntimeServiceBinderEndpoint {
+    override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot =
+      endpointProvider().loadSnapshot()
+
+    override fun dispatchChatWriteCommand(
+      command: OpenCrayChatWriteCommand,
+    ): OpenCrayChatWriteDispatchResult? =
+      endpointProvider().dispatchChatWriteCommand(command)
   }
 
   private class TestRuntimeService : Service() {

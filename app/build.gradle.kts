@@ -135,6 +135,10 @@ android {
   namespace = "org.opencray.app"
   compileSdk = 36
 
+  buildFeatures {
+    aidl = true
+  }
+
   defaultConfig {
     applicationId = "org.opencray.app"
     minSdk = 26

@@ -314,6 +314,10 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
     defaultBindingReleaseScheduler(mainThreadPoster),
   private val serviceIntentFactory: (Context) -> Intent,
   private val bindingFlags: Int = Context.BIND_AUTO_CREATE,
+  private val binderAccessResolver: (
+    IBinder,
+    RuntimeServiceTarget,
+  ) -> OpenCrayRuntimeServiceBinderAccess? = ::runtimeServiceBinderAccessForBinder,
   private val isMainThread: () -> Boolean = {
     Looper.myLooper() == Looper.getMainLooper()
   },
@@ -357,7 +361,7 @@ internal class AndroidBindingOpenCrayRuntimeServiceClient(
         }
         return
       }
-      val access = service as? OpenCrayRuntimeServiceBinderAccess
+      val access = binderAccessResolver(service, runtimeTarget)
       synchronized(lock) {
         cancelPendingBindingReleaseLocked()
         if (access != null) {
@@ -916,4 +920,15 @@ private fun RuntimeServiceProjectionSnapshot.toClientSnapshot(
 ): OpenCrayRuntimeServiceClientSnapshot = OpenCrayRuntimeServiceClientSnapshot(
   connectionState = connectionState,
   projectionSnapshot = this,
+)
+
+internal fun RuntimeServiceProjectionSnapshot.toBridgeSnapshot():
+  OpenCrayRuntimeServiceBridgeSnapshot = OpenCrayRuntimeServiceBridgeSnapshot(
+  runtimeOwnerLifecycle = runtimeOwnerLifecycle,
+  runtimeOwnerWorkSummary = runtimeOwnerWorkSummary,
+  runtimeControllerLifecycle = runtimeControllerLifecycle,
+  serviceLifecycle = serviceLifecycle,
+  serviceWorkState = serviceWorkState,
+  serviceKeepAliveState = serviceKeepAliveState,
+  localRuntimeServerState = localRuntimeServerState,
 )

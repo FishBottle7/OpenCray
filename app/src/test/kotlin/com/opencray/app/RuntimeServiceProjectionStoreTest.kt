@@ -33,6 +33,19 @@ class RuntimeServiceProjectionStoreTest {
   }
 
   @Test
+  fun runtimeServiceProjectionWireCodecRoundTripsDetachedOwnershipEvidence() {
+    val expected = projectionSnapshot(activeRunCount = 2).copy(
+      runtimeServiceOwnerLease = runtimeServiceProjectionLease(heartbeatAtEpochMs = 8_000L),
+      lastInterruptedRunRepair = interruptedRunRepairProjection(recordedAtEpochMs = 9_000L),
+    )
+
+    val encoded = encodeRuntimeServiceProjectionSnapshot(expected)
+
+    assertEquals(expected, decodeRuntimeServiceProjectionSnapshot(encoded))
+    assertNull(decodeRuntimeServiceProjectionSnapshot("{not-json"))
+  }
+
+  @Test
   fun fileBackedProjectionStoreClearAffectsOnlyTargetBucket() {
     val factory = FileBackedRuntimeServiceProjectionStoreFactory(
       runtimeRootDirectory = temporaryFolder.newFolder("runtime-projection-clear"),

@@ -45,6 +45,10 @@ internal fun runtimeServiceShellController(
     { intent -> intentRequestsRuntimeReset(intent) },
   bootstrapForegroundRequested: (Intent?) -> Boolean =
     { intent -> intentRequiresBootstrapForeground(intent) },
+  binderEndpointFactory: (
+    RuntimeServiceTarget,
+    () -> RuntimeServiceBinderEndpoint,
+  ) -> RuntimeServiceBinderEndpoint = ::versionedRuntimeServiceBinderEndpoint,
   ownerLeaseRetryScheduler: (RuntimeServiceTarget) -> Unit = {},
 ): RuntimeServiceShellController = DefaultRuntimeServiceShellController(
   service = service,
@@ -54,6 +58,7 @@ internal fun runtimeServiceShellController(
   runtimeTargetReader = runtimeTargetReader,
   runtimeResetRequested = runtimeResetRequested,
   bootstrapForegroundRequested = bootstrapForegroundRequested,
+  binderEndpointFactory = binderEndpointFactory,
   ownerLeaseRetryScheduler = ownerLeaseRetryScheduler,
 )
 
@@ -70,6 +75,10 @@ private class DefaultRuntimeServiceShellController(
   private val runtimeTargetReader: (Intent?) -> RuntimeServiceTarget,
   private val runtimeResetRequested: (Intent?) -> Boolean,
   private val bootstrapForegroundRequested: (Intent?) -> Boolean,
+  private val binderEndpointFactory: (
+    RuntimeServiceTarget,
+    () -> RuntimeServiceBinderEndpoint,
+  ) -> RuntimeServiceBinderEndpoint,
   private val ownerLeaseRetryScheduler: (RuntimeServiceTarget) -> Unit,
 ) : RuntimeServiceShellController {
   private val serviceBootstraps =
@@ -134,7 +143,9 @@ private class DefaultRuntimeServiceShellController(
         return null
       }
       boundEndpoints.getOrPut(target) {
-        DelegatingRuntimeServiceBinderEndpoint(target)
+        binderEndpointFactory(target) {
+          requireBootstrap(target).binderEndpoint
+        }
       }
     }
 
@@ -165,42 +176,6 @@ private class DefaultRuntimeServiceShellController(
     boundEndpoints.clear()
   }
 
-  private inner class DelegatingRuntimeServiceBinderEndpoint(
-    private val target: RuntimeServiceTarget,
-  ) : android.os.Binder(), RuntimeServiceBinderEndpoint {
-    private fun currentEndpoint(): RuntimeServiceBinderEndpoint =
-      requireBootstrap(target).binderEndpoint
-
-    override fun loadSnapshot(): OpenCrayRuntimeServiceBridgeSnapshot =
-      currentEndpoint().loadSnapshot()
-
-    override fun loadShellGateway(): OpenCrayShellGateway? =
-      currentEndpoint().loadShellGateway()
-
-    override fun loadChatRuntimeGateway(): OpenCrayChatRuntimeGateway? =
-      currentEndpoint().loadChatRuntimeGateway()
-
-    override fun dispatchChatWriteCommand(
-      command: OpenCrayChatWriteCommand,
-    ): OpenCrayChatWriteDispatchResult? =
-      currentEndpoint().dispatchChatWriteCommand(command)
-
-    override fun loadSkillsGateway(): OpenCraySkillsGateway? =
-      currentEndpoint().loadSkillsGateway()
-
-    override fun dispatchSkillsWriteCommand(
-      command: OpenCraySkillsWriteCommand,
-    ): OpenCraySkillsWriteDispatchResult? =
-      currentEndpoint().dispatchSkillsWriteCommand(command)
-
-    override fun loadSettingsGateway(): OpenCraySettingsGateway? =
-      currentEndpoint().loadSettingsGateway()
-
-    override fun dispatchSettingsWriteCommand(
-      command: OpenCraySettingsWriteCommand,
-    ): OpenCraySettingsWriteDispatchResult? =
-      currentEndpoint().dispatchSettingsWriteCommand(command)
-  }
 }
 
 internal fun runtimeServiceStartResult(
