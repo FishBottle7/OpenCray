@@ -32,6 +32,11 @@ fun resolveEmbeddedPythonRuntimeDistDir(projectRoot: File): File {
 
 val embeddedPythonRuntimeDistDir = resolveEmbeddedPythonRuntimeDistDir(rootProject.projectDir)
 
+val runtimeIsolationAndroidTestOnly = providers
+    .gradleProperty("runtimeIsolationAndroidTestOnly")
+    .map(String::toBoolean)
+    .getOrElse(false)
+
 android {
     namespace = "org.opencray.app"
     compileSdk = 36
@@ -85,7 +90,14 @@ android {
             java.srcDirs("../../../app/src/test/kotlin")
         }
         getByName("androidTest") {
-            java.srcDirs("../../../app/src/androidTest/kotlin")
+            if (runtimeIsolationAndroidTestOnly) {
+                java.setSrcDirs(listOf("../../../app/src/runtimeIsolationAndroidTest/kotlin"))
+            } else {
+                java.srcDirs(
+                    "../../../app/src/androidTest/kotlin",
+                    "../../../app/src/runtimeIsolationAndroidTest/kotlin",
+                )
+            }
         }
     }
 }
@@ -93,6 +105,11 @@ android {
 kotlin {
     compilerOptions {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+    }
+    sourceSets.getByName("androidTest").kotlin.apply {
+        if (runtimeIsolationAndroidTestOnly) {
+            setSrcDirs(emptyList<String>())
+        }
     }
 }
 

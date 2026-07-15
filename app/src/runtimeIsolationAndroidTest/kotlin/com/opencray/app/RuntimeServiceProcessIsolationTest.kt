@@ -32,7 +32,7 @@ class RuntimeServiceProcessIsolationTest {
     bindings.clear()
   }
 
-  @Test
+  @Test(timeout = 90_000L)
   fun targetServicesExposeV2RemoteControllersFromIndependentProcesses() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
     val interactive = bindController(context, RuntimeServiceTarget.INTERACTIVE)
@@ -73,7 +73,7 @@ class RuntimeServiceProcessIsolationTest {
     )
   }
 
-  @Test
+  @Test(timeout = 120_000L)
   fun detachedControllerRebindsAfterProcessDeathAndOwnerLeaseExpiry() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
     val target = RuntimeServiceTarget.DETACHED_BACKGROUND

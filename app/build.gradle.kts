@@ -102,6 +102,10 @@ val embeddedPythonRuntimeDistDir =
 val generatedPythonRuntimeManifestAssetsDir = layout.buildDirectory.dir("generated/assets/pythonRuntimeManifest")
 val distPythonRuntimeManifest = rootProject.file("tools/android_python_runtime_p4a/dist/python-runtime-manifest.json")
 val requirementsLockFile = rootProject.file("tools/android_python_runtime_p4a/requirements.lock")
+val runtimeIsolationAndroidTestOnly = providers
+  .gradleProperty("runtimeIsolationAndroidTestOnly")
+  .map(String::toBoolean)
+  .getOrElse(false)
 val generatePythonRuntimeManifestAsset = tasks.register("generatePythonRuntimeManifestAsset") {
   inputs.files(distPythonRuntimeManifest, requirementsLockFile)
   outputs.file(generatedPythonRuntimeManifestAssetsDir.map { directory ->
@@ -174,11 +178,23 @@ android {
   }
 
   sourceSets.getByName("main").assets.srcDir(generatedPythonRuntimeManifestAssetsDir)
+  sourceSets.getByName("androidTest").java.apply {
+    if (runtimeIsolationAndroidTestOnly) {
+      setSrcDirs(listOf("src/runtimeIsolationAndroidTest/kotlin"))
+    } else {
+      srcDir("src/runtimeIsolationAndroidTest/kotlin")
+    }
+  }
 }
 
 kotlin {
   compilerOptions {
     jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+  }
+  sourceSets.getByName("androidTest").kotlin.apply {
+    if (runtimeIsolationAndroidTestOnly) {
+      setSrcDirs(emptyList<String>())
+    }
   }
 }
 
