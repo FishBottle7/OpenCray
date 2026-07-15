@@ -13,6 +13,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.Worker
 import androidx.work.WorkerParameters
+import com.opencray.core.orchestrator.METADATA_RECOVERY_REASON
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
@@ -415,6 +416,12 @@ internal enum class InterruptedRunRepairEvidenceKind {
   RUNTIME_PROJECTION_WORK,
 }
 
+private val CHECKPOINT_BUDGET_SUPPRESSED_REPAIR_EVIDENCE_KINDS = setOf(
+  InterruptedRunRepairEvidenceKind.PROMPT_CHECKPOINT,
+  InterruptedRunRepairEvidenceKind.RUN_RECORD,
+  InterruptedRunRepairEvidenceKind.JOURNAL_TAIL,
+)
+
 internal fun potentialInterruptedRunRepairTargets(
   context: Context,
 ): Set<RuntimeServiceTarget> =
@@ -460,8 +467,9 @@ internal fun potentialInterruptedRunRepairEvidence(
     processRegistryFactory = processRegistryFactory,
   )
   val evidence = mutableListOf<InterruptedRunRepairEvidence>()
+  val suppressedRepairIdentities = mutableSetOf<InterruptedRunRepairIdentity>()
   knownSessionIds.forEach { sessionId ->
-    evidence += potentialInterruptedRunRepairEvidenceForSession(
+    val scan = scanPotentialInterruptedRunRepairEvidenceForSession(
       sessionId = sessionId,
       snapshotStoreFactory = snapshotStoreFactory,
       promptCheckpointStoreFactory = promptCheckpointStoreFactory,
@@ -470,9 +478,12 @@ internal fun potentialInterruptedRunRepairEvidence(
       runEventJournalStoreFactory = runEventJournalStoreFactory,
       processRegistryFactory = processRegistryFactory,
     )
+    evidence += scan.evidence
+    suppressedRepairIdentities += scan.suppressedRepairIdentities
   }
   return evidence.withRuntimeProjectionRepairEvidence(
-    runtimeServiceProjectionRepairEvidence(runtimeServiceProjectionSnapshots),
+    runtimeServiceProjectionRepairEvidence(runtimeServiceProjectionSnapshots)
+      .filterNot { projected -> projected.matchesSuppressedRepairIdentity(suppressedRepairIdentities) },
   )
 }
 
@@ -520,7 +531,25 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
   runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
   processRegistryFactory: AgentProcessRegistryFactory? = null,
-): List<InterruptedRunRepairEvidence> {
+): List<InterruptedRunRepairEvidence> = scanPotentialInterruptedRunRepairEvidenceForSession(
+  sessionId = sessionId,
+  snapshotStoreFactory = snapshotStoreFactory,
+  promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+  subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+  runRecordStoreFactory = runRecordStoreFactory,
+  runEventJournalStoreFactory = runEventJournalStoreFactory,
+  processRegistryFactory = processRegistryFactory,
+).evidence
+
+private fun scanPotentialInterruptedRunRepairEvidenceForSession(
+  sessionId: String,
+  snapshotStoreFactory: AgentQueueSnapshotStoreFactory,
+  promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
+  subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
+  runRecordStoreFactory: AgentRunRecordStoreFactory? = null,
+  runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
+  processRegistryFactory: AgentProcessRegistryFactory? = null,
+): InterruptedRunRepairEvidenceScan {
   val snapshotStore = snapshotStoreFactory.forChatSession(sessionId)
   val promptCheckpointStore = promptCheckpointStoreFactory.forChatSession(sessionId)
   val subAgentHandleStore = subAgentHandleStoreFactory.forChatSession(sessionId)
@@ -656,7 +685,44 @@ internal fun potentialInterruptedRunRepairEvidenceForSession(
         ),
       )
     }
-  return evidence.withManagedProcessReconnectBackoff()
+  val suppressedRepairIdentities = taskSnapshots
+    .filter(SessionQueueTaskSnapshot::isCheckpointResumeBudgetExhausted)
+    .mapTo(mutableSetOf()) { taskSnapshot ->
+      InterruptedRunRepairIdentity(
+        sessionId = sessionId,
+        runId = runIdForTask(taskSnapshot),
+        taskId = taskSnapshot.task.id,
+      )
+    }
+  return InterruptedRunRepairEvidenceScan(
+    evidence = evidence
+      .filterNot { item -> item.matchesSuppressedRepairIdentity(suppressedRepairIdentities) }
+      .withManagedProcessReconnectBackoff(),
+    suppressedRepairIdentities = suppressedRepairIdentities,
+  )
+}
+
+private data class InterruptedRunRepairEvidenceScan(
+  val evidence: List<InterruptedRunRepairEvidence>,
+  val suppressedRepairIdentities: Set<InterruptedRunRepairIdentity>,
+)
+
+private data class InterruptedRunRepairIdentity(
+  val sessionId: String,
+  val runId: String,
+  val taskId: String,
+)
+
+private fun InterruptedRunRepairEvidence.matchesSuppressedRepairIdentity(
+  identities: Set<InterruptedRunRepairIdentity>,
+): Boolean {
+  if (kind !in CHECKPOINT_BUDGET_SUPPRESSED_REPAIR_EVIDENCE_KINDS) {
+    return false
+  }
+  return identities.any { identity ->
+    sessionId == identity.sessionId &&
+      (taskId == identity.taskId || runId == identity.runId)
+  }
 }
 
 private fun repairPreflightTaskSnapshots(
@@ -1239,6 +1305,11 @@ private fun isPotentialManagedProcessReconnectRepair(
 private fun isPotentialRunRepairCheckpoint(
   checkpoint: PersistedPromptCheckpoint,
 ): Boolean = checkpoint.checkpointKind != PromptCheckpointKind.FINALIZATION_COMPLETE
+
+private fun SessionQueueTaskSnapshot.isCheckpointResumeBudgetExhausted(): Boolean =
+  lifecycleState == QueueTaskLifecycleState.FAILED &&
+    task.metadata[METADATA_RECOVERY_REASON] ==
+      RUN_RECOVERY_REASON_AUTOMATIC_CHECKPOINT_RESUME_BUDGET_EXHAUSTED
 
 private fun potentialRunRepairJournalTails(
   journalEntries: List<PersistedRunJournalEntry>,

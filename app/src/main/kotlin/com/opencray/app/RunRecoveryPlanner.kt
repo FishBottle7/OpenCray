@@ -371,7 +371,7 @@ internal class RunRecoveryPlanner(
     }
     return RunRecoveryPlan(
       action = RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED,
-      reasonCode = "automatic_checkpoint_resume_budget_exhausted",
+      reasonCode = RUN_RECOVERY_REASON_AUTOMATIC_CHECKPOINT_RESUME_BUDGET_EXHAUSTED,
       summary =
         "The run reached its automatic checkpoint-resume limit after $attemptCount attempts. Keep it interrupted until the user explicitly retries it.",
       safeToAutoResume = false,
@@ -649,6 +649,8 @@ internal class RunRecoveryPlanner(
 }
 
 internal const val DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS: Int = 3
+internal const val RUN_RECOVERY_REASON_AUTOMATIC_CHECKPOINT_RESUME_BUDGET_EXHAUSTED: String =
+  "automatic_checkpoint_resume_budget_exhausted"
 
 private data class ManagedProcessReconnectEvidence(
   val processIds: List<String> = emptyList(),

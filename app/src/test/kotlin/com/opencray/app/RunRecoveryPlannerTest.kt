@@ -140,7 +140,10 @@ class RunRecoveryPlannerTest {
     )
 
     assertEquals(RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED, plan.action)
-    assertEquals("automatic_checkpoint_resume_budget_exhausted", plan.reasonCode)
+    assertEquals(
+      RUN_RECOVERY_REASON_AUTOMATIC_CHECKPOINT_RESUME_BUDGET_EXHAUSTED,
+      plan.reasonCode,
+    )
     assertEquals(
       DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS,
       plan.checkpointResumeAttemptCount,

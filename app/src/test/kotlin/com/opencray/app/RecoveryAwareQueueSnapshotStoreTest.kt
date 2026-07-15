@@ -270,7 +270,7 @@ class RecoveryAwareQueueSnapshotStoreTest {
     assertEquals(AgentTaskState.FAILED, restoredTask.task.state)
     assertEquals(ERROR_RESTART_REQUIRES_EXPLICIT_RETRY, restoredTask.lastErrorCode)
     assertEquals(
-      "automatic_checkpoint_resume_budget_exhausted",
+      RUN_RECOVERY_REASON_AUTOMATIC_CHECKPOINT_RESUME_BUDGET_EXHAUSTED,
       restoredTask.task.metadata[METADATA_RECOVERY_REASON],
     )
     assertEquals(

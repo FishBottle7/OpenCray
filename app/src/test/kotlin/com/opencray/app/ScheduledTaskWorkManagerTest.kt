@@ -10,6 +10,7 @@ import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.InMemorySessionQueueSnapshotStore
+import com.opencray.core.orchestrator.METADATA_RECOVERY_REASON
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
@@ -1424,6 +1425,141 @@ class ScheduledTaskWorkManagerTest {
         promptCheckpointStoreFactory = promptCheckpointStoreFactory,
         subAgentHandleStoreFactory = subAgentHandleStoreFactory,
       ),
+    )
+  }
+
+  @Test
+  fun potentialInterruptedRunRepairEvidenceIgnoresBudgetExhaustedCheckpointUntilRetry() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-checkpoint-budget")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val runRecordStoreFactory = InMemoryAgentRunRecordStoreFactory()
+    val taskId = "task-checkpoint-budget"
+    val checkpoint = PersistedPromptCheckpoint(
+      sessionId = sessionId,
+      runId = "run-checkpoint-budget",
+      taskId = taskId,
+      checkpointId = "checkpoint-budget",
+      checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+    )
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = taskId,
+          runId = checkpoint.runId,
+          lifecycleState = QueueTaskLifecycleState.FAILED,
+          taskState = AgentTaskState.FAILED,
+          metadata = mapOf(
+            METADATA_RECOVERY_REASON to
+              RUN_RECOVERY_REASON_AUTOMATIC_CHECKPOINT_RESUME_BUDGET_EXHAUSTED,
+            RunLifecycleMetadataKeys.CHECKPOINT_RESUME_ATTEMPT_COUNT to
+              DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS.toString(),
+          ),
+        ),
+      ),
+    )
+    val checkpointStore = promptCheckpointStoreFactory.forChatSession(sessionId)
+    checkpointStore.upsert(checkpoint)
+    runRecordStoreFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = checkpoint.runId,
+        taskId = taskId,
+        acceptedAtEpochMs = 1_000L,
+        lastEvent = OpenCrayAssistantEvent(
+          runId = checkpoint.runId,
+          taskId = taskId,
+          turn = 0,
+          text = "Waiting before the recovery budget was exhausted.",
+          isFinal = false,
+          emittedAtEpochMs = 1_100L,
+        ).toPersistedRecord(),
+      ),
+    )
+
+    val evidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runRecordStoreFactory = runRecordStoreFactory,
+      runtimeServiceProjectionSnapshots = mapOf(
+        RuntimeServiceTarget.INTERACTIVE to runtimeProjectionSnapshot(
+          lastInterruptedRunRepair = RuntimeServiceInterruptedRunRepairProjection(
+            repairEvidenceBySession = mapOf(
+              sessionId to listOf(
+                InterruptedRunRepairEvidence(
+                  sessionId = sessionId,
+                  kind = InterruptedRunRepairEvidenceKind.PROMPT_CHECKPOINT,
+                  target = RuntimeServiceTarget.INTERACTIVE,
+                  runId = checkpoint.runId,
+                  taskId = taskId,
+                  detailId = checkpoint.checkpointId,
+                ),
+                InterruptedRunRepairEvidence(
+                  sessionId = sessionId,
+                  kind = InterruptedRunRepairEvidenceKind.RUN_RECORD,
+                  target = RuntimeServiceTarget.INTERACTIVE,
+                  runId = checkpoint.runId,
+                  taskId = taskId,
+                ),
+                InterruptedRunRepairEvidence(
+                  sessionId = sessionId,
+                  kind = InterruptedRunRepairEvidenceKind.JOURNAL_TAIL,
+                  target = RuntimeServiceTarget.INTERACTIVE,
+                  runId = checkpoint.runId,
+                  taskId = taskId,
+                  detailId = "journal-tail-before-budget-exhaustion",
+                ),
+              ),
+            ),
+            recordedAtEpochMs = 1_200L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(emptyList<InterruptedRunRepairEvidence>(), evidence)
+    assertEquals(checkpoint.checkpointId, checkpointStore.get(taskId)?.checkpointId)
+
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = taskId,
+          runId = checkpoint.runId,
+          lifecycleState = QueueTaskLifecycleState.QUEUED,
+          taskState = AgentTaskState.QUEUED,
+          metadata = mapOf(
+            METADATA_RECOVERY_REASON to
+              RUN_RECOVERY_REASON_AUTOMATIC_CHECKPOINT_RESUME_BUDGET_EXHAUSTED,
+          ),
+        ),
+      ),
+    )
+
+    val retriedEvidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runRecordStoreFactory = runRecordStoreFactory,
+    )
+
+    assertEquals(
+      setOf(
+        InterruptedRunRepairEvidenceKind.QUEUE_TASK,
+        InterruptedRunRepairEvidenceKind.PROMPT_CHECKPOINT,
+        InterruptedRunRepairEvidenceKind.RUN_RECORD,
+      ),
+      retriedEvidence.mapTo(mutableSetOf(), InterruptedRunRepairEvidence::kind),
     )
   }
 

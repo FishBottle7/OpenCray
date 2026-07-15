@@ -1111,7 +1111,7 @@ internal class RecoveryAwareQueueSnapshotStore(
     "uncertain_inflight_mutation" ->
       "The app host restarted after this run advanced beyond the last durable checkpoint. OpenCray stopped it to avoid replaying an uncertain in-flight action. Retry explicitly when you want to continue."
 
-    "automatic_checkpoint_resume_budget_exhausted" ->
+    RUN_RECOVERY_REASON_AUTOMATIC_CHECKPOINT_RESUME_BUDGET_EXHAUSTED ->
       "This run reached its automatic checkpoint-resume limit after repeated runtime interruptions. OpenCray stopped automatic recovery to avoid a restart loop. Retry explicitly when you want to continue."
 
     else -> restoreInterruptedMessage(entry.lifecycleState)
