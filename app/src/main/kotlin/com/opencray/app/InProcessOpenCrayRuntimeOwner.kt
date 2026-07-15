@@ -211,6 +211,7 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
     sessionStore = e2bSessionStore,
     activeSessionProvider = e2bPythonRuntime::activeStickySessionSnapshot,
     pythonRuntime = e2bPythonRuntime,
+    transport = runtimeE2BEnvdCommandTransport(appContext),
   )
   val commandExecutor = RoutingCommandExecutor(
     settingsProvider = sandboxSettingsRepository::load,

@@ -72,6 +72,7 @@ internal object E2BSandboxCommandExecutionBackendFactory {
     sessionStore: E2BSandboxSessionStore,
     activeSessionProvider: () -> E2BSandboxSessionSnapshot?,
     pythonRuntime: PythonScriptRuntime,
+    transport: E2BEnvdCommandTransport = UrlConnectionE2BEnvdCommandTransport(),
     json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
   ): SandboxCommandExecutionBackend = E2BMinimalProtocolSandboxCommandExecutionBackend(
     workspaceRootProvider = workspaceRootProvider,
@@ -79,6 +80,7 @@ internal object E2BSandboxCommandExecutionBackendFactory {
     sessionStore = sessionStore,
     activeSessionProvider = activeSessionProvider,
     pythonRuntime = pythonRuntime,
+    transport = transport,
     json = json,
   )
 

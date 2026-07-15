@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
+import android.content.pm.ApplicationInfo
 import android.os.IBinder
 import android.os.Process
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -31,6 +32,21 @@ import com.opencray.runtime.OpenCrayPromptCheckpointEmission
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCrayPromptResumeState
 import com.opencray.runtime.OpenCraySerializableModelAction
+import com.opencray.runtime.process.FileBackedAgentProcessRegistry
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
+import com.opencray.runtime.process.ManagedProcessController
+import com.opencray.runtime.process.ManagedProcessControllerFactory
+import com.opencray.runtime.process.ManagedProcessObservationState
+import com.opencray.runtime.process.ManagedProcessRemoteHandle
+import com.opencray.runtime.process.ManagedProcessRestoreDecision
+import com.opencray.runtime.process.ManagedProcessRestoreMode
+import com.opencray.runtime.process.ManagedProcessRestoreScope
+import com.opencray.runtime.process.ManagedProcessRuntimeIdentity
+import com.opencray.runtime.process.ManagedProcessSnapshot
+import com.opencray.runtime.process.ManagedProcessStartRequest
+import com.opencray.runtime.process.ManagedProcessStatus
 import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -256,6 +272,214 @@ class RuntimeServiceProcessIsolationTest {
     }
   }
 
+  @Test(timeout = 210_000L)
+  fun detachedProcessDeathReconnectsE2BManagedProcessThroughExternalEndpoint() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    assertTrue(
+      "Runtime-isolation endpoint override requires a debuggable target build.",
+      (context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0,
+    )
+    val target = RuntimeServiceTarget.DETACHED_BACKGROUND
+    val processName = "${context.packageName}:runtime_controller"
+    stopRuntimeServiceProcessIfRunning(
+      context = context,
+      target = target,
+      processName = processName,
+    )
+    val uniqueSuffix = System.nanoTime().toString()
+    val sessionId = "runtime-isolation-e2b-session-$uniqueSuffix"
+    val taskId = "runtime-isolation-e2b-task-$uniqueSuffix"
+    val processId = "runtime-isolation-e2b-process-$uniqueSuffix"
+    val sandboxId = "runtime-isolation-e2b-sandbox-$uniqueSuffix"
+    val remoteWorkspaceRoot = "/home/user/opencray/$sandboxId"
+    val remotePid = 654
+    val workspaceRoot = AppAgentWorkspace.ensureRootForContext(context)
+      .toAbsolutePath()
+      .normalize()
+    val endpointOverrideStore = RuntimeIsolationE2BEnvdEndpointOverrideStore.fromContext(context)
+    val sandboxSettingsStore = SandboxSettingsStore.fromContext(context)
+    val sandboxSettingsRepository = SandboxSettingsRepository.fromContext(context)
+    val previousSandboxSettings = sandboxSettingsRepository.load()
+    val e2bSessionStore = E2BSandboxSessionStore.fromContext(context)
+    val previousE2BSession = e2bSessionStore.load()
+    val endpointServer = RuntimeIsolationEnvdEndpointServer(processPid = remotePid)
+    var first: BoundController? = null
+    var second: BoundController? = null
+    var secondPid: Int? = null
+
+    try {
+      endpointOverrideStore.save(endpointServer.baseUrl)
+      sandboxSettingsRepository.save(
+        state = previousSandboxSettings.state.copy(
+          enabled = true,
+          providerId = SandboxProviderId.E2B.wireValue,
+          defaultBackend = SandboxExecutionBackendPreference.SANDBOX.wireValue,
+          sessionMode = SandboxSessionMode.STICKY.wireValue,
+          autoResume = true,
+          e2bApiKeyCredentialRef = SandboxSettingsRepository.E2B_API_KEY_REF.uri,
+        ),
+        e2bApiKey = "runtime-isolation-e2b-api-key",
+      )
+      e2bSessionStore.save(
+        E2BSandboxSessionSnapshot(
+          sandboxId = sandboxId,
+          sandboxDomain = "e2b.app",
+          envdAccessToken = "runtime-isolation-envd-token",
+          workspaceRoot = workspaceRoot.toString(),
+          templateId = E2BCodeInterpreterPythonRuntime.DEFAULT_TEMPLATE_ID,
+          updatedAtEpochMs = System.currentTimeMillis(),
+          remoteWorkspaceRoot = remoteWorkspaceRoot,
+        ),
+      )
+      seedRunningE2BManagedProcess(
+        context = context,
+        sessionId = sessionId,
+        taskId = taskId,
+        processId = processId,
+        sandboxId = sandboxId,
+        remotePid = remotePid,
+        workspaceRoot = workspaceRoot.toString(),
+        remoteWorkspaceRoot = remoteWorkspaceRoot,
+      )
+
+      val firstBound = bindController(context, target)
+      first = firstBound
+      val firstProjection = loadProjection(firstBound.controller)
+      val firstPid = awaitProcessPid(context, processName)
+      val firstRequest = endpointServer.awaitRequest(index = 0)
+      val firstAttached = awaitManagedProcessAttached(
+        context = context,
+        sessionId = sessionId,
+        processId = processId,
+        expectedOutput = "attached before process death",
+        expectedProcessStartId = firstProjection.runtimeOwnerLifecycle.processStartId,
+      )
+
+      assertEquals("POST", firstRequest.method)
+      assertEquals("/process.Process/Connect", firstRequest.path)
+      assertEquals(
+        "runtime-isolation-envd-token",
+        firstRequest.headers["x-access-token"],
+      )
+      assertEquals(
+        remotePid,
+        E2BEnvdProcessProtoCodec.decodeConnectRequest(
+          grpcPayload(firstRequest.body),
+        ).process.pid,
+      )
+      assertEquals(ManagedProcessStatus.RUNNING, firstAttached.status)
+      assertEquals("attached", firstAttached.metadata["sandboxCommandReconnectStatus"])
+      assertEquals(
+        "attached_live",
+        firstAttached.metadata["sandboxCommandReconnectRecoveryState"],
+      )
+
+      Process.killProcess(firstPid)
+      unbind(context, firstBound.binding)
+      first = null
+      awaitProcessExit(context, processName, firstPid)
+      endpointServer.releaseFirstConnection()
+
+      val leaseStore = FileBackedRuntimeServiceOwnerLeaseStore.fromContext(context)
+      val staleLease = awaitLease(
+        store = leaseStore,
+        target = target,
+        processStartId = firstProjection.runtimeOwnerLifecycle.processStartId,
+      )
+      val waitMs = (staleLease.expiresAtEpochMs - System.currentTimeMillis() + 1_000L)
+        .coerceAtLeast(0L)
+      if (waitMs > 0L) {
+        Thread.sleep(waitMs)
+      }
+      assertTrue(
+        openCrayRuntimeServiceEnvironment(context)
+          .runtimeServiceAccessGateway
+          .resumeInterruptedRuns(
+            context = context,
+            repairReason = ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED,
+            target = target,
+          ),
+      )
+
+      val secondBound = bindController(context, target)
+      second = secondBound
+      val rebuiltPid = awaitProcessPid(context, processName)
+      secondPid = rebuiltPid
+      val rebuiltLease = awaitRebuiltLease(
+        store = leaseStore,
+        target = target,
+        previousProcessStartId = firstProjection.runtimeOwnerLifecycle.processStartId,
+      )
+      val secondRequest = endpointServer.awaitRequest(index = 1)
+      val secondAttached = awaitManagedProcessAttached(
+        context = context,
+        sessionId = sessionId,
+        processId = processId,
+        expectedOutput = "attached after process death",
+        expectedProcessStartId = rebuiltLease.processStartId,
+      )
+
+      assertTrue(rebuiltPid != firstPid)
+      assertEquals(
+        firstProjection.runtimeOwnerLifecycle.durableRuntimeControllerId,
+        rebuiltLease.durableRuntimeControllerId,
+      )
+      assertEquals("POST", secondRequest.method)
+      assertEquals("/process.Process/Connect", secondRequest.path)
+      assertEquals(
+        remotePid,
+        E2BEnvdProcessProtoCodec.decodeConnectRequest(
+          grpcPayload(secondRequest.body),
+        ).process.pid,
+      )
+      assertEquals(ManagedProcessStatus.RUNNING, secondAttached.status)
+      assertEquals("attached", secondAttached.metadata["sandboxCommandReconnectStatus"])
+      assertEquals(
+        "attached_live",
+        secondAttached.metadata["sandboxCommandReconnectRecoveryState"],
+      )
+      assertEquals(
+        ManagedProcessRestoreScope.CROSS_PROCESS.wireValue,
+        secondAttached.metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY],
+      )
+      assertEquals(
+        ManagedProcessRestoreDecision.RECONNECT_ATTEMPTED.wireValue,
+        secondAttached.metadata[MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY],
+      )
+      assertTrue(
+        (secondAttached.metadata["sandboxCommandReconnectAttemptCount"]?.toIntOrNull() ?: 0) >= 2,
+      )
+      assertEquals(SandboxProviderId.E2B.wireValue, secondAttached.remoteHandle?.provider)
+      assertEquals(remotePid.toString(), secondAttached.remoteHandle?.liveSelectorValue)
+    } finally {
+      secondPid?.let { pid ->
+        runCatching { Process.killProcess(pid) }
+        runCatching { awaitProcessExit(context, processName, pid) }
+      }
+      second?.let { bound -> unbind(context, bound.binding) }
+      first?.let { bound -> unbind(context, bound.binding) }
+      runCatching { awaitRuntimeServiceStop(context, target) }
+      endpointServer.close()
+      endpointOverrideStore.clear()
+      if (previousE2BSession == null) {
+        e2bSessionStore.clear()
+      } else {
+        e2bSessionStore.save(previousE2BSession)
+      }
+      if (previousSandboxSettings.e2bApiKey == null) {
+        sandboxSettingsRepository.clearE2bApiKey()
+        sandboxSettingsStore.save(previousSandboxSettings.state)
+      } else {
+        sandboxSettingsRepository.save(
+          state = previousSandboxSettings.state,
+          e2bApiKey = previousSandboxSettings.e2bApiKey,
+        )
+      }
+      FileBackedRuntimeServiceOwnerLeaseStore.fromContext(context).clear(target)
+      deleteRuntimeSessionState(context, sessionId)
+    }
+  }
+
   @Test(timeout = 90_000L)
   fun detachedScheduleMutationRoutesWorkToMainProcessWorkManager() {
     val context = InstrumentationRegistry.getInstrumentation().targetContext
@@ -395,6 +619,25 @@ class RuntimeServiceProcessIsolationTest {
     error("Timed out waiting for process '$processName' pid=$previousPid to exit.")
   }
 
+  private fun stopRuntimeServiceProcessIfRunning(
+    context: Context,
+    target: RuntimeServiceTarget,
+    processName: String,
+  ) {
+    runCatching { awaitRuntimeServiceStop(context, target) }
+    val activityManager = context.getSystemService(ActivityManager::class.java)
+    activityManager.runningAppProcesses
+      .orEmpty()
+      .firstOrNull { process -> process.processName == processName }
+      ?.pid
+      ?.takeIf { pid -> pid > 0 }
+      ?.let { pid ->
+        Process.killProcess(pid)
+        awaitProcessExit(context, processName, pid)
+      }
+    FileBackedRuntimeServiceOwnerLeaseStore.fromContext(context).clear(target)
+  }
+
   private fun awaitLease(
     store: RuntimeServiceOwnerLeaseStore,
     target: RuntimeServiceTarget,
@@ -411,6 +654,27 @@ class RuntimeServiceProcessIsolationTest {
     error(
       "Timed out waiting for ${target.wireValue} owner lease " +
         "from processStartId=$processStartId.",
+    )
+  }
+
+  private fun awaitRebuiltLease(
+    store: RuntimeServiceOwnerLeaseStore,
+    target: RuntimeServiceTarget,
+    previousProcessStartId: String,
+    timeoutMs: Long = 10_000L,
+  ): RuntimeServiceOwnerLease {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      store.load(target)
+        ?.takeIf { lease ->
+          lease.isHeld && lease.processStartId != previousProcessStartId
+        }
+        ?.let { lease -> return lease }
+      Thread.sleep(100L)
+    }
+    error(
+      "Timed out waiting for rebuilt ${target.wireValue} owner lease after " +
+        "processStartId=$previousProcessStartId.",
     )
   }
 
@@ -500,6 +764,160 @@ class RuntimeServiceProcessIsolationTest {
           updatedAtEpochMs = nowEpochMs,
         ),
       )
+  }
+
+  private fun seedRunningE2BManagedProcess(
+    context: Context,
+    sessionId: String,
+    taskId: String,
+    processId: String,
+    sandboxId: String,
+    remotePid: Int,
+    workspaceRoot: String,
+    remoteWorkspaceRoot: String,
+  ) {
+    val sourceIdentity = ManagedProcessRuntimeIdentity(
+      processStartId = "runtime-isolation-seed-process",
+      runtimeControllerId = "runtime-isolation-seed-controller",
+      durableRuntimeControllerId = "runtime-isolation-detached-controller",
+    )
+    val runtimeRoot = File(
+      context.filesDir,
+      FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+    )
+    val registryDirectory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+      .directoryForSession(sessionId)
+    val registry = FileBackedAgentProcessRegistry(
+      directory = registryDirectory,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        SnapshotManagedProcessController(
+          ManagedProcessSnapshot(
+            processId = request.processId,
+            taskId = request.taskId,
+            command = request.command,
+            args = request.args,
+            workingDirectory = request.workingDirectory,
+            status = ManagedProcessStatus.RUNNING,
+            processStarted = true,
+            timeoutMs = request.timeoutMs,
+            stdout = "booting",
+            startedAtEpochMs = request.requestedAtEpochMs,
+            updatedAtEpochMs = request.requestedAtEpochMs,
+            remoteHandle = ManagedProcessRemoteHandle(
+              provider = SandboxProviderId.E2B.wireValue,
+              sandboxId = sandboxId,
+              sandboxDomain = "e2b.app",
+              commandIdKind = "tag",
+              commandId = request.processId,
+              providerHandleKind = "envd_process",
+              stableSelectorKind = "tag",
+              stableSelectorValue = request.processId,
+              liveSelectorKind = "pid",
+              liveSelectorValue = remotePid.toString(),
+              remoteWorkspaceRoot = remoteWorkspaceRoot,
+              remoteWorkingDirectory = "$remoteWorkspaceRoot/repo",
+              nativeProtocol = "envd_connect_process_v1",
+            ),
+            observationState = ManagedProcessObservationState(
+              mode = "host_managed_snapshot",
+              hostEventCount = 1L,
+              hostCursor = "host_seq_1",
+              stdoutBytes = 7L,
+              stderrBytes = 0L,
+              providerMode = "provider_event_stream_host_buffered",
+              providerEventCount = 1L,
+              providerCursor = "envd_seq_1",
+              providerBackfillSupported = false,
+              liveObservationSupported = true,
+              cursorResumeSupported = false,
+              backfillSupported = false,
+            ),
+            ownerIdentity = request.ownerIdentity,
+            metadata = request.metadata,
+          ),
+        )
+      },
+      runtimeIdentity = sourceIdentity,
+    )
+    registry.start(
+      ManagedProcessStartRequest(
+        processId = processId,
+        taskId = taskId,
+        command = "npm",
+        args = listOf("run", "dev"),
+        workingDirectory = File(workspaceRoot, "repo").path,
+        timeoutMs = TimeUnit.MINUTES.toMillis(5L),
+        requestedAtEpochMs = System.currentTimeMillis(),
+        ownerIdentity = sourceIdentity,
+        metadata = mapOf(
+          "executionBackend" to ResolvedExecutionBackend.SANDBOX_REMOTE.wireValue,
+          "runtimeKind" to "command_exec",
+          "runtimeBackend" to "e2b_envd_native_command",
+          "runtimeTransport" to "connect_proto_minimal",
+          "sandboxProvider" to SandboxProviderId.E2B.wireValue,
+          "sandboxCommandBackendKind" to "provider_native",
+          "sandboxCommandBackendResolvedKind" to "provider_native",
+          "sandboxCommandSupportsReconnect" to "true",
+          "sandboxCommandNativeProtocol" to "envd_connect_process_v1",
+          "sandboxCommandPid" to remotePid.toString(),
+          "remoteWorkspaceRoot" to remoteWorkspaceRoot,
+          "remoteWorkingDirectory" to "$remoteWorkspaceRoot/repo",
+        ),
+      ),
+    )
+  }
+
+  private fun awaitManagedProcessAttached(
+    context: Context,
+    sessionId: String,
+    processId: String,
+    expectedOutput: String,
+    expectedProcessStartId: String,
+    timeoutMs: Long = 30_000L,
+  ): ManagedProcessSnapshot {
+    val runtimeRoot = File(
+      context.filesDir,
+      FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+    )
+    val registryDirectory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+      .directoryForSession(sessionId)
+    val projectionRegistry = FileBackedAgentProcessRegistry(
+      directory = registryDirectory,
+      restoreMode = ManagedProcessRestoreMode.PROJECTION_ONLY,
+    )
+    val deadline = System.currentTimeMillis() + timeoutMs
+    var latest: ManagedProcessSnapshot? = null
+    while (System.currentTimeMillis() < deadline) {
+      latest = projectionRegistry.read(processId)
+      if (
+        latest?.metadata?.get("sandboxCommandReconnectStatus") == "attached" &&
+        latest.stdout.contains(expectedOutput) &&
+        latest.metadata[MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY] ==
+        expectedProcessStartId
+      ) {
+        return latest
+      }
+      Thread.sleep(100L)
+    }
+    error(
+      "Timed out waiting for E2B managed process attach processId=$processId " +
+        "status=${latest?.metadata?.get("sandboxCommandReconnectStatus")} " +
+        "recoveryState=${latest?.metadata?.get("sandboxCommandReconnectRecoveryState")} " +
+        "ownerProcessStartId=" +
+        latest?.metadata?.get(MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY) +
+        " stdout=${latest?.stdout}.",
+    )
+  }
+
+  private fun grpcPayload(bodyBytes: ByteArray): ByteArray {
+    require(bodyBytes.size >= 5)
+    val length =
+      ((bodyBytes[1].toInt() and 0xFF) shl 24) or
+        ((bodyBytes[2].toInt() and 0xFF) shl 16) or
+        ((bodyBytes[3].toInt() and 0xFF) shl 8) or
+        (bodyBytes[4].toInt() and 0xFF)
+    require(length >= 0 && bodyBytes.size >= length + 5)
+    return bodyBytes.copyOfRange(5, length + 5)
   }
 
   private fun awaitCompletedCheckpointResume(
@@ -636,6 +1054,16 @@ class RuntimeServiceProcessIsolationTest {
     val runRecord: PersistedAgentRunRecord,
     val checkpoint: PersistedPromptCheckpoint?,
   )
+
+  private class SnapshotManagedProcessController(
+    private val snapshot: ManagedProcessSnapshot,
+  ) : ManagedProcessController {
+    override fun snapshot(): ManagedProcessSnapshot = snapshot
+
+    override fun await(timeoutMs: Long): ManagedProcessSnapshot = snapshot
+
+    override fun terminate(): ManagedProcessSnapshot = snapshot
+  }
 
   private class ServiceBinding : ServiceConnection {
     private val connected = CountDownLatch(1)
