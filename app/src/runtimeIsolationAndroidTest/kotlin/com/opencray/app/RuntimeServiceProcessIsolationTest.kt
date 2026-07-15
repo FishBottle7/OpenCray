@@ -8,6 +8,8 @@ import android.os.IBinder
 import android.os.Process
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
 import com.opencray.app.ipc.IRuntimeServiceController
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -125,6 +127,64 @@ class RuntimeServiceProcessIsolationTest {
     assertEquals(target.wireValue, second.controller.runtimeTarget)
   }
 
+  @Test(timeout = 90_000L)
+  fun detachedScheduleMutationRoutesWorkToMainProcessWorkManager() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val target = RuntimeServiceTarget.DETACHED_BACKGROUND
+    val scheduleId = "runtime-isolation-${System.nanoTime()}"
+    val sessionId = "runtime-isolation-session"
+    val nowEpochMs = System.currentTimeMillis()
+    val specStore = FileBackedScheduledTaskSpecStoreFactory.fromContext(context).create()
+    val workManager = WorkManager.getInstance(context)
+    specStore.upsert(
+      ScheduledTaskSpec(
+        scheduleId = scheduleId,
+        sessionId = sessionId,
+        title = "Runtime isolation schedule",
+        enabled = true,
+        trigger = ScheduledTrigger.At(atEpochMs = nowEpochMs + TimeUnit.HOURS.toMillis(1L)),
+        payload = ScheduledTaskPayload(prompt = "Verify detached scheduler routing"),
+        createdAtEpochMs = nowEpochMs,
+        updatedAtEpochMs = nowEpochMs,
+      ),
+    )
+
+    try {
+      val detached = bindController(context, target)
+      assertRemoteController(detached, target)
+      assertNotNull(
+        context.startForegroundService(
+          RuntimeServiceIntentFactory().scheduleNotificationActionIntent(
+            context = context,
+            action = RuntimeNotificationIntentActions.ACTION_SNOOZE_SCHEDULE,
+            scheduleId = scheduleId,
+            sessionId = sessionId,
+            target = target,
+          ),
+        ),
+      )
+
+      val snoozedSpec = awaitSnoozedSpec(specStore, scheduleId)
+      assertTrue(requireNotNull(snoozedSpec.snoozedUntilEpochMs) > nowEpochMs)
+      val workInfo = awaitScheduledWakeWork(workManager, scheduleId)
+      assertEquals(WorkInfo.State.ENQUEUED, workInfo.state)
+      Thread.sleep(500L)
+      assertEquals(
+        WorkInfo.State.ENQUEUED,
+        latestScheduledWakeWork(workManager, scheduleId)?.state,
+      )
+    } finally {
+      specStore.remove(scheduleId)
+      runCatching { resyncEnabledScheduledTasksFromContext(context) }
+      runCatching {
+        workManager.cancelUniqueWork(scheduleWakeWorkName(scheduleId))
+          .result
+          .get(5L, TimeUnit.SECONDS)
+      }
+      context.stopService(RuntimeServiceIntentFactory().baseIntent(context, target))
+    }
+  }
+
   private fun bindController(
     context: Context,
     target: RuntimeServiceTarget,
@@ -224,6 +284,44 @@ class RuntimeServiceProcessIsolationTest {
         "from processStartId=$processStartId.",
     )
   }
+
+  private fun awaitSnoozedSpec(
+    store: ScheduledTaskSpecStore,
+    scheduleId: String,
+    timeoutMs: Long = 20_000L,
+  ): ScheduledTaskSpec {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      store.get(scheduleId)
+        ?.takeIf { spec -> spec.snoozedUntilEpochMs != null }
+        ?.let { spec -> return spec }
+      Thread.sleep(100L)
+    }
+    error("Timed out waiting for schedule '$scheduleId' to be snoozed.")
+  }
+
+  private fun awaitScheduledWakeWork(
+    workManager: WorkManager,
+    scheduleId: String,
+    timeoutMs: Long = 20_000L,
+  ): WorkInfo {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      latestScheduledWakeWork(workManager, scheduleId)
+        ?.takeIf { workInfo -> workInfo.state == WorkInfo.State.ENQUEUED }
+        ?.let { workInfo -> return workInfo }
+      Thread.sleep(100L)
+    }
+    error("Timed out waiting for main-process WorkManager wake for '$scheduleId'.")
+  }
+
+  private fun latestScheduledWakeWork(
+    workManager: WorkManager,
+    scheduleId: String,
+  ): WorkInfo? = workManager
+    .getWorkInfosForUniqueWork(scheduleWakeWorkName(scheduleId))
+    .get(5L, TimeUnit.SECONDS)
+    .lastOrNull()
 
   private data class BoundController(
     val binding: ServiceBinding,

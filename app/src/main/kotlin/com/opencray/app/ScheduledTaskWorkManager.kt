@@ -1382,7 +1382,7 @@ private val INTERRUPTED_RUN_REPAIR_TARGET_WAKE_ORDER: List<RuntimeServiceTarget>
   RuntimeServiceTarget.INTERACTIVE,
 )
 
-private fun scheduleWakeWorkName(scheduleId: String): String =
+internal fun scheduleWakeWorkName(scheduleId: String): String =
   "scheduled-task-wake-${FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(scheduleId)}"
 
 internal fun delayedRepairWorkName(reason: String): String {
