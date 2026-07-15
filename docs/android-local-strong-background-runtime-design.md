@@ -14,6 +14,8 @@ Current process-death verification status: the independently selectable Android 
 
 Current WorkManager ownership status: WorkManager has one owner in the main app process. Secondary runtime processes use process-aware schedulers that encode scheduled wake/cancel/repair and LiteRT model-download enqueue/cancel operations as explicit app-private broadcasts to non-exported main-process receivers. This keeps WorkManager initialization out of `:runtime` and `:runtime_controller`; routing, codec, and dispatch behavior is JVM-tested, and API 35 verifies a real detached snooze resync survives cancel/schedule ordering and materializes as the expected main-process unique work.
 
+Current media-registry ownership status: runtime-side generated artifact registration and app-side media resolution/GC now update one durable registry through a sidecar OS file lock plus atomic replacement. The old JVM-only lock/direct overwrite path is gone; locked read-modify-write, malformed-record recovery, stale-read simulation, and concurrent registry-instance tests cover this cross-process store boundary.
+
 Current provider-reconnect verification status: a JVM integration test now reopens a persisted running E2B managed process under a new process/controller identity through the production file-backed registry and routing factory, drives the provider-native envd `Connect` path, verifies `cross_process`/`reconnect_attempted` ownership metadata, and confirms attached plus terminal state are written back durably. The envd transport is deterministic in-process test transport; a real E2B endpoint exercised across Android runtime-process death remains release evidence, not completed validation.
 
 ## Purpose
@@ -964,6 +966,7 @@ Status:
 - runtime notification settings save/clear now also use that locked durable update primitive, so notification policy snapshots no longer persist through direct write/delete calls
 - E2B sticky workspace sync state now also uses that shared durable text storage under each workspace's `.opencray/sandbox-sync` directory, so reusable local file manifests for sticky sandbox reconnect are no longer persisted by a separate direct-file writer or direct save/delete call
 - LiteRT on-device model install state now uses that locked durable update path for save/delete, so settings-side cancel/delete and background download progress do not lose another model record through stale manifest writes
+- generated media artifact registry registration/sweep now uses that same locked durable update path, so runtime-side media generation and app-side artifact resolution/GC cannot overwrite each other's artifact ids, run/tool provenance, or integrity facts through a JVM-local stale snapshot
 - memory debug action audit append now also uses the locked durable update path, so overlapping service/runtime debug actions preserve each other's audit entries
 - agent registry create/update/select/archive now also use the locked durable update path, so foreground agent management and service/runtime agent-scope reads preserve active-agent and descriptor changes
 - MCP registry direct save/clear now also uses the locked durable update primitive, so fallback callers do not bypass the process-safe registry update path

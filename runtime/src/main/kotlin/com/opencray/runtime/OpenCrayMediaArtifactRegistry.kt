@@ -1,11 +1,12 @@
 package com.opencray.runtime
 
+import com.opencray.persistence.store.DurableTextStorage
+import com.opencray.persistence.store.DurableTextUpdate
+import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import java.util.Locale
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.io.path.exists
 import kotlin.io.path.isRegularFile
 import kotlinx.serialization.Serializable
@@ -63,9 +64,18 @@ class FileBackedOpenCrayMediaArtifactRegistry(
   private val registryFile: Path,
   private val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
   private val nowEpochMs: () -> Long = System::currentTimeMillis,
+  storage: DurableTextStorage? = null,
 ) : OpenCrayMediaArtifactRegistry {
   private val normalizedWorkspaceRoot: Path = workspaceRoot.toAbsolutePath().normalize()
-  private val lock = lockFor(registryFile)
+  private val normalizedRegistryFile: Path = registryFile.toAbsolutePath().normalize()
+  private val storageName: String = requireNotNull(normalizedRegistryFile.fileName) {
+    "Media artifact registry file must have a file name."
+  }.toString()
+  private val storage: DurableTextStorage = storage ?: DirectoryDurableTextStorage(
+    requireNotNull(normalizedRegistryFile.parent) {
+      "Media artifact registry file must have a parent directory."
+    }.toFile(),
+  )
 
   override fun register(
     artifacts: List<OpenCrayAttachmentArtifact>,
@@ -75,12 +85,14 @@ class FileBackedOpenCrayMediaArtifactRegistry(
     if (normalized.isEmpty()) {
       return
     }
-    synchronized(lock) {
-      val record = loadRecord()
+    val observedArtifacts = normalized.map(::observeArtifact)
+    val normalizedSource = source.source.trim().takeIf(String::isNotBlank)
+    storage.updateText(storageName) { currentText ->
+      val record = decodeRecord(currentText)
       val now = nowEpochMs()
       val byId = record.artifacts.associateByTo(linkedMapOf()) { artifact -> artifact.artifactId }
-      normalized.forEach { artifact ->
-        val path = normalizedWorkspaceRoot.resolve(artifact.relativePath).normalize()
+      observedArtifacts.forEach { observed ->
+        val artifact = observed.artifact
         val existing = byId[artifact.artifactId]
         byId[artifact.artifactId] = PersistedMediaArtifactRecord(
           artifactId = artifact.artifactId,
@@ -91,42 +103,42 @@ class FileBackedOpenCrayMediaArtifactRegistry(
           durationMs = artifact.durationMs,
           waveformBars = artifact.waveformBars,
           transcriptText = artifact.transcriptText,
-          contentSha256 = if (path.exists() && path.isRegularFile()) sha256Hex(path) else existing?.contentSha256,
-          sizeBytes = if (path.exists() && path.isRegularFile()) Files.size(path) else existing?.sizeBytes,
-          source = source.source.trim().takeIf(String::isNotBlank) ?: existing?.source ?: "generated",
+          contentSha256 = observed.contentSha256 ?: existing?.contentSha256,
+          sizeBytes = observed.sizeBytes ?: existing?.sizeBytes,
+          source = normalizedSource ?: existing?.source ?: "generated",
           runIds = mergeSet(existing?.runIds.orEmpty(), source.runId),
           toolNames = mergeSet(existing?.toolNames.orEmpty(), source.toolName),
           firstSeenAtEpochMs = existing?.firstSeenAtEpochMs ?: now,
           lastSeenAtEpochMs = now,
         )
       }
-      saveRecord(
-        record.copy(
-          recordVersion = record.recordVersion + 1L,
-          updatedAtEpochMs = now,
-          artifacts = byId.values
-            .sortedWith(
-              compareByDescending<PersistedMediaArtifactRecord> { artifact -> artifact.lastSeenAtEpochMs }
-                .thenBy { artifact -> artifact.artifactId },
-            ),
-        ),
+      val updated = record.copy(
+        recordVersion = record.recordVersion + 1L,
+        updatedAtEpochMs = now,
+        artifacts = byId.values
+          .sortedWith(
+            compareByDescending<PersistedMediaArtifactRecord> { artifact -> artifact.lastSeenAtEpochMs }
+              .thenBy { artifact -> artifact.artifactId },
+          ),
+      )
+      DurableTextUpdate(
+        text = encodeRecord(updated),
+        result = Unit,
       )
     }
   }
 
   override fun resolve(artifactId: String): OpenCrayRegisteredMediaArtifact? {
     val normalizedArtifactId = artifactId.trim().takeIf(String::isNotBlank) ?: return null
-    return synchronized(lock) {
-      loadRecord().artifacts
-        .firstOrNull { artifact -> artifact.artifactId == normalizedArtifactId }
-        ?.toDomain()
-    }
+    return loadRecord().artifacts
+      .firstOrNull { artifact -> artifact.artifactId == normalizedArtifactId }
+      ?.toDomain()
   }
 
   override fun sweep(workspaceRoot: Path): OpenCrayMediaArtifactSweepResult {
     val normalizedWorkspaceRoot = workspaceRoot.toAbsolutePath().normalize()
-    return synchronized(lock) {
-      val record = loadRecord()
+    return storage.updateText(storageName) { currentText ->
+      val record = decodeRecord(currentText)
       val retained = record.artifacts.filter { artifact ->
         val relativePath = artifact.relativePath.trim().replace('\\', '/').trim('/')
         if (relativePath.isBlank()) {
@@ -135,26 +147,34 @@ class FileBackedOpenCrayMediaArtifactRegistry(
         val path = normalizedWorkspaceRoot.resolve(relativePath).normalize()
         path.startsWith(normalizedWorkspaceRoot) && Files.isRegularFile(path)
       }
-      if (retained.size != record.artifacts.size) {
-        saveRecord(
-          record.copy(
-            recordVersion = record.recordVersion + 1L,
-            updatedAtEpochMs = nowEpochMs(),
-            artifacts = retained,
-          ),
-        )
-      }
-      OpenCrayMediaArtifactSweepResult(
+      val changed = retained.size != record.artifacts.size
+      val result = OpenCrayMediaArtifactSweepResult(
         removedRecords = record.artifacts.size - retained.size,
         retainedRecords = retained.size,
+      )
+      DurableTextUpdate(
+        text = if (changed) {
+          encodeRecord(
+            record.copy(
+              recordVersion = record.recordVersion + 1L,
+              updatedAtEpochMs = nowEpochMs(),
+              artifacts = retained,
+            ),
+          )
+        } else {
+          currentText
+        },
+        result = result,
+        write = changed,
       )
     }
   }
 
-  private fun loadRecord(): MediaArtifactRegistryRecord {
-    val encoded = runCatching {
-      String(Files.readAllBytes(registryFile), StandardCharsets.UTF_8)
-    }.getOrNull()?.trim().orEmpty()
+  private fun loadRecord(): MediaArtifactRegistryRecord =
+    decodeRecord(storage.readText(storageName))
+
+  private fun decodeRecord(text: String?): MediaArtifactRegistryRecord {
+    val encoded = text?.trim().orEmpty()
     if (encoded.isBlank()) {
       return MediaArtifactRegistryRecord()
     }
@@ -163,11 +183,22 @@ class FileBackedOpenCrayMediaArtifactRegistry(
     }.getOrDefault(MediaArtifactRegistryRecord())
   }
 
-  private fun saveRecord(record: MediaArtifactRegistryRecord) {
-    Files.createDirectories(registryFile.parent)
-    Files.write(
-      registryFile,
-      json.encodeToString(MediaArtifactRegistryRecord.serializer(), record).toByteArray(StandardCharsets.UTF_8),
+  private fun encodeRecord(record: MediaArtifactRegistryRecord): String =
+    json.encodeToString(MediaArtifactRegistryRecord.serializer(), record)
+
+  private fun observeArtifact(artifact: OpenCrayAttachmentArtifact): ObservedMediaArtifact {
+    val path = normalizedWorkspaceRoot.resolve(artifact.relativePath).normalize()
+    val fileFacts = runCatching {
+      if (path.exists() && path.isRegularFile()) {
+        sha256Hex(path) to Files.size(path)
+      } else {
+        null
+      }
+    }.getOrNull()
+    return ObservedMediaArtifact(
+      artifact = artifact,
+      contentSha256 = fileFacts?.first,
+      sizeBytes = fileFacts?.second,
     )
   }
 
@@ -237,12 +268,13 @@ class FileBackedOpenCrayMediaArtifactRegistry(
     val lastSeenAtEpochMs: Long = 0L,
   )
 
+  private data class ObservedMediaArtifact(
+    val artifact: OpenCrayAttachmentArtifact,
+    val contentSha256: String?,
+    val sizeBytes: Long?,
+  )
+
   private companion object {
-    private val FILE_LOCKS = ConcurrentHashMap<String, Any>()
-
-    private fun lockFor(path: Path): Any =
-      FILE_LOCKS.computeIfAbsent(path.toAbsolutePath().normalize().toString()) { Any() }
-
     private fun mergeSet(existing: List<String>, value: String?): List<String> =
       (existing + value.orEmpty())
         .map(String::trim)
