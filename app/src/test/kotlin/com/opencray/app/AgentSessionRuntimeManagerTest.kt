@@ -53,6 +53,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -1317,6 +1318,94 @@ class AgentSessionRuntimeManagerTest {
     assertEquals(
       "checkpoint-live-process-reconnect-due",
       completed.lifecycleDiagnostics.recoveredFromCheckpointId,
+    )
+  }
+
+  @Test
+  fun terminalResultClearsCheckpointAtRuntimeOwnerBoundary() {
+    val sessionId = "session-runtime-owner-terminal-checkpoint"
+    val executor = RecordingExecutorService()
+    val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(temporaryFolder.root)
+    val manager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = executor,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+    val handle = manager.forSession(sessionId)
+    val submission = handle.submitPrompt(
+      userText = "finish after checkpoint",
+      pendingMessageId = "pending-runtime-owner-terminal-checkpoint",
+      visibleThroughMessageId = "pending-runtime-owner-terminal-checkpoint",
+      policyDecision = allowDecision(),
+    )
+    val checkpointStore = promptCheckpointStoreFactory.forChatSession(sessionId)
+    checkpointStore.upsert(
+      PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = submission.runId,
+        taskId = submission.taskId,
+        checkpointId = "checkpoint-runtime-owner-terminal",
+        checkpointKind = PromptCheckpointKind.FINALIZATION_COMPLETE,
+        createdAtEpochMs = 1_000L,
+        updatedAtEpochMs = 1_000L,
+        promptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.FINALIZATION_COMPLETE,
+      ),
+    )
+
+    handle.ensureProcessing()
+    executor.runNext()
+
+    assertEquals(QueueTaskLifecycleState.COMPLETED, handle.snapshot().tasks.single().lifecycleState)
+    assertNull(checkpointStore.get(submission.taskId))
+  }
+
+  @Test
+  fun approvalResultKeepsCheckpointAtRuntimeOwnerBoundary() {
+    val sessionId = "session-runtime-owner-approval-checkpoint"
+    val executor = RecordingExecutorService()
+    val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(temporaryFolder.root)
+    val manager = manager(
+      runtimeFactory = RecordingRuntimeFactory(
+        executionResultFactory = { task ->
+          ExecutionResult(
+            taskId = task.id,
+            status = ExecutionStatus.DENIED,
+            errorCode = "APPROVAL_REQUIRED",
+            errorMessage = "Approval is required.",
+            startedAtEpochMs = 1_000L,
+            finishedAtEpochMs = 1_001L,
+          )
+        },
+      ),
+      executor = executor,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    )
+    val handle = manager.forSession(sessionId)
+    val submission = handle.submitPrompt(
+      userText = "wait for approval",
+      pendingMessageId = "pending-runtime-owner-approval-checkpoint",
+      visibleThroughMessageId = "pending-runtime-owner-approval-checkpoint",
+      policyDecision = allowDecision(),
+    )
+    val checkpointStore = promptCheckpointStoreFactory.forChatSession(sessionId)
+    checkpointStore.upsert(
+      PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = submission.runId,
+        taskId = submission.taskId,
+        checkpointId = "checkpoint-runtime-owner-approval",
+        checkpointKind = PromptCheckpointKind.WAITING_APPROVAL,
+        createdAtEpochMs = 1_000L,
+        updatedAtEpochMs = 1_000L,
+      ),
+    )
+
+    handle.ensureProcessing()
+    executor.runNext()
+
+    assertEquals(
+      PromptCheckpointKind.WAITING_APPROVAL,
+      checkpointStore.get(submission.taskId)?.checkpointKind,
     )
   }
 

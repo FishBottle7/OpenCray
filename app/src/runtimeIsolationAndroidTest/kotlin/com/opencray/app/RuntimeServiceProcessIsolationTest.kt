@@ -19,11 +19,13 @@ import com.opencray.core.contracts.AgentTaskType
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
+import com.opencray.core.orchestrator.ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
 import com.opencray.core.orchestrator.EXECUTION_KIND_CHECKPOINT_RESUME
 import com.opencray.core.orchestrator.EXECUTION_KIND_INITIAL
 import com.opencray.core.orchestrator.METADATA_EXECUTION_ID
 import com.opencray.core.orchestrator.METADATA_EXECUTION_KIND
 import com.opencray.core.orchestrator.METADATA_EXECUTION_ORDINAL
+import com.opencray.core.orchestrator.METADATA_RECOVERY_REASON
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
@@ -365,6 +367,117 @@ class RuntimeServiceProcessIsolationTest {
       second?.let { bound -> unbind(context, bound.binding) }
       awaitRuntimeServiceStop(context, target)
       llmSettingsStore.save(previousLlmSettings)
+      runCatching { chatSessionStore.deleteSession(sessionId) }
+      runCatching { chatSessionStore.selectSession(previousActiveSessionId) }
+      deleteRuntimeSessionState(context, sessionId)
+    }
+  }
+
+  @Test(timeout = 120_000L)
+  fun detachedProcessDeathInterruptsUncheckpointedWorkWithoutReplay() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val target = RuntimeServiceTarget.DETACHED_BACKGROUND
+    val processName = "${context.packageName}:runtime_controller"
+    val first = bindController(context, target)
+    val firstSnapshot = loadProjection(first.controller)
+    val firstPid = awaitProcessPid(context, processName)
+    val chatSessionStore = ChatSessionLocalStore.fromContext(context)
+    val previousActiveSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val sessionId = chatSessionStore.copySession(previousActiveSessionId).activeSession.sessionId
+    val uniqueSuffix = System.nanoTime().toString()
+    val taskId = "runtime-isolation-uncheckpointed-task-$uniqueSuffix"
+    val runId = "runtime-isolation-uncheckpointed-run-$uniqueSuffix"
+    val scheduleId = "runtime-isolation-uncheckpointed-schedule-$uniqueSuffix"
+    var second: BoundController? = null
+
+    try {
+      seedRunningTaskWithoutCheckpoint(
+        context = context,
+        sessionId = sessionId,
+        taskId = taskId,
+        runId = runId,
+        scheduleId = scheduleId,
+      )
+
+      Process.killProcess(firstPid)
+      unbind(context, first.binding)
+      awaitProcessExit(context, processName, firstPid)
+
+      val leaseStore = FileBackedRuntimeServiceOwnerLeaseStore.fromContext(context)
+      val staleLease = awaitLease(
+        store = leaseStore,
+        target = target,
+        processStartId = firstSnapshot.runtimeOwnerLifecycle.processStartId,
+      )
+      val waitMs = (staleLease.expiresAtEpochMs - System.currentTimeMillis() + 1_000L)
+        .coerceAtLeast(0L)
+      if (waitMs > 0L) {
+        Thread.sleep(waitMs)
+      }
+
+      assertTrue(
+        openCrayRuntimeServiceEnvironment(context)
+          .runtimeServiceAccessGateway
+          .resumeInterruptedRuns(
+            context = context,
+            repairReason = ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED,
+            target = target,
+          ),
+      )
+
+      val rebuilt = bindController(context, target)
+      second = rebuilt
+      val secondSnapshot = loadProjection(rebuilt.controller)
+      val secondPid = awaitProcessPid(context, processName)
+      val interrupted = awaitInterruptedUncheckpointedTask(
+        context = context,
+        sessionId = sessionId,
+        taskId = taskId,
+      )
+
+      assertTrue(secondPid != firstPid)
+      assertEquals(
+        firstSnapshot.runtimeOwnerLifecycle.durableRuntimeControllerId,
+        secondSnapshot.runtimeOwnerLifecycle.durableRuntimeControllerId,
+      )
+      assertEquals(QueueTaskLifecycleState.FAILED, interrupted.lifecycleState)
+      assertEquals(AgentTaskState.FAILED, interrupted.task.state)
+      assertEquals(1, interrupted.attempt)
+      assertEquals(1, interrupted.executionOrdinal)
+      assertEquals(EXECUTION_KIND_INITIAL, interrupted.executionKind)
+      assertEquals(ERROR_RESTART_REQUIRES_EXPLICIT_RETRY, interrupted.lastErrorCode)
+      assertEquals(
+        RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED.name.lowercase(),
+        interrupted.task.metadata[RunLifecycleMetadataKeys.RECOVERY_ACTION],
+      )
+      assertEquals(
+        "no_recoverable_checkpoint_after_restore",
+        interrupted.task.metadata[METADATA_RECOVERY_REASON],
+      )
+      assertEquals("2", interrupted.task.metadata[RunLifecycleMetadataKeys.RUN_ATTEMPT])
+      assertNull(
+        interrupted.task.metadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID],
+      )
+      assertTrue(interrupted.lastErrorMessage.orEmpty().contains("stopped"))
+
+      Thread.sleep(500L)
+      val stableTask = FileBackedAgentQueueSnapshotStoreFactory.fromContext(context)
+        .forChatSession(sessionId)
+        .load()
+        ?.tasks
+        ?.firstOrNull { task -> task.task.id == taskId }
+      assertEquals(QueueTaskLifecycleState.FAILED, stableTask?.lifecycleState)
+      assertEquals(1, stableTask?.executionOrdinal)
+      assertEquals(ERROR_RESTART_REQUIRES_EXPLICIT_RETRY, stableTask?.lastErrorCode)
+      assertNull(
+        FileBackedPromptCheckpointStoreFactory.fromContext(context)
+          .forChatSession(sessionId)
+          .get(taskId),
+      )
+    } finally {
+      second?.let { bound -> unbind(context, bound.binding) }
+      unbind(context, first.binding)
+      awaitRuntimeServiceStop(context, target)
       runCatching { chatSessionStore.deleteSession(sessionId) }
       runCatching { chatSessionStore.selectSession(previousActiveSessionId) }
       deleteRuntimeSessionState(context, sessionId)
@@ -865,6 +978,57 @@ class RuntimeServiceProcessIsolationTest {
       )
   }
 
+  private fun seedRunningTaskWithoutCheckpoint(
+    context: Context,
+    sessionId: String,
+    taskId: String,
+    runId: String,
+    scheduleId: String,
+  ) {
+    val nowEpochMs = System.currentTimeMillis()
+    FileBackedAgentQueueSnapshotStoreFactory.fromContext(context)
+      .forChatSession(sessionId)
+      .save(
+        SessionQueueSnapshot(
+          sessionId = sessionId,
+          agentId = "opencray-flutter-host",
+          lifecycleState = SessionLifecycleState.RUNNING,
+          nextEnqueueOrder = 2L,
+          tasks = listOf(
+            SessionQueueTaskSnapshot(
+              enqueueOrder = 1L,
+              task = AgentTask(
+                id = taskId,
+                type = AgentTaskType.PROMPT,
+                input = "Do not replay this uncheckpointed detached task.",
+                state = AgentTaskState.RUNNING,
+                policyDecision = PolicyDecision(
+                  outcome = PolicyDecisionOutcome.ALLOW,
+                  reasonCode = "RUNTIME_ISOLATION_UNCHECKPOINTED_TEST",
+                ),
+                createdAtEpochMs = nowEpochMs,
+                updatedAtEpochMs = nowEpochMs,
+                metadata = mapOf(
+                  AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+                  AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to sessionId,
+                  ScheduledTaskMetadataKeys.SCHEDULE_ID to scheduleId,
+                  METADATA_EXECUTION_ID to "execution-before-uncheckpointed-process-death",
+                  METADATA_EXECUTION_KIND to EXECUTION_KIND_INITIAL,
+                  METADATA_EXECUTION_ORDINAL to "1",
+                ),
+              ),
+              lifecycleState = QueueTaskLifecycleState.RUNNING,
+              attempt = 1,
+              executionOrdinal = 1,
+              executionId = "execution-before-uncheckpointed-process-death",
+              executionKind = EXECUTION_KIND_INITIAL,
+            ),
+          ),
+          updatedAtEpochMs = nowEpochMs,
+        ),
+      )
+  }
+
   private fun seedRunningE2BManagedProcess(
     context: Context,
     sessionId: String,
@@ -1063,6 +1227,41 @@ class RuntimeServiceProcessIsolationTest {
         "queueState=${latestTask?.lifecycleState} executionKind=${latestTask?.executionKind} " +
         "resultStatus=${latestRunRecord?.lastResult?.status} " +
         "resultError=${latestRunRecord?.lastResult?.errorCode} " +
+        "checkpointKind=${latestCheckpoint?.checkpointKind}.",
+    )
+  }
+
+  private fun awaitInterruptedUncheckpointedTask(
+    context: Context,
+    sessionId: String,
+    taskId: String,
+    timeoutMs: Long = 30_000L,
+  ): SessionQueueTaskSnapshot {
+    val queueStore = FileBackedAgentQueueSnapshotStoreFactory.fromContext(context)
+      .forChatSession(sessionId)
+    val checkpointStore = FileBackedPromptCheckpointStoreFactory.fromContext(context)
+      .forChatSession(sessionId)
+    val deadline = System.currentTimeMillis() + timeoutMs
+    var latestTask: SessionQueueTaskSnapshot? = null
+    var latestCheckpoint: PersistedPromptCheckpoint? = null
+    while (System.currentTimeMillis() < deadline) {
+      latestTask = queueStore.load()?.tasks?.firstOrNull { task -> task.task.id == taskId }
+      latestCheckpoint = checkpointStore.get(taskId)
+      if (
+        latestTask?.lifecycleState == QueueTaskLifecycleState.FAILED &&
+        latestTask.lastErrorCode == ERROR_RESTART_REQUIRES_EXPLICIT_RETRY &&
+        latestCheckpoint == null
+      ) {
+        return latestTask
+      }
+      Thread.sleep(100L)
+    }
+    error(
+      "Timed out waiting for uncheckpointed interruption task=$taskId " +
+        "queueState=${latestTask?.lifecycleState} " +
+        "executionOrdinal=${latestTask?.executionOrdinal} " +
+        "errorCode=${latestTask?.lastErrorCode} " +
+        "recoveryReason=${latestTask?.task?.metadata?.get(METADATA_RECOVERY_REASON)} " +
         "checkpointKind=${latestCheckpoint?.checkpointKind}.",
     )
   }

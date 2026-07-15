@@ -567,7 +567,7 @@ private class ManagedAgentSessionHandle(
           metadata = executionMetadataFrom(task.metadata),
         )
       },
-      isAwaitingManualResume = ::isDetachedControlAwaitingManualResume,
+      isAwaitingManualResume = ::isResultAwaitingManualResume,
     ),
   )
   private val baseRuntime = runtimeFactory.create(
@@ -800,7 +800,7 @@ private class ManagedAgentSessionHandle(
       runRecordsById.values.firstOrNull { persisted -> persisted.submission.taskId == taskId }
     } ?: return false
     val lastResult = record.lastResult ?: return false
-    if (!isDetachedControlAwaitingManualResume(lastResult)) {
+    if (!isResultAwaitingManualResume(lastResult)) {
       return false
     }
     val cancelledResult = ExecutionResult(
@@ -847,7 +847,7 @@ private class ManagedAgentSessionHandle(
       runRecordsById[state.submission.runId]
     } ?: return false
     val lastResult = record.lastResult ?: return false
-    if (!isDetachedControlAwaitingManualResume(lastResult)) {
+    if (!isResultAwaitingManualResume(lastResult)) {
       return false
     }
     val resumedTask = state.task.copy(
@@ -961,7 +961,7 @@ private class ManagedAgentSessionHandle(
     synchronized(detachedControlLock) {
       val latest = detachedControlTasksByTaskId[submission.taskId] ?: return
       detachedControlTasksByTaskId[submission.taskId] = latest.copy(future = null)
-      if (!isDetachedControlAwaitingManualResume(enrichedResult)) {
+      if (!isResultAwaitingManualResume(enrichedResult)) {
         detachedControlTasksByTaskId.remove(submission.taskId)
       }
     }
@@ -1017,7 +1017,7 @@ private class ManagedAgentSessionHandle(
     )
   }
 
-  private fun isDetachedControlAwaitingManualResume(
+  private fun isResultAwaitingManualResume(
     result: ExecutionResult,
   ): Boolean = when {
     result.status == ExecutionStatus.DENIED &&
@@ -1414,6 +1414,10 @@ private class ManagedAgentSessionHandle(
       runRecordsById[runId] = updated
       persistRunRecordLocked(updated)
     }
+    // Keep terminal checkpoint cleanup under runtime ownership across host-listener rebinds.
+    if (!isResultAwaitingManualResume(result)) {
+      promptCheckpointStore.remove(task.id)
+    }
   }
 
   private fun currentRunSnapshots(): List<AgentRunSnapshot> {
@@ -1611,7 +1615,7 @@ private class ManagedAgentSessionHandle(
         }
         return@forEach
       }
-      if (!isDetachedControlAwaitingManualResume(lastResult)) {
+      if (!isResultAwaitingManualResume(lastResult)) {
         return@forEach
       }
       if (isRecoveryTask) {
