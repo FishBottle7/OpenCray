@@ -12,6 +12,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -237,6 +238,82 @@ class SessionQueueOrderingTest {
 
     assertTrue(approvalTransitions.contains(QueueTaskLifecycleState.SUSPENDED))
     assertTrue(approvalTransitions.contains(QueueTaskLifecycleState.COMPLETED))
+  }
+
+  @Test
+  fun checkpointResumeAttemptsPersistAndExplicitRetryResetsCount() {
+    val store = RecordingSnapshotStore()
+    var executionCount = 0
+    val runtime = SessionTaskRuntime { task, hooks ->
+      executionCount += 1
+      when (executionCount) {
+        1 -> {
+          hooks.requestSuspend(
+            SuspensionRequest(
+              reasonCode = "CHECKPOINT_READY",
+              detail = "Resume from a durable checkpoint.",
+            ),
+          )
+          ExecutionResult(
+            taskId = task.id,
+            status = ExecutionStatus.DENIED,
+            errorCode = "CHECKPOINT_READY",
+            startedAtEpochMs = 1_000L,
+            finishedAtEpochMs = 1_001L,
+          )
+        }
+
+        2 -> ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.FAILED,
+          errorCode = "RUNTIME_INTERRUPTED",
+          startedAtEpochMs = 2_000L,
+          finishedAtEpochMs = 2_001L,
+        )
+
+        else -> ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.SUCCESS,
+          startedAtEpochMs = 3_000L,
+          finishedAtEpochMs = 3_001L,
+        )
+      }
+    }
+    val queue = SessionQueue(
+      sessionId = "session-checkpoint-resume-count",
+      agentId = "agent-checkpoint-resume-count",
+      runtime = runtime,
+      snapshotStore = store,
+      clock = IncrementingClock(start = 100_000L),
+    )
+    queue.enqueue(task(id = "task-checkpoint-resume-count", createdAt = 900L))
+    queue.drain()
+
+    assertTrue(
+      queue.requestResumeTask(
+        taskId = "task-checkpoint-resume-count",
+        executionKind = EXECUTION_KIND_CHECKPOINT_RESUME,
+      ),
+    )
+    queue.drain()
+
+    val failedCheckpointResume = queue.snapshot().tasks.single()
+    assertEquals(QueueTaskLifecycleState.FAILED, failedCheckpointResume.lifecycleState)
+    assertEquals(
+      "1",
+      failedCheckpointResume.task.metadata[METADATA_CHECKPOINT_RESUME_ATTEMPT_COUNT],
+    )
+
+    assertTrue(queue.requestRetry("task-checkpoint-resume-count"))
+    assertNull(
+      queue.snapshot().tasks.single().task.metadata[METADATA_CHECKPOINT_RESUME_ATTEMPT_COUNT],
+    )
+    queue.drain()
+
+    val completedRetry = queue.snapshot().tasks.single()
+    assertEquals(QueueTaskLifecycleState.COMPLETED, completedRetry.lifecycleState)
+    assertEquals(EXECUTION_KIND_RETRY, completedRetry.executionKind)
+    assertNull(completedRetry.task.metadata[METADATA_CHECKPOINT_RESUME_ATTEMPT_COUNT])
   }
 
   @Test

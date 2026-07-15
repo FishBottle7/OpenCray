@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import com.opencray.core.orchestrator.METADATA_CHECKPOINT_RESUME_ATTEMPT_COUNT
 import com.opencray.core.orchestrator.METADATA_PREVIOUS_LIFECYCLE_STATE
 import com.opencray.core.orchestrator.METADATA_QUEUE_RESTORE_EPOCH_MS
 import com.opencray.core.orchestrator.METADATA_RECOVERY_REASON
@@ -17,6 +18,8 @@ internal object RunLifecycleMetadataKeys {
   const val RUNTIME_CONTROLLER_PROCESS_SEPARATE: String =
     "_host.runtimeControllerProcessSeparate"
   const val RUN_ATTEMPT: String = "_host.runAttempt"
+  const val CHECKPOINT_RESUME_ATTEMPT_COUNT: String =
+    METADATA_CHECKPOINT_RESUME_ATTEMPT_COUNT
   const val RECOVERED_FROM_CHECKPOINT_ID: String = "_host.recoveredFromCheckpointId"
   const val RECOVERY_ACTION: String = "_host.recoveryAction"
   const val MANAGED_PROCESS_RECONNECT_PROCESS_IDS: String =
@@ -129,6 +132,7 @@ internal data class RunLifecycleDiagnostics(
   val runtimeExecutionOwnershipTier: String? = null,
   val runtimeControllerProcessSeparate: Boolean? = null,
   val runAttempt: Int? = null,
+  val checkpointResumeAttemptCount: Int? = null,
   val recoveredFromCheckpointId: String? = null,
   val managedProcessReconnectProcessIds: List<String> = emptyList(),
   val managedProcessReconnectStatus: String? = null,
@@ -153,6 +157,7 @@ internal data class RunLifecycleDiagnostics(
       runtimeExecutionOwnershipTier.isNullOrBlank() &&
       runtimeControllerProcessSeparate == null &&
       runAttempt == null &&
+      checkpointResumeAttemptCount == null &&
       recoveredFromCheckpointId.isNullOrBlank() &&
       managedProcessReconnectProcessIds.isEmpty() &&
       managedProcessReconnectStatus.isNullOrBlank() &&
@@ -183,6 +188,7 @@ internal data class RunLifecycleDiagnostics(
       put("runtimeControllerProcessSeparate", separate)
     }
     runAttempt?.let { put("runAttempt", it) }
+    checkpointResumeAttemptCount?.let { put("checkpointResumeAttemptCount", it) }
     recoveredFromCheckpointId?.takeIf(String::isNotBlank)?.let { put("recoveredFromCheckpointId", it) }
     if (managedProcessReconnectProcessIds.isNotEmpty()) {
       put("managedProcessReconnectProcessIds", managedProcessReconnectProcessIds)
@@ -244,6 +250,14 @@ internal fun runLifecycleDiagnosticsFrom(
       ?.trim()
       ?.toIntOrNull()
       ?.takeIf { attempt -> attempt > 0 },
+    checkpointResumeAttemptCount =
+      (
+        taskMetadata[RunLifecycleMetadataKeys.CHECKPOINT_RESUME_ATTEMPT_COUNT]
+          ?: resultMetadata[RunLifecycleMetadataKeys.CHECKPOINT_RESUME_ATTEMPT_COUNT]
+        )
+        ?.trim()
+        ?.toIntOrNull()
+        ?.takeIf { count -> count >= 0 },
     recoveredFromCheckpointId = taskMetadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID]
       ?.trim()
       ?.takeIf(String::isNotBlank),

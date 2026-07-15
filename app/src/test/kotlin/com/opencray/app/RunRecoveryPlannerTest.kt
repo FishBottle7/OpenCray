@@ -115,11 +115,63 @@ class RunRecoveryPlannerTest {
   }
 
   @Test
+  fun exhaustedCheckpointResumeBudgetRequiresExplicitRetry() {
+    val plan = requireNotNull(
+      planner.plan(
+        RunRecoveryPlannerInput(
+          run = runSnapshot(
+            lifecycleState = QueueTaskLifecycleState.QUEUED,
+            diagnostics = RunLifecycleDiagnostics(
+              checkpointResumeAttemptCount =
+                DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS,
+            ),
+          ),
+          checkpoint = PersistedPromptCheckpoint(
+            sessionId = "session-1",
+            runId = "run-1",
+            taskId = "task-1",
+            checkpointId = "checkpoint-1",
+            checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+            createdAtEpochMs = 100L,
+            updatedAtEpochMs = 100L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED, plan.action)
+    assertEquals("automatic_checkpoint_resume_budget_exhausted", plan.reasonCode)
+    assertEquals(
+      DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS,
+      plan.checkpointResumeAttemptCount,
+    )
+    assertEquals(
+      DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS,
+      plan.maxAutomaticCheckpointResumeAttempts,
+    )
+    assertEquals(
+      DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS,
+      plan.toMap()["checkpointResumeAttemptCount"],
+    )
+    assertTrue(plan.requiresUserAction)
+    assertFalse(plan.safeToAutoResume)
+  }
+
+  @Test
   fun durableTerminalResultTakesPriorityOverStaleResumableCheckpoint() {
     val plan = requireNotNull(
       planner.plan(
         RunRecoveryPlannerInput(
-          run = interruptedRestoreRun(),
+          run = runSnapshot(
+            lifecycleState = QueueTaskLifecycleState.FAILED,
+            errorCode = "RESTART_REQUIRES_EXPLICIT_RETRY",
+            diagnostics = RunLifecycleDiagnostics(
+              recoveryReason =
+                com.opencray.core.orchestrator.RECOVERY_REASON_HOST_RESTART_INFLIGHT_TASK_INTERRUPTED,
+              checkpointResumeAttemptCount =
+                DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS,
+            ),
+          ),
           checkpoint = PersistedPromptCheckpoint(
             sessionId = "session-1",
             runId = "run-1",

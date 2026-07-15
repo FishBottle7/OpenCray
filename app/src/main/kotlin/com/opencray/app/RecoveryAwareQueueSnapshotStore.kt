@@ -960,6 +960,10 @@ internal class RecoveryAwareQueueSnapshotStore(
       ?.trim()
       ?.takeIf(String::isNotBlank)
       ?.let { runAttempt -> put(RunLifecycleMetadataKeys.RUN_ATTEMPT, runAttempt) }
+    copyTrimmedMetadata(
+      source = rewrittenEntry.task.metadata,
+      key = RunLifecycleMetadataKeys.CHECKPOINT_RESUME_ATTEMPT_COUNT,
+    )
     rewrittenEntry.task.metadata[RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID]
       ?.trim()
       ?.takeIf(String::isNotBlank)
@@ -1107,6 +1111,9 @@ internal class RecoveryAwareQueueSnapshotStore(
     "uncertain_inflight_mutation" ->
       "The app host restarted after this run advanced beyond the last durable checkpoint. OpenCray stopped it to avoid replaying an uncertain in-flight action. Retry explicitly when you want to continue."
 
+    "automatic_checkpoint_resume_budget_exhausted" ->
+      "This run reached its automatic checkpoint-resume limit after repeated runtime interruptions. OpenCray stopped automatic recovery to avoid a restart loop. Retry explicitly when you want to continue."
+
     else -> restoreInterruptedMessage(entry.lifecycleState)
   }
 
@@ -1195,6 +1202,7 @@ internal class RecoveryAwareQueueSnapshotStore(
       RunLifecycleMetadataKeys.RECOVERY_ACTION,
       METADATA_RECOVERY_REASON,
       RunLifecycleMetadataKeys.RUN_ATTEMPT,
+      RunLifecycleMetadataKeys.CHECKPOINT_RESUME_ATTEMPT_COUNT,
       RunLifecycleMetadataKeys.RECOVERED_FROM_CHECKPOINT_ID,
       RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_PROCESS_IDS,
       RunLifecycleMetadataKeys.MANAGED_PROCESS_RECONNECT_STATUS,

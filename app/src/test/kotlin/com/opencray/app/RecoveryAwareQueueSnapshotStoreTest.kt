@@ -197,6 +197,101 @@ class RecoveryAwareQueueSnapshotStoreTest {
   }
 
   @Test
+  fun loadStopsCheckpointRecoveryAfterAutomaticResumeBudgetIsExhausted() {
+    val runtimeRoot = temporaryFolder.newFolder("recovery-aware-queue-resume-budget")
+    val sessionId = "session-resume-budget"
+    val taskId = "task-resume-budget"
+    val runId = "run-resume-budget"
+    val delegate = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val runRecordStore = FileBackedAgentRunRecordStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val runEventJournalStore = FileBackedRunEventJournalStoreFactory(runtimeRoot).forChatSession(sessionId)
+    val promptCheckpointStore = inMemoryPromptCheckpointStoreFactoryForTest().forChatSession(sessionId)
+    delegate.save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_200L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = taskId,
+              type = AgentTaskType.PROMPT,
+              input = "Stop repeated checkpoint recovery.",
+              state = AgentTaskState.RUNNING,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_200L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+                RunLifecycleMetadataKeys.CHECKPOINT_RESUME_ATTEMPT_COUNT to
+                  DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS.toString(),
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.RUNNING,
+            attempt = 1,
+            executionOrdinal = DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS + 1,
+          ),
+        ),
+      ),
+    )
+    promptCheckpointStore.upsert(
+      PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = runId,
+        taskId = taskId,
+        checkpointId = "checkpoint-resume-budget",
+        checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
+        createdAtEpochMs = 1_150L,
+        updatedAtEpochMs = 1_150L,
+        promptResumeState = OpenCrayPromptResumeState(
+          turnIndex = 2,
+          toolCallCount = 1,
+        ),
+      ),
+    )
+    val store = RecoveryAwareQueueSnapshotStore(
+      sessionId = sessionId,
+      delegate = delegate,
+      runRecordStore = runRecordStore,
+      runEventJournalStore = runEventJournalStore,
+      promptCheckpointStore = promptCheckpointStore,
+      managedProcessesProvider = { emptyList() },
+      clock = { 5_000L },
+    )
+
+    val restoredTask = requireNotNull(store.load()).tasks.single()
+
+    assertEquals(QueueTaskLifecycleState.FAILED, restoredTask.lifecycleState)
+    assertEquals(AgentTaskState.FAILED, restoredTask.task.state)
+    assertEquals(ERROR_RESTART_REQUIRES_EXPLICIT_RETRY, restoredTask.lastErrorCode)
+    assertEquals(
+      "automatic_checkpoint_resume_budget_exhausted",
+      restoredTask.task.metadata[METADATA_RECOVERY_REASON],
+    )
+    assertEquals(
+      DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS,
+      runLifecycleDiagnosticsFrom(restoredTask.task.metadata).checkpointResumeAttemptCount,
+    )
+    assertEquals(
+      "interrupt_recovery_required",
+      restoredTask.task.metadata[RunLifecycleMetadataKeys.RECOVERY_ACTION],
+    )
+    assertEquals(true, restoredTask.lastErrorMessage?.contains("restart loop"))
+    assertEquals(
+      DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS.toString(),
+      runEventJournalStore.listForRun(runId)
+        .single { entry -> entry.kind == PersistedAgentRunEventKind.RECOVERY }
+        .payload
+        .resultMetadata[RunLifecycleMetadataKeys.CHECKPOINT_RESUME_ATTEMPT_COUNT],
+    )
+  }
+
+  @Test
   fun loadSynthesizesGeneralResumeCheckpointFromJournalTailWhenStoreMissing() {
     val runtimeRoot = temporaryFolder.newFolder("recovery-aware-queue-synthetic-general-resume")
     val sessionId = "session-synthetic-general-resume"

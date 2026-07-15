@@ -55,6 +55,8 @@ internal data class RunRecoveryPlan(
   val managedProcessContinuationBasis: String? = null,
   val managedProcessRestoreScope: String? = null,
   val managedProcessRestoreDecision: String? = null,
+  val checkpointResumeAttemptCount: Int? = null,
+  val maxAutomaticCheckpointResumeAttempts: Int? = null,
 ) {
   fun toMap(): Map<String, Any?> = buildMap {
     put("action", action.name.lowercase())
@@ -75,10 +77,21 @@ internal data class RunRecoveryPlan(
     managedProcessContinuationBasis?.let { put("managedProcessContinuationBasis", it) }
     managedProcessRestoreScope?.let { put("managedProcessRestoreScope", it) }
     managedProcessRestoreDecision?.let { put("managedProcessRestoreDecision", it) }
+    checkpointResumeAttemptCount?.let { put("checkpointResumeAttemptCount", it) }
+    maxAutomaticCheckpointResumeAttempts?.let { put("maxAutomaticCheckpointResumeAttempts", it) }
   }
 }
 
-internal class RunRecoveryPlanner {
+internal class RunRecoveryPlanner(
+  private val maxAutomaticCheckpointResumeAttempts: Int =
+    DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS,
+) {
+  init {
+    require(maxAutomaticCheckpointResumeAttempts >= 1) {
+      "RunRecoveryPlanner maxAutomaticCheckpointResumeAttempts must be >= 1."
+    }
+  }
+
   fun plan(input: RunRecoveryPlannerInput): RunRecoveryPlan? {
     val checkpoint = input.checkpoint
     val run = input.run
@@ -108,6 +121,12 @@ internal class RunRecoveryPlanner {
         event = input.lastJournalEvent,
       )
     ) {
+      checkpointResumeBudgetExhaustedPlan(
+        run = run,
+        checkpoint = checkpoint,
+        approvalState = input.approvalState,
+        journalTailKind = journalTailKind,
+      )?.let { plan -> return plan }
       val managedProcessEvidence = managedProcessReconnectEvidence(run)
       return RunRecoveryPlan(
         action = RunRecoveryAction.RESUME_FROM_CHECKPOINT,
@@ -213,6 +232,12 @@ internal class RunRecoveryPlanner {
     }
 
     if (checkpoint?.checkpointKind?.isCheckpointResumeKind() == true) {
+      checkpointResumeBudgetExhaustedPlan(
+        run = run,
+        checkpoint = checkpoint,
+        approvalState = input.approvalState,
+        journalTailKind = journalTailKind,
+      )?.let { plan -> return plan }
       return RunRecoveryPlan(
         action = RunRecoveryAction.RESUME_FROM_CHECKPOINT,
         reasonCode = when (checkpoint.checkpointKind) {
@@ -332,6 +357,31 @@ internal class RunRecoveryPlanner {
     }
 
     return null
+  }
+
+  private fun checkpointResumeBudgetExhaustedPlan(
+    run: AgentRunSnapshot,
+    checkpoint: PersistedPromptCheckpoint,
+    approvalState: AgentTaskApprovalState?,
+    journalTailKind: String?,
+  ): RunRecoveryPlan? {
+    val attemptCount = run.lifecycleDiagnostics.checkpointResumeAttemptCount ?: 0
+    if (attemptCount < maxAutomaticCheckpointResumeAttempts) {
+      return null
+    }
+    return RunRecoveryPlan(
+      action = RunRecoveryAction.INTERRUPT_RECOVERY_REQUIRED,
+      reasonCode = "automatic_checkpoint_resume_budget_exhausted",
+      summary =
+        "The run reached its automatic checkpoint-resume limit after $attemptCount attempts. Keep it interrupted until the user explicitly retries it.",
+      safeToAutoResume = false,
+      requiresUserAction = true,
+      checkpointKind = checkpoint.checkpointKind,
+      approvalState = approvalState,
+      journalTailKind = journalTailKind,
+      checkpointResumeAttemptCount = attemptCount,
+      maxAutomaticCheckpointResumeAttempts = maxAutomaticCheckpointResumeAttempts,
+    )
   }
 
   private fun isApprovalWaitingRun(run: AgentRunSnapshot): Boolean =
@@ -597,6 +647,8 @@ internal class RunRecoveryPlanner {
     private const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
   }
 }
+
+internal const val DEFAULT_MAX_AUTOMATIC_CHECKPOINT_RESUME_ATTEMPTS: Int = 3
 
 private data class ManagedProcessReconnectEvidence(
   val processIds: List<String> = emptyList(),

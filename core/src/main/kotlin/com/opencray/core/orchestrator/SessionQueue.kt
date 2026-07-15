@@ -150,6 +150,8 @@ const val METADATA_EXECUTION_ID: String = "_host.executionId"
 const val METADATA_EXECUTION_KIND: String = "_host.executionKind"
 const val METADATA_EXECUTION_ORDINAL: String = "_host.executionOrdinal"
 const val METADATA_PENDING_EXECUTION_KIND: String = "_host.pendingExecutionKind"
+const val METADATA_CHECKPOINT_RESUME_ATTEMPT_COUNT: String =
+  "_host.checkpointResumeAttemptCount"
 const val EXECUTION_KIND_INITIAL: String = "initial"
 const val EXECUTION_KIND_RETRY: String = "retry"
 const val EXECUTION_KIND_APPROVAL_RESUME: String = "approval_resume"
@@ -697,9 +699,13 @@ class SessionQueue(
     val current = taskEntries[index]
     taskEntries[index] = current.copy(
       task = current.task.copy(
-        metadata = current.task.metadata + mapOf(
-          METADATA_PENDING_EXECUTION_KIND to executionKind,
-        ),
+        metadata = buildMap {
+          putAll(current.task.metadata)
+          if (executionKind == EXECUTION_KIND_RETRY) {
+            remove(METADATA_CHECKPOINT_RESUME_ATTEMPT_COUNT)
+          }
+          put(METADATA_PENDING_EXECUTION_KIND, executionKind)
+        },
       ),
     )
     persistSnapshotLocked()
@@ -745,6 +751,14 @@ class SessionQueue(
       executionId?.let { put(METADATA_EXECUTION_ID, it) }
       executionKind?.let { put(METADATA_EXECUTION_KIND, it) }
       put(METADATA_EXECUTION_ORDINAL, executionOrdinal.toString())
+      if (executionKind == EXECUTION_KIND_CHECKPOINT_RESUME) {
+        val previousCount = current.task.metadata[METADATA_CHECKPOINT_RESUME_ATTEMPT_COUNT]
+          ?.trim()
+          ?.toIntOrNull()
+          ?.takeIf { count -> count >= 0 }
+          ?: 0
+        put(METADATA_CHECKPOINT_RESUME_ATTEMPT_COUNT, (previousCount + 1).toString())
+      }
     } else if (!clearExecutionContext) {
       current.executionId?.let { put(METADATA_EXECUTION_ID, it) }
       current.executionKind?.let { put(METADATA_EXECUTION_KIND, it) }

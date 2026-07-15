@@ -8,6 +8,7 @@ import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.EXECUTION_KIND_APPROVAL_RESUME
+import com.opencray.core.orchestrator.EXECUTION_KIND_INITIAL
 import com.opencray.core.orchestrator.ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
 import com.opencray.core.orchestrator.METADATA_EXECUTION_KIND
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
@@ -831,6 +832,8 @@ class AgentSessionRuntimeManagerTest {
       snapshot = firstHandle.snapshot(),
       taskId = submission.taskId,
       lifecycleState = QueueTaskLifecycleState.RUNNING,
+      executionOrdinal = 1,
+      executionKind = EXECUTION_KIND_INITIAL,
     )
     promptCheckpointStoreFactory.forChatSession(sessionId).upsert(
       PersistedPromptCheckpoint(
@@ -888,6 +891,17 @@ class AgentSessionRuntimeManagerTest {
     assertEquals(
       QueueTaskLifecycleState.COMPLETED,
       restoredHandle.findRun(submission.runId)?.lifecycleState,
+    )
+    val completedRun = requireNotNull(restoredHandle.findRun(submission.runId))
+    assertEquals(1, completedRun.lifecycleDiagnostics.checkpointResumeAttemptCount)
+    val durableResult = FileBackedAgentRunRecordStoreFactory(temporaryFolder.root)
+      .forChatSession(sessionId)
+      .list()
+      .single { record -> record.runId == submission.runId }
+      .lastResult
+    assertEquals(
+      "1",
+      durableResult?.metadata?.get(RunLifecycleMetadataKeys.CHECKPOINT_RESUME_ATTEMPT_COUNT),
     )
   }
 
@@ -2793,6 +2807,8 @@ class AgentSessionRuntimeManagerTest {
     snapshot: SessionQueueSnapshot,
     taskId: String,
     lifecycleState: QueueTaskLifecycleState,
+    executionOrdinal: Int? = null,
+    executionKind: String? = null,
   ) {
     val taskState = when (lifecycleState) {
       QueueTaskLifecycleState.QUEUED,
@@ -2818,6 +2834,8 @@ class AgentSessionRuntimeManagerTest {
             } else {
               taskSnapshot.copy(
                 lifecycleState = lifecycleState,
+                executionOrdinal = executionOrdinal ?: taskSnapshot.executionOrdinal,
+                executionKind = executionKind ?: taskSnapshot.executionKind,
                 task = taskSnapshot.task.copy(
                   state = taskState,
                   updatedAtEpochMs = maxOf(taskSnapshot.task.updatedAtEpochMs, 2_000L),

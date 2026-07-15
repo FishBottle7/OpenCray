@@ -12,6 +12,7 @@ import com.opencray.core.orchestrator.EXECUTION_KIND_INITIAL
 import com.opencray.core.orchestrator.EXECUTION_KIND_RETRY
 import com.opencray.core.orchestrator.AgentLoop
 import com.opencray.core.orchestrator.ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
+import com.opencray.core.orchestrator.METADATA_CHECKPOINT_RESUME_ATTEMPT_COUNT
 import com.opencray.core.orchestrator.METADATA_EXECUTION_ID
 import com.opencray.core.orchestrator.METADATA_EXECUTION_KIND
 import com.opencray.core.orchestrator.METADATA_EXECUTION_ORDINAL
@@ -1734,6 +1735,10 @@ private class ManagedAgentSessionHandle(
       ?.trim()
       ?.takeIf(String::isNotBlank)
       ?.let { put(METADATA_EXECUTION_ORDINAL, it) }
+    metadata[METADATA_CHECKPOINT_RESUME_ATTEMPT_COUNT]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { put(METADATA_CHECKPOINT_RESUME_ATTEMPT_COUNT, it) }
   }
 
   private fun enrichEventExecutionContext(
