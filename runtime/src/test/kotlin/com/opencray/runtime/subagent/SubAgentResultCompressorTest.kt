@@ -2,6 +2,7 @@ package com.opencray.runtime.subagent
 
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
+import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -39,6 +40,25 @@ class SubAgentResultCompressorTest {
     assertEquals("completed", compressed.metadata()[SubAgentResultMetadataKeys.EXECUTION_STATE])
     assertEquals("README says hello.", compressed.metadata()[SubAgentResultMetadataKeys.SUMMARY_HEADLINE])
     assertEquals("2", compressed.metadata()[SubAgentResultMetadataKeys.SUMMARY_DETAIL_COUNT])
+  }
+
+  @Test
+  fun compressCompletedFinalizationCheckpointDoesNotExposeContinuation() {
+    val compressed = SubAgentResultCompressor.compress(
+      result(
+        status = ExecutionStatus.SUCCESS,
+        stdout = "README says hello.",
+        metadata = mapOf(
+          OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON to """{"turnIndex":1}""",
+          OpenCrayPromptResumeMetadata.KEY_PROMPT_CHECKPOINT_BOUNDARY to
+            OpenCrayPromptCheckpointBoundary.FINALIZATION_COMPLETE.wireValue,
+        ),
+      ),
+    )
+
+    assertEquals(SubAgentExecutionState.COMPLETED, compressed.state)
+    assertEquals(SubAgentContinuationKind.NONE, compressed.continuationKind)
+    assertFalse(compressed.resumable)
   }
 
   @Test

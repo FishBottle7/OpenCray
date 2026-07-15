@@ -251,6 +251,7 @@ object SubAgentResultCompressor {
     result: ExecutionResult,
     state: SubAgentExecutionState,
   ): SubAgentContinuationKind = when {
+    state == SubAgentExecutionState.COMPLETED -> SubAgentContinuationKind.NONE
     result.metadata[OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON]
       ?.trim()
       ?.isNotEmpty() == true -> SubAgentContinuationKind.PROMPT_RESUME
