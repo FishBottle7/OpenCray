@@ -92,6 +92,25 @@ class DirectoryDurableTextStorageTest {
   }
 
   @Test
+  fun updateTextAllowsSameThreadReadThroughAnotherStorageInstance() {
+    val directory = temporaryFolder.newFolder("durable-text-storage-reentrant-read")
+    val outerStorage = DirectoryDurableTextStorage(directory)
+    val nestedStorage = DirectoryDurableTextStorage(directory)
+    outerStorage.writeText("chat-workspace.json", """{"sessions":[]}""")
+
+    val nestedRead = outerStorage.updateText("chat-workspace.json") { current ->
+      DurableTextUpdate(
+        text = current,
+        result = nestedStorage.readText("chat-workspace.json"),
+        write = false,
+      )
+    }
+
+    assertEquals("""{"sessions":[]}""", nestedRead)
+    assertEquals("""{"sessions":[]}""", outerStorage.readText("chat-workspace.json"))
+  }
+
+  @Test
   fun updateTextNoOpDoesNotCreatePayloadFile() {
     val directory = temporaryFolder.newFolder("durable-text-storage-update-noop")
     val storage = DirectoryDurableTextStorage(directory)

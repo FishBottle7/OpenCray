@@ -23,10 +23,8 @@ class DirectoryDurableTextStorage(
   override fun readText(name: String): String? {
     val file = fileFor(name)
     if (!directory.exists()) return null
-    return synchronized(lockFor(file)) {
-      withFileLock(file) {
-        readExistingText(file)
-      }
+    return withProcessFileLock(file) {
+      readExistingText(file)
     }
   }
 
@@ -34,20 +32,16 @@ class DirectoryDurableTextStorage(
     val file = fileFor(name)
     ensureDirectory()
 
-    synchronized(lockFor(file)) {
-      withFileLock(file) {
-        writeTextLocked(file, text)
-      }
+    withProcessFileLock(file) {
+      writeTextLocked(file, text)
     }
   }
 
   override fun delete(name: String): Boolean {
     val file = fileFor(name)
     if (!directory.exists()) return false
-    synchronized(lockFor(file)) {
-      return withFileLock(file) {
-        deleteLocked(file)
-      }
+    return withProcessFileLock(file) {
+      deleteLocked(file)
     }
   }
 
@@ -57,18 +51,16 @@ class DirectoryDurableTextStorage(
   ): T {
     val file = fileFor(name)
     ensureDirectory()
-    return synchronized(lockFor(file)) {
-      withFileLock(file) {
-        val updated = update(readExistingText(file))
-        if (updated.write) {
-          if (updated.text == null) {
-            deleteLocked(file)
-          } else {
-            writeTextLocked(file, updated.text)
-          }
+    return withProcessFileLock(file) {
+      val updated = update(readExistingText(file))
+      if (updated.write) {
+        if (updated.text == null) {
+          deleteLocked(file)
+        } else {
+          writeTextLocked(file, updated.text)
         }
-        updated.result
       }
+      updated.result
     }
   }
 
@@ -144,6 +136,20 @@ class DirectoryDurableTextStorage(
           return block()
         }
       }
+    }
+  }
+
+  private fun <T> withProcessFileLock(
+    file: File,
+    block: () -> T,
+  ): T {
+    val jvmLock = lockFor(file)
+    if (Thread.holdsLock(jvmLock)) {
+      // The JVM monitor is reentrant, but reacquiring its OS sidecar lock is not.
+      return block()
+    }
+    return synchronized(jvmLock) {
+      withFileLock(file, block)
     }
   }
 
