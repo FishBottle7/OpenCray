@@ -3,6 +3,7 @@ package com.opencray.app
 import android.app.ActivityManager
 import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.ApplicationInfo
 import android.os.IBinder
@@ -110,6 +111,104 @@ class RuntimeServiceProcessIsolationTest {
       OpenCrayChatWriteDispatchResult.Completed,
       decodeRuntimeServiceChatWriteResult(writeResponse),
     )
+  }
+
+  @Test(timeout = 60_000L)
+  fun v1RemoteControllerStaysProjectionOnlyAndFallsBackWrites() {
+    val instrumentation = InstrumentationRegistry.getInstrumentation()
+    val context = instrumentation.context
+    val component = ComponentName(
+      context,
+      RuntimeServiceControllerV1FixtureService::class.java,
+    )
+    val serviceIntent = Intent().setComponent(component)
+    val binding = ServiceBinding()
+    assertTrue(
+      "bindService returned false for the remote v1 controller fixture",
+      context.bindService(serviceIntent, binding, Context.BIND_AUTO_CREATE),
+    )
+    val binder = binding.awaitBinder()
+    var client: AndroidBindingOpenCrayRuntimeServiceClient? = null
+
+    try {
+      assertNull(
+        binder.queryLocalInterface("com.opencray.app.ipc.IRuntimeServiceController"),
+      )
+      val access = requireNotNull(
+        runtimeServiceBinderAccessForBinder(
+          binder = binder,
+          expectedTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+        ),
+      )
+      assertEquals(
+        RuntimeServiceControllerV1FixtureService.PROJECTION_ACTIVE_RUN_COUNT,
+        access.loadSnapshot().runtimeOwnerWorkSummary.activeRunCount,
+      )
+      assertNull(
+        access.dispatchChatWriteCommand(OpenCrayChatWriteCommand.RefreshSandboxSessionInfo),
+      )
+      assertNull(access.dispatchSkillsWriteCommand(OpenCraySkillsWriteCommand.RefreshSkills))
+      assertNull(
+        access.dispatchSettingsWriteCommand(
+          OpenCraySettingsWriteCommand.PerformStrongBackgroundAction("repair"),
+        ),
+      )
+
+      val fallbackCommands = mutableListOf<OpenCrayChatWriteCommand>()
+      val fallbackResult = OpenCrayChatWriteDispatchResult.Payload(
+        mapOf("transport" to "command_fallback"),
+      )
+      client = AndroidBindingOpenCrayRuntimeServiceClient(
+        appContext = context,
+        runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+        bindingAdapter = object : OpenCrayRuntimeServiceBindingAdapter {
+          override fun bind(
+            context: Context,
+            intent: Intent,
+            connection: ServiceConnection,
+            flags: Int,
+          ): Boolean {
+            connection.onServiceConnected(component, binder)
+            return true
+          }
+
+          override fun unbind(
+            context: Context,
+            connection: ServiceConnection,
+          ) = Unit
+        },
+        startRequester = { },
+        commandFallbackTransport = object : RuntimeServiceCommandFallbackTransport {
+          override fun dispatchChatWriteCommand(
+            command: OpenCrayChatWriteCommand,
+          ): OpenCrayChatWriteDispatchResult {
+            fallbackCommands += command
+            return fallbackResult
+          }
+        },
+        mainThreadPoster = ImmediateMainThreadPoster,
+        serviceIntentFactory = { serviceIntent },
+        isMainThread = { false },
+      )
+
+      assertEquals(
+        fallbackResult,
+        client.dispatchChatWriteCommand(OpenCrayChatWriteCommand.RefreshSandboxSessionInfo),
+      )
+      assertEquals(
+        listOf(OpenCrayChatWriteCommand.RefreshSandboxSessionInfo),
+        fallbackCommands,
+      )
+      assertEquals("bound", client.loadConnectionState().phase)
+      assertEquals("binder", client.loadConnectionState().transport)
+      assertEquals(
+        RuntimeServiceControllerV1FixtureService.PROJECTION_ACTIVE_RUN_COUNT,
+        client.peekProjectionSnapshot()?.runtimeOwnerWorkSummary?.activeRunCount,
+      )
+    } finally {
+      client?.dispose()
+      context.unbindService(binding)
+    }
   }
 
   @Test(timeout = 120_000L)
@@ -937,22 +1036,24 @@ class RuntimeServiceProcessIsolationTest {
     val deadline = System.currentTimeMillis() + timeoutMs
     var latestTask: SessionQueueTaskSnapshot? = null
     var latestRunRecord: PersistedAgentRunRecord? = null
+    var latestCheckpoint: PersistedPromptCheckpoint? = null
     while (System.currentTimeMillis() < deadline) {
       latestTask = queueStore.load()?.tasks?.firstOrNull { task -> task.task.id == taskId }
       latestRunRecord = runRecordStore.list().firstOrNull { record -> record.runId == runId }
-      val checkpoint = checkpointStore.get(taskId)
+      latestCheckpoint = checkpointStore.get(taskId)
       val completedTask = latestTask
       val completedRunRecord = latestRunRecord
       if (
         completedTask?.lifecycleState == QueueTaskLifecycleState.COMPLETED &&
         completedTask.executionKind == EXECUTION_KIND_CHECKPOINT_RESUME &&
         completedRunRecord?.lastResult?.status == ExecutionStatus.SUCCESS &&
-        completedRunRecord.lastResult?.stdout == expectedAnswer
+        completedRunRecord.lastResult?.stdout == expectedAnswer &&
+        latestCheckpoint == null
       ) {
         return CompletedCheckpointResume(
           task = completedTask,
           runRecord = completedRunRecord,
-          checkpoint = checkpoint,
+          checkpoint = latestCheckpoint,
         )
       }
       Thread.sleep(100L)
@@ -961,7 +1062,8 @@ class RuntimeServiceProcessIsolationTest {
       "Timed out waiting for checkpoint resume task=$taskId " +
         "queueState=${latestTask?.lifecycleState} executionKind=${latestTask?.executionKind} " +
         "resultStatus=${latestRunRecord?.lastResult?.status} " +
-        "resultError=${latestRunRecord?.lastResult?.errorCode}.",
+        "resultError=${latestRunRecord?.lastResult?.errorCode} " +
+        "checkpointKind=${latestCheckpoint?.checkpointKind}.",
     )
   }
 
