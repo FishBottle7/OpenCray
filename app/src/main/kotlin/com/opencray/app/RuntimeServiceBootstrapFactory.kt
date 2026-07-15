@@ -21,7 +21,7 @@ internal object DefaultRuntimeServiceBootstrapFactory :
   override fun create(
     appContext: Context,
   ): RuntimeServiceBootstrapParts {
-    val workScheduler = WorkManagerScheduledWorkScheduler.fromContext(appContext)
+    val workScheduler = ProcessSafeScheduledWorkSchedulerFactory.fromContext(appContext)
     return RuntimeServiceBootstrapParts(
       scheduledTaskSpecStore = FileBackedScheduledTaskSpecStoreFactory
         .fromContext(appContext)

@@ -12,7 +12,7 @@ internal fun scheduleRuntimeOwnerLeaseExpiryRepair(
     target = target,
     nowEpochMs = nowEpochMs,
     ownerLeaseStore = FileBackedRuntimeServiceOwnerLeaseStore.fromContext(appContext),
-    workScheduler = WorkManagerScheduledWorkScheduler.fromContext(appContext),
+    workScheduler = ProcessSafeScheduledWorkSchedulerFactory.fromContext(appContext),
   )
 }
 

@@ -188,7 +188,7 @@ internal class LiteRtOnDeviceModelDownloadManager(
         instance ?: LiteRtOnDeviceModelDownloadManager(
           filesDir = context.applicationContext.filesDir,
           installStore = LiteRtOnDeviceModelInstallStore.fromContext(context.applicationContext),
-          workScheduler = WorkManagerLiteRtOnDeviceModelDownloadWorkScheduler
+          workScheduler = ProcessSafeLiteRtOnDeviceModelDownloadWorkSchedulerFactory
             .fromContext(context.applicationContext),
         ).also { created ->
           instance = created

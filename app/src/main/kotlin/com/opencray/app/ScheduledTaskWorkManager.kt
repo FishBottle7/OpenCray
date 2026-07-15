@@ -218,7 +218,7 @@ internal class ScheduledTaskRepairWorker(
       val runtimeServiceProjectionSnapshots = runtimeServiceProjectionSnapshotsFromContext(
         applicationContext,
       )
-      val workScheduler = WorkManagerScheduledWorkScheduler.fromContext(applicationContext)
+      val workScheduler = ProcessSafeScheduledWorkSchedulerFactory.fromContext(applicationContext)
       val ownerLeaseStore = FileBackedRuntimeServiceOwnerLeaseStore.fromContext(applicationContext)
       scheduleNextRuntimeOwnerLeaseExpiryRepair(
         nowEpochMs = nowEpochMs,
@@ -294,7 +294,7 @@ internal class ScheduledTaskRepairReceiver : BroadcastReceiver() {
     runCatching {
       resyncEnabledScheduledTasksFromContext(appContext)
     }
-    val scheduler = WorkManagerScheduledWorkScheduler.fromContext(appContext)
+    val scheduler = ProcessSafeScheduledWorkSchedulerFactory.fromContext(appContext)
     scheduler.enqueueRepair(reason)
     scheduler.ensurePeriodicRepair()
   }
@@ -313,7 +313,7 @@ internal fun resyncEnabledScheduledTasksFromContext(context: Context) {
     specStore = FileBackedScheduledTaskSpecStoreFactory.fromContext(appContext).create(),
     triggerRegistrar = DefaultScheduledTriggerRegistrar(
       alarmScheduler = AlarmManagerScheduledAlarmScheduler.fromContext(appContext),
-      workScheduler = WorkManagerScheduledWorkScheduler.fromContext(appContext),
+      workScheduler = ProcessSafeScheduledWorkSchedulerFactory.fromContext(appContext),
     ),
     triggerSyncStateStore = FileBackedScheduledTaskTriggerSyncStateStoreFactory
       .fromContext(appContext)

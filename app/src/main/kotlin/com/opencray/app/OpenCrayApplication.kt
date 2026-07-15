@@ -66,10 +66,10 @@ internal fun bootstrapOpenCrayApplication(
   },
   resyncEnabledSchedules: (Context) -> Unit = ::resyncEnabledScheduledTasksFromContext,
   enqueueRepair: (Context, String) -> Unit = { context, reason ->
-    WorkManagerScheduledWorkScheduler.fromContext(context).enqueueRepair(reason)
+    ProcessSafeScheduledWorkSchedulerFactory.fromContext(context).enqueueRepair(reason)
   },
   ensurePeriodicRepair: (Context) -> Unit = { context ->
-    WorkManagerScheduledWorkScheduler.fromContext(context).ensurePeriodicRepair()
+    ProcessSafeScheduledWorkSchedulerFactory.fromContext(context).ensurePeriodicRepair()
   },
 ) {
   registerVisibility(application)

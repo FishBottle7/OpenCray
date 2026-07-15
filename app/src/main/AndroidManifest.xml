@@ -103,6 +103,12 @@
             android:name="com.opencray.app.ScheduledTaskWakeReceiver"
             android:exported="false" />
         <receiver
+            android:name="com.opencray.app.ScheduledWorkCommandReceiver"
+            android:exported="false" />
+        <receiver
+            android:name="com.opencray.app.LiteRtOnDeviceModelDownloadWorkCommandReceiver"
+            android:exported="false" />
+        <receiver
             android:name="com.opencray.app.ScheduledTaskRepairReceiver"
             android:enabled="true"
             android:exported="true">

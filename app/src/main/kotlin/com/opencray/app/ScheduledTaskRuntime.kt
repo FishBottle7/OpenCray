@@ -775,7 +775,7 @@ internal fun dispatchScheduledTaskAlarmWake(
   runtimeEnvironmentProvider: (Context) -> OpenCrayRuntimeServiceEnvironment =
     { appContext -> openCrayRuntimeServiceEnvironment(appContext) },
   fallbackSchedulerProvider: (Context) -> ScheduledWorkScheduler =
-    { appContext -> WorkManagerScheduledWorkScheduler.fromContext(appContext) },
+    { appContext -> ProcessSafeScheduledWorkSchedulerFactory.fromContext(appContext) },
   nowEpochMsProvider: () -> Long = System::currentTimeMillis,
 ): Boolean {
   val appContext = context.applicationContext

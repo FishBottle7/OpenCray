@@ -432,7 +432,7 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
         runRecordStore = FileBackedScheduledTaskRunRecordStoreFactory(runtimeRootDirectory).create(),
         triggerRegistrar = DefaultScheduledTriggerRegistrar(
           alarmScheduler = AlarmManagerScheduledAlarmScheduler.fromContext(appContext),
-          workScheduler = WorkManagerScheduledWorkScheduler.fromContext(appContext),
+          workScheduler = ProcessSafeScheduledWorkSchedulerFactory.fromContext(appContext),
         ),
         triggerSyncStateStore = FileBackedScheduledTaskTriggerSyncStateStoreFactory(
           runtimeRootDirectory,
