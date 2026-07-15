@@ -11,6 +11,27 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.opencray.app.ipc.IRuntimeServiceController
+import com.opencray.core.contracts.AgentTask
+import com.opencray.core.contracts.AgentTaskState
+import com.opencray.core.contracts.AgentTaskType
+import com.opencray.core.contracts.ExecutionStatus
+import com.opencray.core.contracts.PolicyDecision
+import com.opencray.core.contracts.PolicyDecisionOutcome
+import com.opencray.core.orchestrator.EXECUTION_KIND_CHECKPOINT_RESUME
+import com.opencray.core.orchestrator.EXECUTION_KIND_INITIAL
+import com.opencray.core.orchestrator.METADATA_EXECUTION_ID
+import com.opencray.core.orchestrator.METADATA_EXECUTION_KIND
+import com.opencray.core.orchestrator.METADATA_EXECUTION_ORDINAL
+import com.opencray.core.orchestrator.QueueTaskLifecycleState
+import com.opencray.core.orchestrator.SessionLifecycleState
+import com.opencray.core.orchestrator.SessionQueueSnapshot
+import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
+import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
+import com.opencray.runtime.OpenCrayPromptCheckpointEmission
+import com.opencray.runtime.OpenCrayPromptResumeMetadata
+import com.opencray.runtime.OpenCrayPromptResumeState
+import com.opencray.runtime.OpenCraySerializableModelAction
+import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.After
@@ -125,6 +146,114 @@ class RuntimeServiceProcessIsolationTest {
       secondSnapshot.runtimeOwnerLifecycle.durableRuntimeControllerId,
     )
     assertEquals(target.wireValue, second.controller.runtimeTarget)
+  }
+
+  @Test(timeout = 150_000L)
+  fun detachedProcessDeathResumesSafeCheckpointUnderSameRunIdentity() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val target = RuntimeServiceTarget.DETACHED_BACKGROUND
+    val processName = "${context.packageName}:runtime_controller"
+    val first = bindController(context, target)
+    val firstSnapshot = loadProjection(first.controller)
+    val firstPid = awaitProcessPid(context, processName)
+    val llmSettingsStore = LlmSettingsStore.fromContext(context)
+    val previousLlmSettings = llmSettingsStore.load()
+    val chatSessionStore = ChatSessionLocalStore.fromContext(context)
+    val previousActiveSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val sessionId = chatSessionStore.copySession(previousActiveSessionId).activeSession.sessionId
+    val uniqueSuffix = System.nanoTime().toString()
+    val taskId = "runtime-isolation-checkpoint-task-$uniqueSuffix"
+    val runId = "runtime-isolation-checkpoint-run-$uniqueSuffix"
+    val scheduleId = "runtime-isolation-checkpoint-schedule-$uniqueSuffix"
+    val expectedAnswer = "Recovered detached checkpoint $uniqueSuffix"
+    var second: BoundController? = null
+
+    try {
+      llmSettingsStore.save(
+        previousLlmSettings.copy(
+          enabled = true,
+          apiKey = "runtime-isolation-test-key",
+        ),
+      )
+      seedRunningFinalActionCheckpoint(
+        context = context,
+        sessionId = sessionId,
+        taskId = taskId,
+        runId = runId,
+        scheduleId = scheduleId,
+        expectedAnswer = expectedAnswer,
+      )
+
+      Process.killProcess(firstPid)
+      unbind(context, first.binding)
+      awaitProcessExit(context, processName, firstPid)
+
+      val leaseStore = FileBackedRuntimeServiceOwnerLeaseStore.fromContext(context)
+      val staleLease = awaitLease(
+        store = leaseStore,
+        target = target,
+        processStartId = firstSnapshot.runtimeOwnerLifecycle.processStartId,
+      )
+      val waitMs = (staleLease.expiresAtEpochMs - System.currentTimeMillis() + 1_000L)
+        .coerceAtLeast(0L)
+      if (waitMs > 0L) {
+        Thread.sleep(waitMs)
+      }
+
+      assertTrue(
+        openCrayRuntimeServiceEnvironment(context)
+          .runtimeServiceAccessGateway
+          .resumeInterruptedRuns(
+            context = context,
+            repairReason = ScheduledTaskRepairReasons.OWNER_LEASE_EXPIRED,
+            target = target,
+          ),
+      )
+
+      val rebuilt = bindController(context, target)
+      second = rebuilt
+      val secondSnapshot = loadProjection(rebuilt.controller)
+      val secondPid = awaitProcessPid(context, processName)
+      val completion = awaitCompletedCheckpointResume(
+        context = context,
+        sessionId = sessionId,
+        taskId = taskId,
+        runId = runId,
+        expectedAnswer = expectedAnswer,
+      )
+
+      assertTrue(secondPid != firstPid)
+      assertEquals(
+        firstSnapshot.runtimeOwnerLifecycle.durableRuntimeControllerId,
+        secondSnapshot.runtimeOwnerLifecycle.durableRuntimeControllerId,
+      )
+      assertEquals(QueueTaskLifecycleState.COMPLETED, completion.task.lifecycleState)
+      assertEquals(AgentTaskState.COMPLETED, completion.task.task.state)
+      assertEquals(2, completion.task.executionOrdinal)
+      assertEquals(EXECUTION_KIND_CHECKPOINT_RESUME, completion.task.executionKind)
+      assertEquals(runId, completion.runRecord.runId)
+      assertEquals(taskId, completion.runRecord.taskId)
+      assertEquals(ExecutionStatus.SUCCESS, completion.runRecord.lastResult?.status)
+      assertEquals(expectedAnswer, completion.runRecord.lastResult?.stdout)
+      assertEquals(
+        EXECUTION_KIND_CHECKPOINT_RESUME,
+        completion.runRecord.lastResult?.metadata?.get(METADATA_EXECUTION_KIND),
+      )
+      assertEquals(
+        OpenCrayPromptCheckpointBoundary.FINALIZATION_COMPLETE.wireValue,
+        completion.runRecord.lastResult
+          ?.metadata
+          ?.get(OpenCrayPromptResumeMetadata.KEY_PROMPT_CHECKPOINT_BOUNDARY),
+      )
+      assertNull(completion.checkpoint)
+    } finally {
+      second?.let { bound -> unbind(context, bound.binding) }
+      awaitRuntimeServiceStop(context, target)
+      llmSettingsStore.save(previousLlmSettings)
+      runCatching { chatSessionStore.deleteSession(sessionId) }
+      runCatching { chatSessionStore.selectSession(previousActiveSessionId) }
+      deleteRuntimeSessionState(context, sessionId)
+    }
   }
 
   @Test(timeout = 90_000L)
@@ -285,6 +414,176 @@ class RuntimeServiceProcessIsolationTest {
     )
   }
 
+  private fun seedRunningFinalActionCheckpoint(
+    context: Context,
+    sessionId: String,
+    taskId: String,
+    runId: String,
+    scheduleId: String,
+    expectedAnswer: String,
+  ) {
+    val nowEpochMs = System.currentTimeMillis()
+    val resumeState = OpenCrayPromptResumeState(
+      turnIndex = 0,
+      toolCallCount = 0,
+      pendingActions = listOf(
+        OpenCraySerializableModelAction.Final(
+          answer = expectedAnswer,
+          responseFormat = "text",
+        ),
+      ),
+    )
+    FileBackedPromptCheckpointStoreFactory.fromContext(context)
+      .forChatSession(sessionId)
+      .upsert(
+        PersistedPromptCheckpoint(
+          sessionId = sessionId,
+          runId = runId,
+          taskId = taskId,
+          checkpointId = "checkpoint-$taskId",
+          checkpointKind = PromptCheckpointKind.ACTION_BATCH_PARSED,
+          createdAtEpochMs = nowEpochMs,
+          updatedAtEpochMs = nowEpochMs,
+          promptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED,
+          promptResumeState = resumeState,
+        ),
+      )
+    FileBackedRunEventJournalStoreFactory.fromContext(context)
+      .forChatSession(sessionId)
+      .appendCheckpoint(
+        runId = runId,
+        taskId = taskId,
+        emission = OpenCrayPromptCheckpointEmission(
+          boundary = OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED,
+          state = resumeState,
+          emittedAtEpochMs = nowEpochMs,
+        ),
+      )
+    FileBackedAgentQueueSnapshotStoreFactory.fromContext(context)
+      .forChatSession(sessionId)
+      .save(
+        SessionQueueSnapshot(
+          sessionId = sessionId,
+          agentId = "opencray-flutter-host",
+          lifecycleState = SessionLifecycleState.RUNNING,
+          nextEnqueueOrder = 2L,
+          tasks = listOf(
+            SessionQueueTaskSnapshot(
+              enqueueOrder = 1L,
+              task = AgentTask(
+                id = taskId,
+                type = AgentTaskType.PROMPT,
+                input = "Resume the detached checkpoint without replaying the prompt.",
+                state = AgentTaskState.RUNNING,
+                policyDecision = PolicyDecision(
+                  outcome = PolicyDecisionOutcome.ALLOW,
+                  reasonCode = "RUNTIME_ISOLATION_CHECKPOINT_TEST",
+                ),
+                createdAtEpochMs = nowEpochMs,
+                updatedAtEpochMs = nowEpochMs,
+                metadata = mapOf(
+                  AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
+                  AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to sessionId,
+                  ScheduledTaskMetadataKeys.SCHEDULE_ID to scheduleId,
+                  METADATA_EXECUTION_ID to "execution-before-process-death",
+                  METADATA_EXECUTION_KIND to EXECUTION_KIND_INITIAL,
+                  METADATA_EXECUTION_ORDINAL to "1",
+                ),
+              ),
+              lifecycleState = QueueTaskLifecycleState.RUNNING,
+              attempt = 1,
+              executionOrdinal = 1,
+              executionId = "execution-before-process-death",
+              executionKind = EXECUTION_KIND_INITIAL,
+            ),
+          ),
+          updatedAtEpochMs = nowEpochMs,
+        ),
+      )
+  }
+
+  private fun awaitCompletedCheckpointResume(
+    context: Context,
+    sessionId: String,
+    taskId: String,
+    runId: String,
+    expectedAnswer: String,
+    timeoutMs: Long = 45_000L,
+  ): CompletedCheckpointResume {
+    val queueStore = FileBackedAgentQueueSnapshotStoreFactory.fromContext(context)
+      .forChatSession(sessionId)
+    val runRecordStore = FileBackedAgentRunRecordStoreFactory.fromContext(context)
+      .forChatSession(sessionId)
+    val checkpointStore = FileBackedPromptCheckpointStoreFactory.fromContext(context)
+      .forChatSession(sessionId)
+    val deadline = System.currentTimeMillis() + timeoutMs
+    var latestTask: SessionQueueTaskSnapshot? = null
+    var latestRunRecord: PersistedAgentRunRecord? = null
+    while (System.currentTimeMillis() < deadline) {
+      latestTask = queueStore.load()?.tasks?.firstOrNull { task -> task.task.id == taskId }
+      latestRunRecord = runRecordStore.list().firstOrNull { record -> record.runId == runId }
+      val checkpoint = checkpointStore.get(taskId)
+      val completedTask = latestTask
+      val completedRunRecord = latestRunRecord
+      if (
+        completedTask?.lifecycleState == QueueTaskLifecycleState.COMPLETED &&
+        completedTask.executionKind == EXECUTION_KIND_CHECKPOINT_RESUME &&
+        completedRunRecord?.lastResult?.status == ExecutionStatus.SUCCESS &&
+        completedRunRecord.lastResult?.stdout == expectedAnswer
+      ) {
+        return CompletedCheckpointResume(
+          task = completedTask,
+          runRecord = completedRunRecord,
+          checkpoint = checkpoint,
+        )
+      }
+      Thread.sleep(100L)
+    }
+    error(
+      "Timed out waiting for checkpoint resume task=$taskId " +
+        "queueState=${latestTask?.lifecycleState} executionKind=${latestTask?.executionKind} " +
+        "resultStatus=${latestRunRecord?.lastResult?.status} " +
+        "resultError=${latestRunRecord?.lastResult?.errorCode}.",
+    )
+  }
+
+  private fun deleteRuntimeSessionState(context: Context, sessionId: String) {
+    runCatching {
+      val runtimeRoot = File(
+        context.filesDir,
+        FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+      ).canonicalFile
+      val sessionDirectory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+        .directoryForSession(sessionId)
+        .canonicalFile
+      check(sessionDirectory.parentFile == runtimeRoot)
+      sessionDirectory.deleteRecursively()
+    }
+  }
+
+  @Suppress("DEPRECATION")
+  private fun awaitRuntimeServiceStop(
+    context: Context,
+    target: RuntimeServiceTarget,
+    timeoutMs: Long = 10_000L,
+  ) {
+    val intent = RuntimeServiceIntentFactory().baseIntent(context, target)
+    val component = requireNotNull(intent.component)
+    context.stopService(intent)
+    val activityManager = context.getSystemService(ActivityManager::class.java)
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      val running = activityManager.getRunningServices(Int.MAX_VALUE)
+        .any { service -> service.service == component }
+      if (!running) {
+        Thread.sleep(250L)
+        return
+      }
+      Thread.sleep(100L)
+    }
+    error("Timed out waiting for runtime service '$component' to stop.")
+  }
+
   private fun awaitSnoozedSpec(
     store: ScheduledTaskSpecStore,
     scheduleId: String,
@@ -331,6 +630,12 @@ class RuntimeServiceProcessIsolationTest {
       IRuntimeServiceController.Stub.asInterface(binder),
     )
   }
+
+  private data class CompletedCheckpointResume(
+    val task: SessionQueueTaskSnapshot,
+    val runRecord: PersistedAgentRunRecord,
+    val checkpoint: PersistedPromptCheckpoint?,
+  )
 
   private class ServiceBinding : ServiceConnection {
     private val connected = CountDownLatch(1)
