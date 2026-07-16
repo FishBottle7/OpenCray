@@ -225,6 +225,7 @@ data class PythonRuntimeManifestSnapshot(
 data class OpenCrayToolDispatcherConfig(
   val workspaceRoots: Set<Path>,
   val readRoots: Set<Path> = workspaceRoots,
+  val fileMutationLockDirectory: Path? = null,
   val allowedToolNames: Set<String>? = null,
   val hiddenToolNamePrefixes: Set<String> = emptySet(),
   val extraPolicyReadRoots: Set<Path> = emptySet(),
@@ -454,7 +455,10 @@ class OpenCrayToolDispatcher(
     readRoots = readBoundary.approvedRoots() + config.extraPolicyReadRoots,
     writeRoots = writeBoundary.approvedRoots() + config.extraPolicyWriteRoots,
   )
-  private val fileOpsService = FileOpsService(writeBoundary.approvedRoots())
+  private val fileOpsService = FileOpsService(
+    approvedRoots = writeBoundary.approvedRoots(),
+    mutationLockDirectory = config.fileMutationLockDirectory,
+  )
   private val todoStore = config.todoStore
   private val processRegistry = config.processRegistry
   private val webContentFetcher = config.webContentFetcher
@@ -4134,25 +4138,26 @@ class OpenCrayToolDispatcher(
       candidate = arguments.requiredStringFrom("file_path", "path"),
       label = "Edit",
       defaultToRoot = false,
-    ).also { resolved ->
-      require(Files.isRegularFile(resolved)) { "Edit path is not a file: $resolved" }
-    }
+    )
     val edit = TextEdit(
       oldString = arguments.requiredString("old_string"),
       newString = arguments.requiredText("new_string"),
       replaceAll = arguments.optionalBoolean("replace_all") ?: false,
     )
-    val source = Files.readAllBytes(file).toString(StandardCharsets.UTF_8)
-    val outcome = applyTextEdits(source, listOf(edit))
-    return writeTextFile(
-      task = task,
-      toolName = "Edit",
-      path = file,
-      content = outcome.content,
-      metadataPathKey = "filePath",
-      successMessage = "Updated ${toolTargetResolver.displayModelPath(file)} with ${outcome.replacementCount} replacement(s).",
-      extraMetadata = mapOf("replacementCount" to outcome.replacementCount.toString()),
-    )
+    return fileOpsService.withMutationLock {
+      require(Files.isRegularFile(file)) { "Edit path is not a file: $file" }
+      val source = Files.readAllBytes(file).toString(StandardCharsets.UTF_8)
+      val outcome = applyTextEdits(source, listOf(edit))
+      writeTextFile(
+        task = task,
+        toolName = "Edit",
+        path = file,
+        content = outcome.content,
+        metadataPathKey = "filePath",
+        successMessage = "Updated ${toolTargetResolver.displayModelPath(file)} with ${outcome.replacementCount} replacement(s).",
+        extraMetadata = mapOf("replacementCount" to outcome.replacementCount.toString()),
+      )
+    }
   }
 
   private fun multiEditWorkspaceFile(task: AgentTask, arguments: JsonObject): AgentToolResult {
@@ -4160,9 +4165,7 @@ class OpenCrayToolDispatcher(
       candidate = arguments.requiredStringFrom("file_path", "path"),
       label = "MultiEdit",
       defaultToRoot = false,
-    ).also { resolved ->
-      require(Files.isRegularFile(resolved)) { "MultiEdit path is not a file: $resolved" }
-    }
+    )
     val edits = arguments.requiredObjectArray("edits").mapIndexed { index, entry ->
       TextEdit(
         oldString = entry.requiredString("old_string"),
@@ -4172,20 +4175,23 @@ class OpenCrayToolDispatcher(
         require(it.oldString.isNotEmpty()) { "MultiEdit edit ${index + 1} old_string must not be empty." }
       }
     }
-    val source = Files.readAllBytes(file).toString(StandardCharsets.UTF_8)
-    val outcome = applyTextEdits(source, edits)
-    return writeTextFile(
-      task = task,
-      toolName = "MultiEdit",
-      path = file,
-      content = outcome.content,
-      metadataPathKey = "filePath",
-      successMessage = "Updated ${toolTargetResolver.displayModelPath(file)} with ${outcome.replacementCount} replacement(s) across ${edits.size} edit(s).",
-      extraMetadata = mapOf(
-        "replacementCount" to outcome.replacementCount.toString(),
-        "editCount" to edits.size.toString(),
-      ),
-    )
+    return fileOpsService.withMutationLock {
+      require(Files.isRegularFile(file)) { "MultiEdit path is not a file: $file" }
+      val source = Files.readAllBytes(file).toString(StandardCharsets.UTF_8)
+      val outcome = applyTextEdits(source, edits)
+      writeTextFile(
+        task = task,
+        toolName = "MultiEdit",
+        path = file,
+        content = outcome.content,
+        metadataPathKey = "filePath",
+        successMessage = "Updated ${toolTargetResolver.displayModelPath(file)} with ${outcome.replacementCount} replacement(s) across ${edits.size} edit(s).",
+        extraMetadata = mapOf(
+          "replacementCount" to outcome.replacementCount.toString(),
+          "editCount" to edits.size.toString(),
+        ),
+      )
+    }
   }
 
   private fun writeTodoList(arguments: JsonObject): AgentToolResult {

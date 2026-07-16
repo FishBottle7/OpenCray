@@ -967,6 +967,7 @@ Status:
 - E2B sticky workspace sync state now also uses that shared durable text storage under each workspace's `.opencray/sandbox-sync` directory, so reusable local file manifests for sticky sandbox reconnect are no longer persisted by a separate direct-file writer or direct save/delete call
 - LiteRT on-device model install state now uses that locked durable update path for save/delete, so settings-side cancel/delete and background download progress do not lose another model record through stale manifest writes
 - generated media artifact registry registration/sweep now uses that same locked durable update path, so runtime-side media generation and app-side artifact resolution/GC cannot overwrite each other's artifact ids, run/tool provenance, or integrity facts through a JVM-local stale snapshot
+- interactive and detached runtime tool dispatchers now also share a runtime-root workspace mutation OS lock. `FileOpsService` holds it across checkpoint capture, the complete mutation batch, commit, and rollback; write replacement is atomic, and `Edit`/`MultiEdit` keep their source read inside the same reentrant transaction, so `:runtime` and `:runtime_controller` no longer race stale read-modify-write snapshots of one workspace file.
 - memory debug action audit append now also uses the locked durable update path, so overlapping service/runtime debug actions preserve each other's audit entries
 - agent registry create/update/select/archive now also use the locked durable update path, so foreground agent management and service/runtime agent-scope reads preserve active-agent and descriptor changes
 - MCP registry direct save/clear now also uses the locked durable update primitive, so fallback callers do not bypass the process-safe registry update path
@@ -1064,7 +1065,7 @@ Status:
 - repeat `./gradlew :app:connectedDebugAndroidTest -PruntimeIsolationAndroidTestOnly=true -Pandroid.testInstrumentationRunnerArguments.class=com.opencray.app.RuntimeServiceProcessIsolationTest` on at least one physical Android device and retain the observed process/lease/reconnect diagnostics with the release evidence
 - restore the full legacy AndroidTest UI resource-id baseline as a separate UI migration; it no longer blocks compilation of the runtime isolation harness
 - validate the checked-in E2B registry/routing/provider reconnect chain against a credentialed E2B cloud endpoint after detached-process recreation; the process-external controlled endpoint path is already covered on API 35
-- continue hardening any remaining direct-file/runtime command edges beyond the now process-safe run journal append path and version-gated explicit command envelopes
+- continue hardening any remaining direct-file/runtime command edges beyond the now process-safe run journal, cross-process workspace `FileOpsService` transaction path, and version-gated explicit command envelopes
 - add richer OEM guidance
 
 Exit criteria:

@@ -2,7 +2,6 @@ package com.opencray.filesystem
 
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardOpenOption
 import java.util.concurrent.atomic.AtomicLong
 
 sealed class FileStateSnapshot {
@@ -42,6 +41,7 @@ class LocalRollbackJournal(
 ) : RollbackJournal {
   private val activeCheckpoints: LinkedHashMap<String, RollbackCheckpoint> = linkedMapOf()
 
+  @Synchronized
   override fun checkpoint(paths: List<Path>): RollbackCheckpoint {
     val orderedPaths = paths
       .distinct()
@@ -63,10 +63,12 @@ class LocalRollbackJournal(
     return checkpoint
   }
 
+  @Synchronized
   override fun commit(checkpointId: String) {
     activeCheckpoints.remove(checkpointId)
   }
 
+  @Synchronized
   override fun restore(checkpoint: RollbackCheckpoint) {
     val records = checkpoint.records.sortedByDescending { it.path.nameCount }
     for (record in records) {
@@ -75,6 +77,7 @@ class LocalRollbackJournal(
     activeCheckpoints.remove(checkpoint.id)
   }
 
+  @Synchronized
   override fun activeCheckpointIds(): Set<String> = activeCheckpoints.keys.toSet()
 
   private fun captureState(path: Path): FileStateSnapshot {
@@ -116,12 +119,6 @@ class LocalRollbackJournal(
     if (parent != null) {
       Files.createDirectories(parent)
     }
-    Files.write(
-      path,
-      bytes,
-      StandardOpenOption.CREATE,
-      StandardOpenOption.TRUNCATE_EXISTING,
-      StandardOpenOption.WRITE,
-    )
+    writeBytesAtomically(path = path, content = bytes, replaceExisting = true)
   }
 }

@@ -166,6 +166,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val soulProfileProvider: () -> WorkspaceSoulProfile?,
   private val workspaceRootsProvider: () -> Set<Path>,
   private val readRootsProvider: () -> Set<Path> = workspaceRootsProvider,
+  private val fileMutationLockDirectoryProvider: () -> Path? = { null },
   private val skillsRootsProvider: () -> List<File>,
   private val mcpReportProvider: () -> McpClientExposureReport?,
   private val memoryRecordsProvider: () -> List<MemoryRecord> = { emptyList() },
@@ -518,6 +519,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       OpenCrayToolDispatcherConfig(
         workspaceRoots = workspaceRootsProvider(),
         readRoots = readRootsProvider(),
+        fileMutationLockDirectory = fileMutationLockDirectoryProvider(),
         hiddenToolNamePrefixes = hiddenToolNamePrefixesProvider(),
         extraPolicyReadRoots = skillPolicyReadRoots + scheduledTaskPolicyRoots,
         extraPolicyWriteRoots = skillPolicyWriteRoots + scheduledTaskPolicyRoots,
@@ -1368,6 +1370,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       OpenCrayToolDispatcherConfig(
         workspaceRoots = workspaceRootsProvider(),
         readRoots = readRootsProvider(),
+        fileMutationLockDirectory = fileMutationLockDirectoryProvider(),
         hiddenToolNamePrefixes = hiddenToolNamePrefixesProvider(),
         extraPolicyReadRoots = skillPolicyReadRoots + scheduledTaskPolicyRoots,
         extraPolicyWriteRoots = skillPolicyWriteRoots + scheduledTaskPolicyRoots,

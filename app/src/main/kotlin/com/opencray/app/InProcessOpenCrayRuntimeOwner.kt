@@ -345,6 +345,9 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
     soulProfileProvider = { soulProfileStore.loadSoulProfile(workspaceRootProvider()) },
     workspaceRootsProvider = workspaceRootsProvider,
     readRootsProvider = { approvedReadRootsProvider().roots },
+    fileMutationLockDirectoryProvider = {
+      runtimeRootDirectory.toPath().resolve("file-mutation-locks")
+    },
     skillsRootsProvider = { skillsFacade.enabledSkillRoots() },
     mcpReportProvider = { mcpSettingsFacade.currentExposureReport() },
     memoryRecordsProvider = personalizationStore::listMemoryRecords,

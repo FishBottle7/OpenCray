@@ -202,6 +202,34 @@ class ClaudeStyleToolDispatchTest {
     assertEquals("dup\ndup\n", String(Files.readAllBytes(target), StandardCharsets.UTF_8))
   }
 
+  @Test(timeout = 5_000L)
+  fun editCommitsInsideReentrantCrossProcessMutationLock() {
+    val workspaceRoot = temporaryFolder.newFolder("claude-edit-process-lock").toPath()
+    val lockDirectory = temporaryFolder.newFolder("claude-edit-process-locks").toPath()
+    val target = workspaceRoot.resolve("notes.txt")
+    Files.write(target, "alpha\nbeta\n".toByteArray(StandardCharsets.UTF_8))
+    val dispatcher = dispatcher(
+      workspaceRoot = workspaceRoot,
+      fileMutationLockDirectory = lockDirectory,
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "Edit",
+        arguments = buildJsonObject {
+          put("file_path", "notes.txt")
+          put("old_string", "alpha")
+          put("new_string", "ALPHA")
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("ALPHA\nbeta\n", String(Files.readAllBytes(target), StandardCharsets.UTF_8))
+  }
+
   @Test
   fun multiEditFailureDoesNotPartiallyRewriteFile() {
     val workspaceRoot = temporaryFolder.newFolder("claude-multiedit-fail").toPath()
@@ -546,11 +574,13 @@ class ClaudeStyleToolDispatchTest {
     processRegistry: AgentProcessRegistry = ClaudeBashProcessRegistry(),
     webContentFetcher: WebContentFetcher = FakeWebContentFetcher(),
     webSearchProvider: WebSearchProvider = FakeWebSearchProvider(),
+    fileMutationLockDirectory: java.nio.file.Path? = null,
     maxReadBytes: Int = 32_000,
     maxDirectoryEntries: Int = 200,
   ): OpenCrayToolDispatcher = OpenCrayToolDispatcher(
     OpenCrayToolDispatcherConfig(
       workspaceRoots = setOf(workspaceRoot),
+      fileMutationLockDirectory = fileMutationLockDirectory,
       todoStore = todoStore,
       processRegistry = processRegistry,
       webContentFetcher = webContentFetcher,

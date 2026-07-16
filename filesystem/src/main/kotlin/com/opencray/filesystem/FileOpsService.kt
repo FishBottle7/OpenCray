@@ -2,9 +2,12 @@ package com.opencray.filesystem
 
 import com.opencray.policy.ProtectedRegistry
 import java.nio.charset.StandardCharsets
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.util.concurrent.locks.ReentrantLock
 
 /**
  * Executes local file mutations under canonical boundary checks.
@@ -15,9 +18,12 @@ class FileOpsService(
   approvedRoots: Set<Path>,
   private val protectedRegistry: ProtectedRegistry = ProtectedRegistry(),
   private val rollbackJournal: RollbackJournal = LocalRollbackJournal(),
+  mutationLockDirectory: Path? = null,
 ) {
   private val canonicalApprovedRoots: List<Path>
   private val defaultRoot: Path
+  private val mutationLock = ReentrantLock(true)
+  private val mutationLockCoordinator: FileMutationLockCoordinator?
 
   init {
     require(approvedRoots.isNotEmpty()) { "At least one approved root is required." }
@@ -28,6 +34,7 @@ class FileOpsService(
       .sortedBy { it.toString() }
 
     defaultRoot = canonicalApprovedRoots.first()
+    mutationLockCoordinator = mutationLockDirectory?.let(::FileMutationLockCoordinator)
   }
 
   fun executeBatch(operations: List<FileMutationOperation>): FileBatchResult {
@@ -40,31 +47,42 @@ class FileOpsService(
       )
     }
 
-    val resolvedOperations = operations.map(::resolveOperation)
-    val checkpointPaths = linkedSetOf<Path>()
-    for (operation in resolvedOperations) {
-      checkpointPaths += operation.checkpointPaths
-    }
-
-    val checkpoint = rollbackJournal.checkpoint(checkpointPaths.toList())
-
-    return try {
+    return withMutationLock {
+      val resolvedOperations = operations.map(::resolveOperation)
+      val checkpointPaths = linkedSetOf<Path>()
       for (operation in resolvedOperations) {
-        applyResolvedOperation(operation)
+        checkpointPaths += operation.checkpointPaths
       }
 
-      rollbackJournal.commit(checkpoint.id)
+      val checkpoint = rollbackJournal.checkpoint(checkpointPaths.toList())
 
-      FileBatchResult(
-        checkpointId = checkpoint.id,
-        checkpointEntryCount = checkpoint.records.size,
-        operationCount = resolvedOperations.size,
-        committedPaths = resolvedOperations
-          .flatMap { it.committedPaths }
-          .distinct(),
-      )
-    } catch (failure: Throwable) {
-      handleFailure(checkpoint, failure)
+      try {
+        for (operation in resolvedOperations) {
+          applyResolvedOperation(operation)
+        }
+
+        rollbackJournal.commit(checkpoint.id)
+
+        FileBatchResult(
+          checkpointId = checkpoint.id,
+          checkpointEntryCount = checkpoint.records.size,
+          operationCount = resolvedOperations.size,
+          committedPaths = resolvedOperations
+            .flatMap { it.committedPaths }
+            .distinct(),
+        )
+      } catch (failure: Throwable) {
+        handleFailure(checkpoint, failure)
+      }
+    }
+  }
+
+  fun <T> withMutationLock(action: () -> T): T {
+    mutationLock.lock()
+    try {
+      return mutationLockCoordinator?.withScopes(canonicalApprovedRoots, action) ?: action()
+    } finally {
+      mutationLock.unlock()
     }
   }
 
@@ -143,12 +161,7 @@ class FileOpsService(
     }
 
     ensureParentDirectory(path)
-    Files.write(
-      path,
-      content,
-      StandardOpenOption.CREATE_NEW,
-      StandardOpenOption.WRITE,
-    )
+    writeBytesAtomically(path = path, content = content, replaceExisting = false)
   }
 
   private fun writeFile(path: Path, content: ByteArray) {
@@ -160,13 +173,7 @@ class FileOpsService(
     }
 
     ensureParentDirectory(path)
-    Files.write(
-      path,
-      content,
-      StandardOpenOption.CREATE,
-      StandardOpenOption.TRUNCATE_EXISTING,
-      StandardOpenOption.WRITE,
-    )
+    writeBytesAtomically(path = path, content = content, replaceExisting = true)
   }
 
   private fun deleteFile(path: Path) {
@@ -320,5 +327,50 @@ class FileOpsService(
       override val checkpointPaths: List<Path> = listOf(sourcePath, destinationPath)
       override val committedPaths: List<Path> = listOf(sourcePath, destinationPath)
     }
+  }
+}
+
+internal fun writeBytesAtomically(
+  path: Path,
+  content: ByteArray,
+  replaceExisting: Boolean,
+) {
+  val parent = path.parent
+  if (parent != null) {
+    Files.createDirectories(parent)
+  }
+  val temporaryDirectory = parent ?: path.toAbsolutePath().normalize().parent
+  requireNotNull(temporaryDirectory) { "Atomic file write requires a parent directory: $path" }
+  val temporaryPath = Files.createTempFile(temporaryDirectory, ".opencray-write-", ".tmp")
+  try {
+    Files.write(
+      temporaryPath,
+      content,
+      StandardOpenOption.TRUNCATE_EXISTING,
+      StandardOpenOption.WRITE,
+    )
+    if (replaceExisting && Files.exists(path)) {
+      runCatching { Files.getPosixFilePermissions(path) }
+        .getOrNull()
+        ?.let { permissions ->
+          runCatching { Files.setPosixFilePermissions(temporaryPath, permissions) }
+        }
+    }
+    if (replaceExisting) {
+      try {
+        Files.move(
+          temporaryPath,
+          path,
+          StandardCopyOption.ATOMIC_MOVE,
+          StandardCopyOption.REPLACE_EXISTING,
+        )
+      } catch (_: AtomicMoveNotSupportedException) {
+        Files.move(temporaryPath, path, StandardCopyOption.REPLACE_EXISTING)
+      }
+    } else {
+      Files.move(temporaryPath, path)
+    }
+  } finally {
+    Files.deleteIfExists(temporaryPath)
   }
 }
