@@ -416,7 +416,7 @@ internal enum class InterruptedRunRepairEvidenceKind {
   RUNTIME_PROJECTION_WORK,
 }
 
-private val CHECKPOINT_BUDGET_SUPPRESSED_REPAIR_EVIDENCE_KINDS = setOf(
+private val CHECKPOINT_BUDGET_SUPPRESSED_DURABLE_REPAIR_EVIDENCE_KINDS = setOf(
   InterruptedRunRepairEvidenceKind.PROMPT_CHECKPOINT,
   InterruptedRunRepairEvidenceKind.RUN_RECORD,
   InterruptedRunRepairEvidenceKind.JOURNAL_TAIL,
@@ -467,7 +467,7 @@ internal fun potentialInterruptedRunRepairEvidence(
     processRegistryFactory = processRegistryFactory,
   )
   val evidence = mutableListOf<InterruptedRunRepairEvidence>()
-  val suppressedRepairIdentities = mutableSetOf<InterruptedRunRepairIdentity>()
+  val suppressedProjectionIdentities = mutableSetOf<InterruptedRunRepairIdentity>()
   knownSessionIds.forEach { sessionId ->
     val scan = scanPotentialInterruptedRunRepairEvidenceForSession(
       sessionId = sessionId,
@@ -479,11 +479,11 @@ internal fun potentialInterruptedRunRepairEvidence(
       processRegistryFactory = processRegistryFactory,
     )
     evidence += scan.evidence
-    suppressedRepairIdentities += scan.suppressedRepairIdentities
+    suppressedProjectionIdentities += scan.suppressedProjectionIdentities
   }
   return evidence.withRuntimeProjectionRepairEvidence(
     runtimeServiceProjectionRepairEvidence(runtimeServiceProjectionSnapshots)
-      .filterNot { projected -> projected.matchesSuppressedRepairIdentity(suppressedRepairIdentities) },
+      .filterNot { projected -> projected.matchesRepairIdentity(suppressedProjectionIdentities) },
   )
 }
 
@@ -630,8 +630,9 @@ private fun scanPotentialInterruptedRunRepairEvidenceForSession(
         taskId = record.taskId,
       )
     }
+  val journalEntries = runEventJournalStore?.list().orEmpty()
   potentialRunRepairJournalTails(
-    journalEntries = runEventJournalStore?.list().orEmpty(),
+    journalEntries = journalEntries,
     terminalRunIds = runRecords
       .filter { record -> record.lastResult != null }
       .mapTo(mutableSetOf(), PersistedAgentRunRecord::runId),
@@ -685,44 +686,115 @@ private fun scanPotentialInterruptedRunRepairEvidenceForSession(
         ),
       )
     }
-  val suppressedRepairIdentities = taskSnapshots
-    .filter(SessionQueueTaskSnapshot::isCheckpointResumeBudgetExhausted)
-    .mapTo(mutableSetOf()) { taskSnapshot ->
-      InterruptedRunRepairIdentity(
-        sessionId = sessionId,
-        runId = runIdForTask(taskSnapshot),
-        taskId = taskSnapshot.task.id,
-      )
-    }
+  val suppressedDurableIdentities = checkpointResumeBudgetExhaustedRepairIdentities(
+    sessionId = sessionId,
+    taskSnapshots = taskSnapshots,
+  )
+  val suppressedProjectionIdentities = terminalProjectionRepairIdentities(
+    sessionId = sessionId,
+    taskSnapshots = taskSnapshots,
+    runRecords = runRecords,
+    journalEntries = journalEntries,
+  )
   return InterruptedRunRepairEvidenceScan(
     evidence = evidence
-      .filterNot { item -> item.matchesSuppressedRepairIdentity(suppressedRepairIdentities) }
+      .filterNot { item ->
+        item.matchesSuppressedDurableRepairIdentity(suppressedDurableIdentities)
+      }
       .withManagedProcessReconnectBackoff(),
-    suppressedRepairIdentities = suppressedRepairIdentities,
+    suppressedProjectionIdentities = suppressedProjectionIdentities,
   )
 }
 
 private data class InterruptedRunRepairEvidenceScan(
   val evidence: List<InterruptedRunRepairEvidence>,
-  val suppressedRepairIdentities: Set<InterruptedRunRepairIdentity>,
+  val suppressedProjectionIdentities: Set<InterruptedRunRepairIdentity>,
 )
 
-private data class InterruptedRunRepairIdentity(
+internal data class InterruptedRunRepairIdentity(
   val sessionId: String,
   val runId: String,
   val taskId: String,
 )
 
-private fun InterruptedRunRepairEvidence.matchesSuppressedRepairIdentity(
+internal fun InterruptedRunRepairEvidence.matchesRepairIdentity(
   identities: Set<InterruptedRunRepairIdentity>,
-): Boolean {
-  if (kind !in CHECKPOINT_BUDGET_SUPPRESSED_REPAIR_EVIDENCE_KINDS) {
-    return false
-  }
-  return identities.any { identity ->
+): Boolean = identities.any { identity ->
     sessionId == identity.sessionId &&
       (taskId == identity.taskId || runId == identity.runId)
   }
+
+private fun InterruptedRunRepairEvidence.matchesSuppressedDurableRepairIdentity(
+  identities: Set<InterruptedRunRepairIdentity>,
+): Boolean = kind in CHECKPOINT_BUDGET_SUPPRESSED_DURABLE_REPAIR_EVIDENCE_KINDS &&
+  matchesRepairIdentity(identities)
+
+private fun checkpointResumeBudgetExhaustedRepairIdentities(
+  sessionId: String,
+  taskSnapshots: List<SessionQueueTaskSnapshot>,
+): Set<InterruptedRunRepairIdentity> = taskSnapshots
+  .filter(SessionQueueTaskSnapshot::isCheckpointResumeBudgetExhausted)
+  .mapTo(mutableSetOf()) { taskSnapshot ->
+    InterruptedRunRepairIdentity(
+      sessionId = sessionId,
+      runId = runIdForTask(taskSnapshot),
+      taskId = taskSnapshot.task.id,
+    )
+  }
+
+private fun terminalTaskAndRunRepairIdentities(
+  sessionId: String,
+  taskSnapshots: List<SessionQueueTaskSnapshot>,
+  runRecords: List<PersistedAgentRunRecord>,
+): Set<InterruptedRunRepairIdentity> = buildSet {
+  taskSnapshots
+    .filter { taskSnapshot -> taskSnapshot.lifecycleState in TERMINAL_QUEUE_TASK_LIFECYCLES }
+    .forEach { taskSnapshot ->
+      add(
+        InterruptedRunRepairIdentity(
+          sessionId = sessionId,
+          runId = runIdForTask(taskSnapshot),
+          taskId = taskSnapshot.task.id,
+        ),
+      )
+    }
+  runRecords
+    .filter { record -> record.lastResult != null }
+    .forEach { record ->
+      add(
+        InterruptedRunRepairIdentity(
+          sessionId = sessionId,
+          runId = record.runId,
+          taskId = record.taskId,
+        ),
+      )
+    }
+}
+
+internal fun terminalProjectionRepairIdentities(
+  sessionId: String,
+  taskSnapshots: List<SessionQueueTaskSnapshot>,
+  runRecords: List<PersistedAgentRunRecord>,
+  journalEntries: List<PersistedRunJournalEntry>,
+): Set<InterruptedRunRepairIdentity> = buildSet {
+  addAll(
+    terminalTaskAndRunRepairIdentities(
+      sessionId = sessionId,
+      taskSnapshots = taskSnapshots,
+      runRecords = runRecords,
+    ),
+  )
+  latestRunRepairJournalTails(journalEntries)
+    .filter(::isTerminalRunRepairJournalTail)
+    .forEach { entry ->
+      add(
+        InterruptedRunRepairIdentity(
+          sessionId = sessionId,
+          runId = entry.runId,
+          taskId = entry.taskId,
+        ),
+      )
+    }
 }
 
 private fun repairPreflightTaskSnapshots(
@@ -1315,17 +1387,35 @@ private fun potentialRunRepairJournalTails(
   journalEntries: List<PersistedRunJournalEntry>,
   terminalRunIds: Set<String>,
 ): List<PersistedRunJournalEntry> {
+  return latestRunRepairJournalTails(journalEntries)
+    .filterNot { entry -> entry.runId in terminalRunIds }
+    .filter(::isPotentialRunRepairJournalTail)
+}
+
+private fun latestRunRepairJournalTails(
+  journalEntries: List<PersistedRunJournalEntry>,
+): List<PersistedRunJournalEntry> {
   if (journalEntries.isEmpty()) {
     return emptyList()
   }
   val latestEntriesByRunId = linkedMapOf<String, PersistedRunJournalEntry>()
-  journalEntries
-    .filterNot { entry -> entry.runId in terminalRunIds }
-    .forEach { entry ->
-      latestEntriesByRunId[entry.runId] = entry
-    }
-  return latestEntriesByRunId.values.filter(::isPotentialRunRepairJournalTail)
+  journalEntries.forEach { entry ->
+    latestEntriesByRunId[entry.runId] = entry
+  }
+  return latestEntriesByRunId.values.toList()
 }
+
+private fun isTerminalRunRepairJournalTail(entry: PersistedRunJournalEntry): Boolean =
+  when (entry.payload.kind) {
+    PersistedAgentRunEventKind.LIFECYCLE ->
+      TERMINAL_JOURNAL_LIFECYCLE_PHASES.any { phase ->
+        entry.payload.phase?.equals(phase, ignoreCase = true) == true
+      }
+    PersistedAgentRunEventKind.ASSISTANT_PHASE ->
+      entry.payload.phase?.equals(FINAL_ASSISTANT_PHASE, ignoreCase = true) == true ||
+        entry.payload.isFinal == true
+    else -> false
+  }
 
 private fun isPotentialRunRepairJournalTail(entry: PersistedRunJournalEntry): Boolean =
   when (entry.payload.kind) {

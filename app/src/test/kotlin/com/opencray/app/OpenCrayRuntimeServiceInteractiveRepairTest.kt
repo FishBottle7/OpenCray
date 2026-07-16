@@ -13,6 +13,7 @@ import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
+import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.process.ManagedProcessRestoreDecision
 import com.opencray.runtime.process.ManagedProcessRestoreScope
@@ -570,6 +571,55 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
         runId = terminalRecord.runId,
         taskId = terminalRecord.taskId,
         processId = "process-projected-terminal-reconnect",
+      ),
+      nowEpochMs = 2_000L,
+    )
+
+    assertTrue(terminalSessionId in result.scannedSessionIds)
+    assertEquals(emptyList<String>(), result.resumedSessionIds)
+    assertEquals(0, terminalSession.resumeCallCount)
+    assertEquals(null, result.nextRepairAfterEpochMs)
+    assertEquals(null, result.nextRepairReason)
+    assertEquals(null, result.repairEvidenceBySession[terminalSessionId])
+  }
+
+  @Test
+  fun resumeInterruptedRuntimeServiceRunsIgnoresProjectedReconnectForFinalJournal() {
+    val root = temporaryFolder.newFolder("runtime-service-repair-projected-reconnect-final-journal")
+    val runtimeRoot = root.resolve("runtime")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val terminalSessionId = "session-projected-final-journal"
+    val runId = "run-projected-final-journal"
+    val taskId = "task-projected-final-journal"
+    val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    runEventJournalStoreFactory.forChatSession(terminalSessionId).append(
+      OpenCrayAssistantEvent(
+        runId = runId,
+        taskId = taskId,
+        turn = 0,
+        text = "Done.",
+        isFinal = true,
+        emittedAtEpochMs = 1_500L,
+      ),
+    )
+    val activeSession = RecordingRuntimeSessionAccess(activeSessionId, runs = emptyList())
+    val terminalSession = RecordingRuntimeSessionAccess(terminalSessionId, runs = emptyList())
+    val runtimeAccess = runtimeAccessForSessions(listOf(activeSession, terminalSession))
+
+    val result = resumeInterruptedRuntimeServiceRuns(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+      runtimeReplayAccess = runtimeAccess.replayAccess,
+      snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot),
+      promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot),
+      subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory(runtimeRoot),
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+      projectedRepairEvidenceBySession = projectedReconnectEvidenceBySession(
+        sessionId = terminalSessionId,
+        runId = runId,
+        taskId = taskId,
+        processId = "process-projected-final-journal",
       ),
       nowEpochMs = 2_000L,
     )

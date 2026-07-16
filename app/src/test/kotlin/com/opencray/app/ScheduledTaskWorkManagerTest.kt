@@ -347,6 +347,72 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
+  fun potentialInterruptedRunRepairEvidenceSuppressesProjectedEvidenceForTerminalQueueTask() {
+    val root = temporaryFolder.newFolder("scheduled-task-repair-terminal-projection")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
+    val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
+    val runId = "run-terminal-projection"
+    val taskId = "task-terminal-projection"
+
+    snapshotStoreFactory.forChatSession(sessionId).save(
+      queueSnapshot(
+        sessionId = sessionId,
+        taskSnapshot = queueTaskSnapshot(
+          sessionId = sessionId,
+          taskId = taskId,
+          runId = runId,
+          lifecycleState = QueueTaskLifecycleState.COMPLETED,
+          taskState = AgentTaskState.COMPLETED,
+        ),
+      ),
+    )
+    val projectedKinds = listOf(
+      InterruptedRunRepairEvidenceKind.QUEUE_TASK,
+      InterruptedRunRepairEvidenceKind.PROMPT_CHECKPOINT,
+      InterruptedRunRepairEvidenceKind.RUN_RECORD,
+      InterruptedRunRepairEvidenceKind.JOURNAL_TAIL,
+      InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT,
+    )
+
+    val evidence = potentialInterruptedRunRepairEvidence(
+      chatSessionStore = chatSessionStore,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runtimeServiceProjectionSnapshots = mapOf(
+        RuntimeServiceTarget.DETACHED_BACKGROUND to runtimeProjectionSnapshot(
+          activeSessionIds = listOf(sessionId),
+          lastInterruptedRunRepair = RuntimeServiceInterruptedRunRepairProjection(
+            repairEvidenceBySession = mapOf(
+              sessionId to projectedKinds.map { kind ->
+                InterruptedRunRepairEvidence(
+                  sessionId = sessionId,
+                  kind = kind,
+                  target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+                  runId = runId,
+                  taskId = taskId,
+                  detailId = when (kind) {
+                    InterruptedRunRepairEvidenceKind.PROMPT_CHECKPOINT -> "checkpoint-terminal"
+                    InterruptedRunRepairEvidenceKind.JOURNAL_TAIL -> "journal-terminal"
+                    InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT -> "process-terminal"
+                    else -> null
+                  },
+                )
+              },
+            ),
+            recordedAtEpochMs = 1_200L,
+          ),
+        ),
+      ),
+    )
+
+    assertEquals(emptyList<InterruptedRunRepairEvidence>(), evidence)
+  }
+
+  @Test
   fun hasPotentialInteractiveRunRepairWorkReturnsTrueForNonTerminalQueueTaskInKnownSession() {
     val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-queued")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
@@ -1998,6 +2064,36 @@ class ScheduledTaskWorkManagerTest {
         promptCheckpointStoreFactory = promptCheckpointStoreFactory,
         subAgentHandleStoreFactory = subAgentHandleStoreFactory,
         runEventJournalStoreFactory = runEventJournalStoreFactory,
+      ),
+    )
+    assertEquals(
+      emptyList<InterruptedRunRepairEvidence>(),
+      potentialInterruptedRunRepairEvidence(
+        chatSessionStore = chatSessionStore,
+        snapshotStoreFactory = snapshotStoreFactory,
+        promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+        runEventJournalStoreFactory = runEventJournalStoreFactory,
+        runtimeServiceProjectionSnapshots = mapOf(
+          RuntimeServiceTarget.INTERACTIVE to runtimeProjectionSnapshot(
+            activeSessionIds = listOf("session-final-journal"),
+            lastInterruptedRunRepair = RuntimeServiceInterruptedRunRepairProjection(
+              repairEvidenceBySession = mapOf(
+                "session-final-journal" to listOf(
+                  InterruptedRunRepairEvidence(
+                    sessionId = "session-final-journal",
+                    kind = InterruptedRunRepairEvidenceKind.JOURNAL_TAIL,
+                    target = RuntimeServiceTarget.INTERACTIVE,
+                    runId = "run-final-journal",
+                    taskId = "task-final-journal",
+                    detailId = "stale-projected-journal-tail",
+                  ),
+                ),
+              ),
+              recordedAtEpochMs = 1_200L,
+            ),
+          ),
+        ),
       ),
     )
   }

@@ -479,7 +479,9 @@ internal fun bootstrapRuntimeServiceSessions(
       projectedRepairEvidence = projectedRepairEvidenceForSession(
         sessionId = sessionId,
         projectedRepairEvidenceBySession = projectedRepairEvidenceBySession,
+        snapshotStoreFactory = snapshotStoreFactory,
         runRecordStoreFactory = runRecordStoreFactory,
+        runEventJournalStoreFactory = runEventJournalStoreFactory,
       ),
     )
     val dueRepairEvidence = dueInterruptedRunRepairEvidence(
@@ -566,7 +568,9 @@ internal fun resumeInterruptedRuntimeServiceRuns(
       projectedRepairEvidence = projectedRepairEvidenceForSession(
         sessionId = sessionId,
         projectedRepairEvidenceBySession = projectedRepairEvidenceBySession,
+        snapshotStoreFactory = snapshotStoreFactory,
         runRecordStoreFactory = runRecordStoreFactory,
+        runEventJournalStoreFactory = runEventJournalStoreFactory,
       ),
     )
     val dueRepairEvidence = dueInterruptedRunRepairEvidence(
@@ -660,23 +664,41 @@ private fun mergedInterruptedRunRepairEvidence(
 private fun projectedRepairEvidenceForSession(
   sessionId: String,
   projectedRepairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>>,
+  snapshotStoreFactory: AgentQueueSnapshotStoreFactory?,
   runRecordStoreFactory: AgentRunRecordStoreFactory?,
+  runEventJournalStoreFactory: RunEventJournalStoreFactory?,
 ): List<InterruptedRunRepairEvidence> {
   val projectedRepairEvidence = projectedRepairEvidenceBySession[sessionId].orEmpty()
-  if (projectedRepairEvidence.isEmpty() || runRecordStoreFactory == null) {
+  if (projectedRepairEvidence.isEmpty()) {
     return projectedRepairEvidence
   }
-  val terminalRunIds = runCatching {
-    runRecordStoreFactory.forChatSession(sessionId)
-      .list()
-      .filter { record -> record.lastResult != null }
-      .mapTo(mutableSetOf(), PersistedAgentRunRecord::runId)
-  }.getOrDefault(emptySet())
-  if (terminalRunIds.isEmpty()) {
+  val terminalIdentities = terminalProjectionRepairIdentities(
+    sessionId = sessionId,
+    taskSnapshots = runCatching {
+      snapshotStoreFactory
+        ?.forChatSession(sessionId)
+        ?.load()
+        ?.tasks
+        .orEmpty()
+    }.getOrDefault(emptyList()),
+    runRecords = runCatching {
+      runRecordStoreFactory
+        ?.forChatSession(sessionId)
+        ?.list()
+        .orEmpty()
+    }.getOrDefault(emptyList()),
+    journalEntries = runCatching {
+      runEventJournalStoreFactory
+        ?.forChatSession(sessionId)
+        ?.list()
+        .orEmpty()
+    }.getOrDefault(emptyList()),
+  )
+  if (terminalIdentities.isEmpty()) {
     return projectedRepairEvidence
   }
   return projectedRepairEvidence.filterNot { evidence ->
-    evidence.runId != null && evidence.runId in terminalRunIds
+    evidence.matchesRepairIdentity(terminalIdentities)
   }
 }
 
