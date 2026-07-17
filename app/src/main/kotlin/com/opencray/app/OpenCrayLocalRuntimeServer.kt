@@ -296,6 +296,21 @@ internal class OpenCrayLocalRuntimeServer(
       "POST" to "/v1/save_notification_settings" -> settingsGateway.saveNotificationSettings(
         payload = jsonObjectToMap(body),
       )
+      "GET" to "/v1/scheduled_tasks" -> settingsGateway.loadScheduledTasks()
+      "GET" to "/v1/scheduled_task" -> settingsGateway.loadScheduledTask(
+        scheduleId = request.queryParameter("scheduleId"),
+      )
+      "POST" to "/v1/update_scheduled_task_enabled" -> settingsGateway.updateScheduledTaskEnabled(
+        scheduleId = body.optString("scheduleId"),
+        enabled = body.optBoolean("enabled"),
+      )
+      "POST" to "/v1/run_scheduled_task_now" -> settingsGateway.runScheduledTaskNow(
+        scheduleId = body.optString("scheduleId"),
+      )
+      "POST" to "/v1/snooze_scheduled_task" -> settingsGateway.snoozeScheduledTask(
+        scheduleId = body.optString("scheduleId"),
+        durationMinutes = body.optInt("durationMinutes"),
+      )
       "GET" to "/v1/strong_background_snapshot" -> settingsGateway.loadStrongBackgroundSnapshot()
       "POST" to "/v1/perform_strong_background_action" -> settingsGateway.performStrongBackgroundAction(
         actionId = body.optString("actionId"),

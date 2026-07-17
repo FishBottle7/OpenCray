@@ -352,6 +352,82 @@ class OpenCrayFlutterHostBridgeTest {
   }
 
   @Test
+  fun scheduledTaskMethodCallsRouteThroughSettingsGateway() {
+    val calls = mutableListOf<String>()
+    val settingsGateway = object : UnsupportedSettingsGateway() {
+      override fun loadScheduledTasks(): Map<String, Any?> =
+        mapOf("totalCount" to 1, "tasks" to emptyList<Map<String, Any?>>())
+
+      override fun loadScheduledTask(scheduleId: String): Map<String, Any?> =
+        mapOf("scheduleId" to scheduleId)
+
+      override fun updateScheduledTaskEnabled(
+        scheduleId: String,
+        enabled: Boolean,
+      ): Map<String, Any?> {
+        calls += "enabled:$scheduleId:$enabled"
+        return mapOf("enabled" to enabled)
+      }
+
+      override fun runScheduledTaskNow(scheduleId: String): Map<String, Any?> {
+        calls += "run:$scheduleId"
+        return mapOf("action" to "run_now")
+      }
+
+      override fun snoozeScheduledTask(
+        scheduleId: String,
+        durationMinutes: Int,
+      ): Map<String, Any?> {
+        calls += "snooze:$scheduleId:$durationMinutes"
+        return mapOf("action" to "snooze")
+      }
+    }
+    val bridge = hostBridge(
+      chatGateway = RecordingChatRuntimeGateway(),
+      settingsGateway = settingsGateway,
+    )
+
+    val listResult = RecordingMethodResult()
+    bridge.onMethodCall(MethodCall("loadScheduledTasks", null), listResult)
+    assertEquals(1, (listResult.successPayload as Map<*, *>)["totalCount"])
+
+    val detailResult = RecordingMethodResult()
+    bridge.onMethodCall(
+      MethodCall("loadScheduledTask", mapOf("scheduleId" to "schedule-1")),
+      detailResult,
+    )
+    assertEquals("schedule-1", (detailResult.successPayload as Map<*, *>)["scheduleId"])
+
+    bridge.onMethodCall(
+      MethodCall(
+        "updateScheduledTaskEnabled",
+        mapOf("scheduleId" to "schedule-1", "enabled" to false),
+      ),
+      RecordingMethodResult(),
+    )
+    bridge.onMethodCall(
+      MethodCall("runScheduledTaskNow", mapOf("scheduleId" to "schedule-1")),
+      RecordingMethodResult(),
+    )
+    bridge.onMethodCall(
+      MethodCall(
+        "snoozeScheduledTask",
+        mapOf("scheduleId" to "schedule-1", "durationMinutes" to 30),
+      ),
+      RecordingMethodResult(),
+    )
+
+    assertEquals(
+      listOf(
+        "enabled:schedule-1:false",
+        "run:schedule-1",
+        "snooze:schedule-1:30",
+      ),
+      calls,
+    )
+  }
+
+  @Test
   fun selectAgentMethodCallRoutesThroughLocalHostGateway() {
     val localGateway = RecordingLocalGateway().apply {
       selectAgentResult = mapOf(
@@ -675,6 +751,7 @@ class OpenCrayFlutterHostBridgeTest {
   private fun hostBridge(
     chatGateway: RecordingChatRuntimeGateway,
     localHostGateway: OpenCrayLocalHostGateway = UnsupportedLocalGateway(),
+    settingsGateway: OpenCraySettingsGateway = UnsupportedSettingsGateway(),
   ): OpenCrayFlutterHostBridge = OpenCrayFlutterHostBridge(
     context = MinimalContext(),
     runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
@@ -682,7 +759,7 @@ class OpenCrayFlutterHostBridgeTest {
     shellGateway = UnsupportedShellGateway(),
     chatRuntimeGateway = chatGateway,
     skillsGateway = UnsupportedSkillsGateway(),
-    settingsGateway = UnsupportedSettingsGateway(),
+    settingsGateway = settingsGateway,
     debugPythonScriptRunnerFactory = {
       throw UnsupportedOperationException("Debug Python runner should not be used.")
     },

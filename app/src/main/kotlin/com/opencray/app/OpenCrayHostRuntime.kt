@@ -258,6 +258,9 @@ internal class OpenCrayHostRuntime private constructor(
   private val fallbackSandboxSettingsRepository: SandboxSettingsRepository by lazy {
     Companion.inMemorySandboxSettingsRepository()
   }
+  private val scheduledTaskManager: AppScheduledTaskManager? by lazy {
+    appContext?.let(AppScheduledTaskManager::fromContext)
+  }
   private val soulProfileResolver = SoulProfileResolver()
   private val runtimeSoulProfileSeedFactory = RuntimeSoulProfileSeedFactory()
   private val memoryBackedSoulProfileResolver = MemoryBackedSoulProfileResolver()
@@ -858,6 +861,34 @@ internal class OpenCrayHostRuntime private constructor(
     }
     return snapshot.toGatewayMap()
   }
+
+  override fun loadScheduledTasks(): Map<String, Any?> =
+    requireScheduledTaskManager().loadScheduledTasksGatewayMap()
+
+  override fun loadScheduledTask(scheduleId: String): Map<String, Any?> =
+    requireScheduledTaskManager().loadScheduledTaskGatewayMap(scheduleId)
+
+  override fun updateScheduledTaskEnabled(
+    scheduleId: String,
+    enabled: Boolean,
+  ): Map<String, Any?> = requireScheduledTaskManager().updateScheduledTaskEnabledGatewayMap(
+    scheduleId = scheduleId,
+    enabled = enabled,
+  )
+
+  override fun runScheduledTaskNow(scheduleId: String): Map<String, Any?> =
+    requireScheduledTaskManager().runScheduledTaskNowGatewayMap(scheduleId)
+
+  override fun snoozeScheduledTask(
+    scheduleId: String,
+    durationMinutes: Int,
+  ): Map<String, Any?> = requireScheduledTaskManager().snoozeScheduledTaskGatewayMap(
+    scheduleId = scheduleId,
+    durationMinutes = durationMinutes,
+  )
+
+  private fun requireScheduledTaskManager(): AppScheduledTaskManager =
+    checkNotNull(scheduledTaskManager) { "Scheduled task management is unavailable." }
 
   override fun loadStrongBackgroundSnapshot(): Map<String, Any?> = buildMap {
     putAll(strongBackgroundSettingsAccess.loadSnapshot())

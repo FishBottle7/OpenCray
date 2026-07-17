@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import android.content.Context
 import com.opencray.runtime.ScheduledTaskConflictPolicy
 import com.opencray.runtime.ScheduledTaskCreateRequest
 import com.opencray.runtime.ScheduledTaskCreateResult
@@ -21,6 +22,7 @@ import com.opencray.runtime.ScheduledTaskTriggerRequest
 import com.opencray.runtime.ScheduledTaskTriggerSnapshot
 import com.opencray.runtime.ScheduledTaskUpdateRequest
 import com.opencray.runtime.ScheduledTaskUpdateResult
+import java.io.File
 import java.nio.file.Path
 import java.time.Duration
 import java.time.Instant
@@ -439,5 +441,35 @@ internal class AppScheduledTaskManager(
   companion object {
     private const val DEFAULT_TITLE_MAX_CHARS: Int = 48
     private const val MILLIS_PER_MINUTE: Long = 60_000L
+
+    fun fromContext(context: Context): AppScheduledTaskManager {
+      val appContext = context.applicationContext
+      val runtimeRoot = File(
+        appContext.filesDir,
+        FileBackedAgentQueueSnapshotStoreFactory.DIRECTORY_NAME,
+      )
+      return AppScheduledTaskManager(
+        storageRootPath = runtimeRoot.toPath(),
+        chatSessionStore = ChatSessionLocalStore.fromContext(appContext),
+        specStore = FileBackedScheduledTaskSpecStoreFactory(runtimeRoot).create(),
+        runRecordStore = FileBackedScheduledTaskRunRecordStoreFactory(runtimeRoot).create(),
+        triggerRegistrar = DefaultScheduledTriggerRegistrar(
+          alarmScheduler = AlarmManagerScheduledAlarmScheduler.fromContext(appContext),
+          workScheduler = ProcessSafeScheduledWorkSchedulerFactory.fromContext(appContext),
+        ),
+        triggerSyncStateStore = FileBackedScheduledTaskTriggerSyncStateStoreFactory(
+          runtimeRoot,
+        ).create(),
+        scheduledTaskStarter = { command ->
+          openCrayRuntimeServiceEnvironment(appContext)
+            .runtimeServiceAccessGateway
+            .startScheduledTask(
+              context = appContext,
+              command = command,
+              target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+            )
+        },
+      )
+    }
   }
 }

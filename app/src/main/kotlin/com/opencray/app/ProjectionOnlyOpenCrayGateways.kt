@@ -99,6 +99,7 @@ internal class ProjectionOnlyOpenCrayShellGateway(
 internal class ProjectionOnlyOpenCraySettingsGateway(
   private val settingsFacade: SettingsFacade,
   private val notificationSettingsFacade: NotificationSettingsFacade,
+  private val scheduledTaskManager: AppScheduledTaskManager,
   private val networkSearchConfigFacade: NetworkSearchConfigFacade,
   private val mediaSpeechSettingsFacade: MediaSpeechSettingsFacade,
   private val sandboxSettingsRepository: SandboxSettingsRepository,
@@ -131,6 +132,25 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
 
   override fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?> =
     throw writeUnavailable("saveNotificationSettings")
+
+  override fun loadScheduledTasks(): Map<String, Any?> =
+    scheduledTaskManager.loadScheduledTasksGatewayMap()
+
+  override fun loadScheduledTask(scheduleId: String): Map<String, Any?> =
+    scheduledTaskManager.loadScheduledTaskGatewayMap(scheduleId)
+
+  override fun updateScheduledTaskEnabled(
+    scheduleId: String,
+    enabled: Boolean,
+  ): Map<String, Any?> = throw writeUnavailable("updateScheduledTaskEnabled")
+
+  override fun runScheduledTaskNow(scheduleId: String): Map<String, Any?> =
+    throw writeUnavailable("runScheduledTaskNow")
+
+  override fun snoozeScheduledTask(
+    scheduleId: String,
+    durationMinutes: Int,
+  ): Map<String, Any?> = throw writeUnavailable("snoozeScheduledTask")
 
   override fun loadStrongBackgroundSnapshot(): Map<String, Any?> = buildMap {
     putAll(strongBackgroundSettingsAccess.loadSnapshot())
@@ -407,6 +427,7 @@ internal fun projectionOnlyOpenCraySettingsGateway(
   return ProjectionOnlyOpenCraySettingsGateway(
     settingsFacade = LocalSettingsFacade.fromContext(appContext),
     notificationSettingsFacade = LocalNotificationSettingsFacade.fromContext(appContext),
+    scheduledTaskManager = AppScheduledTaskManager.fromContext(appContext),
     networkSearchConfigFacade = LocalNetworkSearchConfigFacade.fromContext(appContext),
     mediaSpeechSettingsFacade = LocalMediaSpeechSettingsFacade.fromContext(appContext),
     sandboxSettingsRepository = SandboxSettingsRepository.fromContext(appContext),

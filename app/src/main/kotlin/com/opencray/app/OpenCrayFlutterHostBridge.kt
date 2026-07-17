@@ -321,6 +321,36 @@ internal class OpenCrayFlutterHostBridge(
           }
           return
         }
+        "loadScheduledTasks" -> settingsGateway.loadScheduledTasks()
+        "loadScheduledTask" -> settingsGateway.loadScheduledTask(
+          scheduleId = call.argument<String>("scheduleId").orEmpty(),
+        )
+        "updateScheduledTaskEnabled" -> {
+          runAsync(result) {
+            settingsGateway.updateScheduledTaskEnabled(
+              scheduleId = call.argument<String>("scheduleId").orEmpty(),
+              enabled = call.argument<Boolean>("enabled") == true,
+            )
+          }
+          return
+        }
+        "runScheduledTaskNow" -> {
+          runAsync(result) {
+            settingsGateway.runScheduledTaskNow(
+              scheduleId = call.argument<String>("scheduleId").orEmpty(),
+            )
+          }
+          return
+        }
+        "snoozeScheduledTask" -> {
+          runAsync(result) {
+            settingsGateway.snoozeScheduledTask(
+              scheduleId = call.argument<String>("scheduleId").orEmpty(),
+              durationMinutes = call.argument<Int>("durationMinutes") ?: 15,
+            )
+          }
+          return
+        }
         "loadStrongBackgroundSnapshot" -> settingsGateway.loadStrongBackgroundSnapshot()
         "performStrongBackgroundAction" -> {
           runAsync(result) {

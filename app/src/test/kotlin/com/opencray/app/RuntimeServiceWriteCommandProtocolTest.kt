@@ -246,6 +246,9 @@ class RuntimeServiceWriteCommandProtocolTest {
 
   private fun settingsCommands(): List<OpenCraySettingsWriteCommand> = listOf(
     OpenCraySettingsWriteCommand.SaveNotificationSettings(sampleMap()),
+    OpenCraySettingsWriteCommand.UpdateScheduledTaskEnabled("schedule-1", false),
+    OpenCraySettingsWriteCommand.RunScheduledTaskNow("schedule-2"),
+    OpenCraySettingsWriteCommand.SnoozeScheduledTask("schedule-3", 45),
     OpenCraySettingsWriteCommand.PerformStrongBackgroundAction("repair"),
     OpenCraySettingsWriteCommand.SaveNetworkSearchConfig(listOf(sampleMap())),
     OpenCraySettingsWriteCommand.SaveMediaSpeechConfig(sampleMap()),

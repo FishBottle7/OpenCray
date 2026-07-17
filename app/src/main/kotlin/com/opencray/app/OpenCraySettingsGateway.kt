@@ -11,6 +11,25 @@ internal interface OpenCraySettingsGateway {
 
   fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?>
 
+  fun loadScheduledTasks(): Map<String, Any?> =
+    error("Scheduled task management is unavailable.")
+
+  fun loadScheduledTask(scheduleId: String): Map<String, Any?> =
+    error("Scheduled task details are unavailable.")
+
+  fun updateScheduledTaskEnabled(
+    scheduleId: String,
+    enabled: Boolean,
+  ): Map<String, Any?> = error("Scheduled task updates are unavailable.")
+
+  fun runScheduledTaskNow(scheduleId: String): Map<String, Any?> =
+    error("Scheduled task execution is unavailable.")
+
+  fun snoozeScheduledTask(
+    scheduleId: String,
+    durationMinutes: Int,
+  ): Map<String, Any?> = error("Scheduled task snooze is unavailable.")
+
   fun loadStrongBackgroundSnapshot(): Map<String, Any?>
 
   fun performStrongBackgroundAction(actionId: String): Map<String, Any?>
@@ -148,6 +167,20 @@ internal interface OpenCraySettingsGateway {
 internal sealed interface OpenCraySettingsWriteCommand {
   data class SaveNotificationSettings(
     val payload: Map<String, Any?>,
+  ) : OpenCraySettingsWriteCommand
+
+  data class UpdateScheduledTaskEnabled(
+    val scheduleId: String,
+    val enabled: Boolean,
+  ) : OpenCraySettingsWriteCommand
+
+  data class RunScheduledTaskNow(
+    val scheduleId: String,
+  ) : OpenCraySettingsWriteCommand
+
+  data class SnoozeScheduledTask(
+    val scheduleId: String,
+    val durationMinutes: Int,
   ) : OpenCraySettingsWriteCommand
 
   data class PerformStrongBackgroundAction(
@@ -300,6 +333,27 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
   is OpenCraySettingsWriteCommand.SaveNotificationSettings -> OpenCraySettingsWriteDispatchResult.Payload(
     saveNotificationSettings(command.payload),
   )
+
+  is OpenCraySettingsWriteCommand.UpdateScheduledTaskEnabled ->
+    OpenCraySettingsWriteDispatchResult.Payload(
+      updateScheduledTaskEnabled(
+        scheduleId = command.scheduleId,
+        enabled = command.enabled,
+      ),
+    )
+
+  is OpenCraySettingsWriteCommand.RunScheduledTaskNow ->
+    OpenCraySettingsWriteDispatchResult.Payload(
+      runScheduledTaskNow(command.scheduleId),
+    )
+
+  is OpenCraySettingsWriteCommand.SnoozeScheduledTask ->
+    OpenCraySettingsWriteDispatchResult.Payload(
+      snoozeScheduledTask(
+        scheduleId = command.scheduleId,
+        durationMinutes = command.durationMinutes,
+      ),
+    )
 
   is OpenCraySettingsWriteCommand.PerformStrongBackgroundAction -> OpenCraySettingsWriteDispatchResult.Payload(
     performStrongBackgroundAction(command.actionId),

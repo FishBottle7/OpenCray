@@ -257,6 +257,7 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
         localeTag = strings.localeTag,
         settingsFacade = LocalSettingsFacade.fromContext(localizedContextProvider()),
         notificationSettingsFacade = LocalNotificationSettingsFacade.fromContext(appContext),
+        scheduledTaskManager = AppScheduledTaskManager.fromContext(appContext),
         strongBackgroundSettingsAccess = AndroidStrongBackgroundSettingsAccess.fromContext(
           appContext,
         ),
@@ -1765,6 +1766,7 @@ internal class ServiceOwnedSettingsGateway(
   private var localeTag: String,
   private var settingsFacade: SettingsFacade,
   private var notificationSettingsFacade: NotificationSettingsFacade,
+  private val scheduledTaskManager: AppScheduledTaskManager? = null,
   private val strongBackgroundSettingsAccess: StrongBackgroundSettingsAccess =
     NoOpStrongBackgroundSettingsAccess,
   appLanguageSettingsAccess: AppLanguageSettingsGatewayAccess? = null,
@@ -1823,6 +1825,34 @@ internal class ServiceOwnedSettingsGateway(
     notificationSettingsFacade
       .save(payload.toSaveNotificationSettingsRequest())
       .toGatewayMap()
+
+  override fun loadScheduledTasks(): Map<String, Any?> =
+    requireScheduledTaskManager().loadScheduledTasksGatewayMap()
+
+  override fun loadScheduledTask(scheduleId: String): Map<String, Any?> =
+    requireScheduledTaskManager().loadScheduledTaskGatewayMap(scheduleId)
+
+  override fun updateScheduledTaskEnabled(
+    scheduleId: String,
+    enabled: Boolean,
+  ): Map<String, Any?> = requireScheduledTaskManager().updateScheduledTaskEnabledGatewayMap(
+    scheduleId = scheduleId,
+    enabled = enabled,
+  )
+
+  override fun runScheduledTaskNow(scheduleId: String): Map<String, Any?> =
+    requireScheduledTaskManager().runScheduledTaskNowGatewayMap(scheduleId)
+
+  override fun snoozeScheduledTask(
+    scheduleId: String,
+    durationMinutes: Int,
+  ): Map<String, Any?> = requireScheduledTaskManager().snoozeScheduledTaskGatewayMap(
+    scheduleId = scheduleId,
+    durationMinutes = durationMinutes,
+  )
+
+  private fun requireScheduledTaskManager(): AppScheduledTaskManager =
+    checkNotNull(scheduledTaskManager) { "Scheduled task management is unavailable." }
 
   override fun loadStrongBackgroundSnapshot(): Map<String, Any?> = buildMap {
     putAll(strongBackgroundSettingsAccess.loadSnapshot())

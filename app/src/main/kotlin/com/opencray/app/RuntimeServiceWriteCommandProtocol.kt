@@ -221,6 +221,27 @@ internal fun runtimeServiceWriteCommandEnvelope(
     payload = command.payload.toWireJsonObject(),
   )
 
+  is OpenCraySettingsWriteCommand.UpdateScheduledTaskEnabled -> settingsCommandEnvelope(
+    route = "v1/update_scheduled_task_enabled",
+    payload = buildJsonObject {
+      put("scheduleId", command.scheduleId)
+      put("enabled", command.enabled)
+    },
+  )
+
+  is OpenCraySettingsWriteCommand.RunScheduledTaskNow -> settingsCommandEnvelope(
+    route = "v1/run_scheduled_task_now",
+    payload = stringPayload("scheduleId", command.scheduleId),
+  )
+
+  is OpenCraySettingsWriteCommand.SnoozeScheduledTask -> settingsCommandEnvelope(
+    route = "v1/snooze_scheduled_task",
+    payload = buildJsonObject {
+      put("scheduleId", command.scheduleId)
+      put("durationMinutes", command.durationMinutes)
+    },
+  )
+
   is OpenCraySettingsWriteCommand.PerformStrongBackgroundAction -> settingsCommandEnvelope(
     route = "v1/perform_strong_background_action",
     payload = stringPayload("actionId", command.actionId),
@@ -658,6 +679,21 @@ private fun RuntimeServiceWriteCommandEnvelope.decodeSettingsCommand(): OpenCray
   when (normalizedMethodAndRoute()) {
     "POST" to "v1/save_notification_settings" ->
       OpenCraySettingsWriteCommand.SaveNotificationSettings(payload.toKotlinMap())
+
+    "POST" to "v1/update_scheduled_task_enabled" ->
+      OpenCraySettingsWriteCommand.UpdateScheduledTaskEnabled(
+        scheduleId = payload.requireString("scheduleId"),
+        enabled = payload.requireBoolean("enabled"),
+      )
+
+    "POST" to "v1/run_scheduled_task_now" ->
+      OpenCraySettingsWriteCommand.RunScheduledTaskNow(payload.requireString("scheduleId"))
+
+    "POST" to "v1/snooze_scheduled_task" ->
+      OpenCraySettingsWriteCommand.SnoozeScheduledTask(
+        scheduleId = payload.requireString("scheduleId"),
+        durationMinutes = payload.requireInt("durationMinutes"),
+      )
 
     "POST" to "v1/perform_strong_background_action" ->
       OpenCraySettingsWriteCommand.PerformStrongBackgroundAction(payload.requireString("actionId"))

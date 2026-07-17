@@ -680,6 +680,34 @@ private class LoopbackHttpOpenCraySettingsGateway(
   override fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?> =
     commandTransport.requireSettingsPayload(OpenCraySettingsWriteCommand.SaveNotificationSettings(payload))
 
+  override fun loadScheduledTasks(): Map<String, Any?> =
+    requestClient.getObject(path = "v1/scheduled_tasks")
+
+  override fun loadScheduledTask(scheduleId: String): Map<String, Any?> =
+    requestClient.getObject(
+      path = "v1/scheduled_task",
+      queryParameters = mapOf("scheduleId" to scheduleId),
+    )
+
+  override fun updateScheduledTaskEnabled(
+    scheduleId: String,
+    enabled: Boolean,
+  ): Map<String, Any?> = commandTransport.requireSettingsPayload(
+    OpenCraySettingsWriteCommand.UpdateScheduledTaskEnabled(scheduleId, enabled),
+  )
+
+  override fun runScheduledTaskNow(scheduleId: String): Map<String, Any?> =
+    commandTransport.requireSettingsPayload(
+      OpenCraySettingsWriteCommand.RunScheduledTaskNow(scheduleId),
+    )
+
+  override fun snoozeScheduledTask(
+    scheduleId: String,
+    durationMinutes: Int,
+  ): Map<String, Any?> = commandTransport.requireSettingsPayload(
+    OpenCraySettingsWriteCommand.SnoozeScheduledTask(scheduleId, durationMinutes),
+  )
+
   override fun loadStrongBackgroundSnapshot(): Map<String, Any?> =
     requestClient.getObject(path = "v1/strong_background_snapshot")
 

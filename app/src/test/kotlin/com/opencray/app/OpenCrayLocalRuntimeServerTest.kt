@@ -2662,6 +2662,48 @@ class OpenCrayLocalRuntimeServerTest {
         assertEquals(false, settingsGateway.lastNotificationSettingsPayload?.get("masterEnabled"))
         assertEquals("all", settingsGateway.lastNotificationSettingsPayload?.get("defaultDeliveryModeId"))
 
+        val scheduledTasksResponse = request(server, "GET", "/v1/scheduled_tasks")
+        val scheduledTasksPayload = JSONObject(scheduledTasksResponse.body)
+        assertEquals(200, scheduledTasksResponse.statusCode)
+        assertEquals(1, scheduledTasksPayload.getInt("totalCount"))
+
+        val scheduledTaskResponse = request(
+          server,
+          "GET",
+          "/v1/scheduled_task?scheduleId=schedule-1",
+        )
+        val scheduledTaskPayload = JSONObject(scheduledTaskResponse.body)
+        assertEquals(200, scheduledTaskResponse.statusCode)
+        assertEquals("schedule-1", scheduledTaskPayload.getJSONObject("task").getString("scheduleId"))
+
+        request(
+          server,
+          "POST",
+          "/v1/update_scheduled_task_enabled",
+          body = JSONObject().apply {
+            put("scheduleId", "schedule-1")
+            put("enabled", false)
+          }.toString(),
+        )
+        request(
+          server,
+          "POST",
+          "/v1/run_scheduled_task_now",
+          body = JSONObject().put("scheduleId", "schedule-1").toString(),
+        )
+        request(
+          server,
+          "POST",
+          "/v1/snooze_scheduled_task",
+          body = JSONObject().apply {
+            put("scheduleId", "schedule-1")
+            put("durationMinutes", 15)
+          }.toString(),
+        )
+        assertEquals("schedule-1", settingsGateway.lastScheduledTaskId)
+        assertEquals(false, settingsGateway.lastScheduledTaskEnabled)
+        assertEquals(15, settingsGateway.lastScheduledTaskSnoozeMinutes)
+
         val strongBackgroundResponse = request(server, "GET", "/v1/strong_background_snapshot")
         val strongBackgroundPayload = JSONObject(strongBackgroundResponse.body)
         assertEquals(200, strongBackgroundResponse.statusCode)
@@ -3191,6 +3233,12 @@ class OpenCrayLocalRuntimeServerTest {
       private set
     var lastStrongBackgroundActionId: String? = null
       private set
+    var lastScheduledTaskId: String? = null
+      private set
+    var lastScheduledTaskEnabled: Boolean? = null
+      private set
+    var lastScheduledTaskSnoozeMinutes: Int? = null
+      private set
 
     override fun loadSettingsOverview(): Map<String, Any?> = mapOf("source" to "gateway-settings")
 
@@ -3208,6 +3256,40 @@ class OpenCrayLocalRuntimeServerTest {
     override fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?> {
       lastNotificationSettingsPayload = payload
       return mapOf("source" to "gateway-notification-settings-save")
+    }
+
+    override fun loadScheduledTasks(): Map<String, Any?> = mapOf(
+      "tasks" to listOf(mapOf("scheduleId" to "schedule-1")),
+      "totalCount" to 1,
+    )
+
+    override fun loadScheduledTask(scheduleId: String): Map<String, Any?> = mapOf(
+      "task" to mapOf("scheduleId" to scheduleId),
+      "recentRuns" to emptyList<Map<String, Any?>>(),
+      "totalRunCount" to 0,
+    )
+
+    override fun updateScheduledTaskEnabled(
+      scheduleId: String,
+      enabled: Boolean,
+    ): Map<String, Any?> {
+      lastScheduledTaskId = scheduleId
+      lastScheduledTaskEnabled = enabled
+      return mapOf("scheduleId" to scheduleId, "enabled" to enabled)
+    }
+
+    override fun runScheduledTaskNow(scheduleId: String): Map<String, Any?> {
+      lastScheduledTaskId = scheduleId
+      return mapOf("scheduleId" to scheduleId, "action" to "run_now")
+    }
+
+    override fun snoozeScheduledTask(
+      scheduleId: String,
+      durationMinutes: Int,
+    ): Map<String, Any?> {
+      lastScheduledTaskId = scheduleId
+      lastScheduledTaskSnoozeMinutes = durationMinutes
+      return mapOf("scheduleId" to scheduleId, "action" to "snooze")
     }
 
     override fun loadStrongBackgroundSnapshot(): Map<String, Any?> =

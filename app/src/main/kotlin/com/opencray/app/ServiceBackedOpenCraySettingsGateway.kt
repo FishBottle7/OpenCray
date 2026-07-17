@@ -34,6 +34,34 @@ internal class ServiceBackedOpenCraySettingsGateway(
       command = OpenCraySettingsWriteCommand.SaveNotificationSettings(payload),
   )
 
+  override fun loadScheduledTasks(): Map<String, Any?> =
+    currentLoadGateway().loadScheduledTasks()
+
+  override fun loadScheduledTask(scheduleId: String): Map<String, Any?> =
+    currentLoadGateway().loadScheduledTask(scheduleId)
+
+  override fun updateScheduledTaskEnabled(
+    scheduleId: String,
+    enabled: Boolean,
+  ): Map<String, Any?> = dispatchPayloadWriteCommand(
+    operation = "updateScheduledTaskEnabled",
+    command = OpenCraySettingsWriteCommand.UpdateScheduledTaskEnabled(scheduleId, enabled),
+  )
+
+  override fun runScheduledTaskNow(scheduleId: String): Map<String, Any?> =
+    dispatchPayloadWriteCommand(
+      operation = "runScheduledTaskNow",
+      command = OpenCraySettingsWriteCommand.RunScheduledTaskNow(scheduleId),
+    )
+
+  override fun snoozeScheduledTask(
+    scheduleId: String,
+    durationMinutes: Int,
+  ): Map<String, Any?> = dispatchPayloadWriteCommand(
+    operation = "snoozeScheduledTask",
+    command = OpenCraySettingsWriteCommand.SnoozeScheduledTask(scheduleId, durationMinutes),
+  )
+
   override fun loadStrongBackgroundSnapshot(): Map<String, Any?> =
     currentLoadGateway().loadStrongBackgroundSnapshot()
 
