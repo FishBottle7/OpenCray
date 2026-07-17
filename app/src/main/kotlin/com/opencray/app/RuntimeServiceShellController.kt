@@ -7,6 +7,11 @@ import android.os.Handler
 import android.os.IBinder
 
 internal interface RuntimeServiceShellController {
+  fun attachForStart(
+    intent: Intent?,
+    target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
+  ): Boolean
+
   fun attach(target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET): Boolean
 
   fun onStartCommand(
@@ -23,7 +28,7 @@ internal fun runtimeServiceShellController(
   service: Service,
   appContext: Context,
   mainHandler: Handler,
-  bootstrapDependencies: RuntimeServiceBootstrapDependencies,
+  bootstrapDependencies: RuntimeServiceBootstrapDependencies? = null,
   serviceBootstrapFactory: (
     Service,
     Context,
@@ -36,7 +41,9 @@ internal fun runtimeServiceShellController(
         appContext = resolvedContext,
         mainHandler = resolvedHandler,
         target = resolvedTarget,
-        bootstrapDependencies = bootstrapDependencies,
+        bootstrapDependencies = bootstrapDependencies
+          ?: openCrayRuntimeServiceEnvironment(resolvedContext)
+            .runtimeServiceBootstrapDependencies,
       )
     },
   runtimeTargetReader: (Intent?) -> RuntimeServiceTarget =
@@ -45,6 +52,13 @@ internal fun runtimeServiceShellController(
     { intent -> intentRequestsRuntimeReset(intent) },
   bootstrapForegroundRequested: (Intent?) -> Boolean =
     { intent -> intentRequiresBootstrapForeground(intent) },
+  bootstrapForegroundStarter: (RuntimeServiceTarget) -> Unit = { target ->
+    startRuntimeServiceBootstrapForeground(
+      service = service,
+      appContext = appContext.applicationContext,
+      target = target,
+    )
+  },
   binderEndpointFactory: (
     RuntimeServiceTarget,
     () -> RuntimeServiceBinderEndpoint,
@@ -58,6 +72,7 @@ internal fun runtimeServiceShellController(
   runtimeTargetReader = runtimeTargetReader,
   runtimeResetRequested = runtimeResetRequested,
   bootstrapForegroundRequested = bootstrapForegroundRequested,
+  bootstrapForegroundStarter = bootstrapForegroundStarter,
   binderEndpointFactory = binderEndpointFactory,
   ownerLeaseRetryScheduler = ownerLeaseRetryScheduler,
 )
@@ -75,6 +90,7 @@ private class DefaultRuntimeServiceShellController(
   private val runtimeTargetReader: (Intent?) -> RuntimeServiceTarget,
   private val runtimeResetRequested: (Intent?) -> Boolean,
   private val bootstrapForegroundRequested: (Intent?) -> Boolean,
+  private val bootstrapForegroundStarter: (RuntimeServiceTarget) -> Unit,
   private val binderEndpointFactory: (
     RuntimeServiceTarget,
     () -> RuntimeServiceBinderEndpoint,
@@ -85,6 +101,16 @@ private class DefaultRuntimeServiceShellController(
     linkedMapOf<RuntimeServiceTarget, RuntimeServiceShellAttachment>()
   private val boundEndpoints =
     linkedMapOf<RuntimeServiceTarget, RuntimeServiceBinderEndpoint>()
+
+  override fun attachForStart(
+    intent: Intent?,
+    target: RuntimeServiceTarget,
+  ): Boolean {
+    if (bootstrapForegroundRequested(intent)) {
+      bootstrapForegroundStarter(target)
+    }
+    return attach(target)
+  }
 
   override fun attach(target: RuntimeServiceTarget): Boolean {
     if (serviceBootstraps.containsKey(target)) {

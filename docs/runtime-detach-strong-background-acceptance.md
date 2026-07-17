@@ -15,6 +15,13 @@ This gate uses the following ownership contract:
   `OpenCrayDetachedRuntimeService` in the independent `:runtime_controller` process.
 - UI, Flutter engine, activity, and main-process recreation do not own or implicitly resubmit
   detached work.
+- A started-service wake that requires foreground bootstrap publishes the target-scoped minimal
+  notification before runtime-environment resolution, shell construction, owner-lease acquisition,
+  transport startup, or execution attachment. The retained shell controller adopts that foreground
+  state after attach; a bound-only service creation remains non-foreground.
+- A foreground-service start rejected for target mismatch or owner-lease contention stops its
+  current Android start id before returning `START_NOT_STICKY`, so lease arbitration cannot leave
+  a shell waiting for the foreground deadline.
 - Killing the process that executes a run destroys that process's uncheckpointed memory. The
   supported recovery contract is same-run continuation from proven safe checkpoints, provider
   reconnect for durable managed processes, or explicit interruption when replay safety cannot be
@@ -35,7 +42,7 @@ This gate uses the following ownership contract:
 | Process-safe workspace mutation | `FileMutationLockCoordinator` and `FileOpsService` hold one runtime-root OS lock across checkpoint capture, mutation, commit, and rollback. Replacement and rollback writes are atomic; `Edit` and `MultiEdit` keep source read and write in one reentrant transaction. | `FileOpsTest.executeBatchSerializesSharedWorkspaceAcrossServiceInstances` and the filesystem JVM suite. | Local gate complete |
 | Safe process-death recovery | General prompt checkpoints cover pre-model, parsed action, commentary, committed tool result, supplement ingestion, finalization, and approval boundaries. The recovery planner resumes only proven state and records explicit interruption otherwise. | API 35 process-death cases verify same-task/run checkpoint continuation and the complementary no-checkpoint, no-replay interruption path; recovery planner and queue restore JVM tests cover the decision matrix. | Local gate complete |
 | Convergent repair policy | `ScheduledTaskWorkManager`, runtime-service bootstrap/resume repair, owner-lease repair, and typed projection evidence support startup, boot/package replacement, periodic, reconnect-backoff, and lease-expiry wakes. Checkpoint continuation has a three-attempt budget; terminal and exhausted identities suppress stale repair projections while explicit Retry resets the budget. | `ScheduledTaskWorkManagerTest`, `OpenCrayRuntimeServiceInteractiveRepairTest`, checkpoint recovery tests, and the API 35 owner-lease repair case. | Local gate complete |
-| Strong-background delivery | Foreground `specialUse` services, app-visibility lease policy, target-scoped notifications, AlarmManager plus main-process WorkManager wake bridging, boot/package repair, schedule actions, and explicit runtime wake commands keep detached work independent from visible UI. | Runtime foreground, notification, scheduler routing, WorkManager, strong-background settings, and API 35 detached schedule-delivery tests. | Local gate complete |
+| Strong-background delivery | Foreground `specialUse` services, target-scoped minimal bootstrap foreground before shell assembly, retained-controller notification handoff, app-visibility lease policy, AlarmManager plus main-process WorkManager wake bridging, boot/package repair, schedule actions, and explicit runtime wake commands keep detached work independent from visible UI. Bound-only attach does not enter foreground, and rejected starts stop their exact start id. | Runtime foreground, notification, scheduler routing, WorkManager, strong-background settings, shell startup-order JVM tests, and API 35 detached schedule/process-death tests. The isolated run has empty XML `system-err` and no FGS timeout in the cleared device log. | Local gate complete |
 
 ## Verification Baseline
 
@@ -44,8 +51,9 @@ The checked-in baseline has the following retained evidence:
 - API 35 `RuntimeServiceProcessIsolationTest`: 7 tests, 0 failures, covering independent PIDs,
   AIDL v1/v2 compatibility, detached kill/recreate, owner-lease repair, safe checkpoint continuation,
   no-checkpoint interruption, process-external E2B reconnect, and detached-to-main WorkManager
-  delivery.
-- `:app:testDebugUnitTest`: 1645 tests passed, 12 skipped, 0 failures, and 0 errors.
+  delivery. The result XML has no `system-err`, and the cleared device log has no foreground-service
+  deadline or fatal runtime exception.
+- `:app:testDebugUnitTest`: 1648 tests, 12 skipped, 0 failures, and 0 errors.
 - `:runtime:testDebugUnitTest`: 729 tests passed.
 - `:filesystem:testDebugUnitTest`: 6 tests passed.
 - `:persistence:testDebugUnitTest`: 16 tests passed.

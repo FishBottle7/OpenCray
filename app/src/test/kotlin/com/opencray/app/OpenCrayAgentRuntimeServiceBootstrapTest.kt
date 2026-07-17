@@ -3726,6 +3726,105 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun runtimeServiceShellControllerStartsForegroundBeforeBuildingStartedShell() {
+    val context = MinimalContext()
+    val mainHandler = Handler()
+    val service = TestRuntimeService()
+    val steps = mutableListOf<String>()
+    val target = RuntimeServiceTarget.DETACHED_BACKGROUND
+    val controller = runtimeServiceShellController(
+      service = service,
+      appContext = context,
+      mainHandler = mainHandler,
+      bootstrapDependencies = defaultRuntimeBootstrapDependencies,
+      serviceBootstrapFactory = { _, _, _, _ ->
+        steps += "assemble_bootstrap"
+        OpenCrayAgentRuntimeServiceBootstrap(
+          shellControlBundle = RuntimeServiceShellControlBundle(
+            keepAliveController = RuntimeServiceKeepAliveController(
+              appVisibleProvider = { true },
+              scheduler = object : RuntimeServiceDelayScheduler {
+                override fun schedule(
+                  delayMs: Long,
+                  action: () -> Unit,
+                ): RuntimeServiceDelayedTask = RuntimeServiceDelayedTask { }
+              },
+              stopRequester = { false },
+            ),
+            runtimeForegroundController = RuntimeForegroundController(
+              appVisibleProvider = { true },
+            ),
+            attach = { steps += "shell_attach" },
+          ),
+          transportBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
+            gatewayBundle = testServiceGatewayBundle(),
+            ensureStarted = {
+              steps += "transport_started"
+              true
+            },
+          ),
+          executionCoordinator = RecordingRuntimeServiceExecutionCoordinator(),
+          wakeCommandDispatcher = RecordingRuntimeServiceWakeCommandDispatcher(),
+          binderEndpoint = RecordingRuntimeServiceBinderEndpoint(),
+        )
+      },
+      bootstrapForegroundRequested = { true },
+      bootstrapForegroundStarter = { resolvedTarget ->
+        steps += "bootstrap_foreground:${resolvedTarget.wireValue}"
+      },
+    )
+
+    val attached = controller.attachForStart(
+      intent = Intent(ACTION_RESUME_INTERRUPTED_RUNS),
+      target = target,
+    )
+
+    assertTrue(attached)
+    assertEquals(
+      listOf(
+        "bootstrap_foreground:${target.wireValue}",
+        "assemble_bootstrap",
+        "transport_started",
+        "shell_attach",
+      ),
+      steps,
+    )
+  }
+
+  @Test
+  fun runtimeServiceShellControllerDoesNotStartForegroundForBoundOnlyAttach() {
+    val context = MinimalContext()
+    val foregroundTargets = mutableListOf<RuntimeServiceTarget>()
+    val controller = runtimeServiceShellController(
+      service = TestRuntimeService(),
+      appContext = context,
+      mainHandler = Handler(),
+      bootstrapDependencies = defaultRuntimeBootstrapDependencies,
+      serviceBootstrapFactory = { _, _, _, _ ->
+        OpenCrayAgentRuntimeServiceBootstrap(
+          shellControlBundle = defaultShellControlBundle(),
+          transportBootstrap = OpenCrayRuntimeServiceTransportBootstrap(
+            gatewayBundle = testServiceGatewayBundle(),
+          ),
+          executionCoordinator = RecordingRuntimeServiceExecutionCoordinator(),
+          wakeCommandDispatcher = RecordingRuntimeServiceWakeCommandDispatcher(),
+          binderEndpoint = RecordingRuntimeServiceBinderEndpoint(),
+        )
+      },
+      bootstrapForegroundRequested = { true },
+      bootstrapForegroundStarter = foregroundTargets::add,
+      binderEndpointFactory = { _, endpointProvider ->
+        TestDelegatingRuntimeServiceBinderEndpoint(endpointProvider)
+      },
+    )
+
+    val binder = controller.onBind(null)
+
+    assertNotNull(binder)
+    assertTrue(foregroundTargets.isEmpty())
+  }
+
+  @Test
   fun runtimeServiceBootstrapSkipsStartCommandWhenOwnerLeaseIsNotHeld() {
     val executionCoordinator = RecordingRuntimeServiceExecutionCoordinator()
     val wakeDispatcher = RecordingRuntimeServiceWakeCommandDispatcher()
@@ -6248,6 +6347,19 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertFalse(detachedService.acceptsRuntimeIntent(interactiveIntent))
     assertFalse(interactiveService.acceptsRuntimeIntent(invalidIntent))
     assertFalse(detachedService.acceptsRuntimeIntent(invalidIntent))
+  }
+
+  @Test
+  fun rejectedRuntimeServiceStartStopsCurrentStartBeforeReturningNotSticky() {
+    val stoppedStartIds = mutableListOf<Int>()
+
+    val result = rejectedRuntimeServiceStartResult(
+      startId = 42,
+      stopSelf = stoppedStartIds::add,
+    )
+
+    assertEquals(Service.START_NOT_STICKY, result)
+    assertEquals(listOf(42), stoppedStartIds)
   }
 
   @Test

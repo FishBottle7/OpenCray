@@ -20,11 +20,6 @@ internal abstract class TargetedOpenCrayAgentRuntimeService(
   private val mainHandler: Handler by lazy(LazyThreadSafetyMode.NONE) {
     Handler(Looper.getMainLooper())
   }
-  private val runtimeEnvironment: OpenCrayRuntimeServiceEnvironment by lazy(
-    LazyThreadSafetyMode.NONE,
-  ) {
-    openCrayRuntimeServiceEnvironment(applicationContext)
-  }
   @Volatile
   private var shellControllerInstance: RuntimeServiceShellController? = null
   private val shellController: RuntimeServiceShellController
@@ -37,7 +32,6 @@ internal abstract class TargetedOpenCrayAgentRuntimeService(
       service = this,
       appContext = applicationContext,
       mainHandler = mainHandler,
-      bootstrapDependencies = runtimeEnvironment.runtimeServiceBootstrapDependencies,
       runtimeTargetReader = { intent ->
         runtimeServiceTargetForComponentIntent(intent, serviceTarget) ?: serviceTarget
       },
@@ -53,11 +47,11 @@ internal abstract class TargetedOpenCrayAgentRuntimeService(
     startId: Int,
   ): Int {
     if (!acceptsRuntimeIntent(intent)) {
-      return START_NOT_STICKY
+      return rejectedRuntimeServiceStartResult(startId, ::stopSelf)
     }
     val controller = shellController
-    if (!controller.attach(serviceTarget)) {
-      return START_NOT_STICKY
+    if (!controller.attachForStart(intent, serviceTarget)) {
+      return rejectedRuntimeServiceStartResult(startId, ::stopSelf)
     }
     return controller.onStartCommand(intent = intent, startId = startId)
   }
@@ -76,6 +70,14 @@ internal abstract class TargetedOpenCrayAgentRuntimeService(
 
   internal fun acceptsRuntimeIntent(intent: Intent?): Boolean =
     runtimeServiceTargetForComponentIntent(intent, serviceTarget) == serviceTarget
+}
+
+internal fun rejectedRuntimeServiceStartResult(
+  startId: Int,
+  stopSelf: (Int) -> Unit,
+): Int {
+  stopSelf(startId)
+  return Service.START_NOT_STICKY
 }
 
 internal fun runtimeServiceTargetForComponentIntent(

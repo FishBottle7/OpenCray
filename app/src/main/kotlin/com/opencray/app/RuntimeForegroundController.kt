@@ -45,6 +45,28 @@ internal data class RuntimeForegroundNotificationModel(
   val keepAliveReason: String?,
 )
 
+internal fun runtimeServiceBootstrapForegroundNotificationModel(
+  keepAliveReason: String = RuntimeServiceWorkState.KEEP_ALIVE_REASON_SERVICE_STARTUP,
+): RuntimeForegroundNotificationModel = RuntimeForegroundNotificationModel(
+  activeRunCount = 0,
+  activeSessionCount = 0,
+  liveManagedProcessSessionCount = 0,
+  keepAliveReason = keepAliveReason,
+)
+
+internal fun startRuntimeServiceBootstrapForeground(
+  service: Service,
+  appContext: Context,
+  target: RuntimeServiceTarget,
+) {
+  RuntimeNotificationChannelRegistry.ensureRegistered(appContext)
+  AndroidRuntimeForegroundServiceAdapter(
+    service = service,
+    notificationFactory = RuntimeActiveNotificationFactory(appContext),
+    notificationId = runtimeActiveForegroundNotificationId(target),
+  ).startOrUpdateForeground(runtimeServiceBootstrapForegroundNotificationModel())
+}
+
 internal interface RuntimeForegroundServiceAdapter {
   fun startOrUpdateForeground(model: RuntimeForegroundNotificationModel)
 
@@ -122,12 +144,7 @@ internal class RuntimeForegroundController(
   fun startBootstrapForeground(
     keepAliveReason: String = RuntimeServiceWorkState.KEEP_ALIVE_REASON_SERVICE_STARTUP,
   ): RuntimeForegroundState {
-    val model = RuntimeForegroundNotificationModel(
-      activeRunCount = 0,
-      activeSessionCount = 0,
-      liveManagedProcessSessionCount = 0,
-      keepAliveReason = keepAliveReason,
-    )
+    val model = runtimeServiceBootstrapForegroundNotificationModel(keepAliveReason)
     val nextState: RuntimeForegroundState
     synchronized(lock) {
       if (destroyed) {
