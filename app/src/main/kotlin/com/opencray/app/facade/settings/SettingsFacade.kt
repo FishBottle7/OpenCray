@@ -215,8 +215,8 @@ internal class LocalSettingsFacade(
       subtitle = context.getString(R.string.settings_notification_channels_subtitle),
       sections = listOf(
         SettingsSectionSnapshot(
-          title = "Notification channels",
-          helperText = "Notification channel controls are rendered by the Flutter settings page.",
+          title = "Event alerts",
+          helperText = "Event alert controls are rendered by the Flutter settings page.",
         ),
       ),
     )

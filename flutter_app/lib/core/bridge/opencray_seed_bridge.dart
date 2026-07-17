@@ -1054,7 +1054,8 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       onDeviceAccelerator: onDeviceAccelerator,
       onDeviceThinkingEnabled: onDeviceThinkingEnabled,
       onDeviceLiteModeEnabled: onDeviceLiteModeEnabled,
-      contextBudgetPreset: contextBudgetPreset ?? _llmConfig.contextBudgetPreset,
+      contextBudgetPreset:
+          contextBudgetPreset ?? _llmConfig.contextBudgetPreset,
       contextBudgetReservedOutputTokens: hasExplicitContextBudgetPayload
           ? contextBudgetReservedOutputTokens
           : _llmConfig.contextBudgetReservedOutputTokens,
@@ -1280,8 +1281,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       helperText: _llmConfig.helperText,
       openAiPromptCacheKeyStrategy: _llmConfig.openAiPromptCacheKeyStrategy,
       openAiPromptCacheRetention: _llmConfig.openAiPromptCacheRetention,
-      anthropicPromptCachingEnabled:
-          _llmConfig.anthropicPromptCachingEnabled,
+      anthropicPromptCachingEnabled: _llmConfig.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl: _llmConfig.anthropicPromptCacheTtl,
       onDeviceModels: _llmConfig.onDeviceModels,
       selectedOnDeviceModelId: _llmConfig.selectedOnDeviceModelId,
@@ -2283,13 +2283,13 @@ OpenCraySettingsDetailSnapshot _seedSettingsDetailFor(String routeId) {
     case 'notification_channels':
       return const OpenCraySettingsDetailSnapshot(
         routeId: 'notification_channels',
-        title: 'Notification Channels',
-        subtitle: 'Choose which events can interrupt you.',
+        title: 'Event Alerts',
+        subtitle: 'Choose which app events can publish a new alert.',
         sections: <OpenCraySettingsSectionSnapshot>[
           OpenCraySettingsSectionSnapshot(
-            title: 'Notification channels',
+            title: 'Event alerts',
             helperText:
-                'Notification channel controls are rendered by the Flutter settings page.',
+                'Event alert controls are rendered by the Flutter settings page.',
           ),
         ],
       );

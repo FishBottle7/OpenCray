@@ -1049,7 +1049,7 @@ void main() {
   });
 
   testWidgets(
-    'standalone notifications page saves the master switch and opens channels',
+    'standalone notifications page saves the master switch and opens event alerts',
     (tester) async {
       final facade = _FakeSettingsFacade(
         llmConfig: const LlmConfigSnapshot(
@@ -1105,18 +1105,18 @@ void main() {
       expect(facade.notificationSaveCallCount, 1);
       expect(facade.notificationSettings.masterEnabled, isFalse);
 
-      await tester.tap(find.text('Manage notification channels'));
+      await tester.ensureVisible(find.text('Alert types'));
+      await tester.pump();
+      await tester.tap(find.text('Alert types'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      expect(find.text('Notification Channels'), findsOneWidget);
+      expect(find.text('Event Alerts'), findsOneWidget);
       expect(find.text('Approval requests'), findsOneWidget);
     },
   );
 
-  testWidgets('notification channels page saves per-channel toggles', (
-    tester,
-  ) async {
+  testWidgets('event alerts page saves per-event toggles', (tester) async {
     final facade = _FakeSettingsFacade(
       llmConfig: const LlmConfigSnapshot(
         localeTag: 'en',
@@ -1170,6 +1170,133 @@ void main() {
     expect(facade.notificationSaveCallCount, 1);
     expect(facade.notificationSettings.approvalRequestsEnabled, isFalse);
     expect(find.text('Approval requests'), findsOneWidget);
+  });
+
+  testWidgets(
+    'notifications page keeps the newest state during overlapping saves',
+    (tester) async {
+      final firstSaveStarted = Completer<void>();
+      final releaseFirstSave = Completer<void>();
+      var saveInvocation = 0;
+      final facade = _notificationTestFacade(
+        onSaveNotificationSettings: (snapshot) async {
+          saveInvocation += 1;
+          if (saveInvocation == 1) {
+            firstSaveStarted.complete();
+            await releaseFirstSave.future;
+          }
+          return snapshot;
+        },
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.notificationsBackground,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final masterSwitch = find.descendant(
+        of: find.byKey(const ValueKey<String>('notification-master-enabled')),
+        matching: find.byType(Switch),
+      );
+      final quietHoursSwitch = find.descendant(
+        of: find.byKey(
+          const ValueKey<String>('notification-quiet-hours-enabled'),
+        ),
+        matching: find.byType(Switch),
+      );
+      await tester.tap(masterSwitch);
+      await tester.pump();
+      await firstSaveStarted.future;
+      await tester.ensureVisible(quietHoursSwitch);
+      await tester.pump();
+      await tester.tap(quietHoursSwitch);
+      await tester.pump();
+
+      expect(facade.notificationSaveCallCount, 1);
+      expect(facade.notificationSaveRequests.single.masterEnabled, isFalse);
+      expect(facade.notificationSaveRequests.single.quietHoursEnabled, isTrue);
+
+      releaseFirstSave.complete();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(facade.notificationSaveCallCount, 2);
+      expect(facade.notificationSaveRequests.last.masterEnabled, isFalse);
+      expect(facade.notificationSaveRequests.last.quietHoursEnabled, isFalse);
+      expect(facade.notificationSettings.masterEnabled, isFalse);
+      expect(facade.notificationSettings.quietHoursEnabled, isFalse);
+    },
+  );
+
+  testWidgets('event alerts page keeps rapid per-event changes', (
+    tester,
+  ) async {
+    final firstSaveStarted = Completer<void>();
+    final releaseFirstSave = Completer<void>();
+    var saveInvocation = 0;
+    final facade = _notificationTestFacade(
+      onSaveNotificationSettings: (snapshot) async {
+        saveInvocation += 1;
+        if (saveInvocation == 1) {
+          firstSaveStarted.complete();
+          await releaseFirstSave.future;
+        }
+        return snapshot;
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.notificationChannels,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final approvalSwitch = find.descendant(
+      of: find.byKey(
+        const ValueKey<String>('notification-event-approval-requests'),
+      ),
+      matching: find.byType(Switch),
+    );
+    final reminderSwitch = find.descendant(
+      of: find.byKey(
+        const ValueKey<String>('notification-event-approval-reminder'),
+      ),
+      matching: find.byType(Switch),
+    );
+    await tester.tap(approvalSwitch);
+    await tester.pump();
+    await firstSaveStarted.future;
+    await tester.ensureVisible(reminderSwitch);
+    await tester.pump();
+    await tester.tap(reminderSwitch);
+    await tester.pump();
+
+    releaseFirstSave.complete();
+    await tester.pumpAndSettle();
+
+    expect(facade.notificationSaveCallCount, 2);
+    expect(
+      facade.notificationSaveRequests.last.approvalRequestsEnabled,
+      isFalse,
+    );
+    expect(
+      facade.notificationSaveRequests.last.approvalReminderEnabled,
+      isFalse,
+    );
+    expect(facade.notificationSettings.approvalRequestsEnabled, isFalse);
+    expect(facade.notificationSettings.approvalReminderEnabled, isFalse);
   });
 
   testWidgets(
@@ -1318,6 +1445,12 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      expect(find.text('Background protection status'), findsOneWidget);
+      expect(find.text('Current status'), findsOneWidget);
+      expect(find.text('Active'), findsOneWidget);
+      expect(find.text('AUTO'), findsNothing);
+      expect(find.text('ACTIVE'), findsNothing);
+      expect(find.text('STRONG'), findsNothing);
       expect(
         find.text(
           'Notifications and exact alarms are ready, but the device is not yet in the strongest local background tier.',
@@ -1326,7 +1459,7 @@ void main() {
       );
       expect(
         find.text(
-          'ACTIVE means notifications and exact alarms are configured, so alerts and scheduled wakes are ready, but battery exemption is still missing.',
+          'Event alerts and scheduled wakes are ready. Addressing battery restrictions enables stronger local background protection.',
         ),
         findsOneWidget,
       );
@@ -4700,11 +4833,41 @@ OpenCrayMemoryDebugLinksSnapshot _buildFallbackFieldSourceLinksSnapshot() =>
       ],
     );
 
+_FakeSettingsFacade _notificationTestFacade({
+  Future<NotificationSettingsSnapshot> Function(
+    NotificationSettingsSnapshot snapshot,
+  )?
+  onSaveNotificationSettings,
+}) => _FakeSettingsFacade(
+  llmConfig: const LlmConfigSnapshot(
+    localeTag: 'en',
+    enabled: false,
+    providerId: 'openai',
+    selectedProviderOptionId: 'openai',
+    protocol: 'openai',
+    providerOptions: <LlmProviderOption>[],
+    providerName: 'OpenAI',
+    providerNotes: '',
+    baseUrl: 'https://api.openai.com/v1',
+    apiKey: '',
+    model: 'gpt-4o-mini',
+    reasoningEffort: 'medium',
+    systemPrompt: '',
+    helperText: 'Helper text',
+  ),
+  validationResult: const LlmValidationResult(
+    isSuccess: true,
+    message: 'Validated.',
+  ),
+  onSaveNotificationSettings: onSaveNotificationSettings,
+);
+
 class _FakeSettingsFacade implements SettingsFacade {
   _FakeSettingsFacade({
     required this.llmConfig,
     required this.validationResult,
     this.onSaveLlmConfig,
+    this.onSaveNotificationSettings,
     PersonalizationConfigSnapshot? personalizationConfig,
     SettingsOverviewSnapshot? overviewSnapshot,
   }) : personalizationConfig =
@@ -4857,6 +5020,10 @@ class _FakeSettingsFacade implements SettingsFacade {
   LlmConfigSnapshot llmConfig;
   final LlmValidationResult validationResult;
   final Future<void> Function()? onSaveLlmConfig;
+  final Future<NotificationSettingsSnapshot> Function(
+    NotificationSettingsSnapshot snapshot,
+  )?
+  onSaveNotificationSettings;
   final PersonalizationConfigSnapshot personalizationConfig;
   final McpSettingsSnapshot mcpSettings = const McpSettingsSnapshot(
     title: 'MCP',
@@ -4976,6 +5143,8 @@ class _FakeSettingsFacade implements SettingsFacade {
   int saveCallCount = 0;
   int validationCallCount = 0;
   int notificationSaveCallCount = 0;
+  final List<NotificationSettingsSnapshot> notificationSaveRequests =
+      <NotificationSettingsSnapshot>[];
   int sandboxSaveCallCount = 0;
   int safetySaveCallCount = 0;
 
@@ -4993,7 +5162,7 @@ class _FakeSettingsFacade implements SettingsFacade {
     page: page,
     title: switch (page) {
       SettingsPage.notificationsBackground => 'Notifications & Background',
-      SettingsPage.notificationChannels => 'Notification Channels',
+      SettingsPage.notificationChannels => 'Event Alerts',
       SettingsPage.privacyTelemetry => 'Privacy & Telemetry',
       SettingsPage.aboutVersion => 'About & Version',
       _ => '',
@@ -5002,7 +5171,7 @@ class _FakeSettingsFacade implements SettingsFacade {
       SettingsPage.notificationsBackground =>
         'Control alerts, service visibility, and wakeups.',
       SettingsPage.notificationChannels =>
-        'Choose which events can interrupt you.',
+        'Choose which app events can publish a new alert.',
       SettingsPage.privacyTelemetry =>
         'Review what stays on device and what diagnostic signals are shared.',
       SettingsPage.aboutVersion => 'Build information and app diagnostics.',
@@ -5045,7 +5214,9 @@ class _FakeSettingsFacade implements SettingsFacade {
     NotificationSettingsSnapshot snapshot,
   ) async {
     notificationSaveCallCount += 1;
-    notificationSettings = snapshot;
+    notificationSaveRequests.add(snapshot);
+    notificationSettings =
+        await onSaveNotificationSettings?.call(snapshot) ?? snapshot;
     return notificationSettings;
   }
 

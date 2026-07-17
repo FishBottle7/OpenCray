@@ -1,5 +1,68 @@
 part of 'settings_feature.dart';
 
+class _NotificationSettingsSaveQueue {
+  NotificationSettingsSnapshot? _pending;
+  bool _isDraining = false;
+  int _revision = 0;
+
+  void enqueue(
+    NotificationSettingsSnapshot snapshot, {
+    required Future<NotificationSettingsSnapshot> Function(
+      NotificationSettingsSnapshot snapshot,
+    )
+    save,
+    required bool Function() isActive,
+    required ValueChanged<NotificationSettingsSnapshot> onSaved,
+    required ValueChanged<Object> onError,
+  }) {
+    _revision += 1;
+    _pending = snapshot;
+    if (_isDraining) {
+      return;
+    }
+    _isDraining = true;
+    unawaited(
+      _drain(
+        save: save,
+        isActive: isActive,
+        onSaved: onSaved,
+        onError: onError,
+      ),
+    );
+  }
+
+  Future<void> _drain({
+    required Future<NotificationSettingsSnapshot> Function(
+      NotificationSettingsSnapshot snapshot,
+    )
+    save,
+    required bool Function() isActive,
+    required ValueChanged<NotificationSettingsSnapshot> onSaved,
+    required ValueChanged<Object> onError,
+  }) async {
+    while (_pending != null) {
+      final request = _pending!;
+      final requestRevision = _revision;
+      _pending = null;
+      try {
+        final saved = await save(request);
+        if (!isActive()) {
+          return;
+        }
+        if (requestRevision == _revision) {
+          onSaved(saved);
+        }
+      } catch (error) {
+        if (!isActive()) {
+          return;
+        }
+        onError(error);
+      }
+    }
+    _isDraining = false;
+  }
+}
+
 class _NotificationsBackgroundSettingsPage extends StatefulWidget {
   const _NotificationsBackgroundSettingsPage({
     super.key,
@@ -26,8 +89,7 @@ class _NotificationsBackgroundSettingsPageState
   NotificationSettingsSnapshot? _settings;
   StrongBackgroundSnapshot? _strongBackground;
   String? _loadError;
-  bool _isSaving = false;
-  bool _hasQueuedSave = false;
+  final _saveQueue = _NotificationSettingsSaveQueue();
   StrongBackgroundActionId? _activeActionId;
 
   @override
@@ -71,7 +133,7 @@ class _NotificationsBackgroundSettingsPageState
               onRetry: _load,
             );
     }
-    final enabledChannelCount = _enabledChannelCount(settings);
+    final enabledEventCount = _enabledEventAlertCount(settings);
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       child: Column(
@@ -85,7 +147,7 @@ class _NotificationsBackgroundSettingsPageState
           const SizedBox(height: 16),
           _buildBackgroundProfileCard(copy, strongBackground),
           const SizedBox(height: 16),
-          _buildNotificationsCard(copy, settings, enabledChannelCount),
+          _buildNotificationsCard(copy, settings, enabledEventCount),
           const SizedBox(height: 16),
           _buildDeliveryCard(copy, settings),
           const SizedBox(height: 16),
@@ -99,42 +161,26 @@ class _NotificationsBackgroundSettingsPageState
     _NotificationSettingsCopy copy,
     StrongBackgroundSnapshot strongBackground,
   ) {
-    final profile = _backgroundProfile(strongBackground);
+    final status = _backgroundProfile(strongBackground);
     return _SettingsCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            copy.backgroundProfileTitle,
+            copy.backgroundStatusTitle,
             style: _SettingsTextStyles.cardTitle,
           ),
           const SizedBox(height: 8),
           Text(
-            copy.backgroundProfileSummary(profile),
+            copy.backgroundStatusSummary(status),
             style: _SettingsTextStyles.body,
           ),
           const SizedBox(height: 12),
-          _SegmentedSelector(
-            labels: <String>[
-              copy.backgroundProfileAutoLabel,
-              copy.backgroundProfileActiveLabel,
-              copy.backgroundProfileStrongLabel,
-            ],
-            selectedIndex: profile.index,
-          ),
-          const SizedBox(height: 12),
-          DecoratedBox(
-            decoration: BoxDecoration(
-              color: const Color(0xFFF4F4F7),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text(
-                copy.backgroundProfileBody(profile),
-                style: _SettingsTextStyles.bodyStrong,
-              ),
-            ),
+          const Divider(height: 1, color: OpenCrayColors.divider),
+          _NotificationActionRow(
+            title: copy.backgroundCurrentStatusTitle,
+            subtitle: copy.backgroundStatusBody(status),
+            valueLabel: copy.backgroundStatusLabel(status),
           ),
         ],
       ),
@@ -144,9 +190,9 @@ class _NotificationsBackgroundSettingsPageState
   Widget _buildNotificationsCard(
     _NotificationSettingsCopy copy,
     NotificationSettingsSnapshot settings,
-    int enabledChannelCount,
+    int enabledEventCount,
   ) {
-    final totalChannelCount = _notificationChannelDescriptors(copy).length;
+    final totalEventCount = _notificationEventDescriptors(copy).length;
     return _SettingsCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -156,6 +202,7 @@ class _NotificationsBackgroundSettingsPageState
           Text(copy.notificationsHelper, style: _SettingsTextStyles.body),
           const SizedBox(height: 8),
           _NotificationToggleRow(
+            key: const ValueKey<String>('notification-master-enabled'),
             title: copy.allowNotificationsTitle,
             subtitle: copy.allowNotificationsSubtitle,
             value: settings.masterEnabled,
@@ -164,14 +211,14 @@ class _NotificationsBackgroundSettingsPageState
           ),
           const Divider(height: 1, color: OpenCrayColors.divider),
           _NotificationActionRow(
-            title: copy.manageChannelsTitle,
-            subtitle: copy.manageChannelsSubtitle(
-              enabledChannelCount,
-              totalChannelCount,
+            title: copy.manageEventAlertsTitle,
+            subtitle: copy.manageEventAlertsSubtitle(
+              enabledEventCount,
+              totalEventCount,
             ),
             valueLabel: copy.enabledCountLabel(
-              enabledChannelCount,
-              totalChannelCount,
+              enabledEventCount,
+              totalEventCount,
             ),
             onTap: () => widget.onOpenPage(SettingsPage.notificationChannels),
           ),
@@ -202,6 +249,7 @@ class _NotificationsBackgroundSettingsPageState
           ),
           const Divider(height: 1, color: OpenCrayColors.divider),
           _NotificationToggleRow(
+            key: const ValueKey<String>('notification-quiet-hours-enabled'),
             title: copy.quietHoursTitle,
             subtitle: copy.quietHoursSummary(
               enabled: settings.quietHoursEnabled,
@@ -321,46 +369,19 @@ class _NotificationsBackgroundSettingsPageState
     setState(() {
       _settings = next;
     });
-    unawaited(_saveNow());
-  }
-
-  Future<void> _saveNow() async {
-    final settings = _settings;
-    if (settings == null) {
-      return;
-    }
-    if (_isSaving) {
-      _hasQueuedSave = true;
-      return;
-    }
-    setState(() {
-      _isSaving = true;
-    });
-    try {
-      final updated = await widget.facade.saveNotificationSettings(settings);
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _settings = updated;
-      });
-    } catch (error) {
-      if (mounted) {
-        _showMessage(error.toString().replaceFirst('Exception: ', ''));
-      }
-    } finally {
-      if (mounted) {
+    _saveQueue.enqueue(
+      next,
+      save: widget.facade.saveNotificationSettings,
+      isActive: () => mounted,
+      onSaved: (updated) {
         setState(() {
-          _isSaving = false;
+          _settings = updated;
         });
-      } else {
-        _isSaving = false;
-      }
-      if (_hasQueuedSave) {
-        _hasQueuedSave = false;
-        unawaited(_saveNow());
-      }
-    }
+      },
+      onError: (error) {
+        _showMessage(error.toString().replaceFirst('Exception: ', ''));
+      },
+    );
   }
 
   Future<void> _openDeliveryModeSheet() async {
@@ -523,12 +544,12 @@ class _NotificationsBackgroundSettingsPageState
     }
   }
 
-  int _enabledChannelCount(NotificationSettingsSnapshot settings) {
+  int _enabledEventAlertCount(NotificationSettingsSnapshot settings) {
     var count = 0;
-    for (final channel in _notificationChannelDescriptors(
+    for (final event in _notificationEventDescriptors(
       _NotificationSettingsCopy.fromLocale(Localizations.localeOf(context)),
     )) {
-      if (channel.valueOf(settings)) {
+      if (event.valueOf(settings)) {
         count += 1;
       }
     }
@@ -645,8 +666,7 @@ class _NotificationChannelsSettingsPageState
   SettingsDetailSnapshot? _detail;
   NotificationSettingsSnapshot? _settings;
   String? _loadError;
-  bool _isSaving = false;
-  bool _hasQueuedSave = false;
+  final _saveQueue = _NotificationSettingsSaveQueue();
 
   @override
   void initState() {
@@ -667,14 +687,14 @@ class _NotificationChannelsSettingsPageState
               key: ValueKey<String>('settings-notification-channels-loading'),
             )
           : _SettingsLoadErrorCard(
-              title: detail?.title ?? copy.notificationChannelsTitle,
+              title: detail?.title ?? copy.eventAlertsTitle,
               message: _loadError!,
               onBack: widget.onBack,
               backLabel: widget.backLabel,
               onRetry: _load,
             );
     }
-    final channels = _notificationChannelDescriptors(copy);
+    final events = _notificationEventDescriptors(copy);
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       child: Column(
@@ -690,21 +710,20 @@ class _NotificationChannelsSettingsPageState
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  copy.notificationChannelsHelper,
-                  style: _SettingsTextStyles.body,
-                ),
+                Text(copy.eventAlertsHelper, style: _SettingsTextStyles.body),
                 const SizedBox(height: 8),
-                for (int index = 0; index < channels.length; index++) ...[
+                for (int index = 0; index < events.length; index++) ...[
                   _NotificationToggleRow(
-                    title: channels[index].title,
-                    subtitle: channels[index].subtitle,
-                    value: channels[index].valueOf(settings),
-                    onChanged: (value) => _updateSettings(
-                      channels[index].update(settings, value),
+                    key: ValueKey<String>(
+                      'notification-event-${events[index].id}',
                     ),
+                    title: events[index].title,
+                    subtitle: events[index].subtitle,
+                    value: events[index].valueOf(settings),
+                    onChanged: (value) =>
+                        _updateSettings(events[index].update(settings, value)),
                   ),
-                  if (index < channels.length - 1)
+                  if (index < events.length - 1)
                     const Divider(height: 1, color: OpenCrayColors.divider),
                 ],
               ],
@@ -743,46 +762,19 @@ class _NotificationChannelsSettingsPageState
     setState(() {
       _settings = next;
     });
-    unawaited(_saveNow());
-  }
-
-  Future<void> _saveNow() async {
-    final settings = _settings;
-    if (settings == null) {
-      return;
-    }
-    if (_isSaving) {
-      _hasQueuedSave = true;
-      return;
-    }
-    setState(() {
-      _isSaving = true;
-    });
-    try {
-      final updated = await widget.facade.saveNotificationSettings(settings);
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _settings = updated;
-      });
-    } catch (error) {
-      if (mounted) {
-        _showMessage(error.toString().replaceFirst('Exception: ', ''));
-      }
-    } finally {
-      if (mounted) {
+    _saveQueue.enqueue(
+      next,
+      save: widget.facade.saveNotificationSettings,
+      isActive: () => mounted,
+      onSaved: (updated) {
         setState(() {
-          _isSaving = false;
+          _settings = updated;
         });
-      } else {
-        _isSaving = false;
-      }
-      if (_hasQueuedSave) {
-        _hasQueuedSave = false;
-        unawaited(_saveNow());
-      }
-    }
+      },
+      onError: (error) {
+        _showMessage(error.toString().replaceFirst('Exception: ', ''));
+      },
+    );
   }
 
   void _showMessage(String message) {
@@ -794,6 +786,7 @@ class _NotificationChannelsSettingsPageState
 
 class _NotificationToggleRow extends StatelessWidget {
   const _NotificationToggleRow({
+    super.key,
     required this.title,
     required this.subtitle,
     required this.value,
@@ -917,14 +910,16 @@ class _NotificationActionRow extends StatelessWidget {
 
 enum _BackgroundProfile { auto, active, strong }
 
-class _NotificationChannelDescriptor {
-  const _NotificationChannelDescriptor({
+class _NotificationEventDescriptor {
+  const _NotificationEventDescriptor({
+    required this.id,
     required this.title,
     required this.subtitle,
     required this.valueOf,
     required this.update,
   });
 
+  final String id;
   final String title;
   final String subtitle;
   final bool Function(NotificationSettingsSnapshot snapshot) valueOf;
@@ -935,52 +930,59 @@ class _NotificationChannelDescriptor {
   update;
 }
 
-List<_NotificationChannelDescriptor> _notificationChannelDescriptors(
+List<_NotificationEventDescriptor> _notificationEventDescriptors(
   _NotificationSettingsCopy copy,
 ) {
-  return <_NotificationChannelDescriptor>[
-    _NotificationChannelDescriptor(
+  return <_NotificationEventDescriptor>[
+    _NotificationEventDescriptor(
+      id: 'approval-requests',
       title: copy.approvalRequestsTitle,
       subtitle: copy.approvalRequestsSubtitle,
       valueOf: (snapshot) => snapshot.approvalRequestsEnabled,
       update: (snapshot, value) =>
           snapshot.copyWith(approvalRequestsEnabled: value),
     ),
-    _NotificationChannelDescriptor(
+    _NotificationEventDescriptor(
+      id: 'approval-reminder',
       title: copy.approvalReminderTitle,
       subtitle: copy.approvalReminderSubtitle,
       valueOf: (snapshot) => snapshot.approvalReminderEnabled,
       update: (snapshot, value) =>
           snapshot.copyWith(approvalReminderEnabled: value),
     ),
-    _NotificationChannelDescriptor(
+    _NotificationEventDescriptor(
+      id: 'task-finished',
       title: copy.taskFinishedTitle,
       subtitle: copy.taskFinishedSubtitle,
       valueOf: (snapshot) => snapshot.taskFinishedEnabled,
       update: (snapshot, value) =>
           snapshot.copyWith(taskFinishedEnabled: value),
     ),
-    _NotificationChannelDescriptor(
+    _NotificationEventDescriptor(
+      id: 'task-failed',
       title: copy.taskFailedTitle,
       subtitle: copy.taskFailedSubtitle,
       valueOf: (snapshot) => snapshot.taskFailedEnabled,
       update: (snapshot, value) => snapshot.copyWith(taskFailedEnabled: value),
     ),
-    _NotificationChannelDescriptor(
+    _NotificationEventDescriptor(
+      id: 'scheduled-wake',
       title: copy.scheduledWakeTitle,
       subtitle: copy.scheduledWakeSubtitle,
       valueOf: (snapshot) => snapshot.scheduledWakeEnabled,
       update: (snapshot, value) =>
           snapshot.copyWith(scheduledWakeEnabled: value),
     ),
-    _NotificationChannelDescriptor(
+    _NotificationEventDescriptor(
+      id: 'background-task-paused',
       title: copy.backgroundTaskPausedTitle,
       subtitle: copy.backgroundTaskPausedSubtitle,
       valueOf: (snapshot) => snapshot.backgroundTaskPausedEnabled,
       update: (snapshot, value) =>
           snapshot.copyWith(backgroundTaskPausedEnabled: value),
     ),
-    _NotificationChannelDescriptor(
+    _NotificationEventDescriptor(
+      id: 'service-recovered',
       title: copy.serviceRecoveredTitle,
       subtitle: copy.serviceRecoveredSubtitle,
       valueOf: (snapshot) => snapshot.serviceRecoveredEnabled,
@@ -993,16 +995,17 @@ List<_NotificationChannelDescriptor> _notificationChannelDescriptors(
 class _NotificationSettingsCopy {
   const _NotificationSettingsCopy._({
     required this.notificationsBackgroundTitle,
-    required this.notificationChannelsTitle,
-    required this.backgroundProfileTitle,
-    required this.backgroundProfileAutoLabel,
-    required this.backgroundProfileActiveLabel,
-    required this.backgroundProfileStrongLabel,
+    required this.eventAlertsTitle,
+    required this.backgroundStatusTitle,
+    required this.backgroundCurrentStatusTitle,
+    required this.backgroundStatusBaselineLabel,
+    required this.backgroundStatusActiveLabel,
+    required this.backgroundStatusStrongLabel,
     required this.notificationsTitle,
     required this.notificationsHelper,
     required this.allowNotificationsTitle,
     required this.allowNotificationsSubtitle,
-    required this.manageChannelsTitle,
+    required this.manageEventAlertsTitle,
     required this.deliveryTitle,
     required this.deliveryHelper,
     required this.defaultDeliveryRowTitle,
@@ -1019,7 +1022,7 @@ class _NotificationSettingsCopy {
     required this.systemReadyStatus,
     required this.systemReviewStatus,
     required this.systemActionUnavailable,
-    required this.notificationChannelsHelper,
+    required this.eventAlertsHelper,
     required this.approvalRequestsTitle,
     required this.approvalRequestsSubtitle,
     required this.approvalReminderTitle,
@@ -1041,18 +1044,19 @@ class _NotificationSettingsCopy {
     if (isChinese) {
       return const _NotificationSettingsCopy._(
         notificationsBackgroundTitle: '通知与后台服务',
-        notificationChannelsTitle: '通知频道',
-        backgroundProfileTitle: '后台档位',
-        backgroundProfileAutoLabel: 'AUTO',
-        backgroundProfileActiveLabel: 'ACTIVE',
-        backgroundProfileStrongLabel: 'STRONG',
-        notificationsTitle: '通知总控',
-        notificationsHelper: '先决定系统是否允许提醒，再决定哪些事件可以打扰你。',
-        allowNotificationsTitle: '允许通知',
-        allowNotificationsSubtitle: '关闭后，本地提醒会被统一静音，但各频道配置会保留。',
-        manageChannelsTitle: '管理通知频道',
-        deliveryTitle: '投递时机',
-        deliveryHelper: '先按默认投递规则筛选，再叠加静音时段限制。',
+        eventAlertsTitle: '事件提醒',
+        backgroundStatusTitle: '后台保障状态',
+        backgroundCurrentStatusTitle: '当前状态',
+        backgroundStatusBaselineLabel: '基础',
+        backgroundStatusActiveLabel: '已增强',
+        backgroundStatusStrongLabel: '强后台',
+        notificationsTitle: '应用事件提醒',
+        notificationsHelper: '控制 OpenCray 为任务事件发布的新提醒。强后台所需通知由 Android 单独管理。',
+        allowNotificationsTitle: '允许事件提醒',
+        allowNotificationsSubtitle: '关闭后不再发布新的应用事件提醒；已显示通知和强后台所需的前台服务通知不受影响。',
+        manageEventAlertsTitle: '提醒类型',
+        deliveryTitle: '提醒投递',
+        deliveryHelper: '默认投递规则先筛选事件，静音时段再限制非关键提醒。',
         defaultDeliveryRowTitle: '默认投递',
         quietHoursTitle: '静音时段',
         quietHoursStartTitle: '开始时间',
@@ -1067,7 +1071,7 @@ class _NotificationSettingsCopy {
         systemReadyStatus: '已就绪',
         systemReviewStatus: '需处理',
         systemActionUnavailable: '当前设备上没有可用的系统设置入口。',
-        notificationChannelsHelper: '这些频道会在总开关、默认投递和静音时段之后生效。',
+        eventAlertsHelper: '这些开关仅影响之后发布的事件提醒；已显示通知不会被撤回。总开关、投递规则和静音时段仍会先行生效。',
         approvalRequestsTitle: '审批请求',
         approvalRequestsSubtitle: '当任务需要你 approve 或 reject 时提醒。',
         approvalReminderTitle: '等待提醒',
@@ -1086,19 +1090,20 @@ class _NotificationSettingsCopy {
     }
     return const _NotificationSettingsCopy._(
       notificationsBackgroundTitle: 'Notifications & Background',
-      notificationChannelsTitle: 'Notification Channels',
-      backgroundProfileTitle: 'Background profile',
-      backgroundProfileAutoLabel: 'AUTO',
-      backgroundProfileActiveLabel: 'ACTIVE',
-      backgroundProfileStrongLabel: 'STRONG',
-      notificationsTitle: 'Notifications',
+      eventAlertsTitle: 'Event Alerts',
+      backgroundStatusTitle: 'Background protection status',
+      backgroundCurrentStatusTitle: 'Current status',
+      backgroundStatusBaselineLabel: 'Baseline',
+      backgroundStatusActiveLabel: 'Active',
+      backgroundStatusStrongLabel: 'Strong',
+      notificationsTitle: 'App event alerts',
       notificationsHelper:
-          'Decide whether alerts are allowed at all, then decide which events can interrupt you.',
-      allowNotificationsTitle: 'Allow notifications',
+          'Control new alerts that OpenCray publishes for task events. Android manages required background notices separately.',
+      allowNotificationsTitle: 'Allow event alerts',
       allowNotificationsSubtitle:
-          'Turning this off mutes local alerts globally without losing per-channel choices.',
-      manageChannelsTitle: 'Manage notification channels',
-      deliveryTitle: 'Default delivery',
+          'Turning this off stops new app event alerts. Existing notifications and required foreground-service notices are unaffected.',
+      manageEventAlertsTitle: 'Alert types',
+      deliveryTitle: 'Alert delivery',
       deliveryHelper:
           'Default delivery filters events first, then quiet hours suppress non-critical alerts.',
       defaultDeliveryRowTitle: 'Default delivery',
@@ -1117,8 +1122,8 @@ class _NotificationSettingsCopy {
       systemReadyStatus: 'Ready',
       systemReviewStatus: 'Review',
       systemActionUnavailable: 'No system settings action is available here.',
-      notificationChannelsHelper:
-          'These channels apply after the master switch, default delivery, and quiet-hours rules.',
+      eventAlertsHelper:
+          'These switches affect newly published event alerts only. Existing notifications remain until dismissed, and the master switch, delivery rule, and quiet hours still apply first.',
       approvalRequestsTitle: 'Approval requests',
       approvalRequestsSubtitle:
           'Alert when a run needs an approve or reject decision.',
@@ -1143,16 +1148,17 @@ class _NotificationSettingsCopy {
   }
 
   final String notificationsBackgroundTitle;
-  final String notificationChannelsTitle;
-  final String backgroundProfileTitle;
-  final String backgroundProfileAutoLabel;
-  final String backgroundProfileActiveLabel;
-  final String backgroundProfileStrongLabel;
+  final String eventAlertsTitle;
+  final String backgroundStatusTitle;
+  final String backgroundCurrentStatusTitle;
+  final String backgroundStatusBaselineLabel;
+  final String backgroundStatusActiveLabel;
+  final String backgroundStatusStrongLabel;
   final String notificationsTitle;
   final String notificationsHelper;
   final String allowNotificationsTitle;
   final String allowNotificationsSubtitle;
-  final String manageChannelsTitle;
+  final String manageEventAlertsTitle;
   final String deliveryTitle;
   final String deliveryHelper;
   final String defaultDeliveryRowTitle;
@@ -1169,7 +1175,7 @@ class _NotificationSettingsCopy {
   final String systemReadyStatus;
   final String systemReviewStatus;
   final String systemActionUnavailable;
-  final String notificationChannelsHelper;
+  final String eventAlertsHelper;
   final String approvalRequestsTitle;
   final String approvalRequestsSubtitle;
   final String approvalReminderTitle;
@@ -1185,15 +1191,26 @@ class _NotificationSettingsCopy {
   final String serviceRecoveredTitle;
   final String serviceRecoveredSubtitle;
 
-  String backgroundProfileSummary(_BackgroundProfile profile) {
-    switch (profile) {
+  String backgroundStatusLabel(_BackgroundProfile status) {
+    switch (status) {
+      case _BackgroundProfile.auto:
+        return backgroundStatusBaselineLabel;
+      case _BackgroundProfile.active:
+        return backgroundStatusActiveLabel;
+      case _BackgroundProfile.strong:
+        return backgroundStatusStrongLabel;
+    }
+  }
+
+  String backgroundStatusSummary(_BackgroundProfile status) {
+    switch (status) {
       case _BackgroundProfile.auto:
         return foregroundServiceNoticeStatus == '系统必需'
-            ? '当前没有强保活能力，任务仍按常规前台或系统调度推进。'
-            : 'No strong background hold is active. Runs rely on normal foreground use or scheduled wakes.';
+            ? '当前设备使用基础后台保障，任务仍可通过前台服务和系统调度继续推进。'
+            : 'This device currently uses baseline background protection through foreground service work and Android scheduling.';
       case _BackgroundProfile.active:
         return foregroundServiceNoticeStatus == '系统必需'
-            ? '通知和精确闹钟条件已经就绪，但还没进入更强的本地保活档位。'
+            ? '通知和精确闹钟条件已经就绪，但电池限制仍可能影响长时间后台执行。'
             : 'Notifications and exact alarms are ready, but the device is not yet in the strongest local background tier.';
       case _BackgroundProfile.strong:
         return foregroundServiceNoticeStatus == '系统必需'
@@ -1202,27 +1219,27 @@ class _NotificationSettingsCopy {
     }
   }
 
-  String backgroundProfileBody(_BackgroundProfile profile) {
-    switch (profile) {
+  String backgroundStatusBody(_BackgroundProfile status) {
+    switch (status) {
       case _BackgroundProfile.auto:
         return foregroundServiceNoticeStatus == '系统必需'
-            ? 'AUTO 适合默认使用。任务离开当前页面后，是否能继续推进更依赖系统调度。'
-            : 'AUTO is the baseline profile. Once you leave the session, progress depends more on normal Android scheduling.';
+            ? '这是系统根据当前权限和设备条件得出的状态，不是可手动选择的运行模式。'
+            : 'This status is derived from current permissions and device conditions; it is not a selectable runtime mode.';
       case _BackgroundProfile.active:
         return foregroundServiceNoticeStatus == '系统必需'
-            ? 'ACTIVE 表示通知和精确闹钟已配置完成，任务具备更稳定的提醒和唤醒条件，但还没有电池豁免。'
-            : 'ACTIVE means notifications and exact alarms are configured, so alerts and scheduled wakes are ready, but battery exemption is still missing.';
+            ? '事件提醒和定时唤醒已就绪；处理电池限制后可获得更强的本地后台保障。'
+            : 'Event alerts and scheduled wakes are ready. Addressing battery restrictions enables stronger local background protection.';
       case _BackgroundProfile.strong:
         return foregroundServiceNoticeStatus == '系统必需'
-            ? 'STRONG 表示这台设备已经具备当前 Android 本地侧可做到的更强后台姿态，更适合长任务脱离页面继续推进。'
-            : 'STRONG means this device is in the strongest local Android posture we can provide for detached long-running work.';
+            ? '当前权限和电池条件已具备本地最强后台保障，适合长任务脱离页面继续推进。'
+            : 'Current permissions and battery conditions provide the strongest local protection available for detached long-running work.';
     }
   }
 
-  String manageChannelsSubtitle(int enabledCount, int totalCount) =>
+  String manageEventAlertsSubtitle(int enabledCount, int totalCount) =>
       foregroundServiceNoticeStatus == '系统必需'
-      ? '当前已启用 $enabledCount / $totalCount 个事件频道。'
-      : '$enabledCount of $totalCount event channels are currently enabled.';
+      ? '当前已启用 $enabledCount / $totalCount 类事件提醒。'
+      : '$enabledCount of $totalCount event alert types are currently enabled.';
 
   String enabledCountLabel(int enabledCount, int totalCount) =>
       '$enabledCount/$totalCount';
