@@ -4,12 +4,14 @@ import com.opencray.runtime.process.AgentProcessRegistry
 import com.opencray.runtime.process.FileBackedAgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessController
 import com.opencray.runtime.process.ManagedProcessControllerFactory
+import com.opencray.runtime.process.ManagedProcessRestoreDecision
 import com.opencray.runtime.process.ManagedProcessRestoreMode
 import com.opencray.runtime.process.ManagedProcessRestoreScope
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.process.ManagedProcessRuntimeIdentity
+import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
 import org.junit.Assert.assertEquals
@@ -91,7 +93,7 @@ class AgentProcessRegistryFactoryTest {
   }
 
   @Test
-  fun differentRuntimeControllersInSameProcessDoNotReattachLiveManagedProcessController() {
+  fun differentRuntimeControllersInSameProcessReattachLiveManagedProcessController() {
     val ownerIdentity = ManagedProcessRuntimeIdentity(
       processStartId = "process-1",
       runtimeControllerId = "controller-1",
@@ -141,11 +143,15 @@ class AgentProcessRegistryFactoryTest {
 
     val restored = secondFactory.forChatSession("session/a").read("proc-live")
 
-    assertEquals(ManagedProcessStatus.FAILED, restored?.status)
-    assertEquals(FileBackedAgentProcessRegistry.ERROR_INTERRUPTED_ON_RESTORE, restored?.errorCode)
+    assertEquals(ManagedProcessStatus.RUNNING, restored?.status)
+    assertNull(restored?.errorCode)
     assertEquals(
       ManagedProcessRestoreScope.SAME_PROCESS_NEW_CONTROLLER.wireValue,
       restored?.metadata?.get(MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY),
+    )
+    assertEquals(
+      ManagedProcessRestoreDecision.LIVE_CONTROLLER_REATTACHED.wireValue,
+      restored?.metadata?.get(MANAGED_PROCESS_RESTORE_DECISION_METADATA_KEY),
     )
     assertEquals(
       "controller-2",

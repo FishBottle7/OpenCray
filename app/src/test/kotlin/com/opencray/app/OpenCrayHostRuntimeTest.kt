@@ -7086,7 +7086,7 @@ class OpenCrayHostRuntimeTest {
       ?.lastOrNull { message -> message.messageId == "message-assistant-1" }
     val attachment = repairedMessage?.attachments?.singleOrNull()
 
-    assertEquals("![diagram.png](attachment:artifact)", repairedMessage?.text)
+    assertNull(repairedMessage?.text)
     assertEquals(ChatAttachmentKind.IMAGE, attachment?.kind)
     assertEquals("diagram.png", attachment?.displayName)
     assertTrue(attachment?.localPath?.startsWith(".opencray/chat-media/$activeSessionId/") == true)

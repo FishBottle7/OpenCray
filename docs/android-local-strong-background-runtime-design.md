@@ -1,10 +1,13 @@
 # Android Local Strong Background Runtime Design
 
-Last updated: 2026-07-16
+Last updated: 2026-07-17
 
 ## Status
 
-Design with partial implementation
+Local implementation complete for the detached-runtime and strong-background delivery scope;
+physical-device/OEM repetition and credentialed E2B cloud reconnect remain release validation.
+See [Detached Runtime And Strong Background Acceptance](runtime-detach-strong-background-acceptance.md)
+for the authoritative requirement-to-code-to-test matrix and process-death contract.
 
 Current ownership status: interactive runtime ownership remains in `OpenCrayAgentRuntimeService` under `:runtime`, while detached and scheduled ownership now runs in `OpenCrayDetachedRuntimeService` under the independent `:runtime_controller` process. Target-aware intent construction routes starts, binds, scheduled/repair wakes, and notification actions to the owning component; each component rejects explicit delivery for the other target, bootstrap validates its target-specific process name, and foreground notification ids are target-scoped so either service can stop independently. Durable projection reads and target-scoped loopback command fallback remain supported alongside the versioned controller read path below.
 
@@ -953,7 +956,7 @@ Exit criteria:
 
 Status:
 
-- partially implemented; capability checks, settings actions, and the in-app notifications/background page are already present, interactive ownership runs in `:runtime`, and detached/scheduled ownership runs independently in `:runtime_controller`. Service recreate reuses a process-singleton execution controller plus service-neutral bootstrap assembly inside each target process, managed-process restore is controller-aware, runtime-level routing preserves delegate reconnect support for non-Python-runtime processes, and the retained composition path resolves through explicit environment-owned seams. Periodic repair precheck routes persisted scheduled, detached-control, checkpoint-linked, durable background-subagent, reconnect-hold, and matching journal-tail evidence to the matching runtime-service target; same-run/task evidence does not bypass reconnect backoff, service-side repair persists `nextRepairAfterEpochMs`, and owner-lease heartbeat is projected. API 35 verifies remote v1 projection-only/write fallback, detached process kill/recreate, lease-expiry repair, one safe parsed-action checkpoint continuation under the same task/run identity, one no-checkpoint explicit-interruption/no-replay path, and provider-native managed-process reattach through a process-external Connect endpoint. Each target still depends on an in-memory owner/executor inside its process, so uncheckpointed active work plus credentialed cloud-provider and physical-device continuation evidence remain open before claiming a stronger controller-isolated runtime.
+- complete for the local strong-background delivery gate: capability checks, settings actions, the in-app notifications/background page, foreground keepalive, target-process isolation, periodic and delayed repair, owner-lease repair, checkpoint continuation, conservative interruption, and controlled provider reconnect are implemented and tested. Each target still owns in-memory execution inside its process, so process death resumes only proven durable state; physical-device/OEM repetition and credentialed cloud-provider reconnect remain release validation.
 - process-isolation update: `RuntimeServiceIntentFactory` maps interactive work to `:runtime` and detached/scheduled work to `:runtime_controller`; both service components are single-target shells, reject cross-target delivery, support target-correct sticky restart, and bootstrap only in the expected process. This completes the Android component/process ownership split, and API 35 now verifies real remote Binder plus process kill/recreate; physical-device repetition remains open.
 - controller-IPC update: the stable shell binder now implements `IRuntimeServiceController` v2 with v1 read compatibility, capability negotiation, bounded projection JSON, and bounded typed write command/result JSON. Chat, skills, and settings writes share their wire codec with loopback fallback and re-enter the owner-lease-gated binder endpoint after decode; missing capabilities retain projection/loopback/wake fallback. A pure-v1 remote Binder fixture now verifies projection decoding plus command fallback without v2 capability/write transactions on API 35.
 - approval notification approve/reject actions now wake the service into a service-owned command path instead of going back through a service-local `OpenCrayHostRuntime` facade
@@ -1059,7 +1062,7 @@ Exit criteria:
 
 Status:
 
-- partially implemented; interactive ownership runs in `:runtime`, detached/scheduled ownership runs independently in `:runtime_controller`, target-aware bootstrap rejects mismatched component targets and process placement before owner creation, and versioned read/write controller IPC now spans that boundary. API 35 v1/v2 remote-Binder, detached process kill/recreate, safe checkpoint continuation, no-checkpoint no-replay interruption, main-process scheduled-work delivery, and process-external E2B managed-process reconnect validation pass; remaining release evidence is physical-device/OEM repetition plus credentialed E2B cloud reconnect across runtime-process death.
+- local delivery gate complete: interactive ownership runs in `:runtime`, detached/scheduled ownership runs independently in `:runtime_controller`, target-aware bootstrap rejects mismatched component targets and process placement before owner creation, and versioned read/write controller IPC spans that boundary. API 35 v1/v2 remote-Binder, detached process kill/recreate, safe checkpoint continuation, no-checkpoint no-replay interruption, main-process scheduled-work delivery, and process-external E2B managed-process reconnect validation pass. Physical-device/OEM repetition and credentialed E2B cloud reconnect remain release evidence.
 
 - retain the passing `IRuntimeServiceController` v2 remote-`BinderProxy`/independent-process evidence and the API 35 pure-v1 remote fixture that proves projection-only negotiation plus command fallback without v2 capability/write transactions
 - repeat `./gradlew :app:connectedDebugAndroidTest -PruntimeIsolationAndroidTestOnly=true -Pandroid.testInstrumentationRunnerArguments.class=com.opencray.app.RuntimeServiceProcessIsolationTest` on at least one physical Android device and retain the observed process/lease/reconnect diagnostics with the release evidence

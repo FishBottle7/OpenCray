@@ -1,8 +1,17 @@
 # Host Rebuild And Background Task Plan
 
-Last updated: 2026-07-16
+Last updated: 2026-07-17
 
 ## Status
+
+Authoritative delivery gate: the local detached-runtime and strong-background scope is complete;
+physical-device/OEM repetition and credentialed E2B cloud reconnect remain external release
+evidence. See [Detached Runtime And Strong Background Acceptance](runtime-detach-strong-background-acceptance.md)
+for the requirement-to-code-to-test matrix and the explicit distinction between UI/process
+detachment and preservation of uncheckpointed in-memory execution. The detailed history below
+records incremental implementation and may describe earlier slices as partial.
+
+### Incremental Implementation History
 
 Phase 2 recovery slice partially implemented; in-process detached runtime owner foundation landed, and the production Android runtime service now runs behind a dedicated `:runtime` service shell that bootstraps that owner. Foreground keepalive, notifications, scheduled wake bridges, an interrupted-run repair wake path, and a dedicated service wake-command dispatcher seam are in place. Managed-process restore is now controller-aware inside the same runtime process, a rebuilt owner can reconnect a live managed process across process/controller identity changes when the backend exposes reconnect support, and the runtime-level managed-process router now preserves non-Python-runtime delegate reconnect support instead of hiding it behind the Python adapter route. Retained execution-controller reset or replacement now also disposes the retained runtime owner instead of leaving session caches or executors hanging. Runtime routing is now explicit end to end as well: UI/client bundles default to `INTERACTIVE`, scheduled and detached-control work route to `DETACHED_BACKGROUND`, the service shell keeps target-keyed bootstraps instead of a single mutable default shell, service-backed chat writes now resolve their target from durable queue or checkpoint state before dispatch, durable projection fallback is now target-scoped so interactive and detached clients no longer overwrite each other's last snapshot bucket, and service-owned loopback transport plus lazy client projection fallback are now target-scoped too. Scheduler-owned repair is now target-aware at precheck time as well: persisted scheduled-task metadata, detached-control metadata, checkpoint-linked queue tasks, and durable background subagent handles can wake `DETACHED_BACKGROUND`, while checkpoint-only, run-record-only, and non-terminal journal-tail-only evidence stays conservative `INTERACTIVE`; run-record-only and journal-tail-only sessions are now included in repair candidate enumeration instead of requiring a queue/checkpoint row to survive, while terminal run records and final journal tails are ignored for interrupted-work detection. Schedule notification actions now also include accepted-run cancellation through the existing service-owned chat-write interrupt wake command, so cancellation stays attached to the runtime-service owner; tapping a schedule notification now opens the Notifications & Background settings detail entrypoint and carries `notificationScheduleId` forward for later schedule-specific management UI. The retained-runtime composition path is now also narrower: runtime dependency loading, local host gateway creation, gateway bundle assembly, Flutter/runtime target bridge entrypoints, and execution-controller bootstrap all resolve through explicit environment-owned seams instead of broad deep fallback helpers, with the controller path now taking only a narrowed `RuntimeExecutionDependencies` bag rather than the full runtime context dependency bag. Android component/process ownership and cross-process read/write controller IPC have landed, and API 35 now verifies independent target processes plus detached kill/recreate and owner-lease repair. Physical-device repetition and credentialed cloud-provider managed-process reconnect evidence remain open.
 Current detached-ownership update: Android now assigns `INTERACTIVE` to `OpenCrayAgentRuntimeService` in `:runtime` and `DETACHED_BACKGROUND` to `OpenCrayDetachedRuntimeService` in `:runtime_controller`. Target-aware component routing covers normal client start/bind, scheduled and repair wakes, and notification PendingIntents; each Service accepts only its own target, uses that target for null-intent sticky restart, validates the matching process suffix before host/runtime bootstrap, and uses a distinct foreground notification id. This removes shared-process and notification-lifecycle ownership between interactive and detached runtimes. Process-neutral durable projection reads and target-scoped loopback writes remain compatibility fallbacks alongside the controller IPC update below.
@@ -378,7 +387,7 @@ Conclusion:
 - host recreation no longer erases most recorded runtime detail for journal-backed runs
 - continuity issues now come more from incomplete checkpoint coverage and execution ownership boundaries than from total loss of replayable event history
 
-### 5. Detached execution ownership is only partially implemented
+### 5. Detached execution ownership is process-isolated; own-process loss is recoverable, not transparent
 
 Relevant files:
 
@@ -490,7 +499,7 @@ What we still cannot distinguish with confidence:
 
 - the exact OS-level reason an app process died
 - every Dart-side observer glitch versus a real host rebuild
-- true controller-level live managed-process reattachment versus checkpoint-based recovery fallback
+- the exact provider-side cause when a reconnectable remote process becomes unavailable
 
 The reason is now narrower: lifecycle diagnostics and managed-process restore scope now distinguish same-controller, same-process-new-controller, and cross-process interruption, same-process controller recreate can adopt a still-live process controller when process memory survived, runtime-service bootstrap now refuses to create ownership outside the target-specific `:runtime` or `:runtime_controller` process, `runtimeExecutionOwnership` explicitly reports that execution is still in the runtime-process tier, and a target-scoped durable controller identity now survives service/controller recreate for diagnostics and projection fallback. That durable id is intentionally separate from the live controller instance id; it does not make in-memory execution survive runtime-process death or provide a stronger cross-process controller/runtime tier by itself.
 
@@ -503,7 +512,7 @@ Today the system can persist durable journal and checkpoint state and recover so
 That leaves two remaining failures:
 
 1. runs outside the current safe checkpoint boundaries, plus any case where terminal evidence is incomplete, still fall back to explicit interruption, reconnect-hold, or later repair/resume instead of seamless continuation
-2. UI continuity still depends on layered host, service, and bridge reattachment rather than a truly detached execution controller
+2. loss of the owning target process cannot preserve uncheckpointed in-memory execution, so recovery must use a proven checkpoint, durable provider reconnect, or explicit interruption
 
 ## Design Requirements
 
@@ -757,6 +766,10 @@ Exit criteria:
 
 ### Phase 3: Service-owned detached runtime
 
+Delivery status: complete for UI-independent ownership and independent detached target-process
+ownership. Own-process death intentionally follows the durable recovery contract rather than
+claiming transparent continuation of uncheckpointed memory.
+
 Goal:
 
 - let tasks outlive the visible page
@@ -773,6 +786,10 @@ Exit criteria:
 - user can leave the chat page and active tasks still progress
 
 ### Phase 4: Scheduled and background task execution
+
+Delivery status: complete for the current scheduled wake, detached dispatch, notification, and
+repair contract. Richer schedule management and broader automation types remain future product
+extensions.
 
 Goal:
 

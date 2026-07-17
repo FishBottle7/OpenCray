@@ -6693,21 +6693,27 @@ internal class OpenCrayHostRuntime private constructor(
     sessionId = sessionId,
     runId = runIdFor(task),
     result = result,
+    allowToolSummaryFallback = task.type != AgentTaskType.PROMPT,
   )
 
   private fun finalTextForRunLocked(
     sessionId: String,
     runId: String,
     result: ExecutionResult,
+    allowToolSummaryFallback: Boolean = true,
   ): String {
     if (isLlmRetryPausedResult(result)) {
       return llmRetryPausedMessage()
     }
-    val toolSummaryFallback = successfulToolSummaryFallbackTextForRunLocked(
-      sessionId = sessionId,
-      runId = runId,
-      result = result,
-    )
+    val toolSummaryFallback = if (allowToolSummaryFallback) {
+      successfulToolSummaryFallbackTextForRunLocked(
+        sessionId = sessionId,
+        runId = runId,
+        result = result,
+      )
+    } else {
+      null
+    }
     val rawText = when (result.status) {
       ExecutionStatus.SUCCESS -> {
         if (result.stdout.isBlank() && hasFinalAttachments(result)) {
@@ -7023,6 +7029,7 @@ internal class OpenCrayHostRuntime private constructor(
       sessionId = sessionId,
       runId = run.runId,
       result = result,
+      allowToolSummaryFallback = false,
     )
     val markdownCompatibility = attachmentMarkdownCompatibilityLocked(
       sessionId = sessionId,
