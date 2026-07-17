@@ -9,7 +9,6 @@ data class ScheduledTaskCreateRequest(
   val trigger: ScheduledTaskTriggerRequest,
   val enabled: Boolean = true,
   val conflictPolicy: ScheduledTaskConflictPolicy = ScheduledTaskConflictPolicy.ENQUEUE_NEW_RUN,
-  val requiresForegroundNotification: Boolean = true,
   val notifyOnQueued: Boolean = false,
   val notifyOnApproval: Boolean = true,
   val notifyOnCompletion: Boolean = true,
@@ -49,8 +48,8 @@ data class ScheduledTaskUpdateRequest(
   val title: String? = null,
   val prompt: String? = null,
   val trigger: ScheduledTaskTriggerRequest? = null,
+  val enabled: Boolean? = null,
   val conflictPolicy: ScheduledTaskConflictPolicy? = null,
-  val requiresForegroundNotification: Boolean? = null,
   val notifyOnQueued: Boolean? = null,
   val notifyOnApproval: Boolean? = null,
   val notifyOnCompletion: Boolean? = null,
@@ -68,8 +67,8 @@ data class ScheduledTaskUpdateRequest(
       title != null ||
         prompt != null ||
         trigger != null ||
+        enabled != null ||
         conflictPolicy != null ||
-        requiresForegroundNotification != null ||
         notifyOnQueued != null ||
         notifyOnApproval != null ||
         notifyOnCompletion != null ||
@@ -85,6 +84,26 @@ data class ScheduledTaskDeleteRequest(
 ) {
   init {
     require(scheduleId.isNotBlank()) { "ScheduledTaskDeleteRequest scheduleId must not be blank." }
+  }
+}
+
+data class ScheduledTaskRunNowRequest(
+  val scheduleId: String,
+) {
+  init {
+    require(scheduleId.isNotBlank()) { "ScheduledTaskRunNowRequest scheduleId must not be blank." }
+  }
+}
+
+data class ScheduledTaskSnoozeRequest(
+  val scheduleId: String,
+  val durationMinutes: Int = DEFAULT_SCHEDULED_TASK_SNOOZE_MINUTES,
+) {
+  init {
+    require(scheduleId.isNotBlank()) { "ScheduledTaskSnoozeRequest scheduleId must not be blank." }
+    require(durationMinutes in 1..MAX_SCHEDULED_TASK_SNOOZE_MINUTES) {
+      "ScheduledTaskSnoozeRequest durationMinutes must be between 1 and $MAX_SCHEDULED_TASK_SNOOZE_MINUTES."
+    }
   }
 }
 
@@ -186,6 +205,7 @@ data class ScheduledTaskSummary(
   val triggerKind: String,
   val triggerSummary: String,
   val nextTriggerAtEpochMs: Long? = null,
+  val snoozedUntilEpochMs: Long? = null,
 ) {
   init {
     require(scheduleId.isNotBlank()) { "ScheduledTaskSummary scheduleId must not be blank." }
@@ -204,6 +224,7 @@ data class ScheduledTaskCreateResult(
   val triggerKind: String,
   val triggerSummary: String,
   val nextTriggerAtEpochMs: Long? = null,
+  val snoozedUntilEpochMs: Long? = null,
 ) {
   init {
     require(scheduleId.isNotBlank()) { "ScheduledTaskCreateResult scheduleId must not be blank." }
@@ -235,8 +256,9 @@ data class ScheduledTaskDetails(
   val triggerSummary: String,
   val trigger: ScheduledTaskTriggerSnapshot,
   val nextTriggerAtEpochMs: Long? = null,
+  val snoozedUntilEpochMs: Long? = null,
   val conflictPolicy: String,
-  val requiresForegroundNotification: Boolean,
+  val foregroundNotificationRequired: Boolean,
   val notifyOnQueued: Boolean,
   val notifyOnApproval: Boolean,
   val notifyOnCompletion: Boolean,
@@ -308,6 +330,7 @@ data class ScheduledTaskUpdateResult(
   val triggerKind: String,
   val triggerSummary: String,
   val nextTriggerAtEpochMs: Long? = null,
+  val snoozedUntilEpochMs: Long? = null,
 ) {
   init {
     require(scheduleId.isNotBlank()) { "ScheduledTaskUpdateResult scheduleId must not be blank." }
@@ -332,6 +355,41 @@ data class ScheduledTaskDeleteResult(
   }
 }
 
+data class ScheduledTaskRunNowResult(
+  val scheduleId: String,
+  val sessionId: String,
+  val title: String,
+  val scheduleRunId: String,
+  val requestedAtEpochMs: Long,
+) {
+  init {
+    require(scheduleId.isNotBlank()) { "ScheduledTaskRunNowResult scheduleId must not be blank." }
+    require(sessionId.isNotBlank()) { "ScheduledTaskRunNowResult sessionId must not be blank." }
+    require(title.isNotBlank()) { "ScheduledTaskRunNowResult title must not be blank." }
+    require(scheduleRunId.isNotBlank()) { "ScheduledTaskRunNowResult scheduleRunId must not be blank." }
+    require(requestedAtEpochMs >= 0L) {
+      "ScheduledTaskRunNowResult requestedAtEpochMs must be >= 0."
+    }
+  }
+}
+
+data class ScheduledTaskSnoozeResult(
+  val scheduleId: String,
+  val sessionId: String,
+  val title: String,
+  val snoozedUntilEpochMs: Long,
+  val nextTriggerAtEpochMs: Long? = null,
+) {
+  init {
+    require(scheduleId.isNotBlank()) { "ScheduledTaskSnoozeResult scheduleId must not be blank." }
+    require(sessionId.isNotBlank()) { "ScheduledTaskSnoozeResult sessionId must not be blank." }
+    require(title.isNotBlank()) { "ScheduledTaskSnoozeResult title must not be blank." }
+    require(snoozedUntilEpochMs >= 0L) {
+      "ScheduledTaskSnoozeResult snoozedUntilEpochMs must be >= 0."
+    }
+  }
+}
+
 interface ScheduledTaskManager {
   fun policyTargetPath(): Path
 
@@ -344,6 +402,10 @@ interface ScheduledTaskManager {
   fun update(request: ScheduledTaskUpdateRequest): ScheduledTaskUpdateResult
 
   fun delete(request: ScheduledTaskDeleteRequest): ScheduledTaskDeleteResult
+
+  fun runNow(request: ScheduledTaskRunNowRequest): ScheduledTaskRunNowResult
+
+  fun snooze(request: ScheduledTaskSnoozeRequest): ScheduledTaskSnoozeResult
 }
 
 internal object ScheduledTaskToolMetadataKeys {
@@ -353,6 +415,9 @@ internal object ScheduledTaskToolMetadataKeys {
   const val TRIGGER_KIND: String = "triggerKind"
   const val TRIGGER_SUMMARY: String = "triggerSummary"
   const val NEXT_TRIGGER_AT_EPOCH_MS: String = "nextTriggerAtEpochMs"
+  const val SNOOZED_UNTIL_EPOCH_MS: String = "snoozedUntilEpochMs"
+  const val SCHEDULE_RUN_ID: String = "scheduleRunId"
+  const val SNOOZE_DURATION_MINUTES: String = "snoozeDurationMinutes"
   const val ENABLED: String = "enabled"
   const val CONFLICT_POLICY: String = "conflictPolicy"
   const val RETURNED_COUNT: String = "returnedCount"
@@ -362,3 +427,5 @@ internal object ScheduledTaskToolMetadataKeys {
 
 private const val DEFAULT_SCHEDULED_TASK_LIST_LIMIT: Int = 20
 private const val DEFAULT_SCHEDULED_TASK_RECENT_RUN_LIMIT: Int = 5
+private const val DEFAULT_SCHEDULED_TASK_SNOOZE_MINUTES: Int = 15
+private const val MAX_SCHEDULED_TASK_SNOOZE_MINUTES: Int = 7 * 24 * 60

@@ -62,6 +62,8 @@ class AgentToolAliasDispatchTest {
     assertTrue("ScheduledTaskList" in definitionNames)
     assertTrue("ScheduledTaskGet" in definitionNames)
     assertTrue("ScheduledTaskUpdate" in definitionNames)
+    assertTrue("ScheduledTaskRunNow" in definitionNames)
+    assertTrue("ScheduledTaskSnooze" in definitionNames)
     assertTrue("ScheduledTaskDelete" in definitionNames)
     assertTrue("read" in definitionNames)
     assertTrue("write" in definitionNames)
@@ -79,6 +81,10 @@ class AgentToolAliasDispatchTest {
     assertTrue("scheduledtasklist" in definitionNames)
     assertTrue("scheduled_task_list" in definitionNames)
     assertTrue("scheduledtaskget" in definitionNames)
+    assertTrue("scheduledtaskrunnow" in definitionNames)
+    assertTrue("scheduled_task_run_now" in definitionNames)
+    assertTrue("scheduledtasksnooze" in definitionNames)
+    assertTrue("scheduled_task_snooze" in definitionNames)
     assertTrue("scheduled_task_get" in definitionNames)
     assertTrue("scheduledtaskupdate" in definitionNames)
     assertTrue("scheduled_task_update" in definitionNames)
@@ -174,6 +180,12 @@ class AgentToolAliasDispatchTest {
     val scheduledTaskUpdateDefinition = requireNotNull(
       dispatcher.definitions().firstOrNull { definition -> definition.name == "ScheduledTaskUpdate" },
     )
+    val scheduledTaskRunNowDefinition = requireNotNull(
+      dispatcher.definitions().firstOrNull { definition -> definition.name == "ScheduledTaskRunNow" },
+    )
+    val scheduledTaskSnoozeDefinition = requireNotNull(
+      dispatcher.definitions().firstOrNull { definition -> definition.name == "ScheduledTaskSnooze" },
+    )
     val scheduledTaskDeleteDefinition = requireNotNull(
       dispatcher.definitions().firstOrNull { definition -> definition.name == "ScheduledTaskDelete" },
     )
@@ -213,6 +225,7 @@ class AgentToolAliasDispatchTest {
     assertEquals("false", todoItemSchema.requiredPrimitive("additionalProperties").content)
 
     val scheduledTaskSchema = scheduledTaskDefinition.toJsonSchema()
+    val scheduledTaskProperties = scheduledTaskSchema.requiredProperty("properties")
     val triggerSchema = scheduledTaskSchema.requiredProperty("properties").requiredProperty("trigger")
     val triggerProperties = triggerSchema.requiredProperty("properties")
     assertEquals("object", triggerSchema.requiredString("type"))
@@ -225,6 +238,7 @@ class AgentToolAliasDispatchTest {
       triggerSchema.requiredString("description").contains("start_at plus rrule"),
     )
     assertEquals("false", triggerSchema.requiredPrimitive("additionalProperties").content)
+    assertFalse("requires_foreground_notification" in scheduledTaskProperties)
     assertTrue(
       scheduledTaskListDefinition.description.contains("current chat session"),
     )
@@ -233,6 +247,18 @@ class AgentToolAliasDispatchTest {
     )
     assertTrue(
       scheduledTaskUpdateDefinition.toJsonSchema().requiredStringArray("required").contains("schedule_id"),
+    )
+    val scheduledTaskUpdateProperties = scheduledTaskUpdateDefinition
+      .toJsonSchema()
+      .requiredProperty("properties")
+    assertTrue("enabled" in scheduledTaskUpdateProperties)
+    assertFalse("requires_foreground_notification" in scheduledTaskUpdateProperties)
+    assertEquals(
+      listOf("schedule_id"),
+      scheduledTaskRunNowDefinition.toJsonSchema().requiredStringArray("required"),
+    )
+    assertTrue(
+      scheduledTaskSnoozeDefinition.toJsonSchema().requiredStringArray("required").contains("schedule_id"),
     )
     assertTrue(
       scheduledTaskDeleteDefinition.toJsonSchema().requiredStringArray("required").contains("schedule_id"),

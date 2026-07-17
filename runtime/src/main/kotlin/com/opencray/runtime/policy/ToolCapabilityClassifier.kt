@@ -15,6 +15,8 @@ internal class ToolCapabilityClassifier {
     "extract_workspace_package",
     "ScheduledTaskCreate",
     "ScheduledTaskDelete",
+    "ScheduledTaskRunNow",
+    "ScheduledTaskSnooze",
     "ScheduledTaskUpdate",
     "SkillsAdd",
     "SkillsAddBatch",
@@ -84,6 +86,8 @@ internal class ToolCapabilityClassifier {
     "ScheduledTaskCreate",
     "ScheduledTaskList",
     "ScheduledTaskGet",
+    "ScheduledTaskRunNow",
+    "ScheduledTaskSnooze",
     "ScheduledTaskUpdate",
     "ScheduledTaskDelete",
     -> "schedule_task"

@@ -682,7 +682,6 @@ class OpenCrayToolDispatcher(
           ),
           AgentToolParameter("enabled", "boolean", required = false, description = "Whether the new scheduled task is enabled immediately. Defaults to true."),
           AgentToolParameter("conflict_policy", "string", required = false, description = "Optional conflict policy. Supported values: enqueue_new_run, skip_if_session_busy, cancel_older_waiting_trigger."),
-          AgentToolParameter("requires_foreground_notification", "boolean", required = false, description = "Whether detached execution should require the runtime foreground notification. Defaults to true."),
           AgentToolParameter("notify_on_queued", "boolean", required = false, description = "Whether to notify when the scheduled trigger is accepted into the queue."),
           AgentToolParameter("notify_on_approval", "boolean", required = false, description = "Whether to notify if the scheduled run later waits for approval."),
           AgentToolParameter("notify_on_completion", "boolean", required = false, description = "Whether to notify when the scheduled run completes."),
@@ -708,7 +707,7 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "ScheduledTaskUpdate",
-        description = "Patch one persisted scheduled task. If trigger is provided, it replaces the full stored trigger definition. Enable or disable remains a host-side action and is not changed here.",
+        description = "Patch one persisted scheduled task. If trigger is provided, it replaces the full stored trigger definition. Use enabled to enable or disable future wakes.",
         parameters = listOf(
           AgentToolParameter("schedule_id", "string", required = true, description = "Exact scheduled task id."),
           AgentToolParameter("title", "string", required = false, description = "Optional replacement user-visible title."),
@@ -720,12 +719,27 @@ class OpenCrayToolDispatcher(
             description = "Optional full replacement trigger object. Use exactly one form: at, after, or recurrence with start_at plus rrule.",
             jsonSchema = scheduledTaskTriggerSchema(),
           ),
+          AgentToolParameter("enabled", "boolean", required = false, description = "Optional enabled state. Disabled schedules keep their configuration and history but do not create future wakes."),
           AgentToolParameter("conflict_policy", "string", required = false, description = "Optional replacement conflict policy. Supported values: enqueue_new_run, skip_if_session_busy, cancel_older_waiting_trigger."),
-          AgentToolParameter("requires_foreground_notification", "boolean", required = false, description = "Optional replacement foreground-notification requirement."),
           AgentToolParameter("notify_on_queued", "boolean", required = false, description = "Optional replacement queued notification flag."),
           AgentToolParameter("notify_on_approval", "boolean", required = false, description = "Optional replacement approval notification flag."),
           AgentToolParameter("notify_on_completion", "boolean", required = false, description = "Optional replacement completion notification flag."),
           AgentToolParameter("notify_on_interruption", "boolean", required = false, description = "Optional replacement interruption notification flag."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "ScheduledTaskRunNow",
+        description = "Request one immediate run of an enabled persisted schedule through the detached runtime. This does not change the schedule's future trigger.",
+        parameters = listOf(
+          AgentToolParameter("schedule_id", "string", required = true, description = "Exact enabled scheduled task id."),
+        ),
+      ),
+      AgentToolDefinition(
+        name = "ScheduledTaskSnooze",
+        description = "Delay the next wake of an enabled persisted schedule without changing its trigger definition. Defaults to 15 minutes.",
+        parameters = listOf(
+          AgentToolParameter("schedule_id", "string", required = true, description = "Exact enabled scheduled task id."),
+          AgentToolParameter("duration_minutes", "number", required = false, description = "Delay in whole minutes from 1 through 10080. Defaults to 15."),
         ),
       ),
       AgentToolDefinition(
@@ -1253,6 +1267,8 @@ class OpenCrayToolDispatcher(
         "ScheduledTaskList" -> listScheduledTasks(task = task, arguments = invocation.arguments)
         "ScheduledTaskGet" -> getScheduledTask(task = task, arguments = invocation.arguments)
         "ScheduledTaskUpdate" -> updateScheduledTask(task = task, arguments = invocation.arguments)
+        "ScheduledTaskRunNow" -> runScheduledTaskNow(task = task, arguments = invocation.arguments)
+        "ScheduledTaskSnooze" -> snoozeScheduledTask(task = task, arguments = invocation.arguments)
         "ScheduledTaskDelete" -> deleteScheduledTask(task = task, arguments = invocation.arguments)
         "Bash" -> executeClaudeBash(task = task, arguments = invocation.arguments)
         "ProcessStart" -> startManagedProcess(task = task, arguments = invocation.arguments)
@@ -4356,10 +4372,6 @@ class OpenCrayToolDispatcher(
       trigger = trigger,
       enabled = arguments.optionalBoolean("enabled") ?: true,
       conflictPolicy = conflictPolicy,
-      requiresForegroundNotification = arguments.optionalBooleanFrom(
-        "requires_foreground_notification",
-        "requiresForegroundNotification",
-      ) ?: true,
       notifyOnQueued = arguments.optionalBooleanFrom("notify_on_queued", "notifyOnQueued") ?: false,
       notifyOnApproval = arguments.optionalBooleanFrom(
         "notify_on_approval",
@@ -4409,6 +4421,10 @@ class OpenCrayToolDispatcher(
           appendLine()
           append("next_trigger_at_epoch_ms=$nextTriggerAtEpochMs")
         }
+        result.snoozedUntilEpochMs?.let { snoozedUntilEpochMs ->
+          appendLine()
+          append("snoozed_until_epoch_ms=$snoozedUntilEpochMs")
+        }
       },
       metadata = toolPolicyPipeline.resultMetadata(
         plan = plan,
@@ -4423,6 +4439,9 @@ class OpenCrayToolDispatcher(
         ) + listOfNotNull(
           result.nextTriggerAtEpochMs?.let { nextTriggerAtEpochMs ->
             ScheduledTaskToolMetadataKeys.NEXT_TRIGGER_AT_EPOCH_MS to nextTriggerAtEpochMs.toString()
+          },
+          result.snoozedUntilEpochMs?.let { snoozedUntilEpochMs ->
+            ScheduledTaskToolMetadataKeys.SNOOZED_UNTIL_EPOCH_MS to snoozedUntilEpochMs.toString()
           },
         ).toMap(),
       ),
@@ -4637,10 +4656,7 @@ class OpenCrayToolDispatcher(
       toolName = "ScheduledTaskUpdate",
       defaultValue = null,
     )
-    val requiresForegroundNotification = arguments.optionalBooleanFrom(
-      "requires_foreground_notification",
-      "requiresForegroundNotification",
-    )
+    val enabled = arguments.optionalBoolean("enabled")
     val notifyOnQueued = arguments.optionalBooleanFrom("notify_on_queued", "notifyOnQueued")
     val notifyOnApproval = arguments.optionalBooleanFrom(
       "notify_on_approval",
@@ -4694,8 +4710,8 @@ class OpenCrayToolDispatcher(
         title = title,
         prompt = prompt,
         trigger = trigger,
+        enabled = enabled,
         conflictPolicy = conflictPolicy,
-        requiresForegroundNotification = requiresForegroundNotification,
         notifyOnQueued = notifyOnQueued,
         notifyOnApproval = notifyOnApproval,
         notifyOnCompletion = notifyOnCompletion,
@@ -4756,6 +4772,10 @@ class OpenCrayToolDispatcher(
           appendLine()
           append("next_trigger_at_epoch_ms=$nextTriggerAtEpochMs")
         }
+        result.snoozedUntilEpochMs?.let { snoozedUntilEpochMs ->
+          appendLine()
+          append("snoozed_until_epoch_ms=$snoozedUntilEpochMs")
+        }
       },
       metadata = toolPolicyPipeline.resultMetadata(
         plan = plan,
@@ -4770,6 +4790,187 @@ class OpenCrayToolDispatcher(
           conflictPolicy?.let {
             ScheduledTaskToolMetadataKeys.CONFLICT_POLICY to it.name.lowercase(Locale.US)
           },
+          result.nextTriggerAtEpochMs?.let { nextTriggerAtEpochMs ->
+            ScheduledTaskToolMetadataKeys.NEXT_TRIGGER_AT_EPOCH_MS to nextTriggerAtEpochMs.toString()
+          },
+          result.snoozedUntilEpochMs?.let { snoozedUntilEpochMs ->
+            ScheduledTaskToolMetadataKeys.SNOOZED_UNTIL_EPOCH_MS to snoozedUntilEpochMs.toString()
+          },
+        ).toMap(),
+      ),
+    )
+  }
+
+  private fun runScheduledTaskNow(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val toolName = "ScheduledTaskRunNow"
+    val scheduledTaskManager = config.scheduledTaskManager
+      ?: return unavailableScheduledTaskManager(toolName = toolName)
+    val scheduleId = arguments.requiredStringFrom("schedule_id", "scheduleId").trim()
+    val policyTargetPath = scheduledTaskManager.policyTargetPath().toAbsolutePath().normalize()
+    val displayPolicyTargetPath = displayScheduledTaskPolicyPath(policyTargetPath)
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = toolName,
+      targetPath = policyTargetPath,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = policyTargetPath,
+        primaryTargetPath = displayPolicyTargetPath,
+        targetSummary = scheduleId,
+      ),
+      intent = SchedulingIntent(
+        kind = SchedulingIntentKind.RUN_SCHEDULED_TASK_NOW,
+        targetScheduleId = scheduleId,
+      ),
+    )
+    toolPolicyPipeline.gateFileMutation(
+      plan = plan,
+      affectedPaths = mapOf(
+        "path" to displayPolicyTargetPath,
+        ScheduledTaskToolMetadataKeys.SCHEDULE_ID to scheduleId,
+      ),
+    )?.let { return it }
+
+    val result = runCatching {
+      scheduledTaskManager.runNow(ScheduledTaskRunNowRequest(scheduleId = scheduleId))
+    }.getOrElse { throwable ->
+      val detail = throwable.message?.trim()?.takeIf(String::isNotBlank)
+        ?: "Failed to request an immediate scheduled run."
+      return AgentToolResult(
+        toolName = toolName,
+        status = AgentToolResultStatus.FAILED,
+        content = detail,
+        errorCode = "SCHEDULED_TASK_RUN_NOW_FAILED",
+        errorMessage = detail,
+        metadata = toolPolicyPipeline.resultMetadata(
+          plan = plan,
+          metadata = mapOf(ScheduledTaskToolMetadataKeys.SCHEDULE_ID to scheduleId),
+        ),
+      )
+    }
+    return AgentToolResult(
+      toolName = toolName,
+      status = AgentToolResultStatus.SUCCESS,
+      content = buildString {
+        appendLine("Immediate scheduled run requested.")
+        appendLine("schedule_id=${result.scheduleId}")
+        appendLine("session_id=${result.sessionId}")
+        appendLine("title=${result.title}")
+        appendLine("schedule_run_id=${result.scheduleRunId}")
+        append("requested_at_epoch_ms=${result.requestedAtEpochMs}")
+      },
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          ScheduledTaskToolMetadataKeys.SCHEDULE_ID to result.scheduleId,
+          ScheduledTaskToolMetadataKeys.SESSION_ID to result.sessionId,
+          ScheduledTaskToolMetadataKeys.TITLE to result.title,
+          ScheduledTaskToolMetadataKeys.SCHEDULE_RUN_ID to result.scheduleRunId,
+        ),
+      ),
+    )
+  }
+
+  private fun snoozeScheduledTask(
+    task: AgentTask,
+    arguments: JsonObject,
+  ): AgentToolResult {
+    val toolName = "ScheduledTaskSnooze"
+    val scheduledTaskManager = config.scheduledTaskManager
+      ?: return unavailableScheduledTaskManager(toolName = toolName)
+    val scheduleId = arguments.requiredStringFrom("schedule_id", "scheduleId").trim()
+    val durationMinutes = arguments.optionalInt("duration_minutes")
+      ?: arguments.optionalInt("durationMinutes")
+      ?: 15
+    val request = runCatching {
+      ScheduledTaskSnoozeRequest(
+        scheduleId = scheduleId,
+        durationMinutes = durationMinutes,
+      )
+    }.getOrElse { throwable ->
+      val detail = throwable.message?.trim()?.takeIf(String::isNotBlank)
+        ?: "ScheduledTaskSnooze duration_minutes is invalid."
+      return AgentToolResult(
+        toolName = toolName,
+        status = AgentToolResultStatus.FAILED,
+        content = detail,
+        errorCode = "SCHEDULED_TASK_SNOOZE_INVALID",
+        errorMessage = detail,
+        metadata = toolPolicyPipeline.resultMetadata(
+          toolName = toolName,
+          request = ToolMetadataContextRequest(workspaceRelation = ToolWorkspaceRelation.NONE),
+          metadata = mapOf(
+            ScheduledTaskToolMetadataKeys.SCHEDULE_ID to scheduleId,
+            ScheduledTaskToolMetadataKeys.SNOOZE_DURATION_MINUTES to durationMinutes.toString(),
+          ),
+        ),
+      )
+    }
+    val policyTargetPath = scheduledTaskManager.policyTargetPath().toAbsolutePath().normalize()
+    val displayPolicyTargetPath = displayScheduledTaskPolicyPath(policyTargetPath)
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = toolName,
+      targetPath = policyTargetPath,
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.DIRECTORY,
+        primaryPath = policyTargetPath,
+        primaryTargetPath = displayPolicyTargetPath,
+        targetSummary = "$scheduleId +${durationMinutes}m",
+      ),
+      intent = SchedulingIntent(
+        kind = SchedulingIntentKind.SNOOZE_SCHEDULED_TASK,
+        targetScheduleId = scheduleId,
+      ),
+    )
+    val affectedPaths = mapOf(
+      "path" to displayPolicyTargetPath,
+      ScheduledTaskToolMetadataKeys.SCHEDULE_ID to scheduleId,
+      ScheduledTaskToolMetadataKeys.SNOOZE_DURATION_MINUTES to durationMinutes.toString(),
+    )
+    toolPolicyPipeline.gateFileMutation(plan = plan, affectedPaths = affectedPaths)
+      ?.let { return it }
+
+    val result = runCatching {
+      scheduledTaskManager.snooze(request)
+    }.getOrElse { throwable ->
+      val detail = throwable.message?.trim()?.takeIf(String::isNotBlank)
+        ?: "Failed to snooze the scheduled task."
+      return AgentToolResult(
+        toolName = toolName,
+        status = AgentToolResultStatus.FAILED,
+        content = detail,
+        errorCode = "SCHEDULED_TASK_SNOOZE_FAILED",
+        errorMessage = detail,
+        metadata = toolPolicyPipeline.resultMetadata(plan = plan, metadata = affectedPaths),
+      )
+    }
+    return AgentToolResult(
+      toolName = toolName,
+      status = AgentToolResultStatus.SUCCESS,
+      content = buildString {
+        appendLine("Scheduled task snoozed.")
+        appendLine("schedule_id=${result.scheduleId}")
+        appendLine("session_id=${result.sessionId}")
+        appendLine("title=${result.title}")
+        append("snoozed_until_epoch_ms=${result.snoozedUntilEpochMs}")
+        result.nextTriggerAtEpochMs?.let { nextTriggerAtEpochMs ->
+          appendLine()
+          append("next_trigger_at_epoch_ms=$nextTriggerAtEpochMs")
+        }
+      },
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = mapOf(
+          ScheduledTaskToolMetadataKeys.SCHEDULE_ID to result.scheduleId,
+          ScheduledTaskToolMetadataKeys.SESSION_ID to result.sessionId,
+          ScheduledTaskToolMetadataKeys.TITLE to result.title,
+          ScheduledTaskToolMetadataKeys.SNOOZE_DURATION_MINUTES to durationMinutes.toString(),
+          ScheduledTaskToolMetadataKeys.SNOOZED_UNTIL_EPOCH_MS to result.snoozedUntilEpochMs.toString(),
+        ) + listOfNotNull(
           result.nextTriggerAtEpochMs?.let { nextTriggerAtEpochMs ->
             ScheduledTaskToolMetadataKeys.NEXT_TRIGGER_AT_EPOCH_MS to nextTriggerAtEpochMs.toString()
           },
@@ -5018,6 +5219,10 @@ class OpenCrayToolDispatcher(
       appendLine()
       append("next_trigger_at_epoch_ms=$nextTriggerAtEpochMs")
     }
+    summary.snoozedUntilEpochMs?.let { snoozedUntilEpochMs ->
+      appendLine()
+      append("snoozed_until_epoch_ms=$snoozedUntilEpochMs")
+    }
   }
 
   private fun renderScheduledTaskDetails(details: ScheduledTaskDetails): String = buildString {
@@ -5033,8 +5238,11 @@ class OpenCrayToolDispatcher(
     details.nextTriggerAtEpochMs?.let { nextTriggerAtEpochMs ->
       appendLine("next_trigger_at_epoch_ms=$nextTriggerAtEpochMs")
     }
+    details.snoozedUntilEpochMs?.let { snoozedUntilEpochMs ->
+      appendLine("snoozed_until_epoch_ms=$snoozedUntilEpochMs")
+    }
     appendLine("conflict_policy=${details.conflictPolicy}")
-    appendLine("requires_foreground_notification=${details.requiresForegroundNotification}")
+    appendLine("foreground_notification_required=${details.foregroundNotificationRequired}")
     appendLine("notify_on_queued=${details.notifyOnQueued}")
     appendLine("notify_on_approval=${details.notifyOnApproval}")
     appendLine("notify_on_completion=${details.notifyOnCompletion}")
@@ -5091,6 +5299,9 @@ class OpenCrayToolDispatcher(
   ) + listOfNotNull(
     details.nextTriggerAtEpochMs?.let { nextTriggerAtEpochMs ->
       ScheduledTaskToolMetadataKeys.NEXT_TRIGGER_AT_EPOCH_MS to nextTriggerAtEpochMs.toString()
+    },
+    details.snoozedUntilEpochMs?.let { snoozedUntilEpochMs ->
+      ScheduledTaskToolMetadataKeys.SNOOZED_UNTIL_EPOCH_MS to snoozedUntilEpochMs.toString()
     },
   ).toMap()
 

@@ -97,6 +97,8 @@ internal enum class SchedulingIntentKind(val wireValue: String) {
   LIST_SCHEDULED_TASKS("list_scheduled_tasks"),
   GET_SCHEDULED_TASK("get_scheduled_task"),
   UPDATE_SCHEDULED_TASK("update_scheduled_task"),
+  RUN_SCHEDULED_TASK_NOW("run_scheduled_task_now"),
+  SNOOZE_SCHEDULED_TASK("snooze_scheduled_task"),
   DELETE_SCHEDULED_TASK("delete_scheduled_task"),
 }
 

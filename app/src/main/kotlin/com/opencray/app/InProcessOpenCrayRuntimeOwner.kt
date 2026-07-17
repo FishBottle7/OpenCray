@@ -441,6 +441,15 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
         triggerSyncStateStore = FileBackedScheduledTaskTriggerSyncStateStoreFactory(
           runtimeRootDirectory,
         ).create(),
+        scheduledTaskStarter = { command ->
+          openCrayRuntimeServiceEnvironment(appContext)
+            .runtimeServiceAccessGateway
+            .startScheduledTask(
+              context = appContext,
+              command = command,
+              target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+            )
+        },
       )
     },
   )

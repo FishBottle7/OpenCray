@@ -249,6 +249,7 @@ internal data class ScheduledTaskPayload(
 @Serializable
 internal data class ScheduledTaskPolicy(
   val conflictPolicy: ScheduledConflictPolicy = ScheduledConflictPolicy.ENQUEUE_NEW_RUN,
+  // Kept in the persisted shape for compatibility; detached scheduled execution always requires FGS.
   val requiresForegroundNotification: Boolean = true,
   val notifyOnQueued: Boolean = false,
   val notifyOnApproval: Boolean = true,
@@ -498,6 +499,16 @@ private class FileBackedScheduledTaskSpecStore(
     .values
     .mapNotNull { grouped ->
       grouped.maxByOrNull(ScheduledTaskSpec::updatedAtEpochMs)
+    }
+    .map { spec ->
+      if (spec.policy.requiresForegroundNotification) {
+        spec
+      } else {
+        spec.copy(
+          policy = spec.policy.copy(requiresForegroundNotification = true),
+          updatedAtEpochMs = maxOf(clock(), spec.updatedAtEpochMs + 1L),
+        )
+      }
     }
     .sortedByDescending(ScheduledTaskSpec::updatedAtEpochMs)
     .take(config.maxTrackedSpecs)

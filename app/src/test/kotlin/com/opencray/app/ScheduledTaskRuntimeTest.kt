@@ -11,6 +11,8 @@ import com.opencray.runtime.ScheduledTaskCreateRequest
 import com.opencray.runtime.ScheduledTaskDeleteRequest
 import com.opencray.runtime.ScheduledTaskGetRequest
 import com.opencray.runtime.ScheduledTaskListRequest
+import com.opencray.runtime.ScheduledTaskRunNowRequest
+import com.opencray.runtime.ScheduledTaskSnoozeRequest
 import com.opencray.runtime.ScheduledTaskTriggerRequest
 import com.opencray.runtime.ScheduledTaskUpdateRequest
 import com.opencray.runtime.process.ManagedProcessSnapshot
@@ -23,7 +25,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -47,6 +48,8 @@ class ScheduledTaskRuntimeTest {
       scheduleId = "schedule-store",
       title = "Original",
       updatedAtEpochMs = 1_000L,
+    ).copy(
+      policy = ScheduledTaskPolicy(requiresForegroundNotification = false),
     )
     val updated = original.copy(
       title = "Updated",
@@ -95,6 +98,7 @@ class ScheduledTaskRuntimeTest {
 
     assertEquals(listOf("Updated"), reloadedSpecStore.list().map(ScheduledTaskSpec::title))
     assertEquals(1, reloadedSpecStore.listEnabled().size)
+    assertTrue(reloadedSpecStore.list().single().policy.requiresForegroundNotification)
     assertEquals(
       ScheduledTaskRunResult.ACCEPTED,
       reloadedRunRecordStore.get("schedule-run-store")?.result,
@@ -254,6 +258,7 @@ class ScheduledTaskRuntimeTest {
     val runRecordStore = inMemoryScheduledTaskRunRecordStoreFactory().create()
     val triggerSyncStateStore = inMemoryScheduledTaskTriggerSyncStateStoreFactory().create()
     val registrar = RecordingScheduledTriggerRegistrar()
+    val startedCommands = mutableListOf<ScheduledTaskWakeCommand>()
     val manager = AppScheduledTaskManager(
       storageRootPath = runtimeRoot.toPath(),
       chatSessionStore = chatStore,
@@ -261,6 +266,10 @@ class ScheduledTaskRuntimeTest {
       runRecordStore = runRecordStore,
       triggerRegistrar = registrar,
       triggerSyncStateStore = triggerSyncStateStore,
+      scheduledTaskStarter = { command ->
+        startedCommands += command
+        true
+      },
       clock = { 10_000L },
     )
 
@@ -304,6 +313,7 @@ class ScheduledTaskRuntimeTest {
     )
     assertEquals("Summarize the workspace status", loaded.task.prompt)
     assertEquals("after", loaded.task.triggerKind)
+    assertTrue(loaded.task.foregroundNotificationRequired)
     assertEquals(1, loaded.recentRuns.size)
     assertEquals("run-manager", loaded.recentRuns.single().createdRunId)
 
@@ -316,16 +326,42 @@ class ScheduledTaskRuntimeTest {
           timezone = "Asia/Shanghai",
           rrule = "FREQ=WEEKLY;BYDAY=MO",
         ),
+        enabled = false,
         notifyOnCompletion = false,
       ),
     )
     assertEquals("Weekly review", updated.title)
     assertEquals("rrule", updated.triggerKind)
+    assertFalse(updated.enabled)
 
     val refreshed = manager.get(ScheduledTaskGetRequest(scheduleId = created.scheduleId))
     assertEquals("Weekly review", refreshed.task.title)
     assertEquals("rrule", refreshed.task.triggerKind)
+    assertFalse(refreshed.task.enabled)
     assertFalse(refreshed.task.notifyOnCompletion)
+
+    val enabled = manager.update(
+      ScheduledTaskUpdateRequest(
+        scheduleId = created.scheduleId,
+        enabled = true,
+      ),
+    )
+    assertTrue(enabled.enabled)
+
+    val runNow = manager.runNow(ScheduledTaskRunNowRequest(created.scheduleId))
+    assertEquals(created.scheduleId, runNow.scheduleId)
+    assertEquals(1, startedCommands.size)
+    assertEquals(ScheduledTaskTriggerReasons.MANUAL, startedCommands.single().triggerReason)
+    assertEquals(sessionId, startedCommands.single().targetSessionId)
+
+    val snoozed = manager.snooze(
+      ScheduledTaskSnoozeRequest(
+        scheduleId = created.scheduleId,
+        durationMinutes = 30,
+      ),
+    )
+    assertEquals(1_810_000L, snoozed.snoozedUntilEpochMs)
+    assertEquals(1_810_000L, manager.get(ScheduledTaskGetRequest(created.scheduleId)).task.snoozedUntilEpochMs)
 
     val deleted = manager.delete(
       ScheduledTaskDeleteRequest(

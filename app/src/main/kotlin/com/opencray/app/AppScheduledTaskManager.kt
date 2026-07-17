@@ -11,7 +11,11 @@ import com.opencray.runtime.ScheduledTaskGetResult
 import com.opencray.runtime.ScheduledTaskListRequest
 import com.opencray.runtime.ScheduledTaskListResult
 import com.opencray.runtime.ScheduledTaskManager
+import com.opencray.runtime.ScheduledTaskRunNowRequest
+import com.opencray.runtime.ScheduledTaskRunNowResult
 import com.opencray.runtime.ScheduledTaskRunRecordSummary
+import com.opencray.runtime.ScheduledTaskSnoozeRequest
+import com.opencray.runtime.ScheduledTaskSnoozeResult
 import com.opencray.runtime.ScheduledTaskSummary
 import com.opencray.runtime.ScheduledTaskTriggerRequest
 import com.opencray.runtime.ScheduledTaskTriggerSnapshot
@@ -31,6 +35,7 @@ internal class AppScheduledTaskManager(
   private val runRecordStore: ScheduledTaskRunRecordStore,
   private val triggerRegistrar: ScheduledTriggerRegistrar,
   private val triggerSyncStateStore: ScheduledTaskTriggerSyncStateStore,
+  private val scheduledTaskStarter: (ScheduledTaskWakeCommand) -> Boolean = { false },
   private val clock: () -> Long = System::currentTimeMillis,
 ) : ScheduledTaskManager {
   override fun policyTargetPath(): Path = storageRootPath.toAbsolutePath().normalize()
@@ -53,7 +58,7 @@ internal class AppScheduledTaskManager(
       ),
       policy = ScheduledTaskPolicy(
         conflictPolicy = request.conflictPolicy.toAppConflictPolicy(),
-        requiresForegroundNotification = request.requiresForegroundNotification,
+        requiresForegroundNotification = true,
         notifyOnQueued = request.notifyOnQueued,
         notifyOnApproval = request.notifyOnApproval,
         notifyOnCompletion = request.notifyOnCompletion,
@@ -116,20 +121,20 @@ internal class AppScheduledTaskManager(
     val nowEpochMs = clock()
     val updated = existing.copy(
       title = request.title?.trim()?.takeIf(String::isNotBlank) ?: existing.title,
+      enabled = request.enabled ?: existing.enabled,
       trigger = request.trigger?.toAppTrigger(createdAtEpochMs = nowEpochMs) ?: existing.trigger,
       payload = existing.payload.copy(
         prompt = request.prompt?.trim()?.takeIf(String::isNotBlank) ?: existing.payload.prompt,
       ),
       policy = existing.policy.copy(
         conflictPolicy = request.conflictPolicy?.toAppConflictPolicy() ?: existing.policy.conflictPolicy,
-        requiresForegroundNotification = request.requiresForegroundNotification
-          ?: existing.policy.requiresForegroundNotification,
+        requiresForegroundNotification = true,
         notifyOnQueued = request.notifyOnQueued ?: existing.policy.notifyOnQueued,
         notifyOnApproval = request.notifyOnApproval ?: existing.policy.notifyOnApproval,
         notifyOnCompletion = request.notifyOnCompletion ?: existing.policy.notifyOnCompletion,
         notifyOnInterruption = request.notifyOnInterruption ?: existing.policy.notifyOnInterruption,
       ),
-      updatedAtEpochMs = nowEpochMs,
+      updatedAtEpochMs = maxOf(nowEpochMs, existing.updatedAtEpochMs + 1L),
     )
     specStore.upsert(updated)
     resyncEnabledScheduledTasks(
@@ -156,6 +161,70 @@ internal class AppScheduledTaskManager(
       scheduleId = existing.scheduleId,
       sessionId = existing.sessionId,
       title = existing.title,
+    )
+  }
+
+  override fun runNow(request: ScheduledTaskRunNowRequest): ScheduledTaskRunNowResult {
+    val existing = requireExistingSpec(
+      scheduleId = request.scheduleId.trim(),
+      actionName = "ScheduledTaskRunNow",
+    )
+    require(existing.enabled) {
+      "ScheduledTaskRunNow schedule '${existing.scheduleId}' is disabled. Enable it before running it."
+    }
+    val requestedAtEpochMs = clock()
+    val scheduleRunId = scheduledTaskRunId(existing.scheduleId, requestedAtEpochMs)
+    require(
+      scheduledTaskStarter(
+        ScheduledTaskWakeCommand(
+          scheduleId = existing.scheduleId,
+          scheduleRunId = scheduleRunId,
+          triggeredAtEpochMs = requestedAtEpochMs,
+          triggerReason = ScheduledTaskTriggerReasons.MANUAL,
+          targetSessionId = existing.sessionId,
+        ),
+      ),
+    ) {
+      "ScheduledTaskRunNow could not start the detached runtime service."
+    }
+    return ScheduledTaskRunNowResult(
+      scheduleId = existing.scheduleId,
+      sessionId = existing.sessionId,
+      title = existing.title,
+      scheduleRunId = scheduleRunId,
+      requestedAtEpochMs = requestedAtEpochMs,
+    )
+  }
+
+  override fun snooze(request: ScheduledTaskSnoozeRequest): ScheduledTaskSnoozeResult {
+    val existing = requireExistingSpec(
+      scheduleId = request.scheduleId.trim(),
+      actionName = "ScheduledTaskSnooze",
+    )
+    require(existing.enabled) {
+      "ScheduledTaskSnooze schedule '${existing.scheduleId}' is disabled."
+    }
+    val nowEpochMs = clock()
+    val snoozedUntilEpochMs = nowEpochMs + request.durationMinutes * MILLIS_PER_MINUTE
+    check(
+      snoozeScheduledTask(
+        scheduleId = existing.scheduleId,
+        snoozedUntilEpochMs = snoozedUntilEpochMs,
+        specStore = specStore,
+        triggerRegistrar = triggerRegistrar,
+        triggerSyncStateStore = triggerSyncStateStore,
+        nowEpochMs = nowEpochMs,
+      ),
+    ) {
+      "ScheduledTaskSnooze could not update schedule '${existing.scheduleId}'."
+    }
+    val updated = requireNotNull(specStore.get(existing.scheduleId))
+    return ScheduledTaskSnoozeResult(
+      scheduleId = updated.scheduleId,
+      sessionId = updated.sessionId,
+      title = updated.title,
+      snoozedUntilEpochMs = requireNotNull(updated.snoozedUntilEpochMs),
+      nextTriggerAtEpochMs = nextScheduledTriggerAtEpochMs(updated, nowEpochMs),
     )
   }
 
@@ -242,6 +311,7 @@ internal class AppScheduledTaskManager(
     triggerKind = trigger.kindWireValue(),
     triggerSummary = scheduledTriggerSummary(trigger),
     nextTriggerAtEpochMs = nextScheduledTriggerAtEpochMs(this, nowEpochMs),
+    snoozedUntilEpochMs = snoozedUntilEpochMs,
   )
 
   private fun ScheduledTaskSpec.toUpdateResult(
@@ -254,6 +324,7 @@ internal class AppScheduledTaskManager(
     triggerKind = trigger.kindWireValue(),
     triggerSummary = scheduledTriggerSummary(trigger),
     nextTriggerAtEpochMs = nextScheduledTriggerAtEpochMs(this, nowEpochMs),
+    snoozedUntilEpochMs = snoozedUntilEpochMs,
   )
 
   private fun ScheduledTaskSpec.toRuntimeSummary(
@@ -266,6 +337,7 @@ internal class AppScheduledTaskManager(
     triggerKind = trigger.kindWireValue(),
     triggerSummary = scheduledTriggerSummary(trigger),
     nextTriggerAtEpochMs = nextScheduledTriggerAtEpochMs(this, nowEpochMs),
+    snoozedUntilEpochMs = snoozedUntilEpochMs,
   )
 
   private fun ScheduledTaskSpec.toRuntimeDetails(
@@ -280,8 +352,9 @@ internal class AppScheduledTaskManager(
     triggerSummary = scheduledTriggerSummary(trigger),
     trigger = trigger.toRuntimeSnapshot(),
     nextTriggerAtEpochMs = nextScheduledTriggerAtEpochMs(this, nowEpochMs),
+    snoozedUntilEpochMs = snoozedUntilEpochMs,
     conflictPolicy = policy.conflictPolicy.toRuntimeConflictPolicy().name.lowercase(Locale.US),
-    requiresForegroundNotification = policy.requiresForegroundNotification,
+    foregroundNotificationRequired = true,
     notifyOnQueued = policy.notifyOnQueued,
     notifyOnApproval = policy.notifyOnApproval,
     notifyOnCompletion = policy.notifyOnCompletion,
@@ -365,5 +438,6 @@ internal class AppScheduledTaskManager(
 
   companion object {
     private const val DEFAULT_TITLE_MAX_CHARS: Int = 48
+    private const val MILLIS_PER_MINUTE: Long = 60_000L
   }
 }

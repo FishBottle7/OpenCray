@@ -277,6 +277,7 @@ class OpenCrayToolDispatcherScheduledTaskToolTest {
         arguments = buildJsonObject {
           put("schedule_id", "schedule-test")
           put("title", "Updated title")
+          put("enabled", false)
           put(
             "trigger",
             buildJsonObject {
@@ -294,6 +295,104 @@ class OpenCrayToolDispatcherScheduledTaskToolTest {
     assertEquals("update_scheduled_task", result.metadata["schedulingIntentKind"])
     assertEquals("after", result.metadata["scheduleTriggerKind"])
     assertNull(manager.lastUpdateRequest)
+  }
+
+  @Test
+  fun scheduledTaskUpdateCanDisableExistingSchedule() {
+    val workspaceRoot = temporaryFolder.newFolder("scheduled-task-disable-workspace").toPath()
+    val storageRoot = temporaryFolder.newFolder("scheduled-task-disable-storage").toPath()
+    val manager = RecordingScheduledTaskManager(storageRoot)
+    val dispatcher = dispatcher(workspaceRoot, manager)
+
+    val result = dispatcher.dispatch(
+      task = task(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ScheduledTaskUpdate",
+        arguments = buildJsonObject {
+          put("schedule_id", "schedule-test")
+          put("enabled", false)
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(result.content, AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals(false, manager.lastUpdateRequest?.enabled)
+    assertEquals("update_scheduled_task", result.metadata["schedulingIntentKind"])
+    assertEquals("false", result.metadata[ScheduledTaskToolMetadataKeys.ENABLED])
+  }
+
+  @Test
+  fun scheduledTaskRunNowRequestsDetachedDispatchWithPolicyMetadata() {
+    val workspaceRoot = temporaryFolder.newFolder("scheduled-task-run-now-workspace").toPath()
+    val storageRoot = temporaryFolder.newFolder("scheduled-task-run-now-storage").toPath()
+    val manager = RecordingScheduledTaskManager(storageRoot)
+    val dispatcher = dispatcher(workspaceRoot, manager)
+
+    val result = dispatcher.dispatch(
+      task = task(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ScheduledTaskRunNow",
+        arguments = buildJsonObject { put("schedule_id", "schedule-test") },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(result.content, AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("schedule-test", manager.lastRunNowRequest?.scheduleId)
+    assertEquals("run_scheduled_task_now", result.metadata["schedulingIntentKind"])
+    assertEquals("schedule-run-now", result.metadata[ScheduledTaskToolMetadataKeys.SCHEDULE_RUN_ID])
+    assertTrue(result.content.contains("Immediate scheduled run requested."))
+  }
+
+  @Test
+  fun scheduledTaskSnoozeRequiresApprovalBeforeMutation() {
+    val workspaceRoot = temporaryFolder.newFolder("scheduled-task-snooze-workspace").toPath()
+    val storageRoot = temporaryFolder.newFolder("scheduled-task-snooze-storage").toPath()
+    val manager = RecordingScheduledTaskManager(storageRoot)
+    val dispatcher = dispatcher(workspaceRoot, manager)
+
+    val result = dispatcher.dispatch(
+      task = task(metadata = mapOf("chatMode" to "SAFE")),
+      call = AgentToolCall(
+        toolName = "ScheduledTaskSnooze",
+        arguments = buildJsonObject {
+          put("schedule_id", "schedule-test")
+          put("duration_minutes", 30)
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(result.content, AgentToolResultStatus.DENIED, result.status)
+    assertEquals("APPROVAL_REQUIRED", result.errorCode)
+    assertEquals("snooze_scheduled_task", result.metadata["schedulingIntentKind"])
+    assertNull(manager.lastSnoozeRequest)
+  }
+
+  @Test
+  fun scheduledTaskSnoozeUsesRequestedDuration() {
+    val workspaceRoot = temporaryFolder.newFolder("scheduled-task-snooze-success-workspace").toPath()
+    val storageRoot = temporaryFolder.newFolder("scheduled-task-snooze-success-storage").toPath()
+    val manager = RecordingScheduledTaskManager(storageRoot)
+    val dispatcher = dispatcher(workspaceRoot, manager)
+
+    val result = dispatcher.dispatch(
+      task = task(metadata = mapOf("chatMode" to "DEVELOPER")),
+      call = AgentToolCall(
+        toolName = "ScheduledTaskSnooze",
+        arguments = buildJsonObject {
+          put("schedule_id", "schedule-test")
+          put("duration_minutes", 30)
+        },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(result.content, AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals(30, manager.lastSnoozeRequest?.durationMinutes)
+    assertEquals("30", result.metadata[ScheduledTaskToolMetadataKeys.SNOOZE_DURATION_MINUTES])
+    assertEquals("1800000", result.metadata[ScheduledTaskToolMetadataKeys.SNOOZED_UNTIL_EPOCH_MS])
   }
 
   @Test
@@ -374,6 +473,10 @@ class OpenCrayToolDispatcherScheduledTaskToolTest {
       private set
     var lastDeleteRequest: ScheduledTaskDeleteRequest? = null
       private set
+    var lastRunNowRequest: ScheduledTaskRunNowRequest? = null
+      private set
+    var lastSnoozeRequest: ScheduledTaskSnoozeRequest? = null
+      private set
 
     override fun policyTargetPath(): Path = targetPath
 
@@ -426,7 +529,7 @@ class OpenCrayToolDispatcherScheduledTaskToolTest {
           ),
           nextTriggerAtEpochMs = 120_000L,
           conflictPolicy = "enqueue_new_run",
-          requiresForegroundNotification = true,
+          foregroundNotificationRequired = true,
           notifyOnQueued = false,
           notifyOnApproval = true,
           notifyOnCompletion = true,
@@ -455,7 +558,7 @@ class OpenCrayToolDispatcherScheduledTaskToolTest {
         scheduleId = request.scheduleId,
         sessionId = "session-update",
         title = request.title ?: "Updated title",
-        enabled = true,
+        enabled = request.enabled ?: true,
         triggerKind = request.trigger?.let(::triggerKind) ?: "after",
         triggerSummary = request.trigger?.let(::triggerSummary) ?: "after:PT1M",
         nextTriggerAtEpochMs = request.trigger?.let(::nextTriggerAtEpochMs) ?: 61_000L,
@@ -468,6 +571,28 @@ class OpenCrayToolDispatcherScheduledTaskToolTest {
         scheduleId = request.scheduleId,
         sessionId = "session-delete",
         title = "Delete me",
+      )
+    }
+
+    override fun runNow(request: ScheduledTaskRunNowRequest): ScheduledTaskRunNowResult {
+      lastRunNowRequest = request
+      return ScheduledTaskRunNowResult(
+        scheduleId = request.scheduleId,
+        sessionId = "session-run-now",
+        title = "Run now",
+        scheduleRunId = "schedule-run-now",
+        requestedAtEpochMs = 1_000L,
+      )
+    }
+
+    override fun snooze(request: ScheduledTaskSnoozeRequest): ScheduledTaskSnoozeResult {
+      lastSnoozeRequest = request
+      return ScheduledTaskSnoozeResult(
+        scheduleId = request.scheduleId,
+        sessionId = "session-snooze",
+        title = "Snooze me",
+        snoozedUntilEpochMs = request.durationMinutes * 60_000L,
+        nextTriggerAtEpochMs = request.durationMinutes * 60_000L,
       )
     }
 
