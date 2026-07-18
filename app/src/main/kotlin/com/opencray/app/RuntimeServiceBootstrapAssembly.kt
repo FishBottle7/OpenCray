@@ -501,6 +501,9 @@ internal fun bootstrapRuntimeServiceSessions(
         repairEvidence = allRepairEvidence,
       )
     ) {
+      if (allRepairEvidence.isNotEmpty()) {
+        repairEvidenceBySession[sessionId] = allRepairEvidence
+      }
       return@forEach
     }
     val repairEvidence = runtimeTarget
@@ -606,6 +609,9 @@ internal fun resumeInterruptedRuntimeServiceRuns(
         repairEvidence = allRepairEvidence,
       )
     ) {
+      if (allRepairEvidence.isNotEmpty()) {
+        repairEvidenceBySession[sessionId] = allRepairEvidence
+      }
       return@forEach
     }
     val repairEvidence = runtimeTarget
@@ -667,7 +673,9 @@ private fun shouldOwnSessionForRecovery(
   if (currentOwnerTarget != null) {
     return currentOwnerTarget == target
   }
-  return repairEvidence.firstOrNull()?.target == target
+  return repairEvidence.firstOrNull()?.target?.let { evidenceTarget ->
+    evidenceTarget == target
+  } ?: (runtimeSessionDirectoryAccess.existingSession(sessionId) != null)
 }
 
 private fun durableInteractiveRepairEvidenceForSession(

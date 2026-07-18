@@ -56,23 +56,21 @@ internal class ChatApprovalDecisionCoordinator<TApproval>(
   private val stringsProvider: () -> ApprovalDecisionStrings,
   private val nowEpochMsProvider: () -> Long = System::currentTimeMillis,
 ) {
-  fun approve(taskIdOrRunId: String) {
+  fun approve(taskIdOrRunId: String): Boolean =
     approveInternal(
       taskIdOrRunId = taskIdOrRunId,
       sessionScoped = false,
     )
-  }
 
-  fun approveForSession(taskIdOrRunId: String) {
+  fun approveForSession(taskIdOrRunId: String): Boolean =
     approveInternal(
       taskIdOrRunId = taskIdOrRunId,
       sessionScoped = true,
     )
-  }
 
-  fun reject(taskIdOrRunId: String) {
+  fun reject(taskIdOrRunId: String): Boolean {
     val approval = resolveApproval(taskIdOrRunId)
-      ?: error("Pending approval '$taskIdOrRunId' is unavailable.")
+      ?: return false
     val subject = approvalSubject(approval)
     val strings = stringsProvider()
     val nowEpochMs = nowEpochMsProvider()
@@ -128,14 +126,15 @@ internal class ChatApprovalDecisionCoordinator<TApproval>(
       }
     }
     appendToolMessage(subject.sessionId, text)
+    return true
   }
 
   private fun approveInternal(
     taskIdOrRunId: String,
     sessionScoped: Boolean,
-  ) {
+  ): Boolean {
     val approval = resolveApproval(taskIdOrRunId)
-      ?: error("Pending approval '$taskIdOrRunId' is unavailable.")
+      ?: return false
     val subject = approvalSubject(approval)
     require(!sessionScoped || subject.supportsSessionApproval) {
       "Pending approval '$taskIdOrRunId' does not support session approval."
@@ -210,6 +209,7 @@ internal class ChatApprovalDecisionCoordinator<TApproval>(
       }
     }
     appendToolMessage(subject.sessionId, text)
+    return true
   }
 }
 

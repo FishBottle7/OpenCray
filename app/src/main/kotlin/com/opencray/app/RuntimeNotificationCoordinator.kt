@@ -1150,7 +1150,7 @@ internal class RuntimeNotificationCoordinator(
     terminalNotificationIdForTask(taskId, interrupted)
 
   private fun scheduleNotificationId(scheduleId: String, outcome: String): Int =
-    53_100 + notificationStableHash("$scheduleId:$outcome", modulo = 4_000)
+    scheduleNotificationIdForOutcome(scheduleId, outcome)
 
   private fun stableRequestCode(key: String): Int = 60_000 + notificationStableHash(key, modulo = 30_000)
 
@@ -1175,6 +1175,25 @@ internal class RuntimeNotificationCoordinator(
 
     internal fun approvalNotificationIdForTask(taskId: String): Int =
       52_100 + notificationStableHash(taskId, modulo = 5_000)
+
+    internal fun dismissScheduleNotifications(
+      context: Context,
+      scheduleId: String?,
+    ) {
+      val normalizedScheduleId = scheduleId
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?: return
+      val manager = context.getSystemService(NotificationManager::class.java) ?: return
+      ScheduledTaskRunResult.entries.forEach { outcome ->
+        manager.cancel(scheduleNotificationIdForOutcome(normalizedScheduleId, outcome.name))
+      }
+    }
+
+    internal fun scheduleNotificationIdForOutcome(
+      scheduleId: String,
+      outcome: String,
+    ): Int = 53_100 + notificationStableHash("$scheduleId:$outcome", modulo = 4_000)
 
     private fun terminalNotificationDeliveryKey(runId: String): String = "terminal:$runId"
 

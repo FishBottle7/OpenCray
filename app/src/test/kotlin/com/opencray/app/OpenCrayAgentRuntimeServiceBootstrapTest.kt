@@ -1521,6 +1521,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       )
 
     val provider = ProcessScopedRuntimeServiceExecutionControllerProvider(
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
       runtimeServiceProcessBootstrap = { },
       runtimeServiceRetainedShellControlFactory = { testRuntimeServiceRetainedShellControl() },
       runtimeExecutionDependenciesLoader = RuntimeExecutionDependenciesLoader {
@@ -5326,6 +5327,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       }
     val gatewayBundle = testServiceGatewayBundle()
     val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dismissedScheduleIds = mutableListOf<String?>()
     val dispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
       appContext = context,
       dispatcherDependencies = dispatcherDependencies,
@@ -5340,6 +5342,9 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         )
       },
       approvalNotificationDismisser = { _, _ -> },
+      scheduleNotificationDismisser = { _, scheduleId ->
+        dismissedScheduleIds += scheduleId
+      },
       nowEpochMsProvider = { nowEpochMs },
     )
 
@@ -5363,6 +5368,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(1, projectionCoordinator.persistCallCount)
     assertEquals(1, projectionCoordinator.scheduledDispatchOutcomes.size)
     assertEquals(ScheduledTaskRunResult.ACCEPTED, projectionCoordinator.scheduledDispatchOutcomes.single().result)
+    assertEquals(listOf(fixture.scheduleId), dismissedScheduleIds)
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
   }
@@ -5377,6 +5383,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     )
     val gatewayBundle = testServiceGatewayBundle()
     val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dismissedScheduleIds = mutableListOf<String?>()
     val dispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
       appContext = context,
       dispatcherDependencies = fixture.serviceHost.toRuntimeServiceBootstrapState().wakeCommandDispatcherDependencies,
@@ -5391,6 +5398,9 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         )
       },
       approvalNotificationDismisser = { _, _ -> },
+      scheduleNotificationDismisser = { _, scheduleId ->
+        dismissedScheduleIds += scheduleId
+      },
       nowEpochMsProvider = { nowEpochMs },
     )
 
@@ -5403,6 +5413,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(0, fixture.handle.ensureProcessingCallCount)
     assertEquals(1, projectionCoordinator.persistCallCount)
     assertTrue(projectionCoordinator.scheduledDispatchOutcomes.isEmpty())
+    assertEquals(listOf(fixture.scheduleId), dismissedScheduleIds)
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
   }
@@ -5417,6 +5428,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     )
     val gatewayBundle = testServiceGatewayBundle()
     val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dismissedScheduleIds = mutableListOf<String?>()
     val dispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
       appContext = context,
       dispatcherDependencies = fixture.serviceHost.toRuntimeServiceBootstrapState().wakeCommandDispatcherDependencies,
@@ -5431,6 +5443,9 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         )
       },
       approvalNotificationDismisser = { _, _ -> },
+      scheduleNotificationDismisser = { _, scheduleId ->
+        dismissedScheduleIds += scheduleId
+      },
       nowEpochMsProvider = { nowEpochMs },
     )
 
@@ -5444,6 +5459,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(0, fixture.handle.ensureProcessingCallCount)
     assertEquals(1, projectionCoordinator.persistCallCount)
     assertTrue(projectionCoordinator.scheduledDispatchOutcomes.isEmpty())
+    assertEquals(listOf(fixture.scheduleId), dismissedScheduleIds)
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
   }
@@ -5566,6 +5582,87 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     assertEquals(2, projectionCoordinator.persistCallCount)
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
+  fun defaultWakeDispatcherKeepsApprovalNotificationWhenResumeFails() {
+    val context = MinimalContext()
+    val fixture = pendingApprovalWakeDispatcherFixture(
+      root = temporaryFolder.newFolder("wake-dispatcher-approval-resume-failure"),
+      resumeRequestResult = false,
+    )
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dismissedTaskIds = mutableListOf<String?>()
+    val reportedFailures = mutableListOf<Throwable>()
+    val dispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
+      appContext = context,
+      dispatcherDependencies = fixture.serviceHost
+        .toRuntimeServiceBootstrapState()
+        .wakeCommandDispatcherDependencies,
+      gatewayBundle = testServiceGatewayBundle(),
+      projectionCoordinator = projectionCoordinator,
+      wakeIntentParser = RuntimeServiceWakeIntentParser {
+        RuntimeServiceWakeIntentCommand.Notification(
+          RuntimeServiceNotificationCommand.ApproveApproval(
+            sessionId = fixture.sessionId,
+            taskId = fixture.taskId,
+            runId = fixture.runId,
+          ),
+        )
+      },
+      approvalNotificationDismisser = { _, taskId -> dismissedTaskIds += taskId },
+      notificationActionFailureReporter = { _, failure -> reportedFailures += failure },
+    )
+
+    val failure = runCatching { dispatcher.dispatch(null) }.exceptionOrNull()
+
+    assertTrue(failure is IllegalStateException)
+    assertTrue(dismissedTaskIds.isEmpty())
+    assertEquals(1, reportedFailures.size)
+    assertEquals(1, projectionCoordinator.persistCallCount)
+  }
+
+  @Test
+  fun defaultWakeDispatcherKeepsScheduleNotificationWhenRunNowFails() {
+    val context = MinimalContext()
+    val serviceHost = testServiceHost(
+      temporaryFolder.newFolder("wake-dispatcher-schedule-action-failure"),
+    )
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dismissedScheduleIds = mutableListOf<String?>()
+    val reportedFailures = mutableListOf<Throwable>()
+    val dispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
+      appContext = context,
+      dispatcherDependencies = serviceHost
+        .toRuntimeServiceBootstrapState()
+        .wakeCommandDispatcherDependencies,
+      gatewayBundle = testServiceGatewayBundle(),
+      projectionCoordinator = projectionCoordinator,
+      wakeIntentParser = RuntimeServiceWakeIntentParser {
+        RuntimeServiceWakeIntentCommand.Notification(
+          RuntimeServiceNotificationCommand.RunScheduleNow(
+            sessionId = "session-missing-schedule",
+            scheduleId = "missing-schedule-action",
+          ),
+        )
+      },
+      approvalNotificationDismisser = { _, _ -> },
+      scheduleNotificationDismisser = { _, scheduleId ->
+        dismissedScheduleIds += scheduleId
+      },
+      notificationActionFailureReporter = { _, failure -> reportedFailures += failure },
+      nowEpochMsProvider = { 6_000L },
+    )
+
+    dispatcher.dispatch(null)
+
+    assertTrue(dismissedScheduleIds.isEmpty())
+    assertEquals(1, reportedFailures.size)
+    assertEquals(1, projectionCoordinator.persistCallCount)
+    assertEquals(
+      ScheduledTaskRunResult.FAILED_MISSING_SPEC,
+      projectionCoordinator.scheduledDispatchOutcomes.single().result,
+    )
   }
 
   @Test
@@ -8001,6 +8098,8 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       private set
 
     override fun forSession(sessionId: String): AgentSessionHandle = error("unused in test")
+
+    override fun existingSession(sessionId: String): AgentSessionHandle? = null
 
     override fun observe(listener: AgentSessionRuntimeListener): () -> Unit = { }
 

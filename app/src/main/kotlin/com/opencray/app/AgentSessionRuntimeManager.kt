@@ -146,6 +146,8 @@ private fun runtimeFlowDebug(message: String) {
 internal interface AgentSessionRuntimeManager {
   fun forSession(sessionId: String): AgentSessionHandle
 
+  fun existingSession(sessionId: String): AgentSessionHandle? = forSession(sessionId)
+
   fun sessionOwnerTarget(sessionId: String): RuntimeServiceTarget? = null
 
   fun ownsSession(sessionId: String): Boolean = true
@@ -362,6 +364,10 @@ internal class DefaultAgentSessionRuntimeManager(
         throw failure
       }
     }.also { it.touch() }
+  }
+
+  override fun existingSession(sessionId: String): AgentSessionHandle? = synchronized(lock) {
+    sessions[sessionId]
   }
 
   override fun sessionOwnerTarget(sessionId: String): RuntimeServiceTarget? =

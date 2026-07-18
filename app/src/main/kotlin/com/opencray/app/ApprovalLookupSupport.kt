@@ -57,7 +57,7 @@ internal fun approvalRequiredTaskProjectionsForSession(
   approvalRequiredErrorCode: String = DEFAULT_APPROVAL_REQUIRED_ERROR_CODE,
   highRiskApprovalRequiredErrorCode: String = DEFAULT_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE,
 ): List<ApprovalRequiredTaskProjection> {
-  val session = hostAccess.session(sessionId)
+  val session = hostAccess.existingSession(sessionId) ?: return emptyList()
   val queueSnapshot = session.snapshot()
   return approvalRequiredTaskProjections(
     sessionId = sessionId,
