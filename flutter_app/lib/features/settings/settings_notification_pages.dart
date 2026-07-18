@@ -12,8 +12,9 @@ class _NotificationSettingsSaveQueue {
     )
     save,
     required bool Function() isActive,
-    required ValueChanged<NotificationSettingsSnapshot> onSaved,
-    required ValueChanged<Object> onError,
+    required void Function(NotificationSettingsSnapshot snapshot, bool isLatest)
+    onSaved,
+    required void Function(Object error, bool isLatest) onError,
   }) {
     _revision += 1;
     _pending = snapshot;
@@ -37,8 +38,9 @@ class _NotificationSettingsSaveQueue {
     )
     save,
     required bool Function() isActive,
-    required ValueChanged<NotificationSettingsSnapshot> onSaved,
-    required ValueChanged<Object> onError,
+    required void Function(NotificationSettingsSnapshot snapshot, bool isLatest)
+    onSaved,
+    required void Function(Object error, bool isLatest) onError,
   }) async {
     while (_pending != null) {
       final request = _pending!;
@@ -49,14 +51,12 @@ class _NotificationSettingsSaveQueue {
         if (!isActive()) {
           return;
         }
-        if (requestRevision == _revision) {
-          onSaved(saved);
-        }
+        onSaved(saved, requestRevision == _revision);
       } catch (error) {
         if (!isActive()) {
           return;
         }
-        onError(error);
+        onError(error, requestRevision == _revision);
       }
     }
     _isDraining = false;
@@ -87,8 +87,10 @@ class _NotificationsBackgroundSettingsPageState
     with WidgetsBindingObserver {
   SettingsDetailSnapshot? _detail;
   NotificationSettingsSnapshot? _settings;
+  NotificationSettingsSnapshot? _lastAcknowledgedSettings;
   StrongBackgroundSnapshot? _strongBackground;
   ScheduledTasksSnapshot? _scheduledTasks;
+  String? _scheduledTasksLoadError;
   String? _loadError;
   final _saveQueue = _NotificationSettingsSaveQueue();
   StrongBackgroundActionId? _activeActionId;
@@ -122,10 +124,7 @@ class _NotificationsBackgroundSettingsPageState
     final settings = _settings;
     final strongBackground = _strongBackground;
     final scheduledTasks = _scheduledTasks;
-    if (detail == null ||
-        settings == null ||
-        strongBackground == null ||
-        scheduledTasks == null) {
+    if (detail == null || settings == null || strongBackground == null) {
       return _loadError == null
           ? const _SettingsLoading(
               key: ValueKey<String>('settings-notifications-loading'),
@@ -154,7 +153,11 @@ class _NotificationsBackgroundSettingsPageState
           const SizedBox(height: 16),
           _buildNotificationsCard(copy, settings, enabledEventCount),
           const SizedBox(height: 16),
-          _buildScheduledTasksCard(copy, scheduledTasks),
+          _buildScheduledTasksCard(
+            copy,
+            scheduledTasks,
+            _scheduledTasksLoadError,
+          ),
           const SizedBox(height: 16),
           _buildDeliveryCard(copy, settings),
           const SizedBox(height: 16),
@@ -166,15 +169,18 @@ class _NotificationsBackgroundSettingsPageState
 
   Widget _buildScheduledTasksCard(
     _NotificationSettingsCopy copy,
-    ScheduledTasksSnapshot snapshot,
+    ScheduledTasksSnapshot? snapshot,
+    String? loadError,
   ) {
     return _SettingsCard(
       child: _NotificationActionRow(
         title: copy.scheduledTasksTitle,
-        subtitle: copy.scheduledTasksSubtitle(
-          totalCount: snapshot.totalCount,
-          enabledCount: snapshot.enabledCount,
-        ),
+        subtitle: snapshot == null
+            ? copy.scheduledTasksUnavailable(loadError)
+            : copy.scheduledTasksSubtitle(
+                totalCount: snapshot.totalCount,
+                enabledCount: snapshot.enabledCount,
+              ),
         valueLabel: copy.manageScheduledTasksLabel,
         onTap: () => widget.onOpenPage(SettingsPage.scheduledTasks),
       ),
@@ -351,6 +357,7 @@ class _NotificationsBackgroundSettingsPageState
   }
 
   Future<void> _load() async {
+    unawaited(_loadScheduledTasksSummary());
     try {
       final detail = await widget.facade.loadDetail(
         SettingsPage.notificationsBackground,
@@ -358,15 +365,14 @@ class _NotificationsBackgroundSettingsPageState
       final settings = await widget.facade.loadNotificationSettings();
       final strongBackground = await widget.facade
           .loadStrongBackgroundSnapshot();
-      final scheduledTasks = await widget.facade.loadScheduledTasks();
       if (!mounted) {
         return;
       }
       setState(() {
         _detail = detail;
         _settings = settings;
+        _lastAcknowledgedSettings = settings;
         _strongBackground = strongBackground;
-        _scheduledTasks = scheduledTasks;
         _loadError = null;
       });
     } catch (error) {
@@ -375,6 +381,29 @@ class _NotificationsBackgroundSettingsPageState
       }
       setState(() {
         _loadError = error.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  Future<void> _loadScheduledTasksSummary() async {
+    try {
+      final scheduledTasks = await widget.facade.loadScheduledTasks();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _scheduledTasks = scheduledTasks;
+        _scheduledTasksLoadError = null;
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _scheduledTasksLoadError = error.toString().replaceFirst(
+          'Exception: ',
+          '',
+        );
       });
     }
   }
@@ -399,12 +428,23 @@ class _NotificationsBackgroundSettingsPageState
       next,
       save: widget.facade.saveNotificationSettings,
       isActive: () => mounted,
-      onSaved: (updated) {
+      onSaved: (updated, isLatest) {
         setState(() {
-          _settings = updated;
+          _lastAcknowledgedSettings = updated;
+          if (isLatest) {
+            _settings = updated;
+          }
         });
       },
-      onError: (error) {
+      onError: (error, isLatest) {
+        if (isLatest) {
+          final rollback = _lastAcknowledgedSettings;
+          if (rollback != null) {
+            setState(() {
+              _settings = rollback;
+            });
+          }
+        }
         _showMessage(error.toString().replaceFirst('Exception: ', ''));
       },
     );
@@ -691,6 +731,7 @@ class _NotificationEventAlertsSettingsPageState
     extends State<_NotificationEventAlertsSettingsPage> {
   SettingsDetailSnapshot? _detail;
   NotificationSettingsSnapshot? _settings;
+  NotificationSettingsSnapshot? _lastAcknowledgedSettings;
   String? _loadError;
   final _saveQueue = _NotificationSettingsSaveQueue();
 
@@ -770,6 +811,7 @@ class _NotificationEventAlertsSettingsPageState
       setState(() {
         _detail = detail;
         _settings = settings;
+        _lastAcknowledgedSettings = settings;
         _loadError = null;
       });
     } catch (error) {
@@ -790,12 +832,23 @@ class _NotificationEventAlertsSettingsPageState
       next,
       save: widget.facade.saveNotificationSettings,
       isActive: () => mounted,
-      onSaved: (updated) {
+      onSaved: (updated, isLatest) {
         setState(() {
-          _settings = updated;
+          _lastAcknowledgedSettings = updated;
+          if (isLatest) {
+            _settings = updated;
+          }
         });
       },
-      onError: (error) {
+      onError: (error, isLatest) {
+        if (isLatest) {
+          final rollback = _lastAcknowledgedSettings;
+          if (rollback != null) {
+            setState(() {
+              _settings = rollback;
+            });
+          }
+        }
         _showMessage(error.toString().replaceFirst('Exception: ', ''));
       },
     );
@@ -1277,6 +1330,11 @@ class _NotificationSettingsCopy {
   }) => foregroundServiceNoticeStatus == '系统必需'
       ? '共 $totalCount 个任务，$enabledCount 个已启用。'
       : '$totalCount tasks, $enabledCount enabled.';
+
+  String scheduledTasksUnavailable(String? _) =>
+      foregroundServiceNoticeStatus == '系统必需'
+      ? '暂时无法读取任务摘要，仍可进入管理。'
+      : 'The task summary is temporarily unavailable. Management remains available.';
 
   String get manageScheduledTasksLabel =>
       foregroundServiceNoticeStatus == '系统必需' ? '管理' : 'Manage';

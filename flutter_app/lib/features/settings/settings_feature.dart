@@ -400,7 +400,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
   }
 
   void _openScheduledTask(String scheduleId) {
-    _persistShellTarget(SettingsPage.scheduledTaskDetail);
+    _persistShellTarget(SettingsPage.scheduledTasks);
     setState(() {
       _selectedScheduleId = scheduleId;
       _hasPageTransition = true;

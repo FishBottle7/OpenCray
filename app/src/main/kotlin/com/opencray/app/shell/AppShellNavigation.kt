@@ -41,6 +41,8 @@ enum class SettingsSubpage(
           subpage.routeKey.equals(normalized, ignoreCase = true)
       } ?: EVENT_ALERTS.takeIf {
         normalized.equals("notification_channels", ignoreCase = true)
+      } ?: SCHEDULED_TASKS.takeIf {
+        normalized.equals("scheduled_task_detail", ignoreCase = true)
       }
     }
   }

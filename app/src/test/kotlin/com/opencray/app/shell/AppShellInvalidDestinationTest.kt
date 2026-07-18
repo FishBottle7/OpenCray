@@ -57,4 +57,24 @@ class AppShellInvalidDestinationTest {
       stateStore.load(),
     )
   }
+
+  @Test
+  fun scheduledTaskDetailRestoresScheduledTaskList() {
+    val stateStore = AppShellStateStore(
+      InMemoryAppShellKeyValueStore(
+        initialValues = mapOf(
+          AppShellStateStoreKeys.SELECTED_TAB to AppShellTab.SETTINGS.name,
+          AppShellStateStoreKeys.SETTINGS_SUBPAGE to "scheduled_task_detail",
+        ),
+      ),
+    )
+
+    assertEquals(
+      AppShellDestination(
+        selectedTab = AppShellTab.SETTINGS,
+        settingsSubpage = SettingsSubpage.SCHEDULED_TASKS,
+      ),
+      stateStore.load(),
+    )
+  }
 }

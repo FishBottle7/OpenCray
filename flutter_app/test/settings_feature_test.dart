@@ -1149,6 +1149,7 @@ void main() {
           totalCount: 1,
           enabledCount: 1,
         );
+      final debugBridge = _buildDebugBridge();
 
       await tester.pumpWidget(
         MaterialApp(
@@ -1156,6 +1157,7 @@ void main() {
             facade: facade,
             initialPage: SettingsPage.notificationsBackground,
             standalone: true,
+            debugBridge: debugBridge,
           ),
         ),
       );
@@ -1180,6 +1182,13 @@ void main() {
 
       expect(facade.scheduledTaskEnabledRequests, <bool>[false]);
       expect(facade.scheduledTasks.tasks.single.enabled, isFalse);
+
+      await tester.tap(find.text('Morning review'));
+      await tester.pump();
+      expect(
+        debugBridge.persistedSettingsRouteIds.last,
+        SettingsPage.scheduledTasks.routeId,
+      );
     },
   );
 
@@ -1379,6 +1388,135 @@ void main() {
       expect(facade.notificationSaveRequests.last.quietHoursEnabled, isFalse);
       expect(facade.notificationSettings.masterEnabled, isFalse);
       expect(facade.notificationSettings.quietHoursEnabled, isFalse);
+    },
+  );
+
+  testWidgets('notifications page rolls back the latest failed save', (
+    tester,
+  ) async {
+    final facade = _notificationTestFacade(
+      onSaveNotificationSettings: (snapshot) async {
+        throw Exception('Notification save rejected');
+      },
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.notificationsBackground,
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    final masterSwitch = find.descendant(
+      of: find.byKey(const ValueKey<String>('notification-master-enabled')),
+      matching: find.byType(Switch),
+    );
+    expect(tester.widget<Switch>(masterSwitch).value, isTrue);
+
+    await tester.tap(masterSwitch);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(tester.widget<Switch>(masterSwitch).value, isTrue);
+    expect(facade.notificationSettings.masterEnabled, isTrue);
+    expect(find.text('Notification save rejected'), findsOneWidget);
+  });
+
+  testWidgets(
+    'notifications page keeps a newer edit when an older save fails',
+    (tester) async {
+      final firstSaveStarted = Completer<void>();
+      final releaseFirstSave = Completer<void>();
+      var saveInvocation = 0;
+      final facade = _notificationTestFacade(
+        onSaveNotificationSettings: (snapshot) async {
+          saveInvocation += 1;
+          if (saveInvocation == 1) {
+            firstSaveStarted.complete();
+            await releaseFirstSave.future;
+            throw Exception('Older save failed');
+          }
+          return snapshot;
+        },
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.notificationsBackground,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final masterSwitch = find.descendant(
+        of: find.byKey(const ValueKey<String>('notification-master-enabled')),
+        matching: find.byType(Switch),
+      );
+      final quietHoursSwitch = find.descendant(
+        of: find.byKey(
+          const ValueKey<String>('notification-quiet-hours-enabled'),
+        ),
+        matching: find.byType(Switch),
+      );
+      await tester.tap(masterSwitch);
+      await tester.pump();
+      await firstSaveStarted.future;
+      await tester.ensureVisible(quietHoursSwitch);
+      await tester.tap(quietHoursSwitch);
+      await tester.pump();
+
+      releaseFirstSave.complete();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(facade.notificationSaveCallCount, 2);
+      expect(facade.notificationSettings.masterEnabled, isFalse);
+      expect(facade.notificationSettings.quietHoursEnabled, isFalse);
+      expect(tester.widget<Switch>(masterSwitch).value, isFalse);
+    },
+  );
+
+  testWidgets(
+    'scheduled task summary failure does not block notification controls',
+    (tester) async {
+      final facade = _notificationTestFacade(
+        onLoadScheduledTasks: () async {
+          throw Exception('Scheduled summary unavailable');
+        },
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.notificationsBackground,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(
+        find.byKey(const ValueKey<String>('notification-master-enabled')),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          'The task summary is temporarily unavailable. Management remains available.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('System controls'), findsOneWidget);
     },
   );
 
@@ -4985,6 +5123,7 @@ _FakeSettingsFacade _notificationTestFacade({
     NotificationSettingsSnapshot snapshot,
   )?
   onSaveNotificationSettings,
+  Future<ScheduledTasksSnapshot> Function()? onLoadScheduledTasks,
 }) => _FakeSettingsFacade(
   llmConfig: const LlmConfigSnapshot(
     localeTag: 'en',
@@ -5007,6 +5146,7 @@ _FakeSettingsFacade _notificationTestFacade({
     message: 'Validated.',
   ),
   onSaveNotificationSettings: onSaveNotificationSettings,
+  onLoadScheduledTasks: onLoadScheduledTasks,
 );
 
 ScheduledTaskDetails _copyScheduledTaskDetails(
@@ -5038,6 +5178,7 @@ class _FakeSettingsFacade implements SettingsFacade {
     required this.validationResult,
     this.onSaveLlmConfig,
     this.onSaveNotificationSettings,
+    this.onLoadScheduledTasks,
     PersonalizationConfigSnapshot? personalizationConfig,
     SettingsOverviewSnapshot? overviewSnapshot,
   }) : personalizationConfig =
@@ -5194,6 +5335,7 @@ class _FakeSettingsFacade implements SettingsFacade {
     NotificationSettingsSnapshot snapshot,
   )?
   onSaveNotificationSettings;
+  final Future<ScheduledTasksSnapshot> Function()? onLoadScheduledTasks;
   final PersonalizationConfigSnapshot personalizationConfig;
   final McpSettingsSnapshot mcpSettings = const McpSettingsSnapshot(
     title: 'MCP',
@@ -5400,7 +5542,10 @@ class _FakeSettingsFacade implements SettingsFacade {
   }
 
   @override
-  Future<ScheduledTasksSnapshot> loadScheduledTasks() async => scheduledTasks;
+  Future<ScheduledTasksSnapshot> loadScheduledTasks() async {
+    final loader = onLoadScheduledTasks;
+    return loader == null ? scheduledTasks : loader();
+  }
 
   @override
   Future<ScheduledTaskDetailSnapshot> loadScheduledTask(
