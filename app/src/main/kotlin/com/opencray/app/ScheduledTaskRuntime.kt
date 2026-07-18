@@ -537,12 +537,20 @@ internal class ScheduledTaskDispatcher(
     if (!shouldClearSnooze) {
       return spec
     }
-    val updated = spec.copy(
-      snoozedUntilEpochMs = null,
-      updatedAtEpochMs = maxOf(nowEpochMs, spec.updatedAtEpochMs + 1L),
-    )
-    specStore.upsert(updated)
-    return updated
+    return specStore.update(spec.scheduleId) { current ->
+      val currentSnooze = current.snoozedUntilEpochMs ?: return@update current
+      val shouldClearCurrentSnooze =
+        command.triggerReason == ScheduledTaskTriggerReasons.MANUAL ||
+          currentSnooze <= nowEpochMs
+      if (!shouldClearCurrentSnooze) {
+        current
+      } else {
+        current.copy(
+          snoozedUntilEpochMs = null,
+          updatedAtEpochMs = maxOf(nowEpochMs, current.updatedAtEpochMs + 1L),
+        )
+      }
+    } ?: spec
   }
 
   private fun scheduledTaskMetadata(
@@ -669,8 +677,19 @@ internal fun disableScheduledTask(
   nowEpochMs: Long = System.currentTimeMillis(),
 ): Boolean {
   val normalizedScheduleId = scheduleId.trim().takeIf(String::isNotBlank) ?: return false
-  val existing = specStore.get(normalizedScheduleId) ?: return false
-  if (!existing.enabled) {
+  var changed = false
+  val updated = specStore.update(normalizedScheduleId) { existing ->
+    if (!existing.enabled) {
+      existing
+    } else {
+      changed = true
+      existing.copy(
+        enabled = false,
+        updatedAtEpochMs = maxOf(nowEpochMs, existing.updatedAtEpochMs + 1L),
+      )
+    }
+  } ?: return false
+  if (updated.enabled || !changed) {
     resyncEnabledScheduledTasks(
       specStore = specStore,
       triggerRegistrar = triggerRegistrar,
@@ -678,12 +697,6 @@ internal fun disableScheduledTask(
     )
     return false
   }
-  specStore.upsert(
-    existing.copy(
-      enabled = false,
-      updatedAtEpochMs = maxOf(nowEpochMs, existing.updatedAtEpochMs + 1L),
-    ),
-  )
   resyncEnabledScheduledTasks(
     specStore = specStore,
     triggerRegistrar = triggerRegistrar,
@@ -704,8 +717,27 @@ internal fun snoozeScheduledTask(
   if (snoozedUntilEpochMs <= nowEpochMs) {
     return false
   }
-  val existing = specStore.get(normalizedScheduleId) ?: return false
-  if (!existing.enabled) {
+  var changed = false
+  val updated = specStore.update(normalizedScheduleId) { existing ->
+    if (!existing.enabled) {
+      existing
+    } else {
+      val nextSnooze = maxOf(
+        snoozedUntilEpochMs,
+        existing.snoozedUntilEpochMs ?: 0L,
+      )
+      if (nextSnooze == existing.snoozedUntilEpochMs) {
+        existing
+      } else {
+        changed = true
+        existing.copy(
+          snoozedUntilEpochMs = nextSnooze,
+          updatedAtEpochMs = maxOf(nowEpochMs, existing.updatedAtEpochMs + 1L),
+        )
+      }
+    }
+  } ?: return false
+  if (!updated.enabled || !changed) {
     resyncEnabledScheduledTasks(
       specStore = specStore,
       triggerRegistrar = triggerRegistrar,
@@ -713,15 +745,6 @@ internal fun snoozeScheduledTask(
     )
     return false
   }
-  specStore.upsert(
-    existing.copy(
-      snoozedUntilEpochMs = maxOf(
-        snoozedUntilEpochMs,
-        existing.snoozedUntilEpochMs ?: 0L,
-      ),
-      updatedAtEpochMs = maxOf(nowEpochMs, existing.updatedAtEpochMs + 1L),
-    ),
-  )
   resyncEnabledScheduledTasks(
     specStore = specStore,
     triggerRegistrar = triggerRegistrar,

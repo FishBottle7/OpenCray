@@ -116,29 +116,29 @@ internal class AppScheduledTaskManager(
   }
 
   override fun update(request: ScheduledTaskUpdateRequest): ScheduledTaskUpdateResult {
-    val existing = requireExistingSpec(
-      scheduleId = request.scheduleId.trim(),
-      actionName = "ScheduledTaskUpdate",
-    )
+    val scheduleId = request.scheduleId.trim()
     val nowEpochMs = clock()
-    val updated = existing.copy(
-      title = request.title?.trim()?.takeIf(String::isNotBlank) ?: existing.title,
-      enabled = request.enabled ?: existing.enabled,
-      trigger = request.trigger?.toAppTrigger(createdAtEpochMs = nowEpochMs) ?: existing.trigger,
-      payload = existing.payload.copy(
-        prompt = request.prompt?.trim()?.takeIf(String::isNotBlank) ?: existing.payload.prompt,
-      ),
-      policy = existing.policy.copy(
-        conflictPolicy = request.conflictPolicy?.toAppConflictPolicy() ?: existing.policy.conflictPolicy,
-        requiresForegroundNotification = true,
-        notifyOnQueued = request.notifyOnQueued ?: existing.policy.notifyOnQueued,
-        notifyOnApproval = request.notifyOnApproval ?: existing.policy.notifyOnApproval,
-        notifyOnCompletion = request.notifyOnCompletion ?: existing.policy.notifyOnCompletion,
-        notifyOnInterruption = request.notifyOnInterruption ?: existing.policy.notifyOnInterruption,
-      ),
-      updatedAtEpochMs = maxOf(nowEpochMs, existing.updatedAtEpochMs + 1L),
+    val updated = specStore.update(scheduleId) { existing ->
+      existing.copy(
+        title = request.title?.trim()?.takeIf(String::isNotBlank) ?: existing.title,
+        enabled = request.enabled ?: existing.enabled,
+        trigger = request.trigger?.toAppTrigger(createdAtEpochMs = nowEpochMs) ?: existing.trigger,
+        payload = existing.payload.copy(
+          prompt = request.prompt?.trim()?.takeIf(String::isNotBlank) ?: existing.payload.prompt,
+        ),
+        policy = existing.policy.copy(
+          conflictPolicy = request.conflictPolicy?.toAppConflictPolicy() ?: existing.policy.conflictPolicy,
+          requiresForegroundNotification = true,
+          notifyOnQueued = request.notifyOnQueued ?: existing.policy.notifyOnQueued,
+          notifyOnApproval = request.notifyOnApproval ?: existing.policy.notifyOnApproval,
+          notifyOnCompletion = request.notifyOnCompletion ?: existing.policy.notifyOnCompletion,
+          notifyOnInterruption = request.notifyOnInterruption ?: existing.policy.notifyOnInterruption,
+        ),
+        updatedAtEpochMs = maxOf(nowEpochMs, existing.updatedAtEpochMs + 1L),
+      )
+    } ?: throw IllegalArgumentException(
+      "ScheduledTaskUpdate schedule '$scheduleId' was not found.",
     )
-    specStore.upsert(updated)
     resyncEnabledScheduledTasks(
       specStore = specStore,
       triggerRegistrar = triggerRegistrar,

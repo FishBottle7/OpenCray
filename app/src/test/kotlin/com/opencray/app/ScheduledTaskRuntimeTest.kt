@@ -124,6 +124,58 @@ class ScheduledTaskRuntimeTest {
   }
 
   @Test
+  fun fileBackedSpecStoreRetainsIndependentConcurrentFieldUpdates() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-runtime-concurrent-update")
+    val firstStore = FileBackedScheduledTaskSpecStoreFactory(runtimeRoot).create()
+    val secondStore = FileBackedScheduledTaskSpecStoreFactory(runtimeRoot).create()
+    val original = scheduledTaskSpec(
+      sessionId = "session-concurrent-update",
+      scheduleId = "schedule-concurrent-update",
+      title = "Original",
+      updatedAtEpochMs = 1_000L,
+    )
+    firstStore.upsert(original)
+    val ready = CountDownLatch(2)
+    val start = CountDownLatch(1)
+    val executor = Executors.newFixedThreadPool(2)
+    try {
+      val titleUpdate = executor.submit {
+        ready.countDown()
+        start.await()
+        firstStore.update(original.scheduleId) { current ->
+          current.copy(
+            title = "Title update",
+            updatedAtEpochMs = current.updatedAtEpochMs + 1L,
+          )
+        }
+      }
+      val enabledUpdate = executor.submit {
+        ready.countDown()
+        start.await()
+        secondStore.update(original.scheduleId) { current ->
+          current.copy(
+            enabled = false,
+            updatedAtEpochMs = current.updatedAtEpochMs + 1L,
+          )
+        }
+      }
+      assertTrue(ready.await(5L, TimeUnit.SECONDS))
+      start.countDown()
+      titleUpdate.get(5L, TimeUnit.SECONDS)
+      enabledUpdate.get(5L, TimeUnit.SECONDS)
+    } finally {
+      executor.shutdownNow()
+    }
+
+    val updated = FileBackedScheduledTaskSpecStoreFactory(runtimeRoot)
+      .create()
+      .get(original.scheduleId)
+    assertNotNull(updated)
+    assertEquals("Title update", updated?.title)
+    assertFalse(updated?.enabled ?: true)
+  }
+
+  @Test
   fun fileBackedScheduledTaskRunRecordRemoveForScheduleUsesSingleStorageUpdate() {
     val storage = StaleReadDurableTextStorage()
     val runRecordStore = fileBackedScheduledTaskRunRecordStore(

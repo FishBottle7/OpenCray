@@ -23,6 +23,11 @@ internal interface ScheduledTaskSpecStore {
 
   fun upsert(spec: ScheduledTaskSpec)
 
+  fun update(
+    scheduleId: String,
+    transform: (ScheduledTaskSpec) -> ScheduledTaskSpec,
+  ): ScheduledTaskSpec?
+
   fun remove(scheduleId: String)
 
   fun clear()
@@ -339,6 +344,19 @@ private class InMemoryScheduledTaskSpecStore : ScheduledTaskSpecStore {
     }
   }
 
+  override fun update(
+    scheduleId: String,
+    transform: (ScheduledTaskSpec) -> ScheduledTaskSpec,
+  ): ScheduledTaskSpec? = synchronized(lock) {
+    val current = specsById[scheduleId] ?: return@synchronized null
+    val updated = transform(current)
+    require(updated.scheduleId == current.scheduleId) {
+      "Scheduled task update must not change scheduleId."
+    }
+    specsById[scheduleId] = updated
+    updated
+  }
+
   override fun remove(scheduleId: String) {
     synchronized(lock) {
       specsById.remove(scheduleId)
@@ -424,6 +442,38 @@ private class FileBackedScheduledTaskSpecStore(
           result = Unit,
         )
       }
+    }
+  }
+
+  override fun update(
+    scheduleId: String,
+    transform: (ScheduledTaskSpec) -> ScheduledTaskSpec,
+  ): ScheduledTaskSpec? = synchronized(lock) {
+    updateRecord { existing ->
+      val current = existing.specs.firstOrNull { spec -> spec.scheduleId == scheduleId }
+        ?: return@updateRecord RecordStorageUpdate(
+          value = existing,
+          result = null,
+          write = false,
+        )
+      val updated = transform(current)
+      require(updated.scheduleId == current.scheduleId) {
+        "Scheduled task update must not change scheduleId."
+      }
+      val normalizedSpecs = normalizeSpecs(
+        existing.specs.filterNot { spec -> spec.scheduleId == scheduleId } + updated,
+      )
+      val persisted = normalizedSpecs.firstOrNull { spec -> spec.scheduleId == scheduleId }
+      val next = existing.copy(
+        recordVersion = existing.recordVersion + 1L,
+        updatedAtEpochMs = clock(),
+        specs = normalizedSpecs,
+      )
+      RecordStorageUpdate(
+        value = next,
+        result = persisted,
+        write = next != existing,
+      )
     }
   }
 
