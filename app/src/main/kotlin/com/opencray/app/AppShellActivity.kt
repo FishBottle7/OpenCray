@@ -6,6 +6,7 @@ import com.opencray.app.shell.AppShellDestination
 import com.opencray.app.shell.AppShellNavigationExtras
 import com.opencray.app.shell.AppShellStateStore
 import com.opencray.app.shell.AppShellTab
+import com.opencray.app.shell.SettingsSubpage
 
 class AppShellActivity : LocalizedActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
@@ -41,6 +42,9 @@ class AppShellActivity : LocalizedActivity() {
     val notificationSessionId = intent.getStringExtra(
       RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SESSION_ID,
     )?.trim()?.takeIf(String::isNotBlank)
+    val notificationScheduleId = intent.getStringExtra(
+      RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SCHEDULE_ID,
+    )?.trim()?.takeIf(String::isNotBlank)
     val flutterDestination = appShellFlutterDestination(destination)
     val chatSessionId = notificationSessionId.takeIf {
       destination.selectedTab == AppShellTab.CHAT
@@ -49,6 +53,9 @@ class AppShellActivity : LocalizedActivity() {
       this,
       flutterDestination,
       chatSessionId = chatSessionId,
+      scheduleId = notificationScheduleId.takeIf {
+        destination.settingsSubpage == SettingsSubpage.SCHEDULED_TASKS
+      },
     ).apply {
       putExtras(intent)
       addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION)

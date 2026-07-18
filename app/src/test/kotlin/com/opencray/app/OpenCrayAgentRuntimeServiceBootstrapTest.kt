@@ -5523,6 +5523,52 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun defaultWakeDispatcherTreatsStaleNotificationApprovalActionsAsIdempotent() {
+    val context = MinimalContext()
+    val serviceHost = testServiceHost(
+      temporaryFolder.newFolder("wake-dispatcher-stale-approval"),
+    )
+    val gatewayBundle = testServiceGatewayBundle()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dismissedTaskIds = mutableListOf<String?>()
+    val commands = listOf<RuntimeServiceNotificationCommand>(
+      RuntimeServiceNotificationCommand.ApproveApproval(
+        sessionId = "missing-session",
+        taskId = "missing-approve-task",
+        runId = "missing-approve-run",
+      ),
+      RuntimeServiceNotificationCommand.RejectApproval(
+        sessionId = "missing-session",
+        taskId = "missing-reject-task",
+        runId = "missing-reject-run",
+      ),
+    )
+
+    commands.forEach { command ->
+      DefaultRuntimeServiceWakeCommandDispatcher(
+        appContext = context,
+        dispatcherDependencies = serviceHost
+          .toRuntimeServiceBootstrapState()
+          .wakeCommandDispatcherDependencies,
+        gatewayBundle = gatewayBundle,
+        projectionCoordinator = projectionCoordinator,
+        wakeIntentParser = RuntimeServiceWakeIntentParser {
+          RuntimeServiceWakeIntentCommand.Notification(command)
+        },
+        approvalNotificationDismisser = { _, taskId -> dismissedTaskIds += taskId },
+      ).dispatch(null)
+    }
+
+    assertEquals(
+      listOf("missing-approve-task", "missing-reject-task"),
+      dismissedTaskIds,
+    )
+    assertEquals(2, projectionCoordinator.persistCallCount)
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
   fun defaultWakeDispatcherPersistsProjectionButKeepsTerminalNotificationWhenRetryChatWriteFails() {
     val context = MinimalContext()
     val dismissedTerminalTaskIds = mutableListOf<String?>()

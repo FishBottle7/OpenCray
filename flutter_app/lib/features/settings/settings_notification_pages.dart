@@ -88,6 +88,7 @@ class _NotificationsBackgroundSettingsPageState
   SettingsDetailSnapshot? _detail;
   NotificationSettingsSnapshot? _settings;
   StrongBackgroundSnapshot? _strongBackground;
+  ScheduledTasksSnapshot? _scheduledTasks;
   String? _loadError;
   final _saveQueue = _NotificationSettingsSaveQueue();
   StrongBackgroundActionId? _activeActionId;
@@ -120,7 +121,11 @@ class _NotificationsBackgroundSettingsPageState
     final detail = _detail;
     final settings = _settings;
     final strongBackground = _strongBackground;
-    if (detail == null || settings == null || strongBackground == null) {
+    final scheduledTasks = _scheduledTasks;
+    if (detail == null ||
+        settings == null ||
+        strongBackground == null ||
+        scheduledTasks == null) {
       return _loadError == null
           ? const _SettingsLoading(
               key: ValueKey<String>('settings-notifications-loading'),
@@ -149,10 +154,29 @@ class _NotificationsBackgroundSettingsPageState
           const SizedBox(height: 16),
           _buildNotificationsCard(copy, settings, enabledEventCount),
           const SizedBox(height: 16),
+          _buildScheduledTasksCard(copy, scheduledTasks),
+          const SizedBox(height: 16),
           _buildDeliveryCard(copy, settings),
           const SizedBox(height: 16),
           _buildSystemCard(copy, strongBackground),
         ],
+      ),
+    );
+  }
+
+  Widget _buildScheduledTasksCard(
+    _NotificationSettingsCopy copy,
+    ScheduledTasksSnapshot snapshot,
+  ) {
+    return _SettingsCard(
+      child: _NotificationActionRow(
+        title: copy.scheduledTasksTitle,
+        subtitle: copy.scheduledTasksSubtitle(
+          totalCount: snapshot.totalCount,
+          enabledCount: snapshot.enabledCount,
+        ),
+        valueLabel: copy.manageScheduledTasksLabel,
+        onTap: () => widget.onOpenPage(SettingsPage.scheduledTasks),
       ),
     );
   }
@@ -220,7 +244,7 @@ class _NotificationsBackgroundSettingsPageState
               enabledEventCount,
               totalEventCount,
             ),
-            onTap: () => widget.onOpenPage(SettingsPage.notificationChannels),
+            onTap: () => widget.onOpenPage(SettingsPage.eventAlerts),
           ),
         ],
       ),
@@ -334,6 +358,7 @@ class _NotificationsBackgroundSettingsPageState
       final settings = await widget.facade.loadNotificationSettings();
       final strongBackground = await widget.facade
           .loadStrongBackgroundSnapshot();
+      final scheduledTasks = await widget.facade.loadScheduledTasks();
       if (!mounted) {
         return;
       }
@@ -341,6 +366,7 @@ class _NotificationsBackgroundSettingsPageState
         _detail = detail;
         _settings = settings;
         _strongBackground = strongBackground;
+        _scheduledTasks = scheduledTasks;
         _loadError = null;
       });
     } catch (error) {
@@ -644,8 +670,8 @@ class _NotificationsBackgroundSettingsPageState
   }
 }
 
-class _NotificationChannelsSettingsPage extends StatefulWidget {
-  const _NotificationChannelsSettingsPage({
+class _NotificationEventAlertsSettingsPage extends StatefulWidget {
+  const _NotificationEventAlertsSettingsPage({
     super.key,
     required this.facade,
     required this.onBack,
@@ -657,12 +683,12 @@ class _NotificationChannelsSettingsPage extends StatefulWidget {
   final String backLabel;
 
   @override
-  State<_NotificationChannelsSettingsPage> createState() =>
-      _NotificationChannelsSettingsPageState();
+  State<_NotificationEventAlertsSettingsPage> createState() =>
+      _NotificationEventAlertsSettingsPageState();
 }
 
-class _NotificationChannelsSettingsPageState
-    extends State<_NotificationChannelsSettingsPage> {
+class _NotificationEventAlertsSettingsPageState
+    extends State<_NotificationEventAlertsSettingsPage> {
   SettingsDetailSnapshot? _detail;
   NotificationSettingsSnapshot? _settings;
   String? _loadError;
@@ -684,7 +710,7 @@ class _NotificationChannelsSettingsPageState
     if (detail == null || settings == null) {
       return _loadError == null
           ? const _SettingsLoading(
-              key: ValueKey<String>('settings-notification-channels-loading'),
+              key: ValueKey<String>('settings-event-alerts-loading'),
             )
           : _SettingsLoadErrorCard(
               title: detail?.title ?? copy.eventAlertsTitle,
@@ -736,9 +762,7 @@ class _NotificationChannelsSettingsPageState
 
   Future<void> _load() async {
     try {
-      final detail = await widget.facade.loadDetail(
-        SettingsPage.notificationChannels,
-      );
+      final detail = await widget.facade.loadDetail(SettingsPage.eventAlerts);
       final settings = await widget.facade.loadNotificationSettings();
       if (!mounted) {
         return;
@@ -796,7 +820,7 @@ class _NotificationToggleRow extends StatelessWidget {
   final String title;
   final String subtitle;
   final bool value;
-  final ValueChanged<bool> onChanged;
+  final ValueChanged<bool>? onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -1243,6 +1267,19 @@ class _NotificationSettingsCopy {
 
   String enabledCountLabel(int enabledCount, int totalCount) =>
       '$enabledCount/$totalCount';
+
+  String get scheduledTasksTitle =>
+      foregroundServiceNoticeStatus == '系统必需' ? '定时任务' : 'Scheduled tasks';
+
+  String scheduledTasksSubtitle({
+    required int totalCount,
+    required int enabledCount,
+  }) => foregroundServiceNoticeStatus == '系统必需'
+      ? '共 $totalCount 个任务，$enabledCount 个已启用。'
+      : '$totalCount tasks, $enabledCount enabled.';
+
+  String get manageScheduledTasksLabel =>
+      foregroundServiceNoticeStatus == '系统必需' ? '管理' : 'Manage';
 
   String defaultDeliveryRowSubtitle(NotificationDeliveryMode mode) =>
       mode == NotificationDeliveryMode.critical

@@ -1,4 +1,5 @@
 import 'notification_settings_models.dart';
+import 'scheduled_task_settings_models.dart';
 import 'settings_models.dart';
 import 'safety_settings_models.dart';
 import 'strong_background_settings_models.dart';
@@ -15,6 +16,22 @@ abstract interface class SettingsFacade {
   Future<NotificationSettingsSnapshot> saveNotificationSettings(
     NotificationSettingsSnapshot snapshot,
   );
+
+  Future<ScheduledTasksSnapshot> loadScheduledTasks();
+
+  Future<ScheduledTaskDetailSnapshot> loadScheduledTask(String scheduleId);
+
+  Future<ScheduledTaskActionResult> updateScheduledTaskEnabled({
+    required String scheduleId,
+    required bool enabled,
+  });
+
+  Future<ScheduledTaskActionResult> runScheduledTaskNow(String scheduleId);
+
+  Future<ScheduledTaskActionResult> snoozeScheduledTask({
+    required String scheduleId,
+    int durationMinutes = 15,
+  });
 
   Future<StrongBackgroundSnapshot> loadStrongBackgroundSnapshot();
 

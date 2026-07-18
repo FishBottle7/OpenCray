@@ -46,13 +46,47 @@ void main() {
 
     await tester.pumpWidget(OpenCrayApp(bridge: bridge));
     await tester.pumpAndSettle();
-    await tester
-        .state<NavigatorState>(find.byType(Navigator))
-        .pushNamed('/settings/notifications-background');
-    await tester.pumpAndSettle();
+    unawaited(
+      tester
+          .state<NavigatorState>(find.byType(Navigator))
+          .pushNamed('/settings/notifications-background'),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.text('Notifications & Background'), findsOneWidget);
-    expect(find.text('Background profile'), findsOneWidget);
+    expect(find.text('Background protection status'), findsOneWidget);
+  });
+
+  testWidgets('scheduled task route decodes id and opens task detail', (
+    tester,
+  ) async {
+    final bridge = OpenCraySeedBridge(
+      initialSnapshot: const OpenCrayShellSnapshot(
+        initialTab: OpenCrayTab.chat,
+        localeTag: 'en',
+        hostLabel: 'HOST READY',
+        hostSummary: 'Flutter shell is attached to a seed bridge.',
+        isHostConnected: false,
+      ),
+    );
+
+    await tester.pumpWidget(OpenCrayApp(bridge: bridge));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    unawaited(
+      tester
+          .state<NavigatorState>(find.byType(Navigator))
+          .pushNamed('/settings/scheduled-tasks?scheduleId=schedule%2F1'),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('Task details'), findsOneWidget);
+    expect(
+      find.text('Scheduled task schedule/1 was not found.'),
+      findsOneWidget,
+    );
   });
 
   testWidgets('waits for the shell snapshot without rendering seed chat', (

@@ -17,6 +17,7 @@ import '../models/opencray_personalization_config.dart';
 import '../models/opencray_sandbox_preview_embed_config.dart';
 import '../models/opencray_sandbox_settings.dart';
 import '../models/opencray_safety_settings.dart';
+import '../models/opencray_scheduled_tasks.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
@@ -173,6 +174,26 @@ abstract interface class OpenCrayHostBridge {
   Future<OpenCrayNotificationSettingsSnapshot> saveNotificationSettings(
     OpenCrayNotificationSettingsSnapshot snapshot,
   );
+
+  Future<OpenCrayScheduledTasksSnapshot> loadScheduledTasks();
+
+  Future<OpenCrayScheduledTaskDetailSnapshot> loadScheduledTask(
+    String scheduleId,
+  );
+
+  Future<OpenCrayScheduledTaskActionResult> updateScheduledTaskEnabled({
+    required String scheduleId,
+    required bool enabled,
+  });
+
+  Future<OpenCrayScheduledTaskActionResult> runScheduledTaskNow(
+    String scheduleId,
+  );
+
+  Future<OpenCrayScheduledTaskActionResult> snoozeScheduledTask({
+    required String scheduleId,
+    int durationMinutes = 15,
+  });
 
   Future<OpenCrayStrongBackgroundSnapshot> loadStrongBackgroundSnapshot();
 

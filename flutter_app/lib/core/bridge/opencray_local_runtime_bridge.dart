@@ -23,6 +23,7 @@ import '../models/opencray_personalization_config.dart';
 import '../models/opencray_sandbox_preview_embed_config.dart';
 import '../models/opencray_sandbox_settings.dart';
 import '../models/opencray_safety_settings.dart';
+import '../models/opencray_scheduled_tasks.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
@@ -386,6 +387,53 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     OpenCrayNotificationSettingsSnapshot snapshot,
   ) async => OpenCrayNotificationSettingsSnapshot.fromMap(
     await _postMap('v1/save_notification_settings', snapshot.toMap()),
+  );
+
+  @override
+  Future<OpenCrayScheduledTasksSnapshot> loadScheduledTasks() async =>
+      OpenCrayScheduledTasksSnapshot.fromMap(
+        await _getMap('v1/scheduled_tasks'),
+      );
+
+  @override
+  Future<OpenCrayScheduledTaskDetailSnapshot> loadScheduledTask(
+    String scheduleId,
+  ) async => OpenCrayScheduledTaskDetailSnapshot.fromMap(
+    await _getMap(
+      'v1/scheduled_task',
+      queryParameters: <String, String>{'scheduleId': scheduleId},
+    ),
+  );
+
+  @override
+  Future<OpenCrayScheduledTaskActionResult> updateScheduledTaskEnabled({
+    required String scheduleId,
+    required bool enabled,
+  }) async => OpenCrayScheduledTaskActionResult.fromMap(
+    await _postMap('v1/update_scheduled_task_enabled', <String, Object?>{
+      'scheduleId': scheduleId,
+      'enabled': enabled,
+    }),
+  );
+
+  @override
+  Future<OpenCrayScheduledTaskActionResult> runScheduledTaskNow(
+    String scheduleId,
+  ) async => OpenCrayScheduledTaskActionResult.fromMap(
+    await _postMap('v1/run_scheduled_task_now', <String, Object?>{
+      'scheduleId': scheduleId,
+    }),
+  );
+
+  @override
+  Future<OpenCrayScheduledTaskActionResult> snoozeScheduledTask({
+    required String scheduleId,
+    int durationMinutes = 15,
+  }) async => OpenCrayScheduledTaskActionResult.fromMap(
+    await _postMap('v1/snooze_scheduled_task', <String, Object?>{
+      'scheduleId': scheduleId,
+      'durationMinutes': durationMinutes,
+    }),
   );
 
   @override

@@ -1,7 +1,9 @@
 enum SettingsPage {
   home,
   notificationsBackground,
-  notificationChannels,
+  eventAlerts,
+  scheduledTasks,
+  scheduledTaskDetail,
   workspaceAccess,
   llm,
   mcp,
@@ -24,8 +26,12 @@ extension SettingsPageRouteId on SettingsPage {
         return 'home';
       case SettingsPage.notificationsBackground:
         return 'notifications_background';
-      case SettingsPage.notificationChannels:
-        return 'notification_channels';
+      case SettingsPage.eventAlerts:
+        return 'event_alerts';
+      case SettingsPage.scheduledTasks:
+        return 'scheduled_tasks';
+      case SettingsPage.scheduledTaskDetail:
+        return 'scheduled_task_detail';
       case SettingsPage.workspaceAccess:
         return 'workspace_access';
       case SettingsPage.llm:
@@ -60,8 +66,13 @@ SettingsPage settingsPageFromRouteId(String routeId) {
   switch (routeId) {
     case 'notifications_background':
       return SettingsPage.notificationsBackground;
+    case 'event_alerts':
     case 'notification_channels':
-      return SettingsPage.notificationChannels;
+      return SettingsPage.eventAlerts;
+    case 'scheduled_tasks':
+      return SettingsPage.scheduledTasks;
+    case 'scheduled_task_detail':
+      return SettingsPage.scheduledTaskDetail;
     case 'workspace_access':
       return SettingsPage.workspaceAccess;
     case 'llm':

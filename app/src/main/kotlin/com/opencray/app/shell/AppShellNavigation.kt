@@ -21,7 +21,8 @@ enum class SettingsSubpage(
 ) {
   HOME("home"),
   NOTIFICATIONS_BACKGROUND("notifications_background"),
-  NOTIFICATION_CHANNELS("notification_channels"),
+  EVENT_ALERTS("event_alerts"),
+  SCHEDULED_TASKS("scheduled_tasks"),
   WORKSPACE("workspace"),
   LLM("llm"),
   MCP("mcp"),
@@ -33,9 +34,14 @@ enum class SettingsSubpage(
   ;
 
   companion object {
-    fun fromRaw(rawValue: String?): SettingsSubpage? = entries.firstOrNull { subpage ->
-      subpage.name.equals(rawValue, ignoreCase = true) ||
-        subpage.routeKey.equals(rawValue, ignoreCase = true)
+    fun fromRaw(rawValue: String?): SettingsSubpage? {
+      val normalized = rawValue?.trim().orEmpty()
+      return entries.firstOrNull { subpage ->
+        subpage.name.equals(normalized, ignoreCase = true) ||
+          subpage.routeKey.equals(normalized, ignoreCase = true)
+      } ?: EVENT_ALERTS.takeIf {
+        normalized.equals("notification_channels", ignoreCase = true)
+      }
     }
   }
 }

@@ -35,6 +35,15 @@ const List<LlmOnDeviceModelOption> _defaultOnDeviceLlmModels =
     ];
 
 void main() {
+  test('event alert route uses canonical id and accepts the legacy id', () {
+    expect(SettingsPage.eventAlerts.routeId, 'event_alerts');
+    expect(settingsPageFromRouteId('event_alerts'), SettingsPage.eventAlerts);
+    expect(
+      settingsPageFromRouteId('notification_channels'),
+      SettingsPage.eventAlerts,
+    );
+  });
+
   testWidgets('standalone llm page auto-saves when a field loses focus', (
     tester,
   ) async {
@@ -1098,7 +1107,12 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
-      await tester.tap(find.byType(Switch).first);
+      final masterSwitch = find.descendant(
+        of: find.byKey(const ValueKey<String>('notification-master-enabled')),
+        matching: find.byType(Switch),
+      );
+      await tester.ensureVisible(masterSwitch);
+      await tester.tap(masterSwitch);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -1115,6 +1129,139 @@ void main() {
       expect(find.text('Approval requests'), findsOneWidget);
     },
   );
+
+  testWidgets(
+    'notifications page opens scheduled tasks and list switch saves',
+    (tester) async {
+      final facade = _buildSettingsFacade()
+        ..scheduledTasks = const ScheduledTasksSnapshot(
+          tasks: <ScheduledTaskSummary>[
+            ScheduledTaskSummary(
+              scheduleId: 'schedule-1',
+              sessionId: 'session-1',
+              title: 'Morning review',
+              enabled: true,
+              triggerKind: 'recurrence',
+              triggerSummary: 'Every day at 09:00',
+              nextTriggerAtEpochMs: 1784336400000,
+            ),
+          ],
+          totalCount: 1,
+          enabledCount: 1,
+        );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.notificationsBackground,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('1 tasks, 1 enabled.'), findsOneWidget);
+      final scheduledTasksLink = find.text('Scheduled tasks');
+      await tester.ensureVisible(scheduledTasksLink);
+      await tester.tap(scheduledTasksLink);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Morning review'), findsOneWidget);
+      final taskSwitch = find.descendant(
+        of: find.byKey(const ValueKey<String>('settings-scheduled-tasks')),
+        matching: find.byType(Switch),
+      );
+      await tester.tap(taskSwitch);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(facade.scheduledTaskEnabledRequests, <bool>[false]);
+      expect(facade.scheduledTasks.tasks.single.enabled, isFalse);
+    },
+  );
+
+  testWidgets('scheduled task detail runs snoozes toggles and shows history', (
+    tester,
+  ) async {
+    final facade = _buildSettingsFacade()
+      ..scheduledTaskDetail = const ScheduledTaskDetailSnapshot(
+        task: ScheduledTaskDetails(
+          scheduleId: 'schedule-1',
+          sessionId: 'session-1',
+          title: 'Morning review',
+          enabled: true,
+          triggerKind: 'recurrence',
+          triggerSummary: 'Every day at 09:00',
+          prompt: 'Review open work and summarize blockers.',
+          conflictPolicy: 'queue',
+          foregroundNotificationRequired: true,
+          notifyOnQueued: true,
+          notifyOnApproval: true,
+          notifyOnCompletion: true,
+          notifyOnInterruption: true,
+          createdAtEpochMs: 1784200000000,
+          updatedAtEpochMs: 1784200000000,
+          nextTriggerAtEpochMs: 1784336400000,
+        ),
+        recentRuns: <ScheduledTaskRunRecord>[
+          ScheduledTaskRunRecord(
+            scheduleRunId: 'schedule-run-1',
+            triggerReason: 'alarm',
+            result: 'accepted',
+            triggeredAtEpochMs: 1784250000000,
+            updatedAtEpochMs: 1784250000000,
+          ),
+        ],
+        totalRunCount: 1,
+      );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SettingsFeatureScreen(
+          facade: facade,
+          initialPage: SettingsPage.scheduledTaskDetail,
+          initialScheduleId: 'schedule-1',
+          standalone: true,
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(
+      find.text('Review open work and summarize blockers.'),
+      findsOneWidget,
+    );
+    expect(find.text('Accepted'), findsOneWidget);
+    expect(find.text('Exact alarm trigger'), findsOneWidget);
+
+    final runNow = find.byKey(const ValueKey<String>('scheduled-task-run-now'));
+    await tester.ensureVisible(runNow);
+    await tester.tap(runNow);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(facade.scheduledTaskRunNowCallCount, 1);
+
+    final snooze = find.byKey(const ValueKey<String>('scheduled-task-snooze'));
+    await tester.ensureVisible(snooze);
+    await tester.tap(snooze);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(facade.scheduledTaskSnoozeCallCount, 1);
+
+    final enabledSwitch = find.descendant(
+      of: find.byKey(const ValueKey<String>('scheduled-task-enabled')),
+      matching: find.byType(Switch),
+    );
+    await tester.ensureVisible(enabledSwitch);
+    await tester.tap(enabledSwitch);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(facade.scheduledTaskEnabledRequests, <bool>[false]);
+  });
 
   testWidgets('event alerts page saves per-event toggles', (tester) async {
     final facade = _FakeSettingsFacade(
@@ -1156,7 +1303,7 @@ void main() {
       MaterialApp(
         home: SettingsFeatureScreen(
           facade: facade,
-          initialPage: SettingsPage.notificationChannels,
+          initialPage: SettingsPage.eventAlerts,
           standalone: true,
         ),
       ),
@@ -1256,7 +1403,7 @@ void main() {
       MaterialApp(
         home: SettingsFeatureScreen(
           facade: facade,
-          initialPage: SettingsPage.notificationChannels,
+          initialPage: SettingsPage.eventAlerts,
           standalone: true,
         ),
       ),
@@ -4862,6 +5009,29 @@ _FakeSettingsFacade _notificationTestFacade({
   onSaveNotificationSettings: onSaveNotificationSettings,
 );
 
+ScheduledTaskDetails _copyScheduledTaskDetails(
+  ScheduledTaskDetails task, {
+  bool? enabled,
+}) => ScheduledTaskDetails(
+  scheduleId: task.scheduleId,
+  sessionId: task.sessionId,
+  title: task.title,
+  enabled: enabled ?? task.enabled,
+  triggerKind: task.triggerKind,
+  triggerSummary: task.triggerSummary,
+  prompt: task.prompt,
+  nextTriggerAtEpochMs: task.nextTriggerAtEpochMs,
+  snoozedUntilEpochMs: task.snoozedUntilEpochMs,
+  conflictPolicy: task.conflictPolicy,
+  foregroundNotificationRequired: task.foregroundNotificationRequired,
+  notifyOnQueued: task.notifyOnQueued,
+  notifyOnApproval: task.notifyOnApproval,
+  notifyOnCompletion: task.notifyOnCompletion,
+  notifyOnInterruption: task.notifyOnInterruption,
+  createdAtEpochMs: task.createdAtEpochMs,
+  updatedAtEpochMs: task.updatedAtEpochMs,
+);
+
 class _FakeSettingsFacade implements SettingsFacade {
   _FakeSettingsFacade({
     required this.llmConfig,
@@ -5102,6 +5272,15 @@ class _FakeSettingsFacade implements SettingsFacade {
         backgroundTaskPausedEnabled: true,
         serviceRecoveredEnabled: true,
       );
+  ScheduledTasksSnapshot scheduledTasks = const ScheduledTasksSnapshot(
+    tasks: <ScheduledTaskSummary>[],
+    totalCount: 0,
+    enabledCount: 0,
+  );
+  ScheduledTaskDetailSnapshot? scheduledTaskDetail;
+  final List<bool> scheduledTaskEnabledRequests = <bool>[];
+  int scheduledTaskRunNowCallCount = 0;
+  int scheduledTaskSnoozeCallCount = 0;
   StrongBackgroundSnapshot strongBackgroundSnapshot =
       const StrongBackgroundSnapshot(
         source: 'strong-background',
@@ -5162,7 +5341,7 @@ class _FakeSettingsFacade implements SettingsFacade {
     page: page,
     title: switch (page) {
       SettingsPage.notificationsBackground => 'Notifications & Background',
-      SettingsPage.notificationChannels => 'Event Alerts',
+      SettingsPage.eventAlerts => 'Event Alerts',
       SettingsPage.privacyTelemetry => 'Privacy & Telemetry',
       SettingsPage.aboutVersion => 'About & Version',
       _ => '',
@@ -5170,7 +5349,7 @@ class _FakeSettingsFacade implements SettingsFacade {
     subtitle: switch (page) {
       SettingsPage.notificationsBackground =>
         'Control alerts, service visibility, and wakeups.',
-      SettingsPage.notificationChannels =>
+      SettingsPage.eventAlerts =>
         'Choose which app events can publish a new alert.',
       SettingsPage.privacyTelemetry =>
         'Review what stays on device and what diagnostic signals are shared.',
@@ -5218,6 +5397,92 @@ class _FakeSettingsFacade implements SettingsFacade {
     notificationSettings =
         await onSaveNotificationSettings?.call(snapshot) ?? snapshot;
     return notificationSettings;
+  }
+
+  @override
+  Future<ScheduledTasksSnapshot> loadScheduledTasks() async => scheduledTasks;
+
+  @override
+  Future<ScheduledTaskDetailSnapshot> loadScheduledTask(
+    String scheduleId,
+  ) async {
+    final detail = scheduledTaskDetail;
+    if (detail == null || detail.task.scheduleId != scheduleId) {
+      throw StateError('Scheduled task $scheduleId was not found.');
+    }
+    return detail;
+  }
+
+  @override
+  Future<ScheduledTaskActionResult> updateScheduledTaskEnabled({
+    required String scheduleId,
+    required bool enabled,
+  }) async {
+    scheduledTaskEnabledRequests.add(enabled);
+    final updatedTasks = scheduledTasks.tasks
+        .map(
+          (task) => task.scheduleId == scheduleId
+              ? ScheduledTaskSummary(
+                  scheduleId: task.scheduleId,
+                  sessionId: task.sessionId,
+                  title: task.title,
+                  enabled: enabled,
+                  triggerKind: task.triggerKind,
+                  triggerSummary: task.triggerSummary,
+                  nextTriggerAtEpochMs: task.nextTriggerAtEpochMs,
+                  snoozedUntilEpochMs: task.snoozedUntilEpochMs,
+                )
+              : task,
+        )
+        .toList(growable: false);
+    scheduledTasks = ScheduledTasksSnapshot(
+      tasks: updatedTasks,
+      totalCount: scheduledTasks.totalCount,
+      enabledCount: updatedTasks.where((task) => task.enabled).length,
+    );
+    final detail = scheduledTaskDetail;
+    if (detail != null && detail.task.scheduleId == scheduleId) {
+      scheduledTaskDetail = ScheduledTaskDetailSnapshot(
+        task: _copyScheduledTaskDetails(detail.task, enabled: enabled),
+        recentRuns: detail.recentRuns,
+        totalRunCount: detail.totalRunCount,
+      );
+    }
+    return ScheduledTaskActionResult(
+      action: 'update_enabled',
+      scheduleId: scheduleId,
+      title: detail?.task.title ?? '',
+      enabled: enabled,
+    );
+  }
+
+  @override
+  Future<ScheduledTaskActionResult> runScheduledTaskNow(
+    String scheduleId,
+  ) async {
+    scheduledTaskRunNowCallCount += 1;
+    return ScheduledTaskActionResult(
+      action: 'run_now',
+      scheduleId: scheduleId,
+      title: scheduledTaskDetail?.task.title ?? '',
+      scheduleRunId: 'schedule-run-$scheduledTaskRunNowCallCount',
+    );
+  }
+
+  @override
+  Future<ScheduledTaskActionResult> snoozeScheduledTask({
+    required String scheduleId,
+    int durationMinutes = 15,
+  }) async {
+    scheduledTaskSnoozeCallCount += 1;
+    return ScheduledTaskActionResult(
+      action: 'snooze',
+      scheduleId: scheduleId,
+      title: scheduledTaskDetail?.task.title ?? '',
+      snoozedUntilEpochMs: DateTime.now()
+          .add(Duration(minutes: durationMinutes))
+          .millisecondsSinceEpoch,
+    );
   }
 
   @override

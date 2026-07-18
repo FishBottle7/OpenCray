@@ -97,14 +97,18 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
   ) {
     when (command) {
       is RuntimeServiceNotificationCommand.ApproveApproval ->
-        dispatcherDependencies.approvalDecisionAccess.approve(
-          command.runId ?: command.taskId.orEmpty(),
-        )
+        runCatching {
+          dispatcherDependencies.approvalDecisionAccess.approve(
+            command.runId ?: command.taskId.orEmpty(),
+          )
+        }
 
       is RuntimeServiceNotificationCommand.RejectApproval ->
-        dispatcherDependencies.approvalDecisionAccess.reject(
-          command.runId ?: command.taskId.orEmpty(),
-        )
+        runCatching {
+          dispatcherDependencies.approvalDecisionAccess.reject(
+            command.runId ?: command.taskId.orEmpty(),
+          )
+        }
 
       is RuntimeServiceNotificationCommand.RunScheduleNow ->
         nowEpochMsProvider().let { nowEpochMs ->

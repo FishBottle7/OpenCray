@@ -84,8 +84,8 @@
     <string name="shell_common_off">关闭</string>
     <string name="settings_home_intro">访问权限、提供商和个人默认设置。</string>
     <string name="settings_notifications_background_subtitle">控制提醒、服务可见性与唤醒行为。</string>
-    <string name="settings_notification_channels_title">事件提醒</string>
-    <string name="settings_notification_channels_subtitle">选择哪些应用事件可以发布新提醒。</string>
+    <string name="settings_event_alerts_title">事件提醒</string>
+    <string name="settings_event_alerts_subtitle">选择哪些应用事件可以发布新提醒。</string>
     <string name="settings_home_privacy_summary">%1$s：%2$s · %3$s：%4$s</string>
     <string name="settings_home_safety_summary">当前最高风险提示：%1$s</string>
     <string name="settings_home_about_summary">已安装构建：%1$s</string>

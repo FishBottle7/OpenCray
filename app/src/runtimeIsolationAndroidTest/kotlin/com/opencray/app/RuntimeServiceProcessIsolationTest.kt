@@ -1,13 +1,18 @@
 package com.opencray.app
 
 import android.app.ActivityManager
+import android.app.Notification
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.ApplicationInfo
 import android.os.IBinder
+import android.os.Build
 import android.os.Process
+import android.service.notification.StatusBarNotification
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.work.WorkInfo
@@ -701,6 +706,9 @@ class RuntimeServiceProcessIsolationTest {
     val nowEpochMs = System.currentTimeMillis()
     val specStore = FileBackedScheduledTaskSpecStoreFactory.fromContext(context).create()
     val workManager = WorkManager.getInstance(context)
+    val notificationManager = context.getSystemService(NotificationManager::class.java)
+    grantNotificationPermission(context)
+    RuntimeNotificationChannelRegistry.ensureRegistered(context)
     specStore.upsert(
       ScheduledTaskSpec(
         scheduleId = scheduleId,
@@ -715,22 +723,31 @@ class RuntimeServiceProcessIsolationTest {
     )
 
     try {
-      val detached = bindController(context, target)
-      assertRemoteController(detached, target)
-      assertNotNull(
-        context.startForegroundService(
-          RuntimeServiceIntentFactory().scheduleNotificationActionIntent(
-            context = context,
-            action = RuntimeNotificationIntentActions.ACTION_SNOOZE_SCHEDULE,
-            scheduleId = scheduleId,
-            sessionId = sessionId,
-            target = target,
-          ),
+      runtimeNotificationCoordinator(context).onScheduledDispatchOutcome(
+        ScheduledTaskDispatchOutcome(
+          result = ScheduledTaskRunResult.FAILED_DISPATCH,
+          scheduleId = scheduleId,
+          scheduleRunId = "schedule-run-$scheduleId",
+          sessionId = sessionId,
+          failureReason = "instrumentation_test",
         ),
       )
+      val notification = awaitNotification(
+        notificationManager = notificationManager,
+        subText = "Runtime isolation schedule",
+      )
+      val snoozeAction = notification.notification.actions[1]
+      assertServicePendingIntent(context, snoozeAction.actionIntent)
+
+      snoozeAction.actionIntent.send()
 
       val snoozedSpec = awaitSnoozedSpec(specStore, scheduleId)
       assertTrue(requireNotNull(snoozedSpec.snoozedUntilEpochMs) > nowEpochMs)
+      val detached = bindController(context, target)
+      assertRemoteController(detached, target)
+      assertTrue(
+        awaitProcessPid(context, "${context.packageName}:runtime_controller") != Process.myPid(),
+      )
       val workInfo = awaitScheduledWakeWork(workManager, scheduleId)
       assertEquals(WorkInfo.State.ENQUEUED, workInfo.state)
       Thread.sleep(500L)
@@ -739,6 +756,7 @@ class RuntimeServiceProcessIsolationTest {
         latestScheduledWakeWork(workManager, scheduleId)?.state,
       )
     } finally {
+      notificationManager.cancelAll()
       specStore.remove(scheduleId)
       runCatching { resyncEnabledScheduledTasksFromContext(context) }
       runCatching {
@@ -747,6 +765,173 @@ class RuntimeServiceProcessIsolationTest {
           .get(5L, TimeUnit.SECONDS)
       }
       context.stopService(RuntimeServiceIntentFactory().baseIntent(context, target))
+    }
+  }
+
+  @Test(timeout = 90_000L)
+  fun approvalNotificationActionsSendImmutableServicePendingIntentsToDetachedRuntime() {
+    val context = InstrumentationRegistry.getInstrumentation().targetContext
+    val target = RuntimeServiceTarget.DETACHED_BACKGROUND
+    val notificationManager = context.getSystemService(NotificationManager::class.java)
+    val coordinator = runtimeNotificationCoordinator(context)
+    grantNotificationPermission(context)
+    RuntimeNotificationChannelRegistry.ensureRegistered(context)
+    val suffix = System.nanoTime().toString()
+
+    try {
+      val approveTaskId = "approval-approve-$suffix"
+      val approveNotificationId =
+        RuntimeNotificationCoordinator.approvalNotificationIdForTask(approveTaskId)
+      notificationManager.notify(
+        approveNotificationId,
+        coordinator.buildApprovalNotification(
+          approvalNotificationModel(
+            taskId = approveTaskId,
+            runId = "run-$approveTaskId",
+            target = target,
+          ),
+        ),
+      )
+      val approveNotification = awaitNotification(notificationManager, approveNotificationId)
+      val approveAction = approveNotification.notification.actions[1]
+      assertServicePendingIntent(context, approveAction.actionIntent)
+      approveAction.actionIntent.send()
+      awaitNotificationRemoved(notificationManager, approveNotificationId)
+
+      val detached = bindController(context, target)
+      assertRemoteController(detached, target)
+      assertTrue(
+        awaitProcessPid(context, "${context.packageName}:runtime_controller") != Process.myPid(),
+      )
+
+      val rejectTaskId = "approval-reject-$suffix"
+      val rejectNotificationId =
+        RuntimeNotificationCoordinator.approvalNotificationIdForTask(rejectTaskId)
+      notificationManager.notify(
+        rejectNotificationId,
+        coordinator.buildApprovalNotification(
+          approvalNotificationModel(
+            taskId = rejectTaskId,
+            runId = "run-$rejectTaskId",
+            target = target,
+          ),
+        ),
+      )
+      val rejectNotification = awaitNotification(notificationManager, rejectNotificationId)
+      val rejectAction = rejectNotification.notification.actions[2]
+      assertServicePendingIntent(context, rejectAction.actionIntent)
+      rejectAction.actionIntent.send()
+      awaitNotificationRemoved(notificationManager, rejectNotificationId)
+    } finally {
+      notificationManager.cancelAll()
+      context.stopService(RuntimeServiceIntentFactory().baseIntent(context, target))
+    }
+  }
+
+  private fun runtimeNotificationCoordinator(
+    context: Context,
+  ): RuntimeNotificationCoordinator = RuntimeNotificationCoordinator(
+    appContext = context,
+    localizedContext = context,
+    chatSessionStore = ChatSessionLocalStore.fromContext(context),
+    hostAccess = NoOpRuntimeNotificationHostAccess,
+    scheduledTaskSpecStore = FileBackedScheduledTaskSpecStoreFactory.fromContext(context).create(),
+    scheduledTaskRunRecordStore =
+      FileBackedScheduledTaskRunRecordStoreFactory.fromContext(context).create(),
+    notificationSettingsProvider = {
+      RuntimeNotificationSettingsState(quietHoursEnabled = false)
+    },
+    runtimeServiceAccessGateway = openCrayRuntimeServiceEnvironment(context)
+      .runtimeServiceAccessGateway,
+    appVisibilitySignalAccess = AlwaysBackgroundVisibilitySignalAccess,
+  )
+
+  private fun approvalNotificationModel(
+    taskId: String,
+    runId: String,
+    target: RuntimeServiceTarget,
+  ): RuntimeApprovalNotificationModel = RuntimeApprovalNotificationModel(
+    sessionId = "notification-action-session",
+    sessionTitle = "Notification action session",
+    runId = runId,
+    taskId = taskId,
+    runtimeTarget = target,
+    title = "Approval required",
+    body = "Review the requested action.",
+    isHighRisk = false,
+  )
+
+  private fun grantNotificationPermission(context: Context) {
+    if (Build.VERSION.SDK_INT < 33) {
+      return
+    }
+    InstrumentationRegistry.getInstrumentation().uiAutomation
+      .executeShellCommand(
+        "pm grant ${context.packageName} android.permission.POST_NOTIFICATIONS",
+      )
+      .close()
+  }
+
+  private fun awaitNotification(
+    notificationManager: NotificationManager,
+    notificationId: Int,
+    timeoutMs: Long = 10_000L,
+  ): StatusBarNotification {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      notificationManager.activeNotifications
+        .firstOrNull { notification -> notification.id == notificationId }
+        ?.let { notification -> return notification }
+      Thread.sleep(100L)
+    }
+    error("Timed out waiting for notification id '$notificationId'.")
+  }
+
+  private fun awaitNotification(
+    notificationManager: NotificationManager,
+    subText: String,
+    timeoutMs: Long = 10_000L,
+  ): StatusBarNotification {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      notificationManager.activeNotifications
+        .firstOrNull { notification ->
+          notification.notification.extras
+            .getCharSequence(Notification.EXTRA_SUB_TEXT)
+            ?.toString() == subText
+        }
+        ?.let { notification -> return notification }
+      Thread.sleep(100L)
+    }
+    error("Timed out waiting for notification '$subText'.")
+  }
+
+  private fun awaitNotificationRemoved(
+    notificationManager: NotificationManager,
+    notificationId: Int,
+    timeoutMs: Long = 20_000L,
+  ) {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+      if (notificationManager.activeNotifications.none { notification ->
+          notification.id == notificationId
+        }
+      ) {
+        return
+      }
+      Thread.sleep(100L)
+    }
+    error("Timed out waiting for notification id '$notificationId' to be dismissed.")
+  }
+
+  private fun assertServicePendingIntent(
+    context: Context,
+    pendingIntent: PendingIntent,
+  ) {
+    assertEquals(context.packageName, pendingIntent.creatorPackage)
+    if (Build.VERSION.SDK_INT >= 31) {
+      assertTrue(pendingIntent.isImmutable)
+      assertTrue(pendingIntent.isService)
     }
   }
 
@@ -1340,6 +1525,37 @@ class RuntimeServiceProcessIsolationTest {
     .getWorkInfosForUniqueWork(scheduleWakeWorkName(scheduleId))
     .get(5L, TimeUnit.SECONDS)
     .lastOrNull()
+
+  private object AlwaysBackgroundVisibilitySignalAccess : AppVisibilitySignalAccess {
+    override fun currentVisibility(): Boolean = false
+
+    override fun observe(listener: (Boolean) -> Unit): () -> Unit = { }
+  }
+
+  private object NoOpRuntimeNotificationHostAccess : RuntimeNotificationHostAccess {
+    override val lifecycleDescriptor: HostRuntimeLifecycleDescriptor =
+      HostRuntimeLifecycleDescriptor()
+
+    override fun observe(listener: AgentSessionRuntimeListener): () -> Unit = { }
+
+    override fun activeWorkSummary(): RuntimeOwnerWorkSummary = RuntimeOwnerWorkSummary()
+
+    override fun session(sessionId: String): OpenCrayRuntimeSessionAccess =
+      error("Runtime notification host session access is unused.")
+
+    override fun releaseSession(sessionId: String) = Unit
+
+    override fun releaseIdleSessions() = Unit
+
+    override fun runEventJournalStore(sessionId: String): RunEventJournalStore =
+      error("Runtime notification journal access is unused.")
+
+    override fun promptCheckpointStore(sessionId: String): PromptCheckpointStore =
+      error("Runtime notification checkpoint access is unused.")
+
+    override fun supplementStore(sessionId: String): SessionSupplementStore =
+      error("Runtime notification supplement access is unused.")
+  }
 
   private data class BoundController(
     val binding: ServiceBinding,

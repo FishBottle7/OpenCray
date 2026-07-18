@@ -18,8 +18,10 @@ private fun SettingsSubpage.toFlutterDestination(): OpenCrayFlutterActivity.Dest
     SettingsSubpage.HOME -> OpenCrayFlutterActivity.Destination.SETTINGS
     SettingsSubpage.NOTIFICATIONS_BACKGROUND ->
       OpenCrayFlutterActivity.Destination.SETTINGS_NOTIFICATIONS_BACKGROUND
-    SettingsSubpage.NOTIFICATION_CHANNELS ->
-      OpenCrayFlutterActivity.Destination.SETTINGS_NOTIFICATION_CHANNELS
+    SettingsSubpage.EVENT_ALERTS ->
+      OpenCrayFlutterActivity.Destination.SETTINGS_EVENT_ALERTS
+    SettingsSubpage.SCHEDULED_TASKS ->
+      OpenCrayFlutterActivity.Destination.SETTINGS_SCHEDULED_TASKS
     SettingsSubpage.WORKSPACE -> OpenCrayFlutterActivity.Destination.SETTINGS_WORKSPACE
     SettingsSubpage.LLM -> OpenCrayFlutterActivity.Destination.SETTINGS_LLM
     SettingsSubpage.MCP -> OpenCrayFlutterActivity.Destination.SETTINGS_MCP

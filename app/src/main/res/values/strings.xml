@@ -84,8 +84,8 @@
     <string name="shell_common_off">Off</string>
     <string name="settings_home_intro">Access, providers, and personal defaults.</string>
     <string name="settings_notifications_background_subtitle">Control alerts, service visibility, and wakeups.</string>
-    <string name="settings_notification_channels_title">Event Alerts</string>
-    <string name="settings_notification_channels_subtitle">Choose which app events can publish a new alert.</string>
+    <string name="settings_event_alerts_title">Event Alerts</string>
+    <string name="settings_event_alerts_subtitle">Choose which app events can publish a new alert.</string>
     <string name="settings_home_privacy_summary">%1$s: %2$s • %3$s: %4$s</string>
     <string name="settings_home_safety_summary">Highest current warning: %1$s</string>
     <string name="settings_home_about_summary">Installed build: %1$s</string>

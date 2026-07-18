@@ -8,6 +8,8 @@ import android.provider.DocumentsContract
 import androidx.core.app.ActivityCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
 internal interface ExternalAccessPermissionRequestHost {
   fun requestExternalAccessPermissions(
@@ -43,8 +45,12 @@ class OpenCrayFlutterActivity :
       context: Context,
       destination: Destination = Destination.SHELL,
       chatSessionId: String? = null,
+      scheduleId: String? = null,
     ): Intent = Intent(context, OpenCrayFlutterActivity::class.java).apply {
-      putExtra(EXTRA_DESTINATION, destination.route)
+      putExtra(
+        EXTRA_DESTINATION,
+        openCrayFlutterDestinationRoute(destination, scheduleId),
+      )
       chatSessionId
         ?.trim()
         ?.takeIf(String::isNotBlank)
@@ -61,7 +67,8 @@ class OpenCrayFlutterActivity :
     FILES("/files"),
     SETTINGS("/settings"),
     SETTINGS_NOTIFICATIONS_BACKGROUND("/settings/notifications-background"),
-    SETTINGS_NOTIFICATION_CHANNELS("/settings/notification-channels"),
+    SETTINGS_EVENT_ALERTS("/settings/event-alerts"),
+    SETTINGS_SCHEDULED_TASKS("/settings/scheduled-tasks"),
     SETTINGS_WORKSPACE("/settings/workspace"),
     SETTINGS_LLM("/settings/llm"),
     SETTINGS_MCP("/settings/mcp"),
@@ -253,5 +260,23 @@ class OpenCrayFlutterActivity :
         ?.getStringExtra(EXTRA_CHAT_SESSION_ID),
       environment = runtimeEnvironment,
     )
+  }
+}
+
+internal fun openCrayFlutterDestinationRoute(
+  destination: OpenCrayFlutterActivity.Destination,
+  scheduleId: String? = null,
+): String {
+  val normalizedScheduleId = scheduleId?.trim()?.takeIf(String::isNotBlank)
+  return if (
+    destination == OpenCrayFlutterActivity.Destination.SETTINGS_SCHEDULED_TASKS &&
+    normalizedScheduleId != null
+  ) {
+    val encodedScheduleId = URLEncoder
+      .encode(normalizedScheduleId, StandardCharsets.UTF_8.name())
+      .replace("+", "%20")
+    "${destination.route}?scheduleId=$encodedScheduleId"
+  } else {
+    destination.route
   }
 }

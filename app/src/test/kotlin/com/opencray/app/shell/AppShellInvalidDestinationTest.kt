@@ -37,4 +37,24 @@ class AppShellInvalidDestinationTest {
       stateStore.load(),
     )
   }
+
+  @Test
+  fun legacyNotificationChannelsSubpageRestoresEventAlerts() {
+    val stateStore = AppShellStateStore(
+      InMemoryAppShellKeyValueStore(
+        initialValues = mapOf(
+          AppShellStateStoreKeys.SELECTED_TAB to AppShellTab.SETTINGS.name,
+          AppShellStateStoreKeys.SETTINGS_SUBPAGE to "notification_channels",
+        ),
+      ),
+    )
+
+    assertEquals(
+      AppShellDestination(
+        selectedTab = AppShellTab.SETTINGS,
+        settingsSubpage = SettingsSubpage.EVENT_ALERTS,
+      ),
+      stateStore.load(),
+    )
+  }
 }

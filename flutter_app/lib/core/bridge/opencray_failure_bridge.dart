@@ -20,6 +20,7 @@ import '../models/opencray_personalization_config.dart';
 import '../models/opencray_sandbox_preview_embed_config.dart';
 import '../models/opencray_sandbox_settings.dart';
 import '../models/opencray_safety_settings.dart';
+import '../models/opencray_scheduled_tasks.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
@@ -250,6 +251,32 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   Future<OpenCrayNotificationSettingsSnapshot> saveNotificationSettings(
     OpenCrayNotificationSettingsSnapshot snapshot,
   ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayScheduledTasksSnapshot> loadScheduledTasks() async =>
+      throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayScheduledTaskDetailSnapshot> loadScheduledTask(
+    String scheduleId,
+  ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayScheduledTaskActionResult> updateScheduledTaskEnabled({
+    required String scheduleId,
+    required bool enabled,
+  }) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayScheduledTaskActionResult> runScheduledTaskNow(
+    String scheduleId,
+  ) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayScheduledTaskActionResult> snoozeScheduledTask({
+    required String scheduleId,
+    int durationMinutes = 15,
+  }) async => throw StateError(_failureMessage);
 
   @override
   Future<OpenCrayStrongBackgroundSnapshot>

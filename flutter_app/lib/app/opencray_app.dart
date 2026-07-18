@@ -53,6 +53,7 @@ class _OpenCrayAppState extends State<OpenCrayApp> {
             settings: settings,
             builder: (context) => SettingsFeatureScreen(
               initialPage: entry.settingsInitialPage,
+              initialScheduleId: entry.initialScheduleId,
               facade: BridgeSettingsFacade(bridge: _bridge),
               standalone: true,
               debugBridge: _bridge,
@@ -169,11 +170,13 @@ class _RouteEntry {
     required this.routeName,
     required this.tab,
     this.settingsInitialPage = SettingsPage.home,
+    this.initialScheduleId,
   });
 
   final String routeName;
   final OpenCrayTab tab;
   final SettingsPage settingsInitialPage;
+  final String? initialScheduleId;
 }
 
 const List<_RouteEntry> _routeEntries = <_RouteEntry>[
@@ -187,9 +190,19 @@ const List<_RouteEntry> _routeEntries = <_RouteEntry>[
     settingsInitialPage: SettingsPage.notificationsBackground,
   ),
   _RouteEntry(
+    routeName: '/settings/event-alerts',
+    tab: OpenCrayTab.settings,
+    settingsInitialPage: SettingsPage.eventAlerts,
+  ),
+  _RouteEntry(
     routeName: '/settings/notification-channels',
     tab: OpenCrayTab.settings,
-    settingsInitialPage: SettingsPage.notificationChannels,
+    settingsInitialPage: SettingsPage.eventAlerts,
+  ),
+  _RouteEntry(
+    routeName: '/settings/scheduled-tasks',
+    tab: OpenCrayTab.settings,
+    settingsInitialPage: SettingsPage.scheduledTasks,
   ),
   _RouteEntry(
     routeName: '/settings/workspace',
@@ -249,8 +262,20 @@ const List<_RouteEntry> _routeEntries = <_RouteEntry>[
 ];
 
 _RouteEntry? _routeEntryFor(String? routeName) {
+  final uri = routeName == null ? null : Uri.tryParse(routeName);
+  final routePath = uri?.path;
   for (final entry in _routeEntries) {
-    if (entry.routeName == routeName) {
+    if (entry.routeName == routePath) {
+      final scheduleId = uri?.queryParameters['scheduleId']?.trim();
+      if (entry.settingsInitialPage == SettingsPage.scheduledTasks &&
+          scheduleId?.isNotEmpty == true) {
+        return _RouteEntry(
+          routeName: routeName!,
+          tab: entry.tab,
+          settingsInitialPage: SettingsPage.scheduledTaskDetail,
+          initialScheduleId: scheduleId,
+        );
+      }
       return entry;
     }
   }

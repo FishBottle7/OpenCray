@@ -111,11 +111,11 @@ class RuntimeNotificationCoordinatorTest {
   }
 
   @Test
-  fun scheduleNotificationOpenDestinationUsesNotificationsBackgroundSettings() {
+  fun scheduleNotificationOpenDestinationUsesScheduledTaskSettings() {
     assertEquals(
       AppShellDestination(
         selectedTab = AppShellTab.SETTINGS,
-        settingsSubpage = SettingsSubpage.NOTIFICATIONS_BACKGROUND,
+        settingsSubpage = SettingsSubpage.SCHEDULED_TASKS,
       ),
       scheduleNotificationOpenDestination(),
     )

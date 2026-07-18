@@ -1,6 +1,6 @@
 # Detached Runtime And Strong Background Acceptance
 
-Last updated: 2026-07-17
+Last updated: 2026-07-18
 
 ## Delivery Gate
 
@@ -42,22 +42,32 @@ This gate uses the following ownership contract:
 | Process-safe workspace mutation | `FileMutationLockCoordinator` and `FileOpsService` hold one runtime-root OS lock across checkpoint capture, mutation, commit, and rollback. Replacement and rollback writes are atomic; `Edit` and `MultiEdit` keep source read and write in one reentrant transaction. | `FileOpsTest.executeBatchSerializesSharedWorkspaceAcrossServiceInstances` and the filesystem JVM suite. | Local gate complete |
 | Safe process-death recovery | General prompt checkpoints cover pre-model, parsed action, commentary, committed tool result, supplement ingestion, finalization, and approval boundaries. The recovery planner resumes only proven state and records explicit interruption otherwise. | API 35 process-death cases verify same-task/run checkpoint continuation and the complementary no-checkpoint, no-replay interruption path; recovery planner and queue restore JVM tests cover the decision matrix. | Local gate complete |
 | Convergent repair policy | `ScheduledTaskWorkManager`, runtime-service bootstrap/resume repair, owner-lease repair, and typed projection evidence support startup, boot/package replacement, periodic, reconnect-backoff, and lease-expiry wakes. Checkpoint continuation has a three-attempt budget; terminal and exhausted identities suppress stale repair projections while explicit Retry resets the budget. | `ScheduledTaskWorkManagerTest`, `OpenCrayRuntimeServiceInteractiveRepairTest`, checkpoint recovery tests, and the API 35 owner-lease repair case. | Local gate complete |
-| Strong-background delivery | Foreground `specialUse` services, target-scoped minimal bootstrap foreground before shell assembly, retained-controller notification handoff, app-visibility lease policy, AlarmManager plus main-process WorkManager wake bridging, boot/package repair, schedule actions, and explicit runtime wake commands keep detached work independent from visible UI. Bound-only attach does not enter foreground, and rejected starts stop their exact start id. | Runtime foreground, notification, scheduler routing, WorkManager, strong-background settings, shell startup-order JVM tests, and API 35 detached schedule/process-death tests. The isolated run has empty XML `system-err` and no FGS timeout in the cleared device log. | Local gate complete |
+| Notification policy and actions | One process-safe notification-settings snapshot controls the master event-alert switch, default delivery, quiet hours, and seven application event types. The required foreground-service notice is presented as an Android system requirement rather than a fake toggle. Approval notifications expose Approve/Reject service actions; schedule and interrupted-run notifications expose their supported run, cancel, disable, snooze, retry, and open actions. | Notification policy/store/coordinator JVM tests, Flutter settings tests, and `RuntimeServiceProcessIsolationTest.approvalNotificationActionsSendImmutableServicePendingIntentsToDetachedRuntime` verify settings persistence plus immutable service `PendingIntent` delivery into `:runtime_controller`. | Local gate complete |
+| Scheduled-task lifecycle and management | `ScheduledTaskCreate/List/Get/Update/RunNow/Snooze/Delete` share the runtime policy pipeline and `ScheduledTaskManager`. Binder v2, target-scoped loopback HTTP, and platform bridges expose list/detail/enable/run/snooze management to Flutter. The settings UI provides real list/detail state, enable switches, immediate run, 15-minute snooze, recent history, and schedule-id deep links without presenting unsaved prompt/trigger editors. | Runtime tool/policy tests, app manager/gateway/Binder/HTTP tests, Flutter bridge and settings tests, and the API 35 notification snooze-to-main-process WorkManager case. | Local gate complete |
+| Strong-background delivery | Foreground `specialUse` services, target-scoped minimal bootstrap foreground before shell assembly, retained-controller notification handoff, app-visibility lease policy, AlarmManager plus main-process WorkManager wake bridging, boot/package repair, schedule actions, and explicit runtime wake commands keep detached work independent from visible UI. Bound-only attach does not enter foreground, and rejected starts stop their exact start id. | Runtime foreground, notification, scheduler routing, WorkManager, strong-background settings, shell startup-order JVM tests, and API 35 detached schedule/process-death/action tests. The isolated run has empty XML `system-err` and no FGS timeout in the cleared device log. | Local gate complete |
 
 ## Verification Baseline
 
 The checked-in baseline has the following retained evidence:
 
-- API 35 `RuntimeServiceProcessIsolationTest`: 7 tests, 0 failures, covering independent PIDs,
+- API 35 `RuntimeServiceProcessIsolationTest`: 8 tests, 0 failures, covering independent PIDs,
   AIDL v1/v2 compatibility, detached kill/recreate, owner-lease repair, safe checkpoint continuation,
   no-checkpoint interruption, process-external E2B reconnect, and detached-to-main WorkManager
-  delivery. The result XML has no `system-err`, and the cleared device log has no foreground-service
-  deadline or fatal runtime exception.
-- `:app:testDebugUnitTest`: 1648 tests, 12 skipped, 0 failures, and 0 errors.
-- `:runtime:testDebugUnitTest`: 729 tests passed.
+  delivery. The schedule case sends the real notification snooze action, and the approval case sends
+  immutable Approve/Reject service `PendingIntent`s into the detached process. The result XML has no
+  `system-err`, and the cleared device log has no foreground-service deadline or fatal runtime
+  exception.
+- `:app:testDebugUnitTest`: 1655 tests, 12 skipped, 0 failures, and 0 errors.
+- `:runtime:testDebugUnitTest`: 733 tests passed.
 - `:filesystem:testDebugUnitTest`: 6 tests passed.
 - `:persistence:testDebugUnitTest`: 16 tests passed.
 - `:app:compileDebugKotlin` and `:app:compileDebugUnitTestKotlin`: passed.
+- `dart analyze flutter_app`: passed with no issues.
+- Focused Flutter settings, routing, and bridge regression: 147 tests passed.
+- The complete Flutter suite still reproduces 20 pre-existing failures in
+  `chat_feature_screen_test.dart`, concentrated in chat trace rendering, scroll-controller,
+  attachment-tap, and image-inspector expectations. Running that file alone reproduces the same
+  baseline failures; this detached-runtime/settings slice does not modify those chat surfaces.
 
 Before release, rerun the practical JVM/compile regression on the merge candidate because these
 counts can change as `master` evolves.
@@ -73,5 +83,7 @@ recovery code:
 3. Run the provider reconnect chain against a credentialed E2B cloud endpoint and retain the
    same-remote-pid reconnect evidence.
 
-Richer schedule management UI, broader automation types, and any future third-process supervisor
-are product extensions outside this acceptance gate.
+Broader automation trigger types and any future third-process supervisor are product extensions
+outside this acceptance gate. The current schedule UI intentionally exposes only operations backed
+by the shipped management gateway; schedule creation and full prompt/trigger editing remain on the
+agent tool surface rather than appearing as non-functional settings controls.

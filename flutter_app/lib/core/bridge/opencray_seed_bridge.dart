@@ -25,6 +25,7 @@ import '../models/opencray_personalization_config.dart';
 import '../models/opencray_sandbox_preview_embed_config.dart';
 import '../models/opencray_sandbox_settings.dart';
 import '../models/opencray_safety_settings.dart';
+import '../models/opencray_scheduled_tasks.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
@@ -463,6 +464,12 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
   OpenCrayPersonalizationConfigSnapshot _personalizationConfig;
   OpenCrayMcpSettingsSnapshot _mcpSettings;
   OpenCrayNotificationSettingsSnapshot _notificationSettings;
+  final OpenCrayScheduledTasksSnapshot _scheduledTasks =
+      const OpenCrayScheduledTasksSnapshot(
+        tasks: <OpenCrayScheduledTaskSummary>[],
+        totalCount: 0,
+        enabledCount: 0,
+      );
   OpenCraySafetySettingsSnapshot _safetySettings;
   final OpenCrayStrongBackgroundSnapshot _strongBackgroundSnapshot;
   OpenCraySkillsSnapshot _skillsSnapshot;
@@ -913,6 +920,32 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     _notificationSettings = snapshot;
     return _notificationSettings;
   }
+
+  @override
+  Future<OpenCrayScheduledTasksSnapshot> loadScheduledTasks() async =>
+      _scheduledTasks;
+
+  @override
+  Future<OpenCrayScheduledTaskDetailSnapshot> loadScheduledTask(
+    String scheduleId,
+  ) async => throw StateError('Scheduled task $scheduleId was not found.');
+
+  @override
+  Future<OpenCrayScheduledTaskActionResult> updateScheduledTaskEnabled({
+    required String scheduleId,
+    required bool enabled,
+  }) async => throw StateError('Scheduled task $scheduleId was not found.');
+
+  @override
+  Future<OpenCrayScheduledTaskActionResult> runScheduledTaskNow(
+    String scheduleId,
+  ) async => throw StateError('Scheduled task $scheduleId was not found.');
+
+  @override
+  Future<OpenCrayScheduledTaskActionResult> snoozeScheduledTask({
+    required String scheduleId,
+    int durationMinutes = 15,
+  }) async => throw StateError('Scheduled task $scheduleId was not found.');
 
   @override
   Future<OpenCrayStrongBackgroundSnapshot>
@@ -2280,9 +2313,10 @@ OpenCraySettingsDetailSnapshot _seedSettingsDetailFor(String routeId) {
           ),
         ],
       );
+    case 'event_alerts':
     case 'notification_channels':
       return const OpenCraySettingsDetailSnapshot(
-        routeId: 'notification_channels',
+        routeId: 'event_alerts',
         title: 'Event Alerts',
         subtitle: 'Choose which app events can publish a new alert.',
         sections: <OpenCraySettingsSectionSnapshot>[

@@ -27,7 +27,7 @@ enum class SettingsRouteId(
   val wireValue: String,
 ) {
   NOTIFICATIONS_BACKGROUND("notifications_background"),
-  NOTIFICATION_CHANNELS("notification_channels"),
+  EVENT_ALERTS("event_alerts"),
   WORKSPACE_ACCESS("workspace_access"),
   LLM("llm"),
   MCP("mcp"),
@@ -42,8 +42,11 @@ enum class SettingsRouteId(
   ;
 
   companion object {
-    fun fromWireValue(rawValue: String): SettingsRouteId? =
-      entries.firstOrNull { routeId -> routeId.wireValue == rawValue.trim() }
+    fun fromWireValue(rawValue: String): SettingsRouteId? {
+      val normalized = rawValue.trim()
+      return entries.firstOrNull { routeId -> routeId.wireValue == normalized }
+        ?: EVENT_ALERTS.takeIf { normalized == "notification_channels" }
+    }
   }
 }
 
@@ -209,10 +212,10 @@ internal class LocalSettingsFacade(
         ),
       ),
     )
-    SettingsRouteId.NOTIFICATION_CHANNELS -> SettingsDetailSnapshot(
+    SettingsRouteId.EVENT_ALERTS -> SettingsDetailSnapshot(
       routeId = routeId,
-      title = context.getString(R.string.settings_notification_channels_title),
-      subtitle = context.getString(R.string.settings_notification_channels_subtitle),
+      title = context.getString(R.string.settings_event_alerts_title),
+      subtitle = context.getString(R.string.settings_event_alerts_subtitle),
       sections = listOf(
         SettingsSectionSnapshot(
           title = "Event alerts",

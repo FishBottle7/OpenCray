@@ -376,6 +376,38 @@ class ScheduledTaskRuntimeTest {
   }
 
   @Test
+  fun scheduledTaskGatewayReportsEnabledCountBeyondReturnedSlice() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-gateway-count-root")
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat-store"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val manager = AppScheduledTaskManager(
+      storageRootPath = runtimeRoot.toPath(),
+      chatSessionStore = chatStore,
+      specStore = inMemoryScheduledTaskSpecStoreFactory().create(),
+      runRecordStore = inMemoryScheduledTaskRunRecordStoreFactory().create(),
+      triggerRegistrar = RecordingScheduledTriggerRegistrar(),
+      triggerSyncStateStore = inMemoryScheduledTaskTriggerSyncStateStoreFactory().create(),
+      clock = { 10_000L },
+    )
+    repeat(3) { index ->
+      manager.create(
+        ScheduledTaskCreateRequest(
+          sessionId = sessionId,
+          prompt = "Scheduled task $index",
+          trigger = ScheduledTaskTriggerRequest.After("PT${index + 1}M"),
+          enabled = index < 2,
+        ),
+      )
+    }
+
+    val payload = manager.loadScheduledTasksGatewayMap(limit = 1)
+
+    assertEquals(3, payload["totalCount"])
+    assertEquals(2, payload["enabledCount"])
+    assertEquals(1, (payload["tasks"] as List<*>).size)
+  }
+
+  @Test
   fun scheduledTaskDispatcherQueuesPromptRunAndWritesTranscriptPlaceholder() {
     val runtimeRoot = temporaryFolder.newFolder("scheduled-dispatch-root")
     val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat"))

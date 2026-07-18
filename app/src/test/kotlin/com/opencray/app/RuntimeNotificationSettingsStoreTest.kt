@@ -192,6 +192,21 @@ class RuntimeNotificationSettingsStoreTest {
     )
   }
 
+  @Test
+  fun partialGatewayPayloadUsesTheRuntimeNotificationDefaults() {
+    val defaults = RuntimeNotificationSettingsState()
+
+    val request = mapOf<String, Any?>(
+      "masterEnabled" to false,
+    ).toSaveNotificationSettingsRequest()
+
+    assertFalse(request.masterEnabled)
+    assertEquals(defaults.defaultDeliveryMode.wireValue, request.defaultDeliveryModeId)
+    assertEquals(defaults.taskFinishedEnabled, request.taskFinishedEnabled)
+    assertEquals(defaults.scheduledWakeEnabled, request.scheduledWakeEnabled)
+    assertEquals(defaults.serviceRecoveredEnabled, request.serviceRecoveredEnabled)
+  }
+
   private class StaleReadDurableTextStorage : DurableTextStorage {
     private var text: String? = null
     private var staleReadText: String? = null

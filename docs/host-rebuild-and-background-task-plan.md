@@ -1,6 +1,6 @@
 # Host Rebuild And Background Task Plan
 
-Last updated: 2026-07-17
+Last updated: 2026-07-18
 
 ## Status
 
@@ -11,12 +11,19 @@ for the requirement-to-code-to-test matrix and the explicit distinction between 
 detachment and preservation of uncheckpointed in-memory execution. The detailed history below
 records incremental implementation and may describe earlier slices as partial.
 
+Closure update: scheduled execution now has full Agent lifecycle tools
+(`Create/List/Get/Update/RunNow/Snooze/Delete`), process-neutral Binder/loopback management
+gateways, and a Flutter list/detail surface with only backed operations. Notification settings are
+process-safe and control seven application event types, while approval and schedule notifications
+carry real detached-service actions. Schedule notification taps now deep-link directly to the task
+detail instead of stopping at the notifications/background overview.
+
 ### Incremental Implementation History
 
 Phase 2 recovery slice partially implemented; in-process detached runtime owner foundation landed, and the production Android runtime service now runs behind a dedicated `:runtime` service shell that bootstraps that owner. Foreground keepalive, notifications, scheduled wake bridges, an interrupted-run repair wake path, and a dedicated service wake-command dispatcher seam are in place. Managed-process restore is now controller-aware inside the same runtime process, a rebuilt owner can reconnect a live managed process across process/controller identity changes when the backend exposes reconnect support, and the runtime-level managed-process router now preserves non-Python-runtime delegate reconnect support instead of hiding it behind the Python adapter route. Retained execution-controller reset or replacement now also disposes the retained runtime owner instead of leaving session caches or executors hanging. Runtime routing is now explicit end to end as well: UI/client bundles default to `INTERACTIVE`, scheduled and detached-control work route to `DETACHED_BACKGROUND`, the service shell keeps target-keyed bootstraps instead of a single mutable default shell, service-backed chat writes now resolve their target from durable queue or checkpoint state before dispatch, durable projection fallback is now target-scoped so interactive and detached clients no longer overwrite each other's last snapshot bucket, and service-owned loopback transport plus lazy client projection fallback are now target-scoped too. Scheduler-owned repair is now target-aware at precheck time as well: persisted scheduled-task metadata, detached-control metadata, checkpoint-linked queue tasks, and durable background subagent handles can wake `DETACHED_BACKGROUND`, while checkpoint-only, run-record-only, and non-terminal journal-tail-only evidence stays conservative `INTERACTIVE`; run-record-only and journal-tail-only sessions are now included in repair candidate enumeration instead of requiring a queue/checkpoint row to survive, while terminal run records and final journal tails are ignored for interrupted-work detection. Schedule notification actions now also include accepted-run cancellation through the existing service-owned chat-write interrupt wake command, so cancellation stays attached to the runtime-service owner; tapping a schedule notification now opens the Notifications & Background settings detail entrypoint and carries `notificationScheduleId` forward for later schedule-specific management UI. The retained-runtime composition path is now also narrower: runtime dependency loading, local host gateway creation, gateway bundle assembly, Flutter/runtime target bridge entrypoints, and execution-controller bootstrap all resolve through explicit environment-owned seams instead of broad deep fallback helpers, with the controller path now taking only a narrowed `RuntimeExecutionDependencies` bag rather than the full runtime context dependency bag. Android component/process ownership and cross-process read/write controller IPC have landed, and API 35 now verifies independent target processes plus detached kill/recreate and owner-lease repair. Physical-device repetition and credentialed cloud-provider managed-process reconnect evidence remain open.
 Current detached-ownership update: Android now assigns `INTERACTIVE` to `OpenCrayAgentRuntimeService` in `:runtime` and `DETACHED_BACKGROUND` to `OpenCrayDetachedRuntimeService` in `:runtime_controller`. Target-aware component routing covers normal client start/bind, scheduled and repair wakes, and notification PendingIntents; each Service accepts only its own target, uses that target for null-intent sticky restart, validates the matching process suffix before host/runtime bootstrap, and uses a distinct foreground notification id. This removes shared-process and notification-lifecycle ownership between interactive and detached runtimes. Process-neutral durable projection reads and target-scoped loopback writes remain compatibility fallbacks alongside the controller IPC update below.
 Current controller-IPC update: the stable service binder now implements `IRuntimeServiceController` v2 while preserving the original v1 read transact ordering. Remote clients negotiate protocol version, target identity, and capability bits, decode bounded projection payloads, and dispatch supported bounded chat/skills/settings command envelopes with typed results. V1 peers remain projection-only, and API 35 now verifies that behavior over a pure-v1 remote `BinderProxy`, including command fallback for writes without v2 transactions. Binder and target-scoped loopback share the same structured command codec, process-local gateway objects remain private, and decoded Binder writes still enter the owner-gated endpoint so target forwarding, work-state refresh, and projection persistence are not bypassed.
-Current process-recreate verification update: `RuntimeServiceProcessIsolationTest` drives both real service components through remote AIDL, records their independent process identities, kills the detached process, waits out its persisted owner lease, wakes the target through the production owner-lease repair path, compares rebuilt process/durable-controller identity, drives a detached schedule mutation through the main WorkManager owner, reconstructs one persisted `RUNNING` task from an `ACTION_BATCH_PARSED` checkpoint under the same task/run identity, and reconnects a persisted E2B managed process to one process-external Connect endpoint from both the old and rebuilt detached PIDs. A sixth case binds a pure Android-SDK v1 controller from a separate test-APK process, decodes its projection, keeps chat/skills/settings writes unnegotiated, and observes command fallback. A seventh case kills the detached owner around a persisted running task with prior execution progress but no checkpoint, then proves repair records explicit interruption without advancing its execution ordinal or creating a recovery checkpoint. Its isolated suite passes on the API 35 `OpenCrayRuntimeIsolationApi35` x86_64 emulator (`7` tests, `0` failures, `0` errors, `0` skipped). Physical-device repetition remains open; pre-existing UI tests with removed resource ids remain a separate full-suite baseline issue rather than a runtime-test compile blocker.
+Current process-recreate verification update: `RuntimeServiceProcessIsolationTest` drives both real service components through remote AIDL, records their independent process identities, kills the detached process, waits out its persisted owner lease, wakes the target through the production owner-lease repair path, compares rebuilt process/durable-controller identity, drives a detached schedule mutation through the main WorkManager owner, reconstructs one persisted `RUNNING` task from an `ACTION_BATCH_PARSED` checkpoint under the same task/run identity, and reconnects a persisted E2B managed process to one process-external Connect endpoint from both the old and rebuilt detached PIDs. A sixth case binds a pure Android-SDK v1 controller from a separate test-APK process, decodes its projection, keeps chat/skills/settings writes unnegotiated, and observes command fallback. A seventh case kills the detached owner around a persisted running task with prior execution progress but no checkpoint, then proves repair records explicit interruption without advancing its execution ordinal or creating a recovery checkpoint. An eighth case sends real immutable Approve/Reject service actions from posted notifications and verifies delivery into the detached process plus dismissal. Its isolated suite passes on the API 35 `OpenCrayRuntimeIsolationApi35` x86_64 emulator (`8` tests, `0` failures, `0` errors, `0` skipped). Physical-device repetition remains release evidence.
 Current WorkManager-ownership update: WorkManager stays in the main app process. Secondary runtime processes route scheduled wake/cancel/repair and LiteRT model-download enqueue/cancel through structured explicit broadcasts to non-exported main-process receivers, preventing runtime bootstrap from creating unsynchronized WorkManager owners. JVM tests cover process routing, codecs, and receiver dispatch; API 35 additionally proves a `:runtime_controller` snooze resync reaches the main owner and leaves the expected unique wake stably `ENQUEUED` after cancel/reschedule ordering.
 Current media-registry update: the generated media artifact registry is no longer a JVM-locked direct JSON overwrite. Runtime registration and app-process resolution/GC now merge the current record through the shared durable text `updateText` primitive with an OS sidecar lock and atomic replace; concurrent registry instances and malformed/stale snapshot recovery are covered by focused tests.
 Current provider-reconnect verification update: `E2BManagedProcessRegistryReconnectIntegrationTest` persists a running provider-native process under one runtime owner, reopens the production registry and routing path under a different process/controller identity, verifies the resulting envd `Connect` selector and `cross_process`/`reconnect_attempted` metadata, and confirms attached and completed snapshots are persisted. `RuntimeServiceProcessIsolationTest` now carries that chain across actual Android `:runtime_controller` death: a controlled endpoint outside the killed process receives production `UrlConnection` Connect requests from both PIDs for the same remote pid, while durable state advances reconnect attempts and returns to `attached_live`. This closes the Android process-boundary chain without depending on cloud credentials; credentialed E2B cloud and physical-device runs remain release evidence.
@@ -24,7 +31,7 @@ Current checkpoint-recovery update: prompt execution now emits six general safe-
 Current checkpoint-repair preflight update: when that budget is exhausted, the failed queue task suppresses matching prompt-checkpoint, non-terminal run-record, journal-tail, and stale typed projection repair evidence without deleting the checkpoint needed for explicit Retry. Startup and periodic repair therefore stop waking the runtime for the same failed continuation, while explicit Retry returns the task to queued and makes its evidence eligible again.
 Current terminal-projection repair update: WorkManager preflight and runtime-service bootstrap/resume now reject matching typed repair projection evidence when durable queue/run state is terminal or the latest journal tail is final. This prevents stale service projections from re-waking completed identities across host/process rebuild, without suppressing local safe checkpoint or non-terminal journal recovery evidence that still needs service repair; a real managed-process registry also remains an independent reconnect source.
 Current runtime file-command update: production `FileOpsService` instances in both target processes now coordinate through one runtime-root sidecar OS lock per workspace scope. The lock covers checkpoint capture, complete mutation execution, commit, and rollback; writes replace from same-directory temporary files atomically, rollback writes use the same path, and `Edit`/`MultiEdit` hold their source read through the nested write transaction. Concurrent interactive/detached runtime commands therefore no longer expose the known process-local stale-read/lost-update edge.
-Foreground-service wakes now establish a target-scoped minimal bootstrap notification before runtime-environment resolution and shell factory/owner-lease/transport/execution attachment, then hand notification ownership to the attached retained foreground controller; bind-only attachment remains non-foreground. Target-mismatched and owner-lease-denied starts stop their current Android start id before returning `START_NOT_STICKY`, so a losing rebuilt shell schedules lease-expiry repair without retaining a foreground deadline. The API 35 seven-case isolation run passes with empty XML `system-err` and no `ForegroundServiceDidNotStartInTimeException` in the cleared device log.
+Foreground-service wakes now establish a target-scoped minimal bootstrap notification before runtime-environment resolution and shell factory/owner-lease/transport/execution attachment, then hand notification ownership to the attached retained foreground controller; bind-only attachment remains non-foreground. Target-mismatched and owner-lease-denied starts stop their current Android start id before returning `START_NOT_STICKY`, so a losing rebuilt shell schedules lease-expiry repair without retaining a foreground deadline. The API 35 eight-case isolation run passes with empty XML `system-err` and no `ForegroundServiceDidNotStartInTimeException` in the cleared device log.
 Explicit runtime-service command envelopes now reject mismatched protocol versions before wake dispatch, so stale typed schedule/reset/chat-write commands do not fall through to action-based parsing.
 Current command-transport update: service-backed chat/skills/settings writes still prefer binder-backed dispatch and keep projection fallback read-only, but background-thread callers can now fall through to a target-scoped service-owned loopback command transport when binder attach fails. Main-thread callers still fail fast, and chat fire-and-forget commands retain their foreground wake fallback when loopback is unavailable.
 Current repair targeting update: journal-tail-only evidence can now inherit `DETACHED_BACKGROUND` when it matches a scheduled/detached queue task; only unmatched non-terminal journal-tail evidence remains conservative `INTERACTIVE`.
@@ -269,11 +276,13 @@ That distinction matters:
 - a `:runtime` or `:runtime_controller` process recreation, or an explicit retained-owner reset, still recreates or rotates that target's run owner
 - when that happens, the core queue now normalizes in-flight work into an explicit interrupted state instead of blindly replaying it
 - approval-boundary restores can already be rewritten at the app layer into the same safe continuation shape when a durable checkpoint proves that recovery is safe: `QUEUED` after approved/general resume, `SUSPENDED` while waiting for approval, or stopped awaiting a new instruction after rejection
-- post-tool-result `general_resume` checkpoints can already recover the same run when that boundary is durably committed, but checkpoint coverage is still incomplete outside the current safe slices
+- post-tool-result `general_resume` checkpoints recover the same run when that boundary is durably committed; work outside the proven safe-boundary set intentionally becomes explicit interruption rather than speculative replay
 
 So the user-visible "run restarted" behavior is real. It is not only a UI illusion.
 
-At the same time, the UI makes the problem look worse than it is, because expanded run history is still mostly reconstructed from in-memory runtime events plus partial transcript replay. After host recreation, that history becomes sparse even before the rerun begins.
+Expanded run history now prefers the durable run journal and uses transcript replay only for older
+runs. The live in-memory tail can still be newer than the last committed event, but ordinary host
+recreation no longer reduces the entire run card to transcript heuristics.
 
 ## Code-Backed Findings
 
@@ -323,7 +332,7 @@ Conclusion:
 
 - there is no evidence in current Flutter code of automatic resubmission caused only by page rebuild or event-stream resubscription
 
-### 3. Queue restore is no longer blind replay, but general checkpointed recovery is still incomplete
+### 3. Queue restore is checkpoint-aware and intentionally conservative
 
 Relevant files:
 
@@ -788,9 +797,9 @@ Exit criteria:
 
 ### Phase 4: Scheduled and background task execution
 
-Delivery status: complete for the current scheduled wake, detached dispatch, notification, and
-repair contract. Richer schedule management and broader automation types remain future product
-extensions.
+Delivery status: complete for scheduled wake, detached dispatch, lifecycle tools, notification
+actions, repair, and Flutter list/detail management. Broader automation trigger families remain
+future product extensions.
 
 Goal:
 
@@ -803,6 +812,8 @@ Work:
 - hand off scheduled triggers into `AgentRuntimeService`
 - add background journal events and notification policy
 - route accepted scheduled-run Cancel actions through the service-owned interrupt command path
+- expose policy-pipelined create/list/get/update/run-now/snooze/delete tools to the Agent
+- expose backed list/detail/enable/run/snooze/history operations in Flutter settings
 
 Exit criteria:
 
@@ -811,7 +822,7 @@ Exit criteria:
 
 ## Recommended Near-Term Order
 
-The safest build order is:
+The historical build order was:
 
 1. diagnostics
 2. durable run journal
@@ -819,24 +830,34 @@ The safest build order is:
 4. service-owned detached runtime
 5. scheduled/background triggers
 
-Do not treat `WorkManager` alone as the fix. Without run recovery and journaling, it only creates a more durable way to wake the same restore logic.
+All five local slices are now delivered. The ordering remains useful as architecture rationale:
+`WorkManager` alone would only create a more durable way to wake restore logic without run recovery
+and journaling.
 
 ## Concrete Answer To The Original Question
 
 Why can a run restart when the user did not intentionally restart the app?
 
-Because host/app-process recreation still tears down in-memory execution ownership. After that, restore consults journal and checkpoint state first: safe approval or `general_resume` boundaries can continue the same run, while runs without a safe boundary stay explicitly interrupted instead of silently replaying. The later `ACTION_RESUME_INTERRUPTED_RUNS` wake path can retry that checkpoint-aware repair scan, but it is still not the same as continuous ownership surviving the rebuild.
+Ordinary host, Activity, Flutter-engine, and main app-process recreation no longer owns or resubmits
+detached execution. A run can require recovery when its owning `:runtime` or
+`:runtime_controller` process is recreated. Restore then consults journal and checkpoint state
+first: safe boundaries continue the same run, while runs without a safe boundary stay explicitly
+interrupted instead of silently replaying. `ACTION_RESUME_INTERRUPTED_RUNS` can retry that
+checkpoint-aware repair scan, but it cannot preserve uncheckpointed memory from the killed process.
 
 Why does this still happen even if the UI page was not intentionally closed?
 
-Because the current execution owner lives in the app process, not in the page. A page staying visible does not prove that the host owner was preserved.
+Because the execution owner lives in a target runtime process, not in the page or Flutter engine.
+A page staying visible does not prove that Android preserved the owning runtime process.
 
-What should we do?
+What remains after this delivery gate?
 
-- keep the lifecycle boundary observable with explicit IDs and recovery reasons
-- keep expanding durable journal and checkpoint coverage
-- keep moving execution ownership toward a more detached service owner
-- extend scheduler-owned repair beyond the current target-aware periodic `ACTION_RESUME_INTERRUPTED_RUNS` wake-and-rescan path
-- layer richer `WorkManager`-based scheduling on top of that runtime foundation
+- retain explicit lifecycle IDs and recovery reasons in release diagnostics
+- repeat process-death and delayed-wake evidence on physical devices and the supported OEM matrix
+- run the checked-in provider reconnect chain against a credentialed E2B cloud endpoint
+- treat additional trigger families or a true third-process execution supervisor as future product
+  extensions rather than unfinished controls in the current settings surface
 
-That is the path that fixes the current restart bug and also gives OpenCray a solid base for future keepalive and timed tasks.
+The original local implementation path is complete. These remaining items are release evidence or
+separately scoped product extensions, not missing detached ownership, scheduling, or notification
+controls.

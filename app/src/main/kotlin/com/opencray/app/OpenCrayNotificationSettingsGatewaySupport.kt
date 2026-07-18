@@ -18,20 +18,32 @@ internal fun NotificationSettingsSnapshot.toGatewayMap(): Map<String, Any?> = ma
   "serviceRecoveredEnabled" to serviceRecoveredEnabled,
 )
 
-internal fun Map<String, Any?>.toSaveNotificationSettingsRequest(): SaveNotificationSettingsRequest =
-  SaveNotificationSettingsRequest(
-    masterEnabled = this["masterEnabled"] as? Boolean ?: true,
-    defaultDeliveryModeId = this["defaultDeliveryModeId"]?.toString().orEmpty(),
-    quietHoursEnabled = this["quietHoursEnabled"] as? Boolean ?: true,
+internal fun Map<String, Any?>.toSaveNotificationSettingsRequest(): SaveNotificationSettingsRequest {
+  val defaults = RuntimeNotificationSettingsState()
+  return SaveNotificationSettingsRequest(
+    masterEnabled = this["masterEnabled"] as? Boolean ?: defaults.masterEnabled,
+    defaultDeliveryModeId = this["defaultDeliveryModeId"]
+      ?.toString()
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: defaults.defaultDeliveryMode.wireValue,
+    quietHoursEnabled = this["quietHoursEnabled"] as? Boolean ?: defaults.quietHoursEnabled,
     quietHoursStartMinutes = (this["quietHoursStartMinutes"] as? Number)?.toInt()
-      ?: RuntimeNotificationSettingsState.DEFAULT_QUIET_HOURS_START_MINUTES,
+      ?: defaults.quietHoursStartMinutes,
     quietHoursEndMinutes = (this["quietHoursEndMinutes"] as? Number)?.toInt()
-      ?: RuntimeNotificationSettingsState.DEFAULT_QUIET_HOURS_END_MINUTES,
-    approvalRequestsEnabled = this["approvalRequestsEnabled"] as? Boolean ?: true,
-    approvalReminderEnabled = this["approvalReminderEnabled"] as? Boolean ?: true,
-    taskFinishedEnabled = this["taskFinishedEnabled"] as? Boolean ?: false,
-    taskFailedEnabled = this["taskFailedEnabled"] as? Boolean ?: true,
-    scheduledWakeEnabled = this["scheduledWakeEnabled"] as? Boolean ?: false,
-    backgroundTaskPausedEnabled = this["backgroundTaskPausedEnabled"] as? Boolean ?: true,
-    serviceRecoveredEnabled = this["serviceRecoveredEnabled"] as? Boolean ?: false,
+      ?: defaults.quietHoursEndMinutes,
+    approvalRequestsEnabled = this["approvalRequestsEnabled"] as? Boolean
+      ?: defaults.approvalRequestsEnabled,
+    approvalReminderEnabled = this["approvalReminderEnabled"] as? Boolean
+      ?: defaults.approvalReminderEnabled,
+    taskFinishedEnabled = this["taskFinishedEnabled"] as? Boolean
+      ?: defaults.taskFinishedEnabled,
+    taskFailedEnabled = this["taskFailedEnabled"] as? Boolean ?: defaults.taskFailedEnabled,
+    scheduledWakeEnabled = this["scheduledWakeEnabled"] as? Boolean
+      ?: defaults.scheduledWakeEnabled,
+    backgroundTaskPausedEnabled = this["backgroundTaskPausedEnabled"] as? Boolean
+      ?: defaults.backgroundTaskPausedEnabled,
+    serviceRecoveredEnabled = this["serviceRecoveredEnabled"] as? Boolean
+      ?: defaults.serviceRecoveredEnabled,
   )
+}

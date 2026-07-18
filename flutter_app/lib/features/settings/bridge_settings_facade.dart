@@ -8,10 +8,12 @@ import '../../core/models/opencray_notification_settings.dart';
 import '../../core/models/opencray_personalization_config.dart';
 import '../../core/models/opencray_sandbox_settings.dart';
 import '../../core/models/opencray_safety_settings.dart';
+import '../../core/models/opencray_scheduled_tasks.dart';
 import '../../core/models/opencray_settings_snapshot.dart';
 import '../../core/models/opencray_strong_background.dart';
 import 'notification_settings_models.dart';
 import 'safety_settings_models.dart';
+import 'scheduled_task_settings_models.dart';
 import 'settings_facade.dart';
 import 'settings_models.dart';
 import 'strong_background_settings_models.dart';
@@ -57,6 +59,44 @@ class BridgeSettingsFacade implements SettingsFacade {
         backgroundTaskPausedEnabled: snapshot.backgroundTaskPausedEnabled,
         serviceRecoveredEnabled: snapshot.serviceRecoveredEnabled,
       ),
+    ),
+  );
+
+  @override
+  Future<ScheduledTasksSnapshot> loadScheduledTasks() async =>
+      _mapScheduledTasks(await _bridge.loadScheduledTasks());
+
+  @override
+  Future<ScheduledTaskDetailSnapshot> loadScheduledTask(
+    String scheduleId,
+  ) async =>
+      _mapScheduledTaskDetail(await _bridge.loadScheduledTask(scheduleId));
+
+  @override
+  Future<ScheduledTaskActionResult> updateScheduledTaskEnabled({
+    required String scheduleId,
+    required bool enabled,
+  }) async => _mapScheduledTaskAction(
+    await _bridge.updateScheduledTaskEnabled(
+      scheduleId: scheduleId,
+      enabled: enabled,
+    ),
+  );
+
+  @override
+  Future<ScheduledTaskActionResult> runScheduledTaskNow(
+    String scheduleId,
+  ) async =>
+      _mapScheduledTaskAction(await _bridge.runScheduledTaskNow(scheduleId));
+
+  @override
+  Future<ScheduledTaskActionResult> snoozeScheduledTask({
+    required String scheduleId,
+    int durationMinutes = 15,
+  }) async => _mapScheduledTaskAction(
+    await _bridge.snoozeScheduledTask(
+      scheduleId: scheduleId,
+      durationMinutes: durationMinutes,
     ),
   );
 
@@ -523,6 +563,82 @@ class BridgeSettingsFacade implements SettingsFacade {
       serviceRecoveredEnabled: snapshot.serviceRecoveredEnabled,
     );
   }
+
+  static ScheduledTasksSnapshot _mapScheduledTasks(
+    OpenCrayScheduledTasksSnapshot snapshot,
+  ) => ScheduledTasksSnapshot(
+    tasks: snapshot.tasks.map(_mapScheduledTaskSummary).toList(growable: false),
+    totalCount: snapshot.totalCount,
+    enabledCount: snapshot.enabledCount,
+  );
+
+  static ScheduledTaskSummary _mapScheduledTaskSummary(
+    OpenCrayScheduledTaskSummary task,
+  ) => ScheduledTaskSummary(
+    scheduleId: task.scheduleId,
+    sessionId: task.sessionId,
+    title: task.title,
+    enabled: task.enabled,
+    triggerKind: task.triggerKind,
+    triggerSummary: task.triggerSummary,
+    nextTriggerAtEpochMs: task.nextTriggerAtEpochMs,
+    snoozedUntilEpochMs: task.snoozedUntilEpochMs,
+  );
+
+  static ScheduledTaskDetailSnapshot _mapScheduledTaskDetail(
+    OpenCrayScheduledTaskDetailSnapshot snapshot,
+  ) => ScheduledTaskDetailSnapshot(
+    task: ScheduledTaskDetails(
+      scheduleId: snapshot.task.scheduleId,
+      sessionId: snapshot.task.sessionId,
+      title: snapshot.task.title,
+      enabled: snapshot.task.enabled,
+      triggerKind: snapshot.task.triggerKind,
+      triggerSummary: snapshot.task.triggerSummary,
+      prompt: snapshot.task.prompt,
+      nextTriggerAtEpochMs: snapshot.task.nextTriggerAtEpochMs,
+      snoozedUntilEpochMs: snapshot.task.snoozedUntilEpochMs,
+      conflictPolicy: snapshot.task.conflictPolicy,
+      foregroundNotificationRequired:
+          snapshot.task.foregroundNotificationRequired,
+      notifyOnQueued: snapshot.task.notifyOnQueued,
+      notifyOnApproval: snapshot.task.notifyOnApproval,
+      notifyOnCompletion: snapshot.task.notifyOnCompletion,
+      notifyOnInterruption: snapshot.task.notifyOnInterruption,
+      createdAtEpochMs: snapshot.task.createdAtEpochMs,
+      updatedAtEpochMs: snapshot.task.updatedAtEpochMs,
+    ),
+    recentRuns: snapshot.recentRuns
+        .map(
+          (run) => ScheduledTaskRunRecord(
+            scheduleRunId: run.scheduleRunId,
+            triggerReason: run.triggerReason,
+            result: run.result,
+            triggeredAtEpochMs: run.triggeredAtEpochMs,
+            acceptedAtEpochMs: run.acceptedAtEpochMs,
+            createdRunId: run.createdRunId,
+            createdTaskId: run.createdTaskId,
+            failureReason: run.failureReason,
+            recoverySource: run.recoverySource,
+            updatedAtEpochMs: run.updatedAtEpochMs,
+          ),
+        )
+        .toList(growable: false),
+    totalRunCount: snapshot.totalRunCount,
+  );
+
+  static ScheduledTaskActionResult _mapScheduledTaskAction(
+    OpenCrayScheduledTaskActionResult result,
+  ) => ScheduledTaskActionResult(
+    action: result.action,
+    scheduleId: result.scheduleId,
+    title: result.title,
+    enabled: result.enabled,
+    scheduleRunId: result.scheduleRunId,
+    requestedAtEpochMs: result.requestedAtEpochMs,
+    nextTriggerAtEpochMs: result.nextTriggerAtEpochMs,
+    snoozedUntilEpochMs: result.snoozedUntilEpochMs,
+  );
 
   static StrongBackgroundActionResult _mapStrongBackgroundActionResult(
     OpenCrayStrongBackgroundActionResult result,

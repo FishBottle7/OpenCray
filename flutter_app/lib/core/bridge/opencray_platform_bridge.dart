@@ -19,6 +19,7 @@ import '../models/opencray_personalization_config.dart';
 import '../models/opencray_sandbox_preview_embed_config.dart';
 import '../models/opencray_sandbox_settings.dart';
 import '../models/opencray_safety_settings.dart';
+import '../models/opencray_scheduled_tasks.dart';
 import '../models/opencray_settings_snapshot.dart';
 import '../models/opencray_shell_snapshot.dart';
 import '../models/opencray_skills_snapshot.dart';
@@ -430,6 +431,60 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
   );
 
   @override
+  Future<OpenCrayScheduledTasksSnapshot> loadScheduledTasks() async =>
+      OpenCrayScheduledTasksSnapshot.fromMap(
+        await _invokeMap('loadScheduledTasks'),
+      );
+
+  @override
+  Future<OpenCrayScheduledTaskDetailSnapshot> loadScheduledTask(
+    String scheduleId,
+  ) async => OpenCrayScheduledTaskDetailSnapshot.fromMap(
+    await _invokeMap(
+      'loadScheduledTask',
+      arguments: <String, Object?>{'scheduleId': scheduleId},
+    ),
+  );
+
+  @override
+  Future<OpenCrayScheduledTaskActionResult> updateScheduledTaskEnabled({
+    required String scheduleId,
+    required bool enabled,
+  }) async => OpenCrayScheduledTaskActionResult.fromMap(
+    await _invokeMap(
+      'updateScheduledTaskEnabled',
+      arguments: <String, Object?>{
+        'scheduleId': scheduleId,
+        'enabled': enabled,
+      },
+    ),
+  );
+
+  @override
+  Future<OpenCrayScheduledTaskActionResult> runScheduledTaskNow(
+    String scheduleId,
+  ) async => OpenCrayScheduledTaskActionResult.fromMap(
+    await _invokeMap(
+      'runScheduledTaskNow',
+      arguments: <String, Object?>{'scheduleId': scheduleId},
+    ),
+  );
+
+  @override
+  Future<OpenCrayScheduledTaskActionResult> snoozeScheduledTask({
+    required String scheduleId,
+    int durationMinutes = 15,
+  }) async => OpenCrayScheduledTaskActionResult.fromMap(
+    await _invokeMap(
+      'snoozeScheduledTask',
+      arguments: <String, Object?>{
+        'scheduleId': scheduleId,
+        'durationMinutes': durationMinutes,
+      },
+    ),
+  );
+
+  @override
   Future<OpenCrayStrongBackgroundSnapshot>
   loadStrongBackgroundSnapshot() async =>
       OpenCrayStrongBackgroundSnapshot.fromMap(
@@ -563,7 +618,8 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
         'contextBudgetPreset': contextBudgetPreset,
         'contextBudgetReservedOutputTokens': contextBudgetReservedOutputTokens,
         'contextBudgetSafetyMarginTokens': contextBudgetSafetyMarginTokens,
-        'contextBudgetEffectiveInputPercent': contextBudgetEffectiveInputPercent,
+        'contextBudgetEffectiveInputPercent':
+            contextBudgetEffectiveInputPercent,
       },
     ),
   );

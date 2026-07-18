@@ -18,12 +18,14 @@ import '../../core/design/opencray_widgets.dart';
 import 'notification_settings_models.dart';
 import 'safety_settings_copy.dart';
 import 'safety_settings_models.dart';
+import 'scheduled_task_settings_models.dart';
 import 'settings_facade.dart';
 import 'settings_models.dart';
 import 'strong_background_settings_models.dart';
 
 part 'agent_settings_pages.dart';
 part 'settings_notification_pages.dart';
+part 'settings_scheduled_task_pages.dart';
 part 'settings_api_pages.dart';
 part 'safety_settings_pages.dart';
 part 'settings_debug_pages.dart';
@@ -88,11 +90,13 @@ class SettingsFeatureScreen extends StatefulWidget {
     super.key,
     required this.facade,
     this.initialPage = SettingsPage.home,
+    this.initialScheduleId,
     this.standalone = false,
     this.debugBridge,
   });
 
   final SettingsPage initialPage;
+  final String? initialScheduleId;
   final SettingsFacade facade;
   final bool standalone;
   final OpenCrayHostBridge? debugBridge;
@@ -104,6 +108,7 @@ class SettingsFeatureScreen extends StatefulWidget {
 class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
     with WidgetsBindingObserver {
   late SettingsPage _page = widget.initialPage;
+  late String? _selectedScheduleId = widget.initialScheduleId;
   int _pageTransitionDirection = 1;
   bool _hasPageTransition = false;
   final Map<SettingsPage, SettingsDetailSnapshot> _detailCache =
@@ -239,10 +244,34 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
           backLabel: backLabel,
           onOpenPage: _openPage,
         );
-      case SettingsPage.notificationChannels:
-        return _NotificationChannelsSettingsPage(
-          key: const ValueKey<String>('settings-notification-channels'),
+      case SettingsPage.eventAlerts:
+        return _NotificationEventAlertsSettingsPage(
+          key: const ValueKey<String>('settings-event-alerts'),
           facade: widget.facade,
+          onBack: onBack,
+          backLabel: backLabel,
+        );
+      case SettingsPage.scheduledTasks:
+        return _ScheduledTasksSettingsPage(
+          key: const ValueKey<String>('settings-scheduled-tasks'),
+          facade: widget.facade,
+          onBack: onBack,
+          backLabel: backLabel,
+          onOpenTask: _openScheduledTask,
+        );
+      case SettingsPage.scheduledTaskDetail:
+        final scheduleId = _selectedScheduleId;
+        if (scheduleId == null || scheduleId.isEmpty) {
+          return _ScheduledTaskMissingSelectionPage(
+            key: const ValueKey<String>('settings-scheduled-task-missing'),
+            onBack: onBack,
+            backLabel: backLabel,
+          );
+        }
+        return _ScheduledTaskDetailSettingsPage(
+          key: ValueKey<String>('settings-scheduled-task-$scheduleId'),
+          facade: widget.facade,
+          scheduleId: scheduleId,
           onBack: onBack,
           backLabel: backLabel,
         );
@@ -370,6 +399,16 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
     }
   }
 
+  void _openScheduledTask(String scheduleId) {
+    _persistShellTarget(SettingsPage.scheduledTaskDetail);
+    setState(() {
+      _selectedScheduleId = scheduleId;
+      _hasPageTransition = true;
+      _pageTransitionDirection = 1;
+      _page = SettingsPage.scheduledTaskDetail;
+    });
+  }
+
   Future<void> _loadOverview() async {
     final overview = await widget.facade.loadOverview();
     if (!mounted) {
@@ -395,7 +434,9 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
 
   bool _usesDedicatedPage(SettingsPage page) =>
       page == SettingsPage.notificationsBackground ||
-      page == SettingsPage.notificationChannels ||
+      page == SettingsPage.eventAlerts ||
+      page == SettingsPage.scheduledTasks ||
+      page == SettingsPage.scheduledTaskDetail ||
       page == SettingsPage.llm ||
       page == SettingsPage.apiIntegrations ||
       page == SettingsPage.networkSearch ||
@@ -410,8 +451,12 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
 
   SettingsPage? _nestedBackTargetForPage(SettingsPage page) {
     switch (page) {
-      case SettingsPage.notificationChannels:
+      case SettingsPage.eventAlerts:
         return SettingsPage.notificationsBackground;
+      case SettingsPage.scheduledTasks:
+        return SettingsPage.notificationsBackground;
+      case SettingsPage.scheduledTaskDetail:
+        return SettingsPage.scheduledTasks;
       case SettingsPage.networkSearch:
       case SettingsPage.mediaSpeech:
       case SettingsPage.sandboxProviders:
@@ -440,8 +485,14 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
 
   String _backLabelForPage(SettingsPage page) {
     switch (page) {
-      case SettingsPage.notificationChannels:
+      case SettingsPage.eventAlerts:
         return _homeEntryTitleFor(SettingsPage.notificationsBackground);
+      case SettingsPage.scheduledTasks:
+        return _homeEntryTitleFor(SettingsPage.notificationsBackground);
+      case SettingsPage.scheduledTaskDetail:
+        return _ScheduledTaskSettingsCopy.fromLocale(
+          Localizations.localeOf(context),
+        ).tasksTitle;
       case SettingsPage.networkSearch:
       case SettingsPage.mediaSpeech:
       case SettingsPage.sandboxProviders:

@@ -658,7 +658,7 @@ internal class RuntimeNotificationCoordinator(
     )
   }
 
-  private fun buildApprovalNotification(
+  internal fun buildApprovalNotification(
     model: RuntimeApprovalNotificationModel,
   ): Notification = NotificationCompat.Builder(
     localizedContext,
@@ -1167,7 +1167,7 @@ internal class RuntimeNotificationCoordinator(
         ?.cancel(approvalNotificationIdForTask(normalizedTaskId))
     }
 
-    private fun approvalNotificationIdForTask(taskId: String): Int =
+    internal fun approvalNotificationIdForTask(taskId: String): Int =
       52_100 + notificationStableHash(taskId, modulo = 5_000)
 
     private fun terminalNotificationDeliveryKey(runId: String): String = "terminal:$runId"
@@ -1227,5 +1227,5 @@ internal fun terminalNotificationActionsForModel(
 internal fun scheduleNotificationOpenDestination(): AppShellDestination =
   AppShellDestination(
     selectedTab = AppShellTab.SETTINGS,
-    settingsSubpage = SettingsSubpage.NOTIFICATIONS_BACKGROUND,
+    settingsSubpage = SettingsSubpage.SCHEDULED_TASKS,
   )

@@ -822,6 +822,75 @@ void main() {
   });
 
   test(
+    'local runtime bridge routes scheduled task lifecycle over http',
+    () async {
+      final requests = <String>[];
+      final bodies = <Map<String, Object?>>[];
+      requestHandler = (request) async {
+        requests.add('${request.method} ${request.uri.path}');
+        if (request.method == 'POST') {
+          bodies.add(await readJsonBody(request));
+        }
+        switch (request.uri.path) {
+          case '/v1/scheduled_tasks':
+            await writeJson(request, <String, Object?>{
+              'tasks': <Object?>[
+                <String, Object?>{
+                  'scheduleId': 'schedule-1',
+                  'sessionId': 'session-1',
+                  'title': 'Morning review',
+                  'enabled': true,
+                  'triggerKind': 'recurrence',
+                  'triggerSummary': 'Every day at 09:00',
+                },
+              ],
+              'totalCount': 1,
+              'enabledCount': 1,
+            });
+          case '/v1/scheduled_task':
+            expect(request.uri.queryParameters['scheduleId'], 'schedule-1');
+            await writeJson(request, _scheduledTaskDetailPayload());
+          default:
+            final body = bodies.last;
+            await writeJson(request, <String, Object?>{
+              'action': switch (request.uri.path) {
+                '/v1/update_scheduled_task_enabled' => 'update_enabled',
+                '/v1/run_scheduled_task_now' => 'run_now',
+                _ => 'snooze',
+              },
+              'scheduleId': body['scheduleId'],
+              'title': 'Morning review',
+              'enabled': body['enabled'],
+            });
+        }
+      };
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+
+      final list = await bridge.loadScheduledTasks();
+      final detail = await bridge.loadScheduledTask('schedule-1');
+      await bridge.updateScheduledTaskEnabled(
+        scheduleId: 'schedule-1',
+        enabled: false,
+      );
+      await bridge.runScheduledTaskNow('schedule-1');
+      await bridge.snoozeScheduledTask(scheduleId: 'schedule-1');
+
+      expect(list.totalCount, 1);
+      expect(list.enabledCount, 1);
+      expect(detail.task.prompt, 'Review open work.');
+      expect(requests, <String>[
+        'GET /v1/scheduled_tasks',
+        'GET /v1/scheduled_task',
+        'POST /v1/update_scheduled_task_enabled',
+        'POST /v1/run_scheduled_task_now',
+        'POST /v1/snooze_scheduled_task',
+      ]);
+      expect(bodies[0]['enabled'], isFalse);
+      expect(bodies[2]['durationMinutes'], 15);
+    },
+  );
+
+  test(
     'local runtime bridge loads strong background snapshots over http',
     () async {
       requestHandler = (request) async {
@@ -1828,6 +1897,36 @@ class _RecordingConnector implements OpenCrayHostBridgeConnector {
     return bridge;
   }
 }
+
+Map<String, Object?> _scheduledTaskDetailPayload() => <String, Object?>{
+  'task': <String, Object?>{
+    'scheduleId': 'schedule-1',
+    'sessionId': 'session-1',
+    'title': 'Morning review',
+    'prompt': 'Review open work.',
+    'enabled': true,
+    'triggerKind': 'recurrence',
+    'triggerSummary': 'Every day at 09:00',
+    'conflictPolicy': 'queue',
+    'foregroundNotificationRequired': true,
+    'notifyOnQueued': true,
+    'notifyOnApproval': true,
+    'notifyOnCompletion': true,
+    'notifyOnInterruption': true,
+    'createdAtEpochMs': 100,
+    'updatedAtEpochMs': 200,
+  },
+  'recentRuns': <Object?>[
+    <String, Object?>{
+      'scheduleRunId': 'schedule-run-1',
+      'triggerReason': 'alarm',
+      'result': 'accepted',
+      'triggeredAtEpochMs': 300,
+      'updatedAtEpochMs': 400,
+    },
+  ],
+  'totalRunCount': 1,
+};
 
 const String _tinyPngBase64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn1yt4AAAAASUVORK5CYII=';

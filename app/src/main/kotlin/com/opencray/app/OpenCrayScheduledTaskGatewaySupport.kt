@@ -14,9 +14,16 @@ internal fun ScheduledTaskManager.loadScheduledTasksGatewayMap(
   limit: Int = DEFAULT_SCHEDULED_TASK_GATEWAY_LIMIT,
 ): Map<String, Any?> {
   val result = list(ScheduledTaskListRequest(limit = limit))
+  val enabledCount = list(
+    ScheduledTaskListRequest(
+      enabled = true,
+      limit = 1,
+    ),
+  ).totalCount
   return mapOf(
     "tasks" to result.tasks.map(ScheduledTaskSummary::toGatewayMap),
     "totalCount" to result.totalCount,
+    "enabledCount" to enabledCount,
   )
 }
 

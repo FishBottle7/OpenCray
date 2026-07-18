@@ -685,6 +685,76 @@ void main() {
     },
   );
 
+  test('platform bridge routes scheduled task lifecycle methods', () async {
+    final calls = <MethodCall>[];
+    const bridge = OpenCrayPlatformBridge();
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(methodChannel, (call) async {
+          calls.add(call);
+          switch (call.method) {
+            case 'loadScheduledTasks':
+              return <String, Object?>{
+                'tasks': <Object?>[
+                  <String, Object?>{
+                    'scheduleId': 'schedule-1',
+                    'sessionId': 'session-1',
+                    'title': 'Morning review',
+                    'enabled': true,
+                    'triggerKind': 'recurrence',
+                    'triggerSummary': 'Every day at 09:00',
+                  },
+                ],
+                'totalCount': 1,
+                'enabledCount': 1,
+              };
+            case 'loadScheduledTask':
+              return _scheduledTaskDetailPayload();
+            default:
+              final arguments = call.arguments as Map<Object?, Object?>;
+              return <String, Object?>{
+                'action': switch (call.method) {
+                  'updateScheduledTaskEnabled' => 'update_enabled',
+                  'runScheduledTaskNow' => 'run_now',
+                  _ => 'snooze',
+                },
+                'scheduleId': arguments['scheduleId'],
+                'title': 'Morning review',
+                'enabled': arguments['enabled'],
+                'scheduleRunId': call.method == 'runScheduledTaskNow'
+                    ? 'schedule-run-1'
+                    : null,
+              };
+          }
+        });
+
+    final list = await bridge.loadScheduledTasks();
+    final detail = await bridge.loadScheduledTask('schedule-1');
+    final enabled = await bridge.updateScheduledTaskEnabled(
+      scheduleId: 'schedule-1',
+      enabled: false,
+    );
+    final run = await bridge.runScheduledTaskNow('schedule-1');
+    await bridge.snoozeScheduledTask(
+      scheduleId: 'schedule-1',
+      durationMinutes: 30,
+    );
+
+    expect(list.tasks.single.title, 'Morning review');
+    expect(list.enabledCount, 1);
+    expect(detail.recentRuns.single.result, 'accepted');
+    expect(enabled.enabled, isFalse);
+    expect(run.scheduleRunId, 'schedule-run-1');
+    expect(calls.map((call) => call.method), <String>[
+      'loadScheduledTasks',
+      'loadScheduledTask',
+      'updateScheduledTaskEnabled',
+      'runScheduledTaskNow',
+      'snoozeScheduledTask',
+    ]);
+    final snoozeArguments = calls.last.arguments as Map<Object?, Object?>;
+    expect(snoozeArguments['durationMinutes'], 30);
+  });
+
   test('platform bridge saves safety settings over the host channel', () async {
     late MethodCall capturedCall;
     const bridge = OpenCrayPlatformBridge();
@@ -1899,6 +1969,36 @@ void main() {
     },
   );
 }
+
+Map<String, Object?> _scheduledTaskDetailPayload() => <String, Object?>{
+  'task': <String, Object?>{
+    'scheduleId': 'schedule-1',
+    'sessionId': 'session-1',
+    'title': 'Morning review',
+    'prompt': 'Review open work.',
+    'enabled': true,
+    'triggerKind': 'recurrence',
+    'triggerSummary': 'Every day at 09:00',
+    'conflictPolicy': 'queue',
+    'foregroundNotificationRequired': true,
+    'notifyOnQueued': true,
+    'notifyOnApproval': true,
+    'notifyOnCompletion': true,
+    'notifyOnInterruption': true,
+    'createdAtEpochMs': 100,
+    'updatedAtEpochMs': 200,
+  },
+  'recentRuns': <Object?>[
+    <String, Object?>{
+      'scheduleRunId': 'schedule-run-1',
+      'triggerReason': 'alarm',
+      'result': 'accepted',
+      'triggeredAtEpochMs': 300,
+      'updatedAtEpochMs': 400,
+    },
+  ],
+  'totalRunCount': 1,
+};
 
 const String _tinyPngBase64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn1yt4AAAAASUVORK5CYII=';
