@@ -395,6 +395,9 @@ internal class RuntimeNotificationCoordinator(
   private fun syncOutstandingTerminalNotifications() {
     val hostAccess = currentHostAccess()
     for (sessionId in knownSessionIds()) {
+      if (!hostAccess.ownsSession(sessionId)) {
+        continue
+      }
       val session = hostAccess.session(sessionId)
       val tasksById = session.snapshot().tasks.associateBy { taskSnapshot -> taskSnapshot.task.id }
       for (run in session.listRuns()) {
@@ -428,6 +431,9 @@ internal class RuntimeNotificationCoordinator(
     sessionId: String,
   ): List<RuntimeApprovalNotificationModel> {
     val hostAccess = currentHostAccess()
+    if (!hostAccess.ownsSession(sessionId)) {
+      return emptyList()
+    }
     return approvalRequiredTaskProjectionsForSession(
       sessionId = sessionId,
       hostAccess = hostAccess,

@@ -448,6 +448,42 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
   }
 
   @Test
+  fun bootstrapRuntimeServiceSessionsOnlyConstructsSessionForEvidenceTarget() {
+    val root = temporaryFolder.newFolder("runtime-service-bootstrap-target-owner")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val sessionId = "session-detached-owner"
+    val session = RecordingRuntimeSessionAccess(sessionId, runs = emptyList())
+    val hostAccess = RecordingRuntimeHostAccess(mapOf(sessionId to session))
+    val replayAccess = runtimeAccessForSessions(listOf(session)).replayAccess
+    val projectedEvidence = projectedReconnectEvidenceBySession(
+      sessionId = sessionId,
+      runId = "run-detached-owner",
+      taskId = "task-detached-owner",
+      processId = "process-detached-owner",
+    )
+
+    bootstrapRuntimeServiceSessions(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = hostAccess,
+      runtimeReplayAccess = replayAccess,
+      projectedRepairEvidenceBySession = projectedEvidence,
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      nowEpochMs = 2_000L,
+    )
+    assertTrue(sessionId !in hostAccess.requestedSessionIds)
+
+    bootstrapRuntimeServiceSessions(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = hostAccess,
+      runtimeReplayAccess = replayAccess,
+      projectedRepairEvidenceBySession = projectedEvidence,
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      nowEpochMs = 2_000L,
+    )
+    assertEquals(listOf(sessionId), hostAccess.requestedSessionIds)
+  }
+
+  @Test
   fun resumeInterruptedRuntimeServiceRunsDefersRunRecordWithProjectedReconnectBackoff() {
     val root = temporaryFolder.newFolder("runtime-service-repair-projected-reconnect-run-record")
     val runtimeRoot = root.resolve("runtime")
@@ -916,6 +952,7 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     private val runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory()
     private val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
     private val supplementStores = linkedMapOf<String, SessionSupplementStore>()
+    val requestedSessionIds = mutableListOf<String>()
 
     override val lifecycleDescriptor: HostRuntimeLifecycleDescriptor =
       HostRuntimeLifecycleDescriptor()
@@ -932,8 +969,10 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
         .map(RecordingRuntimeSessionAccess::sessionId),
     )
 
-    override fun session(sessionId: String): OpenCrayRuntimeSessionAccess =
-      requireNotNull(sessions[sessionId]) { "Session '$sessionId' is unavailable." }
+    override fun session(sessionId: String): OpenCrayRuntimeSessionAccess {
+      requestedSessionIds += sessionId
+      return requireNotNull(sessions[sessionId]) { "Session '$sessionId' is unavailable." }
+    }
 
     override fun releaseSession(sessionId: String) = Unit
 

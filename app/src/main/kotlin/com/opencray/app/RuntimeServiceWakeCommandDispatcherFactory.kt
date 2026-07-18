@@ -37,6 +37,9 @@ internal data class RuntimeServiceWakeCommandDispatcherDependencies(
   val resumeInterruptedRuns: (String) -> RuntimeServiceInterruptedRunRepairResult,
   val approvalDecisionAccess: RuntimeServiceApprovalDecisionAccess,
   val refreshServiceWorkState: () -> RuntimeServiceWorkState,
+  val runtimeTarget: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
+  val scheduledTaskForwarder: (ScheduledTaskWakeCommand, RuntimeServiceTarget) -> Boolean =
+    { _, _ -> false },
 )
 
 internal class DefaultRuntimeServiceWakeCommandDispatcher(
@@ -144,6 +147,21 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
   }
 
   private fun dispatchScheduledTask(command: ScheduledTaskWakeCommand) {
+    val scheduledTaskDependencies = dispatcherDependencies.scheduledTaskDispatcherDependencies
+    val sessionOwnerTarget = scheduledTaskDependencies.specStore
+      .get(command.scheduleId)
+      ?.sessionId
+      ?.let(scheduledTaskDependencies.hostAccess::sessionOwnerTarget)
+    if (
+      sessionOwnerTarget != null &&
+      sessionOwnerTarget != dispatcherDependencies.runtimeTarget
+    ) {
+      check(dispatcherDependencies.scheduledTaskForwarder(command, sessionOwnerTarget)) {
+        "Unable to forward scheduled task '${command.scheduleId}' to live session owner " +
+          "'${sessionOwnerTarget.wireValue}'."
+      }
+      return
+    }
     val outcome = dispatcherDependencies
       .scheduledTaskDispatcherDependencies
       .createScheduledTaskDispatcher()

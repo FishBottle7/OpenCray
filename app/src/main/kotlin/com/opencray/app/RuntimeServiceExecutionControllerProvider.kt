@@ -81,7 +81,9 @@ internal fun createRuntimeServiceExecutionController(
     ?: { defaultLocalRuntimeServerState(runtimeTarget) }
   runtimeServiceProcessBootstrap(applicationContext)
   val executionDependencies = runtimeExecutionDependenciesLoader.load(applicationContext)
-  val runtimeOwnerDependencies = executionDependencies.runtimeOwnerBootstrapDependencies
+  val runtimeOwnerDependencies = executionDependencies.runtimeOwnerBootstrapDependencies.copy(
+    runtimeTarget = runtimeTarget,
+  )
   val resolvedRuntimeControllerIdentityStore = runtimeControllerIdentityStore
     ?: defaultRuntimeControllerIdentityStoreProvider()(applicationContext)
   val runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(

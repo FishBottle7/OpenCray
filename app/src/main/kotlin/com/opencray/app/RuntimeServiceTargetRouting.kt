@@ -46,6 +46,9 @@ internal fun openCrayChatRuntimeWriteTargetResolverFactory(
       promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(
         context.applicationContext,
       ),
+      sessionOwnerLeaseStore = FileBackedRuntimeSessionOwnerLeaseStore.fromContext(
+        context.applicationContext,
+      ),
       defaultTarget = defaultTarget,
     )
   }
@@ -54,6 +57,7 @@ internal class ProjectionBackedChatRuntimeWriteTargetResolver(
   private val chatSessionStore: ChatSessionLocalStore,
   private val queueSnapshotStoreFactory: AgentQueueSnapshotStoreFactory,
   private val promptCheckpointStoreFactory: PromptCheckpointStoreFactory,
+  private val sessionOwnerLeaseStore: RuntimeSessionOwnerLeaseStore? = null,
   private val defaultTarget: RuntimeServiceTarget = DEFAULT_CLIENT_RUNTIME_SERVICE_TARGET,
 ) : ChatRuntimeWriteTargetResolver {
   override fun targetFor(command: OpenCrayChatWriteCommand): RuntimeServiceTarget = when (command) {
@@ -73,7 +77,7 @@ internal class ProjectionBackedChatRuntimeWriteTargetResolver(
   }
 
   override fun targetForSession(sessionId: String): RuntimeServiceTarget =
-    routeTaskForSession(sessionId)?.let { taskSnapshot ->
+    sessionOwnerTarget(sessionId) ?: routeTaskForSession(sessionId)?.let { taskSnapshot ->
       runtimeServiceTargetForTask(taskSnapshot.task)
     } ?: defaultTarget
 
@@ -82,8 +86,9 @@ internal class ProjectionBackedChatRuntimeWriteTargetResolver(
   ): RuntimeServiceTarget = findTaskSnapshotForIdentifier(
     sessionIds = knownChatSessionIds(chatSessionStore),
     taskIdOrRunId = taskIdOrRunId,
-  )?.let { taskSnapshot ->
-    runtimeServiceTargetForTask(taskSnapshot.task)
+  )?.let { routedTask ->
+    sessionOwnerTarget(routedTask.sessionId)
+      ?: runtimeServiceTargetForTask(routedTask.taskSnapshot.task)
   } ?: defaultTarget
 
   private fun targetForSubmitChatMessage(
@@ -123,9 +128,9 @@ internal class ProjectionBackedChatRuntimeWriteTargetResolver(
   private fun findTaskSnapshotForIdentifier(
     sessionIds: List<String>,
     taskIdOrRunId: String,
-  ): SessionQueueTaskSnapshot? = sessionIds.firstNotNullOfOrNull { sessionId ->
+  ): RoutedSessionTask? = sessionIds.firstNotNullOfOrNull { sessionId ->
     val queueTasks = queueTaskSnapshotsForSession(sessionId)
-    queueTasks.firstOrNull { taskSnapshot ->
+    val taskSnapshot = queueTasks.firstOrNull { taskSnapshot ->
       matchesTaskIdentifier(taskSnapshot, taskIdOrRunId)
     } ?: approvalRequiredTaskProjections(
       sessionId = sessionId,
@@ -135,7 +140,14 @@ internal class ProjectionBackedChatRuntimeWriteTargetResolver(
     ).firstOrNull { projection ->
       projection.taskId == taskIdOrRunId || projection.runId == taskIdOrRunId
     }?.taskSnapshot
+    taskSnapshot?.let { snapshot ->
+      RoutedSessionTask(sessionId = sessionId, taskSnapshot = snapshot)
+    }
   }
+
+  private fun sessionOwnerTarget(sessionId: String): RuntimeServiceTarget? = runCatching {
+    sessionOwnerLeaseStore?.loadLiveOwner(sessionId)?.target
+  }.getOrNull()
 
   private fun queueTaskSnapshotsForSession(
     sessionId: String,
@@ -174,6 +186,11 @@ internal class ProjectionBackedChatRuntimeWriteTargetResolver(
     )
   }
 }
+
+private data class RoutedSessionTask(
+  val sessionId: String,
+  val taskSnapshot: SessionQueueTaskSnapshot,
+)
 
 internal fun runtimeTargetForFlutterBridgeEntry(
   context: Context,

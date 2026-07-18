@@ -38,6 +38,7 @@ private object DefaultRuntimeOwnerBootstrapFactory : RuntimeOwnerBootstrapFactor
     approvedReadRootsProvider = dependencies.approvedReadRootsProvider,
     soulProfileStore = dependencies.soulProfileStore,
     runtimeControllerLifecycle = runtimeControllerLifecycle,
+    runtimeTarget = dependencies.runtimeTarget,
   )
     .toRuntimeOwnerBootstrap()
 }

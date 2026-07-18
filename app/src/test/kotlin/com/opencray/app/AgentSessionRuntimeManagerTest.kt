@@ -86,6 +86,63 @@ class AgentSessionRuntimeManagerTest {
   }
 
   @Test
+  fun sessionOwnerLeasePreventsSecondRuntimeTargetFromConstructingSameSession() {
+    val leaseStore = inMemoryRuntimeSessionOwnerLeaseStore()
+    val interactiveManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+      runtimeLifecycle = runtimeLifecycle("interactive"),
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      sessionOwnerLeaseStore = leaseStore,
+      clock = { 1_000L },
+    )
+    val detachedManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+      runtimeLifecycle = runtimeLifecycle("detached"),
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      sessionOwnerLeaseStore = leaseStore,
+      clock = { 1_001L },
+    )
+
+    interactiveManager.forSession("session-owned")
+    val failure = runCatching {
+      detachedManager.forSession("session-owned")
+    }.exceptionOrNull()
+
+    assertTrue(failure is RuntimeSessionOwnershipException)
+    assertEquals(RuntimeServiceTarget.INTERACTIVE, detachedManager.sessionOwnerTarget("session-owned"))
+  }
+
+  @Test
+  fun releasingSessionOwnerLeaseAllowsOtherRuntimeTargetToAcquireSession() {
+    val leaseStore = inMemoryRuntimeSessionOwnerLeaseStore()
+    val interactiveManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+      runtimeLifecycle = runtimeLifecycle("interactive"),
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      sessionOwnerLeaseStore = leaseStore,
+      clock = { 1_000L },
+    )
+    val detachedManager = manager(
+      runtimeFactory = RecordingRuntimeFactory(),
+      executor = RecordingExecutorService(),
+      runtimeLifecycle = runtimeLifecycle("detached"),
+      runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      sessionOwnerLeaseStore = leaseStore,
+      clock = { 1_001L },
+    )
+
+    interactiveManager.forSession("session-transfer")
+    interactiveManager.release("session-transfer")
+    val acquired = detachedManager.forSession("session-transfer")
+
+    assertEquals("session-transfer", acquired.sessionId)
+    assertTrue(detachedManager.ownsSession("session-transfer"))
+  }
+
+  @Test
   fun submitPromptQueuesMultipleTasksBeforeProcessingStarts() {
     val executor = RecordingExecutorService()
     val runtimeFactory = RecordingRuntimeFactory()
@@ -2790,6 +2847,9 @@ class AgentSessionRuntimeManagerTest {
     promptCheckpointStoreFactory: PromptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(temporaryFolder.root),
     runtimeLifecycle: HostRuntimeLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
     runtimeLifecycleProvider: () -> HostRuntimeLifecycleDescriptor = { runtimeLifecycle },
+    runtimeTarget: RuntimeServiceTarget? = null,
+    sessionOwnerLeaseStore: RuntimeSessionOwnerLeaseStore? = null,
+    clock: () -> Long = System::currentTimeMillis,
   ): DefaultAgentSessionRuntimeManager = DefaultAgentSessionRuntimeManager(
     agentId = "opencray-app",
     runtimeFactory = runtimeFactory,
@@ -2800,7 +2860,21 @@ class AgentSessionRuntimeManagerTest {
     executor = executor,
     subAgentRecoveryExecutor = subAgentRecoveryExecutor,
     runtimeLifecycleProvider = runtimeLifecycleProvider,
+    runtimeTarget = runtimeTarget,
+    sessionOwnerLeaseStore = sessionOwnerLeaseStore,
+    clock = clock,
   )
+
+  private fun runtimeLifecycle(ownerId: String): HostRuntimeLifecycleDescriptor =
+    HostRuntimeLifecycleDescriptor(
+      processStartId = "process-$ownerId",
+      processStartedAtEpochMs = 100L,
+      hostInstanceId = "host-$ownerId",
+      runtimeOwnerId = "owner-$ownerId",
+      runtimeControllerId = "controller-$ownerId",
+      durableRuntimeControllerId = "durable-$ownerId",
+      hostCreatedAtEpochMs = 200L,
+    )
 
   private fun overwriteQueueSnapshot(
     sessionId: String,

@@ -112,6 +112,10 @@ internal interface RuntimeSessionDirectoryAccess {
 
   fun session(sessionId: String): OpenCrayRuntimeSessionAccess
 
+  fun sessionOwnerTarget(sessionId: String): RuntimeServiceTarget? = null
+
+  fun ownsSession(sessionId: String): Boolean = true
+
   fun releaseSession(sessionId: String)
 
   fun releaseIdleSessions()
@@ -294,6 +298,12 @@ internal class DefaultOpenCrayRuntimeHostAccess(
 
   override fun session(sessionId: String): OpenCrayRuntimeSessionAccess =
     AgentSessionHandleRuntimeSessionAccess(sessionRuntimeManager.forSession(sessionId))
+
+  override fun sessionOwnerTarget(sessionId: String): RuntimeServiceTarget? =
+    sessionRuntimeManager.sessionOwnerTarget(sessionId)
+
+  override fun ownsSession(sessionId: String): Boolean =
+    sessionRuntimeManager.ownsSession(sessionId)
 
   override fun releaseSession(sessionId: String) {
     sessionRuntimeManager.release(sessionId)

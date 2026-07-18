@@ -141,6 +141,7 @@ internal fun createRuntimeServiceBootstrapAssembly(
       appContext = appContext,
       runtimeTarget = runtimeTarget,
     ),
+    runtimeTarget = runtimeTarget,
   )
   scheduleNextInterruptedRunRepairRetry(
     workScheduler = bootstrap.scheduledWorkScheduler,
@@ -380,6 +381,7 @@ private fun RuntimeServiceBootstrapAssembly.toWakeCommandDispatcherDependencies(
           appContext = bootstrapContext.localizedContext.applicationContext,
           runtimeTarget = runtimeTarget,
         ),
+        runtimeTarget = runtimeTarget,
       ).copy(
         requestedRepairReason = repairReason,
       ).also { result ->
@@ -392,6 +394,14 @@ private fun RuntimeServiceBootstrapAssembly.toWakeCommandDispatcherDependencies(
     },
     approvalDecisionAccess = approvalDecisionAccess,
     refreshServiceWorkState = serviceWorkStateTracker::refresh,
+    runtimeTarget = runtimeTarget,
+    scheduledTaskForwarder = { command, target ->
+      bootstrapContext.runtimeServiceAccessGateway.startScheduledTask(
+        context = bootstrapContext.localizedContext.applicationContext,
+        command = command,
+        target = target,
+      )
+    },
   )
 }
 
@@ -448,6 +458,7 @@ internal fun bootstrapRuntimeServiceSessions(
   processRegistryFactory: AgentProcessRegistryFactory? = null,
   projectedRepairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
   nowEpochMs: Long = System.currentTimeMillis(),
+  runtimeTarget: RuntimeServiceTarget? = null,
 ): RuntimeServiceBootstrapResult {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
@@ -464,7 +475,6 @@ internal fun bootstrapRuntimeServiceSessions(
   val repairEvidenceBySession = linkedMapOf<String, List<InterruptedRunRepairEvidence>>()
 
   knownSessionIds.forEach { sessionId ->
-    val session = runtimeSessionDirectoryAccess.session(sessionId)
     val durableRepairEvidence = durableInteractiveRepairEvidenceForSession(
       sessionId = sessionId,
       snapshotStoreFactory = snapshotStoreFactory,
@@ -474,7 +484,7 @@ internal fun bootstrapRuntimeServiceSessions(
       runEventJournalStoreFactory = runEventJournalStoreFactory,
       processRegistryFactory = processRegistryFactory,
     )
-    val repairEvidence = mergedInterruptedRunRepairEvidence(
+    val allRepairEvidence = mergedInterruptedRunRepairEvidence(
       durableRepairEvidence = durableRepairEvidence,
       projectedRepairEvidence = projectedRepairEvidenceForSession(
         sessionId = sessionId,
@@ -484,12 +494,29 @@ internal fun bootstrapRuntimeServiceSessions(
         runEventJournalStoreFactory = runEventJournalStoreFactory,
       ),
     )
+    if (!shouldOwnSessionForRecovery(
+        sessionId = sessionId,
+        runtimeTarget = runtimeTarget,
+        runtimeSessionDirectoryAccess = runtimeSessionDirectoryAccess,
+        repairEvidence = allRepairEvidence,
+      )
+    ) {
+      return@forEach
+    }
+    val repairEvidence = runtimeTarget
+      ?.let { target -> allRepairEvidence.filter { evidence -> evidence.target == target } }
+      ?: allRepairEvidence
     val dueRepairEvidence = dueInterruptedRunRepairEvidence(
       evidence = repairEvidence,
       nowEpochMs = nowEpochMs,
     )
     if (repairEvidence.isNotEmpty()) {
       repairEvidenceBySession[sessionId] = repairEvidence
+    }
+    val session = try {
+      runtimeSessionDirectoryAccess.session(sessionId)
+    } catch (_: RuntimeSessionOwnershipException) {
+      return@forEach
     }
     val shouldResume = session.hasPendingWork() ||
       session.hasLiveManagedProcesses() ||
@@ -536,6 +563,7 @@ internal fun resumeInterruptedRuntimeServiceRuns(
   processRegistryFactory: AgentProcessRegistryFactory? = null,
   projectedRepairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
   nowEpochMs: Long = System.currentTimeMillis(),
+  runtimeTarget: RuntimeServiceTarget? = null,
 ): RuntimeServiceInterruptedRunRepairResult {
   val knownSessionIds = recoveryCandidateSessionIds(
     chatSessionStore = chatSessionStore,
@@ -552,8 +580,6 @@ internal fun resumeInterruptedRuntimeServiceRuns(
   val repairEvidenceBySession = linkedMapOf<String, List<InterruptedRunRepairEvidence>>()
 
   knownSessionIds.forEach { sessionId ->
-    val session = runtimeSessionDirectoryAccess.session(sessionId)
-    val runs = session.listRuns()
     val durableRepairEvidence = durableInteractiveRepairEvidenceForSession(
       sessionId = sessionId,
       snapshotStoreFactory = snapshotStoreFactory,
@@ -563,7 +589,7 @@ internal fun resumeInterruptedRuntimeServiceRuns(
       runEventJournalStoreFactory = runEventJournalStoreFactory,
       processRegistryFactory = processRegistryFactory,
     )
-    val repairEvidence = mergedInterruptedRunRepairEvidence(
+    val allRepairEvidence = mergedInterruptedRunRepairEvidence(
       durableRepairEvidence = durableRepairEvidence,
       projectedRepairEvidence = projectedRepairEvidenceForSession(
         sessionId = sessionId,
@@ -573,6 +599,18 @@ internal fun resumeInterruptedRuntimeServiceRuns(
         runEventJournalStoreFactory = runEventJournalStoreFactory,
       ),
     )
+    if (!shouldOwnSessionForRecovery(
+        sessionId = sessionId,
+        runtimeTarget = runtimeTarget,
+        runtimeSessionDirectoryAccess = runtimeSessionDirectoryAccess,
+        repairEvidence = allRepairEvidence,
+      )
+    ) {
+      return@forEach
+    }
+    val repairEvidence = runtimeTarget
+      ?.let { target -> allRepairEvidence.filter { evidence -> evidence.target == target } }
+      ?: allRepairEvidence
     val dueRepairEvidence = dueInterruptedRunRepairEvidence(
       evidence = repairEvidence,
       nowEpochMs = nowEpochMs,
@@ -580,6 +618,12 @@ internal fun resumeInterruptedRuntimeServiceRuns(
     if (repairEvidence.isNotEmpty()) {
       repairEvidenceBySession[sessionId] = repairEvidence
     }
+    val session = try {
+      runtimeSessionDirectoryAccess.session(sessionId)
+    } catch (_: RuntimeSessionOwnershipException) {
+      return@forEach
+    }
+    val runs = session.listRuns()
     val shouldResume = runs.any(AgentRunSnapshot::isActive) ||
       session.hasLiveSubAgentWork() ||
       dueRepairEvidence.isNotEmpty()
@@ -610,6 +654,20 @@ internal fun resumeInterruptedRuntimeServiceRuns(
     nextRepairAfterEpochMs = nextRepairRetry?.repairAfterEpochMs,
     nextRepairReason = nextRepairRetry?.repairReason,
   )
+}
+
+private fun shouldOwnSessionForRecovery(
+  sessionId: String,
+  runtimeTarget: RuntimeServiceTarget?,
+  runtimeSessionDirectoryAccess: RuntimeSessionDirectoryAccess,
+  repairEvidence: List<InterruptedRunRepairEvidence>,
+): Boolean {
+  val target = runtimeTarget ?: return true
+  val currentOwnerTarget = runtimeSessionDirectoryAccess.sessionOwnerTarget(sessionId)
+  if (currentOwnerTarget != null) {
+    return currentOwnerTarget == target
+  }
+  return repairEvidence.firstOrNull()?.target == target
 }
 
 private fun durableInteractiveRepairEvidenceForSession(

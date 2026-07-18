@@ -168,6 +168,40 @@ class ChatRuntimeWriteTargetResolverTest {
   }
 
   @Test
+  fun projectionBackedResolverRoutesToLiveSessionOwnerWithoutRouteableTask() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-live-owner"))
+    val runtimeRoot = temporaryFolder.newFolder("runtime-root-live-owner")
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val sessionOwnerStore = FileBackedRuntimeSessionOwnerLeaseStore.fromRootDirectory(runtimeRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    sessionOwnerStore.acquire(
+      RuntimeSessionOwnerLease(
+        sessionId = sessionId,
+        target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+        processStartId = "process-detached",
+        runtimeOwnerId = "owner-detached",
+        runtimeControllerId = "controller-detached",
+        durableRuntimeControllerId = "durable-detached",
+        acquiredAtEpochMs = 1_000L,
+        heartbeatAtEpochMs = 1_000L,
+        expiresAtEpochMs = Long.MAX_VALUE,
+      ),
+    )
+    val resolver = ProjectionBackedChatRuntimeWriteTargetResolver(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      sessionOwnerLeaseStore = sessionOwnerStore,
+    )
+
+    assertEquals(
+      RuntimeServiceTarget.DETACHED_BACKGROUND,
+      resolver.targetForSession(sessionId),
+    )
+  }
+
+  @Test
   fun projectionBackedResolverDefaultsToInteractiveForSessionMutations() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-session-mutations"))
     val runtimeRoot = temporaryFolder.newFolder("runtime-root-session-mutations")

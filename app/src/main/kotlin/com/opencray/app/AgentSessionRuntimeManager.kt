@@ -146,6 +146,10 @@ private fun runtimeFlowDebug(message: String) {
 internal interface AgentSessionRuntimeManager {
   fun forSession(sessionId: String): AgentSessionHandle
 
+  fun sessionOwnerTarget(sessionId: String): RuntimeServiceTarget? = null
+
+  fun ownsSession(sessionId: String): Boolean = true
+
   fun observe(listener: AgentSessionRuntimeListener): () -> Unit
 
   fun activeWorkSummary(): RuntimeOwnerWorkSummary = RuntimeOwnerWorkSummary()
@@ -325,27 +329,52 @@ internal class DefaultAgentSessionRuntimeManager(
   private val executor: ExecutorService,
   private val subAgentRecoveryExecutor: ExecutorService = executor,
   private val runtimeLifecycleProvider: () -> HostRuntimeLifecycleDescriptor,
+  private val runtimeTarget: RuntimeServiceTarget? = null,
+  private val sessionOwnerLeaseStore: RuntimeSessionOwnerLeaseStore? = null,
+  private val clock: () -> Long = System::currentTimeMillis,
+  private val sessionOwnerLeaseDurationMs: Long =
+    DEFAULT_RUNTIME_SESSION_OWNER_LEASE_DURATION_MS,
 ) : AgentSessionRuntimeManager {
   private val listeners = linkedSetOf<AgentSessionRuntimeListener>()
   private val sessions = linkedMapOf<String, ManagedAgentSessionHandle>()
+  private val ownedSessionLeases = linkedMapOf<String, RuntimeSessionOwnerLease>()
   private val lock = Any()
 
   override fun forSession(sessionId: String): AgentSessionHandle = synchronized(lock) {
+    acquireSessionOwnershipLocked(sessionId)
     sessions.getOrPut(sessionId) {
-      ManagedAgentSessionHandle(
-        sessionId = sessionId,
-        agentId = agentId,
-        runtimeFactory = runtimeFactory,
-        snapshotStoreFactory = snapshotStoreFactory,
-        runRecordStore = runRecordStoreFactory.forChatSession(sessionId),
-        runEventJournalStore = runEventJournalStoreFactory.forChatSession(sessionId),
-        promptCheckpointStore = promptCheckpointStoreFactory.forChatSession(sessionId),
-        executor = executor,
-        subAgentRecoveryExecutor = subAgentRecoveryExecutor,
-        runtimeLifecycleProvider = runtimeLifecycleProvider,
-        listenerProvider = { synchronized(lock) { listeners.toList() } },
-      )
+      try {
+        ManagedAgentSessionHandle(
+          sessionId = sessionId,
+          agentId = agentId,
+          runtimeFactory = runtimeFactory,
+          snapshotStoreFactory = snapshotStoreFactory,
+          runRecordStore = runRecordStoreFactory.forChatSession(sessionId),
+          runEventJournalStore = runEventJournalStoreFactory.forChatSession(sessionId),
+          promptCheckpointStore = promptCheckpointStoreFactory.forChatSession(sessionId),
+          executor = executor,
+          subAgentRecoveryExecutor = subAgentRecoveryExecutor,
+          runtimeLifecycleProvider = runtimeLifecycleProvider,
+          listenerProvider = { synchronized(lock) { listeners.toList() } },
+        )
+      } catch (failure: Throwable) {
+        releaseSessionOwnershipLocked(sessionId)
+        throw failure
+      }
     }.also { it.touch() }
+  }
+
+  override fun sessionOwnerTarget(sessionId: String): RuntimeServiceTarget? =
+    sessionOwnerLeaseStore?.loadLiveOwner(sessionId, clock())?.target
+
+  override fun ownsSession(sessionId: String): Boolean {
+    val resolvedRuntimeTarget = runtimeTarget ?: return true
+    val lifecycle = runtimeLifecycleProvider()
+    val owner = sessionOwnerLeaseStore?.loadLiveOwner(sessionId, clock()) ?: return false
+    return owner.target == resolvedRuntimeTarget &&
+      owner.processStartId == lifecycle.processStartId &&
+      owner.runtimeControllerId == lifecycle.runtimeControllerId &&
+      owner.durableRuntimeControllerId == lifecycle.durableRuntimeControllerId
   }
 
   override fun observe(listener: AgentSessionRuntimeListener): () -> Unit = synchronized(lock) {
@@ -361,6 +390,9 @@ internal class DefaultAgentSessionRuntimeManager(
     val handles = synchronized(lock) { sessions.values.toList() }
     if (handles.isEmpty()) {
       return RuntimeOwnerWorkSummary()
+    }
+    synchronized(lock) {
+      handles.forEach { handle -> acquireSessionOwnershipLocked(handle.sessionId) }
     }
     val activeSessionIds = linkedSetOf<String>()
     val pendingWorkSessionIds = mutableListOf<String>()
@@ -401,7 +433,9 @@ internal class DefaultAgentSessionRuntimeManager(
 
   override fun release(sessionId: String) {
     val removed = synchronized(lock) {
-      sessions.remove(sessionId)
+      sessions.remove(sessionId).also {
+        releaseSessionOwnershipLocked(sessionId)
+      }
     }
     if (removed != null) {
       runtimeFactory.releaseSession(sessionId)
@@ -412,6 +446,7 @@ internal class DefaultAgentSessionRuntimeManager(
     val releasedSessionIds = synchronized(lock) {
       val currentSessionIds = sessions.keys.toList()
       sessions.clear()
+      currentSessionIds.forEach(::releaseSessionOwnershipLocked)
       currentSessionIds
     }
     releasedSessionIds.forEach(runtimeFactory::releaseSession)
@@ -430,12 +465,51 @@ internal class DefaultAgentSessionRuntimeManager(
         ) {
           releasedSessionIds += entry.key
           iterator.remove()
+          releaseSessionOwnershipLocked(entry.key)
         }
       }
     }
     releasedSessionIds.forEach(runtimeFactory::releaseSession)
   }
+
+  private fun acquireSessionOwnershipLocked(sessionId: String) {
+    val resolvedRuntimeTarget = runtimeTarget ?: return
+    val store = sessionOwnerLeaseStore ?: return
+    val nowEpochMs = clock()
+    val attemptedLease = runtimeSessionOwnerLease(
+      sessionId = sessionId,
+      target = resolvedRuntimeTarget,
+      runtimeOwnerLifecycle = runtimeLifecycleProvider(),
+      acquiredAtEpochMs = ownedSessionLeases[sessionId]?.acquiredAtEpochMs ?: nowEpochMs,
+      heartbeatAtEpochMs = nowEpochMs,
+      leaseDurationMs = sessionOwnerLeaseDurationMs,
+    )
+    val acquiredLease = store.acquire(attemptedLease)
+    if (!acquiredLease.sameRuntimeSessionOwnerAs(attemptedLease)) {
+      throw RuntimeSessionOwnershipException(
+        sessionId = sessionId,
+        requestedTarget = resolvedRuntimeTarget,
+        ownerTarget = acquiredLease.target,
+      )
+    }
+    ownedSessionLeases[sessionId] = acquiredLease
+  }
+
+  private fun releaseSessionOwnershipLocked(sessionId: String) {
+    val store = sessionOwnerLeaseStore ?: return
+    val lease = ownedSessionLeases.remove(sessionId) ?: return
+    store.release(lease.released(clock()))
+  }
 }
+
+internal class RuntimeSessionOwnershipException(
+  val sessionId: String,
+  val requestedTarget: RuntimeServiceTarget,
+  val ownerTarget: RuntimeServiceTarget,
+) : IllegalStateException(
+  "Runtime session '$sessionId' is owned by '${ownerTarget.wireValue}', " +
+    "not '${requestedTarget.wireValue}'.",
+)
 
 private class ManagedAgentSessionHandle(
   override val sessionId: String,

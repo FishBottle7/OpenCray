@@ -24,6 +24,7 @@ internal data class RuntimeOwnerBootstrapDependencies(
   val liveContextModeStore: LiveContextModeStore,
   val mediaSpeechSettingsStore: MediaSpeechSettingsStore,
   val approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot,
+  val runtimeTarget: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
 )
 
 internal data class RuntimeExecutionDependencies(

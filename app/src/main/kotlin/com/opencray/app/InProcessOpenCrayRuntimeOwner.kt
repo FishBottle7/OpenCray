@@ -147,6 +147,7 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
   approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot,
   soulProfileStore: WorkspaceSoulProfileStore,
   runtimeControllerLifecycle: RuntimeControllerLifecycleDescriptor? = null,
+  runtimeTarget: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
 ): RetainedInProcessOpenCrayRuntimeOwnerCore {
   val runtimeOwnerLifecycleState = RuntimeOwnerLifecycleState(
     hostRuntimeLifecycleDescriptorFor(runtimeControllerLifecycle),
@@ -463,6 +464,10 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
     executor = chatExecutor,
     subAgentRecoveryExecutor = subAgentRecoveryExecutor,
     runtimeLifecycleProvider = runtimeOwnerLifecycleState::current,
+    runtimeTarget = runtimeTarget,
+    sessionOwnerLeaseStore = FileBackedRuntimeSessionOwnerLeaseStore.fromRootDirectory(
+      runtimeRootDirectory,
+    ),
   )
   return RetainedInProcessOpenCrayRuntimeOwnerCore(
     runtimeControllerLifecycle = runtimeControllerLifecycle,
