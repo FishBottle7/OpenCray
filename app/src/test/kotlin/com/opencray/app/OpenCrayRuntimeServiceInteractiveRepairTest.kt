@@ -974,6 +974,8 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
       return requireNotNull(sessions[sessionId]) { "Session '$sessionId' is unavailable." }
     }
 
+    override fun existingSession(sessionId: String): OpenCrayRuntimeSessionAccess? = sessions[sessionId]
+
     override fun releaseSession(sessionId: String) = Unit
 
     override fun releaseIdleSessions() = Unit
