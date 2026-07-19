@@ -42,6 +42,10 @@ android {
     compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
+    buildFeatures {
+        aidl = true
+    }
+
     packaging {
         jniLibs {
             // p4a unpacks libpybundle.so via nativeLibraryDir, so the runtime
@@ -83,6 +87,7 @@ android {
         getByName("main") {
             manifest.srcFile("../../../app/src/main/AndroidManifest.xml")
             java.srcDirs("../../../app/src/main/kotlin")
+            aidl.srcDirs("../../../app/src/main/aidl")
             res.setSrcDirs(listOf("../../../app/src/main/res"))
             assets.srcDirs("../../../app/src/main/assets")
         }
