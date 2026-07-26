@@ -6166,7 +6166,7 @@ class OpenCrayAgentRuntime(
       event = OpenCrayAssistantEvent(
         runId = runIdFor(task),
         taskId = task.id,
-        eventId = eventId,
+        eventId = eventId ?: syntheticAssistantEventId(),
         turn = turn,
         text = text,
         responseFormat = responseFormat.takeIf(String::isNotBlank),
@@ -6190,7 +6190,7 @@ class OpenCrayAgentRuntime(
       event = OpenCrayAssistantEvent(
         runId = runIdFor(task),
         taskId = task.id,
-        eventId = eventId,
+        eventId = eventId ?: syntheticAssistantEventId(),
         turn = turn,
         text = text,
         isFinal = false,
@@ -6200,6 +6200,10 @@ class OpenCrayAgentRuntime(
       ),
     )
   }
+
+  // Assistant/commentary events must never share a fallback identity: dedup keys and
+  // projected message ids collapse distinct narrations when eventId is absent.
+  private fun syntheticAssistantEventId(): String = "assistant-item-${UUID.randomUUID()}"
 
   private fun emitResponsesContinuationRecoveryEvent(
     task: AgentTask,

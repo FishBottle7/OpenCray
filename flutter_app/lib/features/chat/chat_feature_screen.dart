@@ -7413,6 +7413,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           for (final run in visibleRuns)
             if (run.taskId.trim().isNotEmpty) run.taskId.trim(): run,
         };
+    final Set<String> latestPhaseEventIdentities =
+        _latestAssistantPhaseEventIdentities(
+          runtimeSnapshot: runtimeSnapshot,
+          visibleRunsByRunId: visibleRunsByRunId,
+          visibleRunsByTaskId: visibleRunsByTaskId,
+        );
     for (final event in runtimeSnapshot.events) {
       if (event.kind != 'assistant_phase' ||
           event.isFinal == true ||
@@ -7432,11 +7438,18 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       if (text.trim().isEmpty) {
         continue;
       }
-      for (final messageId in _assistantPhaseMessageIds(event)) {
+      // Only the event's own ids may be patched: writing through the shared
+      // run/turn/stage aliases would let a later narration overwrite the
+      // persisted bubble of an earlier one from the same turn.
+      for (final messageId in _assistantPhaseClaimMessageIds(event)) {
         patchesByMessageId[messageId] = _RuntimeProjectedMessagePatch(
           anchorMessageId: anchorMessageId,
           text: text,
-          isStreaming: true,
+          isStreaming:
+              !run.isTerminal &&
+              latestPhaseEventIdentities.contains(
+                _assistantPhaseEventIdentity(event),
+              ),
         );
       }
     }
@@ -7873,48 +7886,76 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           (left, right) =>
               left.emittedAtEpochMs.compareTo(right.emittedAtEpochMs),
         );
+    final Set<String> latestPhaseEventIdentities =
+        _latestAssistantPhaseEventIdentities(
+          runtimeSnapshot: runtimeSnapshot,
+          visibleRunsByRunId: visibleRunsByRunId,
+          visibleRunsByTaskId: visibleRunsByTaskId,
+        );
     final Map<String, List<ChatMessageData>> projectedByAnchorMessageId =
         <String, List<ChatMessageData>>{};
+    final List<ChatMessageData> unanchoredProjected = <ChatMessageData>[];
     final Set<String> seenMessageIds = <String>{...visibleMessageIds};
+    final Map<String, int> projectionOrderByMessageId = <String, int>{};
+    int nextProjectionOrder = 0;
     for (final event in sortedEvents) {
       final String runId = event.runId.trim();
       final String taskId = event.taskId.trim();
       final OpenCrayChatRunSnapshot? run =
           visibleRunsByRunId[runId] ?? visibleRunsByTaskId[taskId];
-      final String anchorMessageId = run?.pendingMessageId?.trim() ?? '';
       if (run == null ||
-          anchorMessageId.isEmpty ||
-          !visibleMessageIds.contains(anchorMessageId) ||
           !run.matchesRuntimeEvent(event) ||
           event.kind != 'assistant_phase' ||
           event.isFinal == true ||
           _hideAssistantPhaseBubble(event)) {
         continue;
       }
+      final String anchorMessageId = run.pendingMessageId?.trim() ?? '';
+      final bool anchorVisible =
+          anchorMessageId.isNotEmpty &&
+          visibleMessageIds.contains(anchorMessageId);
+      // The transcript snapshot may lag behind the realtime event feed (for
+      // example on the polling local transport); keep narration for active
+      // runs visible at the list tail instead of waiting for the anchor.
+      if (!anchorVisible && run.isTerminal) {
+        continue;
+      }
       final List<String> aliases = _assistantPhaseMessageIds(event);
       final String messageId = aliases.first;
-      if (aliases.any(seenMessageIds.contains) ||
+      final List<String> claimedAliases = _assistantPhaseClaimMessageIds(
+        event,
+      );
+      if (aliases.any(visibleMessageIds.contains) ||
+          claimedAliases.any(seenMessageIds.contains) ||
           !seenMessageIds.add(messageId)) {
         continue;
       }
-      seenMessageIds.addAll(aliases);
+      seenMessageIds.addAll(claimedAliases);
       final String text = _projectedAssistantPhaseMessageText(event);
       if (text.trim().isEmpty) {
         continue;
       }
-      projectedByAnchorMessageId
-          .putIfAbsent(anchorMessageId, () => <ChatMessageData>[])
-          .add(
-            ChatMessageData(
-              messageId: messageId,
-              kind: ChatMessageKind.inbound,
-              text: text,
-              runtimeAnchorMessageId: anchorMessageId,
-              createdAtEpochMs: event.emittedAtEpochMs,
-              isEphemeral: true,
-              isStreaming: true,
+      projectionOrderByMessageId[messageId] = nextProjectionOrder++;
+      final ChatMessageData projectedMessage = ChatMessageData(
+        messageId: messageId,
+        kind: ChatMessageKind.inbound,
+        text: text,
+        runtimeAnchorMessageId: anchorVisible ? anchorMessageId : '',
+        createdAtEpochMs: event.emittedAtEpochMs,
+        isEphemeral: true,
+        isStreaming:
+            !run.isTerminal &&
+            latestPhaseEventIdentities.contains(
+              _assistantPhaseEventIdentity(event),
             ),
-          );
+      );
+      if (anchorVisible) {
+        projectedByAnchorMessageId
+            .putIfAbsent(anchorMessageId, () => <ChatMessageData>[])
+            .add(projectedMessage);
+      } else {
+        unanchoredProjected.add(projectedMessage);
+      }
     }
     for (final run in visibleRuns) {
       final String anchorMessageId = run.pendingMessageId?.trim() ?? '';
@@ -7965,27 +8006,39 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             );
       }
     }
-    if (projectedByAnchorMessageId.isEmpty) {
+    if (projectedByAnchorMessageId.isEmpty && unanchoredProjected.isEmpty) {
       return messages;
     }
+    int projectionOrderOf(ChatMessageData message) =>
+        projectionOrderByMessageId[message.messageId] ?? 0;
+    int compareProjected(ChatMessageData left, ChatMessageData right) {
+      final int leftEpochMs = left.createdAtEpochMs ?? 0;
+      final int rightEpochMs = right.createdAtEpochMs ?? 0;
+      if (leftEpochMs != rightEpochMs) {
+        return leftEpochMs.compareTo(rightEpochMs);
+      }
+      final int leftOrder = projectionOrderOf(left);
+      final int rightOrder = projectionOrderOf(right);
+      if (leftOrder != rightOrder) {
+        return leftOrder.compareTo(rightOrder);
+      }
+      return left.messageId.compareTo(right.messageId);
+    }
+
     final List<ChatMessageData> mergedMessages = <ChatMessageData>[];
     for (final message in messages) {
       final List<ChatMessageData>? projections =
           projectedByAnchorMessageId[message.messageId];
       if (projections != null) {
         mergedMessages.addAll(
-          projections.toList(growable: false)..sort((left, right) {
-            final int leftEpochMs = left.createdAtEpochMs ?? 0;
-            final int rightEpochMs = right.createdAtEpochMs ?? 0;
-            if (leftEpochMs != rightEpochMs) {
-              return leftEpochMs.compareTo(rightEpochMs);
-            }
-            return left.messageId.compareTo(right.messageId);
-          }),
+          projections.toList(growable: false)..sort(compareProjected),
         );
       }
       mergedMessages.add(message);
     }
+    mergedMessages.addAll(
+      unanchoredProjected.toList(growable: false)..sort(compareProjected),
+    );
     return mergedMessages;
   }
 
@@ -10718,6 +10771,70 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       );
     }
     return ids;
+  }
+
+  /// Aliases an assistant-phase event may claim exclusively when projecting
+  /// bubbles. Events with a durable eventId only own their event-scoped id
+  /// (plus the legacy content-hash id older persisted transcripts used); the
+  /// shared run/turn/stage fallback aliases stay unclaimed so sibling
+  /// narrations of the same turn keep their own bubbles instead of being
+  /// swallowed by or overwriting the first one.
+  List<String> _assistantPhaseClaimMessageIds(
+    OpenCrayChatRuntimeEventSnapshot event,
+  ) {
+    final String eventId = event.eventId?.trim() ?? '';
+    if (eventId.isEmpty) {
+      return _assistantPhaseMessageIds(event);
+    }
+    final List<String> ids = <String>['runtime-assistant-event-$eventId'];
+    final String legacyId = _legacyKotlinAssistantPhaseMessageId(event);
+    if (legacyId.isNotEmpty && !ids.contains(legacyId)) {
+      ids.add(legacyId);
+    }
+    return ids;
+  }
+
+  String _assistantPhaseEventIdentity(OpenCrayChatRuntimeEventSnapshot event) {
+    final String eventId = event.eventId?.trim() ?? '';
+    if (eventId.isNotEmpty) {
+      return 'id:$eventId';
+    }
+    return 'key:${event.runId.trim()}|${event.taskId.trim()}|${event.turn ?? -1}'
+        '|${event.stage?.trim() ?? ''}|${event.emittedAtEpochMs}';
+  }
+
+  /// Identities of each visible run's newest non-final assistant-phase event.
+  /// Only that narration renders as "streaming" so a single live bubble pulses
+  /// per run instead of every historical narration.
+  Set<String> _latestAssistantPhaseEventIdentities({
+    required OpenCrayChatRuntimeSnapshot runtimeSnapshot,
+    required Map<String, OpenCrayChatRunSnapshot> visibleRunsByRunId,
+    required Map<String, OpenCrayChatRunSnapshot> visibleRunsByTaskId,
+  }) {
+    final Map<String, OpenCrayChatRuntimeEventSnapshot> latestByRunKey =
+        <String, OpenCrayChatRuntimeEventSnapshot>{};
+    for (final event in runtimeSnapshot.events) {
+      if (event.kind != 'assistant_phase' ||
+          event.isFinal == true ||
+          _hideAssistantPhaseBubble(event)) {
+        continue;
+      }
+      final OpenCrayChatRunSnapshot? run =
+          visibleRunsByRunId[event.runId.trim()] ??
+          visibleRunsByTaskId[event.taskId.trim()];
+      if (run == null || !run.matchesRuntimeEvent(event)) {
+        continue;
+      }
+      final String runKey = '${run.runId.trim()}|${run.taskId.trim()}';
+      final OpenCrayChatRuntimeEventSnapshot? current = latestByRunKey[runKey];
+      if (current == null ||
+          event.emittedAtEpochMs >= current.emittedAtEpochMs) {
+        latestByRunKey[runKey] = event;
+      }
+    }
+    return latestByRunKey.values
+        .map(_assistantPhaseEventIdentity)
+        .toSet();
   }
 
   String _canonicalKotlinAssistantPhaseMessageId(
