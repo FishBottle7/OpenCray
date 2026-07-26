@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/design/opencray_motion.dart';
+import '../../core/design/opencray_tokens.dart';
 import '../../core/design/opencray_widgets.dart';
 import '../../core/models/opencray_skills_snapshot.dart';
 
@@ -25,14 +26,14 @@ enum _InstalledSkillLifecycleState {
   failed,
 }
 
-const _shellBackground = Color(0xFFF5F5F7);
-const _surface = Colors.white;
-const _surfaceRaised = Color(0xFFF8F8FB);
-const _textPrimary = Color(0xFF111111);
-const _textSecondary = Color(0xFF6E6E73);
-const _border = Color(0xFFE5E5EA);
-const _danger = Color(0xFFFF3B30);
-const _accent = Color(0xFF007AFF);
+const _shellBackground = OpenCrayColors.shellBackground;
+const _surface = OpenCrayColors.surface;
+const _surfaceRaised = OpenCrayColors.surfaceSubtle;
+const _textPrimary = OpenCrayColors.textPrimary;
+const _textSecondary = OpenCrayColors.textSecondary;
+const _border = OpenCrayColors.divider;
+const _danger = OpenCrayColors.danger;
+const _accent = OpenCrayColors.primary;
 const _initialSearchResultLimit = 8;
 const _expandedSearchResultLimit = 20;
 final RegExp _windowsAbsolutePathPattern = RegExp(r'^[A-Za-z]:[\\/].+');
@@ -175,11 +176,11 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
               Text(
                 widget.copy.skillsEyebrow,
                 style: const TextStyle(
-                  fontSize: 12,
+                  fontSize: 11,
                   height: 1.1,
-                  fontWeight: FontWeight.w600,
-                  letterSpacing: 0.2,
-                  color: _textSecondary,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.1,
+                  color: OpenCrayColors.textTertiary,
                 ),
               ),
               const SizedBox(height: 10),
@@ -188,7 +189,8 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                 style: const TextStyle(
                   fontSize: 28,
                   height: 1.08,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.6,
                   color: _textPrimary,
                 ),
               ),
@@ -268,9 +270,11 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
         ),
         const SizedBox(height: 12),
         DecoratedBox(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             color: _surface,
-            borderRadius: BorderRadius.all(Radius.circular(16)),
+            borderRadius: const BorderRadius.all(Radius.circular(16)),
+            border: Border.all(color: OpenCrayColors.divider),
+            boxShadow: OpenCrayShadows.card,
           ),
           child: Column(
             children: [
@@ -381,9 +385,11 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
         ),
         const SizedBox(height: 10),
         DecoratedBox(
-          decoration: const BoxDecoration(
+          decoration: BoxDecoration(
             color: _surface,
-            borderRadius: BorderRadius.all(Radius.circular(16)),
+            borderRadius: const BorderRadius.all(Radius.circular(16)),
+            border: Border.all(color: OpenCrayColors.divider),
+            boxShadow: OpenCrayShadows.card,
           ),
           child: Column(
             children: [
@@ -439,9 +445,11 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
           _EmptyCard(title: emptyTitle, body: emptyBody)
         else ...[
           DecoratedBox(
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               color: _surface,
-              borderRadius: BorderRadius.all(Radius.circular(16)),
+              borderRadius: const BorderRadius.all(Radius.circular(16)),
+              border: Border.all(color: OpenCrayColors.divider),
+              boxShadow: OpenCrayShadows.card,
             ),
             child: Column(
               children: [
@@ -1151,9 +1159,10 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             child: DecoratedBox(
-              decoration: const BoxDecoration(
+              decoration: BoxDecoration(
                 color: _surfaceRaised,
-                borderRadius: BorderRadius.all(Radius.circular(22)),
+                borderRadius: const BorderRadius.all(Radius.circular(24)),
+                border: Border.all(color: OpenCrayColors.divider),
               ),
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 18, 16, 14),
@@ -1167,7 +1176,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                         height: 4,
                         margin: const EdgeInsets.only(bottom: 16),
                         decoration: BoxDecoration(
-                          color: _border,
+                          color: OpenCrayColors.outline,
                           borderRadius: BorderRadius.circular(999),
                         ),
                       ),
@@ -1424,9 +1433,11 @@ class _SummaryCard extends StatelessWidget {
     return SizedBox(
       width: double.infinity,
       child: DecoratedBox(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.all(Radius.circular(16)),
+        decoration: BoxDecoration(
+          color: _surface,
+          borderRadius: const BorderRadius.all(Radius.circular(16)),
+          border: Border.all(color: OpenCrayColors.divider),
+          boxShadow: OpenCrayShadows.card,
         ),
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -1439,6 +1450,7 @@ class _SummaryCard extends StatelessWidget {
                   fontSize: 17,
                   height: 1.2,
                   fontWeight: FontWeight.w600,
+                  letterSpacing: -0.2,
                   color: _textPrimary,
                 ),
               ),
@@ -1477,7 +1489,7 @@ class _SegmentedControl extends StatelessWidget {
       height: 36,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: const Color(0xFFECEEF3),
+          color: OpenCrayColors.surfaceSunken,
           borderRadius: BorderRadius.circular(999),
         ),
         child: Padding(
@@ -1505,6 +1517,7 @@ class _SegmentedControl extends StatelessWidget {
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(999),
+                        boxShadow: OpenCrayShadows.card,
                       ),
                     ),
                   ),
@@ -1566,9 +1579,9 @@ class _SegmentButton extends StatelessWidget {
               fontSize: 14,
               height: 1.1,
               fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-              color: const Color(
-                0xFF111111,
-              ).withValues(alpha: selected ? 1 : 0.72),
+              color: selected
+                  ? OpenCrayColors.textPrimary
+                  : OpenCrayColors.textSecondary,
             ),
             child: Text(label),
           ),
@@ -1610,6 +1623,7 @@ class _SkillRow extends StatelessWidget {
                     fontSize: 17,
                     height: 1.2,
                     fontWeight: FontWeight.w600,
+                    letterSpacing: -0.2,
                     color: _textPrimary,
                   ),
                 ),
@@ -1619,7 +1633,7 @@ class _SkillRow extends StatelessWidget {
                   style: const TextStyle(
                     fontSize: 13,
                     height: 1.3,
-                    color: Color(0xFF8E8E93),
+                    color: OpenCrayColors.textTertiary,
                   ),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
@@ -1640,14 +1654,14 @@ class _SkillRow extends StatelessWidget {
             width: 28,
             height: 28,
             decoration: BoxDecoration(
-              color: const Color(0xFFF1F2F6),
+              color: OpenCrayColors.surfaceMuted,
               borderRadius: BorderRadius.circular(999),
             ),
             child: IconButton(
               padding: EdgeInsets.zero,
               splashRadius: 18,
               icon: const Icon(Icons.more_horiz_rounded, size: 16),
-              color: const Color(0xFF8E8E93),
+              color: OpenCrayColors.textTertiary,
               onPressed: lifecycleState == null ? onMore : null,
             ),
           ),
@@ -1689,13 +1703,13 @@ class _InstalledSkillLifecyclePill extends StatelessWidget {
     final Color textColor = isFailed
         ? _danger
         : isDone
-        ? const Color(0xFF248A3D)
+        ? OpenCrayColors.success
         : _textSecondary;
     final Color surfaceColor = isFailed
-        ? const Color(0xFFFFF0F0)
+        ? OpenCrayColors.dangerTint
         : isDone
-        ? const Color(0xFFEAF7EF)
-        : const Color(0xFFF1F2F6);
+        ? OpenCrayColors.successTint
+        : OpenCrayColors.surfaceMuted;
     return AnimatedContainer(
       key: ValueKey<String>('skills-manage-lifecycle-$skillId-${state.name}'),
       duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
@@ -1766,7 +1780,7 @@ class _SkillToggle extends StatelessWidget {
         width: 50,
         height: 30,
         decoration: BoxDecoration(
-          color: value ? const Color(0xFF34C759) : const Color(0xFFD1D1D6),
+          color: value ? OpenCrayColors.primary : OpenCrayColors.surfaceSunken,
           borderRadius: BorderRadius.circular(999),
         ),
         padding: const EdgeInsets.all(3),
@@ -1796,8 +1810,10 @@ class _SourceRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final titleColor = source.isAvailable
         ? _textPrimary
-        : const Color(0xFF8E8E93);
-    final accentColor = source.isAvailable ? _accent : const Color(0xFFB0B3B8);
+        : OpenCrayColors.textTertiary;
+    final accentColor = source.isAvailable
+        ? _accent
+        : OpenCrayColors.textTertiary;
     return InkWell(
       onTap: onTap,
       child: Padding(
@@ -1891,15 +1907,15 @@ class _SuggestedRow extends StatelessWidget {
       _SkillInstallVisualState.idle => installLabel,
     };
     final Color installBackground = switch (installState) {
-      _SkillInstallVisualState.installing => const Color(0xFFF1F2F6),
-      _SkillInstallVisualState.installed => const Color(0xFFEAF7EF),
-      _SkillInstallVisualState.failed => const Color(0xFFFFF0F0),
-      _SkillInstallVisualState.idle => const Color(0xFFEEF5FF),
+      _SkillInstallVisualState.installing => OpenCrayColors.surfaceMuted,
+      _SkillInstallVisualState.installed => OpenCrayColors.successTint,
+      _SkillInstallVisualState.failed => OpenCrayColors.dangerTint,
+      _SkillInstallVisualState.idle => OpenCrayColors.primaryTint,
     };
     final Color installTextColor = switch (installState) {
       _SkillInstallVisualState.installing => _textSecondary,
-      _SkillInstallVisualState.installed => const Color(0xFF248A3D),
-      _SkillInstallVisualState.failed => const Color(0xFFFF3B30),
+      _SkillInstallVisualState.installed => OpenCrayColors.success,
+      _SkillInstallVisualState.failed => OpenCrayColors.danger,
       _SkillInstallVisualState.idle => _accent,
     };
     return Padding(
@@ -1921,7 +1937,7 @@ class _SuggestedRow extends StatelessWidget {
                         vertical: 3,
                       ),
                       decoration: BoxDecoration(
-                        color: const Color(0xFFF1F2F6),
+                        color: OpenCrayColors.surfaceMuted,
                         borderRadius: BorderRadius.circular(999),
                       ),
                       child: Text(
@@ -1941,7 +1957,7 @@ class _SuggestedRow extends StatelessWidget {
                           vertical: 3,
                         ),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFEEF5FF),
+                          color: OpenCrayColors.primaryTint,
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Text(
@@ -1991,7 +2007,7 @@ class _SuggestedRow extends StatelessWidget {
                     vertical: 6,
                   ),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF1F2F6),
+                    color: OpenCrayColors.surfaceMuted,
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Text(
@@ -2028,7 +2044,7 @@ class _SuggestedRow extends StatelessWidget {
                     borderRadius: BorderRadius.circular(999),
                     border: Border.all(
                       color: didFail
-                          ? const Color(0xFFFF3B30).withValues(alpha: 0.22)
+                          ? OpenCrayColors.danger.withValues(alpha: 0.22)
                           : Colors.transparent,
                     ),
                   ),
@@ -2097,21 +2113,23 @@ class _DirectInstallCard extends StatelessWidget {
       _SkillInstallVisualState.idle => installLabel,
     };
     final Color installBackground = switch (installState) {
-      _SkillInstallVisualState.installing => const Color(0xFFF1F2F6),
-      _SkillInstallVisualState.installed => const Color(0xFFEAF7EF),
-      _SkillInstallVisualState.failed => const Color(0xFFFFF0F0),
-      _SkillInstallVisualState.idle => const Color(0xFFEEF5FF),
+      _SkillInstallVisualState.installing => OpenCrayColors.surfaceMuted,
+      _SkillInstallVisualState.installed => OpenCrayColors.successTint,
+      _SkillInstallVisualState.failed => OpenCrayColors.dangerTint,
+      _SkillInstallVisualState.idle => OpenCrayColors.primaryTint,
     };
     final Color installTextColor = switch (installState) {
       _SkillInstallVisualState.installing => _textSecondary,
-      _SkillInstallVisualState.installed => const Color(0xFF248A3D),
-      _SkillInstallVisualState.failed => const Color(0xFFFF3B30),
+      _SkillInstallVisualState.installed => OpenCrayColors.success,
+      _SkillInstallVisualState.failed => OpenCrayColors.danger,
       _SkillInstallVisualState.idle => _accent,
     };
     return DecoratedBox(
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: _surface,
-        borderRadius: BorderRadius.all(Radius.circular(16)),
+        borderRadius: const BorderRadius.all(Radius.circular(16)),
+        border: Border.all(color: OpenCrayColors.divider),
+        boxShadow: OpenCrayShadows.card,
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
@@ -2165,7 +2183,7 @@ class _DirectInstallCard extends StatelessWidget {
                   borderRadius: BorderRadius.circular(999),
                   border: Border.all(
                     color: didFail
-                        ? const Color(0xFFFF3B30).withValues(alpha: 0.22)
+                        ? OpenCrayColors.danger.withValues(alpha: 0.22)
                         : Colors.transparent,
                   ),
                 ),
@@ -2219,7 +2237,7 @@ class _SearchField extends StatelessWidget {
             const Icon(
               Icons.search_rounded,
               size: 18,
-              color: Color(0xFF8E8E93),
+              color: OpenCrayColors.textTertiary,
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -2231,7 +2249,7 @@ class _SearchField extends StatelessWidget {
                   hintStyle: const TextStyle(
                     fontSize: 14,
                     height: 1.2,
-                    color: Color(0xFF8E8E93),
+                    color: OpenCrayColors.textTertiary,
                   ),
                 ),
               ),
@@ -2248,7 +2266,7 @@ class _ActionRow extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.onTap,
-    this.color = const Color(0xFF111111),
+    this.color = OpenCrayColors.textPrimary,
   });
 
   final IconData icon;

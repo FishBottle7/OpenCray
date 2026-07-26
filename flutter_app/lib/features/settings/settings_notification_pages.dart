@@ -952,7 +952,7 @@ class _NotificationActionRow extends StatelessWidget {
           ],
           DecoratedBox(
             decoration: BoxDecoration(
-              color: const Color(0xFFF3F4F7),
+              color: OpenCrayColors.surfaceMuted,
               borderRadius: BorderRadius.circular(999),
             ),
             child: Padding(

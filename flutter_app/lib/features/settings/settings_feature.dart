@@ -623,6 +623,10 @@ List<Widget> _buildDetailSectionCards(
               section.backgroundTone == SettingsSectionBackgroundTone.danger
               ? OpenCrayColors.dangerSurface
               : Colors.white,
+          borderColor:
+              section.backgroundTone == SettingsSectionBackgroundTone.danger
+              ? OpenCrayColors.dangerBorder
+              : OpenCrayColors.divider,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -645,7 +649,7 @@ List<Widget> _buildDetailSectionCards(
                 const SizedBox(height: 12),
                 DecoratedBox(
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF4F4F7),
+                    color: OpenCrayColors.surfaceMuted,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Padding(
@@ -1227,7 +1231,7 @@ class _DebugValueChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFFF3F4F7),
+        color: OpenCrayColors.surfaceMuted,
         borderRadius: BorderRadius.circular(999),
       ),
       child: Padding(
@@ -4335,7 +4339,8 @@ class _PersonalizationSettingsPageState
           if (snapshot.lastResetMessage.isNotEmpty) ...[
             const SizedBox(height: 16),
             _SettingsCard(
-              backgroundColor: const Color(0xFFF4F8FF),
+              backgroundColor: OpenCrayColors.primaryTint,
+              borderColor: OpenCrayColors.primaryBorder,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -4723,7 +4728,8 @@ class _McpSettingsPageState extends State<_McpSettingsPage> {
                   snapshot.masterDisabledBody.isNotEmpty)) ...[
             const SizedBox(height: 16),
             _SettingsCard(
-              backgroundColor: const Color(0xFFFFF7E8),
+              backgroundColor: OpenCrayColors.warningTint,
+              borderColor: OpenCrayColors.warningBorder,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
@@ -4912,10 +4918,14 @@ class _PresetOptionCard extends StatelessWidget {
       onTap: onTap,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: isSelected ? const Color(0xFFF2F7FF) : const Color(0xFFF7F7FA),
+          color: isSelected
+              ? OpenCrayColors.primaryTint
+              : OpenCrayColors.surfaceSubtle,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: isSelected ? OpenCrayColors.primary : Colors.transparent,
+            color: isSelected
+                ? OpenCrayColors.primary
+                : OpenCrayColors.divider,
           ),
         ),
         child: Padding(
@@ -4975,6 +4985,7 @@ class _DangerResetCard extends StatelessWidget {
         : (isArmed ? action.armedGuidance : action.typeExactGuidance);
     return _SettingsCard(
       backgroundColor: OpenCrayColors.dangerSurface,
+      borderColor: OpenCrayColors.dangerBorder,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -5005,7 +5016,7 @@ class _DangerResetCard extends StatelessWidget {
               style: FilledButton.styleFrom(
                 backgroundColor: OpenCrayColors.dangerText,
                 foregroundColor: Colors.white,
-                disabledBackgroundColor: const Color(0xFFE1E2E7),
+                disabledBackgroundColor: OpenCrayColors.surfaceSunken,
                 disabledForegroundColor: OpenCrayColors.textSecondary,
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 shape: RoundedRectangleBorder(
@@ -5114,22 +5125,22 @@ class _SettingsStatusPill extends StatelessWidget {
       case 'active':
       case 'positive':
       case 'success':
-        backgroundColor = const Color(0xFFE8F8EE);
+        backgroundColor = OpenCrayColors.successTint;
         textColor = OpenCrayColors.success;
         break;
       case 'warning':
       case 'attention':
       case 'caution':
-        backgroundColor = const Color(0xFFFFF3E4);
-        textColor = const Color(0xFF9C5F00);
+        backgroundColor = OpenCrayColors.warningTint;
+        textColor = OpenCrayColors.warning;
         break;
       case 'danger':
       case 'blocked':
-        backgroundColor = const Color(0xFFFFEAED);
+        backgroundColor = OpenCrayColors.dangerTint;
         textColor = OpenCrayColors.dangerText;
         break;
       default:
-        backgroundColor = const Color(0xFFF1F2F5);
+        backgroundColor = OpenCrayColors.surfaceMuted;
         textColor = OpenCrayColors.textSecondary;
         break;
     }
@@ -5221,7 +5232,7 @@ class _SettingsPickerRow extends StatelessWidget {
             ],
             DecoratedBox(
               decoration: BoxDecoration(
-                color: const Color(0xFFF3F4F7),
+                color: OpenCrayColors.surfaceMuted,
                 borderRadius: BorderRadius.circular(999),
               ),
               child: Padding(
@@ -5335,7 +5346,7 @@ class _InteractiveSegmentedSelector extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFFECEEF3),
+        color: OpenCrayColors.surfaceSunken,
         borderRadius: BorderRadius.circular(999),
       ),
       child: Padding(
@@ -5358,6 +5369,9 @@ class _InteractiveSegmentedSelector extends StatelessWidget {
                           ? Colors.white
                           : Colors.transparent,
                       borderRadius: BorderRadius.circular(999),
+                      boxShadow: label == selectedId
+                          ? OpenCrayShadows.card
+                          : null,
                     ),
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     child: Text(
@@ -5508,8 +5522,9 @@ class _PrototypeFieldSurface extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFFF7F7FA),
+        color: OpenCrayColors.surfaceSubtle,
         borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: OpenCrayColors.divider),
       ),
       child: child,
     );
@@ -5531,9 +5546,9 @@ class _PrototypeSwitch extends StatelessWidget {
       thumbColor: const WidgetStatePropertyAll<Color>(Colors.white),
       trackColor: WidgetStateProperty.resolveWith<Color>((states) {
         if (states.contains(WidgetState.selected)) {
-          return OpenCrayColors.success;
+          return OpenCrayColors.primary;
         }
-        return const Color(0xFFD8DAE3);
+        return OpenCrayColors.surfaceSunken;
       }),
       trackOutlineColor: const WidgetStatePropertyAll<Color>(
         Colors.transparent,
@@ -5742,7 +5757,7 @@ class _HeaderActionChip extends StatelessWidget {
       onTap: onTap,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: const Color(0xFFF2F7FF),
+          color: OpenCrayColors.primaryTint,
           borderRadius: BorderRadius.circular(999),
         ),
         child: Padding(
@@ -5761,10 +5776,12 @@ class _SettingsCard extends StatelessWidget {
   const _SettingsCard({
     required this.child,
     this.backgroundColor = Colors.white,
+    this.borderColor = OpenCrayColors.divider,
   });
 
   final Widget child;
   final Color backgroundColor;
+  final Color borderColor;
 
   @override
   Widget build(BuildContext context) {
@@ -5772,6 +5789,8 @@ class _SettingsCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: backgroundColor,
         borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: borderColor),
+        boxShadow: OpenCrayShadows.card,
       ),
       child: Padding(padding: const EdgeInsets.all(16), child: child),
     );
@@ -5788,7 +5807,7 @@ class _SegmentedSelector extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFFECEEF3),
+        color: OpenCrayColors.surfaceSunken,
         borderRadius: BorderRadius.circular(999),
       ),
       child: Padding(
@@ -5808,6 +5827,9 @@ class _SegmentedSelector extends StatelessWidget {
                         ? Colors.white
                         : Colors.transparent,
                     borderRadius: BorderRadius.circular(999),
+                    boxShadow: index == selectedIndex
+                        ? OpenCrayShadows.card
+                        : null,
                   ),
                   padding: const EdgeInsets.symmetric(vertical: 8),
                   child: Text(
@@ -6051,8 +6073,8 @@ class _OnDeviceModelTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final chipBackground = selected
-        ? const Color(0xFFE8F1FF)
-        : const Color(0xFFF1F2F6);
+        ? OpenCrayColors.primaryTint
+        : OpenCrayColors.surfaceMuted;
     final chipColor = selected
         ? OpenCrayColors.primary
         : (actionEnabled
@@ -6115,7 +6137,7 @@ class _OnDeviceModelTile extends StatelessWidget {
                         child: LinearProgressIndicator(
                           minHeight: 5,
                           value: progressValue,
-                          backgroundColor: const Color(0xFFE2E6EE),
+                          backgroundColor: OpenCrayColors.divider,
                           valueColor: const AlwaysStoppedAnimation<Color>(
                             OpenCrayColors.primary,
                           ),
@@ -6222,7 +6244,7 @@ class _DetailRow extends StatelessWidget {
           else
             DecoratedBox(
               decoration: BoxDecoration(
-                color: const Color(0xFFF3F4F7),
+                color: OpenCrayColors.surfaceMuted,
                 borderRadius: BorderRadius.circular(999),
               ),
               child: Padding(
@@ -6290,23 +6312,26 @@ class _SettingsTextStyles {
   const _SettingsTextStyles._();
 
   static const TextStyle eyebrow = TextStyle(
-    fontSize: 12,
+    fontSize: 11,
     height: 1.1,
-    fontWeight: FontWeight.w600,
-    color: OpenCrayColors.textSecondary,
+    fontWeight: FontWeight.w700,
+    letterSpacing: 1.1,
+    color: OpenCrayColors.textTertiary,
   );
 
   static const TextStyle pageTitle = TextStyle(
     fontSize: 28,
     height: 1.15,
-    fontWeight: FontWeight.w600,
+    fontWeight: FontWeight.w700,
+    letterSpacing: -0.6,
     color: OpenCrayColors.textPrimary,
   );
 
   static const TextStyle pageTitleSubpage = TextStyle(
     fontSize: 28,
     height: 1.15,
-    fontWeight: FontWeight.w600,
+    fontWeight: FontWeight.w700,
+    letterSpacing: -0.6,
     color: OpenCrayColors.textPrimary,
   );
 
@@ -6320,6 +6345,7 @@ class _SettingsTextStyles {
     fontSize: 17,
     height: 1.25,
     fontWeight: FontWeight.w600,
+    letterSpacing: -0.2,
     color: OpenCrayColors.textPrimary,
   );
 
@@ -6394,7 +6420,7 @@ class _SettingsTextStyles {
     fontSize: 16,
     height: 1.0,
     fontWeight: FontWeight.w500,
-    color: Color(0xFFC7C7CC),
+    color: OpenCrayColors.textTertiary,
   );
 
   static const TextStyle actionChip = TextStyle(

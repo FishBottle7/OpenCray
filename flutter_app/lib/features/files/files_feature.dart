@@ -13,6 +13,7 @@ import '../../core/models/opencray_file_text_preview.dart';
 import '../../core/models/opencray_files_snapshot.dart';
 import '../../core/models/opencray_workspace_text_document.dart';
 import '../../core/design/opencray_motion.dart';
+import '../../core/design/opencray_tokens.dart';
 import '../../core/design/opencray_widgets.dart';
 import '../../core/widgets/opencray_image_bytes_view.dart';
 import '../../core/widgets/opencray_markdown.dart';
@@ -69,16 +70,16 @@ class FilesFeatureScreen extends StatefulWidget {
   final FilesFeatureController? controller;
   final Duration autoRefreshPollInterval;
 
-  static const Color shellBackground = Color(0xFFF5F5F7);
-  static const Color surface = Colors.white;
-  static const Color surfaceMuted = Color(0xFFF1F2F6);
-  static const Color surfacePressed = Color(0xFFE9F1FF);
-  static const Color textPrimary = Color(0xFF111111);
-  static const Color textSecondary = Color(0xFF6E6E73);
-  static const Color textTertiary = Color(0xFF8E8E93);
-  static const Color accent = Color(0xFF007AFF);
-  static const Color danger = Color(0xFFFF3B30);
-  static const Color divider = Color(0xFFE5E5EA);
+  static const Color shellBackground = OpenCrayColors.shellBackground;
+  static const Color surface = OpenCrayColors.surface;
+  static const Color surfaceMuted = OpenCrayColors.surfaceMuted;
+  static const Color surfacePressed = OpenCrayColors.primaryTint;
+  static const Color textPrimary = OpenCrayColors.textPrimary;
+  static const Color textSecondary = OpenCrayColors.textSecondary;
+  static const Color textTertiary = OpenCrayColors.textTertiary;
+  static const Color accent = OpenCrayColors.primary;
+  static const Color danger = OpenCrayColors.danger;
+  static const Color divider = OpenCrayColors.divider;
 
   @override
   State<FilesFeatureScreen> createState() => _FilesFeatureScreenState();
@@ -1080,7 +1081,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
                     filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
                     child: ColoredBox(
                       key: backdropKey,
-                      color: const Color(0x26000000),
+                      color: OpenCrayColors.scrim,
                     ),
                   ),
                 ),
@@ -1270,9 +1271,10 @@ class _TitleRow extends StatelessWidget {
           child: Text(
             title,
             style: const TextStyle(
-              fontSize: 30,
+              fontSize: 28,
               height: 1.05,
-              fontWeight: FontWeight.w600,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.6,
               color: FilesFeatureScreen.textPrimary,
             ),
           ),
@@ -1352,12 +1354,10 @@ class _SearchBarState extends State<_SearchBar> {
       duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
       curve: OpenCrayMotion.enter,
       decoration: BoxDecoration(
-        color: isActive ? const Color(0xFFF9FBFF) : Colors.white,
+        color: isActive ? OpenCrayColors.primaryTint : Colors.white,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isActive
-              ? FilesFeatureScreen.accent.withValues(alpha: 0.28)
-              : Colors.transparent,
+          color: isActive ? OpenCrayColors.primary : Colors.transparent,
         ),
       ),
       child: Padding(
@@ -1452,8 +1452,10 @@ class _LocationCard extends StatelessWidget {
 
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(18),
+        color: FilesFeatureScreen.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: OpenCrayColors.divider),
+        boxShadow: OpenCrayShadows.card,
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
@@ -1499,9 +1501,10 @@ class _LocationCard extends StatelessWidget {
             Text(
               directoryName,
               style: const TextStyle(
-                fontSize: 18,
+                fontSize: 17,
                 height: 1.2,
                 fontWeight: FontWeight.w600,
+                letterSpacing: -0.2,
                 color: FilesFeatureScreen.textPrimary,
               ),
             ),
@@ -1569,13 +1572,8 @@ class _StickyLocationBar extends StatelessWidget {
       decoration: BoxDecoration(
         color: FilesFeatureScreen.surface.withValues(alpha: 0.96),
         borderRadius: BorderRadius.circular(16),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x14000000),
-            blurRadius: 16,
-            offset: Offset(0, 8),
-          ),
-        ],
+        border: Border.all(color: OpenCrayColors.divider),
+        boxShadow: OpenCrayShadows.floating,
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
@@ -1833,7 +1831,9 @@ class _DirectoryCard extends StatelessWidget {
       sliver: DecoratedSliver(
         decoration: BoxDecoration(
           color: FilesFeatureScreen.surface,
-          borderRadius: BorderRadius.circular(18),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: OpenCrayColors.divider),
+          boxShadow: OpenCrayShadows.card,
         ),
         sliver: SliverPadding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
@@ -2085,7 +2085,7 @@ class _SelectionToolbar extends StatelessWidget {
             border: Border(top: BorderSide(color: FilesFeatureScreen.divider)),
             boxShadow: [
               BoxShadow(
-                color: Color(0x12000000),
+                color: Color(0x12101828),
                 blurRadius: 18,
                 offset: Offset(0, -6),
               ),
@@ -2204,12 +2204,12 @@ class _FilesOperationStatusStrip extends StatelessWidget {
     final Color textColor = isFailed
         ? FilesFeatureScreen.danger
         : state == _FilesOperationState.done
-        ? const Color(0xFF248A3D)
+        ? OpenCrayColors.success
         : FilesFeatureScreen.textSecondary;
     final Color surfaceColor = isFailed
-        ? FilesFeatureScreen.danger.withValues(alpha: 0.08)
+        ? OpenCrayColors.dangerTint
         : state == _FilesOperationState.done
-        ? const Color(0xFFEAF7EF)
+        ? OpenCrayColors.successTint
         : FilesFeatureScreen.surfaceMuted;
     return AnimatedContainer(
       key: ValueKey<String>('files-operation-status-${state.name}'),
@@ -2460,13 +2460,8 @@ class _TextPreviewDialog extends StatelessWidget {
         decoration: BoxDecoration(
           color: FilesFeatureScreen.surface.withValues(alpha: 0.96),
           borderRadius: BorderRadius.circular(24),
-          boxShadow: const [
-            BoxShadow(
-              color: Color(0x22000000),
-              blurRadius: 30,
-              offset: Offset(0, 18),
-            ),
-          ],
+          border: Border.all(color: OpenCrayColors.divider),
+          boxShadow: OpenCrayShadows.floating,
         ),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
@@ -2504,6 +2499,7 @@ class _TextPreviewDialog extends StatelessWidget {
                           style: const TextStyle(
                             fontSize: 17,
                             fontWeight: FontWeight.w600,
+                            letterSpacing: -0.2,
                             color: FilesFeatureScreen.textPrimary,
                           ),
                         ),
@@ -2576,7 +2572,7 @@ class _TextPreviewDialog extends StatelessWidget {
                   onDoubleTap: onEdit,
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      color: const Color(0xFFF8F8FA),
+                      color: OpenCrayColors.surfaceSubtle,
                       borderRadius: BorderRadius.circular(18),
                     ),
                     child: Padding(
@@ -2614,9 +2610,8 @@ class _TextPreviewDialog extends StatelessWidget {
                                       styleSheet: _filesMarkdownStyleSheet(
                                         context,
                                       ),
-                                      imageBackgroundColor: const Color(
-                                        0xFFEDEFF4,
-                                      ),
+                                      imageBackgroundColor:
+                                          OpenCrayColors.surfaceMuted,
                                       imageBorderColor:
                                           FilesFeatureScreen.divider,
                                       contextMenuBuilder:
@@ -2722,13 +2717,8 @@ class _CreateEntryDialogState extends State<_CreateEntryDialog> {
         decoration: BoxDecoration(
           color: FilesFeatureScreen.surface.withValues(alpha: 0.97),
           borderRadius: BorderRadius.circular(24),
-          boxShadow: const [
-            BoxShadow(
-              color: Color(0x22000000),
-              blurRadius: 30,
-              offset: Offset(0, 18),
-            ),
-          ],
+          border: Border.all(color: OpenCrayColors.divider),
+          boxShadow: OpenCrayShadows.floating,
         ),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
@@ -2761,6 +2751,7 @@ class _CreateEntryDialogState extends State<_CreateEntryDialog> {
                         style: const TextStyle(
                           fontSize: 17,
                           fontWeight: FontWeight.w600,
+                          letterSpacing: -0.2,
                           color: FilesFeatureScreen.textPrimary,
                         ),
                       ),
@@ -2924,13 +2915,8 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
         decoration: BoxDecoration(
           color: FilesFeatureScreen.surface.withValues(alpha: 0.97),
           borderRadius: BorderRadius.circular(24),
-          boxShadow: const [
-            BoxShadow(
-              color: Color(0x22000000),
-              blurRadius: 30,
-              offset: Offset(0, 18),
-            ),
-          ],
+          border: Border.all(color: OpenCrayColors.divider),
+          boxShadow: OpenCrayShadows.floating,
         ),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
@@ -2965,6 +2951,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
                           style: const TextStyle(
                             fontSize: 17,
                             fontWeight: FontWeight.w600,
+                            letterSpacing: -0.2,
                             color: FilesFeatureScreen.textPrimary,
                           ),
                         ),
@@ -3017,7 +3004,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
               Expanded(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF8F8FA),
+                    color: OpenCrayColors.surfaceSubtle,
                     borderRadius: BorderRadius.circular(18),
                   ),
                   child: Padding(
@@ -3075,13 +3062,8 @@ class _ImagePreviewDialog extends StatelessWidget {
             decoration: BoxDecoration(
               color: FilesFeatureScreen.surface.withValues(alpha: 0.94),
               borderRadius: BorderRadius.circular(24),
-              boxShadow: const [
-                BoxShadow(
-                  color: Color(0x18000000),
-                  blurRadius: 24,
-                  offset: Offset(0, 14),
-                ),
-              ],
+              border: Border.all(color: OpenCrayColors.divider),
+              boxShadow: OpenCrayShadows.floating,
             ),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
@@ -3116,6 +3098,7 @@ class _ImagePreviewDialog extends StatelessWidget {
                           style: const TextStyle(
                             fontSize: 17,
                             fontWeight: FontWeight.w600,
+                            letterSpacing: -0.2,
                             color: FilesFeatureScreen.textPrimary,
                           ),
                         ),
@@ -3168,7 +3151,9 @@ class _ImagePreviewDialog extends StatelessWidget {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(28),
                 child: DecoratedBox(
-                  decoration: const BoxDecoration(color: Color(0xFFF2F2F5)),
+                  decoration: const BoxDecoration(
+                    color: OpenCrayColors.surfaceMuted,
+                  ),
                   child: OpenCrayImageBytesView(
                     key: const ValueKey<String>('files-image-preview-image'),
                     bytes: preview.bytes,
@@ -3351,8 +3336,9 @@ MarkdownStyleSheet _filesMarkdownStyleSheet(BuildContext context) {
     ),
     codeblockPadding: const EdgeInsets.all(12),
     codeblockDecoration: BoxDecoration(
-      color: const Color(0xFFF0F1F5),
+      color: OpenCrayColors.codeSurface,
       borderRadius: BorderRadius.circular(12),
+      border: Border.all(color: OpenCrayColors.divider),
     ),
     blockSpacing: 14,
     blockquote: const TextStyle(
@@ -3361,7 +3347,7 @@ MarkdownStyleSheet _filesMarkdownStyleSheet(BuildContext context) {
       color: FilesFeatureScreen.textSecondary,
     ),
     blockquoteDecoration: BoxDecoration(
-      color: const Color(0xFFF3F4F8),
+      color: OpenCrayColors.surfaceMuted,
       borderRadius: BorderRadius.circular(12),
       border: const Border(
         left: BorderSide(color: FilesFeatureScreen.divider, width: 3),

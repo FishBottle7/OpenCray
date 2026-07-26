@@ -70,7 +70,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
           else ...[
             if (_errorMessage != null) ...[
               _SettingsCard(
-                backgroundColor: const Color(0xFFFFF3E4),
+                backgroundColor: OpenCrayColors.warningTint,
                 child: Text(_errorMessage!, style: _SettingsTextStyles.body),
               ),
               const SizedBox(height: 16),
@@ -829,7 +829,7 @@ class _WorkspaceAccessSettingsPageState
           else ...[
             if (_errorMessage != null) ...[
               _SettingsCard(
-                backgroundColor: const Color(0xFFFFF3E4),
+                backgroundColor: OpenCrayColors.warningTint,
                 child: Text(_errorMessage!, style: _SettingsTextStyles.body),
               ),
               const SizedBox(height: 16),
@@ -1264,7 +1264,7 @@ class _EnumSegmentedSelector<T> extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFFECEEF3),
+        color: OpenCrayColors.surfaceSunken,
         borderRadius: BorderRadius.circular(999),
       ),
       child: Padding(
@@ -1412,7 +1412,7 @@ class _PrototypeDisclosureRow extends StatelessWidget {
             const Text(
               '›',
               style: TextStyle(
-                color: Color(0xFFC7C7CC),
+                color: OpenCrayColors.outline,
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
               ),
@@ -1527,7 +1527,7 @@ class _StepperButton extends StatelessWidget {
       onTap: enabled ? onTap : null,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: enabled ? const Color(0xFFF7F7FA) : const Color(0xFFF0F0F3),
+          color: enabled ? OpenCrayColors.surfaceSubtle : OpenCrayColors.surfaceMuted,
           borderRadius: BorderRadius.circular(999),
         ),
         child: Padding(
@@ -1556,7 +1556,7 @@ class _PrototypeValuePill extends StatelessWidget {
   Widget build(BuildContext context) {
     final child = DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFFF7F7FA),
+        color: OpenCrayColors.surfaceSubtle,
         borderRadius: BorderRadius.circular(999),
       ),
       child: Padding(
@@ -1693,7 +1693,7 @@ class _ApprovedPathTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: const Color(0xFFF7F7FA),
+        color: OpenCrayColors.surfaceSubtle,
         borderRadius: BorderRadius.circular(14),
       ),
       child: Padding(

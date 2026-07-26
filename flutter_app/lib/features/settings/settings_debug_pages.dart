@@ -395,7 +395,7 @@ print(os.getcwd())
               width: double.infinity,
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: const Color(0xFFF7F8FA),
+                color: OpenCrayColors.surfaceSubtle,
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(color: OpenCrayColors.divider),
               ),
@@ -540,7 +540,7 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
               if (_loadError != null) ...[
                 const SizedBox(height: 16),
                 _SettingsCard(
-                  backgroundColor: const Color(0xFFFFF3F0),
+                  backgroundColor: OpenCrayColors.dangerTint,
                   child: Text(
                     _loadError!,
                     style: _SettingsTextStyles.bodyStrong,
@@ -1175,7 +1175,7 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
               if (_loadError != null) ...[
                 const SizedBox(height: 16),
                 _SettingsCard(
-                  backgroundColor: const Color(0xFFFFF3F0),
+                  backgroundColor: OpenCrayColors.dangerTint,
                   child: Text(
                     _loadError!,
                     style: _SettingsTextStyles.bodyStrong,
@@ -2708,7 +2708,7 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
               if (_loadError != null) ...[
                 const SizedBox(height: 16),
                 _SettingsCard(
-                  backgroundColor: const Color(0xFFFFF3F0),
+                  backgroundColor: OpenCrayColors.dangerTint,
                   child: Text(
                     _loadError!,
                     style: _SettingsTextStyles.bodyStrong,
@@ -2943,7 +2943,7 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF7F8FA),
+                    color: OpenCrayColors.surfaceSubtle,
                     borderRadius: BorderRadius.circular(14),
                     border: Border.all(color: OpenCrayColors.divider),
                   ),
@@ -3380,7 +3380,7 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
               if (_loadError != null) ...[
                 const SizedBox(height: 16),
                 _SettingsCard(
-                  backgroundColor: const Color(0xFFFFF3F0),
+                  backgroundColor: OpenCrayColors.dangerTint,
                   child: Text(
                     _loadError!,
                     style: _SettingsTextStyles.bodyStrong,
@@ -3742,7 +3742,7 @@ class _DebugToggleChip extends StatelessWidget {
       borderRadius: BorderRadius.circular(999),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFFEAF2FF) : const Color(0xFFF3F4F7),
+          color: selected ? OpenCrayColors.primaryTint : OpenCrayColors.surfaceMuted,
           borderRadius: BorderRadius.circular(999),
         ),
         child: Padding(
@@ -3779,10 +3779,10 @@ class _MemoryDebugRecordRow extends StatelessWidget {
       borderRadius: BorderRadius.circular(14),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFFF3F4F7) : Colors.white,
+          color: selected ? OpenCrayColors.surfaceMuted : Colors.white,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: selected ? const Color(0xFFD7E4FF) : OpenCrayColors.divider,
+            color: selected ? OpenCrayColors.primaryBorder : OpenCrayColors.divider,
           ),
         ),
         child: Padding(
@@ -3825,10 +3825,10 @@ class _MemoryDebugSearchResultRow extends StatelessWidget {
       borderRadius: BorderRadius.circular(14),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: selected ? const Color(0xFFF3F4F7) : Colors.white,
+          color: selected ? OpenCrayColors.surfaceMuted : Colors.white,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
-            color: selected ? const Color(0xFFD7E4FF) : OpenCrayColors.divider,
+            color: selected ? OpenCrayColors.primaryBorder : OpenCrayColors.divider,
           ),
         ),
         child: Padding(

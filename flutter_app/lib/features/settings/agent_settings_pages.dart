@@ -407,11 +407,11 @@ class _SavedAgent {
 }
 
 const List<List<Color>> _agentGradientSets = <List<Color>>[
-  <Color>[Color(0xFFE8EEF8), Color(0xFFCBD9EB)],
-  <Color>[Color(0xFFF2E8E1), Color(0xFFDECCBF)],
-  <Color>[Color(0xFFE8F0EE), Color(0xFFC7D8D4)],
-  <Color>[Color(0xFFEFE6F3), Color(0xFFD8C6E7)],
-  <Color>[Color(0xFFE6EDF8), Color(0xFFC7D5F0)],
+  <Color>[Color(0xFFE7EEFA), Color(0xFFC9D9F2)],
+  <Color>[Color(0xFFF4EAE2), Color(0xFFE2CFBF)],
+  <Color>[Color(0xFFE6F2EE), Color(0xFFC5DDD5)],
+  <Color>[Color(0xFFF0E8F6), Color(0xFFD9C8EC)],
+  <Color>[Color(0xFFE9F0FB), Color(0xFFCBD8F4)],
 ];
 
 List<Color> _agentGradientForSeed(String seed) {
@@ -1492,9 +1492,9 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
           const SizedBox(height: 10),
           Container(
             decoration: BoxDecoration(
-              color: const Color(0xFFF7F9FD),
+              color: OpenCrayColors.surfaceSubtle,
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFFDDE5F2)),
+              border: Border.all(color: OpenCrayColors.divider),
             ),
             padding: const EdgeInsets.all(14),
             child: Column(
@@ -1507,14 +1507,14 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
                       width: 36,
                       height: 36,
                       decoration: BoxDecoration(
-                        color: const Color(0xFFE8EEF8),
+                        color: OpenCrayColors.surfaceMuted,
                         borderRadius: BorderRadius.circular(12),
                       ),
                       alignment: Alignment.center,
                       child: const Icon(
                         Icons.description_outlined,
                         size: 18,
-                        color: Color(0xFF4B5B73),
+                        color: OpenCrayColors.textSecondary,
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -1974,8 +1974,9 @@ class _AgentAvatarPageState extends State<_AgentAvatarPage> {
                 Container(
                   height: 184,
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF7F9FD),
+                    color: OpenCrayColors.surfaceSubtle,
                     borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: OpenCrayColors.divider),
                   ),
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -2217,9 +2218,9 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
           const SizedBox(height: 12),
           Container(
             decoration: BoxDecoration(
-              color: const Color(0xFFF7F9FD),
+              color: OpenCrayColors.surfaceSubtle,
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFFDDE5F2)),
+              border: Border.all(color: OpenCrayColors.divider),
             ),
             padding: const EdgeInsets.all(14),
             child: Column(
@@ -2245,7 +2246,7 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
                 Container(
                   height: 56,
                   decoration: BoxDecoration(
-                    color: const Color(0xFFE8EEF8),
+                    color: OpenCrayColors.surfaceMuted,
                     borderRadius: BorderRadius.circular(10),
                   ),
                   padding: const EdgeInsets.symmetric(
@@ -2355,9 +2356,9 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
           const SizedBox(height: 12),
           Container(
             decoration: BoxDecoration(
-              color: const Color(0xFFF7F9FD),
+              color: OpenCrayColors.surfaceSubtle,
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: const Color(0xFFDDE5F2)),
+              border: Border.all(color: OpenCrayColors.divider),
             ),
             padding: const EdgeInsets.all(12),
             child: Column(
@@ -2366,7 +2367,7 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
                 Text(
                   '${images.length} labeled references',
                   style: _SettingsTextStyles.rowSubtitle.copyWith(
-                    color: const Color(0xFF4E5665),
+                    color: OpenCrayColors.textSecondary,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
@@ -3000,7 +3001,7 @@ class _AgentListCard extends StatelessWidget {
               style: _SettingsTextStyles.bodyStrong.copyWith(
                 fontSize: 13,
                 fontWeight: FontWeight.w400,
-                color: const Color(0xFF4B5B73),
+                color: OpenCrayColors.textSecondary,
               ),
             ),
             const SizedBox(height: 10),
@@ -3124,32 +3125,32 @@ class _AgentStatusVisual {
     return switch (status) {
       _AgentCreateStatus.clean => const _AgentStatusVisual(
         label: 'Draft ready',
-        surfaceColor: Color(0xFFF1F2F6),
-        borderColor: Color(0xFFE3E5EA),
-        textColor: Color(0xFF5B6472),
+        surfaceColor: OpenCrayColors.surfaceMuted,
+        borderColor: OpenCrayColors.divider,
+        textColor: OpenCrayColors.textSecondary,
       ),
       _AgentCreateStatus.edited => const _AgentStatusVisual(
         label: 'Unsaved changes',
-        surfaceColor: Color(0xFFFFF7E8),
-        borderColor: Color(0xFFFFDCA8),
-        textColor: Color(0xFF9A5B00),
+        surfaceColor: OpenCrayColors.warningTint,
+        borderColor: OpenCrayColors.warningBorder,
+        textColor: OpenCrayColors.warning,
       ),
       _AgentCreateStatus.saving => const _AgentStatusVisual(
         label: 'Saving agent',
-        surfaceColor: Color(0xFFEEF5FF),
-        borderColor: Color(0xFFCFE2FF),
-        textColor: Color(0xFF0A63C7),
+        surfaceColor: OpenCrayColors.primaryTint,
+        borderColor: OpenCrayColors.primaryBorder,
+        textColor: OpenCrayColors.primary,
       ),
       _AgentCreateStatus.saved => const _AgentStatusVisual(
         label: 'Saved',
-        surfaceColor: Color(0xFFEAF7EF),
-        borderColor: Color(0xFFCDEDD8),
-        textColor: Color(0xFF248A3D),
+        surfaceColor: OpenCrayColors.successTint,
+        borderColor: OpenCrayColors.successBorder,
+        textColor: OpenCrayColors.success,
       ),
       _AgentCreateStatus.failed => const _AgentStatusVisual(
         label: 'Save failed',
-        surfaceColor: Color(0xFFFFF0F0),
-        borderColor: Color(0xFFFFD4D4),
+        surfaceColor: OpenCrayColors.dangerTint,
+        borderColor: OpenCrayColors.dangerBorder,
         textColor: OpenCrayColors.dangerText,
       ),
     };
@@ -3301,9 +3302,13 @@ class _AgentChoiceTile extends StatelessWidget {
         decoration: BoxDecoration(
           color: selected
               ? OpenCrayColors.surfaceAccent
-              : const Color(0xFFF7F7FA),
+              : OpenCrayColors.surfaceSubtle,
           borderRadius: BorderRadius.circular(14),
-          border: selected ? Border.all(color: const Color(0xFFBBD7FF)) : null,
+          border: Border.all(
+            color: selected
+                ? OpenCrayColors.primaryBorder
+                : OpenCrayColors.divider,
+          ),
         ),
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -3328,7 +3333,7 @@ class _AgentChoiceTile extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: Colors.white,
                       shape: BoxShape.circle,
-                      border: Border.all(color: const Color(0xFFD0D5E0)),
+                      border: Border.all(color: OpenCrayColors.outline),
                     ),
                   ),
               ],
@@ -3338,9 +3343,7 @@ class _AgentChoiceTile extends StatelessWidget {
               body,
               style: _SettingsTextStyles.body.copyWith(
                 fontSize: 13,
-                color: selected
-                    ? const Color(0xFF4B5B73)
-                    : OpenCrayColors.textSecondary,
+                color: OpenCrayColors.textSecondary,
               ),
             ),
           ],
@@ -3380,7 +3383,7 @@ class _AgentSoftBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFFEAF4FF),
+        color: OpenCrayColors.primaryTint,
         borderRadius: BorderRadius.circular(999),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -3406,7 +3409,7 @@ class _TwinImportNeutralBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: const Color(0xFFF2F2F7),
+        color: OpenCrayColors.surfaceMuted,
         borderRadius: BorderRadius.circular(999),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -3434,9 +3437,13 @@ class _TwinImportSignalPill extends StatelessWidget {
     return Container(
       height: 32,
       decoration: BoxDecoration(
-        color: active ? OpenCrayColors.surfaceAccent : const Color(0xFFF2F2F7),
+        color: active
+            ? OpenCrayColors.surfaceAccent
+            : OpenCrayColors.surfaceMuted,
         borderRadius: BorderRadius.circular(999),
-        border: active ? Border.all(color: const Color(0xFFBBD7FF)) : null,
+        border: active
+            ? Border.all(color: OpenCrayColors.primaryBorder)
+            : null,
       ),
       alignment: Alignment.center,
       child: Text(
@@ -3535,7 +3542,7 @@ class _AgentTertiaryButton extends StatelessWidget {
       onTap: onTap,
       child: Container(
         decoration: BoxDecoration(
-          color: OpenCrayColors.primary,
+          color: OpenCrayColors.primaryTint,
           borderRadius: BorderRadius.circular(999),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -3545,7 +3552,7 @@ class _AgentTertiaryButton extends StatelessWidget {
             fontSize: 11,
             height: 1.1,
             fontWeight: FontWeight.w600,
-            color: Colors.white,
+            color: OpenCrayColors.primary,
           ),
         ),
       ),
@@ -3566,7 +3573,7 @@ class _AgentMutedButton extends StatelessWidget {
       onTap: onTap,
       child: Container(
         decoration: BoxDecoration(
-          color: const Color(0xFFEEF1F6),
+          color: OpenCrayColors.surfaceMuted,
           borderRadius: BorderRadius.circular(999),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
@@ -3576,7 +3583,7 @@ class _AgentMutedButton extends StatelessWidget {
             fontSize: 11,
             height: 1.1,
             fontWeight: FontWeight.w600,
-            color: Color(0xFF4E5665),
+            color: OpenCrayColors.textSecondary,
           ),
         ),
       ),
@@ -3611,7 +3618,7 @@ class _AgentWaveBar extends StatelessWidget {
       width: 4,
       height: height,
       decoration: BoxDecoration(
-        color: const Color(0xFF7DB3FF),
+        color: OpenCrayColors.brandSky,
         borderRadius: BorderRadius.circular(999),
       ),
     );
@@ -3639,9 +3646,9 @@ class _AgentUploadZone extends StatelessWidget {
       child: Container(
         height: 148,
         decoration: BoxDecoration(
-          color: const Color(0xFFF7F7FA),
+          color: OpenCrayColors.surfaceSubtle,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: const Color(0xFFD8DCE6)),
+          border: Border.all(color: OpenCrayColors.outline),
         ),
         padding: const EdgeInsets.all(14),
         child: Column(
@@ -3703,7 +3710,7 @@ class _AgentReferenceCard extends StatelessWidget {
               fontSize: 10,
               height: 1.2,
               fontWeight: FontWeight.w600,
-              color: Color(0xFF3E4756),
+              color: OpenCrayColors.textPrimary,
             ),
           ),
         ),
@@ -3775,7 +3782,7 @@ class _AgentDetailActionRow extends StatelessWidget {
               size: 18,
               color: enabled
                   ? OpenCrayColors.textTertiary
-                  : const Color(0xFFD9D9DE),
+                  : OpenCrayColors.outline,
             ),
           ],
         ),
@@ -3865,11 +3872,11 @@ Future<T?> _showSelectionSheet<T>(
                     decoration: BoxDecoration(
                       color: options[index] == selectedValue
                           ? OpenCrayColors.surfaceAccent
-                          : const Color(0xFFF7F7FA),
+                          : OpenCrayColors.surfaceSubtle,
                       borderRadius: BorderRadius.circular(14),
                       border: options[index] == selectedValue
-                          ? Border.all(color: const Color(0xFFBBD7FF))
-                          : null,
+                          ? Border.all(color: OpenCrayColors.primaryBorder)
+                          : Border.all(color: OpenCrayColors.divider),
                     ),
                     child: Row(
                       children: [
@@ -3905,7 +3912,7 @@ Future<String?> _showImageNamingDialog(
 }) {
   return showDialog<String>(
     context: context,
-    barrierColor: const Color(0x66111111),
+    barrierColor: OpenCrayColors.scrim,
     builder: (BuildContext context) {
       final TextEditingController controller = TextEditingController();
       String draftValue = '';
@@ -3919,13 +3926,7 @@ Future<String?> _showImageNamingDialog(
               decoration: BoxDecoration(
                 color: Colors.white,
                 borderRadius: BorderRadius.circular(22),
-                boxShadow: const [
-                  BoxShadow(
-                    color: Color(0x1A000000),
-                    blurRadius: 30,
-                    offset: Offset(0, 12),
-                  ),
-                ],
+                boxShadow: OpenCrayShadows.floating,
               ),
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -3959,7 +3960,7 @@ Future<String?> _showImageNamingDialog(
                           fontSize: 10,
                           height: 1.2,
                           fontWeight: FontWeight.w600,
-                          color: Color(0xFF3E4756),
+                          color: OpenCrayColors.textPrimary,
                         ),
                       ),
                     ),
@@ -3978,9 +3979,9 @@ Future<String?> _showImageNamingDialog(
                   Container(
                     height: 48,
                     decoration: BoxDecoration(
-                      color: const Color(0xFFF7F7FA),
+                      color: OpenCrayColors.surfaceSubtle,
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: const Color(0xFFD8DCE6)),
+                      border: Border.all(color: OpenCrayColors.outline),
                     ),
                     alignment: Alignment.center,
                     padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -4007,7 +4008,7 @@ Future<String?> _showImageNamingDialog(
                         border: InputBorder.none,
                         hintText: 'e.g. front portrait, red outfit, warm light',
                         hintStyle: _SettingsTextStyles.fieldValue.copyWith(
-                          color: const Color(0xFFA0A4AE),
+                          color: OpenCrayColors.textTertiary,
                           fontWeight: FontWeight.w400,
                         ),
                       ),
@@ -4072,9 +4073,9 @@ class _AgentDialogButton extends StatelessWidget {
         decoration: BoxDecoration(
           color: primary
               ? (onTap == null
-                    ? const Color(0xFF9BC8FF)
+                    ? OpenCrayColors.surfaceSunken
                     : OpenCrayColors.primary)
-              : const Color(0xFFEEF1F6),
+              : OpenCrayColors.surfaceMuted,
           borderRadius: BorderRadius.circular(14),
         ),
         alignment: Alignment.center,
@@ -4084,7 +4085,11 @@ class _AgentDialogButton extends StatelessWidget {
             fontSize: 14,
             height: 1.2,
             fontWeight: FontWeight.w600,
-            color: primary ? Colors.white : const Color(0xFF4E5665),
+            color: primary
+                ? (onTap == null
+                      ? OpenCrayColors.textTertiary
+                      : Colors.white)
+                : OpenCrayColors.textSecondary,
           ),
         ),
       ),
