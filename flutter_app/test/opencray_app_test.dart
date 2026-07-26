@@ -6,8 +6,14 @@ import 'package:opencray/app/opencray_app.dart';
 import 'package:opencray/app/opencray_tabs.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
+import 'package:opencray/core/design/opencray_widgets.dart';
 import 'package:opencray/core/models/opencray_shell_snapshot.dart';
 import 'package:opencray/features/settings/settings.dart';
+
+Finder _navLabel(String label) => find.descendant(
+  of: find.byType(OpenCrayBottomNavigation),
+  matching: find.text(label),
+);
 
 void main() {
   testWidgets('renders shell with all bottom tabs', (tester) async {
@@ -24,11 +30,11 @@ void main() {
     await tester.pumpWidget(OpenCrayApp(bridge: bridge));
     await tester.pumpAndSettle();
 
-    expect(find.text('Chat'), findsOneWidget);
-    expect(find.text('CHAT'), findsOneWidget);
-    expect(find.text('SKILLS'), findsOneWidget);
-    expect(find.text('FILES'), findsOneWidget);
-    expect(find.text('SETTINGS'), findsOneWidget);
+    expect(find.text('Chat'), findsNWidgets(2));
+    expect(_navLabel('Chat'), findsOneWidget);
+    expect(_navLabel('Skills'), findsOneWidget);
+    expect(_navLabel('Files'), findsOneWidget);
+    expect(_navLabel('Settings'), findsOneWidget);
   });
 
   testWidgets('settings route opens notifications and background page', (
@@ -98,7 +104,7 @@ void main() {
     await tester.pump();
 
     expect(find.text('Why is write access pending?'), findsNothing);
-    expect(find.text('CHAT'), findsNothing);
+    expect(find.byType(OpenCrayBottomNavigation), findsNothing);
   });
 
   testWidgets(
@@ -118,7 +124,7 @@ void main() {
       await tester.pumpWidget(OpenCrayApp(bridge: bridge));
       await tester.pumpAndSettle();
 
-      expect(find.text('Chat'), findsOneWidget);
+      expect(find.text('Chat'), findsNWidgets(2));
       expect(find.text('Privacy & Telemetry'), findsNothing);
     },
   );

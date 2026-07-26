@@ -77,8 +77,10 @@ class OpenCrayPageTemplate extends StatelessWidget {
                   if (eyebrow != null)
                     Text(
                       eyebrow!,
-                      style: textTheme.labelMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
+                      style: textTheme.labelSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.1,
+                        color: OpenCrayColors.textTertiary,
                       ),
                     ),
                   if (eyebrow != null)
@@ -104,11 +106,15 @@ class OpenCrayCard extends StatelessWidget {
     required this.child,
     this.padding = const EdgeInsets.all(OpenCraySpacing.md),
     this.backgroundColor = OpenCrayColors.surface,
+    this.borderColor,
+    this.showShadow = true,
   });
 
   final Widget child;
   final EdgeInsets padding;
   final Color backgroundColor;
+  final Color? borderColor;
+  final bool showShadow;
 
   @override
   Widget build(BuildContext context) {
@@ -116,6 +122,8 @@ class OpenCrayCard extends StatelessWidget {
       decoration: BoxDecoration(
         color: backgroundColor,
         borderRadius: const BorderRadius.all(OpenCrayRadii.lg),
+        border: Border.all(color: borderColor ?? OpenCrayColors.divider),
+        boxShadow: showShadow ? OpenCrayShadows.card : null,
       ),
       child: Padding(padding: padding, child: child),
     );
@@ -159,6 +167,7 @@ class OpenCrayStateCard extends StatelessWidget {
         color: colors.background,
         borderRadius: const BorderRadius.all(OpenCrayRadii.lg),
         border: Border.all(color: colors.border),
+        boxShadow: OpenCrayShadows.card,
       ),
       child: hasText
           ? Row(
@@ -179,8 +188,9 @@ class OpenCrayStateCard extends StatelessWidget {
                           title!,
                           style: const TextStyle(
                             fontSize: 16,
-                            height: 1.2,
-                            fontWeight: FontWeight.w700,
+                            height: 1.25,
+                            fontWeight: FontWeight.w600,
+                            letterSpacing: -0.2,
                             color: OpenCrayColors.textPrimary,
                           ),
                         ),
@@ -192,7 +202,7 @@ class OpenCrayStateCard extends StatelessWidget {
                           body!,
                           style: const TextStyle(
                             fontSize: 14,
-                            height: 1.35,
+                            height: 1.4,
                             color: OpenCrayColors.textSecondary,
                           ),
                         ),
@@ -273,32 +283,32 @@ class _OpenCrayStateToneColors {
 _OpenCrayStateToneColors _stateToneColors(OpenCrayStateTone tone) {
   switch (tone) {
     case OpenCrayStateTone.neutral:
-      return _OpenCrayStateToneColors(
+      return const _OpenCrayStateToneColors(
         background: OpenCrayColors.surface,
-        border: OpenCrayColors.divider.withValues(alpha: 0.7),
+        border: OpenCrayColors.divider,
         markerBackground: OpenCrayColors.surfaceMuted,
         markerForeground: OpenCrayColors.textSecondary,
       );
     case OpenCrayStateTone.accent:
-      return _OpenCrayStateToneColors(
+      return const _OpenCrayStateToneColors(
         background: OpenCrayColors.surface,
-        border: OpenCrayColors.primary.withValues(alpha: 0.18),
-        markerBackground: OpenCrayColors.surfaceAccent,
+        border: OpenCrayColors.primaryBorder,
+        markerBackground: OpenCrayColors.primaryTint,
         markerForeground: OpenCrayColors.primary,
       );
     case OpenCrayStateTone.success:
-      return _OpenCrayStateToneColors(
+      return const _OpenCrayStateToneColors(
         background: OpenCrayColors.surface,
-        border: OpenCrayColors.success.withValues(alpha: 0.2),
-        markerBackground: const Color(0xFFEAF7EF),
-        markerForeground: const Color(0xFF248A3D),
+        border: OpenCrayColors.successBorder,
+        markerBackground: OpenCrayColors.successTint,
+        markerForeground: OpenCrayColors.success,
       );
     case OpenCrayStateTone.danger:
-      return _OpenCrayStateToneColors(
-        background: OpenCrayColors.dangerSurface,
-        border: OpenCrayColors.dangerText.withValues(alpha: 0.18),
+      return const _OpenCrayStateToneColors(
+        background: OpenCrayColors.dangerTint,
+        border: OpenCrayColors.dangerBorder,
         markerBackground: OpenCrayColors.surface,
-        markerForeground: OpenCrayColors.dangerText,
+        markerForeground: OpenCrayColors.danger,
       );
   }
 }
@@ -315,16 +325,27 @@ class OpenCrayPillButton extends StatelessWidget {
       decoration: const BoxDecoration(
         color: OpenCrayColors.surface,
         borderRadius: BorderRadius.all(OpenCrayRadii.pill),
+        border: Border.fromBorderSide(
+          BorderSide(color: OpenCrayColors.divider),
+        ),
+        boxShadow: OpenCrayShadows.card,
       ),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             if (icon != null)
               Icon(icon, size: 15, color: OpenCrayColors.textSecondary),
             if (icon != null) const SizedBox(width: 6),
-            Text(label),
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w500,
+                color: OpenCrayColors.textPrimary,
+              ),
+            ),
           ],
         ),
       ),
@@ -452,9 +473,9 @@ class _BottomNavItem extends StatelessWidget {
     final copy = OpenCrayUiCopy.fromLocaleTag(snapshot.localeTag);
     final color = selected
         ? OpenCrayColors.primary
-        : OpenCrayColors.textSecondary;
+        : OpenCrayColors.textTertiary;
     final Color indicatorColor = selected
-        ? OpenCrayColors.surfaceAccent
+        ? OpenCrayColors.primaryTint
         : Colors.transparent;
     final Duration duration = OpenCrayMotion.resolve(
       context,
@@ -476,15 +497,15 @@ class _BottomNavItem extends StatelessWidget {
               AnimatedContainer(
                 duration: duration,
                 curve: OpenCrayMotion.enter,
-                width: 42,
-                height: 24,
+                width: 46,
+                height: 26,
                 decoration: BoxDecoration(
                   color: indicatorColor,
                   borderRadius: const BorderRadius.all(OpenCrayRadii.pill),
                 ),
                 alignment: Alignment.center,
                 child: Icon(
-                  _iconFor(tab),
+                  _iconFor(tab, selected: selected),
                   size: OpenCraySizes.bottomNavIconSize,
                   color: color,
                 ),
@@ -496,15 +517,19 @@ class _BottomNavItem extends StatelessWidget {
                 style:
                     Theme.of(context).textTheme.labelMedium?.copyWith(
                       color: color,
-                      fontSize: 10,
+                      fontSize: 11,
+                      height: 14 / 11,
+                      letterSpacing: 0.1,
                       fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                     ) ??
                     TextStyle(
                       color: color,
-                      fontSize: 10,
+                      fontSize: 11,
+                      height: 14 / 11,
+                      letterSpacing: 0.1,
                       fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                     ),
-                child: Text(copy.tabLabel(tab).toUpperCase()),
+                child: Text(copy.tabLabel(tab)),
               ),
             ],
           ),
@@ -513,16 +538,18 @@ class _BottomNavItem extends StatelessWidget {
     );
   }
 
-  IconData _iconFor(OpenCrayTab tab) {
+  IconData _iconFor(OpenCrayTab tab, {required bool selected}) {
     switch (tab) {
       case OpenCrayTab.chat:
-        return Icons.chat_bubble_outline_rounded;
+        return selected
+            ? Icons.chat_bubble_rounded
+            : Icons.chat_bubble_outline_rounded;
       case OpenCrayTab.skills:
-        return Icons.auto_awesome_outlined;
+        return selected ? Icons.auto_awesome : Icons.auto_awesome_outlined;
       case OpenCrayTab.files:
-        return Icons.folder_outlined;
+        return selected ? Icons.folder_rounded : Icons.folder_outlined;
       case OpenCrayTab.settings:
-        return Icons.tune_outlined;
+        return Icons.tune_rounded;
     }
   }
 }

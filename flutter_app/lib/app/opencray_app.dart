@@ -6,6 +6,7 @@ import '../core/copy/opencray_ui_copy.dart';
 import '../core/design/opencray_motion.dart';
 import '../core/models/opencray_shell_snapshot.dart';
 import '../core/design/opencray_theme.dart';
+import '../core/design/opencray_tokens.dart';
 import '../features/chat/chat_feature.dart';
 import '../features/files/files.dart';
 import '../features/settings/settings.dart';
@@ -102,7 +103,7 @@ class _ShellEntryState extends State<_ShellEntry> {
       builder: (context, snapshot) {
         final OpenCrayShellSnapshot? shellSnapshot = snapshot.data;
         if (shellSnapshot == null) {
-          return const ColoredBox(color: Color(0xFFF8F8FA));
+          return const ColoredBox(color: OpenCrayColors.shellBackground);
         }
         final initialTab = widget.tab ?? OpenCrayTab.chat;
         final initialSettingsPage = widget.tab == OpenCrayTab.settings

@@ -5,11 +5,17 @@ import 'package:opencray/app/opencray_app_shell.dart';
 import 'package:opencray/app/opencray_tabs.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
 import 'package:opencray/core/copy/opencray_ui_copy.dart';
+import 'package:opencray/core/design/opencray_widgets.dart';
 import 'package:opencray/core/models/opencray_files_snapshot.dart';
 import 'package:opencray/core/models/opencray_shell_snapshot.dart';
 import 'package:opencray/features/chat/chat_feature.dart';
 import 'package:opencray/features/files/files.dart';
 import 'package:opencray/features/settings/settings.dart';
+
+Finder _navLabel(String label) => find.descendant(
+  of: find.byType(OpenCrayBottomNavigation),
+  matching: find.text(label),
+);
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -93,7 +99,13 @@ void main() {
     await tester.binding.handlePopRoute();
     await tester.pumpAndSettle();
 
-    expect(find.text('Files'), findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byType(FilesFeatureScreen),
+        matching: find.text('Files'),
+      ),
+      findsOneWidget,
+    );
     expect(find.text('1 Selected'), findsNothing);
     expect(bridge.shownNativeToasts, isEmpty);
     expect(
@@ -236,7 +248,7 @@ void main() {
       initialTab: OpenCrayTab.chat,
     );
 
-    await tester.tap(find.text('FILES'));
+    await tester.tap(_navLabel('Files'));
     await tester.pumpAndSettle();
 
     final snapshot = await bridge.loadShellSnapshot();
@@ -270,9 +282,9 @@ void main() {
     await tester.enterText(find.byType(TextField), 'keep this draft');
     await tester.pump();
 
-    await tester.tap(find.text('FILES'));
+    await tester.tap(_navLabel('Files'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('CHAT'));
+    await tester.tap(_navLabel('Chat'));
     await tester.pumpAndSettle();
 
     final TextField composer = tester.widget<TextField>(find.byType(TextField));
