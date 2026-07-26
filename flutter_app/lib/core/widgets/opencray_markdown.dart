@@ -14,6 +14,91 @@ import '../copy/opencray_ui_copy.dart';
 import '../models/opencray_file_image_preview.dart';
 import 'opencray_image_bytes_view.dart';
 
+/// Sentinel appended to markdown source to mark where a trailing inline
+/// widget (for example the streaming indicator) should render. Uses a
+/// private-use codepoint so real content never contains it.
+const String openCrayMarkdownTrailingInlineMarker = '\u{E5C7}';
+
+const String _openCrayTrailingInlineTag = 'opencrayTrailingInline';
+
+/// Whether appending [openCrayMarkdownTrailingInlineMarker] to [markdown]
+/// keeps the document structurally intact so the trailing widget can render
+/// inline right after the last character. Returns false when the text ends
+/// inside or on structural syntax (open code fence, closing fence line,
+/// table row, thematic break, unbalanced inline code or display math), in
+/// which case callers should render the widget on its own line instead.
+bool openCrayMarkdownCanInlineTrailingWidget(String markdown) {
+  final String text = markdown.trimRight();
+  if (text.isEmpty) {
+    return false;
+  }
+  int fenceDelimiters = 0;
+  for (final String line in const LineSplitter().convert(text)) {
+    final String trimmed = line.trimLeft();
+    if (trimmed.startsWith('```') || trimmed.startsWith('~~~')) {
+      fenceDelimiters += 1;
+    }
+  }
+  if (fenceDelimiters.isOdd) {
+    return false;
+  }
+  if ('\$\$'.allMatches(text).length.isOdd) {
+    return false;
+  }
+  final String lastLine = text.substring(text.lastIndexOf('\n') + 1);
+  final String trimmedLastLine = lastLine.trim();
+  if (trimmedLastLine.startsWith('```') || trimmedLastLine.startsWith('~~~')) {
+    return false;
+  }
+  if (trimmedLastLine.startsWith('|')) {
+    return false;
+  }
+  if (RegExp(r'^(-{3,}|_{3,}|\*{3,})$').hasMatch(trimmedLastLine)) {
+    return false;
+  }
+  if ('`'.allMatches(lastLine).length.isOdd) {
+    return false;
+  }
+  return true;
+}
+
+class _OpenCrayTrailingInlineSyntax extends md.InlineSyntax {
+  _OpenCrayTrailingInlineSyntax() : super(openCrayMarkdownTrailingInlineMarker);
+
+  @override
+  bool onMatch(md.InlineParser parser, Match match) {
+    parser.addNode(md.Element.empty(_openCrayTrailingInlineTag));
+    return true;
+  }
+}
+
+class _OpenCrayTrailingInlineWidgetBuilder extends MarkdownElementBuilder {
+  _OpenCrayTrailingInlineWidgetBuilder(this.trailing);
+
+  final Widget trailing;
+
+  @override
+  Widget visitElementAfterWithContext(
+    BuildContext context,
+    md.Element element,
+    TextStyle? preferredStyle,
+    TextStyle? parentStyle,
+  ) {
+    return Text.rich(
+      TextSpan(
+        children: <InlineSpan>[
+          WidgetSpan(
+            alignment: PlaceholderAlignment.middle,
+            child: ExcludeSemantics(
+              child: SelectionContainer.disabled(child: trailing),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 const Set<String> _openCrayMarkdownInternalRoutes = <String>{
   '/settings',
   '/settings/notifications-background',
@@ -89,6 +174,7 @@ class OpenCrayMarkdownBody extends StatelessWidget {
     this.documentRelativePath = '',
     this.imageBackgroundColor,
     this.imageBorderColor,
+    this.trailingInlineWidget,
   });
 
   final String data;
@@ -102,12 +188,18 @@ class OpenCrayMarkdownBody extends StatelessWidget {
   final Color? imageBackgroundColor;
   final Color? imageBorderColor;
 
+  /// Rendered inline immediately after the last character of [data]. Callers
+  /// must gate on [openCrayMarkdownCanInlineTrailingWidget]. Requires
+  /// [selectable] to stay false (SelectableText cannot host WidgetSpans).
+  final Widget? trailingInlineWidget;
+
   static final md.ExtensionSet extensionSet = md.ExtensionSet(
     <md.BlockSyntax>[
       LatexBlockSyntax(),
       ...md.ExtensionSet.gitHubFlavored.blockSyntaxes,
     ],
     <md.InlineSyntax>[
+      _OpenCrayTrailingInlineSyntax(),
       LatexInlineSyntax(),
       ...md.ExtensionSet.gitHubFlavored.inlineSyntaxes,
     ],
@@ -115,8 +207,11 @@ class OpenCrayMarkdownBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final Widget? trailing = selectable ? null : trailingInlineWidget;
     final Widget body = MarkdownBody(
-      data: data,
+      data: trailing != null
+          ? '$data$openCrayMarkdownTrailingInlineMarker'
+          : data,
       selectable: selectable,
       styleSheet: styleSheet,
       onTapLink: onTapLink,
@@ -134,6 +229,10 @@ class OpenCrayMarkdownBody extends StatelessWidget {
           textStyle: latexTextStyle,
           textScaleFactor: latexTextScaleFactor,
         ),
+        if (trailing != null)
+          _openCrayTrailingInlineTag: _OpenCrayTrailingInlineWidgetBuilder(
+            trailing,
+          ),
       },
       extensionSet: extensionSet,
     );
@@ -194,6 +293,7 @@ class OpenCraySelectableMarkdownBody extends StatefulWidget {
     this.documentRelativePath = '',
     this.imageBackgroundColor,
     this.imageBorderColor,
+    this.trailingInlineWidget,
   });
 
   final String data;
@@ -208,6 +308,10 @@ class OpenCraySelectableMarkdownBody extends StatefulWidget {
   final String documentRelativePath;
   final Color? imageBackgroundColor;
   final Color? imageBorderColor;
+
+  /// Rendered inline immediately after the last character of [data]; see
+  /// [OpenCrayMarkdownBody.trailingInlineWidget].
+  final Widget? trailingInlineWidget;
 
   @override
   State<OpenCraySelectableMarkdownBody> createState() =>
@@ -297,6 +401,7 @@ class _OpenCraySelectableMarkdownBodyState
             documentRelativePath: widget.documentRelativePath,
             imageBackgroundColor: widget.imageBackgroundColor,
             imageBorderColor: widget.imageBorderColor,
+            trailingInlineWidget: widget.trailingInlineWidget,
           ),
         ),
       ),
