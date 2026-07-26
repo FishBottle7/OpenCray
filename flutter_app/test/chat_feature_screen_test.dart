@@ -8937,11 +8937,11 @@ void main() {
         'lines 5-6',
       ]);
       expect(spans.map((span) => span.style?.color).toList(), <Color?>[
-        const Color(0xFF007AFF),
-        const Color(0xFF111111),
+        const Color(0xFF2563EB),
+        const Color(0xFF101828),
         const Color(0xFF7C3AED),
-        const Color(0xFF111111),
-        const Color(0xFF16A34A),
+        const Color(0xFF101828),
+        const Color(0xFF179457),
       ]);
     },
   );
@@ -13907,7 +13907,7 @@ void main() {
         matching: find.byIcon(Icons.add_rounded),
       ),
     );
-    expect(plusIcon.color, const Color(0xFF007AFF));
+    expect(plusIcon.color, const Color(0xFF2563EB));
   });
 
   testWidgets('composer keeps mixed sections in a stable vertical order', (
@@ -16538,19 +16538,19 @@ void main() {
           completedIndicator.decoration! as BoxDecoration;
 
       expect(find.text('Highlighting active todo text'), findsOneWidget);
-      expect(activeText.style?.color, const Color(0xFF007AFF));
+      expect(activeText.style?.color, const Color(0xFF2563EB));
       expect(completedText.style?.decoration, TextDecoration.lineThrough);
       expect(pendingDecoration.color, Colors.transparent);
       expect(
         (pendingDecoration.border! as Border).top.color,
-        const Color(0xFFD7D7DC),
+        const Color(0xFFD5DCE6),
       );
       expect(activeDecoration.color, Colors.transparent);
       expect(
         (activeDecoration.border! as Border).top.color,
-        const Color(0xFF007AFF),
+        const Color(0xFF2563EB),
       );
-      expect(completedDecoration.color, const Color(0xFFB8BDC7));
+      expect(completedDecoration.color, const Color(0xFF95A0B1));
     },
   );
 
@@ -17064,6 +17064,17 @@ Finder _findRichTextWithPlainText(String text) =>
       }
       return widget.text.toPlainText() == text;
     });
+
+/// Matches bubble text that may carry the trailing inline streaming
+/// indicator, which contributes a single object-replacement placeholder
+/// (U+FFFC) to the rendered plain text while the message streams.
+Finder _findStreamedText(String text) => find.byWidgetPredicate((widget) {
+  if (widget is! Text) {
+    return false;
+  }
+  final String plain = widget.data ?? widget.textSpan?.toPlainText() ?? '';
+  return plain == text || plain == '$text￼';
+}, description: 'streamed text "$text"');
 
 Finder _chatSessionsButton() =>
     find.byKey(const ValueKey<String>('chat-sessions-button'));

@@ -20,11 +20,11 @@ void main() {
     );
     expect(
       chatBubbleSelectionTheme(ChatMessageKind.inbound).selectionColor,
-      const Color(0x33007AFF),
+      const Color(0x332563EB),
     );
     expect(
       chatBubbleSelectionTheme(ChatMessageKind.inbound).selectionHandleColor,
-      const Color(0xFF0A84FF),
+      const Color(0xFF2563EB),
     );
   });
 
@@ -159,7 +159,7 @@ void main() {
       expect(find.text(copy.chatSelectionCount(1)), findsOneWidget);
       expect(
         _rowHighlightColor(tester, 'seed-main-inbound-2'),
-        const Color(0xFFE5E5EA),
+        const Color(0xFFE8ECF2),
       );
       expect(
         _rowHighlightColor(tester, 'seed-main-outbound-2'),
@@ -176,7 +176,7 @@ void main() {
       expect(find.text(copy.chatSelectionCount(2)), findsOneWidget);
       expect(
         _rowHighlightColor(tester, 'seed-main-outbound-2'),
-        const Color(0xFFE5E5EA),
+        const Color(0xFFE8ECF2),
       );
     },
   );

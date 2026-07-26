@@ -2697,8 +2697,8 @@ TextSelectionThemeData chatBubbleSelectionTheme(ChatMessageKind kind) {
       selectionHandleColor: Colors.white,
     ),
     _ => const TextSelectionThemeData(
-      selectionColor: Color(0x33007AFF),
-      selectionHandleColor: Color(0xFF0A84FF),
+      selectionColor: Color(0x332563EB),
+      selectionHandleColor: OpenCrayColors.primary,
     ),
   };
 }
@@ -6732,8 +6732,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       label: attachment.displayName,
       detail: detail,
       accentColor: isImage
-          ? const Color(0xFFE6F0FF)
-          : (isVoice ? const Color(0xFFEAF7F4) : const Color(0xFFF2F3F7)),
+          ? OpenCrayColors.primaryTint
+          : (isVoice ? OpenCrayColors.successTint : OpenCrayColors.surfaceMuted),
       draftAttachment: attachment,
     );
   }
@@ -13351,7 +13351,7 @@ class _TopGlassBar extends StatelessWidget {
     )!;
     final Color shadowColor = Color.lerp(
       const Color(0x00000000),
-      const Color(0x0A000000),
+      const Color(0x0A101828),
       strength,
     )!;
     final double shadowBlur = lerpDouble(0, 16, strength)!;
@@ -13530,14 +13530,11 @@ class _ChatToolbarIconButtonState extends State<_ChatToolbarIconButton> {
                 height: 36,
                 decoration: BoxDecoration(
                   color: _isPressed
-                      ? Colors.white.withValues(alpha: 0.86)
-                      : Colors.white.withValues(alpha: 0.54),
+                      ? OpenCrayColors.surfaceMuted
+                      : Colors.white.withValues(alpha: 0.86),
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: Colors.white.withValues(
-                      alpha: _isPressed ? 0.92 : 0.58,
-                    ),
-                  ),
+                  border: Border.all(color: _ChatPalette.border),
+                  boxShadow: _isPressed ? null : OpenCrayShadows.card,
                 ),
                 child: Icon(widget.icon, size: 18, color: foregroundColor),
               ),
@@ -13641,9 +13638,10 @@ class _ChatRuntimeStatusPill extends StatelessWidget {
     return DecoratedBox(
       key: const ValueKey<String>('chat-runtime-status-pill'),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.62),
+        color: Colors.white.withValues(alpha: 0.86),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.64)),
+        border: Border.all(color: _ChatPalette.border),
+        boxShadow: OpenCrayShadows.card,
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -13852,13 +13850,13 @@ class _SummaryCard extends StatelessWidget {
       quietProgress * 0.22,
     )!;
     final Color borderColor = Color.lerp(
-      const Color(0x00E8E8ED),
+      const Color(0x00E5E9F0),
       _ChatPalette.border,
       quietProgress,
     )!;
     final Color titleColor = Color.lerp(
       _ChatPalette.textPrimary,
-      const Color(0xFF2F3642),
+      const Color(0xFF3B4757),
       quietProgress,
     )!;
     final Color bodyColor = Color.lerp(
@@ -13998,7 +13996,7 @@ class _ApprovalGlassSurface extends StatelessWidget {
                     ),
                     boxShadow: <BoxShadow>[
                       BoxShadow(
-                        color: const Color(0x12000000),
+                        color: const Color(0x14101828),
                         blurRadius: 22,
                         offset: const Offset(0, 10),
                       ),
@@ -14009,8 +14007,8 @@ class _ApprovalGlassSurface extends StatelessWidget {
                       colors: <Color>[
                         Colors.white.withValues(alpha: 0.42),
                         Colors.white.withValues(alpha: 0.32),
-                        const Color(0xFFF3F7FF).withValues(alpha: 0.26),
-                        const Color(0xFFD7E5FF).withValues(alpha: 0.18),
+                        OpenCrayColors.primaryTint.withValues(alpha: 0.26),
+                        OpenCrayColors.primaryBorder.withValues(alpha: 0.18),
                       ],
                       stops: const <double>[0, 0.28, 0.72, 1],
                     ),
@@ -14139,16 +14137,16 @@ class _PendingApprovalCard extends StatelessWidget {
     final _PendingApprovalPresentation presentation =
         _PendingApprovalPresentation.fromApproval(copy, approval);
     final Color surfaceColor = approval.isHighRisk
-        ? const Color(0xFFFFF8F5)
-        : const Color(0xFFF7F9FC);
+        ? const Color(0xFFFDF6F2)
+        : OpenCrayColors.surfaceSubtle;
     final Color borderColor = approval.isHighRisk
-        ? const Color(0xFFF0D6C5)
-        : const Color(0xFFDCE3ED);
+        ? _ChatPalette.highRiskBorder
+        : _ChatPalette.runTraceBorder;
     final Color reasonColor = approval.isHighRisk
-        ? const Color(0xFF7B5B47)
-        : const Color(0xFF5B6675);
+        ? const Color(0xFF8A5A3B)
+        : OpenCrayColors.textSecondary;
     final TextStyle detailStyle = _ChatTextStyles.approvalRequest.copyWith(
-      color: const Color(0xFF1E2430),
+      color: OpenCrayColors.textPrimary,
     );
     final List<_ApprovalInfoRowData> visibleRows = isPreview
         ? presentation.impactRows.take(1).toList(growable: false)
@@ -14327,11 +14325,11 @@ class _ApprovalResolutionBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color color = isRejected
-        ? const Color(0xFF8B4A4A)
-        : const Color(0xFF226B45);
+        ? OpenCrayColors.danger
+        : OpenCrayColors.success;
     final Color surface = isRejected
-        ? const Color(0xFFFFF1F1)
-        : const Color(0xFFEAF7EF);
+        ? OpenCrayColors.dangerTint
+        : OpenCrayColors.successTint;
     return DecoratedBox(
       decoration: BoxDecoration(
         color: surface,
@@ -14406,13 +14404,13 @@ class _ApprovalActionRow extends StatelessWidget {
       );
     }
     final Color accentColor = approval.isHighRisk
-        ? const Color(0xFFF97316)
+        ? _ChatPalette.highRiskAccent
         : _ChatPalette.accent;
     final Widget rejectButton = _ApprovalActionButton(
       label: approval.rejectLabel,
-      foregroundColor: const Color(0xFF526071),
+      foregroundColor: OpenCrayColors.textSecondary,
       backgroundColor: Colors.white,
-      borderColor: const Color(0xFFD9DEE8),
+      borderColor: OpenCrayColors.outline,
       onPressed: isBusy ? null : onReject,
     );
     final Widget? approveForSessionButton = approval.supportsSessionApproval
@@ -14783,7 +14781,7 @@ class _ChatTimestampDivider extends StatelessWidget {
               ? null
               : ValueKey<String>('chat-message-divider-$messageId'),
           decoration: BoxDecoration(
-            color: const Color(0xFFE9E9ED),
+            color: OpenCrayColors.surfaceSunken,
             borderRadius: BorderRadius.circular(999),
           ),
           child: Padding(
@@ -15375,7 +15373,7 @@ class _MessageListState extends State<_MessageList> {
               child: Center(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: const Color(0xFFE9E9ED),
+                    color: OpenCrayColors.surfaceSunken,
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Padding(
@@ -16057,7 +16055,7 @@ class _RunTraceStatusTone {
   }) {
     if (trace.isRetryable) {
       return const _RunTraceStatusTone(
-        textColor: Color(0xFFC06A1A),
+        textColor: OpenCrayColors.warning,
         markColor: Color(0xFFF59E0B),
         icon: Icons.priority_high_rounded,
         showProgress: false,
@@ -16066,7 +16064,7 @@ class _RunTraceStatusTone {
     if (trace.isTerminal) {
       return const _RunTraceStatusTone(
         textColor: _ChatPalette.textSecondary,
-        markColor: Color(0xFF9CA3AF),
+        markColor: OpenCrayColors.textTertiary,
         icon: Icons.check_rounded,
         showProgress: false,
       );
@@ -16941,23 +16939,23 @@ _RunTracePreviewStatusStyle _runTracePreviewStatusStyle(
   switch (status) {
     case ChatRunTracePreviewStatus.ready:
       return const _RunTracePreviewStatusStyle(
-        foregroundColor: Color(0xFF166534),
-        backgroundColor: Color(0xFFE9F9EE),
+        foregroundColor: OpenCrayColors.success,
+        backgroundColor: OpenCrayColors.successTint,
       );
     case ChatRunTracePreviewStatus.reachable:
       return const _RunTracePreviewStatusStyle(
-        foregroundColor: Color(0xFF0F4C81),
-        backgroundColor: Color(0xFFE8F3FF),
+        foregroundColor: OpenCrayColors.primaryPressed,
+        backgroundColor: OpenCrayColors.primaryTint,
       );
     case ChatRunTracePreviewStatus.unreachable:
       return const _RunTracePreviewStatusStyle(
-        foregroundColor: Color(0xFF9A3412),
-        backgroundColor: Color(0xFFFFF1E8),
+        foregroundColor: OpenCrayColors.warning,
+        backgroundColor: OpenCrayColors.warningTint,
       );
     case ChatRunTracePreviewStatus.skipped:
       return const _RunTracePreviewStatusStyle(
-        foregroundColor: Color(0xFF475569),
-        backgroundColor: Color(0xFFF1F5F9),
+        foregroundColor: OpenCrayColors.textSecondary,
+        backgroundColor: OpenCrayColors.surfaceMuted,
       );
   }
 }
@@ -16968,23 +16966,23 @@ _RunTraceSandboxSessionStatusStyle _runTraceSandboxSessionStatusStyle(
   switch (lifecycleStatus) {
     case ChatRunTraceSandboxSessionLifecycleStatus.active:
       return const _RunTraceSandboxSessionStatusStyle(
-        foregroundColor: Color(0xFF166534),
-        backgroundColor: Color(0xFFE9F9EE),
+        foregroundColor: OpenCrayColors.success,
+        backgroundColor: OpenCrayColors.successTint,
       );
     case ChatRunTraceSandboxSessionLifecycleStatus.stale:
       return const _RunTraceSandboxSessionStatusStyle(
-        foregroundColor: Color(0xFF9A3412),
-        backgroundColor: Color(0xFFFFF1E8),
+        foregroundColor: OpenCrayColors.warning,
+        backgroundColor: OpenCrayColors.warningTint,
       );
     case ChatRunTraceSandboxSessionLifecycleStatus.reclaimed:
       return const _RunTraceSandboxSessionStatusStyle(
-        foregroundColor: Color(0xFF475569),
-        backgroundColor: Color(0xFFF1F5F9),
+        foregroundColor: OpenCrayColors.textSecondary,
+        backgroundColor: OpenCrayColors.surfaceMuted,
       );
     case ChatRunTraceSandboxSessionLifecycleStatus.none:
       return const _RunTraceSandboxSessionStatusStyle(
-        foregroundColor: Color(0xFF475569),
-        backgroundColor: Color(0xFFF1F5F9),
+        foregroundColor: OpenCrayColors.textSecondary,
+        backgroundColor: OpenCrayColors.surfaceMuted,
       );
   }
 }
@@ -17767,9 +17765,9 @@ class _RunTraceActionButton extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: const Color(0xFFE7EBF4),
+            color: OpenCrayColors.surfaceSunken,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: const Color(0xFFD2D8E4)),
+            border: Border.all(color: OpenCrayColors.outline),
           ),
           child: Text(
             label,
@@ -18935,10 +18933,10 @@ class _ChatMessageMenuItem extends StatelessWidget {
   Widget build(BuildContext context) {
     final Color foregroundColor = isDestructive
         ? OpenCrayColors.danger
-        : const Color(0xFF1C1C1E);
+        : OpenCrayColors.textPrimary;
     final Color labelColor = isDestructive
         ? OpenCrayColors.danger
-        : const Color(0xFF636366);
+        : OpenCrayColors.textSecondary;
     return GestureDetector(
       key: itemKey,
       onTap: enabled ? onTap : null,
@@ -19302,14 +19300,32 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
         streamingIndicator != null &&
         lastSegment is _ChatInlineMarkdownSegment &&
         openCrayMarkdownCanInlineTrailingWidget(lastSegment.markdown);
+    final bool isOutboundBubble =
+        widget.message.kind == ChatMessageKind.outbound;
+    final bool useBrandGradient =
+        isOutboundBubble && widget.backgroundColor == _ChatPalette.accent;
+    final bool showInboundOutline =
+        !isOutboundBubble && widget.backgroundColor == Colors.white;
     final Widget bubble = ConstrainedBox(
       key: ValueKey<String>('chat-bubble-${widget.message.messageId}'),
       constraints: BoxConstraints(maxWidth: widget.maxWidth),
       child: DecoratedBox(
         decoration: ShapeDecoration(
-          color: widget.backgroundColor,
-          shape: const RoundedSuperellipseBorder(
-            borderRadius: BorderRadius.all(Radius.circular(18)),
+          color: useBrandGradient ? null : widget.backgroundColor,
+          gradient: useBrandGradient
+              ? const LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: <Color>[Color(0xFF3D7BF7), OpenCrayColors.primary],
+                )
+              : null,
+          shape: RoundedSuperellipseBorder(
+            borderRadius: const BorderRadius.all(Radius.circular(18)),
+            side: showInboundOutline
+                ? BorderSide(
+                    color: OpenCrayColors.divider.withValues(alpha: 0.85),
+                  )
+                : BorderSide.none,
           ),
         ),
         child: Padding(
@@ -20226,7 +20242,7 @@ class _ChatImageAttachmentPreviewState
         : _ChatPalette.border;
     final Color placeholderColor = widget.isOutgoing
         ? Colors.white.withValues(alpha: 0.14)
-        : const Color(0xFFF3F4F7);
+        : OpenCrayColors.surfaceMuted;
     final Future<OpenCrayFileImagePreview>? previewFuture = _previewFuture;
     final double stableAspectRatio = _chatMessageAttachmentStableAspectRatio(
       widget.attachment,
@@ -20351,7 +20367,7 @@ class _ChatImageAttachmentPlaceholder extends StatelessWidget {
             decoration: BoxDecoration(
               color: isOutgoing
                   ? Colors.white.withValues(alpha: 0.14)
-                  : const Color(0xFFF3F4F7),
+                  : OpenCrayColors.surfaceMuted,
               border: Border.all(
                 color: isOutgoing
                     ? Colors.white.withValues(alpha: 0.22)
@@ -20486,7 +20502,7 @@ class _ChatFileAttachmentTile extends StatelessWidget {
         bridge != null && attachment.localPath.trim().isNotEmpty;
     final Color surfaceColor = isOutgoing
         ? Colors.white.withValues(alpha: 0.12)
-        : const Color(0xFFF3F4F7);
+        : OpenCrayColors.surfaceMuted;
     final Color borderColor = isOutgoing
         ? Colors.white.withValues(alpha: 0.22)
         : _ChatPalette.border;
@@ -20790,7 +20806,7 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
         widget.bridge != null && widget.attachment.localPath.trim().isNotEmpty;
     final Color surfaceColor = widget.isOutgoing
         ? Colors.white.withValues(alpha: 0.12)
-        : const Color(0xFFF3F4F7);
+        : OpenCrayColors.surfaceMuted;
     final Color borderColor = widget.isOutgoing
         ? Colors.white.withValues(alpha: 0.22)
         : _ChatPalette.border;
@@ -20929,7 +20945,7 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
                                 : _ChatPalette.accent,
                             unplayedColor: widget.isOutgoing
                                 ? Colors.white.withValues(alpha: 0.18)
-                                : const Color(0xFFDCE0E7),
+                                : OpenCrayColors.outline,
                             onTapSeek: canPlay && totalDuration > Duration.zero
                                 ? (fraction) {
                                     _recordChildInteraction();
@@ -21586,7 +21602,7 @@ MarkdownStyleSheet _chatTextPreviewMarkdownStyleSheet(BuildContext context) {
     ),
     codeblockPadding: const EdgeInsets.all(12),
     codeblockDecoration: BoxDecoration(
-      color: const Color(0xFFF0F1F5),
+      color: OpenCrayColors.surfaceMuted,
       borderRadius: BorderRadius.circular(12),
     ),
     blockSpacing: 14,
@@ -21596,7 +21612,7 @@ MarkdownStyleSheet _chatTextPreviewMarkdownStyleSheet(BuildContext context) {
       color: _ChatPalette.textSecondary,
     ),
     blockquoteDecoration: BoxDecoration(
-      color: const Color(0xFFF3F4F8),
+      color: OpenCrayColors.surfaceMuted,
       borderRadius: BorderRadius.circular(12),
       border: const Border(
         left: BorderSide(color: _ChatPalette.border, width: 3),
@@ -21698,7 +21714,7 @@ class _ChatTextPreviewDialog extends StatelessWidget {
               Expanded(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF6F7FA),
+                    color: OpenCrayColors.surfaceSubtle,
                     borderRadius: BorderRadius.circular(16),
                     border: Border.all(color: _ChatPalette.border),
                   ),
@@ -21721,7 +21737,7 @@ class _ChatTextPreviewDialog extends StatelessWidget {
                               styleSheet: _chatTextPreviewMarkdownStyleSheet(
                                 context,
                               ),
-                              imageBackgroundColor: const Color(0xFFEDEFF4),
+                              imageBackgroundColor: OpenCrayColors.surfaceMuted,
                               imageBorderColor: _ChatPalette.border,
                               contextMenuBuilder:
                                   (
@@ -22598,8 +22614,8 @@ class _ComposerGlassSurface extends StatelessWidget {
                       colors: <Color>[
                         Colors.white.withValues(alpha: 0.34),
                         Colors.white.withValues(alpha: 0.22),
-                        const Color(0xFFEAF2FF).withValues(alpha: 0.18),
-                        const Color(0xFFCFE1FF).withValues(alpha: 0.12),
+                        OpenCrayColors.primaryTint.withValues(alpha: 0.18),
+                        OpenCrayColors.primaryBorder.withValues(alpha: 0.12),
                       ],
                       stops: const <double>[0, 0.28, 0.72, 1],
                     ),
@@ -22949,6 +22965,7 @@ class _InputRow extends StatelessWidget {
             return _CircleButton(
               key: const ValueKey<String>('chat-composer-send-button'),
               backgroundColor: _ChatPalette.accent,
+              gradient: OpenCrayGradients.brand,
               foregroundColor: Colors.white,
               icon: Icons.arrow_upward_rounded,
               onPressed: enabled ? onSendPressed : null,
@@ -23013,15 +23030,18 @@ class _CircleButton extends StatelessWidget {
     required this.foregroundColor,
     required this.icon,
     required this.onPressed,
+    this.gradient,
   });
 
   final Color backgroundColor;
   final Color foregroundColor;
   final IconData icon;
   final VoidCallback? onPressed;
+  final Gradient? gradient;
 
   @override
   Widget build(BuildContext context) {
+    final bool enabled = onPressed != null;
     return GestureDetector(
       onTap: onPressed,
       behavior: HitTestBehavior.opaque,
@@ -23029,16 +23049,24 @@ class _CircleButton extends StatelessWidget {
         width: 40,
         height: 40,
         decoration: BoxDecoration(
-          color: onPressed == null
-              ? backgroundColor.withValues(alpha: 0.4)
-              : backgroundColor,
+          color: enabled ? backgroundColor : backgroundColor.withValues(alpha: 0.4),
+          gradient: enabled ? gradient : null,
           borderRadius: BorderRadius.circular(14),
+          boxShadow: enabled && gradient != null
+              ? const <BoxShadow>[
+                  BoxShadow(
+                    color: Color(0x3D2563EB),
+                    offset: Offset(0, 3),
+                    blurRadius: 10,
+                  ),
+                ]
+              : null,
         ),
         child: Icon(
           icon,
-          color: onPressed == null
-              ? foregroundColor.withValues(alpha: 0.5)
-              : foregroundColor,
+          color: enabled
+              ? foregroundColor
+              : foregroundColor.withValues(alpha: 0.5),
           size: 18,
         ),
       ),
@@ -23060,7 +23088,7 @@ class _AddActionPill extends StatelessWidget {
       child: Container(
         height: 40,
         decoration: BoxDecoration(
-          color: const Color(0xFFF7F7F9),
+          color: OpenCrayColors.surfaceSubtle,
           borderRadius: BorderRadius.circular(12),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -23308,7 +23336,7 @@ class _CommandOptionTile extends StatelessWidget {
         padding: const EdgeInsets.only(bottom: 10),
         child: DecoratedBox(
           decoration: BoxDecoration(
-            color: const Color(0xFFF7F7F9),
+            color: OpenCrayColors.surfaceSubtle,
             borderRadius: BorderRadius.circular(14),
           ),
           child: Padding(
@@ -23434,7 +23462,7 @@ class _SessionsDrawerOverlayState extends State<_SessionsDrawerOverlay> {
                       ? OpenCrayMotion.enter
                       : OpenCrayMotion.exit,
                   child: const ColoredBox(
-                    color: Color(0x26111111),
+                    color: Color(0x26101828),
                     child: SizedBox.expand(),
                   ),
                 ),
@@ -23479,8 +23507,15 @@ class _SessionsDrawerOverlayState extends State<_SessionsDrawerOverlay> {
                             height: 40,
                             width: 132,
                             decoration: BoxDecoration(
-                              color: _ChatPalette.accent,
+                              gradient: OpenCrayGradients.brand,
                               borderRadius: BorderRadius.circular(14),
+                              boxShadow: const <BoxShadow>[
+                                BoxShadow(
+                                  color: Color(0x3D2563EB),
+                                  offset: Offset(0, 3),
+                                  blurRadius: 10,
+                                ),
+                              ],
                             ),
                             alignment: Alignment.center,
                             child: Text(
@@ -23592,12 +23627,12 @@ class _SessionListTileState extends State<_SessionListTile> {
     final bool isSelected = widget.session.isSelected;
     final bool hasUnread = widget.session.unreadCount > 0;
     final Color backgroundColor = isSelected
-        ? const Color(0xFFF4F7FF)
+        ? OpenCrayColors.primaryTint
         : _isPressed
-        ? const Color(0xFFF0F3F8)
-        : const Color(0xFFF7F7F9);
+        ? OpenCrayColors.surfaceMuted
+        : OpenCrayColors.surfaceSubtle;
     final Color borderColor = isSelected
-        ? const Color(0xFFD8E5FF)
+        ? OpenCrayColors.primaryBorder
         : hasUnread
         ? OpenCrayColors.dangerBorder
         : Colors.transparent;
@@ -23761,7 +23796,7 @@ class _ChatDecorations {
 }
 
 class _ChatPalette {
-  const _ChatPalette._();
+  _ChatPalette._();
 
   static const Color background = OpenCrayColors.shellBackground;
   static const Color accent = OpenCrayColors.primary;
