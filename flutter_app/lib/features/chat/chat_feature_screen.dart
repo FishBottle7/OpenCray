@@ -21,6 +21,7 @@ import '../../core/models/opencray_file_voice_playback_source.dart';
 import '../../core/models/opencray_sandbox_preview_embed_config.dart';
 import '../../core/models/opencray_sandbox_settings.dart';
 import '../../core/design/opencray_motion.dart';
+import '../../core/design/opencray_tokens.dart';
 import '../../core/widgets/opencray_image_bytes_view.dart';
 import '../../core/widgets/opencray_markdown.dart';
 import 'chat_models.dart';
@@ -7005,12 +7006,12 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               const Icon(
                 Icons.delete_outline_rounded,
                 size: 18,
-                color: Color(0xFFB42318),
+                color: OpenCrayColors.danger,
               ),
               const SizedBox(width: 10),
               Text(
                 widget.copy.filesDeleteAction,
-                style: const TextStyle(color: Color(0xFFB42318)),
+                style: const TextStyle(color: OpenCrayColors.danger),
               ),
             ],
           ),
@@ -13788,7 +13789,7 @@ class _ChatSelectionActionButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color foregroundColor = isDestructive
-        ? const Color(0xFFFF3B30)
+        ? OpenCrayColors.danger
         : _ChatPalette.textPrimary;
     return GestureDetector(
       onTap: onPressed,
@@ -13799,7 +13800,7 @@ class _ChatSelectionActionButton extends StatelessWidget {
           height: 44,
           decoration: BoxDecoration(
             color: isDestructive
-                ? const Color(0xFFFFF2F1)
+                ? OpenCrayColors.dangerTint
                 : _ChatPalette.subtleSurface,
             borderRadius: BorderRadius.circular(14),
           ),
@@ -18933,10 +18934,10 @@ class _ChatMessageMenuItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color foregroundColor = isDestructive
-        ? const Color(0xFFFF3B30)
+        ? OpenCrayColors.danger
         : const Color(0xFF1C1C1E);
     final Color labelColor = isDestructive
-        ? const Color(0xFFFF3B30)
+        ? OpenCrayColors.danger
         : const Color(0xFF636366);
     return GestureDetector(
       key: itemKey,
@@ -19284,6 +19285,23 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
         hasText &&
         widget.message.kind == ChatMessageKind.inbound &&
         widget.message.isStreaming;
+    final String indicatorKeySuffix = widget.message.messageId.trim().isNotEmpty
+        ? widget.message.messageId.trim()
+        : 'anonymous';
+    final Widget? streamingIndicator = showStreamingIndicator
+        ? _ChatStreamingTailIndicator(
+            key: ValueKey<String>(
+              'chat-streaming-indicator-$indicatorKeySuffix',
+            ),
+            color: widget.textColor,
+          )
+        : null;
+    final _ChatInlineAttachmentSegment? lastSegment =
+        inlineBody.segments.isNotEmpty ? inlineBody.segments.last : null;
+    final bool canInlineStreamingIndicator =
+        streamingIndicator != null &&
+        lastSegment is _ChatInlineMarkdownSegment &&
+        openCrayMarkdownCanInlineTrailingWidget(lastSegment.markdown);
     final Widget bubble = ConstrainedBox(
       key: ValueKey<String>('chat-bubble-${widget.message.messageId}'),
       constraints: BoxConstraints(maxWidth: widget.maxWidth),
@@ -19300,36 +19318,39 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: <Widget>[
               if (hasText)
-                _ChatBubbleStreamingTextBody(
-                  messageId: widget.message.messageId,
+                _ChatBubbleMarkdownBody(
+                  bridge: widget.bridge,
+                  copy: widget.copy,
+                  content: inlineBody,
                   textColor: widget.textColor,
-                  showIndicator: showStreamingIndicator,
-                  child: _ChatBubbleMarkdownBody(
-                    bridge: widget.bridge,
-                    copy: widget.copy,
-                    content: inlineBody,
-                    textColor: widget.textColor,
-                    backgroundColor: widget.backgroundColor,
-                    messageId: widget.message.messageId,
-                    contentMaxWidth: widget.maxWidth - 28,
-                    selectionTheme: selectionTheme,
-                    onSelectionChanged: (selection) {
-                      if (_didOpenMenu && _pointerDownGlobalPosition != null) {
-                        return;
-                      }
-                      _selectedText = selection?.plainText;
-                      widget.onTextSelectionChanged(selection);
-                    },
-                    contextMenuBuilder:
-                        (
-                          BuildContext context,
-                          SelectableRegionState selectableRegionState,
-                          OpenCrayMarkdownSelectionSnapshot? selection,
-                        ) => const SizedBox.shrink(),
-                    voicePlaybackControllerFactory:
-                        widget.voicePlaybackControllerFactory,
-                    isOutgoing: widget.message.kind == ChatMessageKind.outbound,
-                  ),
+                  backgroundColor: widget.backgroundColor,
+                  messageId: widget.message.messageId,
+                  contentMaxWidth: widget.maxWidth - 28,
+                  selectionTheme: selectionTheme,
+                  trailingInlineIndicator: canInlineStreamingIndicator
+                      ? streamingIndicator
+                      : null,
+                  onSelectionChanged: (selection) {
+                    if (_didOpenMenu && _pointerDownGlobalPosition != null) {
+                      return;
+                    }
+                    _selectedText = selection?.plainText;
+                    widget.onTextSelectionChanged(selection);
+                  },
+                  contextMenuBuilder:
+                      (
+                        BuildContext context,
+                        SelectableRegionState selectableRegionState,
+                        OpenCrayMarkdownSelectionSnapshot? selection,
+                      ) => const SizedBox.shrink(),
+                  voicePlaybackControllerFactory:
+                      widget.voicePlaybackControllerFactory,
+                  isOutgoing: widget.message.kind == ChatMessageKind.outbound,
+                ),
+              if (streamingIndicator != null && !canInlineStreamingIndicator)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: streamingIndicator,
                 ),
               if (hasImages) ...<Widget>[
                 if (hasText) const SizedBox(height: 10),
@@ -19391,44 +19412,6 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
       onPointerUp: (_) => _cancelLongPressTimer(),
       onPointerCancel: (_) => _cancelLongPressTimer(),
       child: bubble,
-    );
-  }
-}
-
-class _ChatBubbleStreamingTextBody extends StatelessWidget {
-  const _ChatBubbleStreamingTextBody({
-    required this.messageId,
-    required this.textColor,
-    required this.showIndicator,
-    required this.child,
-  });
-
-  final String messageId;
-  final Color textColor;
-  final bool showIndicator;
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    if (!showIndicator) {
-      return child;
-    }
-    final String keySuffix = messageId.trim().isNotEmpty
-        ? messageId.trim()
-        : 'anonymous';
-    return Stack(
-      clipBehavior: Clip.none,
-      children: <Widget>[
-        Padding(padding: const EdgeInsets.only(right: 14), child: child),
-        Positioned(
-          right: 1,
-          bottom: 2,
-          child: _ChatStreamingTailIndicator(
-            key: ValueKey<String>('chat-streaming-indicator-$keySuffix'),
-            color: textColor,
-          ),
-        ),
-      ],
     );
   }
 }
@@ -19988,6 +19971,7 @@ class _ChatBubbleMarkdownBody extends StatelessWidget {
     required this.contextMenuBuilder,
     required this.voicePlaybackControllerFactory,
     required this.isOutgoing,
+    this.trailingInlineIndicator,
   });
 
   final OpenCrayHostBridge? bridge;
@@ -20002,6 +19986,10 @@ class _ChatBubbleMarkdownBody extends StatelessWidget {
   final OpenCrayMarkdownContextMenuBuilder contextMenuBuilder;
   final ChatVoicePlaybackControllerFactory? voicePlaybackControllerFactory;
   final bool isOutgoing;
+
+  /// Streaming indicator rendered inline right after the final character of
+  /// the last markdown segment while the message is still streaming.
+  final Widget? trailingInlineIndicator;
 
   Future<void> _handleLinkTap(BuildContext context, String? href) async {
     await _handleOpenCrayMarkdownLinkTap(
@@ -20024,6 +20012,8 @@ class _ChatBubbleMarkdownBody extends StatelessWidget {
           .entries
           .map((entry) {
             final _ChatInlineAttachmentSegment segment = entry.value;
+            final bool isLastSegment =
+                entry.key == content.segments.length - 1;
             final Widget child;
             if (segment is _ChatInlineMarkdownSegment) {
               child = OpenCraySelectableMarkdownBody(
@@ -20035,6 +20025,9 @@ class _ChatBubbleMarkdownBody extends StatelessWidget {
                 selectionTheme: selectionTheme,
                 onSelectionChanged: onSelectionChanged,
                 contextMenuBuilder: contextMenuBuilder,
+                trailingInlineWidget: isLastSegment
+                    ? trailingInlineIndicator
+                    : null,
                 onTapLink: (_, href, __) {
                   unawaited(_handleLinkTap(context, href));
                 },
@@ -23606,12 +23599,12 @@ class _SessionListTileState extends State<_SessionListTile> {
     final Color borderColor = isSelected
         ? const Color(0xFFD8E5FF)
         : hasUnread
-        ? const Color(0xFFFFD5D2)
+        ? OpenCrayColors.dangerBorder
         : Colors.transparent;
     final Color railColor = isSelected
         ? _ChatPalette.accent
         : hasUnread
-        ? const Color(0xFFFF3B30)
+        ? OpenCrayColors.danger
         : Colors.transparent;
     return Semantics(
       button: true,
@@ -23728,7 +23721,7 @@ class _SessionUnreadBadge extends StatelessWidget {
         width: 10,
         height: 10,
         decoration: const BoxDecoration(
-          color: Color(0xFFFF3B30),
+          color: OpenCrayColors.danger,
           shape: BoxShape.circle,
         ),
       );
@@ -23739,7 +23732,7 @@ class _SessionUnreadBadge extends StatelessWidget {
       constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: const Color(0xFFFF3B30),
+        color: OpenCrayColors.danger,
         borderRadius: BorderRadius.circular(999),
       ),
       alignment: Alignment.center,
@@ -23762,6 +23755,7 @@ class _ChatDecorations {
       color: Colors.white,
       borderRadius: BorderRadius.circular(16),
       border: Border.all(color: _ChatPalette.border),
+      boxShadow: OpenCrayShadows.card,
     );
   }
 }
@@ -23769,38 +23763,38 @@ class _ChatDecorations {
 class _ChatPalette {
   const _ChatPalette._();
 
-  static const Color background = Color(0xFFF5F5F7);
-  static const Color accent = Color(0xFF007AFF);
-  static const Color highRiskAccent = Color(0xFFC84B31);
-  static const Color highRiskBorder = Color(0xFFF2C6BA);
-  static const Color highRiskBadgeSurface = Color(0xFFFFE0D7);
-  static const Color textPrimary = Color(0xFF111111);
-  static const Color textSecondary = Color(0xFF6E6E73);
-  static const Color textTertiary = Color(0xFF8E8E93);
-  static const Color border = Color(0xFFE8E8ED);
-  static const Color runTraceBorder = Color(0xFFDCE3ED);
-  static const Color runTraceStatusSurface = Color(0xFFEAF2FF);
-  static const Color runTraceStatusText = Color(0xFF1B67D9);
-  static const Color runTraceActivityText = Color(0xFF526071);
-  static const Color runTraceDetailSurface = Color(0xFFF5F7FC);
-  static const Color runTracePreviewSurface = Color(0xFFF7FAFF);
-  static const Color runTracePreviewBorder = Color(0xFFD9E4F5);
-  static const Color runTraceUrlText = Color(0xFF165FC2);
-  static const Color runTraceInterruptSurface = Color(0xFFFFF1ED);
-  static const Color runTraceInterruptBorder = Color(0xFFF2CFC4);
-  static const Color runTraceInterruptAction = Color(0xFFC84B31);
-  static const Color runTraceTabDivider = Color(0xFFE4E8F0);
-  static const Color inspectorAction = Color(0xFF007AFF);
+  static const Color background = OpenCrayColors.shellBackground;
+  static const Color accent = OpenCrayColors.primary;
+  static const Color highRiskAccent = Color(0xFFC2491D);
+  static const Color highRiskBorder = Color(0xFFF0CFC0);
+  static const Color highRiskBadgeSurface = Color(0xFFFBE4D8);
+  static const Color textPrimary = OpenCrayColors.textPrimary;
+  static const Color textSecondary = OpenCrayColors.textSecondary;
+  static const Color textTertiary = OpenCrayColors.textTertiary;
+  static const Color border = OpenCrayColors.divider;
+  static const Color runTraceBorder = Color(0xFFDDE4F0);
+  static const Color runTraceStatusSurface = OpenCrayColors.primaryTint;
+  static const Color runTraceStatusText = OpenCrayColors.primaryPressed;
+  static const Color runTraceActivityText = OpenCrayColors.textSecondary;
+  static const Color runTraceDetailSurface = OpenCrayColors.surfaceSubtle;
+  static const Color runTracePreviewSurface = OpenCrayColors.surfaceSubtle;
+  static const Color runTracePreviewBorder = Color(0xFFDCE5F4);
+  static const Color runTraceUrlText = OpenCrayColors.primary;
+  static const Color runTraceInterruptSurface = Color(0xFFFCEFE8);
+  static const Color runTraceInterruptBorder = Color(0xFFF0CFC0);
+  static const Color runTraceInterruptAction = Color(0xFFC2491D);
+  static const Color runTraceTabDivider = OpenCrayColors.divider;
+  static const Color inspectorAction = OpenCrayColors.primary;
   static const Color inspectorTarget = Color(0xFF7C3AED);
-  static const Color inspectorScope = Color(0xFF16A34A);
-  static const Color inspectorResult = Color(0xFF64748B);
-  static const Color inspectorConnector = Color(0xFFCDD6F4);
-  static const Color composerStroke = Color(0xFFD7D7DC);
-  static const Color plusActiveSurface = Color(0xFFEEF5FF);
-  static const Color subtleSurface = Color(0xFFF7F7FA);
-  static const Color todoCompletedFill = Color(0xFFB8BDC7);
-  static const Color selectionRowHighlight = Color(0xFFE5E5EA);
-  static const Color selectionControlBorder = Color(0xFFC7C7CC);
+  static const Color inspectorScope = OpenCrayColors.success;
+  static const Color inspectorResult = OpenCrayColors.textSecondary;
+  static const Color inspectorConnector = Color(0xFFCBD6EE);
+  static const Color composerStroke = OpenCrayColors.outline;
+  static const Color plusActiveSurface = OpenCrayColors.primaryTint;
+  static const Color subtleSurface = OpenCrayColors.surfaceSubtle;
+  static const Color todoCompletedFill = OpenCrayColors.textTertiary;
+  static const Color selectionRowHighlight = OpenCrayColors.surfaceSunken;
+  static const Color selectionControlBorder = OpenCrayColors.outline;
 }
 
 class _ChatTextStyles {
@@ -23809,7 +23803,7 @@ class _ChatTextStyles {
   static const TextStyle pageTitle = TextStyle(
     fontSize: 30,
     height: 1.1,
-    fontWeight: FontWeight.w600,
+    fontWeight: FontWeight.w700,
     color: _ChatPalette.textPrimary,
     letterSpacing: -0.6,
   );
@@ -23819,6 +23813,7 @@ class _ChatTextStyles {
     height: 1.25,
     fontWeight: FontWeight.w600,
     color: _ChatPalette.textPrimary,
+    letterSpacing: -0.2,
   );
 
   static const TextStyle bodyMuted = TextStyle(
@@ -23829,9 +23824,9 @@ class _ChatTextStyles {
   );
 
   static const TextStyle bubble = TextStyle(
-    fontSize: 14,
-    height: 1.35,
-    fontWeight: FontWeight.w500,
+    fontSize: 15,
+    height: 1.4,
+    fontWeight: FontWeight.w400,
   );
 
   static const TextStyle runTraceHeadline = TextStyle(
@@ -23845,29 +23840,29 @@ class _ChatTextStyles {
     fontSize: 12,
     height: 1.35,
     fontWeight: FontWeight.w600,
-    color: Color(0xFF243248),
+    color: OpenCrayColors.textPrimary,
   );
 
   static const TextStyle runTraceDetailValue = TextStyle(
     fontSize: 12,
     height: 1.35,
     fontWeight: FontWeight.w500,
-    color: Color(0xFF243248),
+    color: OpenCrayColors.textSecondary,
   );
 
   static const TextStyle runTraceFooter = TextStyle(
     fontSize: 12,
     height: 1.35,
     fontWeight: FontWeight.w500,
-    color: Color(0xFF7A8494),
+    color: OpenCrayColors.textTertiary,
   );
 
   static const TextStyle runInspectorTitle = TextStyle(
     fontSize: 28,
     height: 1.1,
-    fontWeight: FontWeight.w600,
+    fontWeight: FontWeight.w700,
     color: _ChatPalette.textPrimary,
-    letterSpacing: -0.4,
+    letterSpacing: -0.5,
   );
 
   static const TextStyle runInspectorLog = TextStyle(
