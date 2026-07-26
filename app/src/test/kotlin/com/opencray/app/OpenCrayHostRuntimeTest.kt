@@ -6226,6 +6226,17 @@ class OpenCrayHostRuntimeTest {
       )
       assertEquals(true, observedEvents[1]["cleared"])
       assertEquals("", observedEvents[1]["text"])
+      assertTrue((observedEvents[0]["streamInstanceId"] as? String)?.isNotBlank() == true)
+      assertEquals(observedEvents[0]["streamInstanceId"], observedEvents[1]["streamInstanceId"])
+      assertEquals(1L, observedEvents[0]["sequence"])
+      assertEquals(2L, observedEvents[1]["sequence"])
+      assertEquals(observedEvents[0]["sequence"], observedEvents[0]["lastSequence"])
+      assertEquals(observedEvents[1]["sequence"], observedEvents[1]["lastSequence"])
+      assertTrue((observedEvents[0]["eventId"] as? String)?.isNotBlank() == true)
+      assertTrue((observedEvents[1]["eventId"] as? String)?.isNotBlank() == true)
+      val snapshot = hostRuntime.loadChatRuntimeSnapshot()
+      assertEquals(observedEvents[1]["streamInstanceId"], snapshot["streamInstanceId"])
+      assertEquals(observedEvents[1]["sequence"], snapshot["lastSequence"])
     } finally {
       disposer()
     }
@@ -6381,6 +6392,9 @@ class OpenCrayHostRuntimeTest {
       val delta = observedDeltas.single()
       assertEquals(activeSessionId, delta["sessionId"])
       assertTrue((delta["sequence"] as Long) >= 1L)
+      assertEquals(delta["sequence"], delta["lastSequence"])
+      assertTrue((delta["streamInstanceId"] as? String)?.isNotBlank() == true)
+      assertTrue((delta["eventId"] as? String)?.isNotBlank() == true)
       assertTrue(observedChatSnapshots.isEmpty())
       val activeRuns = delta["activeRuns"] as List<*>
       val activeRun = activeRuns.single() as Map<*, *>
@@ -6390,6 +6404,10 @@ class OpenCrayHostRuntimeTest {
       assertEquals("tool_call", event["kind"])
       assertEquals("Read", event["toolName"])
       assertEquals(submission["runId"], event["runId"])
+      assertTrue((event["eventId"] as? String)?.isNotBlank() == true)
+      val fullSnapshot = hostRuntime.loadChatRuntimeSnapshot()
+      assertEquals(delta["streamInstanceId"], fullSnapshot["streamInstanceId"])
+      assertEquals(delta["sequence"], fullSnapshot["lastSequence"])
     } finally {
       disposer()
       chatDisposer()
@@ -10041,6 +10059,7 @@ class OpenCrayHostRuntimeTest {
     val run = hostRuntime.submitChatMessage("Cancel this run")!!
 
     hostRuntime.interruptChatRun(run["runId"] as String)
+    hostRuntime.interruptChatRun(run["runId"] as String)
 
     val chatSnapshot = hostRuntime.loadChatSnapshot()
     val runtimeActivity = chatSnapshot["runtimeActivity"] as Map<*, *>
@@ -10074,6 +10093,49 @@ class OpenCrayHostRuntimeTest {
       ((chatSnapshot["summary"] as Map<*, *>)["body"]),
     )
     assertEquals("Waiting for your next instruction.", drawerSession["preview"])
+  }
+
+  @Test
+  fun interruptChatRunDoesNotHoldHostLockWhileWaitingForCancellationToSettle() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-run-cancel-lock"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val cancellationSettled = CountDownLatch(1)
+    lateinit var manager: RecordingRuntimeManager
+    lateinit var handle: RecordingSessionHandle
+    handle = RecordingSessionHandle(
+      sessionId = activeSessionId,
+      cancellationSettled = cancellationSettled,
+      onRequestCancel = { taskId ->
+        Thread {
+          val task = handle.submittedTasks.single { submitted -> submitted.id == taskId }
+          manager.emitTaskFinishedAfterListener(
+            sessionId = activeSessionId,
+            task = task,
+            result = ExecutionResult(
+              taskId = task.id,
+              status = ExecutionStatus.CANCELLED,
+              errorCode = "CANCELLED_BY_USER",
+              errorMessage = "Run cancelled by user.",
+              startedAtEpochMs = 1_000L,
+              finishedAtEpochMs = 1_001L,
+            ),
+          )
+          cancellationSettled.countDown()
+        }.apply {
+          name = "host-lock-cancellation-settlement"
+          isDaemon = true
+        }.start()
+      },
+    )
+    manager = RecordingRuntimeManager().apply { putHandle(handle) }
+    val hostRuntime = hostRuntime(chatStore = chatStore, runtimeManager = manager)
+    val run = hostRuntime.submitChatMessage("Cancel without blocking lifecycle publication")!!
+
+    hostRuntime.interruptChatRun(run["runId"] as String)
+
+    assertTrue(cancellationSettled.await(2, TimeUnit.SECONDS))
+    val events = hostRuntime.loadChatRuntimeSnapshot()["events"] as List<*>
+    assertTrue(events.any { event -> (event as Map<*, *>)["kind"] == "interrupted" })
   }
 
   @Test
@@ -12416,6 +12478,17 @@ class OpenCrayHostRuntimeTest {
       }
     }
 
+    fun emitTaskFinishedAfterListener(
+      sessionId: String,
+      task: AgentTask,
+      result: ExecutionResult,
+    ) {
+      listeners.forEach { listener ->
+        listener.onTaskFinished(sessionId, task, result)
+      }
+      handlesBySession[sessionId]?.recordResult(task = task, result = result)
+    }
+
     fun emitRunEvent(
       sessionId: String,
       task: AgentTask,
@@ -12750,6 +12823,8 @@ class OpenCrayHostRuntimeTest {
     private val submitFailure: Throwable? = null,
     private val resumeResult: Boolean = false,
     private val retryResult: Boolean = false,
+    private val cancellationSettled: CountDownLatch? = null,
+    private val onRequestCancel: ((String) -> Unit)? = null,
   ) : AgentSessionHandle {
     var queuedToolCompletion: QueuedToolCompletion? = null
     val queuedToolCompletions = mutableListOf<QueuedToolCompletion>()
@@ -12866,10 +12941,15 @@ class OpenCrayHostRuntimeTest {
       runSnapshotsById.entries.firstOrNull { (_, snapshot) -> snapshot.taskId == taskId }?.let { (runId, snapshot) ->
         runSnapshotsById[runId] = snapshot.copy(
           updatedAtEpochMs = snapshot.updatedAtEpochMs + 1L,
-          lifecycleState = QueueTaskLifecycleState.CANCELLED,
-          taskState = AgentTaskState.CANCELLED,
+          lifecycleState = if (onRequestCancel == null) {
+            QueueTaskLifecycleState.CANCELLED
+          } else {
+            QueueTaskLifecycleState.CANCEL_REQUESTED
+          },
+          taskState = if (onRequestCancel == null) AgentTaskState.CANCELLED else AgentTaskState.RUNNING,
         )
       }
+      onRequestCancel?.invoke(taskId)
       return true
     }
 
@@ -12998,7 +13078,10 @@ class OpenCrayHostRuntimeTest {
 
     override fun findRun(runId: String): AgentRunSnapshot? = runSnapshotsById[runId]?.let(::withManagedProcessState)
 
-    override fun waitForRun(runId: String, timeoutMs: Long): AgentRunSnapshot? = findRun(runId)
+    override fun waitForRun(runId: String, timeoutMs: Long): AgentRunSnapshot? {
+      cancellationSettled?.await(timeoutMs.coerceAtMost(500L), TimeUnit.MILLISECONDS)
+      return findRun(runId)
+    }
 
     override fun requestCancelForPendingMessageIds(pendingMessageIds: Set<String>): Int {
       val normalizedIds = pendingMessageIds

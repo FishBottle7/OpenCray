@@ -202,6 +202,63 @@ tasks.named("preBuild").configure {
   dependsOn(generatePythonRuntimeManifestAsset)
 }
 
+val verifyReleaseManifestSecurity = tasks.register("verifyReleaseManifestSecurity") {
+  val mergedManifest = layout.buildDirectory.file(
+    "intermediates/merged_manifest/release/processReleaseMainManifest/AndroidManifest.xml",
+  )
+  dependsOn("processReleaseMainManifest")
+  inputs.file(mergedManifest)
+  doLast {
+    val manifestFile = mergedManifest.get().asFile
+    check(manifestFile.isFile) {
+      "Release merged manifest was not generated: ${manifestFile.absolutePath}"
+    }
+    val androidNamespace = "http://schemas.android.com/apk/res/android"
+    val document = javax.xml.parsers.DocumentBuilderFactory.newInstance().apply {
+      isNamespaceAware = true
+    }.newDocumentBuilder().parse(manifestFile)
+    val application = document.getElementsByTagName("application").item(0) as org.w3c.dom.Element
+    check(application.getAttributeNS(androidNamespace, "debuggable") != "true") {
+      "Release manifest must not be debuggable."
+    }
+    check(application.getAttributeNS(androidNamespace, "allowBackup") == "false") {
+      "Release manifest must disable Android Auto Backup."
+    }
+    check(application.getAttributeNS(androidNamespace, "fullBackupContent").isNotBlank()) {
+      "Release manifest must declare pre-Android 12 backup exclusions."
+    }
+    check(application.getAttributeNS(androidNamespace, "dataExtractionRules").isNotBlank()) {
+      "Release manifest must declare Android 12+ data extraction exclusions."
+    }
+    check(application.getAttributeNS(androidNamespace, "networkSecurityConfig").isNotBlank()) {
+      "Release manifest must keep the scoped loopback network security policy."
+    }
+
+    fun requirePrivateComponent(tagName: String, className: String) {
+      val nodes = document.getElementsByTagName(tagName)
+      val component = (0 until nodes.length)
+        .asSequence()
+        .map { index -> nodes.item(index) as org.w3c.dom.Element }
+        .firstOrNull { element ->
+          element.getAttributeNS(androidNamespace, "name") == className
+        }
+        ?: error("Release manifest is missing $className.")
+      check(component.getAttributeNS(androidNamespace, "exported") == "false") {
+        "$className must not be exported in release builds."
+      }
+    }
+
+    requirePrivateComponent("service", "org.opencray.app.ServiceOpencraypython")
+    requirePrivateComponent("receiver", "com.opencray.app.ScheduledTaskRepairReceiver")
+  }
+}
+
+tasks.matching { task ->
+  task.name == "assembleRelease" || task.name == "bundleRelease"
+}.configureEach {
+  dependsOn(verifyReleaseManifestSecurity)
+}
+
 dependencies {
   implementation(kotlin("stdlib"))
   implementation("androidx.activity:activity-ktx:1.9.3")

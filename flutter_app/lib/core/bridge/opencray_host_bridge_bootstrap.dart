@@ -69,6 +69,12 @@ class OpenCrayLocalRuntimeBridgeConnector
   @override
   Future<OpenCrayHostBridge?> connect() async {
     final configuredBaseUrl = (baseUrl ?? _environmentBaseUrl).trim();
+    if (configuredBaseUrl.isEmpty && Platform.isAndroid) {
+      // The production Android loopback endpoint uses an ephemeral port and
+      // per-start credentials held by the native process. If the platform
+      // channel is unavailable, Dart cannot authenticate to that endpoint.
+      return null;
+    }
     final resolvedBaseUrl = configuredBaseUrl.isEmpty
         ? _defaultBaseUrl
         : configuredBaseUrl;

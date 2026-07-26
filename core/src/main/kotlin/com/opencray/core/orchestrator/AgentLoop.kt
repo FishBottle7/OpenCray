@@ -17,7 +17,23 @@ class AgentLoop(
 
   fun requestCancel(taskId: String): Boolean = queue.requestCancel(taskId)
 
-  fun requestRetry(taskId: String): Boolean = queue.requestRetry(taskId)
+  fun requestRetry(
+    taskId: String,
+    taskMetadataUpdates: Map<String, String> = emptyMap(),
+  ): Boolean = queue.requestRetry(
+    taskId = taskId,
+    taskMetadataUpdates = taskMetadataUpdates,
+  )
+
+  fun reconcileFailure(
+    taskId: String,
+    errorCode: String,
+    errorMessage: String,
+  ): Boolean = queue.reconcileFailure(
+    taskId = taskId,
+    errorCode = errorCode,
+    errorMessage = errorMessage,
+  )
 
   fun requestResumeTask(taskId: String): Boolean = queue.requestResumeTask(taskId)
 

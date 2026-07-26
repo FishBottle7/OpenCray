@@ -1837,6 +1837,252 @@ void main() {
     );
   });
 
+  test('local runtime bridge long-polls ordered runtime deltas', () async {
+    var requestCount = 0;
+    requestHandler = (request) async {
+      expect(request.method, 'GET');
+      expect(request.uri.path, '/v1/chat_runtime_events');
+      requestCount += 1;
+      if (requestCount == 1) {
+        expect(request.uri.queryParameters['streamInstanceId'], isEmpty);
+        expect(request.uri.queryParameters['afterSequence'], '0');
+        await writeJson(request, <String, Object?>{
+          'kind': 'snapshot',
+          'sessionId': 'session-1',
+          'streamInstanceId': 'stream-local-1',
+          'lastSequence': 4,
+          'payload': <String, Object?>{
+            'sessionId': 'session-1',
+            'streamInstanceId': 'stream-local-1',
+            'lastSequence': 4,
+            'activeRuns': const <Object?>[],
+            'events': const <Object?>[],
+          },
+        });
+        return;
+      }
+      expect(request.uri.queryParameters['streamInstanceId'], 'stream-local-1');
+      expect(request.uri.queryParameters['afterSequence'], '4');
+      await writeJson(request, <String, Object?>{
+        'kind': 'delta',
+        'sessionId': 'session-1',
+        'streamInstanceId': 'stream-local-1',
+        'sequence': 5,
+        'lastSequence': 5,
+        'eventId': 'envelope-local-5',
+        'payload': <String, Object?>{
+          'sessionId': 'session-1',
+          'streamInstanceId': 'stream-local-1',
+          'sequence': 5,
+          'lastSequence': 5,
+          'eventId': 'envelope-local-5',
+          'totalLength': 1,
+          'events': <Object?>[
+            <String, Object?>{
+              'eventId': 'runtime-local-5',
+              'kind': 'tool_result',
+              'runId': 'run-local-1',
+              'taskId': 'task-local-1',
+              'emittedAtEpochMs': 5000,
+              'toolName': 'Read',
+            },
+          ],
+        },
+      });
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final delta = await bridge.watchRuntimeEventDeltas().first.timeout(
+      const Duration(seconds: 2),
+    );
+
+    expect(delta.streamInstanceId, 'stream-local-1');
+    expect(delta.sequence, 5);
+    expect(delta.lastSequence, 5);
+    expect(delta.eventId, 'envelope-local-5');
+    expect(delta.bridgeEpoch, isNotEmpty);
+    expect(delta.events.single.eventId, 'runtime-local-5');
+  });
+
+  test(
+    'local runtime bridge shares one cursor across draft and delta streams',
+    () async {
+      final Map<String, int> requestsByCursor = <String, int>{};
+      requestHandler = (request) async {
+        expect(request.method, 'GET');
+        expect(request.uri.path, '/v1/chat_runtime_events');
+        final String streamInstanceId =
+            request.uri.queryParameters['streamInstanceId'] ?? '';
+        final String afterSequence =
+            request.uri.queryParameters['afterSequence'] ?? '0';
+        final String cursorKey = '$streamInstanceId:$afterSequence';
+        requestsByCursor.update(
+          cursorKey,
+          (count) => count + 1,
+          ifAbsent: () => 1,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 20));
+        if (streamInstanceId.isEmpty) {
+          await writeJson(request, <String, Object?>{
+            'kind': 'snapshot',
+            'sessionId': 'session-shared-cursor',
+            'streamInstanceId': 'stream-shared-cursor',
+            'lastSequence': 4,
+            'payload': <String, Object?>{
+              'sessionId': 'session-shared-cursor',
+              'streamInstanceId': 'stream-shared-cursor',
+              'lastSequence': 4,
+              'activeRuns': const <Object?>[],
+              'events': const <Object?>[],
+            },
+          });
+          return;
+        }
+        if (afterSequence == '4') {
+          await writeJson(request, <String, Object?>{
+            'kind': 'draft',
+            'sessionId': 'session-shared-cursor',
+            'streamInstanceId': 'stream-shared-cursor',
+            'sequence': 5,
+            'lastSequence': 5,
+            'eventId': 'draft-envelope-5',
+            'payload': <String, Object?>{
+              'sessionId': 'session-shared-cursor',
+              'streamInstanceId': 'stream-shared-cursor',
+              'sequence': 5,
+              'lastSequence': 5,
+              'eventId': 'draft-envelope-5',
+              'runId': 'run-shared-cursor',
+              'taskId': 'task-shared-cursor',
+              'executionId': 'execution-shared-cursor',
+              'pendingMessageId': 'pending-shared-cursor',
+              'text': 'Shared cursor draft.',
+              'updatedAtEpochMs': 5000,
+            },
+          });
+          return;
+        }
+        expect(afterSequence, '5');
+        await writeJson(request, <String, Object?>{
+          'kind': 'delta',
+          'sessionId': 'session-shared-cursor',
+          'streamInstanceId': 'stream-shared-cursor',
+          'sequence': 6,
+          'lastSequence': 6,
+          'eventId': 'delta-envelope-6',
+          'payload': <String, Object?>{
+            'sessionId': 'session-shared-cursor',
+            'streamInstanceId': 'stream-shared-cursor',
+            'sequence': 6,
+            'lastSequence': 6,
+            'eventId': 'delta-envelope-6',
+            'totalLength': 0,
+            'events': const <Object?>[],
+          },
+        });
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+      final draftFuture = bridge.watchLiveAssistantDraftEvents().first.timeout(
+        const Duration(seconds: 2),
+      );
+      final deltaFuture = bridge.watchRuntimeEventDeltas().first.timeout(
+        const Duration(seconds: 2),
+      );
+
+      final draft = await draftFuture;
+      final delta = await deltaFuture;
+
+      expect(draft.eventId, 'draft-envelope-5');
+      expect(delta.eventId, 'delta-envelope-6');
+      expect(requestsByCursor, <String, int>{
+        ':0': 1,
+        'stream-shared-cursor:4': 1,
+        'stream-shared-cursor:5': 1,
+      });
+    },
+  );
+
+  test('local runtime bridge resets cursor when the session changes', () async {
+    final List<String> cursors = <String>[];
+    requestHandler = (request) async {
+      expect(request.method, 'GET');
+      expect(request.uri.path, '/v1/chat_runtime_events');
+      final String sessionId = request.uri.queryParameters['sessionId'] ?? '';
+      final String streamInstanceId =
+          request.uri.queryParameters['streamInstanceId'] ?? '';
+      final String afterSequence =
+          request.uri.queryParameters['afterSequence'] ?? '0';
+      cursors.add('$sessionId|$streamInstanceId|$afterSequence');
+      switch (cursors.length) {
+        case 1:
+          await writeJson(request, <String, Object?>{
+            'kind': 'snapshot',
+            'sessionId': 'session-high-watermark',
+            'streamInstanceId': 'stream-session-switch',
+            'lastSequence': 8,
+            'payload': <String, Object?>{
+              'sessionId': 'session-high-watermark',
+              'streamInstanceId': 'stream-session-switch',
+              'lastSequence': 8,
+              'activeRuns': const <Object?>[],
+              'events': const <Object?>[],
+            },
+          });
+          return;
+        case 2:
+          await writeJson(request, <String, Object?>{
+            'kind': 'snapshot',
+            'sessionId': 'session-low-watermark',
+            'streamInstanceId': 'stream-session-switch',
+            'lastSequence': 2,
+            'payload': <String, Object?>{
+              'sessionId': 'session-low-watermark',
+              'streamInstanceId': 'stream-session-switch',
+              'lastSequence': 2,
+              'activeRuns': const <Object?>[],
+              'events': const <Object?>[],
+            },
+          });
+          return;
+        default:
+          expect(sessionId, 'session-low-watermark');
+          expect(streamInstanceId, 'stream-session-switch');
+          expect(afterSequence, '2');
+          await writeJson(request, <String, Object?>{
+            'kind': 'delta',
+            'sessionId': 'session-low-watermark',
+            'streamInstanceId': 'stream-session-switch',
+            'sequence': 3,
+            'lastSequence': 3,
+            'eventId': 'session-switch-delta-3',
+            'payload': <String, Object?>{
+              'sessionId': 'session-low-watermark',
+              'streamInstanceId': 'stream-session-switch',
+              'sequence': 3,
+              'lastSequence': 3,
+              'eventId': 'session-switch-delta-3',
+              'totalLength': 0,
+              'events': const <Object?>[],
+            },
+          });
+      }
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    final delta = await bridge.watchRuntimeEventDeltas().first.timeout(
+      const Duration(seconds: 2),
+    );
+
+    expect(delta.sessionId, 'session-low-watermark');
+    expect(delta.sequence, 3);
+    expect(cursors, <String>[
+      '||0',
+      'session-high-watermark|stream-session-switch|8',
+      'session-low-watermark|stream-session-switch|2',
+    ]);
+  });
+
   test(
     'local runtime connector returns null when loopback runtime is unavailable',
     () async {

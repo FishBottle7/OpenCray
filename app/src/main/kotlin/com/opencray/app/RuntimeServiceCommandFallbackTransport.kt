@@ -1,12 +1,16 @@
 package com.opencray.app
 
+import android.content.Context
 import com.opencray.runtime.OpenCrayFinalAttachment
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.ConnectException
 import java.net.HttpURLConnection
+import java.net.Proxy
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.URLEncoder
+import java.util.concurrent.TimeUnit
 import org.json.JSONArray
 import org.json.JSONObject
 import org.json.JSONTokener
@@ -36,10 +40,30 @@ internal data class RuntimeServiceReadFallbackGatewayBundle(
 )
 
 internal fun loopbackRuntimeServiceReadFallbackGatewayBundle(
+  appContext: Context,
+  target: RuntimeServiceTarget = RuntimeServiceTarget.INTERACTIVE,
+  requestClient: OpenCrayLocalRuntimeLoopbackHttpClient =
+    openCrayLocalRuntimeLoopbackHttpClientForTarget(appContext, target),
+  mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
+): RuntimeServiceReadFallbackGatewayBundle = loopbackRuntimeServiceReadFallbackGatewayBundleInternal(
+  requestClient = requestClient,
+  mainThreadPoster = mainThreadPoster,
+)
+
+@Deprecated("Legacy fixed-port test compatibility only; production callers must pass appContext.")
+internal fun loopbackRuntimeServiceReadFallbackGatewayBundle(
   target: RuntimeServiceTarget = RuntimeServiceTarget.INTERACTIVE,
   requestClient: OpenCrayLocalRuntimeLoopbackHttpClient =
     openCrayLocalRuntimeLoopbackHttpClientForTarget(target),
   mainThreadPoster: MainThreadPoster = ImmediateMainThreadPoster,
+): RuntimeServiceReadFallbackGatewayBundle = loopbackRuntimeServiceReadFallbackGatewayBundleInternal(
+  requestClient = requestClient,
+  mainThreadPoster = mainThreadPoster,
+)
+
+private fun loopbackRuntimeServiceReadFallbackGatewayBundleInternal(
+  requestClient: OpenCrayLocalRuntimeLoopbackHttpClient,
+  mainThreadPoster: MainThreadPoster,
 ): RuntimeServiceReadFallbackGatewayBundle {
   val commandTransport = LoopbackHttpRuntimeServiceCommandFallbackTransport(
     requestClient = requestClient,
@@ -68,6 +92,21 @@ internal fun loopbackRuntimeServiceReadFallbackGatewayBundle(
 }
 
 internal fun openCrayLocalRuntimeLoopbackHttpClientForTarget(
+  appContext: Context,
+  target: RuntimeServiceTarget,
+): OpenCrayLocalRuntimeLoopbackHttpClient {
+  val descriptorStore by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+    RuntimeServiceLoopbackDescriptorStore.fromContext(
+      appContext.applicationContext ?: appContext,
+    )
+  }
+  return OpenCrayLocalRuntimeLoopbackHttpClient(
+    descriptorProvider = { descriptorStore.read(target) },
+  )
+}
+
+@Deprecated("Legacy fixed-port test compatibility only; production callers must pass appContext.")
+internal fun openCrayLocalRuntimeLoopbackHttpClientForTarget(
   target: RuntimeServiceTarget,
 ): OpenCrayLocalRuntimeLoopbackHttpClient = OpenCrayLocalRuntimeLoopbackHttpClient(
   baseUrlProvider = {
@@ -76,7 +115,7 @@ internal fun openCrayLocalRuntimeLoopbackHttpClientForTarget(
 )
 
 internal class LoopbackHttpRuntimeServiceCommandFallbackTransport(
-  private val requestClient: OpenCrayLocalRuntimeLoopbackHttpClient = OpenCrayLocalRuntimeLoopbackHttpClient(),
+  private val requestClient: OpenCrayLocalRuntimeLoopbackHttpClient,
 ) : RuntimeServiceCommandFallbackTransport {
   override fun dispatchChatWriteCommand(
     command: OpenCrayChatWriteCommand,
@@ -119,6 +158,7 @@ internal class OpenCrayLocalRuntimeLoopbackHttpClient(
   private val retryDelayMs: Long = 100L,
   private val connectTimeoutMs: Int = 300,
   private val readTimeoutMs: Int = 60_000,
+  private val descriptorProvider: (() -> RuntimeServiceLoopbackDescriptor?)? = null,
 ) {
   fun post(
     path: String,
@@ -181,7 +221,9 @@ internal class OpenCrayLocalRuntimeLoopbackHttpClient(
     queryParameters: Map<String, String> = emptyMap(),
     body: JSONObject? = null,
   ): Any? {
-    val deadlineAt = System.currentTimeMillis() + bootstrapTimeoutMs
+    val deadlineAtNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(
+      bootstrapTimeoutMs.coerceAtLeast(0L),
+    )
     var lastConnectionFailure: Throwable? = null
     while (true) {
       try {
@@ -204,7 +246,7 @@ internal class OpenCrayLocalRuntimeLoopbackHttpClient(
           throwable,
         )
       }
-      if (System.currentTimeMillis() >= deadlineAt) {
+      if (System.nanoTime() - deadlineAtNanos >= 0L) {
         throw IllegalStateException(
           "Loopback runtime transport is unavailable for '$path'.",
           lastConnectionFailure,
@@ -220,25 +262,84 @@ internal class OpenCrayLocalRuntimeLoopbackHttpClient(
     queryParameters: Map<String, String>,
     body: JSONObject?,
   ): Any? {
-    val connection = (URL(buildUrl(path, queryParameters)).openConnection() as HttpURLConnection).apply {
-      requestMethod = method
+    val normalizedMethod = method.uppercase()
+    val bodyBytes = body?.toString()?.toByteArray(Charsets.UTF_8) ?: ByteArray(0)
+    val endpoint = resolveEndpoint(path = path, queryParameters = queryParameters)
+    val requestTimestampEpochMs = System.currentTimeMillis()
+    val authenticationHeaders = endpoint.descriptor?.let { descriptor ->
+      RuntimeServiceLoopbackHttpAuth.requestHeaders(
+        credentials = descriptor.credentials,
+        timestampEpochMs = requestTimestampEpochMs,
+        method = normalizedMethod,
+        requestTarget = endpoint.requestTarget,
+        body = bodyBytes,
+      )
+    }.orEmpty()
+    val requestNonce = authenticationHeaders[RuntimeServiceLoopbackHttpAuth.HEADER_NONCE_WIRE]
+    val connection = (endpoint.url.openConnection(Proxy.NO_PROXY) as HttpURLConnection).apply {
+      requestMethod = normalizedMethod
+      instanceFollowRedirects = false
       connectTimeout = connectTimeoutMs
       readTimeout = readTimeoutMs
       doInput = true
       setRequestProperty("Accept", "application/json")
+      authenticationHeaders.forEach { (name, value) ->
+        setRequestProperty(name, value)
+      }
       if (body != null) {
         doOutput = true
         setRequestProperty("Content-Type", "application/json")
+        setFixedLengthStreamingMode(bodyBytes.size)
       }
     }
     return try {
       if (body != null) {
         connection.outputStream.use { output ->
-          output.write(body.toString().toByteArray(Charsets.UTF_8))
+          output.write(bodyBytes)
         }
       }
       val statusCode = connection.responseCode
-      val responseBody = readResponseBody(connection, statusCode)
+      val responseBytes = readResponseBody(connection, statusCode)
+      endpoint.descriptor?.let { descriptor ->
+        val responseHeaders = mapOf(
+          RuntimeServiceLoopbackHttpAuth.HEADER_EPOCH to
+            connection.getHeaderField(RuntimeServiceLoopbackHttpAuth.HEADER_EPOCH_WIRE).orEmpty(),
+          RuntimeServiceLoopbackHttpAuth.HEADER_TIMESTAMP to
+            connection.getHeaderField(RuntimeServiceLoopbackHttpAuth.HEADER_TIMESTAMP_WIRE).orEmpty(),
+          RuntimeServiceLoopbackHttpAuth.HEADER_NONCE to
+            connection.getHeaderField(RuntimeServiceLoopbackHttpAuth.HEADER_NONCE_WIRE).orEmpty(),
+          RuntimeServiceLoopbackHttpAuth.HEADER_SIGNATURE to
+            connection.getHeaderField(RuntimeServiceLoopbackHttpAuth.HEADER_SIGNATURE_WIRE).orEmpty(),
+        )
+        val responseAuthenticated =
+          requestNonce != null &&
+            RuntimeServiceLoopbackHttpAuth.verifyResponse(
+              credentials = descriptor.credentials,
+              requestTimestampEpochMs = requestTimestampEpochMs,
+              requestNonce = requestNonce,
+              method = normalizedMethod,
+              requestTarget = endpoint.requestTarget,
+              statusCode = statusCode,
+              body = responseBytes,
+              headers = responseHeaders,
+            )
+        if (!responseAuthenticated && statusCode == 401) {
+          // Authentication rejection happens before dispatch, so this attempt
+          // is safe to repeat with a freshly read descriptor.
+          throw LoopbackDescriptorRotationException(
+            "Loopback runtime transport returned an unauthenticated response for '$path'.",
+          )
+        }
+        if (!responseAuthenticated) {
+          // A non-401 response may have followed an executed write. Never
+          // replay that ambiguous request merely because its response failed
+          // authentication.
+          throw IOException(
+            "Loopback runtime transport response authentication failed for '$path'.",
+          )
+        }
+      }
+      val responseBody = String(responseBytes, Charsets.UTF_8)
       if (statusCode !in 200..299) {
         throw IllegalStateException(
           "Loopback runtime transport returned HTTP $statusCode for '$path'${formatErrorSuffix(responseBody)}",
@@ -251,10 +352,11 @@ internal class OpenCrayLocalRuntimeLoopbackHttpClient(
   }
 
   private fun buildUrl(
+    baseUrl: String,
     path: String,
     queryParameters: Map<String, String>,
   ): String {
-    val normalizedBaseUrl = baseUrlProvider().trim().ifBlank {
+    val normalizedBaseUrl = baseUrl.trim().ifBlank {
       "http://127.0.0.1:${OpenCrayLocalRuntimeServer.DEFAULT_PORT}/"
     }
     val prefix = if (normalizedBaseUrl.endsWith("/")) normalizedBaseUrl else "$normalizedBaseUrl/"
@@ -268,6 +370,28 @@ internal class OpenCrayLocalRuntimeLoopbackHttpClient(
     return "$prefix$normalizedPath?$query"
   }
 
+  private fun resolveEndpoint(
+    path: String,
+    queryParameters: Map<String, String>,
+  ): LoopbackRequestEndpoint {
+    val descriptor = descriptorProvider?.invoke()
+    if (descriptorProvider != null && descriptor == null) {
+      throw ConnectException("Loopback runtime descriptor is unavailable.")
+    }
+    val url = URL(
+      buildUrl(
+        baseUrl = descriptor?.baseUrl() ?: baseUrlProvider(),
+        path = path,
+        queryParameters = queryParameters,
+      ),
+    )
+    return LoopbackRequestEndpoint(
+      url = url,
+      requestTarget = url.file.takeIf(String::isNotBlank) ?: "/",
+      descriptor = descriptor,
+    )
+  }
+
   private fun parseJsonPayload(rawBody: String): Any? {
     if (rawBody.isBlank()) {
       return null
@@ -278,11 +402,38 @@ internal class OpenCrayLocalRuntimeLoopbackHttpClient(
   private fun readResponseBody(
     connection: HttpURLConnection,
     statusCode: Int,
-  ): String =
-    (if (statusCode in 200..299) connection.inputStream else connection.errorStream)
-      ?.bufferedReader(Charsets.UTF_8)
-      ?.use { reader -> reader.readText() }
-      .orEmpty()
+  ): ByteArray {
+    val contentLength = connection.contentLengthLong
+    if (contentLength > MAX_RESPONSE_BODY_BYTES) {
+      throw IOException("Loopback runtime response exceeds the size limit.")
+    }
+    val input = if (statusCode in 200..299) {
+      connection.inputStream
+    } else {
+      connection.errorStream
+    } ?: return ByteArray(0)
+    return input.use { stream ->
+      val output = ByteArrayOutputStream(
+        contentLength.takeIf { it in 1..MAX_RESPONSE_BODY_BYTES }
+          ?.toInt()
+          ?: DEFAULT_RESPONSE_BUFFER_BYTES,
+      )
+      val buffer = ByteArray(DEFAULT_RESPONSE_BUFFER_BYTES)
+      var total = 0L
+      while (true) {
+        val count = stream.read(buffer)
+        if (count < 0) {
+          break
+        }
+        total += count
+        if (total > MAX_RESPONSE_BODY_BYTES) {
+          throw IOException("Loopback runtime response exceeds the size limit.")
+        }
+        output.write(buffer, 0, count)
+      }
+      output.toByteArray()
+    }
+  }
 
   private fun formatErrorSuffix(rawBody: String): String {
     val parsed = runCatching { parseJsonPayload(rawBody) }.getOrNull()
@@ -292,6 +443,21 @@ internal class OpenCrayLocalRuntimeLoopbackHttpClient(
       rawBody.isBlank() -> ""
       else -> ": ${rawBody.take(200)}"
     }
+  }
+
+  private data class LoopbackRequestEndpoint(
+    val url: URL,
+    val requestTarget: String,
+    val descriptor: RuntimeServiceLoopbackDescriptor?,
+  )
+
+  private class LoopbackDescriptorRotationException(
+    message: String,
+  ) : ConnectException(message)
+
+  companion object {
+    private const val DEFAULT_RESPONSE_BUFFER_BYTES: Int = 8 * 1024
+    private const val MAX_RESPONSE_BODY_BYTES: Long = 8L * 1024L * 1024L
   }
 }
 

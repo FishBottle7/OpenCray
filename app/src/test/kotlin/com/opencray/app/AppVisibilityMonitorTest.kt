@@ -11,8 +11,9 @@ class AppVisibilityMonitorTest {
   fun registerPublishesHeartbeatWhileVisibleAndDoesNotPublishFalseImmediatelyOnStop() {
     val publishedValues = mutableListOf<Boolean>()
     val scheduler = RecordingRuntimeServiceDelayScheduler()
+    val stateStore = RecordingAppVisibilityStateStore()
     val publisher = PersistingAppVisibilityPublisher(
-      stateStore = RecordingAppVisibilityStateStore(),
+      stateStore = stateStore,
       broadcaster = AppVisibilityChangeBroadcaster { visible ->
         publishedValues += visible
       },
@@ -29,6 +30,9 @@ class AppVisibilityMonitorTest {
     )
 
     monitor.onActivityStarted(activity)
+    stateStore.failNextSave()
+    scheduler.runNext()
+    assertEquals(1, scheduler.pendingTaskCount)
     scheduler.runNext()
     monitor.onActivityStopped(activity)
 
@@ -38,6 +42,11 @@ class AppVisibilityMonitorTest {
 
   private class RecordingAppVisibilityStateStore : AppVisibilityStateStore {
     private var appVisibleUntilEpochMs: Long? = null
+    private var shouldFailNextSave: Boolean = false
+
+    fun failNextSave() {
+      shouldFailNextSave = true
+    }
 
     override fun loadAppVisible(): Boolean = appVisibleUntilEpochMs != null
 
@@ -48,6 +57,10 @@ class AppVisibilityMonitorTest {
     override fun loadAppVisibleUntilEpochMs(): Long? = appVisibleUntilEpochMs
 
     override fun saveAppVisibleUntilEpochMs(visibleUntilEpochMs: Long?) {
+      if (shouldFailNextSave) {
+        shouldFailNextSave = false
+        throw IllegalStateException("injected visibility persistence failure")
+      }
       appVisibleUntilEpochMs = visibleUntilEpochMs
     }
   }

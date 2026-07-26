@@ -21,18 +21,21 @@ internal fun interface RuntimeServiceLoopbackBootstrapFactory {
 internal class DefaultRuntimeServiceLoopbackBootstrapFactory(
   private val ensureServerStarted:
     (Context, RuntimeServiceTarget, OpenCrayLocalRuntimeServerProviders) -> OpenCrayLocalRuntimeServer =
-    { _, runtimeTarget, providers ->
+    { _, _, providers ->
       OpenCrayLocalRuntimeServer(
         localGatewayProvider = providers.localGatewayProvider,
         shellGatewayProvider = providers.shellGatewayProvider,
         chatRuntimeGatewayProvider = providers.chatRuntimeGatewayProvider,
         skillsGatewayProvider = providers.skillsGatewayProvider,
         settingsGatewayProvider = providers.settingsGatewayProvider,
-        requestedPort = localRuntimeLoopbackPortForTarget(runtimeTarget),
+        requestedPort = 0,
         shutdownExecutorOnClose = true,
         runtimeOwnerWriteGuard = providers.runtimeOwnerWriteGuard,
+        loopbackSecurity = providers.loopbackSecurity,
       ).also(OpenCrayLocalRuntimeServer::ensureStarted)
     },
+  private val descriptorStoreFactory: (Context) -> RuntimeServiceLoopbackDescriptorStore =
+    RuntimeServiceLoopbackDescriptorStore::fromContext,
 ) : RuntimeServiceLoopbackBootstrapFactory {
   override fun create(
     appContext: Context,
@@ -44,34 +47,77 @@ internal class DefaultRuntimeServiceLoopbackBootstrapFactory(
   ): RuntimeServiceLoopbackBootstrap {
     val serverLock = Any()
     var server: OpenCrayLocalRuntimeServer? = null
+    var descriptorStore: RuntimeServiceLoopbackDescriptorStore? = null
+    var activeDescriptor: RuntimeServiceLoopbackDescriptor? = null
+    var disposed = false
     return RuntimeServiceLoopbackBootstrap(
       ensureStarted = {
         val startedServer = synchronized(serverLock) {
-          server ?: ensureServerStarted(
-            appContext,
-            runtimeTarget,
-            openCrayLocalRuntimeServerProviders(
-              localGatewayProvider = localGatewayProvider,
-              shellGatewayProvider = { gatewayBundle.shellGateway },
-              chatRuntimeGatewayProvider = { gatewayBundle.chatRuntimeGateway },
-              skillsGatewayProvider = { gatewayBundle.skillsGateway },
-              settingsGatewayProvider = { gatewayBundle.settingsGateway },
-              runtimeOwnerWriteGuard = runtimeOwnerWriteGuard,
-            ),
-          ).also { created ->
+          if (disposed) {
+            return@synchronized null
+          }
+          server ?: run {
+            val resolvedDescriptorStore = descriptorStoreFactory(appContext)
+            val credentials = RuntimeServiceLoopbackCredentials.create()
+            val created = ensureServerStarted(
+              appContext,
+              runtimeTarget,
+              OpenCrayLocalRuntimeServerProviders(
+                localGatewayProvider = localGatewayProvider,
+                shellGatewayProvider = { gatewayBundle.shellGateway },
+                chatRuntimeGatewayProvider = { gatewayBundle.chatRuntimeGateway },
+                skillsGatewayProvider = { gatewayBundle.skillsGateway },
+                settingsGatewayProvider = { gatewayBundle.settingsGateway },
+                runtimeOwnerWriteGuard = runtimeOwnerWriteGuard,
+                loopbackSecurity = RuntimeServiceLoopbackServerSecurity(credentials),
+              ),
+            )
+            val state = created.currentState()
+            if (state.phase == LocalRuntimeServerState.PHASE_LISTENING) {
+              val descriptor = RuntimeServiceLoopbackDescriptor(
+                target = runtimeTarget,
+                port = requireNotNull(state.listeningPort) {
+                  "Listening loopback server did not report a port."
+                },
+                credentials = credentials,
+                publishedAtEpochMs = System.currentTimeMillis(),
+              )
+              try {
+                resolvedDescriptorStore.publish(descriptor)
+              } catch (throwable: Throwable) {
+                created.close()
+                throw throwable
+              }
+              activeDescriptor = descriptor
+            }
+            descriptorStore = resolvedDescriptorStore
             server = created
+            created
           }
         }
-        transportCoordinator.bindLocalRuntimeServerStateProvider(startedServer::currentState)
-        startedServer.currentState().phase == LocalRuntimeServerState.PHASE_LISTENING
+        val serverForBinding = startedServer ?: return@ensureStarted false
+        transportCoordinator.bindLocalRuntimeServerStateProvider(serverForBinding::currentState)
+        serverForBinding.currentState().phase == LocalRuntimeServerState.PHASE_LISTENING
       },
       dispose = {
-        val existingServer = synchronized(serverLock) {
-          server.also {
+        val (existingServer, existingDescriptor, existingDescriptorStore) = synchronized(serverLock) {
+          disposed = true
+          Triple(server, activeDescriptor, descriptorStore).also {
             server = null
+            activeDescriptor = null
+            descriptorStore = null
           }
         }
-        existingServer?.close()
+        try {
+          if (existingDescriptor != null) {
+            existingDescriptorStore?.revoke(
+              target = runtimeTarget,
+              expectedEpoch = existingDescriptor.credentials.epoch,
+            )
+          }
+        } finally {
+          existingServer?.close()
+        }
       },
     )
   }

@@ -109,6 +109,7 @@ internal class OpenCrayFlutterHostBridge(
       observerStreamHandler(
         observe = chatRuntimeGateway::observeLiveAssistantDraftEvents,
         onDisposeChanged = { disposer -> liveAssistantDraftObserverDisposer = disposer },
+        payloadTransformer = ::attachBridgeLifecycleToRealtimePayload,
       ),
     )
     EventChannel(
@@ -118,6 +119,7 @@ internal class OpenCrayFlutterHostBridge(
       observerStreamHandler(
         observe = chatRuntimeGateway::observeRuntimeEventDeltas,
         onDisposeChanged = { disposer -> runtimeEventDeltaObserverDisposer = disposer },
+        payloadTransformer = ::attachBridgeLifecycleToRealtimePayload,
       ),
     )
   }
@@ -1203,6 +1205,15 @@ internal class OpenCrayFlutterHostBridge(
     val snapshot = payload as? Map<*, *> ?: return payload
     return snapshot.toMutableMap().apply {
       put("bridgeInstanceId", bridgeInstanceId)
+      put("bridgeEpoch", bridgeInstanceId)
+    }
+  }
+
+  internal fun attachBridgeLifecycleToRealtimePayload(payload: Any?): Any? {
+    val envelope = payload as? Map<*, *> ?: return payload
+    return envelope.toMutableMap().apply {
+      put("bridgeInstanceId", bridgeInstanceId)
+      put("bridgeEpoch", bridgeInstanceId)
     }
   }
 

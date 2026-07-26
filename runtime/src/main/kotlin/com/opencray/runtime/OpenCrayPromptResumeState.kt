@@ -339,9 +339,13 @@ sealed interface OpenCraySerializableModelAction {
   data class Commentary(
     val text: String,
     val stage: String? = null,
+    val eventId: String? = null,
   ) : OpenCraySerializableModelAction {
     init {
       require(text.isNotBlank()) { "OpenCraySerializableModelAction.Commentary text must not be blank." }
+      require(eventId == null || eventId.isNotBlank()) {
+        "OpenCraySerializableModelAction.Commentary eventId must not be blank."
+      }
     }
   }
 
@@ -357,6 +361,7 @@ sealed interface OpenCraySerializableModelAction {
     val answer: String,
     val responseFormat: String,
     val attachments: List<OpenCrayFinalAttachment> = emptyList(),
+    val eventId: String? = null,
   ) : OpenCraySerializableModelAction {
     init {
       require(answer.isNotBlank() || attachments.isNotEmpty()) {
@@ -364,6 +369,9 @@ sealed interface OpenCraySerializableModelAction {
       }
       require(responseFormat.isNotBlank()) {
         "OpenCraySerializableModelAction.Final responseFormat must not be blank."
+      }
+      require(eventId == null || eventId.isNotBlank()) {
+        "OpenCraySerializableModelAction.Final eventId must not be blank."
       }
     }
   }

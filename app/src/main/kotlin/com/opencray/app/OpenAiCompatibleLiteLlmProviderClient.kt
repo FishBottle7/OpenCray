@@ -6045,7 +6045,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       runCatching {
         Log.d(
           STREAM_DEBUG_TAG,
-          "provider.visibleDraft len=${text.length} preview=${text.take(STREAM_DEBUG_PREVIEW_CHARS).replace('\n', ' ')}",
+          "provider.visibleDraft len=${text.length}",
         )
       }
       observer.onVisibleTextSnapshot(text)
@@ -6059,7 +6059,6 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     private const val DEFAULT_ANTHROPIC_MAX_TOKENS: Int = 4096
     private const val DEFAULT_STREAM_UPDATE_MIN_INTERVAL_MS: Long = 24L
     private const val STREAM_SNIFF_LIMIT_BYTES: Int = 2_048
-    private const val STREAM_DEBUG_PREVIEW_CHARS: Int = 80
     private const val STREAM_DEBUG_TAG: String = "OpenCrayStream"
     private const val MAX_INLINE_IMAGE_BYTES: Long = 20L * 1024L * 1024L
     private const val MAX_INLINE_PDF_BYTES: Long = 32L * 1024L * 1024L

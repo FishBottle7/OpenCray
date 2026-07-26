@@ -1,8 +1,10 @@
 package com.opencray.app
 
 import android.content.Context
-import android.os.Handler
-import android.os.Looper
+import android.util.Log
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
 internal interface RuntimeServiceProjectionCoordinator {
   fun bindServiceLifecycle(serviceLifecycle: RuntimeServiceLifecycleDescriptor)
@@ -70,11 +72,7 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
       inMemoryRuntimeServiceProjectionStore()
     },
   private val ownerLeaseStore: RuntimeServiceOwnerLeaseStore =
-    runCatching {
-      FileBackedRuntimeServiceOwnerLeaseStore.fromContext(appContext)
-    }.getOrElse {
-      inMemoryRuntimeServiceOwnerLeaseStore()
-    },
+    FileBackedRuntimeServiceOwnerLeaseStore.fromContext(appContext),
   private val ownerLeaseHeartbeatScheduler: RuntimeServiceDelayScheduler =
     defaultRuntimeServiceOwnerLeaseHeartbeatScheduler(),
   private val runtimeNotificationCoordinator: RuntimeNotificationCoordinator? =
@@ -186,6 +184,7 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
       boundServiceLifecycle = null
       activeServiceLifecycle = null
     }
+    (ownerLeaseHeartbeatScheduler as? OwnerLeaseHeartbeatDelayScheduler)?.shutdown()
     val persistedReleasedLease = ownerLeaseToRelease?.let(ownerLeaseStore::release)
     if (
       ownerLeaseToRelease != null &&
@@ -333,10 +332,18 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
     if (!shouldSchedule) {
       return
     }
-    val task = ownerLeaseHeartbeatScheduler.schedule(
-      ownerLeaseHeartbeatIntervalMs.coerceAtLeast(0L),
-    ) {
-      onOwnerLeaseHeartbeat()
+    val task = try {
+      ownerLeaseHeartbeatScheduler.schedule(
+        ownerLeaseHeartbeatIntervalMs.coerceAtLeast(0L),
+      ) {
+        onOwnerLeaseHeartbeat()
+      }
+    } catch (failure: RuntimeException) {
+      val stopped = synchronized(lock) { disposed || !started }
+      if (stopped) {
+        return
+      }
+      throw failure
     }
     val shouldKeepTask = synchronized(lock) {
       if (started && !disposed && ownerLeaseHeartbeatTask == null) {
@@ -352,11 +359,25 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
   }
 
   private fun onOwnerLeaseHeartbeat() {
-    synchronized(lock) {
+    val shouldHeartbeat = synchronized(lock) {
       ownerLeaseHeartbeatTask = null
+      started && !disposed
     }
-    persistProjectionSnapshot()
-    scheduleOwnerLeaseHeartbeat()
+    if (!shouldHeartbeat) {
+      return
+    }
+    try {
+      persistProjectionSnapshot()
+    } catch (failure: Exception) {
+      runCatching {
+        Log.e(
+          OWNER_LEASE_HEARTBEAT_LOG_TAG,
+          "runtime.ownerLeaseHeartbeatFailure type=${failure::class.java.name}",
+        )
+      }
+    } finally {
+      scheduleOwnerLeaseHeartbeat()
+    }
   }
 
   private fun persistReleasedOwnerLeaseProjection(
@@ -407,13 +428,32 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
 }
 
 private fun defaultRuntimeServiceOwnerLeaseHeartbeatScheduler(): RuntimeServiceDelayScheduler =
-  runCatching {
-    HandlerRuntimeServiceDelayScheduler(Handler(Looper.getMainLooper()))
-  }.getOrElse {
-    object : RuntimeServiceDelayScheduler {
-      override fun schedule(
-        delayMs: Long,
-        action: () -> Unit,
-      ): RuntimeServiceDelayedTask = RuntimeServiceDelayedTask { }
+  OwnerLeaseHeartbeatDelayScheduler()
+
+private const val OWNER_LEASE_HEARTBEAT_LOG_TAG: String = "OpenCrayRuntimeLease"
+
+private class OwnerLeaseHeartbeatDelayScheduler(
+  private val executor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { runnable ->
+    Thread(runnable, "opencray-owner-lease-heartbeat").apply {
+      isDaemon = true
+    }
+  },
+) : RuntimeServiceDelayScheduler {
+  override fun schedule(
+    delayMs: Long,
+    action: () -> Unit,
+  ): RuntimeServiceDelayedTask {
+    val future = executor.schedule(
+      Runnable(action),
+      delayMs.coerceAtLeast(0L),
+      TimeUnit.MILLISECONDS,
+    )
+    return RuntimeServiceDelayedTask {
+      future.cancel(false)
     }
   }
+
+  fun shutdown() {
+    executor.shutdown()
+  }
+}

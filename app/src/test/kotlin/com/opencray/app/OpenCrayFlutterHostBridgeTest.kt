@@ -155,6 +155,26 @@ class OpenCrayFlutterHostBridgeTest {
   }
 
   @Test
+  fun realtimePayloadsCarryBridgeEpochWithoutChangingStreamIdentity() {
+    val bridge = hostBridge(chatGateway = RecordingChatRuntimeGateway())
+
+    val transformed = bridge.attachBridgeLifecycleToRealtimePayload(
+      mapOf(
+        "sessionId" to "session-1",
+        "streamInstanceId" to "stream-1",
+        "sequence" to 7L,
+        "eventId" to "event-7",
+      ),
+    ) as Map<*, *>
+
+    assertEquals("stream-1", transformed["streamInstanceId"])
+    assertEquals(7L, transformed["sequence"])
+    assertEquals("event-7", transformed["eventId"])
+    assertTrue((transformed["bridgeInstanceId"] as? String)?.isNotBlank() == true)
+    assertEquals(transformed["bridgeInstanceId"], transformed["bridgeEpoch"])
+  }
+
+  @Test
   fun openCrayFlutterHostBridgeUsesInjectedGatewayBundleFactory() {
     val localGateway = RecordingLocalGateway()
     val chatGateway = RecordingChatRuntimeGateway()

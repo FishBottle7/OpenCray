@@ -17,7 +17,9 @@ class RuntimeServiceProjectionCoordinatorTest {
   @Test
   fun projectionCoordinatorHeartbeatsAndReleasesRuntimeOwnerLease() {
     var now = 10_000L
-    val projectionStore = inMemoryRuntimeServiceProjectionStore()
+    val projectionStore = ToggleFailingRuntimeServiceProjectionStore(
+      inMemoryRuntimeServiceProjectionStore(),
+    )
     val ownerLeaseStore = inMemoryRuntimeServiceOwnerLeaseStore()
     val heartbeatScheduler = RecordingRuntimeServiceDelayScheduler()
     val runtimeOwnerLifecycle = HostRuntimeLifecycleDescriptor(
@@ -96,7 +98,17 @@ class RuntimeServiceProjectionCoordinatorTest {
     assertEquals(refreshedLease, projectionStore.loadSnapshot()?.runtimeServiceOwnerLease)
     assertEquals(2, heartbeatScheduler.tasks.size)
 
-    val competingLease = refreshedLease.copy(
+    projectionStore.failNextSave()
+    now = 10_055L
+    heartbeatScheduler.runNext()
+    val leaseAfterFailedProjection = checkNotNull(
+      ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND),
+    )
+    assertEquals(10_055L, leaseAfterFailedProjection.heartbeatAtEpochMs)
+    assertEquals(10_155L, leaseAfterFailedProjection.expiresAtEpochMs)
+    assertEquals(3, heartbeatScheduler.tasks.size)
+
+    val competingLease = leaseAfterFailedProjection.copy(
       processStartId = "process-competing-owner",
       controllerInstanceId = "runtime-controller-competing",
       runtimeOwnerId = "runtime-owner-competing",
@@ -107,7 +119,7 @@ class RuntimeServiceProjectionCoordinatorTest {
       expiresAtEpochMs = 10_155L,
     )
     val blockedLease = ownerLeaseStore.save(competingLease)
-    assertEquals(refreshedLease, blockedLease.copy(lastAcquireFailure = null))
+    assertEquals(leaseAfterFailedProjection, blockedLease.copy(lastAcquireFailure = null))
     assertEquals("runtime-owner-competing", blockedLease.lastAcquireFailure?.attemptedRuntimeOwnerId)
 
     now = 10_060L
@@ -560,6 +572,30 @@ class RuntimeServiceProjectionCoordinatorTest {
 
     override fun supplementStore(sessionId: String): SessionSupplementStore =
       supplementStores.getOrPut(sessionId) { InMemorySessionSupplementStore() }
+  }
+
+  private class ToggleFailingRuntimeServiceProjectionStore(
+    private val delegate: RuntimeServiceProjectionStore,
+  ) : RuntimeServiceProjectionStore {
+    private var shouldFailNextSave: Boolean = false
+
+    fun failNextSave() {
+      shouldFailNextSave = true
+    }
+
+    override fun loadSnapshot(): RuntimeServiceProjectionSnapshot? = delegate.loadSnapshot()
+
+    override fun saveSnapshot(snapshot: RuntimeServiceProjectionSnapshot) {
+      if (shouldFailNextSave) {
+        shouldFailNextSave = false
+        throw IllegalStateException("injected projection persistence failure")
+      }
+      delegate.saveSnapshot(snapshot)
+    }
+
+    override fun clear() {
+      delegate.clear()
+    }
   }
 
   private object NoOpRuntimeServiceAccessGateway : RuntimeServiceAccessGateway {

@@ -61,6 +61,58 @@ class _RuntimeProjectedMessagePatch {
   final bool isStreaming;
 }
 
+enum _QueuedRealtimeKind { runtimeDelta, liveDraft }
+
+class _QueuedRealtimeEnvelope {
+  const _QueuedRealtimeEnvelope.delta({
+    required this.value,
+    required this.arrivalOrdinal,
+  }) : kind = _QueuedRealtimeKind.runtimeDelta;
+
+  const _QueuedRealtimeEnvelope.draft({
+    required this.value,
+    required this.arrivalOrdinal,
+  }) : kind = _QueuedRealtimeKind.liveDraft;
+
+  final Object value;
+  final _QueuedRealtimeKind kind;
+  final int arrivalOrdinal;
+
+  int get sequence => switch (value) {
+    OpenCrayChatRuntimeEventDelta delta => delta.sequence,
+    OpenCrayChatLiveAssistantDraftEvent event => event.sequence ?? 0,
+    _ => 0,
+  };
+
+  String get sessionId => switch (value) {
+    OpenCrayChatRuntimeEventDelta delta => delta.sessionId.trim(),
+    OpenCrayChatLiveAssistantDraftEvent event => event.sessionId.trim(),
+    _ => '',
+  };
+
+  String get streamInstanceId => switch (value) {
+    OpenCrayChatRuntimeEventDelta delta => delta.streamInstanceId?.trim() ?? '',
+    OpenCrayChatLiveAssistantDraftEvent event =>
+      event.streamInstanceId?.trim() ?? '',
+    _ => '',
+  };
+
+  String get bridgeEpoch => switch (value) {
+    OpenCrayChatRuntimeEventDelta delta => delta.bridgeEpoch?.trim() ?? '',
+    OpenCrayChatLiveAssistantDraftEvent event => event.bridgeEpoch?.trim() ?? '',
+    _ => '',
+  };
+
+  String get eventId => switch (value) {
+    OpenCrayChatRuntimeEventDelta delta => delta.eventId?.trim() ?? '',
+    OpenCrayChatLiveAssistantDraftEvent event => event.eventId?.trim() ?? '',
+    _ => '',
+  };
+
+  String get deduplicationKey =>
+      '${kind.name}|$sessionId|$streamInstanceId|$bridgeEpoch|$sequence|$eventId';
+}
+
 @visibleForTesting
 OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshot(
   OpenCrayChatRuntimeSnapshot? embedded,
@@ -74,6 +126,9 @@ OpenCrayChatRuntimeSnapshot? resolveChatRuntimeSnapshot(
   }
   if (!_runtimeSnapshotsShareSession(embedded, streamed)) {
     return _preferRuntimeSnapshot(embedded, streamed);
+  }
+  if (!_runtimeSnapshotsShareStreamInstance(embedded, streamed)) {
+    return streamed;
   }
   if (_runtimeSnapshotIsAuthoritativeClear(streamed, embedded)) {
     return streamed;
@@ -109,6 +164,24 @@ bool _runtimeSnapshotsShareSession(
   return leftSessionId.isEmpty ||
       rightSessionId.isEmpty ||
       leftSessionId == rightSessionId;
+}
+
+bool _runtimeSnapshotsShareStreamInstance(
+  OpenCrayChatRuntimeSnapshot left,
+  OpenCrayChatRuntimeSnapshot right,
+) {
+  final String leftBridgeEpoch = left.bridgeEpoch?.trim() ?? '';
+  final String rightBridgeEpoch = right.bridgeEpoch?.trim() ?? '';
+  if (leftBridgeEpoch.isNotEmpty &&
+      rightBridgeEpoch.isNotEmpty &&
+      leftBridgeEpoch != rightBridgeEpoch) {
+    return false;
+  }
+  final String leftStreamInstanceId = left.streamInstanceId?.trim() ?? '';
+  final String rightStreamInstanceId = right.streamInstanceId?.trim() ?? '';
+  return leftStreamInstanceId.isEmpty ||
+      rightStreamInstanceId.isEmpty ||
+      leftStreamInstanceId == rightStreamInstanceId;
 }
 
 bool _runtimeSnapshotIsAuthoritativeClear(
@@ -148,6 +221,10 @@ OpenCrayChatRuntimeSnapshot _preferRuntimeSnapshot(
   OpenCrayChatRuntimeSnapshot left,
   OpenCrayChatRuntimeSnapshot right,
 ) {
+  if (!_runtimeSnapshotsShareStreamInstance(left, right) &&
+      (right.streamInstanceId?.trim().isNotEmpty ?? false)) {
+    return right;
+  }
   final String leftHostInstanceId = _hostInstanceId(left);
   final String rightHostInstanceId = _hostInstanceId(right);
   if (leftHostInstanceId != rightHostInstanceId &&
@@ -209,6 +286,14 @@ OpenCrayChatRuntimeSnapshot _mergeRuntimeSnapshots(
     subAgents: subAgents,
     events: events,
     liveAssistantDrafts: drafts,
+    streamInstanceId: right.streamInstanceId?.trim().isNotEmpty == true
+        ? right.streamInstanceId
+        : left.streamInstanceId,
+    lastSequence: _maxNullableInt(left.lastSequence, right.lastSequence),
+    flutterAppInstanceId:
+        right.flutterAppInstanceId ?? left.flutterAppInstanceId,
+    bridgeInstanceId: right.bridgeInstanceId ?? left.bridgeInstanceId,
+    bridgeEpoch: right.bridgeEpoch ?? left.bridgeEpoch,
     hostLifecycle: hostLifecycle,
     updatedAtEpochMs: math.max(left.updatedAtEpochMs, right.updatedAtEpochMs),
   );
@@ -237,6 +322,11 @@ OpenCrayChatRuntimeSnapshot _mergeRuntimeDeltaSnapshot(
     liveAssistantDrafts: hasLiveAssistantDraftsPatch
         ? delta.liveAssistantDrafts
         : merged.liveAssistantDrafts,
+    streamInstanceId: merged.streamInstanceId,
+    lastSequence: merged.lastSequence,
+    flutterAppInstanceId: merged.flutterAppInstanceId,
+    bridgeInstanceId: merged.bridgeInstanceId,
+    bridgeEpoch: merged.bridgeEpoch,
     hostLifecycle: merged.hostLifecycle,
     updatedAtEpochMs: merged.updatedAtEpochMs,
   );
@@ -826,6 +916,7 @@ OpenCrayChatRuntimeEventSnapshot _preferRuntimeEventSnapshot(
 }
 
 int _runtimeEventDetailWeight(OpenCrayChatRuntimeEventSnapshot event) =>
+    (event.eventId?.length ?? 0) +
     (event.executionId?.length ?? 0) +
     (event.executionOrdinal == null ? 0 : 4) +
     (event.executionKind?.length ?? 0) +
@@ -894,6 +985,10 @@ int _runtimeEventDetailWeight(OpenCrayChatRuntimeEventSnapshot event) =>
     (event.totalLineCount == null ? 0 : 4);
 
 String _runtimeEventMergeKey(OpenCrayChatRuntimeEventSnapshot event) {
+  final String eventId = event.eventId?.trim() ?? '';
+  if (eventId.isNotEmpty) {
+    return 'event:$eventId';
+  }
   return <String>[
     event.kind,
     event.runId,
@@ -954,7 +1049,7 @@ List<OpenCrayChatLiveAssistantDraftSnapshot> _mergeRuntimeDrafts(
   List<OpenCrayChatLiveAssistantDraftSnapshot> left,
   List<OpenCrayChatLiveAssistantDraftSnapshot> right,
 ) {
-  final Map<String, OpenCrayChatLiveAssistantDraftSnapshot> byMessageId =
+  final Map<String, OpenCrayChatLiveAssistantDraftSnapshot> byIdentity =
       <String, OpenCrayChatLiveAssistantDraftSnapshot>{};
   for (final draft in <OpenCrayChatLiveAssistantDraftSnapshot>[
     ...left,
@@ -964,17 +1059,49 @@ List<OpenCrayChatLiveAssistantDraftSnapshot> _mergeRuntimeDrafts(
     if (pendingMessageId.isEmpty) {
       continue;
     }
+    final String identity = _runtimeDraftIdentity(
+      pendingMessageId: pendingMessageId,
+      executionId: draft.executionId,
+    );
     final OpenCrayChatLiveAssistantDraftSnapshot? existing =
-        byMessageId[pendingMessageId];
-    if (existing == null ||
-        draft.updatedAtEpochMs >= existing.updatedAtEpochMs) {
-      byMessageId[pendingMessageId] = draft;
+        byIdentity[identity];
+    if (existing == null || _draftIsAtLeastAsNew(draft, existing)) {
+      byIdentity[identity] = draft;
     }
   }
-  return byMessageId.values.toList(growable: false)..sort(
-    (leftDraft, rightDraft) =>
-        leftDraft.updatedAtEpochMs.compareTo(rightDraft.updatedAtEpochMs),
-  );
+  return byIdentity.values.toList(growable: false)
+    ..sort((leftDraft, rightDraft) {
+      final int leftSequence = leftDraft.sequence ?? 0;
+      final int rightSequence = rightDraft.sequence ?? 0;
+      if (leftSequence != rightSequence) {
+        return leftSequence.compareTo(rightSequence);
+      }
+      return leftDraft.updatedAtEpochMs.compareTo(rightDraft.updatedAtEpochMs);
+    });
+}
+
+String _runtimeDraftIdentity({
+  required String pendingMessageId,
+  required String? executionId,
+}) => '${pendingMessageId.trim()}\u0001${executionId?.trim() ?? ''}';
+
+bool _draftIsAtLeastAsNew(
+  OpenCrayChatLiveAssistantDraftSnapshot candidate,
+  OpenCrayChatLiveAssistantDraftSnapshot current,
+) {
+  final int? candidateSequence = candidate.sequence;
+  final int? currentSequence = current.sequence;
+  if (candidateSequence != null && currentSequence != null) {
+    return candidateSequence >= currentSequence;
+  }
+  return candidate.updatedAtEpochMs >= current.updatedAtEpochMs;
+}
+
+int? _maxNullableInt(int? left, int? right) {
+  if (left == null || right == null) {
+    return right ?? left;
+  }
+  return math.max(left, right);
 }
 
 OpenCrayHostLifecycleSnapshot? _preferHostLifecycle(
@@ -1187,6 +1314,10 @@ bool shouldReplaceObservedRuntimeSnapshot(
       currentSessionId != incomingSessionId) {
     return true;
   }
+  if (!_runtimeSnapshotsShareStreamInstance(current, incoming) &&
+      (incoming.streamInstanceId?.trim().isNotEmpty ?? false)) {
+    return true;
+  }
   final OpenCrayChatRuntimeSnapshot candidate = incoming;
   final int currentVersion = runtimeSnapshotVersion(current);
   final int candidateVersion = runtimeSnapshotVersion(candidate);
@@ -1302,6 +1433,9 @@ String _hostInstanceId(OpenCrayChatRuntimeSnapshot snapshot) =>
 String _runtimeSnapshotDisplaySignature(OpenCrayChatRuntimeSnapshot snapshot) {
   return jsonEncode(<String, Object?>{
     'sessionId': snapshot.sessionId,
+    'streamInstanceId': snapshot.streamInstanceId,
+    'lastSequence': snapshot.lastSequence,
+    'bridgeEpoch': snapshot.bridgeEpoch,
     'activeRuns': snapshot.activeRuns
         .map(_runtimeRunDisplaySignature)
         .toList(growable: false),
@@ -1734,6 +1868,7 @@ Map<String, Object?> _runtimeEventDisplaySignature(
     'runId': event.runId,
     'taskId': event.taskId,
     'emittedAtEpochMs': event.emittedAtEpochMs,
+    'eventId': event.eventId,
     'executionId': event.executionId,
     'executionOrdinal': event.executionOrdinal,
     'executionKind': event.executionKind,
@@ -1839,6 +1974,12 @@ Map<String, Object?> _runtimeDraftDisplaySignature(
   return <String, Object?>{
     'runId': draft.runId,
     'taskId': draft.taskId,
+    'executionId': draft.executionId,
+    'streamInstanceId': draft.streamInstanceId,
+    'sequence': draft.sequence,
+    'lastSequence': draft.lastSequence,
+    'eventId': draft.eventId,
+    'bridgeEpoch': draft.bridgeEpoch,
     'pendingMessageId': draft.pendingMessageId,
     'text': draft.text,
     'updatedAtEpochMs': draft.updatedAtEpochMs,
@@ -2728,9 +2869,27 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   final Map<String, Map<String, int>>
   _liveAssistantDraftEventEpochBySessionAndMessage =
       <String, Map<String, int>>{};
+  final Map<String, Map<String, int>>
+  _liveAssistantDraftEventSequenceBySessionAndIdentity =
+      <String, Map<String, int>>{};
+  final Map<String, Map<String, bool>>
+  _liveAssistantDraftEventClearedBySessionAndIdentity =
+      <String, Map<String, bool>>{};
+  final Map<String, String> _runtimeStreamInstanceBySession =
+      <String, String>{};
+  final Map<String, String> _runtimeBridgeEpochBySession = <String, String>{};
+  final Map<String, Set<String>> _seenRealtimeEventIdsBySession =
+      <String, Set<String>>{};
   final Map<String, int> _runtimeEventDeltaSequenceBySession = <String, int>{};
   bool _runtimeEventDeltaResyncInFlight = false;
-  OpenCrayChatRuntimeEventDelta? _queuedRuntimeEventDeltaAfterResync;
+  static const int _maxQueuedRealtimeEventsAfterResync = 512;
+  final List<_QueuedRealtimeEnvelope> _queuedRealtimeEventsAfterResync =
+      <_QueuedRealtimeEnvelope>[];
+  int _queuedRealtimeArrivalOrdinal = 0;
+  Timer? _runtimeDeltaResyncRetryTimer;
+  Timer? _bridgeRecoveryTimer;
+  int _bridgeBindingEpoch = 0;
+  Future<void> _bridgeBindingBarrier = Future<void>.value();
   final Set<String> _approvalTaskIdsInFlight = <String>{};
   final Map<String, _ApprovalResolutionKind> _approvalResolutionById =
       <String, _ApprovalResolutionKind>{};
@@ -3368,22 +3527,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     super.initState();
     widget.controller?._backPressHandler = _consumeBackPress;
     _chatScrollController.addListener(_handleChatScrollChanged);
-    final bridge = widget.bridge;
-    if (bridge != null) {
-      _hydrateFromHost(bridge);
-      _chatSubscription = bridge.watchChatSnapshot().listen(
-        _handleChatSnapshot,
-      );
-      _chatRuntimeSubscription = bridge.watchChatRuntimeSnapshot().listen(
-        _handleChatRuntimeSnapshot,
-      );
-      _liveAssistantDraftSubscription = bridge
-          .watchLiveAssistantDraftEvents()
-          .listen(_handleLiveAssistantDraftEvent);
-      _runtimeEventDeltaSubscription = bridge.watchRuntimeEventDeltas().listen(
-        _handleRuntimeEventDelta,
-      );
-    }
+    _bindBridge(widget.bridge);
   }
 
   @override
@@ -3392,6 +3536,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller?._backPressHandler = null;
       widget.controller?._backPressHandler = _consumeBackPress;
+    }
+    if (oldWidget.bridge != widget.bridge) {
+      _bindBridge(widget.bridge);
     }
     if (oldWidget.isTabActive &&
         !widget.isTabActive &&
@@ -3411,6 +3558,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
 
   @override
   void dispose() {
+    _bridgeBindingEpoch += 1;
     widget.controller?._backPressHandler = null;
     _chatScrollController.removeListener(_handleChatScrollChanged);
     _chatSubscription?.cancel();
@@ -3418,6 +3566,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _liveAssistantDraftSubscription?.cancel();
     _runtimeEventDeltaSubscription?.cancel();
     _runtimeProjectionFlushTimer?.cancel();
+    _runtimeDeltaResyncRetryTimer?.cancel();
+    _bridgeRecoveryTimer?.cancel();
     _todoArchiveHideTimer?.cancel();
     for (final Timer timer in _approvalResolutionDismissTimers.values) {
       timer.cancel();
@@ -3429,6 +3579,159 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _composerFocusNode.dispose();
     _chatScrollController.dispose();
     super.dispose();
+  }
+
+  void _bindBridge(OpenCrayHostBridge? bridge) {
+    final int bindingEpoch = ++_bridgeBindingEpoch;
+    _bridgeRecoveryTimer?.cancel();
+    _bridgeRecoveryTimer = null;
+    final List<StreamSubscription<Object?>> subscriptionsToCancel =
+        <StreamSubscription<Object?>>[
+          if (_chatSubscription != null) _chatSubscription!,
+          if (_chatRuntimeSubscription != null) _chatRuntimeSubscription!,
+          if (_liveAssistantDraftSubscription != null)
+            _liveAssistantDraftSubscription!,
+          if (_runtimeEventDeltaSubscription != null)
+            _runtimeEventDeltaSubscription!,
+        ];
+    _chatSubscription = null;
+    _chatRuntimeSubscription = null;
+    _liveAssistantDraftSubscription = null;
+    _runtimeEventDeltaSubscription = null;
+    _resetRealtimeReducerForBridgeChange();
+    _runtimeEventDeltaResyncInFlight = bridge != null;
+    final Future<void> previousBinding = _bridgeBindingBarrier;
+    _bridgeBindingBarrier = _completeBridgeBinding(
+      previousBinding: previousBinding,
+      subscriptionsToCancel: subscriptionsToCancel,
+      bridge: bridge,
+      bindingEpoch: bindingEpoch,
+    );
+  }
+
+  Future<void> _completeBridgeBinding({
+    required Future<void> previousBinding,
+    required List<StreamSubscription<Object?>> subscriptionsToCancel,
+    required OpenCrayHostBridge? bridge,
+    required int bindingEpoch,
+  }) async {
+    try {
+      await previousBinding;
+    } catch (_) {}
+    try {
+      await Future.wait(
+        subscriptionsToCancel.map((subscription) => subscription.cancel()),
+      );
+    } catch (_) {}
+    if (!mounted ||
+        _bridgeBindingEpoch != bindingEpoch ||
+        widget.bridge != bridge ||
+        bridge == null) {
+      return;
+    }
+    _chatSubscription = bridge.watchChatSnapshot().listen(
+      (snapshot) {
+        if (_bridgeBindingEpoch == bindingEpoch) {
+          _handleChatSnapshot(snapshot);
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _handleRealtimeStreamError(bridge, bindingEpoch);
+      },
+    );
+    _chatRuntimeSubscription = bridge.watchChatRuntimeSnapshot().listen(
+      (snapshot) {
+        if (_bridgeBindingEpoch == bindingEpoch) {
+          _handleChatRuntimeSnapshot(snapshot);
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _handleRealtimeStreamError(bridge, bindingEpoch);
+      },
+    );
+    _liveAssistantDraftSubscription = bridge
+        .watchLiveAssistantDraftEvents()
+        .listen(
+          (event) {
+            if (_bridgeBindingEpoch == bindingEpoch) {
+              _handleLiveAssistantDraftEvent(event);
+            }
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            _handleRealtimeStreamError(bridge, bindingEpoch);
+          },
+        );
+    _runtimeEventDeltaSubscription = bridge.watchRuntimeEventDeltas().listen(
+      (delta) {
+        if (_bridgeBindingEpoch == bindingEpoch) {
+          _handleRuntimeEventDelta(delta);
+        }
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        _handleRealtimeStreamError(bridge, bindingEpoch);
+      },
+    );
+    unawaited(_hydrateBridgeBinding(bridge, bindingEpoch));
+  }
+
+  void _resetRealtimeReducerForBridgeChange() {
+    _runtimeDeltaResyncRetryTimer?.cancel();
+    _runtimeDeltaResyncRetryTimer = null;
+    _runtimeProjectionFlushTimer?.cancel();
+    _runtimeProjectionFlushTimer = null;
+    _pendingRuntimeProjectionSnapshot = null;
+    _latestChatSnapshot = null;
+    _latestChatRuntimeSnapshot = null;
+    _runtimeStreamInstanceBySession.clear();
+    _runtimeBridgeEpochBySession.clear();
+    _seenRealtimeEventIdsBySession.clear();
+    _runtimeEventDeltaSequenceBySession.clear();
+    _queuedRealtimeEventsAfterResync.clear();
+    _queuedRealtimeArrivalOrdinal = 0;
+    _liveAssistantDraftOverridesBySession.clear();
+    _liveAssistantDraftEventEpochBySessionAndMessage.clear();
+    _liveAssistantDraftEventSequenceBySessionAndIdentity.clear();
+    _liveAssistantDraftEventClearedBySessionAndIdentity.clear();
+  }
+
+  Future<void> _hydrateBridgeBinding(
+    OpenCrayHostBridge bridge,
+    int bindingEpoch,
+  ) async {
+    bool hydrated = false;
+    try {
+      hydrated = await _hydrateFromHost(
+        bridge,
+        bindingEpoch: bindingEpoch,
+        authoritativeRuntimeSnapshot: true,
+      );
+    } catch (_) {}
+    if (!mounted || _bridgeBindingEpoch != bindingEpoch) {
+      return;
+    }
+    _runtimeEventDeltaResyncInFlight = false;
+    if (hydrated) {
+      _drainQueuedRealtimeEventsAfterResync();
+    } else {
+      _handleRealtimeStreamError(bridge, bindingEpoch);
+    }
+  }
+
+  void _handleRealtimeStreamError(OpenCrayHostBridge bridge, int bindingEpoch) {
+    if (!mounted ||
+        _bridgeBindingEpoch != bindingEpoch ||
+        widget.bridge != bridge ||
+        _bridgeRecoveryTimer != null) {
+      return;
+    }
+    _bridgeRecoveryTimer = Timer(const Duration(milliseconds: 250), () {
+      _bridgeRecoveryTimer = null;
+      if (mounted &&
+          _bridgeBindingEpoch == bindingEpoch &&
+          widget.bridge == bridge) {
+        _bindBridge(bridge);
+      }
+    });
   }
 
   bool _consumeBackPress() {
@@ -4866,32 +5169,43 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         resolvedRuntime,
       )) {
         _latestChatRuntimeSnapshot = resolvedRuntime;
-        final String resolvedSessionId = resolvedRuntime.sessionId.trim();
-        if (resolvedSessionId.isNotEmpty) {
-          _runtimeEventDeltaSequenceBySession.remove(resolvedSessionId);
-        }
+        _recordRuntimeSnapshotWatermark(resolvedRuntime);
       }
     }
     _latestChatSnapshot = snapshot;
     _applyHostState();
   }
 
-  void _handleChatRuntimeSnapshot(OpenCrayChatRuntimeSnapshot snapshot) {
-    final OpenCrayChatRuntimeSnapshot resolvedSnapshot =
-        _latestChatRuntimeSnapshot != null &&
-            !_runtimeSnapshotsShareSession(
-              _latestChatRuntimeSnapshot!,
-              snapshot,
-            ) &&
-            snapshot.sessionId.trim().isNotEmpty
+  bool _handleChatRuntimeSnapshot(
+    OpenCrayChatRuntimeSnapshot snapshot, {
+    bool authoritative = false,
+  }) {
+    final String streamInstanceId = snapshot.streamInstanceId?.trim() ?? '';
+    final bool hasOrderedEnvelope =
+        streamInstanceId.isNotEmpty && snapshot.lastSequence != null;
+    if (hasOrderedEnvelope) {
+      if (_runtimeSnapshotIsBehindCurrentWatermark(snapshot)) {
+        return false;
+      }
+      authoritative = true;
+    }
+    final OpenCrayChatRuntimeSnapshot resolvedSnapshot = authoritative
+        ? snapshot
+        : _latestChatRuntimeSnapshot != null &&
+              !_runtimeSnapshotsShareSession(
+                _latestChatRuntimeSnapshot!,
+                snapshot,
+              ) &&
+              snapshot.sessionId.trim().isNotEmpty
         ? snapshot
         : resolveChatRuntimeSnapshot(_latestChatRuntimeSnapshot, snapshot) ??
               snapshot;
-    if (!shouldReplaceObservedRuntimeSnapshot(
-      _latestChatRuntimeSnapshot,
-      resolvedSnapshot,
-    )) {
-      return;
+    if (!authoritative &&
+        !shouldReplaceObservedRuntimeSnapshot(
+          _latestChatRuntimeSnapshot,
+          resolvedSnapshot,
+        )) {
+      return false;
     }
     final List<String> activeRunSummaries = resolvedSnapshot.activeRuns
         .map(
@@ -4904,15 +5218,110 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     );
     _reconcileLiveAssistantDraftOverrides(resolvedSnapshot);
     _latestChatRuntimeSnapshot = resolvedSnapshot;
-    final String resolvedSessionId = resolvedSnapshot.sessionId.trim();
-    if (resolvedSessionId.isNotEmpty) {
-      _runtimeEventDeltaSequenceBySession.remove(resolvedSessionId);
-    }
+    _recordRuntimeSnapshotWatermark(
+      resolvedSnapshot,
+      authoritative: authoritative,
+    );
     _queueRuntimeActivityPatch(resolvedSnapshot);
+    return true;
+  }
+
+  bool _runtimeSnapshotIsBehindCurrentWatermark(
+    OpenCrayChatRuntimeSnapshot snapshot,
+  ) {
+    final String sessionId = snapshot.sessionId.trim();
+    final String streamInstanceId = snapshot.streamInstanceId?.trim() ?? '';
+    final int? lastSequence = snapshot.lastSequence;
+    if (sessionId.isEmpty || streamInstanceId.isEmpty || lastSequence == null) {
+      return false;
+    }
+    final String currentStreamInstanceId = _currentRuntimeStreamInstanceId(
+      sessionId,
+    );
+    final int? currentSequence = _runtimeEventDeltaSequenceBySession[sessionId];
+    return currentStreamInstanceId == streamInstanceId &&
+        currentSequence != null &&
+        lastSequence < currentSequence;
+  }
+
+  void _recordRuntimeSnapshotWatermark(
+    OpenCrayChatRuntimeSnapshot snapshot, {
+    bool authoritative = false,
+  }) {
+    final String sessionId = snapshot.sessionId.trim();
+    if (sessionId.isEmpty) {
+      return;
+    }
+    final String streamInstanceId = snapshot.streamInstanceId?.trim() ?? '';
+    final String previousStreamInstanceId =
+        _runtimeStreamInstanceBySession[sessionId] ?? '';
+    final String bridgeEpoch = snapshot.bridgeEpoch?.trim() ?? '';
+    final String previousBridgeEpoch =
+        _runtimeBridgeEpochBySession[sessionId] ?? '';
+    final bool identityChanged =
+        (streamInstanceId.isNotEmpty &&
+            previousStreamInstanceId != streamInstanceId) ||
+        (bridgeEpoch.isNotEmpty && previousBridgeEpoch != bridgeEpoch);
+    if (identityChanged) {
+      _resetRealtimeSessionIdentity(
+        sessionId: sessionId,
+        streamInstanceId: streamInstanceId,
+        bridgeEpoch: bridgeEpoch,
+      );
+    }
+    if (streamInstanceId.isNotEmpty) {
+      _runtimeStreamInstanceBySession[sessionId] = streamInstanceId;
+    }
+    if (bridgeEpoch.isNotEmpty) {
+      _runtimeBridgeEpochBySession[sessionId] = bridgeEpoch;
+    }
+    final int? lastSequence = snapshot.lastSequence;
+    if (lastSequence != null) {
+      _runtimeEventDeltaSequenceBySession[sessionId] = math.max(
+        0,
+        lastSequence,
+      );
+    } else if (authoritative) {
+      _runtimeEventDeltaSequenceBySession.remove(sessionId);
+    }
+  }
+
+  String _currentRuntimeStreamInstanceId(String sessionId) {
+    final String normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty) {
+      return '';
+    }
+    final String recorded =
+        _runtimeStreamInstanceBySession[normalizedSessionId] ?? '';
+    if (recorded.isNotEmpty) {
+      return recorded;
+    }
+    final OpenCrayChatRuntimeSnapshot? snapshot = _latestChatRuntimeSnapshot;
+    if (snapshot?.sessionId.trim() == normalizedSessionId) {
+      return snapshot?.streamInstanceId?.trim() ?? '';
+    }
+    return '';
+  }
+
+  String _currentRuntimeBridgeEpoch(String sessionId) {
+    final String normalizedSessionId = sessionId.trim();
+    if (normalizedSessionId.isEmpty) {
+      return '';
+    }
+    final String recorded =
+        _runtimeBridgeEpochBySession[normalizedSessionId] ?? '';
+    if (recorded.isNotEmpty) {
+      return recorded;
+    }
+    final OpenCrayChatRuntimeSnapshot? snapshot = _latestChatRuntimeSnapshot;
+    if (snapshot?.sessionId.trim() == normalizedSessionId) {
+      return snapshot?.bridgeEpoch?.trim() ?? '';
+    }
+    return '';
   }
 
   void _handleRuntimeEventDelta(OpenCrayChatRuntimeEventDelta delta) {
-    if (!mounted || !delta.hasRuntimeActivityPatch) {
+    if (!mounted) {
       return;
     }
     final String sessionId = delta.sessionId.trim();
@@ -4920,15 +5329,53 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return;
     }
     if (_runtimeEventDeltaResyncInFlight) {
-      _queuedRuntimeEventDeltaAfterResync = delta;
+      _queueRuntimeEventDeltaForResync(delta);
       return;
     }
+    final String deltaStreamInstanceId = delta.streamInstanceId?.trim() ?? '';
+    final String currentStreamInstanceId = _currentRuntimeStreamInstanceId(
+      sessionId,
+    );
+    final String deltaBridgeEpoch = delta.bridgeEpoch?.trim() ?? '';
+    final String currentBridgeEpoch = _currentRuntimeBridgeEpoch(sessionId);
+    if ((deltaStreamInstanceId.isNotEmpty &&
+            currentStreamInstanceId.isNotEmpty &&
+            deltaStreamInstanceId != currentStreamInstanceId) ||
+        (deltaBridgeEpoch.isNotEmpty &&
+            currentBridgeEpoch.isNotEmpty &&
+            deltaBridgeEpoch != currentBridgeEpoch) ||
+        (delta.lastSequence != null &&
+            delta.sequence > 0 &&
+            delta.lastSequence != delta.sequence)) {
+      _queueRuntimeEventDeltaForResync(delta);
+      unawaited(_resyncRuntimeSnapshotAfterDeltaMiss());
+      return;
+    }
+    final bool hasSequenceWatermark = _runtimeEventDeltaSequenceBySession
+        .containsKey(sessionId);
     final int previousSequence =
         _runtimeEventDeltaSequenceBySession[sessionId] ?? 0;
-    if (previousSequence > 0 &&
-        delta.sequence > 0 &&
-        delta.sequence != previousSequence + 1) {
-      _resyncRuntimeSnapshotAfterDeltaMiss();
+    if (delta.sequence > 0 && hasSequenceWatermark) {
+      if (delta.sequence <= previousSequence) {
+        return;
+      }
+      if (delta.sequence != previousSequence + 1) {
+        _queueRuntimeEventDeltaForResync(delta);
+        unawaited(_resyncRuntimeSnapshotAfterDeltaMiss());
+        return;
+      }
+    }
+    if (delta.runPatchMode.trim().toLowerCase() == 'snapshot') {
+      _queueRuntimeEventDeltaForResync(delta);
+      unawaited(_resyncRuntimeSnapshotAfterDeltaMiss());
+      return;
+    }
+    if (_realtimeEventIdWasSeen(sessionId, delta.eventId)) {
+      _recordAppliedRuntimeDelta(delta);
+      return;
+    }
+    if (!delta.hasRuntimeActivityPatch) {
+      _recordAppliedRuntimeDelta(delta);
       return;
     }
     final OpenCrayChatRuntimeSnapshot? currentSnapshot =
@@ -4952,20 +5399,22 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       0,
       (latest, event) => math.max(latest, event.emittedAtEpochMs),
     );
-    final OpenCrayChatRuntimeSnapshot deltaSnapshot =
-        OpenCrayChatRuntimeSnapshot(
-          sessionId: sessionId,
-          activeRuns: delta.activeRuns,
-          retainedRuns: delta.retainedRuns,
-          subAgents: delta.subAgents,
-          events: delta.events,
-          liveAssistantDrafts: delta.liveAssistantDrafts,
-          hostLifecycle: delta.hostLifecycle,
-          updatedAtEpochMs: math.max(
-            delta.updatedAtEpochMs,
-            latestDeltaEpochMs,
-          ),
-        );
+    final OpenCrayChatRuntimeSnapshot
+    deltaSnapshot = OpenCrayChatRuntimeSnapshot(
+      sessionId: sessionId,
+      activeRuns: delta.activeRuns,
+      retainedRuns: delta.retainedRuns,
+      subAgents: delta.subAgents,
+      events: delta.events,
+      liveAssistantDrafts: delta.liveAssistantDrafts,
+      streamInstanceId: delta.streamInstanceId,
+      lastSequence:
+          delta.lastSequence ?? (delta.sequence > 0 ? delta.sequence : null),
+      bridgeInstanceId: delta.bridgeInstanceId,
+      bridgeEpoch: delta.bridgeEpoch,
+      hostLifecycle: delta.hostLifecycle,
+      updatedAtEpochMs: math.max(delta.updatedAtEpochMs, latestDeltaEpochMs),
+    );
     final OpenCrayChatRuntimeSnapshot patchedSnapshot = currentSnapshot == null
         ? deltaSnapshot
         : _mergeRuntimeDeltaSnapshot(
@@ -4974,17 +5423,19 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             hasActiveRunsPatch:
                 delta.runPatchMode.trim().toLowerCase() == 'replace' &&
                 delta.hasActiveRunsPatch &&
-                _runtimeRunListPatchCanReplace(
-                  currentSnapshot.activeRuns,
-                  deltaSnapshot.activeRuns,
-                ),
+                (delta.activeRuns.isEmpty ||
+                    _runtimeRunListPatchCanReplace(
+                      currentSnapshot.activeRuns,
+                      deltaSnapshot.activeRuns,
+                    )),
             hasRetainedRunsPatch:
                 delta.runPatchMode.trim().toLowerCase() == 'replace' &&
                 delta.hasRetainedRunsPatch &&
-                _runtimeRunListPatchCanReplace(
-                  currentSnapshot.retainedRuns,
-                  deltaSnapshot.retainedRuns,
-                ),
+                (delta.retainedRuns.isEmpty ||
+                    _runtimeRunListPatchCanReplace(
+                      currentSnapshot.retainedRuns,
+                      deltaSnapshot.retainedRuns,
+                    )),
             hasSubAgentsPatch: delta.hasSubAgentsPatch,
             hasLiveAssistantDraftsPatch: delta.hasLiveAssistantDraftsPatch,
           );
@@ -5003,9 +5454,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           _queueRuntimeActivityPatch(draftPatchedSnapshot);
         }
       }
-      if (delta.sequence > 0) {
-        _runtimeEventDeltaSequenceBySession[sessionId] = delta.sequence;
-      }
+      _recordAppliedRuntimeDelta(delta);
       return;
     }
     if (delta.hasLiveAssistantDraftsPatch) {
@@ -5015,9 +5464,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       );
     }
     _latestChatRuntimeSnapshot = patchedSnapshot;
-    if (delta.sequence > 0) {
-      _runtimeEventDeltaSequenceBySession[sessionId] = delta.sequence;
-    }
+    _recordAppliedRuntimeDelta(delta);
     if (_latestChatSnapshot == null) {
       return;
     }
@@ -5038,7 +5485,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       subAgents: base.subAgents,
       events: base.events,
       liveAssistantDrafts: deltaSnapshot.liveAssistantDrafts,
-      hostLifecycle: base.hostLifecycle,
+      streamInstanceId: deltaSnapshot.streamInstanceId ?? base.streamInstanceId,
+      lastSequence: deltaSnapshot.lastSequence ?? base.lastSequence,
+      flutterAppInstanceId:
+          deltaSnapshot.flutterAppInstanceId ?? base.flutterAppInstanceId,
+      bridgeInstanceId:
+          deltaSnapshot.bridgeInstanceId ?? base.bridgeInstanceId,
+      bridgeEpoch: deltaSnapshot.bridgeEpoch ?? base.bridgeEpoch,
+      hostLifecycle: deltaSnapshot.hostLifecycle ?? base.hostLifecycle,
       updatedAtEpochMs: math.max(
         base.updatedAtEpochMs,
         deltaSnapshot.updatedAtEpochMs,
@@ -5054,39 +5508,265 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     if (bridge == null) {
       return;
     }
+    final int bindingEpoch = _bridgeBindingEpoch;
+    _runtimeDeltaResyncRetryTimer?.cancel();
+    _runtimeDeltaResyncRetryTimer = null;
     _runtimeEventDeltaResyncInFlight = true;
     bool resynced = false;
     try {
       final OpenCrayChatRuntimeSnapshot snapshot = await bridge
           .loadChatRuntimeSnapshot();
-      if (!mounted) {
+      if (!mounted ||
+          _bridgeBindingEpoch != bindingEpoch ||
+          widget.bridge != bridge) {
         return;
       }
-      _handleChatRuntimeSnapshot(snapshot);
-      final String resyncedSessionId = snapshot.sessionId.trim();
-      if (resyncedSessionId.isNotEmpty) {
-        _runtimeEventDeltaSequenceBySession.remove(resyncedSessionId);
+      resynced = _handleChatRuntimeSnapshot(snapshot, authoritative: true);
+    } catch (_) {}
+    if (!mounted ||
+        _bridgeBindingEpoch != bindingEpoch ||
+        widget.bridge != bridge) {
+      return;
+    }
+    _runtimeEventDeltaResyncInFlight = false;
+    if (resynced) {
+      _drainQueuedRealtimeEventsAfterResync();
+    } else {
+      _scheduleRuntimeDeltaResyncRetry();
+    }
+  }
+
+  void _recordAppliedRuntimeDelta(OpenCrayChatRuntimeEventDelta delta) {
+    final String sessionId = delta.sessionId.trim();
+    if (sessionId.isEmpty) {
+      return;
+    }
+    final String streamInstanceId = delta.streamInstanceId?.trim() ?? '';
+    if (streamInstanceId.isNotEmpty) {
+      _runtimeStreamInstanceBySession[sessionId] = streamInstanceId;
+    }
+    final String bridgeEpoch = delta.bridgeEpoch?.trim() ?? '';
+    if (bridgeEpoch.isNotEmpty) {
+      _runtimeBridgeEpochBySession[sessionId] = bridgeEpoch;
+    }
+    if (delta.sequence > 0) {
+      _runtimeEventDeltaSequenceBySession[sessionId] = delta.sequence;
+    }
+    _markRealtimeEventIdSeen(sessionId, delta.eventId);
+  }
+
+  bool _realtimeEventIdWasSeen(String sessionId, String? eventId) {
+    final String normalizedEventId = eventId?.trim() ?? '';
+    if (normalizedEventId.isEmpty) {
+      return false;
+    }
+    return _seenRealtimeEventIdsBySession[sessionId]?.contains(
+          normalizedEventId,
+        ) ??
+        false;
+  }
+
+  void _markRealtimeEventIdSeen(String sessionId, String? eventId) {
+    final String normalizedEventId = eventId?.trim() ?? '';
+    if (sessionId.isEmpty || normalizedEventId.isEmpty) {
+      return;
+    }
+    _seenRealtimeEventIdsBySession
+        .putIfAbsent(sessionId, () => <String>{})
+        .add(normalizedEventId);
+  }
+
+  void _queueRuntimeEventDeltaForResync(OpenCrayChatRuntimeEventDelta delta) {
+    _queueRealtimeEnvelope(
+      _QueuedRealtimeEnvelope.delta(
+        value: delta,
+        arrivalOrdinal: _queuedRealtimeArrivalOrdinal++,
+      ),
+    );
+  }
+
+  void _queueLiveAssistantDraftEventForResync(
+    OpenCrayChatLiveAssistantDraftEvent event,
+  ) {
+    _queueRealtimeEnvelope(
+      _QueuedRealtimeEnvelope.draft(
+        value: event,
+        arrivalOrdinal: _queuedRealtimeArrivalOrdinal++,
+      ),
+    );
+  }
+
+  void _queueRealtimeEnvelope(_QueuedRealtimeEnvelope envelope) {
+    final String deduplicationKey = envelope.deduplicationKey;
+    if (envelope.sequence > 0 || envelope.eventId.isNotEmpty) {
+      final int existingIndex = _queuedRealtimeEventsAfterResync.indexWhere(
+        (queued) => queued.deduplicationKey == deduplicationKey,
+      );
+      if (existingIndex >= 0) {
+        _queuedRealtimeEventsAfterResync[existingIndex] = envelope;
+        return;
       }
-      resynced = true;
-    } finally {
-      _runtimeEventDeltaResyncInFlight = false;
     }
-    final OpenCrayChatRuntimeEventDelta? queuedDelta =
-        _queuedRuntimeEventDeltaAfterResync;
-    _queuedRuntimeEventDeltaAfterResync = null;
-    if (mounted && resynced && queuedDelta != null) {
-      _handleRuntimeEventDelta(queuedDelta);
+    _queuedRealtimeEventsAfterResync.add(envelope);
+    if (_queuedRealtimeEventsAfterResync.length >
+        _maxQueuedRealtimeEventsAfterResync) {
+      _queuedRealtimeEventsAfterResync.removeRange(
+        0,
+        _queuedRealtimeEventsAfterResync.length -
+            _maxQueuedRealtimeEventsAfterResync,
+      );
     }
+  }
+
+  void _resetRealtimeSessionIdentity({
+    required String sessionId,
+    required String streamInstanceId,
+    required String bridgeEpoch,
+  }) {
+    _runtimeEventDeltaSequenceBySession.remove(sessionId);
+    _seenRealtimeEventIdsBySession.remove(sessionId);
+    _liveAssistantDraftOverridesBySession.remove(sessionId);
+    _liveAssistantDraftEventEpochBySessionAndMessage.remove(sessionId);
+    _liveAssistantDraftEventSequenceBySessionAndIdentity.remove(sessionId);
+    _liveAssistantDraftEventClearedBySessionAndIdentity.remove(sessionId);
+    _queuedRealtimeEventsAfterResync.removeWhere((queued) {
+      if (queued.sessionId != sessionId) {
+        return false;
+      }
+      final bool streamMismatch =
+          streamInstanceId.isNotEmpty &&
+          queued.streamInstanceId.isNotEmpty &&
+          queued.streamInstanceId != streamInstanceId;
+      final bool bridgeMismatch =
+          bridgeEpoch.isNotEmpty &&
+          queued.bridgeEpoch.isNotEmpty &&
+          queued.bridgeEpoch != bridgeEpoch;
+      return streamMismatch || bridgeMismatch;
+    });
+  }
+
+  void _drainQueuedRealtimeEventsAfterResync() {
+    if (_runtimeEventDeltaResyncInFlight) {
+      return;
+    }
+    final List<_QueuedRealtimeEnvelope> queuedEvents =
+        _queuedRealtimeEventsAfterResync.toList(growable: false)
+          ..sort((left, right) {
+            final int leftSequence = left.sequence;
+            final int rightSequence = right.sequence;
+            if (leftSequence > 0 && rightSequence > 0 &&
+                leftSequence != rightSequence) {
+              return leftSequence.compareTo(rightSequence);
+            }
+            if (leftSequence > 0 && rightSequence <= 0) {
+              return -1;
+            }
+            if (leftSequence <= 0 && rightSequence > 0) {
+              return 1;
+            }
+            if (leftSequence == rightSequence &&
+                left.kind != right.kind) {
+              return left.kind == _QueuedRealtimeKind.runtimeDelta ? -1 : 1;
+            }
+            return left.arrivalOrdinal.compareTo(right.arrivalOrdinal);
+          });
+    _queuedRealtimeEventsAfterResync.clear();
+    for (final envelope in queuedEvents) {
+      final String sessionId = envelope.sessionId;
+      final String currentStreamInstanceId = _currentRuntimeStreamInstanceId(
+        sessionId,
+      );
+      final String currentBridgeEpoch = _currentRuntimeBridgeEpoch(sessionId);
+      if ((currentStreamInstanceId.isNotEmpty &&
+              envelope.streamInstanceId.isNotEmpty &&
+              currentStreamInstanceId != envelope.streamInstanceId) ||
+          (currentBridgeEpoch.isNotEmpty &&
+              envelope.bridgeEpoch.isNotEmpty &&
+              currentBridgeEpoch != envelope.bridgeEpoch)) {
+        continue;
+      }
+      switch (envelope.value) {
+        case OpenCrayChatRuntimeEventDelta delta:
+          _handleRuntimeEventDelta(delta);
+          break;
+        case OpenCrayChatLiveAssistantDraftEvent event:
+          _handleLiveAssistantDraftEvent(event);
+          break;
+        default:
+          break;
+      }
+    }
+  }
+
+  void _scheduleRuntimeDeltaResyncRetry() {
+    if (!mounted ||
+        widget.bridge == null ||
+        _runtimeDeltaResyncRetryTimer != null) {
+      return;
+    }
+    _runtimeDeltaResyncRetryTimer = Timer(
+      const Duration(milliseconds: 300),
+      () {
+        _runtimeDeltaResyncRetryTimer = null;
+        if (mounted) {
+          unawaited(_resyncRuntimeSnapshotAfterDeltaMiss());
+        }
+      },
+    );
   }
 
   void _handleLiveAssistantDraftEvent(
     OpenCrayChatLiveAssistantDraftEvent event,
   ) {
-    _storeLiveAssistantDraftOverride(event);
-    if (!mounted || _latestChatSnapshot == null) {
+    if (_runtimeEventDeltaResyncInFlight) {
+      _queueLiveAssistantDraftEventForResync(event);
       return;
     }
     final String sessionId = event.sessionId.trim();
+    final String currentStreamInstanceId = _currentRuntimeStreamInstanceId(
+      sessionId,
+    );
+    final String eventStreamInstanceId = event.streamInstanceId?.trim() ?? '';
+    final String currentBridgeEpoch = _currentRuntimeBridgeEpoch(sessionId);
+    final String eventBridgeEpoch = event.bridgeEpoch?.trim() ?? '';
+    if ((currentStreamInstanceId.isNotEmpty &&
+            eventStreamInstanceId.isNotEmpty &&
+            currentStreamInstanceId != eventStreamInstanceId) ||
+        (currentBridgeEpoch.isNotEmpty &&
+            eventBridgeEpoch.isNotEmpty &&
+            currentBridgeEpoch != eventBridgeEpoch) ||
+        (event.lastSequence != null &&
+            event.sequence != null &&
+            event.lastSequence != event.sequence)) {
+      _queueLiveAssistantDraftEventForResync(event);
+      unawaited(_resyncRuntimeSnapshotAfterDeltaMiss());
+      return;
+    }
+    final int? eventSequence = event.sequence;
+    final bool hasSequenceWatermark = _runtimeEventDeltaSequenceBySession
+        .containsKey(sessionId);
+    final int previousSequence =
+        _runtimeEventDeltaSequenceBySession[sessionId] ?? 0;
+    if (eventSequence != null && hasSequenceWatermark) {
+      if (eventSequence <= previousSequence) {
+        return;
+      }
+      if (eventSequence != previousSequence + 1) {
+        _queueLiveAssistantDraftEventForResync(event);
+        unawaited(_resyncRuntimeSnapshotAfterDeltaMiss());
+        return;
+      }
+    }
+    if (_realtimeEventIdWasSeen(sessionId, event.eventId)) {
+      return;
+    }
+    if (!_storeLiveAssistantDraftOverride(event)) {
+      return;
+    }
+    _recordAppliedLiveDraftEvent(event);
+    if (!mounted || _latestChatSnapshot == null) {
+      return;
+    }
     if (sessionId.isEmpty || sessionId != _activeSessionId) {
       return;
     }
@@ -5106,6 +5786,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       liveAssistantDrafts:
           runtimeSnapshot?.liveAssistantDrafts ??
           const <OpenCrayChatLiveAssistantDraftSnapshot>[],
+      streamInstanceId:
+          event.streamInstanceId ?? runtimeSnapshot?.streamInstanceId,
+      lastSequence:
+          event.lastSequence ?? event.sequence ?? runtimeSnapshot?.lastSequence,
+      flutterAppInstanceId: runtimeSnapshot?.flutterAppInstanceId,
+      bridgeInstanceId:
+          event.bridgeInstanceId ?? runtimeSnapshot?.bridgeInstanceId,
+      bridgeEpoch: event.bridgeEpoch ?? runtimeSnapshot?.bridgeEpoch,
       hostLifecycle: runtimeSnapshot?.hostLifecycle,
       updatedAtEpochMs: math.max(
         runtimeSnapshot?.updatedAtEpochMs ?? 0,
@@ -5115,13 +5803,45 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _queueRuntimeActivityPatch(effectiveRuntime);
   }
 
-  void _storeLiveAssistantDraftOverride(
+  void _recordAppliedLiveDraftEvent(OpenCrayChatLiveAssistantDraftEvent event) {
+    final String sessionId = event.sessionId.trim();
+    final String streamInstanceId = event.streamInstanceId?.trim() ?? '';
+    final String bridgeEpoch = event.bridgeEpoch?.trim() ?? '';
+    if (streamInstanceId.isNotEmpty) {
+      _runtimeStreamInstanceBySession[sessionId] = streamInstanceId;
+    }
+    if (bridgeEpoch.isNotEmpty) {
+      _runtimeBridgeEpochBySession[sessionId] = bridgeEpoch;
+    }
+    if (event.sequence != null && event.sequence! > 0) {
+      _runtimeEventDeltaSequenceBySession[sessionId] = event.sequence!;
+    }
+    _markRealtimeEventIdSeen(sessionId, event.eventId);
+  }
+
+  bool _storeLiveAssistantDraftOverride(
     OpenCrayChatLiveAssistantDraftEvent event,
   ) {
     final String sessionId = event.sessionId.trim();
     final String pendingMessageId = event.pendingMessageId.trim();
     if (sessionId.isEmpty || pendingMessageId.isEmpty) {
-      return;
+      return false;
+    }
+    final String identity = _runtimeDraftIdentity(
+      pendingMessageId: pendingMessageId,
+      executionId: event.executionId,
+    );
+    final int? eventSequence = event.sequence;
+    final Map<String, int> sessionEventSequences =
+        _liveAssistantDraftEventSequenceBySessionAndIdentity.putIfAbsent(
+          sessionId,
+          () => <String, int>{},
+        );
+    final int? previousSequence = sessionEventSequences[identity];
+    if (eventSequence != null &&
+        previousSequence != null &&
+        eventSequence <= previousSequence) {
+      return false;
     }
     final Map<String, int> sessionEventEpochs =
         _liveAssistantDraftEventEpochBySessionAndMessage.putIfAbsent(
@@ -5129,32 +5849,56 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           () => <String, int>{},
         );
     final int eventEpochMs = event.updatedAtEpochMs;
-    final int previousEventEpochMs = sessionEventEpochs[pendingMessageId] ?? 0;
+    final int previousEventEpochMs = sessionEventEpochs[identity] ?? 0;
     if (eventEpochMs > 0 && previousEventEpochMs > eventEpochMs) {
-      return;
+      return false;
+    }
+    final Map<String, bool> sessionClearedStates =
+        _liveAssistantDraftEventClearedBySessionAndIdentity.putIfAbsent(
+          sessionId,
+          () => <String, bool>{},
+        );
+    if (eventSequence == null &&
+        eventEpochMs > 0 &&
+        previousEventEpochMs == eventEpochMs &&
+        sessionClearedStates[identity] == true &&
+        !event.cleared) {
+      return false;
+    }
+    if (eventSequence != null) {
+      sessionEventSequences[identity] = eventSequence;
     }
     if (eventEpochMs > 0) {
-      sessionEventEpochs[pendingMessageId] = eventEpochMs;
+      sessionEventEpochs[identity] = eventEpochMs;
     }
+    sessionClearedStates[identity] = event.cleared;
     final Map<String, OpenCrayChatLiveAssistantDraftSnapshot> sessionDrafts =
         _liveAssistantDraftOverridesBySession.putIfAbsent(
           sessionId,
           () => <String, OpenCrayChatLiveAssistantDraftSnapshot>{},
         );
     if (event.cleared) {
-      sessionDrafts.remove(pendingMessageId);
+      sessionDrafts.remove(identity);
       if (sessionDrafts.isEmpty) {
         _liveAssistantDraftOverridesBySession.remove(sessionId);
       }
-      return;
+      return true;
     }
-    sessionDrafts[pendingMessageId] = OpenCrayChatLiveAssistantDraftSnapshot(
+    sessionDrafts[identity] = OpenCrayChatLiveAssistantDraftSnapshot(
       runId: event.runId,
       taskId: event.taskId,
       pendingMessageId: pendingMessageId,
       text: event.text,
       updatedAtEpochMs: event.updatedAtEpochMs,
+      executionId: event.executionId,
+      streamInstanceId: event.streamInstanceId,
+      sequence: event.sequence,
+      lastSequence: event.lastSequence,
+      eventId: event.eventId,
+      bridgeInstanceId: event.bridgeInstanceId,
+      bridgeEpoch: event.bridgeEpoch,
     );
+    return true;
   }
 
   void _reconcileLiveAssistantDraftOverrides(
@@ -5171,29 +5915,41 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       return;
     }
     final Map<String, OpenCrayChatLiveAssistantDraftSnapshot>
-    authoritativeDraftsByMessageId =
+    authoritativeDraftsByIdentity =
         <String, OpenCrayChatLiveAssistantDraftSnapshot>{
           for (final draft in authoritativeSnapshot!.liveAssistantDrafts)
             if (draft.pendingMessageId.trim().isNotEmpty)
-              draft.pendingMessageId.trim(): draft,
+              _runtimeDraftIdentity(
+                pendingMessageId: draft.pendingMessageId,
+                executionId: draft.executionId,
+              ): draft,
         };
     final int authoritativeVersion = runtimeSnapshotVersion(
       authoritativeSnapshot,
     );
     final List<String> keysToRemove = <String>[];
-    sessionDrafts.forEach((pendingMessageId, overrideDraft) {
+    final String authoritativeStreamInstanceId =
+        authoritativeSnapshot.streamInstanceId?.trim() ?? '';
+    sessionDrafts.forEach((identity, overrideDraft) {
+      final String overrideStreamInstanceId =
+          overrideDraft.streamInstanceId?.trim() ?? '';
+      if (authoritativeStreamInstanceId.isNotEmpty &&
+          overrideStreamInstanceId.isNotEmpty &&
+          authoritativeStreamInstanceId != overrideStreamInstanceId) {
+        keysToRemove.add(identity);
+        return;
+      }
       final OpenCrayChatLiveAssistantDraftSnapshot? authoritativeDraft =
-          authoritativeDraftsByMessageId[pendingMessageId];
+          authoritativeDraftsByIdentity[identity];
       if (authoritativeDraft != null &&
-          authoritativeDraft.updatedAtEpochMs >=
-              overrideDraft.updatedAtEpochMs) {
-        keysToRemove.add(pendingMessageId);
+          _draftIsAtLeastAsNew(authoritativeDraft, overrideDraft)) {
+        keysToRemove.add(identity);
         return;
       }
       if (authoritativeDraft == null &&
           (liveAssistantDraftsAuthoritative ||
               authoritativeVersion >= overrideDraft.updatedAtEpochMs)) {
-        keysToRemove.add(pendingMessageId);
+        keysToRemove.add(identity);
       }
     });
     for (final String key in keysToRemove) {
@@ -6402,7 +7158,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return '$title copy';
   }
 
-  Future<void> _hydrateFromHost(OpenCrayHostBridge bridge) async {
+  Future<bool> _hydrateFromHost(
+    OpenCrayHostBridge bridge, {
+    required int bindingEpoch,
+    bool authoritativeRuntimeSnapshot = false,
+  }) async {
     final snapshotFuture = bridge.loadChatSnapshot();
     final runtimeSnapshotFuture = bridge.loadChatRuntimeSnapshot();
     final sandboxSettingsFuture = bridge.loadSandboxSettings();
@@ -6412,16 +7172,23 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     try {
       sandboxSettings = await sandboxSettingsFuture;
     } catch (_) {}
-    if (!mounted) {
-      return;
+    if (!mounted ||
+        _bridgeBindingEpoch != bindingEpoch ||
+        widget.bridge != bridge) {
+      return false;
     }
     final OpenCrayChatRuntimeSnapshot resolvedRuntimeSnapshot =
-        _latestChatRuntimeSnapshot != null &&
-            !_runtimeSnapshotsShareSession(
-              _latestChatRuntimeSnapshot!,
-              runtimeSnapshot,
-            ) &&
-            runtimeSnapshot.sessionId.trim().isNotEmpty
+        authoritativeRuntimeSnapshot
+        ? _runtimeSnapshotIsBehindCurrentWatermark(runtimeSnapshot) &&
+                  _latestChatRuntimeSnapshot != null
+              ? _latestChatRuntimeSnapshot!
+              : runtimeSnapshot
+        : _latestChatRuntimeSnapshot != null &&
+              !_runtimeSnapshotsShareSession(
+                _latestChatRuntimeSnapshot!,
+                runtimeSnapshot,
+              ) &&
+              runtimeSnapshot.sessionId.trim().isNotEmpty
         ? runtimeSnapshot
         : resolveChatRuntimeSnapshot(
                 _latestChatRuntimeSnapshot,
@@ -6430,6 +7197,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               runtimeSnapshot;
     _latestChatSnapshot = snapshot;
     _latestChatRuntimeSnapshot = resolvedRuntimeSnapshot;
+    _recordRuntimeSnapshotWatermark(
+      resolvedRuntimeSnapshot,
+      authoritative: authoritativeRuntimeSnapshot,
+    );
     _pruneLocalDeletionTombstones(snapshot);
     _syncTodoArchiveVisibility(snapshot);
     final ChatFeatureState nextState = _applyLocalDeletionTombstones(
@@ -6457,6 +7228,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     _syncSandboxSessionAutoRefresh();
     _syncSandboxSessionLifecycleAutoRefresh();
+    return true;
   }
 
   ChatFeatureState _mapSnapshot(
@@ -6609,6 +7381,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           !_shouldDisplayLiveAssistantDraft(
             runId: draft.runId,
             taskId: draft.taskId,
+            executionId: draft.executionId,
             runtimeSnapshot: runtimeSnapshot,
           )) {
         continue;
@@ -7239,6 +8012,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           !_shouldDisplayLiveAssistantDraft(
             runId: draft.runId,
             taskId: draft.taskId,
+            executionId: draft.executionId,
             runtimeSnapshot: runtimeSnapshot,
           ) ||
           !seenMessageIds.add(messageId)) {
@@ -7260,6 +8034,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   bool _shouldDisplayLiveAssistantDraft({
     required String runId,
     required String taskId,
+    required String? executionId,
     required OpenCrayChatRuntimeSnapshot? runtimeSnapshot,
   }) {
     if (runtimeSnapshot == null) {
@@ -7284,6 +8059,9 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     if (matchedRun == null) {
       return true;
+    }
+    if (!_draftExecutionMatchesRun(executionId, matchedRun)) {
+      return false;
     }
     final OpenCrayChatRuntimeEventSnapshot? latestEvent = _latestRunTraceEvent(
       _runEventsFor(run: matchedRun, runtimeSnapshot: runtimeSnapshot),
@@ -7316,12 +8094,16 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           !_shouldDisplayLiveAssistantDraft(
             runId: draft.runId,
             taskId: draft.taskId,
+            executionId: draft.executionId,
             runtimeSnapshot: runtimeSnapshot,
           )) {
         continue;
       }
       final String draftRunId = draft.runId.trim();
       final String draftTaskId = draft.taskId.trim();
+      if (!_draftExecutionMatchesRun(draft.executionId, run)) {
+        continue;
+      }
       if ((draftRunId.isNotEmpty && draftRunId == run.runId.trim()) ||
           (draftTaskId.isNotEmpty && draftTaskId == run.taskId.trim()) ||
           (draftRunId.isEmpty && draftTaskId.isEmpty)) {
@@ -7329,6 +8111,17 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       }
     }
     return false;
+  }
+
+  bool _draftExecutionMatchesRun(
+    String? draftExecutionId,
+    OpenCrayChatRunSnapshot run,
+  ) {
+    final String normalizedDraftExecutionId = draftExecutionId?.trim() ?? '';
+    final String runExecutionId = run.executionId?.trim() ?? '';
+    return normalizedDraftExecutionId.isEmpty ||
+        runExecutionId.isEmpty ||
+        normalizedDraftExecutionId == runExecutionId;
   }
 
   bool _hideAssistantPhaseBubble(OpenCrayChatRuntimeEventSnapshot event) {
@@ -9901,6 +10694,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       ids.add(id);
     }
 
+    final String eventId = event.eventId?.trim() ?? '';
+    if (eventId.isNotEmpty) {
+      addId('runtime-assistant-event-$eventId');
+    }
+    addId(_canonicalKotlinAssistantPhaseMessageId(event));
     final List<String> ownerIds = _assistantPhaseOwnerIds(event);
     if (ownerIds.isEmpty) {
       addId(_assistantPhaseMessageIdForOwner(event, ''));
@@ -9910,6 +10708,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     for (final String ownerId in ownerIds) {
       addId(_assistantPhaseMessageIdForOwner(event, ownerId));
     }
+    addId(_legacyKotlinAssistantPhaseMessageId(event));
     for (final String ownerId in ownerIds) {
       addId(_assistantPhaseBaseMessageIdForOwner(event, ownerId));
     }
@@ -9919,6 +10718,35 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       );
     }
     return ids;
+  }
+
+  String _canonicalKotlinAssistantPhaseMessageId(
+    OpenCrayChatRuntimeEventSnapshot event,
+  ) {
+    final String runId = event.runId.trim();
+    if (runId.isEmpty) {
+      return '';
+    }
+    final String stage = event.stage?.trim().isNotEmpty == true
+        ? event.stage!.trim()
+        : '-';
+    final int turn = event.turn ?? -1;
+    return 'runtime-assistant-${_assistantPhaseTag(event)}-$runId-$turn-$stage';
+  }
+
+  String _legacyKotlinAssistantPhaseMessageId(
+    OpenCrayChatRuntimeEventSnapshot event,
+  ) {
+    final String runId = event.runId.trim();
+    if (runId.isEmpty) {
+      return '';
+    }
+    final String stage = event.stage?.trim().isNotEmpty == true
+        ? event.stage!.trim()
+        : '-';
+    final int turn = event.turn ?? -1;
+    final int textHash = javaStringHashCode(event.text?.trim() ?? '');
+    return 'runtime-assistant-${_assistantPhaseTag(event)}-$runId-$turn-$stage-${event.emittedAtEpochMs}-$textHash';
   }
 
   List<String> _assistantPhaseOwnerIds(OpenCrayChatRuntimeEventSnapshot event) {
@@ -9938,14 +10766,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     OpenCrayChatRuntimeEventSnapshot event,
     String ownerId,
   ) {
-    final String base = _assistantPhaseBaseMessageIdForOwner(event, ownerId);
-    if (event.turn != null) {
-      return base;
-    }
-    final String textFingerprint = event.text?.trim().isNotEmpty == true
-        ? event.text!.trim()
-        : _projectedAssistantPhaseMessageText(event);
-    return '$base-${javaStringHashCode(textFingerprint)}';
+    return _assistantPhaseBaseMessageIdForOwner(event, ownerId);
   }
 
   String _assistantPhaseBaseMessageIdForOwner(
@@ -12206,15 +13027,29 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
               in resolved?.liveAssistantDrafts ??
                   const <OpenCrayChatLiveAssistantDraftSnapshot>[])
             if (draft.pendingMessageId.trim().isNotEmpty)
-              draft.pendingMessageId.trim(): draft,
+              _runtimeDraftIdentity(
+                pendingMessageId: draft.pendingMessageId,
+                executionId: draft.executionId,
+              ): draft,
         };
     for (final draft in overrideDrafts) {
       final String pendingMessageId = draft.pendingMessageId.trim();
+      final String resolvedStreamInstanceId =
+          resolved?.streamInstanceId?.trim() ?? '';
+      final String draftStreamInstanceId = draft.streamInstanceId?.trim() ?? '';
+      if (resolvedStreamInstanceId.isNotEmpty &&
+          draftStreamInstanceId.isNotEmpty &&
+          resolvedStreamInstanceId != draftStreamInstanceId) {
+        continue;
+      }
+      final String identity = _runtimeDraftIdentity(
+        pendingMessageId: pendingMessageId,
+        executionId: draft.executionId,
+      );
       final OpenCrayChatLiveAssistantDraftSnapshot? existing =
-          mergedDrafts[pendingMessageId];
-      if (existing == null ||
-          draft.updatedAtEpochMs >= existing.updatedAtEpochMs) {
-        mergedDrafts[pendingMessageId] = draft;
+          mergedDrafts[identity];
+      if (existing == null || _draftIsAtLeastAsNew(draft, existing)) {
+        mergedDrafts[identity] = draft;
       }
     }
     final List<OpenCrayChatLiveAssistantDraftSnapshot> sortedDrafts =
@@ -12229,6 +13064,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
       subAgents: resolved?.subAgents ?? const <OpenCrayChatSubAgentSnapshot>[],
       events: resolved?.events ?? const <OpenCrayChatRuntimeEventSnapshot>[],
       liveAssistantDrafts: sortedDrafts,
+      streamInstanceId: resolved?.streamInstanceId,
+      lastSequence: resolved?.lastSequence,
+      flutterAppInstanceId: resolved?.flutterAppInstanceId,
+      bridgeInstanceId: resolved?.bridgeInstanceId,
+      bridgeEpoch: resolved?.bridgeEpoch,
       hostLifecycle: resolved?.hostLifecycle,
       updatedAtEpochMs: resolved?.updatedAtEpochMs ?? 0,
     );

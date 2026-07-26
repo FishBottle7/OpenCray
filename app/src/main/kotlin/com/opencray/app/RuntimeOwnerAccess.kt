@@ -62,6 +62,10 @@ internal interface OpenCrayRuntimeSessionAccess {
 
   fun hasLiveManagedProcesses(): Boolean
 
+  fun terminateManagedProcesses(
+    processIds: Set<String>,
+  ): List<com.opencray.runtime.process.ManagedProcessSnapshot> = emptyList()
+
   fun terminateRunningManagedProcesses(): List<com.opencray.runtime.process.ManagedProcessSnapshot>
 
   fun listSubAgentHandles(): List<SubAgentHandleState> = emptyList()
@@ -252,6 +256,11 @@ private class AgentSessionHandleRuntimeSessionAccess(
     delegate.listManagedProcesses()
 
   override fun hasLiveManagedProcesses(): Boolean = delegate.hasLiveManagedProcesses()
+
+  override fun terminateManagedProcesses(
+    processIds: Set<String>,
+  ): List<com.opencray.runtime.process.ManagedProcessSnapshot> =
+    delegate.terminateManagedProcesses(processIds)
 
   override fun terminateRunningManagedProcesses(): List<com.opencray.runtime.process.ManagedProcessSnapshot> =
     delegate.terminateRunningManagedProcesses()

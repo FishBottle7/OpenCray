@@ -143,6 +143,7 @@ data class SessionQueueConfig(
 }
 
 const val ERROR_RESTART_REQUIRES_EXPLICIT_RETRY: String = "RESTART_REQUIRES_EXPLICIT_RETRY"
+const val ERROR_RUNTIME_INTERRUPTED: String = "RUNTIME_INTERRUPTED"
 const val METADATA_QUEUE_RESTORE_EPOCH_MS: String = "_queue.restoreEpochMs"
 const val METADATA_PREVIOUS_LIFECYCLE_STATE: String = "_queue.previousLifecycleState"
 const val METADATA_RECOVERY_REASON: String = "_queue.recoveryReason"
@@ -246,6 +247,9 @@ class SessionQueue(
         if (result != null) {
           results += result
           executedCount += 1
+          if (Thread.currentThread().isInterrupted) {
+            break
+          }
         }
       }
       return results
@@ -294,19 +298,54 @@ class SessionQueue(
   /**
    * Manual retry hook for failed tasks, keeping deterministic serial ordering.
    */
-  fun requestRetry(taskId: String): Boolean = synchronized(lock) {
+  fun requestRetry(
+    taskId: String,
+    taskMetadataUpdates: Map<String, String> = emptyMap(),
+  ): Boolean = synchronized(lock) {
     val index = indexOfTaskLocked(taskId) ?: return false
     val current = taskEntries[index]
     if (current.lifecycleState != QueueTaskLifecycleState.FAILED) return false
     val restartInterrupted = current.lastErrorCode == ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
     if (!restartInterrupted && current.attempt >= config.maxAttempts) return false
 
+    if (taskMetadataUpdates.isNotEmpty()) {
+      applyTaskMetadataUpdatesLocked(index = index, updates = taskMetadataUpdates)
+    }
     markPendingExecutionKindLocked(index, EXECUTION_KIND_RETRY)
-    transitionTaskLocked(index, QueueTaskLifecycleState.RETRY_PENDING)
+    transitionTaskLocked(
+      index = index,
+      to = QueueTaskLifecycleState.RETRY_PENDING,
+      errorCode = "",
+      errorMessage = "",
+    )
     transitionTaskLocked(
       index = index,
       to = QueueTaskLifecycleState.QUEUED,
       clearExecutionContext = true,
+    )
+    return true
+  }
+
+  fun reconcileFailure(
+    taskId: String,
+    errorCode: String,
+    errorMessage: String,
+  ): Boolean = synchronized(lock) {
+    require(errorCode.isNotBlank()) { "Reconciled failure errorCode must not be blank." }
+    val index = indexOfTaskLocked(taskId) ?: return false
+    val current = taskEntries[index]
+    if (
+      current.lifecycleState == QueueTaskLifecycleState.COMPLETED ||
+      current.lifecycleState == QueueTaskLifecycleState.FAILED ||
+      current.lifecycleState == QueueTaskLifecycleState.CANCELLED
+    ) {
+      return false
+    }
+    transitionTaskLocked(
+      index = index,
+      to = QueueTaskLifecycleState.FAILED,
+      errorCode = errorCode,
+      errorMessage = errorMessage,
     )
     return true
   }
@@ -598,6 +637,18 @@ class SessionQueue(
         taskId = task.id,
         startedAtEpochMs = minOf(result.startedAtEpochMs, result.finishedAtEpochMs),
         finishedAtEpochMs = maxOf(result.startedAtEpochMs, result.finishedAtEpochMs),
+      )
+    } catch (interrupted: InterruptedException) {
+      Thread.currentThread().interrupt()
+      val startedAt = clock.nowEpochMs()
+      val finishedAt = clock.nowEpochMs()
+      ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.CANCELLED,
+        errorCode = ERROR_RUNTIME_INTERRUPTED,
+        errorMessage = interrupted.message ?: "Runtime execution was interrupted.",
+        startedAtEpochMs = minOf(startedAt, finishedAt),
+        finishedAtEpochMs = maxOf(startedAt, finishedAt),
       )
     } catch (throwable: Throwable) {
       val startedAt = clock.nowEpochMs()
@@ -891,6 +942,7 @@ class SessionQueue(
       QueueTaskLifecycleState.QUEUED to setOf(
         QueueTaskLifecycleState.RUNNING,
         QueueTaskLifecycleState.CANCELLED,
+        QueueTaskLifecycleState.FAILED,
       ),
       QueueTaskLifecycleState.RUNNING to setOf(
         QueueTaskLifecycleState.RETRY_PENDING,
@@ -903,10 +955,12 @@ class SessionQueue(
       QueueTaskLifecycleState.RETRY_PENDING to setOf(
         QueueTaskLifecycleState.QUEUED,
         QueueTaskLifecycleState.CANCELLED,
+        QueueTaskLifecycleState.FAILED,
       ),
       QueueTaskLifecycleState.SUSPENDED to setOf(
         QueueTaskLifecycleState.QUEUED,
         QueueTaskLifecycleState.CANCELLED,
+        QueueTaskLifecycleState.FAILED,
       ),
       QueueTaskLifecycleState.CANCEL_REQUESTED to setOf(
         QueueTaskLifecycleState.CANCELLED,

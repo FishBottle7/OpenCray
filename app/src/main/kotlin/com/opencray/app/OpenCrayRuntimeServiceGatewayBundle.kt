@@ -3,6 +3,7 @@ package com.opencray.app
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.opencray.core.orchestrator.METADATA_EXECUTION_ID
 import com.opencray.app.facade.llm.LlmConfigFacade
 import com.opencray.app.facade.llm.LocalLlmConfigFacade
 import com.opencray.app.facade.media.LocalMediaSpeechSettingsFacade
@@ -524,6 +525,7 @@ internal class ServiceOwnedChatRuntimeGateway(
   private var disposed: Boolean = false
   private val liveAssistantDraftEventListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val runtimeEventDeltaListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  private val runtimeEventStreamInstanceId: String = lifecycleId(prefix = "service-runtime-stream")
   private val runtimeEventDeltaSequencesBySession = linkedMapOf<String, Long>()
   private var latestChatPayload: Map<String, Any?> = emptyMap()
   private val liveAssistantDraftsBySession =
@@ -573,7 +575,7 @@ internal class ServiceOwnedChatRuntimeGateway(
     object : AgentSessionRuntimeListener {
       override fun onTaskStarted(sessionId: String, task: com.opencray.core.contracts.AgentTask) {
         emitChatSnapshot()
-        if (!emitServiceOwnedRuntimeEventDeltaFromSnapshot()) {
+        if (!emitServiceOwnedRuntimeEventDelta()) {
           emitChatRuntimeSnapshot()
         }
       }
@@ -584,7 +586,7 @@ internal class ServiceOwnedChatRuntimeGateway(
         event: com.opencray.runtime.OpenCrayAgentRunEvent,
       ) {
         emitChatSnapshot()
-        if (!emitServiceOwnedRuntimeEventDeltaFromSnapshot()) {
+        if (!emitServiceOwnedRuntimeEventDelta()) {
           emitChatRuntimeSnapshot()
         }
       }
@@ -613,22 +615,21 @@ internal class ServiceOwnedChatRuntimeGateway(
           liveAssistantDraftsBySession[sessionId]
             ?.get(pendingMessageId)
             ?.toLiveAssistantDraftEventPayload(sessionId = sessionId, cleared = false)
+            ?.let { payload -> assignRuntimeRealtimeEnvelopeLocked(sessionId, payload) }
         }
         if (draftEventPayload != null) {
           serviceChatDebug(
-            "service.draftUpdated session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} len=${text.length} preview=${text.take(80).replace('\n', ' ')}",
+            "service.draftUpdated session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} len=${text.length}",
           )
-          emitLiveAssistantDraftEvent(draftEventPayload)
           val hasRuntimeEventDeltaListeners = synchronized(lock) {
             runtimeEventDeltaListeners.isNotEmpty()
           }
-          val emittedRuntimeDelta = if (hasRuntimeEventDeltaListeners) {
-            emitServiceOwnedRuntimeEventDeltaFromSnapshot()
+          if (hasRuntimeEventDeltaListeners) {
+            if (!emitServiceOwnedRuntimeEventDelta(realtimeEnvelope = draftEventPayload)) {
+              emitChatRuntimeSnapshot()
+            }
           } else {
-            false
-          }
-          if (!hasRuntimeEventDeltaListeners && !emittedRuntimeDelta) {
-            emitChatRuntimeSnapshot()
+            emitLiveAssistantDraftEvent(draftEventPayload)
           }
         }
       }
@@ -658,27 +659,26 @@ internal class ServiceOwnedChatRuntimeGateway(
               ?.takeIf(String::isNotBlank)
               ?: "",
             taskId = task.id,
+            executionId = task.metadata[METADATA_EXECUTION_ID]?.trim()?.takeIf(String::isNotBlank),
             pendingMessageId = pendingMessageId,
             text = "",
             updatedAtEpochMs = emittedAtEpochMs,
             cleared = true,
-          )
+          ).let { payload -> assignRuntimeRealtimeEnvelopeLocked(sessionId, payload) }
         }
         if (draftEventPayload != null) {
           serviceChatDebug(
             "service.draftCleared session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"}",
           )
-          emitLiveAssistantDraftEvent(draftEventPayload)
           val hasRuntimeEventDeltaListeners = synchronized(lock) {
             runtimeEventDeltaListeners.isNotEmpty()
           }
-          val emittedRuntimeDelta = if (hasRuntimeEventDeltaListeners) {
-            emitServiceOwnedRuntimeEventDeltaFromSnapshot()
+          if (hasRuntimeEventDeltaListeners) {
+            if (!emitServiceOwnedRuntimeEventDelta(realtimeEnvelope = draftEventPayload)) {
+              emitChatRuntimeSnapshot()
+            }
           } else {
-            false
-          }
-          if (!hasRuntimeEventDeltaListeners && !emittedRuntimeDelta) {
-            emitChatRuntimeSnapshot()
+            emitLiveAssistantDraftEvent(draftEventPayload)
           }
         }
       }
@@ -708,20 +708,28 @@ internal class ServiceOwnedChatRuntimeGateway(
               ?.takeIf(String::isNotBlank)
               ?: "",
             taskId = task.id,
+            executionId = task.metadata[METADATA_EXECUTION_ID]?.trim()?.takeIf(String::isNotBlank),
             pendingMessageId = pendingMessageId,
             text = "",
             updatedAtEpochMs = result.finishedAtEpochMs,
             cleared = true,
-          )
+          ).let { payload -> assignRuntimeRealtimeEnvelopeLocked(sessionId, payload) }
         }
         if (draftEventPayload != null) {
           serviceChatDebug(
             "service.taskFinishedClearedDraft session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} status=${result.status} error=${result.errorCode ?: "-"}",
           )
-          emitLiveAssistantDraftEvent(draftEventPayload)
         }
         emitChatSnapshot()
-        if (!emitServiceOwnedRuntimeEventDeltaFromSnapshot()) {
+        val hasRuntimeEventDeltaListeners = synchronized(lock) {
+          runtimeEventDeltaListeners.isNotEmpty()
+        }
+        if (hasRuntimeEventDeltaListeners) {
+          if (!emitServiceOwnedRuntimeEventDelta(realtimeEnvelope = draftEventPayload)) {
+            emitChatRuntimeSnapshot()
+          }
+        } else {
+          draftEventPayload?.let(::emitLiveAssistantDraftEvent)
           emitChatRuntimeSnapshot()
         }
         snapshotNotifier()
@@ -732,6 +740,7 @@ internal class ServiceOwnedChatRuntimeGateway(
   private data class ServiceOwnedLiveAssistantDraftSnapshot(
     val runId: String,
     val taskId: String,
+    val executionId: String?,
     val pendingMessageId: String,
     val text: String,
     val updatedAtEpochMs: Long,
@@ -758,6 +767,7 @@ internal class ServiceOwnedChatRuntimeGateway(
         ?.takeIf(String::isNotBlank)
         ?: "",
       taskId = task.id,
+      executionId = task.metadata[METADATA_EXECUTION_ID]?.trim()?.takeIf(String::isNotBlank),
       pendingMessageId = pendingMessageId,
       text = normalizedText,
       updatedAtEpochMs = emittedAtEpochMs,
@@ -805,20 +815,26 @@ internal class ServiceOwnedChatRuntimeGateway(
         ?.sortedBy(ServiceOwnedLiveAssistantDraftSnapshot::updatedAtEpochMs)
         .orEmpty()
     }
-    if (liveDrafts.isEmpty()) {
-      return ensureDecoratedRuntimePayloadVersionSignal(payload)
-    }
-    return ensureDecoratedRuntimePayloadVersionSignal(payload.toMutableMap().apply {
-      this["liveAssistantDrafts"] = liveDrafts.map { draft ->
-        mapOf(
-          "runId" to draft.runId,
-          "taskId" to draft.taskId,
-          "pendingMessageId" to draft.pendingMessageId,
-          "text" to draft.text,
-          "updatedAtEpochMs" to draft.updatedAtEpochMs,
-        )
+    val decoratedPayload = if (liveDrafts.isEmpty()) {
+      payload
+    } else {
+      payload.toMutableMap().apply {
+        this["liveAssistantDrafts"] = liveDrafts.map { draft ->
+          mapOf(
+            "runId" to draft.runId,
+            "taskId" to draft.taskId,
+            "executionId" to draft.executionId,
+            "pendingMessageId" to draft.pendingMessageId,
+            "text" to draft.text,
+            "updatedAtEpochMs" to draft.updatedAtEpochMs,
+          )
+        }
       }
-    })
+    }
+    return ensureDecoratedRuntimePayloadVersionSignal(decoratedPayload).toMutableMap().apply {
+      put("streamInstanceId", runtimeEventStreamInstanceId)
+      put("lastSequence", synchronized(lock) { currentRuntimeEventSequenceLocked(sessionId) })
+    }
   }
 
   override fun loadChatSnapshot(): Map<String, Any?> =
@@ -1094,7 +1110,7 @@ internal class ServiceOwnedChatRuntimeGateway(
 
   override fun notifyChatSnapshotsChanged() {
     emitChatSnapshot()
-    if (!emitServiceOwnedRuntimeEventDeltaFromSnapshot()) {
+    if (!emitServiceOwnedRuntimeEventDelta()) {
       emitChatRuntimeSnapshot()
     }
     snapshotNotifier()
@@ -1130,7 +1146,9 @@ internal class ServiceOwnedChatRuntimeGateway(
     emitChatRuntimePayload(currentDecoratedChatRuntimePayload())
   }
 
-  private fun emitServiceOwnedRuntimeEventDeltaFromSnapshot(): Boolean {
+  private fun emitServiceOwnedRuntimeEventDelta(
+    realtimeEnvelope: Map<String, Any?>? = null,
+  ): Boolean {
     if (delegate != null) {
       return false
     }
@@ -1143,6 +1161,7 @@ internal class ServiceOwnedChatRuntimeGateway(
       runtimeEventDeltaPayloadFromRuntimePayloads(
         previousPayload = latestChatRuntimePayload,
         nextPayload = nextPayload,
+        realtimeEnvelope = realtimeEnvelope,
       ).also {
         latestChatRuntimePayload = nextPayload
       }
@@ -1229,6 +1248,7 @@ internal class ServiceOwnedChatRuntimeGateway(
   private fun runtimeEventDeltaPayloadFromRuntimePayloads(
     previousPayload: Map<String, Any?>,
     nextPayload: Map<String, Any?>,
+    realtimeEnvelope: Map<String, Any?>? = null,
   ): Map<String, Any?>? {
     val sessionId = (nextPayload["sessionId"] as? String)
       ?.trim()
@@ -1245,15 +1265,35 @@ internal class ServiceOwnedChatRuntimeGateway(
         runtimeEventPayloadContentSignature(event)
     }
     if (
+      realtimeEnvelope == null &&
       deltaEvents.isEmpty() &&
       payloadUpdatedAtEpochMs(nextPayload) <= payloadUpdatedAtEpochMs(previousPayload)
     ) {
       return null
     }
-    val sequence = nextRuntimeEventDeltaSequenceLocked(sessionId)
+    val sequence = (realtimeEnvelope?.get("sequence") as? Number)?.toLong()
+      ?: nextRuntimeEventDeltaSequenceLocked(sessionId)
+    val streamInstanceId = (realtimeEnvelope?.get("streamInstanceId") as? String)
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: runtimeEventStreamInstanceId
+    val eventId = (realtimeEnvelope?.get("eventId") as? String)
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: runtimeRealtimeEnvelopeEventId(sessionId = sessionId, sequence = sequence)
+    val executionId = (realtimeEnvelope?.get("executionId") as? String)
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: deltaEvents.firstNotNullOfOrNull { event ->
+        (event["executionId"] as? String)?.trim()?.takeIf(String::isNotBlank)
+      }
     return mapOf(
       "sessionId" to sessionId,
+      "streamInstanceId" to streamInstanceId,
       "sequence" to sequence,
+      "lastSequence" to sequence,
+      "eventId" to eventId,
+      "executionId" to executionId,
       "events" to deltaEvents,
       "totalLength" to nextEvents.size,
       "runPatchMode" to "replace",
@@ -1271,6 +1311,25 @@ internal class ServiceOwnedChatRuntimeGateway(
     return next
   }
 
+  private fun currentRuntimeEventSequenceLocked(sessionId: String): Long =
+    runtimeEventDeltaSequencesBySession[sessionId] ?: 0L
+
+  private fun assignRuntimeRealtimeEnvelopeLocked(
+    sessionId: String,
+    payload: Map<String, Any?>,
+  ): Map<String, Any?> {
+    val sequence = nextRuntimeEventDeltaSequenceLocked(sessionId)
+    return payload.toMutableMap().apply {
+      put("streamInstanceId", runtimeEventStreamInstanceId)
+      put("sequence", sequence)
+      put("lastSequence", sequence)
+      put("eventId", runtimeRealtimeEnvelopeEventId(sessionId = sessionId, sequence = sequence))
+    }
+  }
+
+  private fun runtimeRealtimeEnvelopeEventId(sessionId: String, sequence: Long): String =
+    "runtime-stream-$runtimeEventStreamInstanceId-$sessionId-$sequence"
+
   private fun payloadRuntimeEvents(
     payload: Map<String, Any?>,
   ): List<Map<String, Any?>> = (payload["events"] as? List<*>)
@@ -1280,22 +1339,27 @@ internal class ServiceOwnedChatRuntimeGateway(
     }
     .orEmpty()
 
-  private fun runtimeEventPayloadMergeKey(event: Map<String, Any?>): String = listOf(
-    event["kind"],
-    event["runId"],
-    event["taskId"],
-    event["executionId"],
-    event["executionOrdinal"],
-    event["executionKind"],
-    event["turn"],
-    event["phase"],
-    event["stage"],
-    event["toolName"],
-    event["entryId"],
-    event["childRunId"],
-    event["childTaskId"],
-    event["emittedAtEpochMs"],
-  ).joinToString(separator = "|") { value -> value?.toString().orEmpty() }
+  private fun runtimeEventPayloadMergeKey(event: Map<String, Any?>): String =
+    (event["eventId"] as? String)
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { eventId -> "event|$eventId" }
+      ?: listOf(
+        event["kind"],
+        event["runId"],
+        event["taskId"],
+        event["executionId"],
+        event["executionOrdinal"],
+        event["executionKind"],
+        event["turn"],
+        event["phase"],
+        event["stage"],
+        event["toolName"],
+        event["entryId"],
+        event["childRunId"],
+        event["childTaskId"],
+        event["emittedAtEpochMs"],
+      ).joinToString(separator = "|") { value -> value?.toString().orEmpty() }
 
   private fun runtimeEventPayloadContentSignature(event: Map<String, Any?>): String =
     event.entries
@@ -1482,6 +1546,7 @@ internal class ServiceOwnedChatRuntimeGateway(
     sessionId: String,
     runId: String,
     taskId: String,
+    executionId: String?,
     pendingMessageId: String,
     text: String,
     updatedAtEpochMs: Long,
@@ -1490,6 +1555,7 @@ internal class ServiceOwnedChatRuntimeGateway(
     "sessionId" to sessionId,
     "runId" to runId,
     "taskId" to taskId,
+    "executionId" to executionId,
     "pendingMessageId" to pendingMessageId,
     "text" to text,
     "updatedAtEpochMs" to updatedAtEpochMs,
@@ -1503,6 +1569,7 @@ internal class ServiceOwnedChatRuntimeGateway(
     sessionId = sessionId,
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
     pendingMessageId = pendingMessageId,
     text = text,
     updatedAtEpochMs = updatedAtEpochMs,

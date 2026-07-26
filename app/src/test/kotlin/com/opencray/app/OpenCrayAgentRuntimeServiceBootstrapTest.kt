@@ -22,6 +22,11 @@ import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.persistence.store.MemoryStore
 import java.io.File
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -2616,6 +2621,109 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
   }
 
   @Test
+  fun defaultTransportBootstrapDisposeWaitsForConcurrentGatewayBinding() {
+    val context = MinimalContext()
+    val serviceHost = testServiceHost(
+      temporaryFolder.newFolder("service-transport-dispose-during-bind"),
+    )
+    val gatewayDisposeCount = AtomicInteger()
+    val gatewayBundle = testServiceGatewayBundle(
+      dispose = { gatewayDisposeCount.incrementAndGet() },
+    )
+    val bindEntered = CountDownLatch(1)
+    val allowBind = CountDownLatch(1)
+    val loopbackDisposed = CountDownLatch(1)
+    val disposeFinished = CountDownLatch(1)
+    val coordinatorDelegate = DefaultRuntimeServiceTransportCoordinator()
+    val transportCoordinator = object : RuntimeServiceTransportCoordinator {
+      override fun bindGatewayBundle(gatewayBundle: OpenCrayRuntimeServiceGatewayBundle) {
+        bindEntered.countDown()
+        check(allowBind.await(2L, TimeUnit.SECONDS)) { "Timed out waiting to finish gateway bind." }
+        coordinatorDelegate.bindGatewayBundle(gatewayBundle)
+      }
+
+      override fun releaseGatewayBundle(gatewayBundle: OpenCrayRuntimeServiceGatewayBundle) {
+        coordinatorDelegate.releaseGatewayBundle(gatewayBundle)
+      }
+
+      override fun currentGatewayBundle(): OpenCrayRuntimeServiceGatewayBundle =
+        coordinatorDelegate.currentGatewayBundle()
+
+      override fun bindLocalRuntimeServerStateProvider(
+        provider: () -> LocalRuntimeServerState?,
+      ) {
+        coordinatorDelegate.bindLocalRuntimeServerStateProvider(provider)
+      }
+
+      override fun currentLocalRuntimeServerState(): LocalRuntimeServerState? =
+        coordinatorDelegate.currentLocalRuntimeServerState()
+
+      override fun dispose() {
+        coordinatorDelegate.dispose()
+      }
+    }
+    val bootstrap = DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
+      loopbackBootstrapFactory = RuntimeServiceLoopbackBootstrapFactory { _, _, _, _, _, _ ->
+        RuntimeServiceLoopbackBootstrap(
+          ensureStarted = { true },
+          dispose = { loopbackDisposed.countDown() },
+        )
+      },
+    ).create(
+      appContext = context,
+      runtimeTarget = RuntimeServiceTarget.INTERACTIVE,
+      localGatewayProvider = { NoOpLocalHostGateway() },
+      gatewayDependencies = serviceHost.toRuntimeServiceBootstrapState().gatewayDependencies,
+      runtimeServiceGatewayBundleFactory = RuntimeServiceGatewayBundleFactory { _, _, _, _ ->
+        gatewayBundle
+      },
+      runtimeServiceKeepAliveStateProvider = { RuntimeServiceKeepAliveState() },
+      runtimeServiceKeepAliveChangeRegistrar = RuntimeServiceKeepAliveChangeRegistrar { ({ }) },
+      transportCoordinator = transportCoordinator,
+    )
+    val startResult = AtomicBoolean(true)
+    val startFailure = AtomicReference<Throwable?>()
+    val disposeFailure = AtomicReference<Throwable?>()
+    val startThread = Thread {
+      runCatching { startResult.set(bootstrap.ensureStarted()) }
+        .exceptionOrNull()
+        ?.let(startFailure::set)
+    }
+    val disposeThread = Thread {
+      runCatching { bootstrap.dispose() }
+        .exceptionOrNull()
+        ?.let(disposeFailure::set)
+      disposeFinished.countDown()
+    }
+
+    startThread.start()
+    try {
+      assertTrue(bindEntered.await(2L, TimeUnit.SECONDS))
+      disposeThread.start()
+      assertTrue(loopbackDisposed.await(2L, TimeUnit.SECONDS))
+      assertFalse(disposeFinished.await(100L, TimeUnit.MILLISECONDS))
+
+      allowBind.countDown()
+      assertTrue(disposeFinished.await(2L, TimeUnit.SECONDS))
+    } finally {
+      allowBind.countDown()
+      startThread.join(2_000L)
+      if (disposeThread.state != Thread.State.NEW) {
+        disposeThread.join(2_000L)
+      }
+    }
+
+    assertNull(startFailure.get())
+    assertNull(disposeFailure.get())
+    assertFalse(startResult.get())
+    assertEquals(1, gatewayDisposeCount.get())
+    assertTrue(
+      runCatching { transportCoordinator.currentGatewayBundle() }.exceptionOrNull()
+        is IllegalStateException,
+    )
+  }
+
+  @Test
   fun defaultTransportBootstrapFactoryDoesNotReplaceRetainedGatewayWhenLoopbackStartFails() {
     val context = MinimalContext()
     val serviceHost = testServiceHost(
@@ -2747,6 +2855,9 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       requestedPort = localRuntimeLoopbackPortForTarget(RuntimeServiceTarget.DETACHED_BACKGROUND),
       shutdownExecutorOnClose = true,
     )
+    val descriptorStore = RuntimeServiceLoopbackDescriptorStore(
+      temporaryFolder.newFolder("loopback-descriptor-injected"),
+    )
     val factory = DefaultRuntimeServiceLoopbackBootstrapFactory(
       ensureServerStarted = { resolvedContext, runtimeTarget, providers ->
         ensureServerStartedCallCount += 1
@@ -2755,6 +2866,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         capturedProviders = providers
         startedServer
       },
+      descriptorStoreFactory = { descriptorStore },
     )
 
     val transportCoordinator = DefaultRuntimeServiceTransportCoordinator().apply {
@@ -2834,7 +2946,11 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     val transportCoordinator = DefaultRuntimeServiceTransportCoordinator().apply {
       bindGatewayBundle(gatewayBundle)
     }
+    val descriptorStore = RuntimeServiceLoopbackDescriptorStore(
+      temporaryFolder.newFolder("loopback-descriptor-production"),
+    )
     val bootstrap = DefaultRuntimeServiceLoopbackBootstrapFactory(
+      descriptorStoreFactory = { descriptorStore },
     ).create(
       appContext = context,
       runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
@@ -2852,8 +2968,14 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
         LocalRuntimeServerState.PHASE_LISTENING,
         transportCoordinator.currentLocalRuntimeServerState()?.phase,
       )
+      assertEquals(0, transportCoordinator.currentLocalRuntimeServerState()?.requestedPort)
+      assertEquals(
+        transportCoordinator.currentLocalRuntimeServerState()?.listeningPort,
+        descriptorStore.read(RuntimeServiceTarget.DETACHED_BACKGROUND)?.port,
+      )
     } finally {
       bootstrap.dispose()
+      assertNull(descriptorStore.read(RuntimeServiceTarget.DETACHED_BACKGROUND))
       OpenCrayLocalRuntimeServerRegistry.clearForTest()
     }
   }
@@ -2878,11 +3000,15 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
       requestedPort = localRuntimeLoopbackPortForTarget(RuntimeServiceTarget.DETACHED_BACKGROUND),
       shutdownExecutorOnClose = true,
     )
+    val descriptorStore = RuntimeServiceLoopbackDescriptorStore(
+      temporaryFolder.newFolder("loopback-descriptor-environment"),
+    )
     val bootstrap = DefaultRuntimeServiceLoopbackBootstrapFactory(
       ensureServerStarted = { _, _, providers ->
         capturedProviders = providers
         startedServer
       },
+      descriptorStoreFactory = { descriptorStore },
     ).create(
       appContext = context,
       runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,

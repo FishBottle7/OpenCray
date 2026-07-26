@@ -243,6 +243,7 @@ class OpenCrayChatRuntimeEventSnapshot {
     required this.runId,
     required this.taskId,
     required this.emittedAtEpochMs,
+    this.eventId,
     this.executionId,
     this.executionOrdinal,
     this.executionKind,
@@ -297,6 +298,7 @@ class OpenCrayChatRuntimeEventSnapshot {
   final String runId;
   final String taskId;
   final int emittedAtEpochMs;
+  final String? eventId;
   final String? executionId;
   final int? executionOrdinal;
   final String? executionKind;
@@ -374,6 +376,7 @@ class OpenCrayChatRuntimeEventSnapshot {
       runId: map['runId'] as String? ?? '',
       taskId: map['taskId'] as String? ?? '',
       emittedAtEpochMs: map['emittedAtEpochMs'] as int? ?? 0,
+      eventId: map['eventId'] as String?,
       executionId: map['executionId'] as String?,
       executionOrdinal: map['executionOrdinal'] as int?,
       executionKind: map['executionKind'] as String?,
@@ -1693,8 +1696,11 @@ class OpenCrayChatRuntimeSnapshot {
     this.subAgents = const <OpenCrayChatSubAgentSnapshot>[],
     required this.events,
     this.liveAssistantDrafts = const <OpenCrayChatLiveAssistantDraftSnapshot>[],
+    this.streamInstanceId,
+    this.lastSequence,
     this.flutterAppInstanceId,
     this.bridgeInstanceId,
+    this.bridgeEpoch,
     this.hostLifecycle,
     this.updatedAtEpochMs = 0,
   });
@@ -1705,8 +1711,11 @@ class OpenCrayChatRuntimeSnapshot {
   final List<OpenCrayChatSubAgentSnapshot> subAgents;
   final List<OpenCrayChatRuntimeEventSnapshot> events;
   final List<OpenCrayChatLiveAssistantDraftSnapshot> liveAssistantDrafts;
+  final String? streamInstanceId;
+  final int? lastSequence;
   final String? flutterAppInstanceId;
   final String? bridgeInstanceId;
+  final String? bridgeEpoch;
   final OpenCrayHostLifecycleSnapshot? hostLifecycle;
   final int updatedAtEpochMs;
 
@@ -1743,8 +1752,11 @@ class OpenCrayChatRuntimeSnapshot {
           .whereType<Map<Object?, Object?>>()
           .map(OpenCrayChatLiveAssistantDraftSnapshot.fromMap)
           .toList(growable: false),
+      streamInstanceId: map['streamInstanceId'] as String?,
+      lastSequence: map['lastSequence'] as int?,
       flutterAppInstanceId: map['flutterAppInstanceId'] as String?,
       bridgeInstanceId: map['bridgeInstanceId'] as String?,
+      bridgeEpoch: map['bridgeEpoch'] as String?,
       hostLifecycle: rawHostLifecycle is Map<Object?, Object?>
           ? OpenCrayHostLifecycleSnapshot.fromMap(rawHostLifecycle)
           : null,
@@ -1759,6 +1771,12 @@ class OpenCrayChatRuntimeEventDelta {
     required this.events,
     required this.totalLength,
     this.sequence = 0,
+    this.streamInstanceId,
+    this.lastSequence,
+    this.eventId,
+    this.executionId,
+    this.bridgeInstanceId,
+    this.bridgeEpoch,
     this.activeRuns = const <OpenCrayChatRunSnapshot>[],
     this.retainedRuns = const <OpenCrayChatRunSnapshot>[],
     this.subAgents = const <OpenCrayChatSubAgentSnapshot>[],
@@ -1776,6 +1794,12 @@ class OpenCrayChatRuntimeEventDelta {
   final List<OpenCrayChatRuntimeEventSnapshot> events;
   final int totalLength;
   final int sequence;
+  final String? streamInstanceId;
+  final int? lastSequence;
+  final String? eventId;
+  final String? executionId;
+  final String? bridgeInstanceId;
+  final String? bridgeEpoch;
   final List<OpenCrayChatRunSnapshot> activeRuns;
   final List<OpenCrayChatRunSnapshot> retainedRuns;
   final List<OpenCrayChatSubAgentSnapshot> subAgents;
@@ -1811,6 +1835,12 @@ class OpenCrayChatRuntimeEventDelta {
           .toList(growable: false),
       totalLength: map['totalLength'] as int? ?? 0,
       sequence: map['sequence'] as int? ?? 0,
+      streamInstanceId: map['streamInstanceId'] as String?,
+      lastSequence: map['lastSequence'] as int?,
+      eventId: map['eventId'] as String?,
+      executionId: map['executionId'] as String?,
+      bridgeInstanceId: map['bridgeInstanceId'] as String?,
+      bridgeEpoch: map['bridgeEpoch'] as String?,
       activeRuns: rawActiveRuns
           .whereType<Map<Object?, Object?>>()
           .map(OpenCrayChatRunSnapshot.fromMap)
@@ -1860,6 +1890,13 @@ class OpenCrayChatLiveAssistantDraftSnapshot {
     required this.pendingMessageId,
     required this.text,
     required this.updatedAtEpochMs,
+    this.executionId,
+    this.streamInstanceId,
+    this.sequence,
+    this.lastSequence,
+    this.eventId,
+    this.bridgeInstanceId,
+    this.bridgeEpoch,
   });
 
   final String runId;
@@ -1867,6 +1904,13 @@ class OpenCrayChatLiveAssistantDraftSnapshot {
   final String pendingMessageId;
   final String text;
   final int updatedAtEpochMs;
+  final String? executionId;
+  final String? streamInstanceId;
+  final int? sequence;
+  final int? lastSequence;
+  final String? eventId;
+  final String? bridgeInstanceId;
+  final String? bridgeEpoch;
 
   factory OpenCrayChatLiveAssistantDraftSnapshot.fromMap(
     Map<Object?, Object?> map,
@@ -1877,6 +1921,13 @@ class OpenCrayChatLiveAssistantDraftSnapshot {
       pendingMessageId: map['pendingMessageId'] as String? ?? '',
       text: map['text'] as String? ?? '',
       updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
+      executionId: map['executionId'] as String?,
+      streamInstanceId: map['streamInstanceId'] as String?,
+      sequence: map['sequence'] as int?,
+      lastSequence: map['lastSequence'] as int?,
+      eventId: map['eventId'] as String?,
+      bridgeInstanceId: map['bridgeInstanceId'] as String?,
+      bridgeEpoch: map['bridgeEpoch'] as String?,
     );
   }
 }
@@ -1889,6 +1940,13 @@ class OpenCrayChatLiveAssistantDraftEvent {
     required this.pendingMessageId,
     required this.text,
     required this.updatedAtEpochMs,
+    this.executionId,
+    this.streamInstanceId,
+    this.sequence,
+    this.lastSequence,
+    this.eventId,
+    this.bridgeInstanceId,
+    this.bridgeEpoch,
     this.cleared = false,
   });
 
@@ -1898,6 +1956,13 @@ class OpenCrayChatLiveAssistantDraftEvent {
   final String pendingMessageId;
   final String text;
   final int updatedAtEpochMs;
+  final String? executionId;
+  final String? streamInstanceId;
+  final int? sequence;
+  final int? lastSequence;
+  final String? eventId;
+  final String? bridgeInstanceId;
+  final String? bridgeEpoch;
   final bool cleared;
 
   factory OpenCrayChatLiveAssistantDraftEvent.fromMap(
@@ -1910,6 +1975,13 @@ class OpenCrayChatLiveAssistantDraftEvent {
       pendingMessageId: map['pendingMessageId'] as String? ?? '',
       text: map['text'] as String? ?? '',
       updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
+      executionId: map['executionId'] as String?,
+      streamInstanceId: map['streamInstanceId'] as String?,
+      sequence: map['sequence'] as int?,
+      lastSequence: map['lastSequence'] as int?,
+      eventId: map['eventId'] as String?,
+      bridgeInstanceId: map['bridgeInstanceId'] as String?,
+      bridgeEpoch: map['bridgeEpoch'] as String?,
       cleared: map['cleared'] as bool? ?? false,
     );
   }

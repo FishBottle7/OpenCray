@@ -132,6 +132,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private val clock: () -> Long = System::currentTimeMillis,
   private val pollIntervalMs: Long = DEFAULT_PROJECTION_POLL_INTERVAL_MS,
 ) : OpenCrayChatRuntimeGateway {
+  private val runtimeEventStreamLock = Any()
+  private val runtimeEventStreamInstanceId: String = lifecycleId(prefix = "projection-runtime-stream")
+  private val runtimeEventSequencesBySession = linkedMapOf<String, Long>()
   private val resolvedStrings: ProjectionOnlyChatStrings
     get() = stringsProvider?.invoke() ?: strings
 
@@ -171,7 +174,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     observeLiveAssistantDraftsWithPollingSnapshot(
       mainThreadPoster = mainThreadPoster,
       runtimePayloadProvider = ::loadChatRuntimeSnapshot,
-      listener = listener,
+      listener = { payload -> listener(assignRuntimeRealtimeEnvelope(payload)) },
       pollIntervalMs = pollIntervalMs,
     )
 
@@ -437,6 +440,13 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
           return@mapNotNull null
         }
         val persistedVisibleMessage = projectedMessageId?.let(visibleMessagesById::get)
+          ?: projectedMessageId
+            ?.takeIf { messageId -> messageId.startsWith("runtime-assistant-") }
+            ?.let { stableMessageId ->
+              visibleMessages.firstOrNull { message ->
+                message.messageId.startsWith("$stableMessageId-")
+              }
+            }
         val effectiveProjection = if (persistedVisibleMessage != null) {
           persistedProjectedMessageIds += persistedVisibleMessage.messageId
           projection.copy(snapshot = chatMessageToMap(persistedVisibleMessage))
@@ -876,6 +886,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     return ProjectionLiveAssistantDraftSnapshot(
       runId = run.runId,
       taskId = run.taskId,
+      executionId = latestDraftEvent.executionId ?: run.executionId,
       pendingMessageId = pendingMessageId,
       text = text,
       updatedAtEpochMs = latestDraftEvent.emittedAtEpochMs,
@@ -936,6 +947,10 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       updatedAtEpochMs = updatedAtEpochMs,
       snapshot = buildMap {
         put("sessionId", sessionId)
+        put("streamInstanceId", runtimeEventStreamInstanceId)
+        put("lastSequence", synchronized(runtimeEventStreamLock) {
+          runtimeEventSequencesBySession[sessionId] ?: 0L
+        })
         put("updatedAtEpochMs", updatedAtEpochMs)
         putRuntimeServiceDiagnosticsSnapshot(
           localRuntimeServerState = localRuntimeServerStateProvider(),
@@ -1822,20 +1837,20 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       ?: task.id
 
   private fun runtimeProjectedMessageId(event: OpenCrayAgentRunEvent): String = when (event) {
-    is OpenCrayAssistantPhaseEvent -> buildString {
-      append("runtime-assistant-")
-      append(event.phase.name.lowercase(Locale.US))
-      append('-')
-      append(event.runId)
-      append('-')
-      append(event.turn ?: -1)
-      append('-')
-      append(event.stage?.trim()?.ifEmpty { "-" } ?: "-")
-      append('-')
-      append(event.emittedAtEpochMs)
-      append('-')
-      append(event.text.trim().hashCode())
-    }
+    is OpenCrayAssistantPhaseEvent -> event.eventId
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { eventId -> "runtime-assistant-event-$eventId" }
+      ?: buildString {
+        append("runtime-assistant-")
+        append(event.phase.name.lowercase(Locale.US))
+        append('-')
+        append(event.runId)
+        append('-')
+        append(event.turn ?: -1)
+        append('-')
+        append(event.stage?.trim()?.ifEmpty { "-" } ?: "-")
+      }
     is OpenCraySupplementEvent -> "runtime-supplement-${event.entryId}"
     is OpenCrayApprovalEvent ->
       "runtime-approval-${event.phase.name.lowercase(Locale.US)}-${event.runId}-${event.emittedAtEpochMs}"
@@ -1925,7 +1940,31 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       planner = recoveryPlanner,
     )
 
-  private fun runtimeEventToMap(event: OpenCrayAgentRunEvent): Map<String, Any?> = when (event) {
+  private fun runtimeEventToMap(event: OpenCrayAgentRunEvent): Map<String, Any?> =
+    runtimeEventPayload(event).toMutableMap().apply {
+      put("eventId", runtimeEventStableId(event))
+    }
+
+  private fun assignRuntimeRealtimeEnvelope(payload: Map<String, Any?>): Map<String, Any?> {
+    val sessionId = (payload["sessionId"] as? String)?.trim().orEmpty()
+    if (sessionId.isBlank()) {
+      return payload
+    }
+    val sequence = synchronized(runtimeEventStreamLock) {
+      val next = (runtimeEventSequencesBySession[sessionId] ?: 0L) + 1L
+      runtimeEventSequencesBySession[sessionId] = next
+      next
+    }
+    return payload.toMutableMap().apply {
+      put("streamInstanceId", runtimeEventStreamInstanceId)
+      put("sequence", sequence)
+      put("lastSequence", sequence)
+      put("eventId", "runtime-stream-$runtimeEventStreamInstanceId-$sessionId-$sequence")
+      put("executionId", payload["executionId"] ?: payload["runId"])
+    }
+  }
+
+  private fun runtimeEventPayload(event: OpenCrayAgentRunEvent): Map<String, Any?> = when (event) {
     is OpenCrayLifecycleEvent -> mapOf(
       "kind" to "lifecycle",
       "runId" to event.runId,
@@ -2244,6 +2283,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   ): Map<String, Any?> = mapOf(
     "runId" to draft.runId,
     "taskId" to draft.taskId,
+    "executionId" to draft.executionId,
     "pendingMessageId" to draft.pendingMessageId,
     "text" to draft.text,
     "updatedAtEpochMs" to draft.updatedAtEpochMs,
@@ -2311,6 +2351,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private data class ProjectionLiveAssistantDraftSnapshot(
     val runId: String,
     val taskId: String,
+    val executionId: String?,
     val pendingMessageId: String,
     val text: String,
     val updatedAtEpochMs: Long,

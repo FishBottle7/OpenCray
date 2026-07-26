@@ -59,9 +59,12 @@ import com.opencray.runtime.soul.SoulMemoryExtensionKeys
 import com.opencray.runtime.soul.SoulMemoryObjectTypes
 import com.opencray.runtime.soul.SoulProfileExtensionKeys
 import java.net.HttpURLConnection
+import java.net.Socket
 import java.net.URL
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.io.path.writeText
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -96,6 +99,201 @@ class OpenCrayLocalRuntimeServerTest {
       assertEquals(200, response.statusCode)
       assertEquals("HOST CONNECTED", payload.getString("hostLabel"))
       assertTrue(payload.getBoolean("isHostConnected"))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun secureLoopbackRequiresAuthenticationAndSignsClientResponse() {
+    val credentials = RuntimeServiceLoopbackCredentials.create()
+    val server = localRuntimeServer(
+      loopbackSecurity = RuntimeServiceLoopbackServerSecurity(credentials),
+    )
+    server.ensureStarted()
+    val descriptor = RuntimeServiceLoopbackDescriptor(
+      target = RuntimeServiceTarget.INTERACTIVE,
+      port = server.listeningPort,
+      credentials = credentials,
+      publishedAtEpochMs = System.currentTimeMillis(),
+    )
+    val secureClient = OpenCrayLocalRuntimeLoopbackHttpClient(
+      bootstrapTimeoutMs = 500L,
+      retryDelayMs = 10L,
+      descriptorProvider = { descriptor },
+    )
+
+    try {
+      val unauthenticatedResponse = request(server, "GET", "/v1/shell_snapshot")
+      val authenticatedPayload = secureClient.getObject(path = "v1/shell_snapshot")
+
+      assertEquals(401, unauthenticatedResponse.statusCode)
+      assertEquals("loopback_authentication_failed", JSONObject(unauthenticatedResponse.body).getString("error"))
+      assertEquals("HOST CONNECTED", authenticatedPayload["hostLabel"])
+      assertEquals(true, authenticatedPayload["isHostConnected"])
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun secureLoopbackClientRereadsRotatedDescriptorAfterAuthenticationFailure() {
+    val currentCredentials = RuntimeServiceLoopbackCredentials.create()
+    val server = localRuntimeServer(
+      loopbackSecurity = RuntimeServiceLoopbackServerSecurity(currentCredentials),
+    )
+    server.ensureStarted()
+    val staleDescriptor = RuntimeServiceLoopbackDescriptor(
+      target = RuntimeServiceTarget.INTERACTIVE,
+      port = server.listeningPort,
+      credentials = RuntimeServiceLoopbackCredentials.create(),
+      publishedAtEpochMs = System.currentTimeMillis() - 1L,
+    )
+    val currentDescriptor = RuntimeServiceLoopbackDescriptor(
+      target = RuntimeServiceTarget.INTERACTIVE,
+      port = server.listeningPort,
+      credentials = currentCredentials,
+      publishedAtEpochMs = System.currentTimeMillis(),
+    )
+    var descriptorReadCount = 0
+    val secureClient = OpenCrayLocalRuntimeLoopbackHttpClient(
+      bootstrapTimeoutMs = 500L,
+      retryDelayMs = 10L,
+      descriptorProvider = {
+        descriptorReadCount += 1
+        if (descriptorReadCount == 1) staleDescriptor else currentDescriptor
+      },
+    )
+
+    try {
+      val payload = secureClient.getObject(path = "v1/shell_snapshot")
+
+      assertEquals(2, descriptorReadCount)
+      assertEquals("HOST CONNECTED", payload["hostLabel"])
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun rejectsOversizedRequestBodyBeforeReadingIt() {
+    val server = localRuntimeServer()
+    server.ensureStarted()
+
+    try {
+      val rawResponse = rawRequest(
+        server = server,
+        request = buildString {
+          append("POST /v1/save_shell_destination HTTP/1.1\r\n")
+          append("Host: 127.0.0.1\r\n")
+          append("Content-Length: 4194305\r\n")
+          append("\r\n")
+        },
+      )
+
+      assertTrue(rawResponse.startsWith("HTTP/1.1 413 "))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun rejectsOversizedHeaderLine() {
+    val server = localRuntimeServer()
+    server.ensureStarted()
+
+    try {
+      val rawResponse = rawRequest(
+        server = server,
+        request = buildString {
+          append("GET /v1/shell_snapshot HTTP/1.1\r\n")
+          append("X-Fill: ")
+          append("x".repeat(8 * 1024 + 1))
+          append("\r\n\r\n")
+        },
+      )
+
+      assertTrue(rawResponse.startsWith("HTTP/1.1 431 "))
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
+  fun preAuthenticationDeadlineCannotBeExtendedByDrippingBytes() {
+    val server = localRuntimeServer(preAuthenticationTimeoutMs = 200)
+    server.ensureStarted()
+    val socket = Socket("127.0.0.1", server.listeningPort).apply {
+      soTimeout = 3_000
+    }
+    val keepWriting = AtomicBoolean(true)
+    val output = socket.getOutputStream()
+    val writer = Thread {
+      repeat(30) {
+        if (!keepWriting.get()) {
+          return@Thread
+        }
+        Thread.sleep(50L)
+        if (runCatching {
+            output.write('x'.code)
+            output.flush()
+          }.isFailure
+        ) {
+          return@Thread
+        }
+      }
+    }.apply {
+      isDaemon = true
+    }
+
+    try {
+      output.write('G'.code)
+      output.flush()
+      val startedAtNanos = System.nanoTime()
+      writer.start()
+
+      val response = socket.getInputStream().bufferedReader(Charsets.UTF_8).use { reader ->
+        reader.readText()
+      }
+      val elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startedAtNanos)
+
+      assertTrue(response.startsWith("HTTP/1.1 400 "))
+      assertTrue("Pre-authentication deadline took ${elapsedMs}ms.", elapsedMs < 1_000L)
+    } finally {
+      keepWriting.set(false)
+      runCatching(socket::close)
+      writer.join(500L)
+      server.close()
+    }
+  }
+
+  @Test
+  fun reconnectableRuntimeEventEndpointReturnsSnapshotWhenWatermarkIsUnknown() {
+    val chatGateway = RecordingChatRuntimeGateway().apply {
+      runtimeSnapshot = mapOf(
+        "sessionId" to "session-stream",
+        "streamInstanceId" to "stream-current",
+        "lastSequence" to 4L,
+        "events" to emptyList<Map<String, Any?>>(),
+      )
+    }
+    val server = localRuntimeServer(chatRuntimeGatewayResolver = { chatGateway })
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "GET",
+        "/v1/chat_runtime_events?sessionId=session-stream&streamInstanceId=stream-old&afterSequence=9&timeoutMs=0",
+      )
+      val payload = JSONObject(response.body)
+
+      assertEquals(200, response.statusCode)
+      assertEquals("snapshot", payload.getString("kind"))
+      assertEquals("stream-current", payload.getString("streamInstanceId"))
+      assertEquals(4L, payload.getLong("lastSequence"))
+      assertEquals("session-stream", payload.getString("sessionId"))
+      assertTrue(payload.getJSONObject("payload").has("events"))
     } finally {
       server.close()
     }
@@ -2808,6 +3006,8 @@ class OpenCrayLocalRuntimeServerTest {
     skillsGatewayResolver: ((OpenCrayHostRuntime) -> OpenCraySkillsGateway)? = null,
     settingsGatewayResolver: ((OpenCrayHostRuntime) -> OpenCraySettingsGateway)? = null,
     runtimeOwnerWriteGuard: () -> Boolean = { true },
+    loopbackSecurity: RuntimeServiceLoopbackServerSecurity? = null,
+    preAuthenticationTimeoutMs: Int = 2_000,
     workspaceSnapshotProvider: () -> Map<String, Any?> = {
       WorkspaceTreeSnapshot(
         rootName = AppAgentWorkspace.DIRECTORY_NAME,
@@ -2874,6 +3074,8 @@ class OpenCrayLocalRuntimeServerTest {
       skillsGatewayResolver = skillsGatewayResolver ?: { hostRuntime -> hostRuntime },
       settingsGatewayResolver = settingsGatewayResolver ?: { hostRuntime -> hostRuntime },
       runtimeOwnerWriteGuard = runtimeOwnerWriteGuard,
+      loopbackSecurity = loopbackSecurity,
+      preAuthenticationTimeoutMs = preAuthenticationTimeoutMs,
     )
   }
 
@@ -2944,6 +3146,8 @@ class OpenCrayLocalRuntimeServerTest {
     requestedPort: Int = 0,
     shutdownExecutorOnClose: Boolean = true,
     runtimeOwnerWriteGuard: () -> Boolean = { true },
+    loopbackSecurity: RuntimeServiceLoopbackServerSecurity? = null,
+    preAuthenticationTimeoutMs: Int = 2_000,
   ): OpenCrayLocalRuntimeServer = OpenCrayLocalRuntimeServer(
     localGatewayProvider = { hostRuntimeProvider() },
     shellGatewayProvider = { shellGatewayResolver(hostRuntimeProvider()) },
@@ -2953,6 +3157,8 @@ class OpenCrayLocalRuntimeServerTest {
     requestedPort = requestedPort,
     shutdownExecutorOnClose = shutdownExecutorOnClose,
     runtimeOwnerWriteGuard = runtimeOwnerWriteGuard,
+    loopbackSecurity = loopbackSecurity,
+    preAuthenticationTimeoutMs = preAuthenticationTimeoutMs,
   )
 
   private fun localRuntimeServerWithLocalGateway(
@@ -3008,6 +3214,20 @@ class OpenCrayLocalRuntimeServerTest {
     return HttpResponse(statusCode = statusCode, body = bodyText)
   }
 
+  private fun rawRequest(
+    server: OpenCrayLocalRuntimeServer,
+    request: String,
+  ): String = Socket("127.0.0.1", server.listeningPort).use { socket ->
+    socket.soTimeout = 2_000
+    val output = socket.getOutputStream()
+    output.write(request.toByteArray(Charsets.US_ASCII))
+    output.flush()
+    socket.shutdownOutput()
+    socket.getInputStream().bufferedReader(Charsets.UTF_8).use { reader ->
+      reader.readText()
+    }
+  }
+
   private data class HttpResponse(
     val statusCode: Int,
     val body: String,
@@ -3047,6 +3267,7 @@ class OpenCrayLocalRuntimeServerTest {
   )
 
   private class RecordingChatRuntimeGateway : OpenCrayChatRuntimeGateway {
+    var runtimeSnapshot: Map<String, Any?> = mapOf("source" to "gateway")
     var submittedText: String? = null
       private set
     var submittedAttachments: List<com.opencray.runtime.OpenCrayFinalAttachment> = emptyList()
@@ -3071,7 +3292,7 @@ class OpenCrayLocalRuntimeServerTest {
       return { }
     }
 
-    override fun loadChatRuntimeSnapshot(): Map<String, Any?> = mapOf("source" to "gateway")
+    override fun loadChatRuntimeSnapshot(): Map<String, Any?> = runtimeSnapshot
 
     override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit =
       { }

@@ -11,6 +11,8 @@ import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 
 internal fun dedupeRuntimeEventsPreservingOrder(
   events: Iterable<OpenCrayAgentRunEvent>,
@@ -22,7 +24,16 @@ internal fun dedupeRuntimeEventsPreservingOrder(
   return dedupedByKey.values.toList()
 }
 
-internal fun runtimeEventDedupKey(event: OpenCrayAgentRunEvent): String = when (event) {
+internal fun runtimeEventStableId(event: OpenCrayAgentRunEvent): String =
+  event.eventId
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: runtimeEventSemanticKey(event).sha256Hex().let { digest -> "runtime-event-${digest.take(32)}" }
+
+internal fun runtimeEventDedupKey(event: OpenCrayAgentRunEvent): String =
+  "event|${runtimeEventStableId(event)}"
+
+private fun runtimeEventSemanticKey(event: OpenCrayAgentRunEvent): String = when (event) {
   is OpenCrayLifecycleEvent -> listOf(
     "lifecycle",
     event.runId,
@@ -109,6 +120,7 @@ internal fun runtimeEventDedupKey(event: OpenCrayAgentRunEvent): String = when (
     event.executionOrdinal.orEmptyString(),
     event.executionKind.orEmpty(),
     event.turn.toString(),
+    event.call.id.orEmpty(),
     event.call.toolName,
     event.call.reason.orEmpty(),
     event.call.arguments.toString(),
@@ -122,6 +134,7 @@ internal fun runtimeEventDedupKey(event: OpenCrayAgentRunEvent): String = when (
     event.executionOrdinal.orEmptyString(),
     event.executionKind.orEmpty(),
     event.turn.toString(),
+    event.call.id.orEmpty(),
     event.result.toolName,
     event.result.status.name,
     event.result.errorCode.orEmpty(),
@@ -205,5 +218,7 @@ private fun String?.trimToDedupField(): String =
     ?.replace(Regex("\\s+"), " ")
     .orEmpty()
 
-private fun String.collapseWhitespaceForDedup(): String =
-  trim().replace(Regex("\\s+"), " ")
+private fun String.sha256Hex(): String = MessageDigest
+  .getInstance("SHA-256")
+  .digest(toByteArray(StandardCharsets.UTF_8))
+  .joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xff) }

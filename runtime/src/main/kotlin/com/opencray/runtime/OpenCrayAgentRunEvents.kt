@@ -36,6 +36,7 @@ enum class OpenCraySubAgentPhase {
 sealed interface OpenCrayAgentRunEvent {
   val runId: String
   val taskId: String
+  val eventId: String?
   val executionId: String?
   val executionOrdinal: Int?
   val executionKind: String?
@@ -66,6 +67,7 @@ data class OpenCrayLifecycleEvent(
   val errorMessage: String? = null,
   override val turn: Int? = null,
   override val emittedAtEpochMs: Long,
+  override val eventId: String? = null,
 ) : OpenCrayAgentRunEvent
 
 data class OpenCrayAssistantEvent(
@@ -81,6 +83,7 @@ data class OpenCrayAssistantEvent(
   override val stage: String? = null,
   override val metadata: Map<String, String> = emptyMap(),
   override val emittedAtEpochMs: Long,
+  override val eventId: String? = null,
 ) : OpenCrayAssistantPhaseEvent {
   override val phase: OpenCrayAssistantPhase
     get() = if (isFinal) {
@@ -110,6 +113,7 @@ data class OpenCraySupplementEvent(
   val checkpoint: String = "turn_start",
   val metadata: Map<String, String> = emptyMap(),
   override val emittedAtEpochMs: Long,
+  override val eventId: String? = null,
 ) : OpenCrayAgentRunEvent
 
 data class OpenCrayApprovalEvent(
@@ -124,6 +128,7 @@ data class OpenCrayApprovalEvent(
   val isHighRisk: Boolean = false,
   override val turn: Int? = null,
   override val emittedAtEpochMs: Long,
+  override val eventId: String? = null,
 ) : OpenCrayAgentRunEvent
 
 data class OpenCraySubAgentEvent(
@@ -148,6 +153,7 @@ data class OpenCraySubAgentEvent(
   val isHighRisk: Boolean = false,
   override val turn: Int? = null,
   override val emittedAtEpochMs: Long,
+  override val eventId: String? = null,
 ) : OpenCrayAgentRunEvent
 
 data class OpenCrayToolCallEvent(
@@ -159,6 +165,7 @@ data class OpenCrayToolCallEvent(
   override val turn: Int,
   val call: AgentToolCall,
   override val emittedAtEpochMs: Long,
+  override val eventId: String? = null,
 ) : OpenCrayAgentRunEvent
 
 data class OpenCrayToolResultEvent(
@@ -171,6 +178,7 @@ data class OpenCrayToolResultEvent(
   val call: AgentToolCall,
   val result: AgentToolResult,
   override val emittedAtEpochMs: Long,
+  override val eventId: String? = null,
 ) : OpenCrayAgentRunEvent
 
 data class OpenCrayMemoryWriteEvent(
@@ -190,6 +198,7 @@ data class OpenCrayMemoryWriteEvent(
   val stewardshipPlanGraph: MemoryStewardshipPlanGraph = MemoryStewardshipPlanGraph(),
   override val turn: Int? = null,
   override val emittedAtEpochMs: Long,
+  override val eventId: String? = null,
 ) : OpenCrayAgentRunEvent
 
 data class OpenCrayCancellationEvent(
@@ -203,6 +212,7 @@ data class OpenCrayCancellationEvent(
   val text: String,
   override val turn: Int? = null,
   override val emittedAtEpochMs: Long,
+  override val eventId: String? = null,
 ) : OpenCrayAgentRunEvent
 
 data class OpenCrayMemoryRetrievalEvent(
@@ -227,6 +237,7 @@ data class OpenCrayMemoryRetrievalEvent(
   val returnedLineCount: Int? = null,
   val totalLineCount: Int? = null,
   override val emittedAtEpochMs: Long,
+  override val eventId: String? = null,
 ) : OpenCrayAgentRunEvent
 
 interface OpenCrayAgentRuntimeEventSink {

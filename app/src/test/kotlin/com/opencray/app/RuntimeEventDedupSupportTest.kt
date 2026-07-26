@@ -40,6 +40,30 @@ class RuntimeEventDedupSupportTest {
   }
 
   @Test
+  fun dedupeRuntimeEventsKeepsDistinctToolCallIds() {
+    val first = OpenCrayToolResultEvent(
+      runId = "run-1",
+      taskId = "task-1",
+      turn = 1,
+      call = AgentToolCall(id = "call-1", toolName = "Read"),
+      result = AgentToolResult(
+        toolName = "Read",
+        status = AgentToolResultStatus.SUCCESS,
+        content = "same result",
+      ),
+      emittedAtEpochMs = 2_000L,
+    )
+    val second = first.copy(
+      call = first.call.copy(id = "call-2"),
+      emittedAtEpochMs = 2_001L,
+    )
+
+    val deduped = dedupeRuntimeEventsPreservingOrder(listOf(first, second))
+
+    assertEquals(2, deduped.size)
+  }
+
+  @Test
   fun dedupeRuntimeEventsKeepsLaterAssistantPhaseTextForSameStage() {
     val first = OpenCrayAssistantEvent(
       runId = "run-1",

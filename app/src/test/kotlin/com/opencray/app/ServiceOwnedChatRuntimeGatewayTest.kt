@@ -725,7 +725,7 @@ class ServiceOwnedChatRuntimeGatewayTest {
       runtimeHostAccess.emitAssistantDraftCleared(
         sessionId = "session-stream",
         task = task,
-        emittedAtEpochMs = 1_235L,
+        emittedAtEpochMs = 1_234L,
       )
       val clearedPayload = gateway.loadChatRuntimeSnapshot()
       val clearedUpdatedAtEpochMs = (clearedPayload["updatedAtEpochMs"] as Number).toLong()
@@ -1111,6 +1111,7 @@ class ServiceOwnedChatRuntimeGatewayTest {
       mainThreadPoster = ImmediateMainThreadPoster,
     )
     val observedDeltas = mutableListOf<Map<String, Any?>>()
+    val observedDraftEvents = mutableListOf<Map<String, Any?>>()
     val task = AgentTask(
       id = "task-stream",
       type = com.opencray.core.contracts.AgentTaskType.PROMPT,
@@ -1130,6 +1131,9 @@ class ServiceOwnedChatRuntimeGatewayTest {
     val disposer = gateway.observeRuntimeEventDeltas { payload ->
       observedDeltas += payload
     }
+    val draftDisposer = gateway.observeLiveAssistantDraftEvents { payload ->
+      observedDraftEvents += payload
+    }
 
     try {
       runtimeHostAccess.emitAssistantDraftUpdated(
@@ -1141,12 +1145,21 @@ class ServiceOwnedChatRuntimeGatewayTest {
       runtimeHostAccess.emitAssistantDraftCleared(
         sessionId = "session-stream",
         task = task,
-        emittedAtEpochMs = 1_235L,
+        emittedAtEpochMs = 1_234L,
       )
 
       assertEquals(2, observedDeltas.size)
+      assertEquals(2, observedDraftEvents.size)
       assertEquals(1L, observedDeltas[0]["sequence"])
       assertEquals(2L, observedDeltas[1]["sequence"])
+      assertEquals(observedDraftEvents[0]["sequence"], observedDeltas[0]["sequence"])
+      assertEquals(observedDraftEvents[1]["sequence"], observedDeltas[1]["sequence"])
+      assertEquals(observedDraftEvents[0]["eventId"], observedDeltas[0]["eventId"])
+      assertEquals(observedDraftEvents[1]["eventId"], observedDeltas[1]["eventId"])
+      assertEquals(observedDeltas[0]["sequence"], observedDeltas[0]["lastSequence"])
+      assertEquals(observedDeltas[1]["sequence"], observedDeltas[1]["lastSequence"])
+      assertTrue((observedDeltas[0]["streamInstanceId"] as? String)?.isNotBlank() == true)
+      assertEquals(observedDeltas[0]["streamInstanceId"], observedDeltas[1]["streamInstanceId"])
       val updatedDrafts = observedDeltas[0]["liveAssistantDrafts"] as List<*>
       val updatedDraft = updatedDrafts.single() as Map<*, *>
       assertEquals("pending-stream", updatedDraft["pendingMessageId"])
@@ -1155,6 +1168,7 @@ class ServiceOwnedChatRuntimeGatewayTest {
       assertTrue((observedDeltas[0]["events"] as List<*>).isEmpty())
       assertTrue((observedDeltas[1]["events"] as List<*>).isEmpty())
     } finally {
+      draftDisposer()
       disposer()
     }
   }
@@ -1536,6 +1550,167 @@ class ServiceOwnedChatRuntimeGatewayTest {
   }
 
   @Test
+  fun serviceOwnedInterruptReturnsWhenRunFinishesBeforeCancelRequest() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("service-owned-chat-interrupt-race-store"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runningRun = AgentRunSnapshot(
+      sessionId = sessionId,
+      runId = "run-interrupt-race",
+      taskId = "task-interrupt-race",
+      acceptedAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+      taskState = AgentTaskState.RUNNING,
+    )
+    val completedRun = runningRun.copy(
+      updatedAtEpochMs = 1_200L,
+      lifecycleState = QueueTaskLifecycleState.COMPLETED,
+      taskState = AgentTaskState.COMPLETED,
+      executionStatus = ExecutionStatus.SUCCESS,
+    )
+    var cancelAttempted = false
+    val runtimeHostAccess = RecordingRuntimeHostAccess().apply {
+      putSession(
+        RecordingRuntimeSessionAccess(
+          sessionId = sessionId,
+          resumeHistory = mutableListOf(),
+          runs = listOf(runningRun),
+          cancelHandler = {
+            cancelAttempted = true
+            false
+          },
+          findRunHandler = { if (cancelAttempted) completedRun else runningRun },
+        ),
+      )
+    }
+    val runtimeEventState = ChatRuntimeEventState()
+    val replayedRuns = mutableListOf<String>()
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      delegate = RecordingChatGateway("delegate"),
+      readGateway = RecordingChatGateway("projection"),
+      chatRunControlAccess = ServiceOwnedChatRunControlAccess(
+        chatSessionStore = chatStore,
+        runtimeHostAccess = runtimeHostAccess,
+        runtimeEventState = runtimeEventState,
+        runCancellationReplayRecorder = { _, _, runId, _, _ -> replayedRuns += runId },
+      ),
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+
+    gateway.interruptChatRun(runningRun.runId)
+
+    assertTrue(cancelAttempted)
+    assertTrue(runtimeEventState.eventsForSession(sessionId).isEmpty())
+    assertTrue(replayedRuns.isEmpty())
+  }
+
+  @Test
+  fun serviceOwnedInterruptDoesNotPublishUntilCancellationSettles() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("service-owned-chat-interrupt-settling-store"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runningRun = AgentRunSnapshot(
+      sessionId = sessionId,
+      runId = "run-interrupt-settling",
+      taskId = "task-interrupt-settling",
+      acceptedAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+      taskState = AgentTaskState.RUNNING,
+    )
+    val settlingRun = runningRun.copy(
+      updatedAtEpochMs = 1_200L,
+      lifecycleState = QueueTaskLifecycleState.CANCEL_REQUESTED,
+    )
+    val runtimeHostAccess = RecordingRuntimeHostAccess().apply {
+      putSession(
+        RecordingRuntimeSessionAccess(
+          sessionId = sessionId,
+          resumeHistory = mutableListOf(),
+          runs = listOf(runningRun),
+          cancelResult = false,
+          waitForRunHandler = { _, _ -> settlingRun },
+        ),
+      )
+    }
+    val runtimeEventState = ChatRuntimeEventState()
+    val replayedRuns = mutableListOf<String>()
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      delegate = RecordingChatGateway("delegate"),
+      readGateway = RecordingChatGateway("projection"),
+      chatRunControlAccess = ServiceOwnedChatRunControlAccess(
+        chatSessionStore = chatStore,
+        runtimeHostAccess = runtimeHostAccess,
+        runtimeEventState = runtimeEventState,
+        runCancellationReplayRecorder = { _, _, runId, _, _ -> replayedRuns += runId },
+      ),
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+
+    gateway.interruptChatRun(runningRun.runId)
+
+    assertEquals(listOf(runningRun.taskId), runtimeHostAccess.cancelledTaskIds(sessionId))
+    assertTrue(runtimeEventState.eventsForSession(sessionId).isEmpty())
+    assertTrue(replayedRuns.isEmpty())
+  }
+
+  @Test
+  fun serviceOwnedInterruptTerminatesOnlyManagedProcessesOwnedByTerminalActiveRun() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("service-owned-chat-interrupt-process-store"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val processId = "process-interrupt-owned"
+    val liveRun = AgentRunSnapshot(
+      sessionId = sessionId,
+      runId = "run-interrupt-process",
+      taskId = "task-interrupt-process",
+      acceptedAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+      lifecycleState = QueueTaskLifecycleState.COMPLETED,
+      taskState = AgentTaskState.COMPLETED,
+      executionStatus = ExecutionStatus.SUCCESS,
+      managedProcessIds = listOf(processId),
+      runningManagedProcessCount = 1,
+      hasLiveManagedProcesses = true,
+    )
+    val settledRun = liveRun.copy(
+      updatedAtEpochMs = 1_200L,
+      runningManagedProcessCount = 0,
+      hasLiveManagedProcesses = false,
+    )
+    lateinit var runtimeSession: RecordingRuntimeSessionAccess
+    runtimeSession = RecordingRuntimeSessionAccess(
+      sessionId = sessionId,
+      resumeHistory = mutableListOf(),
+      runs = listOf(liveRun),
+      findRunHandler = {
+        if (runtimeSession.terminatedManagedProcessIds.isEmpty()) liveRun else settledRun
+      },
+    )
+    val runtimeHostAccess = RecordingRuntimeHostAccess().apply {
+      putSession(runtimeSession)
+    }
+    val runtimeEventState = ChatRuntimeEventState()
+    val replayedRuns = mutableListOf<String>()
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      delegate = RecordingChatGateway("delegate"),
+      readGateway = RecordingChatGateway("projection"),
+      chatRunControlAccess = ServiceOwnedChatRunControlAccess(
+        chatSessionStore = chatStore,
+        runtimeHostAccess = runtimeHostAccess,
+        runtimeEventState = runtimeEventState,
+        runCancellationReplayRecorder = { _, _, runId, _, _ -> replayedRuns += runId },
+      ),
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+
+    gateway.interruptChatRun(liveRun.runId)
+
+    assertTrue(runtimeSession.cancelledTaskIds.isEmpty())
+    assertEquals(listOf(setOf(processId)), runtimeSession.terminatedManagedProcessIds)
+    assertEquals(listOf(liveRun.runId), replayedRuns)
+    assertEquals(1, runtimeEventState.eventsForSession(sessionId).size)
+  }
+
+  @Test
   fun serviceOwnedChatRuntimeGatewayInterruptApprovalWaitingRunKeepsApprovalAvailable() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("service-owned-chat-interrupt-approval-store"))
     val sessionId = chatStore.loadState().activeSession.sessionId
@@ -1626,10 +1801,11 @@ class ServiceOwnedChatRuntimeGatewayTest {
     )
 
     gateway.interruptChatRun(run.runId)
+    gateway.interruptChatRun(run.runId)
 
     val cancellationEvent = runtimeEventState.eventsForSession(sessionId).single() as OpenCrayCancellationEvent
     assertTrue(delegate.interruptedRunIds.isEmpty())
-    assertEquals(1, delegate.notifiedChatSnapshotCount)
+    assertEquals(2, delegate.notifiedChatSnapshotCount)
     assertTrue(runtimeHostAccess.cancelledTaskIds(sessionId).isEmpty())
     assertTrue(runtimeHostAccess.clearedApprovals.isEmpty())
     assertEquals(1, pendingApprovalState.approvalsForSession(sessionId).size)
@@ -2137,9 +2313,14 @@ class ServiceOwnedChatRuntimeGatewayTest {
     private val cancelResult: Boolean = false,
     private val retryResult: Boolean = false,
     private val resumeTaskResult: Boolean = false,
+    private val cancelHandler: ((String) -> Boolean)? = null,
+    private val findRunHandler: ((String) -> AgentRunSnapshot?)? = null,
+    private val waitForRunHandler: ((String, Long) -> AgentRunSnapshot?)? = null,
   ) : OpenCrayRuntimeSessionAccess {
     private val submittedRuns = mutableListOf<AgentRunSnapshot>()
+    private val acceptedCancellationTaskIds = mutableSetOf<String>()
     val cancelledTaskIds = mutableListOf<String>()
+    val terminatedManagedProcessIds = mutableListOf<Set<String>>()
     val cancelledPendingMessageIds = mutableListOf<Set<String>>()
     val promptSubmissionRequests = mutableListOf<PromptSubmissionRequest>()
     val retriedTaskIds = mutableListOf<String>()
@@ -2191,7 +2372,11 @@ class ServiceOwnedChatRuntimeGatewayTest {
 
     override fun requestCancel(taskId: String): Boolean {
       cancelledTaskIds += taskId
-      return cancelResult
+      val accepted = cancelHandler?.invoke(taskId) ?: cancelResult
+      if (accepted) {
+        acceptedCancellationTaskIds += taskId
+      }
+      return accepted
     }
 
     override fun requestRetry(taskId: String): Boolean {
@@ -2224,9 +2409,20 @@ class ServiceOwnedChatRuntimeGatewayTest {
     override fun listRuns(): List<AgentRunSnapshot> = runs + submittedRuns
 
     override fun findRun(runId: String): AgentRunSnapshot? =
-      runs.firstOrNull { run -> run.runId == runId }
+      findRunHandler?.invoke(runId) ?: runs.firstOrNull { run -> run.runId == runId }
 
-    override fun waitForRun(runId: String, timeoutMs: Long): AgentRunSnapshot? = findRun(runId)
+    override fun waitForRun(runId: String, timeoutMs: Long): AgentRunSnapshot? =
+      waitForRunHandler?.invoke(runId, timeoutMs) ?: findRun(runId)?.let { run ->
+        if (run.taskId in acceptedCancellationTaskIds) {
+          run.copy(
+            lifecycleState = QueueTaskLifecycleState.CANCELLED,
+            taskState = AgentTaskState.CANCELLED,
+            executionStatus = ExecutionStatus.CANCELLED,
+          )
+        } else {
+          run
+        }
+      }
 
     override fun requestCancelForPendingMessageIds(pendingMessageIds: Set<String>): Int {
       cancelledPendingMessageIds += pendingMessageIds.toSet()
@@ -2273,6 +2469,13 @@ class ServiceOwnedChatRuntimeGatewayTest {
       emptyList()
 
     override fun hasLiveManagedProcesses(): Boolean = false
+
+    override fun terminateManagedProcesses(
+      processIds: Set<String>,
+    ): List<com.opencray.runtime.process.ManagedProcessSnapshot> {
+      terminatedManagedProcessIds += processIds
+      return emptyList()
+    }
 
     override fun terminateRunningManagedProcesses():
       List<com.opencray.runtime.process.ManagedProcessSnapshot> = emptyList()

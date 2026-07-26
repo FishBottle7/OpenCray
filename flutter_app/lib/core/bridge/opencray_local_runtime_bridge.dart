@@ -33,17 +33,37 @@ import '../models/opencray_workspace_text_document.dart';
 import 'opencray_bridge_lifecycle.dart';
 import 'opencray_host_bridge.dart';
 
+class _LocalRuntimeRealtimeEnvelope {
+  const _LocalRuntimeRealtimeEnvelope({
+    required this.kind,
+    required this.payload,
+  });
+
+  final String kind;
+  final Map<Object?, Object?> payload;
+}
+
 class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
   OpenCrayLocalRuntimeBridge({
     required String baseUrl,
     this.requestTimeout = const Duration(milliseconds: 800),
     this.pollInterval = const Duration(seconds: 2),
-  }) : _baseUri = _normalizeBaseUri(baseUrl);
+  }) : _baseUri = _normalizeBaseUri(baseUrl) {
+    _runtimeRealtimeController =
+        StreamController<_LocalRuntimeRealtimeEnvelope>.broadcast(
+          onListen: _startRuntimeRealtimePolling,
+          onCancel: _stopRuntimeRealtimePolling,
+        );
+  }
 
   final Uri _baseUri;
   final Duration requestTimeout;
   final Duration pollInterval;
   final String _bridgeInstanceId = openCrayLifecycleId('local-runtime-bridge');
+  late final StreamController<_LocalRuntimeRealtimeEnvelope>
+  _runtimeRealtimeController;
+  StreamSubscription<_LocalRuntimeRealtimeEnvelope>?
+  _runtimeRealtimeSourceSubscription;
 
   @override
   Future<OpenCrayShellSnapshot> loadShellSnapshot() async =>
@@ -940,11 +960,17 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
 
   @override
   Stream<OpenCrayChatLiveAssistantDraftEvent> watchLiveAssistantDraftEvents() =>
-      const Stream<OpenCrayChatLiveAssistantDraftEvent>.empty();
+      _runtimeRealtimeController.stream
+          .where((envelope) => envelope.kind == 'draft')
+          .map((envelope) => envelope.payload)
+          .map(OpenCrayChatLiveAssistantDraftEvent.fromMap);
 
   @override
   Stream<OpenCrayChatRuntimeEventDelta> watchRuntimeEventDeltas() =>
-      const Stream<OpenCrayChatRuntimeEventDelta>.empty();
+      _runtimeRealtimeController.stream
+          .where((envelope) => envelope.kind == 'delta')
+          .map((envelope) => envelope.payload)
+          .map(OpenCrayChatRuntimeEventDelta.fromMap);
 
   @override
   Future<OpenCrayChatRunSnapshot?> loadChatRunSnapshot(String runId) async {
@@ -1166,11 +1192,123 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     }
   }
 
+  void _startRuntimeRealtimePolling() {
+    if (_runtimeRealtimeSourceSubscription != null) {
+      return;
+    }
+    _runtimeRealtimeSourceSubscription = _watchRuntimeRealtimeEnvelopes()
+        .listen(
+          _runtimeRealtimeController.add,
+          onError: _runtimeRealtimeController.addError,
+        );
+  }
+
+  void _stopRuntimeRealtimePolling() {
+    final StreamSubscription<_LocalRuntimeRealtimeEnvelope>? subscription =
+        _runtimeRealtimeSourceSubscription;
+    _runtimeRealtimeSourceSubscription = null;
+    unawaited(subscription?.cancel());
+  }
+
+  Stream<_LocalRuntimeRealtimeEnvelope>
+  _watchRuntimeRealtimeEnvelopes() async* {
+    String sessionId = '';
+    String streamInstanceId = '';
+    int afterSequence = 0;
+    while (true) {
+      try {
+        final String requestedSessionId = sessionId;
+        final String requestedStreamInstanceId = streamInstanceId;
+        final int requestedAfterSequence = afterSequence;
+        final Map<Object?, Object?> response = await _getMap(
+          'v1/chat_runtime_events',
+          queryParameters: <String, String>{
+            'sessionId': sessionId,
+            'streamInstanceId': streamInstanceId,
+            'afterSequence': afterSequence.toString(),
+            'timeoutMs': '15000',
+          },
+          timeout: const Duration(seconds: 17),
+        );
+        final Map<Object?, Object?> payload = _requireMap(response['payload']);
+        final String nextSessionId =
+            (response['sessionId'] ?? payload['sessionId']) as String? ?? '';
+        final String nextStreamInstanceId =
+            (response['streamInstanceId'] ?? payload['streamInstanceId'])
+                as String? ??
+            '';
+        final int nextSequence = switch (response['sequence'] ??
+            response['lastSequence'] ??
+            payload['sequence'] ??
+            payload['lastSequence']) {
+          int value => value,
+          num value => value.toInt(),
+          final Object? value => int.tryParse(value?.toString() ?? '') ?? 0,
+        };
+        final String normalizedNextSessionId = nextSessionId.trim();
+        if (normalizedNextSessionId.isNotEmpty) {
+          if (sessionId != normalizedNextSessionId) {
+            afterSequence = 0;
+          }
+          sessionId = normalizedNextSessionId;
+        }
+        if (nextStreamInstanceId.trim().isNotEmpty) {
+          if (streamInstanceId != nextStreamInstanceId.trim()) {
+            afterSequence = 0;
+          }
+          streamInstanceId = nextStreamInstanceId.trim();
+        }
+        if (nextSequence > afterSequence) {
+          afterSequence = nextSequence;
+        }
+        final String kind = response['kind'] as String? ?? '';
+        final bool isSameOrderedCursor =
+            requestedSessionId.isNotEmpty &&
+            requestedStreamInstanceId.isNotEmpty &&
+            normalizedNextSessionId == requestedSessionId &&
+            nextStreamInstanceId.trim() == requestedStreamInstanceId &&
+            nextSequence > requestedAfterSequence;
+        if (kind == 'snapshot' && isSameOrderedCursor) {
+          yield _LocalRuntimeRealtimeEnvelope(
+            kind: 'delta',
+            payload: <Object?, Object?>{
+              ...attachChatRuntimeSnapshotClientLifecycle(
+                payload,
+                fallbackBridgeInstanceId: _bridgeInstanceId,
+              ),
+              'sequence': nextSequence,
+              'lastSequence': nextSequence,
+              'eventId':
+                  'runtime-snapshot-$streamInstanceId-$normalizedNextSessionId-$nextSequence',
+              'runPatchMode': 'snapshot',
+            },
+          );
+        } else if (kind == 'draft' || kind == 'delta') {
+          yield _LocalRuntimeRealtimeEnvelope(
+            kind: kind,
+            payload: attachChatRuntimeSnapshotClientLifecycle(
+              payload,
+              fallbackBridgeInstanceId: _bridgeInstanceId,
+            ),
+          );
+        }
+      } catch (_) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+    }
+  }
+
   Future<Map<Object?, Object?>> _getMap(
     String path, {
     Map<String, String>? queryParameters,
+    Duration? timeout,
   }) async => _requireMap(
-    await _requestJson('GET', path, queryParameters: queryParameters),
+    await _requestJson(
+      'GET',
+      path,
+      queryParameters: queryParameters,
+      timeout: timeout,
+    ),
   );
 
   Future<Map<Object?, Object?>> _postMap(
@@ -1218,22 +1356,24 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     String path, {
     Map<String, String>? queryParameters,
     Map<String, Object?>? body,
+    Duration? timeout,
   }) async {
+    final Duration effectiveTimeout = timeout ?? requestTimeout;
     final client = HttpClient();
-    client.connectionTimeout = requestTimeout;
+    client.connectionTimeout = effectiveTimeout;
     try {
       final request = await _openRequest(
         client,
         method,
         path,
         queryParameters: queryParameters,
-      ).timeout(requestTimeout);
+      ).timeout(effectiveTimeout);
       request.headers.set(HttpHeaders.acceptHeader, 'application/json');
       if (body != null) {
         request.headers.contentType = ContentType.json;
         request.write(jsonEncode(body));
       }
-      final response = await request.close().timeout(requestTimeout);
+      final response = await request.close().timeout(effectiveTimeout);
       final responseBody = await response.transform(utf8.decoder).join();
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw HttpException(

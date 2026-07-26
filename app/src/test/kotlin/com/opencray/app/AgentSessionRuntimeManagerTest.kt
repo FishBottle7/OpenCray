@@ -2487,9 +2487,10 @@ class AgentSessionRuntimeManagerTest {
         }
       },
     )
+    val restoredExecutor = RecordingExecutorService()
     val restoredHandle = manager(
       runtimeFactory = restoredFactory,
-      executor = RecordingExecutorService(),
+      executor = restoredExecutor,
     ).forSession(sessionId)
 
     val restoredRun = requireNotNull(restoredHandle.findRun(submission.runId))
@@ -2504,6 +2505,18 @@ class AgentSessionRuntimeManagerTest {
       restoredTerminalStateInterruptedForTest,
       restoredRun.resultMetadata[metadataRestoredTerminalStateForTest],
     )
+    assertEquals(
+      QueueTaskLifecycleState.FAILED,
+      restoredHandle.snapshot().tasks.single().lifecycleState,
+    )
+
+    assertTrue(restoredHandle.requestRetry(submission.taskId))
+
+    val retriedTask = restoredHandle.snapshot().tasks.single()
+    assertEquals(QueueTaskLifecycleState.QUEUED, retriedTask.lifecycleState)
+    assertEquals(null, retriedTask.lastErrorCode)
+    assertEquals(null, retriedTask.lastErrorMessage)
+    assertEquals(1, restoredExecutor.pendingCount())
   }
 
   @Test
@@ -2670,6 +2683,77 @@ class AgentSessionRuntimeManagerTest {
     })
     assertEquals(submission.runId, observed.first().runId)
     assertEquals(submission.runId, handle.waitForRun(submission.runId, 0L)?.runId)
+  }
+
+  @Test
+  fun listenerFailureDoesNotStopExecutionOrOtherListeners() {
+    val executor = RecordingExecutorService()
+    val runtimeFactory = RecordingRuntimeFactory(
+      onExecute = { task, eventSink ->
+        eventSink.onRunEvent(
+          task,
+          OpenCrayLifecycleEvent(
+            runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID].orEmpty(),
+            taskId = task.id,
+            phase = OpenCrayRunLifecyclePhase.START,
+            emittedAtEpochMs = 10L,
+          ),
+        )
+      },
+    )
+    val manager = manager(runtimeFactory = runtimeFactory, executor = executor)
+    val handle = manager.forSession("session-listener-failure")
+    var observedStarts = 0
+    var observedEvents = 0
+    var observedFinishes = 0
+    manager.observe(
+      object : AgentSessionRuntimeListener {
+        override fun onTaskStarted(sessionId: String, task: AgentTask) {
+          error("injected listener failure")
+        }
+
+        override fun onRunEvent(sessionId: String, task: AgentTask, event: OpenCrayAgentRunEvent) {
+          error("injected listener failure")
+        }
+
+        override fun onTaskFinished(sessionId: String, task: AgentTask, result: ExecutionResult) {
+          error("injected listener failure")
+        }
+      },
+    )
+    manager.observe(
+      object : AgentSessionRuntimeListener {
+        override fun onTaskStarted(sessionId: String, task: AgentTask) {
+          observedStarts += 1
+        }
+
+        override fun onRunEvent(sessionId: String, task: AgentTask, event: OpenCrayAgentRunEvent) {
+          observedEvents += 1
+        }
+
+        override fun onTaskFinished(sessionId: String, task: AgentTask, result: ExecutionResult) {
+          observedFinishes += 1
+        }
+      },
+    )
+
+    val submission = handle.submitPrompt(
+      userText = "listener failure prompt",
+      pendingMessageId = "pending-listener-failure",
+      visibleThroughMessageId = "pending-listener-failure",
+      policyDecision = allowDecision(),
+    )
+    handle.ensureProcessing()
+
+    executor.runNext()
+
+    assertEquals(1, observedStarts)
+    assertEquals(1, observedEvents)
+    assertEquals(1, observedFinishes)
+    assertEquals(
+      QueueTaskLifecycleState.COMPLETED,
+      handle.findRun(submission.runId)?.lifecycleState,
+    )
   }
 
   @Test

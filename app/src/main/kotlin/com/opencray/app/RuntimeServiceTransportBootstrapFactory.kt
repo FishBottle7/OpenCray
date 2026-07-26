@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.Context
+import java.util.concurrent.CountDownLatch
 
 internal data class OpenCrayRuntimeServiceTransportBootstrap(
   val gatewayBundle: OpenCrayRuntimeServiceGatewayBundle,
@@ -53,59 +54,103 @@ internal class DefaultOpenCrayRuntimeServiceTransportBootstrapFactory(
     var starting = false
     var activated = false
     var disposed = false
+    var startCompletion: CountDownLatch? = null
+    var loopbackDisposeClaimed = false
+    fun claimLoopbackDisposeLocked(): Boolean {
+      if (loopbackDisposeClaimed) {
+        return false
+      }
+      loopbackDisposeClaimed = true
+      return true
+    }
     return OpenCrayRuntimeServiceTransportBootstrap(
       gatewayBundle = gatewayBundle,
       ensureStarted = ensureStarted@{
-        val shouldStart = synchronized(lock) {
+        val completion = synchronized(lock) {
           if (disposed) {
             return@ensureStarted false
           }
           if (starting || activated) {
-            false
+            null
           } else {
             starting = true
-            true
+            CountDownLatch(1).also { created ->
+              startCompletion = created
+            }
           }
         }
-        if (!shouldStart) {
-          return@ensureStarted activated
+        if (completion == null) {
+          return@ensureStarted synchronized(lock) { activated }
         }
         try {
           val started = loopbackBootstrap.ensureStarted()
+          if (!started || synchronized(lock) { disposed }) {
+            return@ensureStarted false
+          }
+          try {
+            transportCoordinator.bindGatewayBundle(gatewayBundle)
+          } catch (throwable: Throwable) {
+            val boundDespiteFailure = runCatching {
+              transportCoordinator.currentGatewayBundle() === gatewayBundle
+            }.getOrDefault(false)
+            if (boundDespiteFailure) {
+              synchronized(lock) {
+                activated = true
+              }
+            }
+            throw throwable
+          }
           synchronized(lock) {
-            starting = false
-            if (disposed) {
-              return@ensureStarted false
-            }
-            if (!started) {
-              return@ensureStarted false
-            }
             activated = true
+            !disposed
           }
-          transportCoordinator.bindGatewayBundle(gatewayBundle)
-          true
-        } catch (throwable: Throwable) {
+        } finally {
           synchronized(lock) {
             starting = false
+            if (startCompletion === completion) {
+              startCompletion = null
+            }
           }
-          throw throwable
+          completion.countDown()
         }
       },
       dispose = dispose@{
-        val releaseFromCoordinator = synchronized(lock) {
+        val disposeAction = synchronized(lock) {
           if (disposed) {
             return@synchronized null
           }
           disposed = true
-          activated
+          Pair(startCompletion, claimLoopbackDisposeLocked())
         } ?: return@dispose
-        loopbackBootstrap.dispose()
-        if (releaseFromCoordinator) {
-          transportCoordinator.releaseGatewayBundle(gatewayBundle)
-        } else {
-          gatewayBundle.dispose()
+        try {
+          if (disposeAction.second) {
+            loopbackBootstrap.dispose()
+          }
+        } finally {
+          disposeAction.first?.awaitUninterruptibly()
+          val releaseFromCoordinator = synchronized(lock) { activated }
+          if (releaseFromCoordinator) {
+            transportCoordinator.releaseGatewayBundle(gatewayBundle)
+          } else {
+            gatewayBundle.dispose()
+          }
         }
       },
     )
+  }
+}
+
+private fun CountDownLatch.awaitUninterruptibly() {
+  var interrupted = false
+  while (true) {
+    try {
+      await()
+      break
+    } catch (_: InterruptedException) {
+      interrupted = true
+    }
+  }
+  if (interrupted) {
+    Thread.currentThread().interrupt()
   }
 }

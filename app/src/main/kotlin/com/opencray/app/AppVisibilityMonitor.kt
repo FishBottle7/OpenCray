@@ -5,6 +5,7 @@ import android.app.Application
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 
 private const val DEFAULT_APP_VISIBILITY_HEARTBEAT_INTERVAL_MS: Long = 2_000L
 
@@ -37,10 +38,10 @@ internal class AppVisibilityLifecycleMonitor : Application.ActivityLifecycleCall
       this.heartbeatIntervalMs = heartbeatIntervalMs
     }
     if (isAppVisible()) {
-      visibilityPublisher.publish(true)
+      publishVisibilitySafely(visibilityPublisher, true)
       scheduleVisibilityHeartbeat()
     } else {
-      visibilityPublisher.publish(false)
+      publishVisibilitySafely(visibilityPublisher, false)
     }
     callbacksRegistrar(application, this)
   }
@@ -94,12 +95,20 @@ internal class AppVisibilityLifecycleMonitor : Application.ActivityLifecycleCall
       publisher = visibilityPublisher
     }
     if (becameVisible) {
-      publisher?.publish(true)
+      publisher?.let { resolvedPublisher ->
+        publishVisibilitySafely(resolvedPublisher, true)
+      }
       scheduleVisibilityHeartbeat()
     } else if (!nextVisibility) {
       cancelHeartbeat()
     }
-    listenersToNotify.forEach { listener -> listener(nextVisibility) }
+    listenersToNotify.forEach { listener ->
+      try {
+        listener(nextVisibility)
+      } catch (failure: Exception) {
+        logVisibilityFailure("listener", failure)
+      }
+    }
   }
 
   private fun scheduleVisibilityHeartbeat() {
@@ -119,7 +128,7 @@ internal class AppVisibilityLifecycleMonitor : Application.ActivityLifecycleCall
         }
         visibilityPublisher
       } ?: return@schedule
-      publisher.publish(true)
+      publishVisibilitySafely(publisher, true)
       scheduleVisibilityHeartbeat()
     }
     synchronized(lock) {
@@ -137,7 +146,32 @@ internal class AppVisibilityLifecycleMonitor : Application.ActivityLifecycleCall
       heartbeatTask = null
     }
   }
+
+  private fun publishVisibilitySafely(
+    publisher: PersistingAppVisibilityPublisher,
+    appVisible: Boolean,
+  ) {
+    try {
+      publisher.publish(appVisible)
+    } catch (failure: Exception) {
+      logVisibilityFailure("publish", failure)
+    }
+  }
+
+  private fun logVisibilityFailure(
+    operation: String,
+    failure: Exception,
+  ) {
+    runCatching {
+      Log.e(
+        APP_VISIBILITY_LOG_TAG,
+        "appVisibility.$operation failure=${failure::class.java.name}",
+      )
+    }
+  }
 }
+
+private const val APP_VISIBILITY_LOG_TAG: String = "OpenCrayVisibility"
 
 private val defaultAppVisibilityMonitor = AppVisibilityLifecycleMonitor()
 

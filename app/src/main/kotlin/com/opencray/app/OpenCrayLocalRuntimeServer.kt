@@ -4,6 +4,7 @@ import android.content.Context
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream
+import java.io.FilterInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.net.BindException
@@ -12,10 +13,15 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketException
+import java.net.SocketTimeoutException
 import java.net.URI
 import java.net.URLDecoder
+import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadFactory
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import com.opencray.runtime.OpenCrayFinalAttachment
 import org.json.JSONArray
 import org.json.JSONObject
@@ -23,6 +29,19 @@ import org.json.JSONObject
 private val DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS: InetAddress = InetAddress.getByName("127.0.0.1")
 
 private fun InetAddress.asRuntimeBindAddress(): String = hostAddress ?: hostName ?: "127.0.0.1"
+
+private fun newBoundedLocalRuntimeExecutor(): ExecutorService = ThreadPoolExecutor(
+  LOCAL_RUNTIME_EXECUTOR_THREADS,
+  LOCAL_RUNTIME_EXECUTOR_THREADS,
+  0L,
+  TimeUnit.MILLISECONDS,
+  ArrayBlockingQueue(LOCAL_RUNTIME_PENDING_CLIENT_LIMIT),
+  ThreadFactory { runnable ->
+    Thread(runnable, "opencray-loopback").apply {
+      isDaemon = true
+    }
+  },
+)
 
 internal data class LocalRuntimeServerState(
   val phase: String = PHASE_NOT_CREATED,
@@ -65,9 +84,11 @@ internal class OpenCrayLocalRuntimeServer(
   private val settingsGatewayProvider: () -> OpenCraySettingsGateway,
   private val requestedPort: Int = DEFAULT_PORT,
   private val bindAddress: InetAddress = DEFAULT_LOCAL_RUNTIME_LOOPBACK_ADDRESS,
-  private val executor: ExecutorService = Executors.newCachedThreadPool(),
+  private val executor: ExecutorService = newBoundedLocalRuntimeExecutor(),
   private val shutdownExecutorOnClose: Boolean = false,
   private val runtimeOwnerWriteGuard: () -> Boolean = { true },
+  private val loopbackSecurity: RuntimeServiceLoopbackServerSecurity? = null,
+  private val preAuthenticationTimeoutMs: Int = PRE_AUTH_REQUEST_TIMEOUT_MS,
 ) {
   @Volatile
   private var serverSocket: ServerSocket? = null
@@ -165,17 +186,36 @@ internal class OpenCrayLocalRuntimeServer(
       } catch (_: IOException) {
         return
       }
-      executor.execute {
-        handleClient(client)
+      try {
+        executor.execute {
+          handleClient(client)
+        }
+      } catch (_: RejectedExecutionException) {
+        runCatching(client::close)
       }
     }
   }
 
   private fun handleClient(socket: Socket) {
     socket.use { client ->
-      client.soTimeout = SOCKET_TIMEOUT_MS
+      // SO_TIMEOUT alone is an inactivity timeout and can be bypassed by
+      // continuously dripping bytes. Bound the entire unauthenticated parse.
+      val preAuthenticationInput = LocalRuntimeDeadlineInputStream(
+        input = client.getInputStream(),
+        socket = client,
+        timeoutMs = preAuthenticationTimeoutMs,
+      )
       val request = try {
-        parseRequest(client.getInputStream()) ?: return
+        parseRequest(preAuthenticationInput) ?: return
+      } catch (throwable: LocalRuntimeHttpException) {
+        writeResponse(
+          client,
+          LocalRuntimeResponse(
+            statusCode = throwable.statusCode,
+            body = mapOf("error" to throwable.message),
+          ),
+        )
+        return
       } catch (throwable: Throwable) {
         writeResponse(
           client,
@@ -186,6 +226,23 @@ internal class OpenCrayLocalRuntimeServer(
         )
         return
       }
+      val authenticatedExchange = loopbackSecurity?.authenticate(
+        headers = request.headers,
+        method = request.method,
+        requestTarget = request.rawRequestTarget,
+        body = request.body,
+      )
+      if (loopbackSecurity != null && authenticatedExchange == null) {
+        writeResponse(
+          client,
+          LocalRuntimeResponse(
+            statusCode = 401,
+            body = mapOf("error" to "loopback_authentication_failed"),
+          ),
+        )
+        return
+      }
+      client.soTimeout = POST_AUTH_SOCKET_TIMEOUT_MS
       val response = try {
         dispatch(request)
       } catch (throwable: Throwable) {
@@ -194,7 +251,11 @@ internal class OpenCrayLocalRuntimeServer(
           body = mapOf("error" to (throwable.message ?: throwable::class.java.simpleName)),
         )
       }
-      writeResponse(client, response)
+      writeResponse(
+        socket = client,
+        response = response,
+        authenticatedExchange = authenticatedExchange,
+      )
     }
   }
 
@@ -600,6 +661,10 @@ internal class OpenCrayLocalRuntimeServer(
       )
       "GET" to "/v1/chat_snapshot" -> chatRuntimeGateway.loadChatSnapshot()
       "GET" to "/v1/chat_runtime_snapshot" -> chatRuntimeGateway.loadChatRuntimeSnapshot()
+      "GET" to "/v1/chat_runtime_events" -> waitForChatRuntimeEvent(
+        chatRuntimeGateway = chatRuntimeGateway,
+        request = request,
+      )
       "GET" to "/v1/chat_run_snapshot" -> chatRuntimeGateway.loadChatRunSnapshot(
         runId = request.queryParameter("runId"),
       )
@@ -709,34 +774,90 @@ internal class OpenCrayLocalRuntimeServer(
 
   private fun parseRequest(inputStream: InputStream): LocalRuntimeRequest? {
     val input = BufferedInputStream(inputStream)
-    val requestLine = input.readHttpLine() ?: return null
+    val requestLine = input.readHttpLine(
+      maxBytes = MAX_REQUEST_LINE_BYTES,
+      limitStatusCode = 400,
+      limitMessage = "HTTP request line exceeds the size limit.",
+    ) ?: return null
     if (requestLine.isBlank()) {
       return null
     }
-    val parts = requestLine.split(' ')
-    require(parts.size >= 2) {
+    val firstSeparator = requestLine.indexOf(' ')
+    val secondSeparator = requestLine.indexOf(' ', startIndex = firstSeparator + 1)
+    require(firstSeparator > 0 && secondSeparator > firstSeparator + 1) {
       "Malformed request line."
     }
+    val method = requestLine.substring(0, firstSeparator).uppercase()
+    val rawRequestTarget = requestLine.substring(firstSeparator + 1, secondSeparator)
+    val httpVersion = requestLine.substring(secondSeparator + 1).trim()
+    require(httpVersion == "HTTP/1.0" || httpVersion == "HTTP/1.1") {
+      "Unsupported HTTP version."
+    }
+    require(rawRequestTarget.startsWith('/') && !rawRequestTarget.contains('#')) {
+      "Malformed HTTP request target."
+    }
     val headers = linkedMapOf<String, String>()
+    var headerBytes = 0
+    var headerCount = 0
     while (true) {
-      val line = input.readHttpLine() ?: break
+      val line = input.readHttpLine(
+        maxBytes = MAX_HEADER_LINE_BYTES,
+        limitStatusCode = 431,
+        limitMessage = "HTTP header line exceeds the size limit.",
+      ) ?: break
       if (line.isEmpty()) {
         break
       }
-      val separatorIndex = line.indexOf(':')
-      if (separatorIndex <= 0) {
-        continue
+      headerCount += 1
+      headerBytes += line.toByteArray(Charsets.UTF_8).size + 2
+      if (headerCount > MAX_HEADER_COUNT || headerBytes > MAX_HEADER_BYTES) {
+        throw LocalRuntimeHttpException(
+          statusCode = 431,
+          message = "HTTP headers exceed the size limit.",
+        )
       }
-      headers[line.substring(0, separatorIndex).trim().lowercase()] =
-        line.substring(separatorIndex + 1).trim()
+      val separatorIndex = line.indexOf(':')
+      require(separatorIndex > 0) {
+        "Malformed HTTP header."
+      }
+      val name = line.substring(0, separatorIndex).trim().lowercase()
+      require(name.isNotBlank() && !headers.containsKey(name)) {
+        "Duplicate or malformed HTTP header."
+      }
+      headers[name] = line.substring(separatorIndex + 1).trim()
     }
-    val contentLength = headers["content-length"]?.toIntOrNull() ?: 0
-    val body = input.readExactBytes(contentLength)
-    val uri = URI(parts[1])
+    if (!headers["transfer-encoding"].isNullOrBlank()) {
+      throw LocalRuntimeHttpException(
+        statusCode = 400,
+        message = "Transfer-Encoding is unsupported.",
+      )
+    }
+    val contentLength = headers["content-length"]?.let { rawLength ->
+      rawLength.toLongOrNull() ?: throw LocalRuntimeHttpException(
+        statusCode = 400,
+        message = "Content-Length is invalid.",
+      )
+    } ?: 0L
+    if (contentLength < 0L) {
+      throw LocalRuntimeHttpException(
+        statusCode = 400,
+        message = "Content-Length is invalid.",
+      )
+    }
+    if (contentLength > MAX_REQUEST_BODY_BYTES) {
+      throw LocalRuntimeHttpException(
+        statusCode = 413,
+        message = "HTTP request body exceeds the size limit.",
+      )
+    }
+    val body = input.readExactBytes(contentLength.toInt())
+    val uri = URI(rawRequestTarget)
     return LocalRuntimeRequest(
-      method = parts[0].uppercase(),
+      method = method,
+      rawRequestTarget = rawRequestTarget,
       path = uri.path ?: "/",
       queryParameters = parseQueryParameters(uri.rawQuery),
+      headers = headers,
       body = body,
     )
   }
@@ -744,15 +865,29 @@ internal class OpenCrayLocalRuntimeServer(
   private fun writeResponse(
     socket: Socket,
     response: LocalRuntimeResponse,
+    authenticatedExchange: RuntimeServiceLoopbackAuthenticatedExchange? = null,
   ) {
     runCatching {
       val responseBytes = encodeJson(response.body).toByteArray(Charsets.UTF_8)
+      val authenticationHeaders = if (authenticatedExchange == null) {
+        emptyMap()
+      } else {
+        requireNotNull(loopbackSecurity).responseHeaders(
+          exchange = authenticatedExchange,
+          statusCode = response.statusCode,
+          body = responseBytes,
+        )
+      }
       val output = BufferedOutputStream(socket.getOutputStream())
       output.write(
         buildString {
           append("HTTP/1.1 ${response.statusCode} ${reasonPhrase(response.statusCode)}\r\n")
           append("Content-Type: application/json; charset=utf-8\r\n")
           append("Content-Length: ${responseBytes.size}\r\n")
+          append("Cache-Control: no-store\r\n")
+          authenticationHeaders.forEach { (name, value) ->
+            append("$name: $value\r\n")
+          }
           append("Connection: close\r\n")
           append("\r\n")
         }.toByteArray(Charsets.US_ASCII),
@@ -760,6 +895,87 @@ internal class OpenCrayLocalRuntimeServer(
       output.write(responseBytes)
       output.flush()
     }
+  }
+
+  private fun waitForChatRuntimeEvent(
+    chatRuntimeGateway: OpenCrayChatRuntimeGateway,
+    request: LocalRuntimeRequest,
+  ): Map<String, Any?> {
+    val requestedSessionId = request.queryParameter("sessionId").trim()
+    val afterStreamInstanceId = request.queryParameter("streamInstanceId").trim()
+    val afterSequence = request.queryParameter("afterSequence").toLongOrNull() ?: 0L
+    val timeoutMs = request.queryParameter("timeoutMs").toLongOrNull()
+      ?.coerceIn(0L, MAX_RUNTIME_EVENT_POLL_TIMEOUT_MS)
+      ?: DEFAULT_RUNTIME_EVENT_POLL_TIMEOUT_MS
+    val waitLock = java.lang.Object()
+    var observed: Map<String, Any?>? = null
+
+    fun offer(kind: String, payload: Map<String, Any?>) {
+      val sessionId = (payload["sessionId"] as? String)?.trim().orEmpty()
+      val sequence = (payload["sequence"] as? Number)?.toLong() ?: return
+      if (requestedSessionId.isNotBlank() && requestedSessionId != sessionId) {
+        return
+      }
+      if (sequence <= afterSequence) {
+        return
+      }
+      synchronized(waitLock) {
+        if (observed == null) {
+          observed = runtimeEventPollResponse(kind = kind, payload = payload)
+          waitLock.notifyAll()
+        }
+      }
+    }
+
+    val draftDisposer = chatRuntimeGateway.observeLiveAssistantDraftEvents { payload ->
+      offer(kind = "draft", payload = payload)
+    }
+    val deltaDisposer = chatRuntimeGateway.observeRuntimeEventDeltas { payload ->
+      offer(kind = "delta", payload = payload)
+    }
+    try {
+      val initialSnapshot = chatRuntimeGateway.loadChatRuntimeSnapshot()
+      val snapshotSessionId = (initialSnapshot["sessionId"] as? String)?.trim().orEmpty()
+      val snapshotStreamInstanceId = (initialSnapshot["streamInstanceId"] as? String)?.trim().orEmpty()
+      val snapshotLastSequence = (initialSnapshot["lastSequence"] as? Number)?.toLong() ?: 0L
+      if (
+        (requestedSessionId.isNotBlank() && requestedSessionId != snapshotSessionId) ||
+          afterStreamInstanceId.isBlank() ||
+          afterStreamInstanceId != snapshotStreamInstanceId ||
+          snapshotLastSequence > afterSequence
+      ) {
+        return runtimeEventPollResponse(kind = "snapshot", payload = initialSnapshot)
+      }
+      synchronized(waitLock) {
+        if (observed == null && timeoutMs > 0L) {
+          waitLock.wait(timeoutMs)
+        }
+        observed?.let { return it }
+      }
+      val refreshedSnapshot = chatRuntimeGateway.loadChatRuntimeSnapshot()
+      val refreshedLastSequence = (refreshedSnapshot["lastSequence"] as? Number)?.toLong() ?: 0L
+      if (refreshedLastSequence > afterSequence) {
+        return runtimeEventPollResponse(kind = "snapshot", payload = refreshedSnapshot)
+      }
+      return runtimeEventPollResponse(kind = "heartbeat", payload = refreshedSnapshot)
+    } finally {
+      deltaDisposer()
+      draftDisposer()
+    }
+  }
+
+  private fun runtimeEventPollResponse(
+    kind: String,
+    payload: Map<String, Any?>,
+  ): Map<String, Any?> = buildMap {
+    put("kind", kind)
+    put("payload", payload)
+    payload["sessionId"]?.let { value -> put("sessionId", value) }
+    payload["streamInstanceId"]?.let { value -> put("streamInstanceId", value) }
+    payload["sequence"]?.let { value -> put("sequence", value) }
+    payload["lastSequence"]?.let { value -> put("lastSequence", value) }
+    payload["eventId"]?.let { value -> put("eventId", value) }
+    payload["executionId"]?.let { value -> put("executionId", value) }
   }
 
   private fun parseQueryParameters(rawQuery: String?): Map<String, String> {
@@ -820,9 +1036,13 @@ internal class OpenCrayLocalRuntimeServer(
     when (statusCode) {
       200 -> "OK"
       400 -> "Bad Request"
+      401 -> "Unauthorized"
+      413 -> "Payload Too Large"
       409 -> "Conflict"
+      431 -> "Request Header Fields Too Large"
       404 -> "Not Found"
       500 -> "Internal Server Error"
+      503 -> "Service Unavailable"
       else -> "OK"
     }
 
@@ -830,7 +1050,10 @@ internal class OpenCrayLocalRuntimeServer(
     URLDecoder.decode(value, Charsets.UTF_8.name())
 
   companion object {
-    private const val SOCKET_TIMEOUT_MS: Int = 2_000
+    private const val PRE_AUTH_REQUEST_TIMEOUT_MS: Int = 2_000
+    private const val POST_AUTH_SOCKET_TIMEOUT_MS: Int = 30_000
+    private const val DEFAULT_RUNTIME_EVENT_POLL_TIMEOUT_MS: Long = 15_000L
+    private const val MAX_RUNTIME_EVENT_POLL_TIMEOUT_MS: Long = 25_000L
     internal const val DEFAULT_PORT: Int = 42_617
     internal const val DETACHED_BACKGROUND_DEFAULT_PORT: Int = DEFAULT_PORT + 1
   }
@@ -843,6 +1066,7 @@ internal data class OpenCrayLocalRuntimeServerProviders(
   val skillsGatewayProvider: () -> OpenCraySkillsGateway,
   val settingsGatewayProvider: () -> OpenCraySettingsGateway,
   val runtimeOwnerWriteGuard: () -> Boolean = { true },
+  val loopbackSecurity: RuntimeServiceLoopbackServerSecurity? = null,
 )
 
 internal fun localRuntimeLoopbackPortForTarget(
@@ -928,8 +1152,10 @@ private fun parseSubmitChatMessageAttachments(body: JSONObject): List<OpenCrayFi
 
 private data class LocalRuntimeRequest(
   val method: String,
+  val rawRequestTarget: String,
   val path: String,
   val queryParameters: Map<String, String>,
+  val headers: Map<String, String>,
   val body: ByteArray,
 ) {
   fun queryParameter(name: String): String = queryParameters[name].orEmpty()
@@ -950,7 +1176,49 @@ private data class LocalRuntimeResponse(
   val body: Any?,
 )
 
-private fun BufferedInputStream.readHttpLine(): String? {
+private class LocalRuntimeHttpException(
+  val statusCode: Int,
+  override val message: String,
+) : IOException(message)
+
+private class LocalRuntimeDeadlineInputStream(
+  input: InputStream,
+  private val socket: Socket,
+  timeoutMs: Int,
+) : FilterInputStream(input) {
+  private val deadlineNanos: Long = System.nanoTime() +
+    TimeUnit.MILLISECONDS.toNanos(timeoutMs.toLong())
+
+  override fun read(): Int {
+    applyRemainingTimeout()
+    return super.read()
+  }
+
+  override fun read(
+    buffer: ByteArray,
+    offset: Int,
+    length: Int,
+  ): Int {
+    applyRemainingTimeout()
+    return super.read(buffer, offset, length)
+  }
+
+  private fun applyRemainingTimeout() {
+    val remainingNanos = deadlineNanos - System.nanoTime()
+    if (remainingNanos <= 0L) {
+      throw SocketTimeoutException("Loopback request authentication deadline exceeded.")
+    }
+    socket.soTimeout = (((remainingNanos - 1L) / NANOS_PER_MILLISECOND) + 1L)
+      .coerceAtMost(Int.MAX_VALUE.toLong())
+      .toInt()
+  }
+}
+
+private fun BufferedInputStream.readHttpLine(
+  maxBytes: Int,
+  limitStatusCode: Int,
+  limitMessage: String,
+): String? {
   val buffer = ByteArrayOutputStream()
   while (true) {
     val next = read()
@@ -960,9 +1228,25 @@ private fun BufferedInputStream.readHttpLine(): String? {
     if (next == '\n'.code) {
       return buffer.toString(Charsets.UTF_8.name()).trimEnd('\r')
     }
+    if (buffer.size() >= maxBytes) {
+      throw LocalRuntimeHttpException(
+        statusCode = limitStatusCode,
+        message = limitMessage,
+      )
+    }
     buffer.write(next)
   }
 }
+
+private const val LOCAL_RUNTIME_MAX_CONCURRENT_CLIENTS: Int = 12
+private const val LOCAL_RUNTIME_EXECUTOR_THREADS: Int = LOCAL_RUNTIME_MAX_CONCURRENT_CLIENTS + 1
+private const val LOCAL_RUNTIME_PENDING_CLIENT_LIMIT: Int = 32
+private const val MAX_REQUEST_LINE_BYTES: Int = 8 * 1024
+private const val MAX_HEADER_LINE_BYTES: Int = 8 * 1024
+private const val MAX_HEADER_BYTES: Int = 32 * 1024
+private const val MAX_HEADER_COUNT: Int = 64
+private const val MAX_REQUEST_BODY_BYTES: Long = 4L * 1024L * 1024L
+private const val NANOS_PER_MILLISECOND: Long = 1_000_000L
 
 private fun InputStream.readExactBytes(length: Int): ByteArray {
   if (length <= 0) {

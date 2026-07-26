@@ -26,6 +26,31 @@ import org.junit.Test
 
 class AgentRunRecordStoreFactoryTest {
   @Test
+  fun runtimeEventIdentitySurvivesPersistenceRoundTrip() {
+    val event = OpenCrayToolResultEvent(
+      runId = "run-stable-event",
+      taskId = "task-stable-event",
+      executionId = "execution-stable-event",
+      turn = 2,
+      call = AgentToolCall(id = "call-stable", toolName = "Read"),
+      result = AgentToolResult(
+        toolName = "Read",
+        status = AgentToolResultStatus.SUCCESS,
+        content = "done",
+      ),
+      emittedAtEpochMs = 1_234L,
+    )
+
+    val persisted = persistedRecordForTest(event)
+    val restored = runtimeEventForTest(persisted) as OpenCrayToolResultEvent
+
+    assertTrue(persisted.eventId?.isNotBlank() == true)
+    assertEquals(runtimeEventStableId(event), persisted.eventId)
+    assertEquals(persisted.eventId, restored.eventId)
+    assertEquals(runtimeEventDedupKey(restored), runtimeEventDedupKey(restored.copy(eventId = persisted.eventId)))
+  }
+
+  @Test
   fun memoryWriteEventRoundTripsStewardshipPlanGraph() {
     val event = OpenCrayMemoryWriteEvent(
       runId = "run-memory",

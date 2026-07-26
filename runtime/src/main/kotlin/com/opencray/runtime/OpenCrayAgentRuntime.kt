@@ -5,6 +5,7 @@ import com.opencray.core.contracts.AgentTaskType
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.orchestrator.AgentLoop
+import com.opencray.core.orchestrator.ERROR_RUNTIME_INTERRUPTED
 import com.opencray.core.orchestrator.NoOpSessionQueueRestoreTransformer
 import com.opencray.core.orchestrator.QueueClock
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
@@ -237,6 +238,15 @@ class OpenCrayAgentRuntime(
         result = result,
       )
       result
+    } catch (interrupted: InterruptedException) {
+      Thread.currentThread().interrupt()
+      emitLifecycleEvent(
+        task = task,
+        phase = OpenCrayRunLifecyclePhase.CANCELLED,
+        errorCode = ERROR_RUNTIME_INTERRUPTED,
+        errorMessage = interrupted.message ?: "Runtime execution was interrupted.",
+      )
+      throw interrupted
     } catch (throwable: Throwable) {
       emitLifecycleEvent(
         task = task,
@@ -930,6 +940,16 @@ class OpenCrayAgentRuntime(
         }
 
         is ParsedModelActionBatch.Actions -> {
+          val identifiedBatch = parsedBatch.copy(
+            actions = parsedBatch.actions.mapIndexed { index, action ->
+              action.withAssistantActionEventId(
+                task = task,
+                turn = cursor.turn,
+                actionIndex = index,
+                batchRequestId = gatewayResult.requestId,
+              )
+            },
+          )
           val responsesAppliedUpdateCount = if (gatewayMessagePlan.mode == LocalContinuationMode.RESPONSES_NATIVE) {
             (cursor.responsesContinuationShape?.referenceState?.appliedUpdateCount ?: 0) +
               gatewayMessagePlan.responsesPendingContextUpdateCount
@@ -959,9 +979,9 @@ class OpenCrayAgentRuntime(
             cursor = cursor,
             turnIndex = cursor.turn,
             emittedAtEpochMs = actionBatchCheckpointEpochMs,
-            pendingActions = parsedBatch.actions,
+            pendingActions = identifiedBatch.actions,
             nextActionIndex = 0,
-            requiresSingleActionReminder = parsedBatch.requiresSingleActionReminder,
+            requiresSingleActionReminder = identifiedBatch.requiresSingleActionReminder,
             localContinuationContextPrompts = assembledPrompt.frontContextPrompts,
             localContinuationStableAnchor = stableLocalContinuationAnchor,
             localContinuationGatewayMessagesEnabled = gatewayMessagesEnabled,
@@ -976,9 +996,9 @@ class OpenCrayAgentRuntime(
             cursor = cursor,
             turnIndex = cursor.turn,
             emittedAtEpochMs = actionBatchCheckpointEpochMs,
-            pendingActions = parsedBatch.actions,
+            pendingActions = identifiedBatch.actions,
             nextActionIndex = 0,
-            requiresSingleActionReminder = parsedBatch.requiresSingleActionReminder,
+            requiresSingleActionReminder = identifiedBatch.requiresSingleActionReminder,
             localContinuationContextPrompts = assembledPrompt.frontContextPrompts,
             localContinuationStableAnchor = stableLocalContinuationAnchor,
             localContinuationGatewayMessagesEnabled = gatewayMessagesEnabled,
@@ -992,7 +1012,7 @@ class OpenCrayAgentRuntime(
               startedAt = startedAt,
               gatewayResult = gatewayResult,
               contextReport = lastContextReport,
-              parsedBatch = parsedBatch,
+              parsedBatch = identifiedBatch,
               cursor = cursor,
               hooks = hooks,
               activeSkillCapsule = activeSkillCapsule,
@@ -4328,7 +4348,14 @@ class OpenCrayAgentRuntime(
     val batchActions = normalizeToolCallIds(
       actions = parsedBatch.actions,
       cursor = cursor,
-    )
+    ).mapIndexed { index, action ->
+      action.withAssistantActionEventId(
+        task = task,
+        turn = cursor.turn,
+        actionIndex = index,
+        batchRequestId = gatewayResult?.requestId,
+      )
+    }
     val containsToolAction = batchActions.any { action -> action is AgentModelAction.ToolCall }
     val containsCommentaryAction = batchActions.any { action -> action is AgentModelAction.Commentary }
     val containsFinalAction = batchActions.any { action -> action is AgentModelAction.Final }
@@ -4388,6 +4415,7 @@ class OpenCrayAgentRuntime(
             turn = cursor.turn,
             text = action.text,
             stage = action.stage,
+            eventId = action.eventId,
             metadata = promptCheckpointMetadataAfterActionIndex(
               boundary = OpenCrayPromptCheckpointBoundary.COMMENTARY_EMITTED,
               cursor = cursor,
@@ -4575,6 +4603,7 @@ class OpenCrayAgentRuntime(
             text = action.answer,
             responseFormat = action.responseFormat,
             isFinal = true,
+            eventId = action.eventId,
             metadata = finalizationMetadata,
           )
           return PromptBatchExecutionOutcome.Terminal(
@@ -5449,6 +5478,58 @@ class OpenCrayAgentRuntime(
     }
   }
 
+  private fun AgentModelAction.withAssistantActionEventId(
+    task: AgentTask,
+    turn: Int,
+    actionIndex: Int,
+    batchRequestId: String?,
+  ): AgentModelAction = when (this) {
+    is AgentModelAction.Commentary -> copy(
+      eventId = eventId ?: assistantActionEventId(
+        task = task,
+        turn = turn,
+        actionIndex = actionIndex,
+        phase = "commentary",
+        batchRequestId = batchRequestId,
+      ),
+    )
+
+    is AgentModelAction.Final -> copy(
+      eventId = eventId ?: assistantActionEventId(
+        task = task,
+        turn = turn,
+        actionIndex = actionIndex,
+        phase = "final",
+        batchRequestId = batchRequestId,
+      ),
+    )
+
+    is AgentModelAction.ToolCall -> this
+  }
+
+  private fun assistantActionEventId(
+    task: AgentTask,
+    turn: Int,
+    actionIndex: Int,
+    phase: String,
+    batchRequestId: String?,
+  ): String {
+    val batchIdentity = batchRequestId
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: "resume"
+    val identity = listOf(
+      "assistant-action-v1",
+      runIdFor(task),
+      task.id,
+      batchIdentity,
+      turn.toString(),
+      actionIndex.toString(),
+      phase,
+    ).joinToString(separator = "\u001f")
+    return "assistant-item-${UUID.nameUUIDFromBytes(identity.toByteArray(Charsets.UTF_8))}"
+  }
+
   private fun AgentToolCall.ensureToolCallId(cursor: PromptTurnCursor): AgentToolCall {
     if (!id.isNullOrBlank()) {
       return this
@@ -6077,6 +6158,7 @@ class OpenCrayAgentRuntime(
     text: String,
     responseFormat: String,
     isFinal: Boolean,
+    eventId: String? = null,
     metadata: Map<String, String> = emptyMap(),
   ) {
     eventSink.onRunEvent(
@@ -6084,6 +6166,7 @@ class OpenCrayAgentRuntime(
       event = OpenCrayAssistantEvent(
         runId = runIdFor(task),
         taskId = task.id,
+        eventId = eventId,
         turn = turn,
         text = text,
         responseFormat = responseFormat.takeIf(String::isNotBlank),
@@ -6099,6 +6182,7 @@ class OpenCrayAgentRuntime(
     turn: Int,
     text: String,
     stage: String?,
+    eventId: String? = null,
     metadata: Map<String, String> = emptyMap(),
   ) {
     eventSink.onRunEvent(
@@ -6106,6 +6190,7 @@ class OpenCrayAgentRuntime(
       event = OpenCrayAssistantEvent(
         runId = runIdFor(task),
         taskId = task.id,
+        eventId = eventId,
         turn = turn,
         text = text,
         isFinal = false,
@@ -6734,12 +6819,14 @@ class OpenCrayAgentRuntime(
     is AgentModelAction.Commentary -> OpenCraySerializableModelAction.Commentary(
       text = text,
       stage = stage,
+      eventId = eventId,
     )
 
     is AgentModelAction.Final -> OpenCraySerializableModelAction.Final(
       answer = answer,
       responseFormat = responseFormat,
       attachments = attachments,
+      eventId = eventId,
     )
 
     is AgentModelAction.ToolCall -> OpenCraySerializableModelAction.ToolCall(
@@ -6751,12 +6838,14 @@ class OpenCrayAgentRuntime(
     is OpenCraySerializableModelAction.Commentary -> AgentModelAction.Commentary(
       text = text,
       stage = stage,
+      eventId = eventId,
     )
 
     is OpenCraySerializableModelAction.Final -> AgentModelAction.Final(
       answer = answer,
       responseFormat = responseFormat,
       attachments = attachments,
+      eventId = eventId,
     )
 
     is OpenCraySerializableModelAction.ToolCall -> AgentModelAction.ToolCall(
@@ -9633,12 +9722,14 @@ class OpenCrayAgentRuntime(
     data class Commentary(
       val text: String,
       val stage: String? = null,
+      val eventId: String? = null,
     ) : AgentModelAction
 
     data class Final(
       val answer: String,
       val responseFormat: String,
       val attachments: List<OpenCrayFinalAttachment> = emptyList(),
+      val eventId: String? = null,
     ) : AgentModelAction
 
     data class ToolCall(

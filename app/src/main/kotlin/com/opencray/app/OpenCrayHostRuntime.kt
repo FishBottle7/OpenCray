@@ -300,14 +300,36 @@ internal class OpenCrayHostRuntime private constructor(
   )
   private val chatRunControlCoordinator = ChatRunControlCoordinator(
     runtimeHostAccess = runtimeHostAccess,
-    findRunSnapshotForIdentifier = ::findRunSnapshotForIdentifierLocked,
-    pendingApprovalForRun = { run ->
-      pendingApprovalForIdentifier(run.sessionId, run.taskId)
+    findRunSnapshotForIdentifier = { runIdOrTaskId ->
+      synchronized(lock) {
+        findRunSnapshotForIdentifierLocked(runIdOrTaskId)
+      }
     },
-    clearPendingApproval = ::clearPendingApprovalLocked,
-    clearApproval = ::clearApproval,
-    clearPromptCheckpoint = ::clearPromptCheckpointLocked,
-    recordRuntimeEvent = ::recordRuntimeEventLocked,
+    pendingApprovalForRun = { run ->
+      synchronized(lock) {
+        pendingApprovalForIdentifier(run.sessionId, run.taskId)
+      }
+    },
+    clearPendingApproval = { sessionId, taskId ->
+      synchronized(lock) {
+        clearPendingApprovalLocked(sessionId, taskId)
+      }
+    },
+    clearApproval = { sessionId, taskId ->
+      synchronized(lock) {
+        clearApproval(sessionId, taskId)
+      }
+    },
+    clearPromptCheckpoint = { sessionId, taskId ->
+      synchronized(lock) {
+        clearPromptCheckpointLocked(sessionId, taskId)
+      }
+    },
+    recordRuntimeEvent = { sessionId, event ->
+      synchronized(lock) {
+        recordRuntimeEventLocked(sessionId, event)
+      }
+    },
     runCancellationReplayRecorder = runCancellationReplayRecorder,
     subAgentReplayRecorder = subAgentReplayRecorder,
     subAgentTerminalEventFactory = { approval, summary, emittedAtEpochMs ->
@@ -316,9 +338,22 @@ internal class OpenCrayHostRuntime private constructor(
         emittedAtEpochMs = emittedAtEpochMs,
       )
     },
-    cancellationEventFactory = ::cancellationRuntimeEvent,
-    delegatedChildCancelledWhileWaitingSummaryProvider = ::delegatedChildCancelledWhileWaitingSummary,
+    cancellationEventFactory = { run, approval, emittedAtEpochMs ->
+      synchronized(lock) {
+        cancellationRuntimeEvent(run, approval, emittedAtEpochMs)
+      }
+    },
+    delegatedChildCancelledWhileWaitingSummaryProvider = {
+      synchronized(lock) {
+        delegatedChildCancelledWhileWaitingSummary()
+      }
+    },
     nowEpochMsProvider = System::currentTimeMillis,
+    hasRecordedCancellation = { run ->
+      synchronized(lock) {
+        chatRuntimeEventState.eventsForSession(run.sessionId).hasRecordedCancellationFor(run)
+      }
+    },
   )
   private val chatApprovalDecisionCoordinator = ChatApprovalDecisionCoordinator(
     resolveApproval = ::findPendingApprovalMatchLocked,
@@ -435,6 +470,7 @@ internal class OpenCrayHostRuntime private constructor(
   private val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val liveAssistantDraftEventListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val runtimeEventDeltaListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  private val runtimeEventStreamInstanceId: String = lifecycleId(prefix = "runtime-stream")
   private val runtimeEventDeltaSequencesBySession = linkedMapOf<String, Long>()
   private val onDeviceLlmWarmupController: OnDeviceLlmWarmupController =
     providedOnDeviceLlmWarmupController ?: defaultOnDeviceLlmWarmupController()
@@ -719,7 +755,9 @@ internal class OpenCrayHostRuntime private constructor(
             task = task,
             text = text,
             emittedAtEpochMs = emittedAtEpochMs,
-          )?.toLiveAssistantDraftEventPayload(sessionId = sessionId, cleared = false)
+          )
+            ?.toLiveAssistantDraftEventPayload(sessionId = sessionId, cleared = false)
+            ?.let { payload -> assignRuntimeRealtimeEnvelope(sessionId = sessionId, payload = payload) }
           if (draftEventPayload != null) {
             emitLiveAssistantDraftEvent(draftEventPayload)
           }
@@ -753,6 +791,7 @@ internal class OpenCrayHostRuntime private constructor(
               sessionId = sessionId,
               runId = runIdFor(task),
               taskId = task.id,
+              executionId = executionIdFromMetadata(task.metadata),
               pendingMessageId = pendingMessageId,
               text = "",
               updatedAtEpochMs = emittedAtEpochMs,
@@ -762,7 +801,9 @@ internal class OpenCrayHostRuntime private constructor(
             null
           }
           if (draftEventPayload != null) {
-            emitLiveAssistantDraftEvent(draftEventPayload)
+            emitLiveAssistantDraftEvent(
+              assignRuntimeRealtimeEnvelope(sessionId = sessionId, payload = draftEventPayload),
+            )
           }
         }
 
@@ -2210,17 +2251,13 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   override fun interruptChatRun(taskIdOrRunId: String) {
-    synchronized(lock) {
-      chatRunControlCoordinator.interruptChatRun(taskIdOrRunId)
-    }
+    chatRunControlCoordinator.interruptChatRun(taskIdOrRunId)
     emitChatSnapshot()
     emitChatRuntimeSnapshot()
   }
 
   override fun retryChatRun(taskIdOrRunId: String) {
-    synchronized(lock) {
-      chatRunControlCoordinator.retryChatRun(taskIdOrRunId)
-    }
+    chatRunControlCoordinator.retryChatRun(taskIdOrRunId)
     emitChatSnapshot()
     emitChatRuntimeSnapshot()
   }
@@ -2794,7 +2831,15 @@ internal class OpenCrayHostRuntime private constructor(
     return next
   }
 
+  private fun currentRuntimeEventSequenceLocked(sessionId: String): Long =
+    runtimeEventDeltaSequencesBySession[sessionId] ?: 0L
+
   private fun assignRuntimeEventDeltaSequence(
+    sessionId: String,
+    payload: Map<String, Any?>,
+  ): Map<String, Any?> = assignRuntimeRealtimeEnvelope(sessionId = sessionId, payload = payload)
+
+  private fun assignRuntimeRealtimeEnvelope(
     sessionId: String,
     payload: Map<String, Any?>,
   ): Map<String, Any?> {
@@ -2802,9 +2847,15 @@ internal class OpenCrayHostRuntime private constructor(
       nextRuntimeEventDeltaSequenceLocked(sessionId)
     }
     return payload.toMutableMap().apply {
+      put("streamInstanceId", runtimeEventStreamInstanceId)
       put("sequence", sequence)
+      put("lastSequence", sequence)
+      put("eventId", runtimeRealtimeEnvelopeEventId(sessionId = sessionId, sequence = sequence))
     }
   }
+
+  private fun runtimeRealtimeEnvelopeEventId(sessionId: String, sequence: Long): String =
+    "runtime-stream-$runtimeEventStreamInstanceId-$sessionId-$sequence"
 
   private fun buildRuntimeTaskDeltaPayload(
     sessionId: String,
@@ -2829,6 +2880,7 @@ internal class OpenCrayHostRuntime private constructor(
     return buildMap {
       put("sessionId", sessionId)
       put("sequence", sequence)
+      put("executionId", visibleEvent?.executionId ?: visibleRun?.executionId)
       put("updatedAtEpochMs", updatedAtEpochMs)
       put("runPatchMode", "merge")
       put("events", visibleEvent?.let(::runtimeEventToMap)?.let(::listOf) ?: emptyList<Map<String, Any?>>())
@@ -2980,6 +3032,7 @@ internal class OpenCrayHostRuntime private constructor(
     val updatedDraft = LiveAssistantDraftSnapshot(
       runId = runIdFor(task),
       taskId = task.id,
+      executionId = executionIdFromMetadata(task.metadata),
       pendingMessageId = pendingMessageId,
       text = normalizedText,
       updatedAtEpochMs = emittedAtEpochMs,
@@ -3077,6 +3130,7 @@ internal class OpenCrayHostRuntime private constructor(
     return LiveAssistantDraftSnapshot(
       runId = run.runId,
       taskId = run.taskId,
+      executionId = latestDraftEvent.executionId ?: run.executionId,
       pendingMessageId = pendingMessageId,
       text = text,
       updatedAtEpochMs = latestDraftEvent.emittedAtEpochMs,
@@ -3131,6 +3185,8 @@ internal class OpenCrayHostRuntime private constructor(
     )
     return buildMap {
       put("sessionId", sessionId)
+      put("streamInstanceId", runtimeEventStreamInstanceId)
+      put("lastSequence", currentRuntimeEventSequenceLocked(sessionId))
       put("updatedAtEpochMs", updatedAtEpochMs)
       putRuntimeServiceDiagnosticsSnapshot(
         hostLifecycle = lifecycleDescriptor,
@@ -3671,6 +3727,13 @@ internal class OpenCrayHostRuntime private constructor(
           return@mapNotNull null
         }
         val persistedVisibleMessage = projectedMessageId?.let(visibleMessagesById::get)
+          ?: projectedMessageId
+            ?.takeIf { messageId -> messageId.startsWith("runtime-assistant-") }
+            ?.let { stableMessageId ->
+              visibleMessages.firstOrNull { message ->
+                message.messageId.startsWith("$stableMessageId-")
+              }
+            }
         val effectiveProjection = if (persistedVisibleMessage != null) {
           persistedProjectedMessageIds += persistedVisibleMessage.messageId
           projection.copy(snapshot = chatMessageToMap(persistedVisibleMessage))
@@ -5001,20 +5064,20 @@ internal class OpenCrayHostRuntime private constructor(
   )
 
   private fun runtimeProjectedMessageId(event: OpenCrayAgentRunEvent): String = when (event) {
-    is OpenCrayAssistantPhaseEvent -> buildString {
-      append("runtime-assistant-")
-      append(event.phase.name.lowercase(Locale.US))
-      append('-')
-      append(event.runId)
-      append('-')
-      append(event.turn ?: -1)
-      append('-')
-      append(event.stage?.trim()?.ifEmpty { "-" } ?: "-")
-      append('-')
-      append(event.emittedAtEpochMs)
-      append('-')
-      append(event.text.trim().hashCode())
-    }
+    is OpenCrayAssistantPhaseEvent -> event.eventId
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { eventId -> "runtime-assistant-event-$eventId" }
+      ?: buildString {
+        append("runtime-assistant-")
+        append(event.phase.name.lowercase(Locale.US))
+        append('-')
+        append(event.runId)
+        append('-')
+        append(event.turn ?: -1)
+        append('-')
+        append(event.stage?.trim()?.ifEmpty { "-" } ?: "-")
+      }
     is OpenCraySupplementEvent -> "runtime-supplement-${event.entryId}"
     is OpenCrayApprovalEvent -> "runtime-approval-${event.phase.name.lowercase(Locale.US)}-${event.runId}-${event.emittedAtEpochMs}"
     is OpenCrayToolCallEvent -> "runtime-tool-call-${event.runId}-${event.turn}-${event.emittedAtEpochMs}"
@@ -5602,6 +5665,7 @@ internal class OpenCrayHostRuntime private constructor(
   ): Map<String, Any?> = mapOf(
     "runId" to draft.runId,
     "taskId" to draft.taskId,
+    "executionId" to draft.executionId,
     "pendingMessageId" to draft.pendingMessageId,
     "text" to draft.text,
     "updatedAtEpochMs" to draft.updatedAtEpochMs,
@@ -6418,7 +6482,12 @@ internal class OpenCrayHostRuntime private constructor(
       ?.takeIf(String::isNotBlank)
       ?: task.id
 
-  private fun runtimeEventToMap(event: OpenCrayAgentRunEvent): Map<String, Any?> = when (event) {
+  private fun runtimeEventToMap(event: OpenCrayAgentRunEvent): Map<String, Any?> =
+    runtimeEventPayload(event).toMutableMap().apply {
+      put("eventId", runtimeEventStableId(event))
+    }
+
+  private fun runtimeEventPayload(event: OpenCrayAgentRunEvent): Map<String, Any?> = when (event) {
     is OpenCrayLifecycleEvent -> mapOf(
       "kind" to "lifecycle",
       "runId" to event.runId,
@@ -8817,6 +8886,7 @@ private data class RestoredTerminalMessage(
     sessionId: String,
     runId: String,
     taskId: String,
+    executionId: String?,
     pendingMessageId: String,
     text: String,
     updatedAtEpochMs: Long,
@@ -8825,6 +8895,7 @@ private data class RestoredTerminalMessage(
     "sessionId" to sessionId,
     "runId" to runId,
     "taskId" to taskId,
+    "executionId" to executionId,
     "pendingMessageId" to pendingMessageId,
     "text" to text,
     "updatedAtEpochMs" to updatedAtEpochMs,
@@ -8852,6 +8923,7 @@ private data class RestoredTerminalMessage(
     sessionId = sessionId,
     runId = runId,
     taskId = taskId,
+    executionId = executionId,
     pendingMessageId = pendingMessageId,
     text = text,
     updatedAtEpochMs = updatedAtEpochMs,
@@ -9236,6 +9308,7 @@ private data class ReplayedRuntimeEvent(
 private data class LiveAssistantDraftSnapshot(
   val runId: String,
   val taskId: String,
+  val executionId: String?,
   val pendingMessageId: String,
   val text: String,
   val updatedAtEpochMs: Long,

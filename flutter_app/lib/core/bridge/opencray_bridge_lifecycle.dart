@@ -50,15 +50,20 @@ Map<Object?, Object?> _attachRuntimeSnapshotClientLifecycle(
   Map<Object?, Object?> payload, {
   required String fallbackBridgeInstanceId,
 }) {
+  final String bridgeInstanceId = _resolvedLifecycleId(
+    payload['bridgeInstanceId'],
+    fallbackBridgeInstanceId,
+  );
   return <Object?, Object?>{
     ...payload,
     'flutterAppInstanceId': _resolvedLifecycleId(
       payload['flutterAppInstanceId'],
       openCrayFlutterAppInstanceId,
     ),
-    'bridgeInstanceId': _resolvedLifecycleId(
-      payload['bridgeInstanceId'],
-      fallbackBridgeInstanceId,
+    'bridgeInstanceId': bridgeInstanceId,
+    'bridgeEpoch': _resolvedLifecycleId(
+      payload['bridgeEpoch'],
+      bridgeInstanceId,
     ),
   };
 }

@@ -12,6 +12,23 @@ import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
 
+internal fun Iterable<OpenCrayAgentRunEvent>.hasRecordedCancellationFor(
+  run: AgentRunSnapshot,
+): Boolean {
+  if (run.pendingExecutionKind != null) {
+    return false
+  }
+  val executionId = run.executionId?.trim()?.takeIf(String::isNotBlank)
+  val executionOrdinal = run.executionOrdinal.takeIf { ordinal -> ordinal > 0 }
+  return any { event ->
+    event is OpenCrayCancellationEvent &&
+      event.runId == run.runId &&
+      event.taskId == run.taskId &&
+      event.executionId?.trim()?.takeIf(String::isNotBlank) == executionId &&
+      event.executionOrdinal?.takeIf { ordinal -> ordinal > 0 } == executionOrdinal
+  }
+}
+
 internal class ChatRunControlCoordinator(
   private val runtimeHostAccess: RuntimeChatMutationAccess,
   private val findRunSnapshotForIdentifier: (String) -> AgentRunSnapshot?,
@@ -29,26 +46,79 @@ internal class ChatRunControlCoordinator(
     (AgentRunSnapshot, PendingApprovalSnapshot?, Long) -> OpenCrayCancellationEvent,
   private val delegatedChildCancelledWhileWaitingSummaryProvider: () -> String,
   private val nowEpochMsProvider: () -> Long = System::currentTimeMillis,
+  private val hasRecordedCancellation: (AgentRunSnapshot) -> Boolean = { false },
 ) {
   fun interruptChatRun(taskIdOrRunId: String) {
     val run = requireNotNull(findRunSnapshotForIdentifier(taskIdOrRunId)) {
       "Run '$taskIdOrRunId' is unavailable."
     }
+    if (
+      hasRecordedCancellation(run) ||
+      (
+        !run.hasLiveManagedProcesses &&
+          (
+            run.lifecycleState == QueueTaskLifecycleState.COMPLETED ||
+              run.lifecycleState == QueueTaskLifecycleState.FAILED
+            )
+        )
+    ) {
+      return
+    }
     val approval = pendingApprovalForRun(run)
     val interruptedWaitingApproval = approval != null && isApprovalWaitingRun(run)
+    var cancellationRun = run
     if (!interruptedWaitingApproval) {
-      val cancelled = runtimeHostAccess.session(run.sessionId).requestCancel(run.taskId)
-      check(cancelled) {
-        "Unable to cancel run '$taskIdOrRunId'."
+      val runtimeSession = runtimeHostAccess.session(run.sessionId)
+      val resourceOnlyInterrupt = run.hasLiveManagedProcesses && run.lifecycleState in setOf(
+        QueueTaskLifecycleState.COMPLETED,
+        QueueTaskLifecycleState.FAILED,
+        QueueTaskLifecycleState.CANCELLED,
+      )
+      if (resourceOnlyInterrupt) {
+        terminateRunManagedProcesses(runtimeSession = runtimeSession, run = run)
+        val settledRun = runtimeSession.findRun(run.runId) ?: run
+        if (settledRun.hasLiveManagedProcesses) {
+          return
+        }
+        cancellationRun = settledRun
+      } else {
+        val cancelAccepted = runtimeSession.requestCancel(run.taskId)
+        terminateRunManagedProcesses(runtimeSession = runtimeSession, run = run)
+        var settledRun = runtimeSession.waitForRun(
+          runId = run.runId,
+          timeoutMs = INTERRUPT_SETTLE_TIMEOUT_MS,
+        ) ?: runtimeSession.findRun(run.runId)
+        if (settledRun?.hasLiveManagedProcesses == true) {
+          terminateRunManagedProcesses(runtimeSession = runtimeSession, run = settledRun)
+          settledRun = runtimeSession.findRun(run.runId) ?: settledRun
+        }
+        if (!cancelAccepted && settledRun?.isTerminal != true) {
+          if (settledRun?.lifecycleState == QueueTaskLifecycleState.CANCEL_REQUESTED) {
+            return
+          }
+          check(false) {
+            "Unable to cancel run '$taskIdOrRunId'."
+          }
+        }
+        if (settledRun?.isTerminal == true && !isCancellationSettled(settledRun)) {
+          return
+        }
+        if (!isCancellationSettled(settledRun) || settledRun?.hasLiveManagedProcesses == true) {
+          return
+        }
+        if (settledRun?.let(hasRecordedCancellation) == true) {
+          return
+        }
+        cancellationRun = requireNotNull(settledRun)
       }
     }
     val emittedAtEpochMs = nowEpochMsProvider()
     runCancellationReplayRecorder(
-      run.sessionId,
-      run.taskId,
-      run.runId,
+      cancellationRun.sessionId,
+      cancellationRun.taskId,
+      cancellationRun.runId,
       approval?.toolName,
-      run.replayExecutionContext(),
+      cancellationRun.replayExecutionContext(),
     )
     if (!interruptedWaitingApproval) {
       clearPendingApproval(run.sessionId, run.taskId)
@@ -68,7 +138,7 @@ internal class ChatRunControlCoordinator(
     recordRuntimeEvent(
       run.sessionId,
       cancellationEventFactory(
-        run,
+        cancellationRun,
         approval,
         emittedAtEpochMs,
       ),
@@ -133,6 +203,20 @@ internal class ChatRunControlCoordinator(
   private fun isApprovalRequiredError(errorCode: String?): Boolean =
     errorCode == ERROR_APPROVAL_REQUIRED || errorCode == ERROR_HIGH_RISK_APPROVAL_REQUIRED
 
+  private fun isCancellationSettled(run: AgentRunSnapshot?): Boolean =
+    run?.lifecycleState == QueueTaskLifecycleState.CANCELLED ||
+      run?.executionStatus == ExecutionStatus.CANCELLED
+
+  private fun terminateRunManagedProcesses(
+    runtimeSession: OpenCrayRuntimeSessionAccess,
+    run: AgentRunSnapshot,
+  ) {
+    if (!run.hasLiveManagedProcesses) {
+      return
+    }
+    runtimeSession.terminateManagedProcesses(run.managedProcessIds.toSet())
+  }
+
   private fun AgentRunSnapshot.replayExecutionContext(): RuntimeReplayExecutionContext =
     RuntimeReplayExecutionContext(
       executionId = executionId,
@@ -143,6 +227,7 @@ internal class ChatRunControlCoordinator(
   private companion object {
     private const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
     private const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
+    private const val INTERRUPT_SETTLE_TIMEOUT_MS: Long = 5_000L
   }
 }
 
@@ -184,6 +269,7 @@ internal class ServiceOwnedChatRunControlAccess(
     cancellationEventFactory = ::cancellationRuntimeEvent,
     delegatedChildCancelledWhileWaitingSummaryProvider = ::delegatedChildCancelledWhileWaitingSummary,
     nowEpochMsProvider = nowEpochMsProvider,
+    hasRecordedCancellation = ::hasRecordedCancellation,
   )
 
   fun interruptChatRun(taskIdOrRunId: String) {
@@ -265,6 +351,9 @@ internal class ServiceOwnedChatRunControlAccess(
     runtimeHostAccess.runEventJournalStore(sessionId).append(event)
     maybeClearPromptCheckpointAfterRuntimeEvent(sessionId = sessionId, event = event)
   }
+
+  private fun hasRecordedCancellation(run: AgentRunSnapshot): Boolean =
+    runtimeEventState.eventsForSession(run.sessionId).hasRecordedCancellationFor(run)
 
   private fun maybeClearPromptCheckpointAfterRuntimeEvent(
     sessionId: String,

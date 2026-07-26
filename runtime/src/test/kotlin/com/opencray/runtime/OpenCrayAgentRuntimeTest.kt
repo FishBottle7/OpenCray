@@ -8427,15 +8427,29 @@ class OpenCrayAgentRuntimeTest {
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("README says multi commentary works.", result.stdout)
+    val commentaryEvents = eventSink.events
+      .filterIsInstance<OpenCrayAssistantEvent>()
+      .filterNot(OpenCrayAssistantEvent::isFinal)
     assertEquals(
       listOf(
         "Scanning the README before reading it.",
         "Opening the relevant section now.",
       ),
-      eventSink.events
-        .filterIsInstance<OpenCrayAssistantEvent>()
-        .filterNot(OpenCrayAssistantEvent::isFinal)
-        .map(OpenCrayAssistantEvent::text),
+      commentaryEvents.map(OpenCrayAssistantEvent::text),
+    )
+    assertTrue(commentaryEvents.all { event -> !event.eventId.isNullOrBlank() })
+    assertEquals(2, commentaryEvents.map(OpenCrayAssistantEvent::eventId).distinct().size)
+    val replayState = requireNotNull(
+      OpenCrayPromptResumeMetadata.decodeFromMetadata(
+        metadata = commentaryEvents.first().metadata,
+        json = Json { ignoreUnknownKeys = true },
+      ),
+    )
+    assertEquals(
+      commentaryEvents.map(OpenCrayAssistantEvent::eventId),
+      replayState.pendingActions
+        .filterIsInstance<OpenCraySerializableModelAction.Commentary>()
+        .map(OpenCraySerializableModelAction.Commentary::eventId),
     )
     assertTrue(eventSink.assistantDrafts.isEmpty())
   }
@@ -8875,6 +8889,54 @@ class OpenCrayAgentRuntimeTest {
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("AUTO", gateway.requests.single().metadata["chatMode"])
     assertTrue("_host.pendingMessageId" !in gateway.requests.single().metadata)
+  }
+
+  @Test
+  fun interruptedGatewayExecutionEmitsCancelledLifecycleBeforeRethrow() {
+    Thread.interrupted()
+    val eventSink = RecordingEventSink()
+    val runtime = OpenCrayAgentRuntime(
+      gateway = object : LiteLlmGateway {
+        override fun execute(request: LiteLlmGatewayRequest): LiteLlmGatewayResult {
+          throw InterruptedException("cancel requested")
+        }
+      },
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(temporaryFolder.newFolder("agent-interrupted-gateway").toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 2),
+      eventSink = eventSink,
+      clock = IncrementingClock(start = 13_500L)::next,
+    )
+
+    try {
+      var interruptedThrown = false
+      try {
+        runtime.execute(
+          task = promptTask(input = "Wait for cancellation."),
+          hooks = runtimeHooks(),
+        )
+      } catch (_: InterruptedException) {
+        interruptedThrown = true
+      }
+
+      assertTrue(interruptedThrown)
+      assertTrue(Thread.currentThread().isInterrupted)
+      val terminalLifecycle = eventSink.events
+        .filterIsInstance<OpenCrayLifecycleEvent>()
+        .last()
+      assertEquals(OpenCrayRunLifecyclePhase.CANCELLED, terminalLifecycle.phase)
+      assertEquals("RUNTIME_INTERRUPTED", terminalLifecycle.errorCode)
+      assertTrue(
+        eventSink.events
+          .filterIsInstance<OpenCrayLifecycleEvent>()
+          .none { event -> event.phase == OpenCrayRunLifecyclePhase.ERROR },
+      )
+    } finally {
+      Thread.interrupted()
+    }
   }
 
   private fun promptTask(

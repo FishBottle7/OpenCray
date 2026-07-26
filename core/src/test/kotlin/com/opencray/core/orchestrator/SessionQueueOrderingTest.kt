@@ -317,6 +317,115 @@ class SessionQueueOrderingTest {
   }
 
   @Test
+  fun manualRetryClearsPreviousErrorState() {
+    var executionCount = 0
+    val queue = SessionQueue(
+      sessionId = "session-manual-retry-clear-error",
+      agentId = "agent-manual-retry-clear-error",
+      runtime = SessionTaskRuntime { task, _ ->
+        executionCount += 1
+        ExecutionResult(
+          taskId = task.id,
+          status = if (executionCount == 1) ExecutionStatus.FAILED else ExecutionStatus.SUCCESS,
+          errorCode = if (executionCount == 1) "TRANSIENT_FAILURE" else null,
+          errorMessage = if (executionCount == 1) "Try again." else null,
+          startedAtEpochMs = 1_000L + executionCount,
+          finishedAtEpochMs = 2_000L + executionCount,
+        )
+      },
+      snapshotStore = RecordingSnapshotStore(),
+      clock = IncrementingClock(start = 75_000L),
+    )
+    queue.enqueue(task(id = "task-manual-retry-clear-error", createdAt = 3_500L))
+    queue.drain()
+
+    assertTrue(
+      queue.requestRetry(
+        taskId = "task-manual-retry-clear-error",
+        taskMetadataUpdates = mapOf("_test.retryAcknowledgement" to "process-1"),
+      ),
+    )
+
+    val retriedTask = queue.snapshot().tasks.single()
+    assertEquals(QueueTaskLifecycleState.QUEUED, retriedTask.lifecycleState)
+    assertNull(retriedTask.lastErrorCode)
+    assertNull(retriedTask.lastErrorMessage)
+    assertEquals("process-1", retriedTask.task.metadata["_test.retryAcknowledgement"])
+  }
+
+  @Test
+  fun interruptedRuntimeExecutionProducesCancelledResultAndPreservesInterruptFlag() {
+    Thread.interrupted()
+    val queue = SessionQueue(
+      sessionId = "session-runtime-interrupted",
+      agentId = "agent-runtime-interrupted",
+      runtime = SessionTaskRuntime { _, _ -> throw InterruptedException("cancel requested") },
+      snapshotStore = RecordingSnapshotStore(),
+      clock = IncrementingClock(start = 77_000L),
+    )
+    queue.enqueue(task(id = "task-runtime-interrupted", createdAt = 3_700L))
+
+    try {
+      val result = queue.drain().single()
+
+      assertEquals(ExecutionStatus.CANCELLED, result.status)
+      assertEquals("RUNTIME_INTERRUPTED", result.errorCode)
+      assertEquals(QueueTaskLifecycleState.CANCELLED, queue.snapshot().tasks.single().lifecycleState)
+      assertTrue(Thread.currentThread().isInterrupted)
+    } finally {
+      Thread.interrupted()
+    }
+  }
+
+  @Test
+  fun interruptedRuntimeExecutionStopsDrainBeforeStartingNextTask() {
+    Thread.interrupted()
+    val executedTaskIds = mutableListOf<String>()
+    val queue = SessionQueue(
+      sessionId = "session-runtime-interrupted-drain",
+      agentId = "agent-runtime-interrupted-drain",
+      runtime = SessionTaskRuntime { task, _ ->
+        executedTaskIds += task.id
+        if (task.id == "task-interrupted-first") {
+          throw InterruptedException("cancel requested")
+        }
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.SUCCESS,
+          startedAtEpochMs = 1_000L,
+          finishedAtEpochMs = 1_001L,
+        )
+      },
+      snapshotStore = RecordingSnapshotStore(),
+      clock = IncrementingClock(start = 78_000L),
+    )
+    queue.enqueue(task(id = "task-interrupted-first", createdAt = 3_800L))
+    queue.enqueue(task(id = "task-waits-for-clean-worker", createdAt = 3_801L))
+
+    try {
+      val interruptedDrain = queue.drain()
+
+      assertEquals(listOf("task-interrupted-first"), executedTaskIds)
+      assertEquals(ExecutionStatus.CANCELLED, interruptedDrain.single().status)
+      assertEquals(
+        QueueTaskLifecycleState.QUEUED,
+        queue.snapshot().tasks.last().lifecycleState,
+      )
+      assertTrue(Thread.currentThread().isInterrupted)
+    } finally {
+      Thread.interrupted()
+    }
+
+    val resumedDrain = queue.drain()
+
+    assertEquals(
+      listOf("task-interrupted-first", "task-waits-for-clean-worker"),
+      executedTaskIds,
+    )
+    assertEquals(ExecutionStatus.SUCCESS, resumedDrain.single().status)
+  }
+
+  @Test
   fun externalCancelWhileRuntimeExecutesStillReachesCancellationHook() {
     val store = RecordingSnapshotStore()
     val queueClock = IncrementingClock(start = 80_000L)
