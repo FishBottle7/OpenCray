@@ -7783,8 +7783,17 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     executionState: snapshot.executionState,
     continuationKind: snapshot.continuationKind,
     resultMetadata: <String, String>{
+      'hasActiveExecution': '${snapshot.hasActiveExecution}',
       'mailboxMessageCount': '${snapshot.mailboxMessageCount}',
       'mailboxPendingMessageCount': '${snapshot.mailboxPendingMessageCount}',
+      'hasPendingApprovalResume': '${snapshot.hasPendingApprovalResume}',
+      if (snapshot.pendingApprovalToolName?.trim().isNotEmpty == true)
+        'pendingApprovalToolName': snapshot.pendingApprovalToolName!.trim(),
+      'pendingApprovalIsHighRisk': '${snapshot.pendingApprovalIsHighRisk}',
+      if (snapshot.pendingApprovalChildRunId?.trim().isNotEmpty == true)
+        'pendingApprovalChildRunId': snapshot.pendingApprovalChildRunId!.trim(),
+      if (snapshot.pendingApprovalChildTaskId?.trim().isNotEmpty == true)
+        'pendingApprovalChildTaskId': snapshot.pendingApprovalChildTaskId!.trim(),
       if (snapshot.mailboxLastDeliveredMessageId?.trim().isNotEmpty == true)
         'mailboxLastDeliveredMessageId': snapshot.mailboxLastDeliveredMessageId!
             .trim(),
@@ -7832,8 +7841,14 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         event.executionState?.trim().toLowerCase() ?? '',
         event.continuationKind?.trim().toLowerCase() ?? '',
         event.text?.trim() ?? '',
+        event.resultMetadata['hasActiveExecution']?.trim() ?? '',
         event.resultMetadata['mailboxMessageCount']?.trim() ?? '',
         event.resultMetadata['mailboxPendingMessageCount']?.trim() ?? '',
+        event.resultMetadata['hasPendingApprovalResume']?.trim() ?? '',
+        event.resultMetadata['pendingApprovalToolName']?.trim() ?? '',
+        event.resultMetadata['pendingApprovalIsHighRisk']?.trim() ?? '',
+        event.resultMetadata['pendingApprovalChildRunId']?.trim() ?? '',
+        event.resultMetadata['pendingApprovalChildTaskId']?.trim() ?? '',
         event.resultMetadata['mailboxLastDeliveredMessageId']?.trim() ?? '',
         event.isHighRisk.toString(),
       ].join('|');
@@ -10921,6 +10936,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
   String _buildSubagentPreviewBody(OpenCrayChatRuntimeEventSnapshot event) {
     return _joinTraceSections(<String?>[
       _subagentPhaseSummary(event),
+      _subagentControlSection(event),
       _subagentSummarySection(event),
       _subagentMailboxSection(event),
       _subagentContextSection(event),
@@ -10931,6 +10947,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     return _joinTraceSections(<String?>[
       _subagentPhaseSummary(event),
       _subagentContextSection(event),
+      _subagentControlSection(event),
       _subagentMailboxSection(event),
       _subagentSummarySection(event),
     ]);
@@ -11024,6 +11041,52 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     }
     final String label = _traceSectionLabel(english: 'Summary', chinese: '摘要');
     return summary.contains('\n') ? '$label:\n$summary' : '$label: $summary';
+  }
+
+  String? _subagentControlSection(OpenCrayChatRuntimeEventSnapshot event) {
+    final bool? hasActiveExecution = _resultMetadataBool(
+      event,
+      'hasActiveExecution',
+    );
+    final bool? hasPendingApprovalResume = _resultMetadataBool(
+      event,
+      'hasPendingApprovalResume',
+    );
+    final bool pendingApprovalIsHighRisk =
+        _resultMetadataBool(event, 'pendingApprovalIsHighRisk') == true;
+    final String? pendingApprovalToolName = _resultMetadataValue(
+      event,
+      'pendingApprovalToolName',
+    );
+    final String? pendingApprovalChildRunId = _resultMetadataValue(
+      event,
+      'pendingApprovalChildRunId',
+    );
+    final String? pendingApprovalChildTaskId = _resultMetadataValue(
+      event,
+      'pendingApprovalChildTaskId',
+    );
+    final List<String> lines = <String>[
+      if (hasActiveExecution == true)
+        widget.copy.isChinese
+            ? '执行: 当前有活动运行'
+            : 'Execution: active',
+      if (hasPendingApprovalResume == true)
+        widget.copy.isChinese
+            ? '审批: ${pendingApprovalIsHighRisk ? '高风险待批' : '待批恢复'}${pendingApprovalToolName == null ? '' : ' ($pendingApprovalToolName)'}'
+            : 'Approval: ${pendingApprovalIsHighRisk ? 'high risk pending' : 'pending resume'}${pendingApprovalToolName == null ? '' : ' ($pendingApprovalToolName)'}',
+      if (pendingApprovalChildRunId != null || pendingApprovalChildTaskId != null)
+        widget.copy.isChinese
+            ? '审批子任务: ${[
+                if (pendingApprovalChildRunId != null) 'run $pendingApprovalChildRunId',
+                if (pendingApprovalChildTaskId != null) 'task $pendingApprovalChildTaskId',
+              ].join(' / ')}'
+            : 'Approval child: ${[
+                if (pendingApprovalChildRunId != null) 'run $pendingApprovalChildRunId',
+                if (pendingApprovalChildTaskId != null) 'task $pendingApprovalChildTaskId',
+              ].join(' / ')}',
+    ];
+    return lines.isEmpty ? null : lines.join('\n');
   }
 
   String? _subagentMailboxSection(OpenCrayChatRuntimeEventSnapshot event) {

@@ -197,9 +197,15 @@ void main() {
           'startedAtEpochMs': 1800,
           'updatedAtEpochMs': 2400,
           'eventCount': 0,
+          'hasActiveExecution': true,
           'mailboxMessageCount': 2,
           'mailboxPendingMessageCount': 1,
           'mailboxLastDeliveredMessageId': 'mailbox-1',
+          'hasPendingApprovalResume': true,
+          'pendingApprovalToolName': 'Read',
+          'pendingApprovalIsHighRisk': false,
+          'pendingApprovalChildRunId': 'run-child',
+          'pendingApprovalChildTaskId': 'task-child',
         },
       ],
       'events': <Object?>[],
@@ -229,9 +235,15 @@ void main() {
     expect(subAgent.startedAtEpochMs, 1800);
     expect(subAgent.updatedAtEpochMs, 2400);
     expect(subAgent.eventCount, 0);
+    expect(subAgent.hasActiveExecution, isTrue);
     expect(subAgent.mailboxMessageCount, 2);
     expect(subAgent.mailboxPendingMessageCount, 1);
     expect(subAgent.mailboxLastDeliveredMessageId, 'mailbox-1');
+    expect(subAgent.hasPendingApprovalResume, isTrue);
+    expect(subAgent.pendingApprovalToolName, 'Read');
+    expect(subAgent.pendingApprovalIsHighRisk, isFalse);
+    expect(subAgent.pendingApprovalChildRunId, 'run-child');
+    expect(subAgent.pendingApprovalChildTaskId, 'task-child');
   });
 
   test('chat run snapshot parses execution fields from map payload', () {

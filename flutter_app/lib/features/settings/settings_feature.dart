@@ -1067,6 +1067,16 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
                     label: 'Parent',
                     value: subAgents[index].parentRunId,
                   ),
+                  if (subAgents[index].hasActiveExecution)
+                    const _DebugValueChip(
+                      label: 'Execution',
+                      value: 'active',
+                    ),
+                  if (subAgents[index].hasPendingApprovalResume)
+                    _DebugValueChip(
+                      label: 'Approval',
+                      value: _formatSubAgentApprovalStatus(subAgents[index]),
+                    ),
                   if (subAgents[index].mailboxMessageCount > 0 ||
                       subAgents[index].mailboxPendingMessageCount > 0)
                     _DebugValueChip(
@@ -1091,6 +1101,19 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
                   subAgents[index].mailboxLastDeliveredMessageId!.trim(),
                 ),
               ],
+              if (subAgents[index].pendingApprovalToolName?.trim().isNotEmpty ==
+                  true)
+                _DebugKeyValueLine(
+                  'Pending approval tool',
+                  subAgents[index].pendingApprovalIsHighRisk
+                      ? '${subAgents[index].pendingApprovalToolName!.trim()} (high risk)'
+                      : subAgents[index].pendingApprovalToolName!.trim(),
+                ),
+              if (_pendingApprovalChildLabel(subAgents[index]) != null)
+                _DebugKeyValueLine(
+                  'Pending approval child',
+                  _pendingApprovalChildLabel(subAgents[index])!,
+                ),
               if (index < subAgents.length - 1) ...[
                 const SizedBox(height: 12),
                 const Divider(height: 1, color: OpenCrayColors.divider),
@@ -1212,6 +1235,13 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
     return rawStatus.trim().replaceAll(RegExp(r'[_-]+'), ' ').toLowerCase();
   }
 
+  String _formatSubAgentApprovalStatus(OpenCrayChatSubAgentSnapshot subAgent) {
+    if (!subAgent.hasPendingApprovalResume) {
+      return 'none';
+    }
+    return subAgent.pendingApprovalIsHighRisk ? 'high risk' : 'pending';
+  }
+
   String _formatSubAgentSummary(OpenCrayChatSubAgentSnapshot subAgent) {
     final List<String> parts = <String>[
       if (subAgent.subagentType.trim().isNotEmpty) subAgent.subagentType.trim(),
@@ -1220,6 +1250,16 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
       if (subAgent.summary?.trim().isNotEmpty == true) subAgent.summary!.trim(),
     ];
     return parts.join(' · ');
+  }
+
+  String? _pendingApprovalChildLabel(OpenCrayChatSubAgentSnapshot subAgent) {
+    final List<String> parts = <String>[
+      if (subAgent.pendingApprovalChildRunId?.trim().isNotEmpty == true)
+        'run ${subAgent.pendingApprovalChildRunId!.trim()}',
+      if (subAgent.pendingApprovalChildTaskId?.trim().isNotEmpty == true)
+        'task ${subAgent.pendingApprovalChildTaskId!.trim()}',
+    ];
+    return parts.isEmpty ? null : parts.join(' / ');
   }
 }
 

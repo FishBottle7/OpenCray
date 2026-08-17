@@ -2679,10 +2679,23 @@ void main() {
     expect(find.text('run-memory'), findsWidgets);
     expect(find.text('Subagent: Inspect detached recovery'), findsOneWidget);
     expect(find.text('Status: background running'), findsOneWidget);
+    expect(find.text('Execution: active'), findsOneWidget);
+    expect(find.text('Approval: pending'), findsOneWidget);
     expect(find.text('Mailbox: 1 pending / 2 total'), findsOneWidget);
     expect(
       find.textContaining(
         'Last delivered: mailbox-memory-1',
+        findRichText: true,
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining('Pending approval tool: Read', findRichText: true),
+      findsOneWidget,
+    );
+    expect(
+      find.textContaining(
+        'Pending approval child: run child-run-detached-memory / task child-task-detached-memory',
         findRichText: true,
       ),
       findsOneWidget,
@@ -4202,9 +4215,14 @@ _FakeDebugBridge _buildDebugBridge({
           startedAtEpochMs: 1750,
           updatedAtEpochMs: 2350,
           eventCount: 0,
+          hasActiveExecution: true,
           mailboxMessageCount: 2,
           mailboxPendingMessageCount: 1,
           mailboxLastDeliveredMessageId: 'mailbox-memory-1',
+          hasPendingApprovalResume: true,
+          pendingApprovalToolName: 'Read',
+          pendingApprovalChildRunId: 'child-run-detached-memory',
+          pendingApprovalChildTaskId: 'child-task-detached-memory',
         ),
       ],
       events: <OpenCrayChatRuntimeEventSnapshot>[

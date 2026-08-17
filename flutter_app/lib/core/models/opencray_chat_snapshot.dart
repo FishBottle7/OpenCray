@@ -2000,9 +2000,16 @@ class OpenCrayChatSubAgentSnapshot {
     required this.startedAtEpochMs,
     required this.updatedAtEpochMs,
     required this.eventCount,
+    this.hasActiveExecution = false,
     this.mailboxMessageCount = 0,
     this.mailboxPendingMessageCount = 0,
     this.mailboxLastDeliveredMessageId,
+    this.hasPendingApprovalResume = false,
+    this.pendingApprovalToolName,
+    this.pendingApprovalIsHighRisk = false,
+    this.pendingApprovalChildRunId,
+    this.pendingApprovalChildTaskId,
+    this.childSessionId,
     this.phase,
     this.status,
     this.executionState,
@@ -2015,6 +2022,7 @@ class OpenCrayChatSubAgentSnapshot {
 
   final String parentRunId;
   final String parentTaskId;
+  final String? childSessionId;
   final String childRunId;
   final String childTaskId;
   final String label;
@@ -2032,14 +2040,21 @@ class OpenCrayChatSubAgentSnapshot {
   final int startedAtEpochMs;
   final int updatedAtEpochMs;
   final int eventCount;
+  final bool hasActiveExecution;
   final int mailboxMessageCount;
   final int mailboxPendingMessageCount;
   final String? mailboxLastDeliveredMessageId;
+  final bool hasPendingApprovalResume;
+  final String? pendingApprovalToolName;
+  final bool pendingApprovalIsHighRisk;
+  final String? pendingApprovalChildRunId;
+  final String? pendingApprovalChildTaskId;
 
   factory OpenCrayChatSubAgentSnapshot.fromMap(Map<Object?, Object?> map) {
     return OpenCrayChatSubAgentSnapshot(
       parentRunId: map['parentRunId'] as String? ?? '',
       parentTaskId: map['parentTaskId'] as String? ?? '',
+      childSessionId: map['childSessionId'] as String?,
       childRunId: map['childRunId'] as String? ?? '',
       childTaskId: map['childTaskId'] as String? ?? '',
       label: map['label'] as String? ?? '',
@@ -2057,11 +2072,20 @@ class OpenCrayChatSubAgentSnapshot {
       startedAtEpochMs: map['startedAtEpochMs'] as int? ?? 0,
       updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
       eventCount: map['eventCount'] as int? ?? 0,
+      hasActiveExecution: map['hasActiveExecution'] as bool? ?? false,
       mailboxMessageCount: map['mailboxMessageCount'] as int? ?? 0,
       mailboxPendingMessageCount:
           map['mailboxPendingMessageCount'] as int? ?? 0,
       mailboxLastDeliveredMessageId:
           map['mailboxLastDeliveredMessageId'] as String?,
+      hasPendingApprovalResume:
+          map['hasPendingApprovalResume'] as bool? ?? false,
+      pendingApprovalToolName: map['pendingApprovalToolName'] as String?,
+      pendingApprovalIsHighRisk:
+          map['pendingApprovalIsHighRisk'] as bool? ?? false,
+      pendingApprovalChildRunId: map['pendingApprovalChildRunId'] as String?,
+      pendingApprovalChildTaskId:
+          map['pendingApprovalChildTaskId'] as String?,
     );
   }
 }

@@ -8976,9 +8976,14 @@ void main() {
               startedAtEpochMs: 1800,
               updatedAtEpochMs: 2600,
               eventCount: 0,
+              hasActiveExecution: true,
               mailboxMessageCount: 2,
               mailboxPendingMessageCount: 1,
               mailboxLastDeliveredMessageId: 'mailbox-detached-1',
+              hasPendingApprovalResume: true,
+              pendingApprovalToolName: 'Read',
+              pendingApprovalChildRunId: 'child-run-detached-1',
+              pendingApprovalChildTaskId: 'child-task-detached-1',
             ),
           ],
           events: <OpenCrayChatRuntimeEventSnapshot>[],
@@ -9006,6 +9011,7 @@ void main() {
           'chat-run-trace-fullscreen-child-run-detached-1',
         ),
       );
+      expect(fullscreenFinder, findsOneWidget);
       expect(
         find.descendant(
           of: fullscreenFinder,
@@ -9035,6 +9041,29 @@ void main() {
         find.descendant(
           of: fullscreenFinder,
           matching: find.textContaining('Last delivered: mailbox-detached-1'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Execution: active'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining('Approval: pending resume (Read)'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: fullscreenFinder,
+          matching: find.textContaining(
+            'Approval child: run child-run-detached-1 / task child-task-detached-1',
+          ),
         ),
         findsOneWidget,
       );
