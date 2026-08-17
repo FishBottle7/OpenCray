@@ -137,6 +137,7 @@ data class OpenCraySubAgentEvent(
   override val executionId: String? = null,
   override val executionOrdinal: Int? = null,
   override val executionKind: String? = null,
+  val agentId: String? = null,
   val phase: OpenCraySubAgentPhase,
   val childRunId: String,
   val childTaskId: String,
@@ -153,6 +154,7 @@ data class OpenCraySubAgentEvent(
   val isHighRisk: Boolean = false,
   override val turn: Int? = null,
   override val emittedAtEpochMs: Long,
+  val closed: Boolean = false,
   override val eventId: String? = null,
 ) : OpenCrayAgentRunEvent
 

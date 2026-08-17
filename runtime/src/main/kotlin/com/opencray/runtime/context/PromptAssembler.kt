@@ -583,7 +583,7 @@ class PromptAssembler(
         ToolProtocolDetailMode.FULL -> {
           appendToolGuidance("Use spawn_agent when you need an explicit child handle and want that child to start immediately.")
           appendToolGuidance("Use wait_agent to block until a running child reaches its latest stable state and harvest its result.")
-          appendToolGuidance("After user approval unlocks a paused child, the runtime resumes it through the detached recovery path; use wait_agent later to observe the new stable state.")
+          appendToolGuidance("After user approval unlocks a paused child, the session-owned recovery path resumes it automatically; use wait_agent later to observe the new stable state.")
         }
 
         ToolProtocolDetailMode.COMPACT,
@@ -594,7 +594,7 @@ class PromptAssembler(
       }
     }
     if (hasSendInputTool) {
-      appendToolGuidance("Use send_input only while a child is queued or paused and waiting to resume. It queues mailbox input for the next child resume; it is not a mid-run interrupt.")
+      appendToolGuidance("Use send_input while a child is queued, already running in background, or paused and waiting to resume. By default it queues mailbox input for the next safe child boundary. If you must redirect a currently running child immediately, set interrupt=true so the in-flight child turn is stopped and restarted with the updated mailbox input.")
     }
     if (hasCloseAgentTool) {
       when (detailMode) {

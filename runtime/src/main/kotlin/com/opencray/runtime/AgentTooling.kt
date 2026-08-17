@@ -584,7 +584,7 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "wait_agent",
-        description = "Wait for one delegated child handle to reach its latest stable state and return a summarized result. If that child is already running, wait_agent blocks until it finishes or pauses for approval. Approval-unlocked children resume through the runtime or host recovery path; use wait_agent later to observe that resumed state.",
+        description = "Wait for one delegated child handle to reach its latest stable state and return a summarized result. If that child is already running, wait_agent blocks until it finishes or pauses for approval. Approval-unlocked children resume through the session-owned recovery path; use wait_agent later to observe that resumed state.",
         parameters = listOf(
           AgentToolParameter("agent_id", "string", required = false, description = "One delegated child handle id returned by spawn_agent."),
           AgentToolParameter("agent_ids", "string[]", required = false, description = "Optional batch form. The first listed id is used in this runtime."),
@@ -593,12 +593,13 @@ class OpenCrayToolDispatcher(
       ),
       AgentToolDefinition(
         name = "send_input",
-        description = "Queue one parent follow-up message in the delegated child mailbox. Use it only for queued or approval-waiting children; it is not a mid-run interrupt.",
+        description = "Queue one parent follow-up message in the delegated child mailbox. Use it for queued, background-running, or approval-waiting children. Idle queued children may resume immediately, while background-running children normally apply it after the current child turn reaches its next safe boundary. Set interrupt=true only when you need to redirect a currently running child immediately.",
         parameters = listOf(
           AgentToolParameter("agent_id", "string", required = false, description = "Delegated child handle id returned by spawn_agent."),
           AgentToolParameter("id", "string", required = false, description = "Compatibility alias for agent_id."),
-          AgentToolParameter("message", "string", required = false, description = "Parent follow-up message to queue in the child mailbox before the next resume."),
+          AgentToolParameter("message", "string", required = false, description = "Parent follow-up message to queue in the child mailbox before the next resume boundary."),
           AgentToolParameter("input", "string", required = false, description = "Compatibility alias for message."),
+          AgentToolParameter("interrupt", "boolean", required = false, description = "When true and the child is already running, interrupt that in-flight child turn, keep the not-yet-committed mailbox delivery pending, and restart the child immediately with the updated input."),
         ),
       ),
       AgentToolDefinition(

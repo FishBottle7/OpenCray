@@ -434,7 +434,7 @@ class PromptAssemblerTest {
 
     assertTrue(prompt.taskPrompt.contains("Use spawn_agent when you need an explicit child handle and want that child to start immediately."))
     assertTrue(prompt.taskPrompt.contains("Use wait_agent to block until a running child reaches its latest stable state and harvest its result."))
-    assertTrue(prompt.taskPrompt.contains("After user approval unlocks a paused child, the runtime resumes it through the detached recovery path; use wait_agent later to observe the new stable state."))
+    assertTrue(prompt.taskPrompt.contains("After user approval unlocks a paused child, the session-owned recovery path resumes it automatically; use wait_agent later to observe the new stable state."))
     assertFalse(prompt.taskPrompt.contains("Use wait_agent to block until a running child reaches its latest stable state, or to resume a paused child after user approval."))
   }
 
