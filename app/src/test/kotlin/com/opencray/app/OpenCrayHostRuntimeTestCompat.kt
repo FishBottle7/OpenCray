@@ -75,6 +75,8 @@ internal fun OpenCrayHostRuntime.Companion.createForTest(
   sessionRuntimeManager: AgentSessionRuntimeManager,
   runEventJournalStoreFactory: RunEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory(),
   promptCheckpointStoreFactory: PromptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory(),
+  subAgentSessionLinkStoreFactory: SubAgentSessionLinkStoreFactory =
+    inMemorySubAgentSessionLinkStoreFactory(),
   supplementStoreFactory: AgentSessionSupplementStoreFactory = inMemorySupplementStoreFactoryForHostRuntimeTest(),
   todoSnapshotProvider: (String) -> ChatSessionTodoPresentation = {
     ChatSessionTodoPresentation.empty()
@@ -193,6 +195,7 @@ internal fun OpenCrayHostRuntime.Companion.createForTest(
     voiceMetadataBackfillExecutor = voiceMetadataBackfillExecutor,
     voiceMetadataCacheStore = voiceMetadataCacheStore,
     runtimeHostAccess = runtimeHostAccess,
+    subAgentSessionLinkStoreFactory = subAgentSessionLinkStoreFactory,
     todoSnapshotProvider = todoSnapshotProvider,
     transcriptMessagesProvider = transcriptMessagesProvider,
     directTaskRuntimeFactory = directTaskRuntimeFactory,

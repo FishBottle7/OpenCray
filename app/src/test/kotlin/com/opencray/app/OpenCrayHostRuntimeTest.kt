@@ -129,6 +129,7 @@ import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
 import com.opencray.runtime.subagent.SubAgentMailbox
 import com.opencray.runtime.subagent.SubAgentMailboxMessage
+import com.opencray.runtime.subagent.SubAgentSessionLink
 import com.opencray.runtime.soul.InteractionPreferenceState
 import com.opencray.runtime.soul.PreferenceAxisState
 import com.opencray.runtime.soul.PreferredAddressState
@@ -5861,6 +5862,52 @@ class OpenCrayHostRuntimeTest {
     assertEquals(2, completedChild["eventCount"])
   }
 
+
+  @Test
+  fun chatRuntimeSnapshotProjectsClosedSubAgentEdgeFromReplayEvents() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-subagent-runtime-closed"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val transcriptMessages = listOf(
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.TOOL,
+        content = """{"event_kind":"subagent","run_id":"replay-run-close","task_id":"replay-task-close","agent_id":"child-handle-close","turn":0,"phase":"started","child_run_id":"child-run-close","child_task_id":"child-task-close","label":"Inspect README","subagent_type":"researcher","context_mode":"minimal","depth":1,"execution_state":"running","continuation_kind":"none","resumable":false,"requires_user_action":false,"is_high_risk":false}""",
+      ),
+      RuntimeConversationMessage(
+        role = RuntimeConversationRole.TOOL,
+        content = """{"event_kind":"subagent","run_id":"replay-run-close","task_id":"replay-task-close","agent_id":"child-handle-close","turn":1,"phase":"cancelled","child_run_id":"child-run-close","child_task_id":"child-task-close","label":"Inspect README","subagent_type":"researcher","context_mode":"minimal","depth":1,"summary":"Delegated child handle closed.","execution_state":"cancelled","continuation_kind":"none","resumable":false,"requires_user_action":false,"is_high_risk":false,"closed":true}""",
+      ),
+    )
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = RecordingRuntimeManager(),
+      transcriptMessagesProvider = { sessionId ->
+        if (sessionId == activeSessionId) {
+          transcriptMessages
+        } else {
+          emptyList()
+        }
+      },
+    )
+
+    val runtimeActivity = hostRuntime.loadChatRuntimeSnapshot()
+    val events = (runtimeActivity["events"] as List<*>).map { entry -> entry as Map<*, *> }
+    val subAgents = (runtimeActivity["subAgents"] as List<*>).map { entry -> entry as Map<*, *> }
+    val closedEvent = events.last { event -> event["kind"] == "subagent" }
+    val closedChild = subAgents.single()
+
+    assertEquals(true, closedEvent["closed"])
+    assertEquals("child-handle-close", closedEvent["agentId"])
+    assertEquals("cancelled", closedEvent["phase"])
+    assertEquals("cancelled", closedEvent["status"])
+    assertEquals("Delegated child handle closed.", closedEvent["text"])
+    assertEquals(true, closedChild["closed"])
+    assertEquals("child-handle-close", closedChild["agentId"])
+    assertEquals("cancelled", closedChild["phase"])
+    assertEquals("cancelled", closedChild["status"])
+    assertEquals("Delegated child handle closed.", closedChild["summary"])
+    assertEquals(2, closedChild["eventCount"])
+  }
+
   @Test
   fun chatRuntimeSnapshotBuildsSubAgentRegistryFromPromptCheckpointHandles() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-subagent-runtime-checkpoint"))
@@ -6013,6 +6060,131 @@ class OpenCrayHostRuntimeTest {
     assertEquals(2, child["mailboxMessageCount"])
     assertEquals(1, child["mailboxPendingMessageCount"])
     assertEquals("mailbox-durable-1", child["mailboxLastDeliveredMessageId"])
+  }
+
+
+  @Test
+  fun chatRuntimeSnapshotBuildsSubAgentRegistryFromDurableClosedHandleSource() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-subagent-runtime-durable-closed"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(sessionId = activeSessionId).apply {
+      closedSubAgentHandles += SubAgentHandleState(
+        agentId = "child-durable-closed",
+        childRunId = "child-run-durable-closed",
+        childTaskId = "child-task-durable-closed",
+        description = "Closed runtime snapshot",
+        prompt = "Inspect the durable closed runtime snapshot pipeline.",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        parentRunId = "run-parent-durable-closed",
+        parentTaskId = "task-parent-durable-closed",
+        parentTurn = 1,
+        depth = 1,
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.CANCELLED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Delegated child handle was explicitly closed.",
+        ),
+        createdAtEpochMs = 900L,
+        updatedAtEpochMs = 1_300L,
+      )
+    }
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+    )
+
+    val runtimeActivity = hostRuntime.loadChatRuntimeSnapshot()
+    val subAgents = (runtimeActivity["subAgents"] as List<*>).map { entry ->
+      entry as Map<*, *>
+    }
+    val child = subAgents.single()
+
+    assertEquals("child-durable-closed", child["agentId"])
+    assertEquals("cancelled", child["phase"])
+    assertEquals("cancelled", child["status"])
+    assertEquals(true, child["closed"])
+    assertEquals(false, child["hasActiveExecution"])
+    assertEquals("Delegated child handle was explicitly closed.", child["summary"])
+  }
+
+
+  @Test
+  fun chatRuntimeSnapshotBuildsSubAgentRegistryFromDurableSessionLinkSource() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-subagent-runtime-link"))
+    val activeSessionId = chatStore.loadState().activeSession.sessionId
+    val manager = RecordingRuntimeManager()
+    val handle = RecordingSessionHandle(sessionId = activeSessionId).apply {
+      putRunSnapshot(
+        AgentRunSnapshot(
+          sessionId = activeSessionId,
+          runId = "run-parent-link",
+          taskId = "task-parent-link",
+          acceptedAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_300L,
+          lifecycleState = QueueTaskLifecycleState.RUNNING,
+          taskState = AgentTaskState.RUNNING,
+          attempt = 1,
+        ),
+      )
+    }
+    val subAgentSessionLinkStoreFactory = inMemorySubAgentSessionLinkStoreFactory()
+    subAgentSessionLinkStoreFactory.forChatSession(activeSessionId).upsert(
+      SubAgentSessionLink(
+        parentSessionId = activeSessionId,
+        parentRunId = "run-parent-link",
+        agentId = "child-link-only",
+        childSessionId = "child-session-link-only",
+        childRootRunId = "child-run-link-only",
+        childRootTaskId = "child-task-link-only",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        depth = 1,
+        label = "Inspect detached child link",
+        status = "background_running",
+        closed = false,
+        createdAtEpochMs = 900L,
+        updatedAtEpochMs = 1_300L,
+      ),
+    )
+    manager.putHandle(handle)
+    val hostRuntime = hostRuntime(
+      chatStore = chatStore,
+      runtimeManager = manager,
+      subAgentSessionLinkStoreFactory = subAgentSessionLinkStoreFactory,
+    )
+
+    val runtimeActivity = hostRuntime.loadChatRuntimeSnapshot()
+    val subAgents = (runtimeActivity["subAgents"] as List<*>).map { entry ->
+      entry as Map<*, *>
+    }
+    val child = subAgents.single()
+
+    assertEquals("run-parent-link", child["parentRunId"])
+    assertEquals("child-link-only", child["agentId"])
+    assertEquals("child-session-link-only", child["childSessionId"])
+    assertEquals("child-run-link-only", child["childRunId"])
+    assertEquals("child-task-link-only", child["childTaskId"])
+    assertEquals("Inspect detached child link", child["label"])
+    assertEquals("researcher", child["subagentType"])
+    assertEquals("minimal", child["contextMode"])
+    assertEquals(1, child["depth"])
+    assertEquals("resumed", child["phase"])
+    assertEquals("background_running", child["status"])
+    assertEquals("background_running", child["executionState"])
+    assertEquals("background_resume", child["continuationKind"])
+    assertEquals(false, child["resumable"])
+    assertEquals(false, child["requiresUserAction"])
+    assertEquals(false, child["isHighRisk"])
+    assertEquals(false, child["closed"])
+    assertEquals(true, child["hasActiveExecution"])
+    assertEquals(0, child["eventCount"])
+    assertNull(child["summary"])
   }
 
   @Test
@@ -11848,6 +12020,8 @@ class OpenCrayHostRuntimeTest {
       hostRuntimeTestRunEventJournalStoreFactory(),
     promptCheckpointStoreFactory: PromptCheckpointStoreFactory =
       hostRuntimeTestPromptCheckpointStoreFactory(),
+    subAgentSessionLinkStoreFactory: SubAgentSessionLinkStoreFactory =
+      inMemorySubAgentSessionLinkStoreFactory(),
     lifecycleDescriptor: HostRuntimeLifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
     runtimeOwnerDescriptor: HostRuntimeLifecycleDescriptor = lifecycleDescriptor,
     runtimeControllerDescriptor: RuntimeControllerLifecycleDescriptor? = null,
@@ -11897,6 +12071,7 @@ class OpenCrayHostRuntimeTest {
     transcriptMessagesProvider = transcriptMessagesProvider,
     runEventJournalStoreFactory = runEventJournalStoreFactory,
     promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+    subAgentSessionLinkStoreFactory = subAgentSessionLinkStoreFactory,
     approvalRegistry = approvalRegistry,
     memoryIngestionCoordinator = memoryIngestionCoordinator,
     approvalReplayRecorder = approvalReplayRecorder,
@@ -12840,9 +13015,11 @@ class OpenCrayHostRuntimeTest {
     val retriedTaskIds = mutableListOf<String>()
     val terminatedProcessIds = mutableListOf<String>()
     val subAgentHandles = mutableListOf<SubAgentHandleState>()
+    val closedSubAgentHandles = mutableListOf<SubAgentHandleState>()
     val retainedSubAgentParentRunIds = mutableListOf<Set<String>>()
     private var lastSubmittedTaskId: String? = null
     private val runSnapshotsById = linkedMapOf<String, AgentRunSnapshot>()
+    private val activeSubAgentExecutions = mutableSetOf<Pair<String, String>>()
     private val managedProcessesById =
       linkedMapOf<String, com.opencray.runtime.process.ManagedProcessSnapshot>()
 
@@ -13114,7 +13291,18 @@ class OpenCrayHostRuntimeTest {
     override fun listManagedProcesses(): List<com.opencray.runtime.process.ManagedProcessSnapshot> =
       managedProcessesById.values.toList()
 
-    override fun listSubAgentHandles(): List<SubAgentHandleState> = subAgentHandles.toList()
+    override fun listSubAgentHandles(): List<SubAgentHandleState> =
+      (subAgentHandles + closedSubAgentHandles).toList()
+
+    override fun listClosedSubAgentHandles(): List<SubAgentHandleState> =
+      closedSubAgentHandles.toList()
+
+    override fun hasActiveSubAgentExecution(agentId: String, parentRunId: String): Boolean =
+      activeSubAgentExecutions.contains(agentId to parentRunId)
+
+    fun markActiveSubAgentExecution(agentId: String, parentRunId: String) {
+      activeSubAgentExecutions += agentId to parentRunId
+    }
 
     override fun retainKnownSubAgentParentRuns(parentRunIds: Set<String>) {
       retainedSubAgentParentRunIds += parentRunIds

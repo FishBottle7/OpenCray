@@ -582,6 +582,114 @@ class ScheduledTaskRuntimeTest {
   }
 
   @Test
+  fun scheduledTaskDispatcherSkipsSessionWithLiveManagedProcessWhenConflictPolicyRequiresIt() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-dispatch-managed-process-busy")
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val runRecordStore = InMemoryScheduledTaskRunRecordStoreFactory().create()
+    val session = RecordingScheduledTaskSessionAccess(
+      sessionId = sessionId,
+      hasLiveManagedProcesses = true,
+    )
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val spec = scheduledTaskSpec(
+      sessionId = sessionId,
+      scheduleId = "schedule-managed-process-busy",
+      conflictPolicy = ScheduledConflictPolicy.SKIP_IF_SESSION_BUSY,
+    )
+    specStore.upsert(spec)
+    val dispatcher = ScheduledTaskDispatcher(
+      hostAccess = RecordingScheduledRuntimeHostAccess(session),
+      chatSessionStore = chatStore,
+      safetySettingsFacade = EmptySafetySettingsFacade,
+      approvedReadRootsProvider = {
+        ApprovedReadRootsSnapshot(
+          roots = emptySet(),
+          summary = "workspace=/workspace",
+        )
+      },
+      lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      localizedContext = ContextWrapper(null),
+      assistantPlaceholderTextProvider = { "Thinking…" },
+      specStore = specStore,
+      runRecordStore = runRecordStore,
+      triggerRegistrar = registrar,
+      clock = { 6_500L },
+    )
+
+    val outcome = dispatcher.dispatch(
+      ScheduledTaskWakeCommand(
+        scheduleId = spec.scheduleId,
+        scheduleRunId = "schedule-run-managed-process-busy",
+        triggeredAtEpochMs = 5_500L,
+        triggerReason = ScheduledTaskTriggerReasons.ALARM,
+      ),
+    )
+
+    assertEquals(ScheduledTaskRunResult.SKIPPED_SESSION_BUSY, outcome.result)
+    assertTrue(session.submittedTasks.isEmpty())
+    assertEquals(
+      ScheduledTaskRunResult.SKIPPED_SESSION_BUSY,
+      runRecordStore.get("schedule-run-managed-process-busy")?.result,
+    )
+  }
+
+  @Test
+  fun scheduledTaskDispatcherSkipsSessionWithLiveSubAgentWhenConflictPolicyRequiresIt() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-dispatch-live-subagent-busy")
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val runRecordStore = InMemoryScheduledTaskRunRecordStoreFactory().create()
+    val session = RecordingScheduledTaskSessionAccess(
+      sessionId = sessionId,
+      hasLiveSubAgentWork = true,
+    )
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val spec = scheduledTaskSpec(
+      sessionId = sessionId,
+      scheduleId = "schedule-live-subagent-busy",
+      conflictPolicy = ScheduledConflictPolicy.SKIP_IF_SESSION_BUSY,
+    )
+    specStore.upsert(spec)
+    val dispatcher = ScheduledTaskDispatcher(
+      hostAccess = RecordingScheduledRuntimeHostAccess(session),
+      chatSessionStore = chatStore,
+      safetySettingsFacade = EmptySafetySettingsFacade,
+      approvedReadRootsProvider = {
+        ApprovedReadRootsSnapshot(
+          roots = emptySet(),
+          summary = "workspace=/workspace",
+        )
+      },
+      lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      localizedContext = ContextWrapper(null),
+      assistantPlaceholderTextProvider = { "Thinking…" },
+      specStore = specStore,
+      runRecordStore = runRecordStore,
+      triggerRegistrar = registrar,
+      clock = { 7_000L },
+    )
+
+    val outcome = dispatcher.dispatch(
+      ScheduledTaskWakeCommand(
+        scheduleId = spec.scheduleId,
+        scheduleRunId = "schedule-run-live-subagent-busy",
+        triggeredAtEpochMs = 6_000L,
+        triggerReason = ScheduledTaskTriggerReasons.ALARM,
+      ),
+    )
+
+    assertEquals(ScheduledTaskRunResult.SKIPPED_SESSION_BUSY, outcome.result)
+    assertTrue(session.submittedTasks.isEmpty())
+    assertEquals(
+      ScheduledTaskRunResult.SKIPPED_SESSION_BUSY,
+      runRecordStore.get("schedule-run-live-subagent-busy")?.result,
+    )
+  }
+
+  @Test
   fun parseScheduledTaskWakeCommandRequiresCompleteScheduledWakeIntent() {
     val parsed = parseScheduledTaskWakeCommand(
       action = ACTION_RUN_SCHEDULED_TASK,
@@ -1456,6 +1564,8 @@ class ScheduledTaskRuntimeTest {
   private class RecordingScheduledTaskSessionAccess(
     override val sessionId: String,
     private val hasPendingWork: Boolean = false,
+    private val hasLiveManagedProcesses: Boolean = false,
+    private val hasLiveSubAgentWork: Boolean = false,
     private val queueSnapshots: List<SessionQueueTaskSnapshot> = emptyList(),
   ) : OpenCrayRuntimeSessionAccess {
     val submittedTasks = mutableListOf<AgentTask>()
@@ -1511,7 +1621,9 @@ class ScheduledTaskRuntimeTest {
 
     override fun listManagedProcesses(): List<ManagedProcessSnapshot> = emptyList()
 
-    override fun hasLiveManagedProcesses(): Boolean = false
+    override fun hasLiveManagedProcesses(): Boolean = hasLiveManagedProcesses
+
+    override fun hasLiveSubAgentWork(): Boolean = hasLiveSubAgentWork
 
     override fun submitSubAgentRecoveryTask(
       agentId: String,

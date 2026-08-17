@@ -1459,6 +1459,47 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
   }
 
   @Test
+  fun transcriptStorePersistsClosedSubagentReplayField() {
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-subagent-replay-closed"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-subagent-replay-closed").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    factory.recordSubAgentReplayEvent(
+      sessionId = "session-closed",
+      event = OpenCraySubAgentEvent(
+        runId = "run-parent",
+        taskId = "task-parent",
+        agentId = "child-handle-1",
+        phase = OpenCraySubAgentPhase.CANCELLED,
+        childRunId = "run-child",
+        childTaskId = "task-child",
+        label = "Inspect README",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        depth = 1,
+        summary = "Delegated child handle closed.",
+        executionState = SubAgentExecutionState.CANCELLED,
+        continuationKind = SubAgentContinuationKind.NONE,
+        emittedAtEpochMs = 1_002L,
+        closed = true,
+      ),
+    )
+
+    val snapshot = factory.transcriptStoreForSession("session-closed").snapshot()
+
+    assertEquals(1, snapshot.size)
+    assertTrue(snapshot.single().content.contains("\"agent_id\":\"child-handle-1\""))
+    assertTrue(snapshot.single().content.contains("\"closed\":true"))
+    assertTrue(snapshot.single().content.contains("\"phase\":\"cancelled\""))
+  }
+
+  @Test
   fun recalledMemoryForUsesPersistedRecordsAndSessionAndWorkspaceFiltering() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-memory"))
     val personalizationStore = PersonalizationLocalStore(temporaryFolder.newFolder("personalization-memory"))

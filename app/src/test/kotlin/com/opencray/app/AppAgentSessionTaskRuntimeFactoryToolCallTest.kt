@@ -21,7 +21,9 @@ import com.opencray.runtime.process.AgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
+import com.opencray.runtime.subagent.SubAgentActiveExecution
 import com.opencray.runtime.subagent.SubAgentContinuationKind
+import com.opencray.runtime.subagent.SubAgentExecutionKey
 import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
@@ -33,6 +35,9 @@ import com.opencray.skills.SkillLoader
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -694,6 +699,442 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
   }
 
   @Test
+  fun directWaitAgentReturnsCancelledIfAnotherRuntimeClosesDetachedChild() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-tool-call-wait-close-race").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-tool-call-wait-close-race"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val coordinator = runtimeFactory.subAgentExecutionCoordinatorForSession(sessionId)
+    val runningHandle = SubAgentHandleState(
+      agentId = "child-close-race",
+      childRunId = "child-run-close-race",
+      childTaskId = "child-task-close-race",
+      description = "Inspect README",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "run-parent-close-race",
+      parentTaskId = "task-parent-close-race",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Detached delegated child run is still running in the background.",
+      ),
+      createdAtEpochMs = 900L,
+      updatedAtEpochMs = 1_100L,
+    )
+    val executionKey = SubAgentExecutionKey.from(runningHandle)
+    val activeExecutor = Executors.newSingleThreadExecutor()
+    val activeFuture = FutureTask<Unit> {
+      Thread.sleep(30_000L)
+    }
+    val activeExecution = SubAgentActiveExecution(
+      executor = activeExecutor,
+      future = activeFuture,
+      cancelRequested = AtomicBoolean(false),
+      closed = AtomicBoolean(false),
+    )
+    coordinator.upsertHandle(runningHandle)
+    coordinator.registerActiveExecution(executionKey, activeExecution)
+    activeExecutor.execute(activeFuture)
+    val waitRuntime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val closeRuntime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+
+    var waitResult: com.opencray.core.contracts.ExecutionResult? = null
+    val waitThread = Thread {
+      waitResult = waitRuntime.execute(
+        developerToolCallTask(
+          id = "tool-call-wait-close-race-wait",
+          toolName = "wait_agent",
+          argumentsJson = """{"agent_id":"child-close-race"}""",
+        ),
+        runtimeHooks("Retry was not expected for wait/close race wait."),
+      )
+    }
+
+    try {
+      waitThread.start()
+      Thread.sleep(100L)
+
+      val closeResult = closeRuntime.execute(
+        developerToolCallTask(
+          id = "tool-call-wait-close-race-close",
+          toolName = "close_agent",
+          argumentsJson = """{"agent_id":"child-close-race"}""",
+        ),
+        runtimeHooks("Retry was not expected for wait/close race close."),
+      )
+
+      waitThread.join(5_000L)
+
+      assertEquals(ExecutionStatus.SUCCESS, closeResult.status)
+      assertEquals("true", closeResult.metadata["closed"])
+      assertFalse(waitThread.isAlive)
+      assertEquals(
+        "status=${waitResult?.status} errorCode=${waitResult?.errorCode} errorMessage=${waitResult?.errorMessage} stdout=${waitResult?.stdout} stderr=${waitResult?.stderr}",
+        ExecutionStatus.CANCELLED,
+        waitResult?.status,
+      )
+      assertEquals("SUBAGENT_CANCELLED", waitResult?.errorCode)
+      val waitStderr = requireNotNull(waitResult).stderr
+      assertTrue(
+        waitStderr,
+        waitStderr.contains("Subagent cancelled") ||
+          waitStderr.contains("cancelled before wait_agent could harvest it."),
+      )
+      assertEquals(null, coordinator.currentHandle(executionKey))
+      assertEquals(null, coordinator.activeExecution(executionKey))
+    } finally {
+      waitThread.interrupt()
+      waitThread.join(1_000L)
+      activeExecutor.shutdownNow()
+    }
+  }
+
+  @Test
+  fun directWaitAgentReturnsCancelledWhenRuntimeSeedBecameStaleAfterClose() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-tool-call-stale-close-seed").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-tool-call-stale-close-seed"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+    val coordinator = runtimeFactory.subAgentExecutionCoordinatorForSession(sessionId)
+    val runningHandle = SubAgentHandleState(
+      agentId = "child-stale-close-seed",
+      childRunId = "child-run-stale-close-seed",
+      childTaskId = "child-task-stale-close-seed",
+      description = "Inspect README",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "run-parent-stale-close-seed",
+      parentTaskId = "task-parent-stale-close-seed",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Detached delegated child run is still running in the background.",
+      ),
+      createdAtEpochMs = 900L,
+      updatedAtEpochMs = 1_100L,
+    )
+    val executionKey = SubAgentExecutionKey.from(runningHandle)
+    coordinator.upsertHandle(runningHandle)
+    val staleWaitRuntime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val closeRuntime = runtimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+
+    val closeResult = closeRuntime.execute(
+      developerToolCallTask(
+        id = "tool-call-stale-close-seed-close",
+        toolName = "close_agent",
+        argumentsJson = """{"agent_id":"child-stale-close-seed"}""",
+      ),
+      runtimeHooks("Retry was not expected for stale-close-seed close."),
+    )
+    val waitResult = staleWaitRuntime.execute(
+      developerToolCallTask(
+        id = "tool-call-stale-close-seed-wait",
+        toolName = "wait_agent",
+        argumentsJson = """{"agent_id":"child-stale-close-seed"}""",
+      ),
+      runtimeHooks("Retry was not expected for stale-close-seed wait."),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, closeResult.status)
+    assertEquals("true", closeResult.metadata["closed"])
+    assertEquals(
+      "status=${waitResult.status} errorCode=${waitResult.errorCode} errorMessage=${waitResult.errorMessage} stdout=${waitResult.stdout} stderr=${waitResult.stderr}",
+      ExecutionStatus.CANCELLED,
+      waitResult.status,
+    )
+    assertEquals("SUBAGENT_CANCELLED", waitResult.errorCode)
+    val waitStderr = waitResult.stderr
+    assertTrue(
+      waitStderr,
+      waitStderr.contains("Subagent cancelled") ||
+        waitStderr.contains("cancelled before wait_agent could harvest it."),
+    )
+    assertEquals(null, coordinator.currentHandle(executionKey))
+    assertEquals(null, coordinator.activeExecution(executionKey))
+  }
+
+  @Test
+  fun directWaitAgentReturnsCancelledAfterSessionReleaseWhenClosedTombstoneWasDurablyStored() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-tool-call-durable-close").toPath()
+    val runtimeRoot = temporaryFolder.newFolder("runtime-tool-call-durable-close")
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-tool-call-durable-close"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val handleStoreFactory = FileBackedSubAgentHandleStoreFactory(runtimeRoot)
+    fun runtimeFactory(): AppAgentSessionTaskRuntimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      subAgentHandleStoreProvider = { resolvedSessionId ->
+        handleStoreFactory.forChatSession(resolvedSessionId)
+      },
+    )
+    val firstRuntimeFactory = runtimeFactory()
+    val coordinator = firstRuntimeFactory.subAgentExecutionCoordinatorForSession(sessionId)
+    val runningHandle = SubAgentHandleState(
+      agentId = "child-durable-close",
+      childRunId = "child-run-durable-close",
+      childTaskId = "child-task-durable-close",
+      description = "Inspect README",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "run-parent-durable-close",
+      parentTaskId = "task-parent-durable-close",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Detached delegated child run is still running in the background.",
+      ),
+      createdAtEpochMs = 900L,
+      updatedAtEpochMs = 1_100L,
+    )
+    val executionKey = SubAgentExecutionKey.from(runningHandle)
+    coordinator.upsertHandle(runningHandle)
+    val closeRuntime = firstRuntimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+
+    val closeResult = closeRuntime.execute(
+      developerToolCallTask(
+        id = "tool-call-durable-close-close",
+        toolName = "close_agent",
+        argumentsJson = """{"agent_id":"child-durable-close"}""",
+      ),
+      runtimeHooks("Retry was not expected for durable-close close."),
+    )
+
+    firstRuntimeFactory.releaseSession(sessionId)
+
+    val restartedRuntimeFactory = runtimeFactory()
+    val waitRuntime = restartedRuntimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val waitResult = waitRuntime.execute(
+      developerToolCallTask(
+        id = "tool-call-durable-close-wait",
+        toolName = "wait_agent",
+        argumentsJson = """{"agent_id":"child-durable-close"}""",
+      ),
+      runtimeHooks("Retry was not expected for durable-close wait."),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, closeResult.status)
+    assertEquals("true", closeResult.metadata["closed"])
+    assertEquals(
+      "status=${waitResult.status} errorCode=${waitResult.errorCode} errorMessage=${waitResult.errorMessage} stdout=${waitResult.stdout} stderr=${waitResult.stderr}",
+      ExecutionStatus.CANCELLED,
+      waitResult.status,
+    )
+    assertEquals("SUBAGENT_CANCELLED", waitResult.errorCode)
+    val waitStderr = waitResult.stderr
+    assertTrue(
+      waitStderr,
+      waitStderr.contains("Subagent cancelled") ||
+        waitStderr.contains("cancelled before wait_agent could harvest it."),
+    )
+    assertEquals(null, coordinator.currentHandle(executionKey))
+    assertEquals(null, coordinator.activeExecution(executionKey))
+    assertTrue(restartedRuntimeFactory.subAgentHandleStoreForSession(sessionId).list().isEmpty())
+    assertEquals(1, restartedRuntimeFactory.subAgentHandleStoreForSession(sessionId).listClosed().size)
+  }
+
+  @Test
+  fun directCloseAgentReturnsSuccessAfterSessionReleaseWhenClosedTombstoneWasDurablyStored() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-tool-call-durable-close-idempotent").toPath()
+    val runtimeRoot = temporaryFolder.newFolder("runtime-tool-call-durable-close-idempotent")
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-tool-call-durable-close-idempotent"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val handleStoreFactory = FileBackedSubAgentHandleStoreFactory(runtimeRoot)
+    fun runtimeFactory(): AppAgentSessionTaskRuntimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      subAgentHandleStoreProvider = { resolvedSessionId ->
+        handleStoreFactory.forChatSession(resolvedSessionId)
+      },
+    )
+    val firstRuntimeFactory = runtimeFactory()
+    val coordinator = firstRuntimeFactory.subAgentExecutionCoordinatorForSession(sessionId)
+    val runningHandle = SubAgentHandleState(
+      agentId = "child-durable-close-idempotent",
+      childRunId = "child-run-durable-close-idempotent",
+      childTaskId = "child-task-durable-close-idempotent",
+      description = "Inspect README",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "run-parent-durable-close-idempotent",
+      parentTaskId = "task-parent-durable-close-idempotent",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Detached delegated child run is still running in the background.",
+      ),
+      createdAtEpochMs = 900L,
+      updatedAtEpochMs = 1_100L,
+    )
+    val executionKey = SubAgentExecutionKey.from(runningHandle)
+    coordinator.upsertHandle(runningHandle)
+    val closeRuntime = firstRuntimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+
+    val firstCloseResult = closeRuntime.execute(
+      developerToolCallTask(
+        id = "tool-call-durable-close-idempotent-close-1",
+        toolName = "close_agent",
+        argumentsJson = """{"agent_id":"child-durable-close-idempotent"}""",
+      ),
+      runtimeHooks("Retry was not expected for durable-close-idempotent first close."),
+    )
+
+    firstRuntimeFactory.releaseSession(sessionId)
+
+    val restartedRuntimeFactory = runtimeFactory()
+    val restartedCloseRuntime = restartedRuntimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val secondCloseResult = restartedCloseRuntime.execute(
+      developerToolCallTask(
+        id = "tool-call-durable-close-idempotent-close-2",
+        toolName = "close_agent",
+        argumentsJson = """{"agent_id":"child-durable-close-idempotent"}""",
+      ),
+      runtimeHooks("Retry was not expected for durable-close-idempotent second close."),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, firstCloseResult.status)
+    assertEquals("true", firstCloseResult.metadata["closed"])
+    assertEquals(ExecutionStatus.SUCCESS, secondCloseResult.status)
+    assertEquals("true", secondCloseResult.metadata["closed"])
+    assertEquals("child-durable-close-idempotent", secondCloseResult.metadata["agentId"])
+    assertEquals(null, coordinator.currentHandle(executionKey))
+    assertEquals(null, coordinator.activeExecution(executionKey))
+    assertTrue(restartedRuntimeFactory.subAgentHandleStoreForSession(sessionId).list().isEmpty())
+    assertEquals(1, restartedRuntimeFactory.subAgentHandleStoreForSession(sessionId).listClosed().size)
+  }
+
+  @Test
+  fun directSendInputReturnsNotQueueableAfterSessionReleaseWhenClosedTombstoneWasDurablyStored() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-tool-call-durable-send-input").toPath()
+    val runtimeRoot = temporaryFolder.newFolder("runtime-tool-call-durable-send-input")
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-tool-call-durable-send-input"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val handleStoreFactory = FileBackedSubAgentHandleStoreFactory(runtimeRoot)
+    fun runtimeFactory(): AppAgentSessionTaskRuntimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      subAgentHandleStoreProvider = { resolvedSessionId ->
+        handleStoreFactory.forChatSession(resolvedSessionId)
+      },
+    )
+    val firstRuntimeFactory = runtimeFactory()
+    val coordinator = firstRuntimeFactory.subAgentExecutionCoordinatorForSession(sessionId)
+    val runningHandle = SubAgentHandleState(
+      agentId = "child-durable-send-input",
+      childRunId = "child-run-durable-send-input",
+      childTaskId = "child-task-durable-send-input",
+      description = "Inspect README",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "run-parent-durable-send-input",
+      parentTaskId = "task-parent-durable-send-input",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Detached delegated child run is still running in the background.",
+      ),
+      createdAtEpochMs = 900L,
+      updatedAtEpochMs = 1_100L,
+    )
+    val executionKey = SubAgentExecutionKey.from(runningHandle)
+    coordinator.upsertHandle(runningHandle)
+    val closeRuntime = firstRuntimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+
+    val closeResult = closeRuntime.execute(
+      developerToolCallTask(
+        id = "tool-call-durable-send-input-close",
+        toolName = "close_agent",
+        argumentsJson = """{"agent_id":"child-durable-send-input"}""",
+      ),
+      runtimeHooks("Retry was not expected for durable-send-input close."),
+    )
+
+    firstRuntimeFactory.releaseSession(sessionId)
+
+    val restartedRuntimeFactory = runtimeFactory()
+    val sendInputRuntime = restartedRuntimeFactory.create(
+      sessionId = sessionId,
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+    )
+    val sendInputResult = sendInputRuntime.execute(
+      developerToolCallTask(
+        id = "tool-call-durable-send-input-send",
+        toolName = "send_input",
+        argumentsJson = """{"agent_id":"child-durable-send-input","message":"follow up"}""",
+      ),
+      runtimeHooks("Retry was not expected for durable-send-input send_input."),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, closeResult.status)
+    assertEquals("true", closeResult.metadata["closed"])
+    assertEquals(ExecutionStatus.FAILED, sendInputResult.status)
+    assertEquals("SUBAGENT_NOT_QUEUEABLE", sendInputResult.errorCode)
+    assertEquals("child-durable-send-input", sendInputResult.metadata["agentId"])
+    assertEquals(null, coordinator.currentHandle(executionKey))
+    assertEquals(null, coordinator.activeExecution(executionKey))
+    assertTrue(restartedRuntimeFactory.subAgentHandleStoreForSession(sessionId).list().isEmpty())
+    assertEquals(1, restartedRuntimeFactory.subAgentHandleStoreForSession(sessionId).listClosed().size)
+  }
+
+  @Test
   fun detachedControlRecoveryWaitTargetsExactHandleKeyWithoutJsonToolPayload() {
     val workspaceRoot = temporaryFolder.newFolder("workspace-detached-control-wait").toPath()
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-detached-control-wait"))
@@ -793,6 +1234,91 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
     assertEquals("child-shared", result.metadata["agentId"])
     assertEquals("child-run-target", result.metadata["childRunId"])
     assertEquals("completed", result.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+  }
+
+  @Test
+  fun listSubAgentHandlesIncludesDurableClosedTombstones() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-list-subagent-handles").toPath()
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-list-subagent-handles"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    runtimeFactory.subAgentHandleStoreForSession(sessionId).upsertClosed(
+      SubAgentHandleState(
+        agentId = "child-closed-store",
+        childRunId = "child-run-closed-store",
+        childTaskId = "child-task-closed-store",
+        description = "Closed from durable store",
+        prompt = "Describe the durable closed tombstone.",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        parentRunId = "run-parent-closed-store",
+        parentTaskId = "task-parent-closed-store",
+        parentTurn = 1,
+        depth = 1,
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.CANCELLED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Closed child persisted to store.",
+        ),
+        createdAtEpochMs = 900L,
+        updatedAtEpochMs = 1_100L,
+      ),
+    )
+
+    val storeOnlyHandles = runtimeFactory.listSubAgentHandles(sessionId)
+    val storeOnlyClosedHandles = runtimeFactory.listClosedSubAgentHandles(sessionId)
+
+    assertEquals(listOf("child-closed-store"), storeOnlyHandles.map(SubAgentHandleState::agentId))
+    assertEquals(listOf("child-closed-store"), storeOnlyClosedHandles.map(SubAgentHandleState::agentId))
+
+    runtimeFactory.subAgentExecutionCoordinatorForSession(sessionId).noteClosedHandle(
+      SubAgentHandleState(
+        agentId = "child-closed-coordinator",
+        childRunId = "child-run-closed-coordinator",
+        childTaskId = "child-task-closed-coordinator",
+        description = "Closed from active coordinator",
+        prompt = "Describe the coordinator closed tombstone.",
+        subagentType = "worker",
+        contextMode = "delegated",
+        parentRunId = "run-parent-closed-coordinator",
+        parentTaskId = "task-parent-closed-coordinator",
+        parentTurn = 1,
+        depth = 1,
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.CANCELLED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Closed child still visible through coordinator.",
+        ),
+        createdAtEpochMs = 1_000L,
+        updatedAtEpochMs = 1_300L,
+      ),
+    )
+
+    val mergedHandles = runtimeFactory.listSubAgentHandles(sessionId)
+    val mergedClosedHandles = runtimeFactory.listClosedSubAgentHandles(sessionId)
+
+    assertEquals(
+      listOf("child-closed-coordinator", "child-closed-store"),
+      mergedHandles.map(SubAgentHandleState::agentId),
+    )
+    assertEquals(
+      listOf("child-closed-coordinator", "child-closed-store"),
+      mergedClosedHandles.map(SubAgentHandleState::agentId),
+    )
   }
 
   @Test
