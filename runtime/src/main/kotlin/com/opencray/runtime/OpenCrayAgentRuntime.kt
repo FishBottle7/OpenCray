@@ -10081,26 +10081,3 @@ class OpenCrayAgentRuntime(
     val DEFAULT_ACTIVE_SKILL_EXEMPT_TOOL_KEYS: Set<String> = setOf("skills_list", "skill_read", "skill_execute")
   }
 }
-
-class OpenCrayAgentEngine(
-  private val runtime: SessionTaskRuntime,
-  private val clock: QueueClock = SystemQueueClock,
-  private val restoreTransformer: SessionQueueRestoreTransformer = NoOpSessionQueueRestoreTransformer,
-  private val queueConfig: SessionQueueConfig = SessionQueueConfig(),
-) {
-  fun create(
-    sessionId: String,
-    agentId: String,
-    snapshotStore: SessionQueueSnapshotStore,
-  ): AgentLoop = AgentLoop(
-    queue = SessionQueue(
-      sessionId = sessionId,
-      agentId = agentId,
-      runtime = runtime,
-      snapshotStore = snapshotStore,
-      restoreTransformer = restoreTransformer,
-      clock = clock,
-      config = queueConfig,
-    ),
-  )
-}
