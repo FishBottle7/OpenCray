@@ -44,8 +44,10 @@ import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessRestoreMode
 import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
+import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.SubAgentSessionLink
 import java.nio.file.Path
 import java.util.Locale
 import java.util.Timer
@@ -1315,6 +1317,8 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       val snapshot = SubAgentActivitySnapshot(
         parentRunId = latestEvent.runId,
         parentTaskId = latestEvent.taskId,
+        agentId = latestEvent.agentId,
+        childSessionId = null,
         childRunId = latestEvent.childRunId,
         childTaskId = latestEvent.childTaskId,
         label = latestEvent.label,
@@ -1328,13 +1332,20 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
         resumable = latestEvent.resumable,
         requiresUserAction = latestEvent.requiresUserAction,
         isHighRisk = latestEvent.isHighRisk,
+        closed = latestEvent.closed,
         summary = latestEvent.summary,
         startedAtEpochMs = firstEvent.emittedAtEpochMs,
         updatedAtEpochMs = latestEvent.emittedAtEpochMs,
         eventCount = accumulator.eventCount,
+        hasActiveExecution = false,
         mailboxMessageCount = 0,
         mailboxPendingMessageCount = 0,
         mailboxLastDeliveredMessageId = null,
+        hasPendingApprovalResume = false,
+        pendingApprovalToolName = null,
+        pendingApprovalIsHighRisk = false,
+        pendingApprovalChildRunId = null,
+        pendingApprovalChildTaskId = null,
       )
       eventSnapshotsByKey[subAgentRegistryKey(snapshot)] = snapshot
     }
@@ -1350,9 +1361,16 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
             startedAtEpochMs = minOf(existing.startedAtEpochMs, snapshot.startedAtEpochMs),
             updatedAtEpochMs = maxOf(existing.updatedAtEpochMs, snapshot.updatedAtEpochMs),
             eventCount = maxOf(existing.eventCount, snapshot.eventCount),
+            closed = existing.closed || snapshot.closed,
+            hasActiveExecution = snapshot.hasActiveExecution,
             mailboxMessageCount = snapshot.mailboxMessageCount,
             mailboxPendingMessageCount = snapshot.mailboxPendingMessageCount,
             mailboxLastDeliveredMessageId = snapshot.mailboxLastDeliveredMessageId,
+            hasPendingApprovalResume = snapshot.hasPendingApprovalResume,
+            pendingApprovalToolName = snapshot.pendingApprovalToolName,
+            pendingApprovalIsHighRisk = snapshot.pendingApprovalIsHighRisk,
+            pendingApprovalChildRunId = snapshot.pendingApprovalChildRunId,
+            pendingApprovalChildTaskId = snapshot.pendingApprovalChildTaskId,
           )
         }
       }
@@ -1363,7 +1381,8 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     event: OpenCraySubAgentEvent,
   ): String = listOf(
     event.runId,
-    event.childRunId.trim().takeIf(String::isNotBlank)
+    event.agentId?.trim()?.takeIf(String::isNotBlank)
+      ?: event.childRunId.trim().takeIf(String::isNotBlank)
       ?: event.childTaskId.trim().takeIf(String::isNotBlank)
       ?: event.label.trim(),
   ).joinToString(separator = "|")
@@ -1372,7 +1391,8 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     snapshot: SubAgentActivitySnapshot,
   ): String = listOf(
     snapshot.parentRunId,
-    snapshot.childRunId.trim().takeIf(String::isNotBlank)
+    snapshot.agentId?.trim()?.takeIf(String::isNotBlank)
+      ?: snapshot.childRunId.trim().takeIf(String::isNotBlank)
       ?: snapshot.childTaskId.trim().takeIf(String::isNotBlank)
       ?: snapshot.label.trim(),
   ).joinToString(separator = "|")
@@ -1380,31 +1400,63 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private fun subAgentSnapshotsFromDurableSources(
     sessionId: String,
   ): List<SubAgentActivitySnapshot> {
-    val latestByKey = linkedMapOf<String, SubAgentActivitySnapshot>()
-    subAgentHandleStoreFactory.forChatSession(sessionId)
+    val latestByKey = linkedMapOf<String, DurableSubAgentSnapshot>()
+    fun mergeSnapshot(
+      snapshot: SubAgentActivitySnapshot,
+      sourcePriority: Int,
+    ) {
+      val key = subAgentRegistryKey(snapshot)
+      val existing = latestByKey[key]
+      if (
+        existing == null ||
+        snapshot.updatedAtEpochMs > existing.snapshot.updatedAtEpochMs ||
+        (
+          snapshot.updatedAtEpochMs == existing.snapshot.updatedAtEpochMs &&
+            sourcePriority > existing.sourcePriority
+          )
+      ) {
+        latestByKey[key] = DurableSubAgentSnapshot(
+          snapshot = snapshot,
+          sourcePriority = sourcePriority,
+        )
+      }
+    }
+    val handleStore = subAgentHandleStoreFactory.forChatSession(sessionId)
+    mergeSubAgentHandlesByLatestState(
+      liveHandles = handleStore.list(),
+      closedHandles = handleStore.listClosed(),
+    ).forEach { entry ->
+      mergeSnapshot(
+        snapshot = subAgentActivitySnapshot(
+          handle = entry.handle,
+          closed = entry.closed,
+        ),
+        sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_HANDLE,
+      )
+    }
+    subAgentSessionLinkStoreFactory.forChatSession(sessionId)
       .list()
-      .forEach { handle ->
-        val snapshot = subAgentActivitySnapshot(handle)
-        val key = subAgentRegistryKey(snapshot)
-        val existing = latestByKey[key]
-        if (existing == null || snapshot.updatedAtEpochMs >= existing.updatedAtEpochMs) {
-          latestByKey[key] = snapshot
-        }
+      .forEach { link ->
+        mergeSnapshot(
+          snapshot = subAgentActivitySnapshot(link),
+          sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_LINK,
+        )
       }
     promptCheckpointStoreFactory.forChatSession(sessionId)
       .list()
       .asReversed()
       .forEach { checkpoint ->
         checkpointSubAgentHandles(checkpoint).forEach { handle ->
-          val snapshot = subAgentActivitySnapshot(handle)
-          val key = subAgentRegistryKey(snapshot)
-          val existing = latestByKey[key]
-          if (existing == null || snapshot.updatedAtEpochMs >= existing.updatedAtEpochMs) {
-            latestByKey[key] = snapshot
-          }
+          mergeSnapshot(
+            snapshot = subAgentActivitySnapshot(
+              handle = handle,
+              closed = false,
+            ),
+            sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_CHECKPOINT,
+          )
         }
       }
-    return latestByKey.values.toList()
+    return latestByKey.values.map(DurableSubAgentSnapshot::snapshot)
   }
 
   private fun checkpointSubAgentHandles(
@@ -1415,12 +1467,63 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   ).filterNotNull().flatMap { state -> state.subAgentHandles.asSequence() }
 
   private fun subAgentActivitySnapshot(
+    link: SubAgentSessionLink,
+  ): SubAgentActivitySnapshot {
+    val state = SubAgentExecutionState.fromWireValue(link.status) ?: SubAgentExecutionState.RUNNING
+    return SubAgentActivitySnapshot(
+      parentRunId = link.parentRunId,
+      parentTaskId = "",
+      agentId = link.agentId,
+      childSessionId = link.childSessionId,
+      childRunId = link.childRootRunId.orEmpty(),
+      childTaskId = link.childRootTaskId.orEmpty(),
+      label = link.label,
+      subagentType = link.subagentType,
+      contextMode = link.contextMode,
+      depth = link.depth,
+      phase = subAgentPhaseFor(state),
+      status = link.status,
+      executionState = link.status,
+      continuationKind = when (state) {
+        SubAgentExecutionState.BACKGROUND_RUNNING ->
+          SubAgentContinuationKind.BACKGROUND_RESUME.wireValue
+
+        else -> SubAgentContinuationKind.NONE.wireValue
+      },
+      resumable = false,
+      requiresUserAction = false,
+      isHighRisk = false,
+      closed = link.closed,
+      summary = null,
+      startedAtEpochMs = link.createdAtEpochMs,
+      updatedAtEpochMs = link.updatedAtEpochMs,
+      eventCount = 0,
+      hasActiveExecution = !link.closed && (
+        state == SubAgentExecutionState.RUNNING ||
+          state == SubAgentExecutionState.BACKGROUND_RUNNING
+        ),
+      mailboxMessageCount = 0,
+      mailboxPendingMessageCount = 0,
+      mailboxLastDeliveredMessageId = null,
+      hasPendingApprovalResume = false,
+      pendingApprovalToolName = null,
+      pendingApprovalIsHighRisk = false,
+      pendingApprovalChildRunId = null,
+      pendingApprovalChildTaskId = null,
+    )
+  }
+
+  private fun subAgentActivitySnapshot(
     handle: SubAgentHandleState,
+    closed: Boolean,
   ): SubAgentActivitySnapshot {
     val mailbox = handle.normalizedMailbox()
+    val pendingApprovalResume = handle.pendingApprovalResume
     return SubAgentActivitySnapshot(
       parentRunId = handle.parentRunId,
       parentTaskId = handle.parentTaskId,
+      agentId = handle.agentId,
+      childSessionId = handle.childSessionId,
       childRunId = handle.childRunId,
       childTaskId = handle.childTaskId,
       label = handle.description,
@@ -1434,13 +1537,21 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       resumable = handle.snapshot.resumable,
       requiresUserAction = handle.snapshot.requiresUserAction,
       isHighRisk = handle.snapshot.isHighRisk,
+      closed = closed,
       summary = handle.snapshot.headline,
       startedAtEpochMs = handle.createdAtEpochMs,
       updatedAtEpochMs = handle.updatedAtEpochMs,
       eventCount = 0,
+      hasActiveExecution = handle.snapshot.state == SubAgentExecutionState.RUNNING ||
+        handle.snapshot.state == SubAgentExecutionState.BACKGROUND_RUNNING,
       mailboxMessageCount = mailbox.messages.size,
       mailboxPendingMessageCount = mailbox.pendingMessages().size,
       mailboxLastDeliveredMessageId = mailbox.lastDeliveredMessageId,
+      hasPendingApprovalResume = pendingApprovalResume != null,
+      pendingApprovalToolName = pendingApprovalResume?.approvedToolName,
+      pendingApprovalIsHighRisk = pendingApprovalResume?.isHighRisk == true,
+      pendingApprovalChildRunId = pendingApprovalResume?.childRunId,
+      pendingApprovalChildTaskId = pendingApprovalResume?.childTaskId,
     )
   }
 
@@ -1469,6 +1580,8 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private fun subAgentSnapshotToMap(snapshot: SubAgentActivitySnapshot): Map<String, Any?> = mapOf(
     "parentRunId" to snapshot.parentRunId,
     "parentTaskId" to snapshot.parentTaskId,
+    "agentId" to snapshot.agentId,
+    "childSessionId" to snapshot.childSessionId,
     "childRunId" to snapshot.childRunId,
     "childTaskId" to snapshot.childTaskId,
     "label" to snapshot.label,
@@ -1482,13 +1595,20 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     "resumable" to snapshot.resumable,
     "requiresUserAction" to snapshot.requiresUserAction,
     "isHighRisk" to snapshot.isHighRisk,
+    "closed" to snapshot.closed,
     "summary" to snapshot.summary,
     "startedAtEpochMs" to snapshot.startedAtEpochMs,
     "updatedAtEpochMs" to snapshot.updatedAtEpochMs,
     "eventCount" to snapshot.eventCount,
+    "hasActiveExecution" to snapshot.hasActiveExecution,
     "mailboxMessageCount" to snapshot.mailboxMessageCount,
     "mailboxPendingMessageCount" to snapshot.mailboxPendingMessageCount,
     "mailboxLastDeliveredMessageId" to snapshot.mailboxLastDeliveredMessageId,
+    "hasPendingApprovalResume" to snapshot.hasPendingApprovalResume,
+    "pendingApprovalToolName" to snapshot.pendingApprovalToolName,
+    "pendingApprovalIsHighRisk" to snapshot.pendingApprovalIsHighRisk,
+    "pendingApprovalChildRunId" to snapshot.pendingApprovalChildRunId,
+    "pendingApprovalChildTaskId" to snapshot.pendingApprovalChildTaskId,
   )
 
   private fun retainedRunsFor(runs: List<AgentRunSnapshot>): List<AgentRunSnapshot> {
@@ -1767,18 +1887,67 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private fun projectedLifecycleState(
     original: QueueTaskLifecycleState?,
     result: ExecutionResult?,
-  ): QueueTaskLifecycleState? = projectedLifecycleStateForRestoreResult(
-    original = original,
-    result = result,
-  )
+  ): QueueTaskLifecycleState? {
+    val projected = projectedLifecycleStateForRestoreResult(
+      original = original,
+      result = result,
+    )
+    if (projected != null || original != null) {
+      return projected
+    }
+    return terminalLifecycleState(result)
+  }
 
   private fun projectedTaskState(
     original: AgentTaskState?,
     result: ExecutionResult?,
-  ): AgentTaskState? = projectedTaskStateForRestoreResult(
-    original = original,
-    result = result,
-  )
+  ): AgentTaskState? {
+    val projected = projectedTaskStateForRestoreResult(
+      original = original,
+      result = result,
+    )
+    if (projected != null || original != null) {
+      return projected
+    }
+    return terminalTaskState(result)
+  }
+
+  private fun terminalLifecycleState(result: ExecutionResult?): QueueTaskLifecycleState? = when {
+    result == null -> null
+    isAwaitingExplicitResumeResult(result) -> null
+    result.status == ExecutionStatus.SUCCESS -> QueueTaskLifecycleState.COMPLETED
+    result.status == ExecutionStatus.CANCELLED -> QueueTaskLifecycleState.CANCELLED
+    result.status == ExecutionStatus.FAILED ||
+      result.status == ExecutionStatus.TIMEOUT ||
+      result.status == ExecutionStatus.DENIED
+    -> QueueTaskLifecycleState.FAILED
+
+    else -> null
+  }
+
+  private fun terminalTaskState(result: ExecutionResult?): AgentTaskState? = when {
+    result == null -> null
+    isAwaitingExplicitResumeResult(result) -> null
+    result.status == ExecutionStatus.SUCCESS -> AgentTaskState.COMPLETED
+    result.status == ExecutionStatus.CANCELLED -> AgentTaskState.CANCELLED
+    result.status == ExecutionStatus.FAILED ||
+      result.status == ExecutionStatus.TIMEOUT ||
+      result.status == ExecutionStatus.DENIED
+    -> AgentTaskState.FAILED
+
+    else -> null
+  }
+
+  private fun isAwaitingExplicitResumeResult(result: ExecutionResult): Boolean = when {
+    result.status == ExecutionStatus.DENIED &&
+      (
+        result.errorCode == "APPROVAL_REQUIRED" ||
+          result.errorCode == "HIGH_RISK_APPROVAL_REQUIRED"
+        ) -> true
+
+    result.errorCode == ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME -> true
+    else -> false
+  }
 
   private fun visibleRunResult(
     taskSnapshot: SessionQueueTaskSnapshot?,
@@ -2035,6 +2204,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "kind" to "subagent",
       "runId" to event.runId,
       "taskId" to event.taskId,
+      "agentId" to event.agentId,
       "executionId" to event.executionId,
       "executionOrdinal" to event.executionOrdinal,
       "executionKind" to event.executionKind,
@@ -2050,6 +2220,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       "depth" to event.depth,
       "executionState" to event.executionState?.wireValue,
       "continuationKind" to event.continuationKind?.wireValue,
+      "closed" to event.closed,
       "text" to event.summary,
     )
     is OpenCrayToolCallEvent -> mapOf(
@@ -2362,9 +2533,16 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val eventCount: Int,
   )
 
+  private data class DurableSubAgentSnapshot(
+    val snapshot: SubAgentActivitySnapshot,
+    val sourcePriority: Int,
+  )
+
   private data class SubAgentActivitySnapshot(
     val parentRunId: String,
     val parentTaskId: String,
+    val agentId: String?,
+    val childSessionId: String?,
     val childRunId: String,
     val childTaskId: String,
     val label: String,
@@ -2378,16 +2556,26 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val resumable: Boolean,
     val requiresUserAction: Boolean,
     val isHighRisk: Boolean,
+    val closed: Boolean,
     val summary: String?,
     val startedAtEpochMs: Long,
     val updatedAtEpochMs: Long,
     val eventCount: Int,
+    val hasActiveExecution: Boolean,
     val mailboxMessageCount: Int,
     val mailboxPendingMessageCount: Int,
     val mailboxLastDeliveredMessageId: String?,
+    val hasPendingApprovalResume: Boolean,
+    val pendingApprovalToolName: String?,
+    val pendingApprovalIsHighRisk: Boolean,
+    val pendingApprovalChildRunId: String?,
+    val pendingApprovalChildTaskId: String?,
   )
 
   private companion object {
+    private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_CHECKPOINT: Int = 1
+    private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_LINK: Int = 2
+    private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_HANDLE: Int = 3
     private const val TOOL_GENERATED_SUPPLEMENT_ENTRY_ID_PREFIX: String = "tool-supplement-"
     private const val MEMORY_DEBUG_RUN_ID_PREFIX: String = "memory-debug-run"
     private const val MEMORY_DEBUG_TASK_ID_PREFIX: String = "memory-debug-task"

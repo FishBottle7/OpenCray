@@ -142,6 +142,7 @@ import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentHandleState
 import com.opencray.runtime.subagent.SubAgentExecutionState
+import com.opencray.runtime.subagent.SubAgentSessionLink
 import com.opencray.runtime.subagent.SubAgentLiveContextSnapshot
 import com.opencray.runtime.skills.SkillPackageCheckReport
 import com.opencray.runtime.skills.SkillPackageCheckResult
@@ -213,6 +214,8 @@ internal class OpenCrayHostRuntime private constructor(
   private val voiceMetadataBackfillExecutor: Executor,
   private val voiceMetadataCacheStore: AppAgentWorkspaceVoiceMetadataCacheStore? = null,
   private val runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  private val subAgentSessionLinkStoreFactory: SubAgentSessionLinkStoreFactory =
+    inMemorySubAgentSessionLinkStoreFactory(),
   private val todoSnapshotProvider: (String) -> ChatSessionTodoPresentation = {
     ChatSessionTodoPresentation.empty()
   },
@@ -3263,7 +3266,10 @@ internal class OpenCrayHostRuntime private constructor(
       if (subAgentEvent.runId !in visibleRunIds) {
         return@forEach
       }
-      val key = subAgentRegistryKey(subAgentEvent)
+      val keys = subAgentRegistryKeys(subAgentEvent)
+      val key = grouped.aliasSubAgentRegistryKey(keys)
+        ?: keys.firstOrNull()
+        ?: return@forEach
       val existing = grouped[key]
       grouped[key] = if (existing == null) {
         SubAgentActivityAccumulator(
@@ -3284,6 +3290,8 @@ internal class OpenCrayHostRuntime private constructor(
       val snapshot = SubAgentActivitySnapshot(
         parentRunId = latestEvent.runId,
         parentTaskId = latestEvent.taskId,
+        agentId = latestEvent.agentId,
+        childSessionId = null,
         childRunId = latestEvent.childRunId,
         childTaskId = latestEvent.childTaskId,
         label = latestEvent.label,
@@ -3297,20 +3305,34 @@ internal class OpenCrayHostRuntime private constructor(
         resumable = latestEvent.resumable,
         requiresUserAction = latestEvent.requiresUserAction,
         isHighRisk = latestEvent.isHighRisk,
+        closed = latestEvent.closed,
         summary = latestEvent.summary,
         startedAtEpochMs = firstEvent.emittedAtEpochMs,
         updatedAtEpochMs = latestEvent.emittedAtEpochMs,
         eventCount = accumulator.eventCount,
+        hasActiveExecution = false,
         mailboxMessageCount = 0,
         mailboxPendingMessageCount = 0,
         mailboxLastDeliveredMessageId = null,
+        hasPendingApprovalResume = false,
+        pendingApprovalToolName = null,
+        pendingApprovalIsHighRisk = false,
+        pendingApprovalChildRunId = null,
+        pendingApprovalChildTaskId = null,
       )
-      eventSnapshotsByKey[subAgentRegistryKey(snapshot)] = snapshot
+      val snapshotKeys = subAgentRegistryKeys(snapshot)
+      val snapshotKey = eventSnapshotsByKey.aliasSubAgentRegistryKey(snapshotKeys)
+        ?: snapshotKeys.firstOrNull()
+        ?: return@forEach
+      eventSnapshotsByKey[snapshotKey] = snapshot
     }
     registrySnapshots
       .filter { snapshot -> snapshot.parentRunId in visibleRunIds }
       .forEach { snapshot ->
-        val key = subAgentRegistryKey(snapshot)
+        val keys = subAgentRegistryKeys(snapshot)
+        val key = eventSnapshotsByKey.aliasSubAgentRegistryKey(keys)
+          ?: keys.firstOrNull()
+          ?: return@forEach
         val existing = eventSnapshotsByKey[key]
         eventSnapshotsByKey[key] = if (existing == null) {
           snapshot
@@ -3319,61 +3341,132 @@ internal class OpenCrayHostRuntime private constructor(
             startedAtEpochMs = minOf(existing.startedAtEpochMs, snapshot.startedAtEpochMs),
             updatedAtEpochMs = maxOf(existing.updatedAtEpochMs, snapshot.updatedAtEpochMs),
             eventCount = maxOf(existing.eventCount, snapshot.eventCount),
+            closed = existing.closed || snapshot.closed,
+            hasActiveExecution = snapshot.hasActiveExecution,
             mailboxMessageCount = snapshot.mailboxMessageCount,
             mailboxPendingMessageCount = snapshot.mailboxPendingMessageCount,
             mailboxLastDeliveredMessageId = snapshot.mailboxLastDeliveredMessageId,
+            hasPendingApprovalResume = snapshot.hasPendingApprovalResume,
+            pendingApprovalToolName = snapshot.pendingApprovalToolName,
+            pendingApprovalIsHighRisk = snapshot.pendingApprovalIsHighRisk,
+            pendingApprovalChildRunId = snapshot.pendingApprovalChildRunId,
+            pendingApprovalChildTaskId = snapshot.pendingApprovalChildTaskId,
           )
         }
       }
     return eventSnapshotsByKey.values.toList()
   }
 
-  private fun subAgentRegistryKey(
+  private fun subAgentRegistryKeys(
     event: OpenCraySubAgentEvent,
-  ): String = listOf(
-    event.runId,
-    event.childRunId.trim().takeIf(String::isNotBlank)
-      ?: event.childTaskId.trim().takeIf(String::isNotBlank)
-      ?: event.label.trim(),
-  ).joinToString(separator = "|")
+  ): List<String> = subAgentRegistryKeys(
+    parentRunId = event.runId,
+    agentId = event.agentId,
+    childRunId = event.childRunId,
+    childTaskId = event.childTaskId,
+    label = event.label,
+  )
 
-  private fun subAgentRegistryKey(
+  private fun subAgentRegistryKeys(
     snapshot: SubAgentActivitySnapshot,
-  ): String = listOf(
-    snapshot.parentRunId,
-    snapshot.childRunId.trim().takeIf(String::isNotBlank)
-      ?: snapshot.childTaskId.trim().takeIf(String::isNotBlank)
-      ?: snapshot.label.trim(),
-  ).joinToString(separator = "|")
+  ): List<String> = subAgentRegistryKeys(
+    parentRunId = snapshot.parentRunId,
+    agentId = snapshot.agentId,
+    childRunId = snapshot.childRunId,
+    childTaskId = snapshot.childTaskId,
+    label = snapshot.label,
+  )
+
+  private fun subAgentRegistryKeys(
+    parentRunId: String,
+    agentId: String?,
+    childRunId: String,
+    childTaskId: String,
+    label: String,
+  ): List<String> = listOfNotNull(
+    agentId?.trim()?.takeIf(String::isNotBlank),
+    childRunId.trim().takeIf(String::isNotBlank),
+    childTaskId.trim().takeIf(String::isNotBlank),
+    label.trim().takeIf(String::isNotBlank),
+  ).distinct().map { identity ->
+    listOf(parentRunId, identity).joinToString(separator = "|")
+  }
+
+  private fun <T> Map<String, T>.aliasSubAgentRegistryKey(
+    keys: List<String>,
+  ): String? = keys.firstOrNull(::containsKey)
 
   private fun subAgentSnapshotsFromDurableSources(
     sessionId: String,
   ): List<SubAgentActivitySnapshot> {
-    val latestByKey = linkedMapOf<String, SubAgentActivitySnapshot>()
-    runtimeSession(sessionId)
+    val latestByKey = linkedMapOf<String, DurableSubAgentSnapshot>()
+    fun mergeSnapshot(
+      snapshot: SubAgentActivitySnapshot,
+      sourcePriority: Int,
+    ) {
+      val keys = subAgentRegistryKeys(snapshot)
+      val key = latestByKey.aliasSubAgentRegistryKey(keys)
+        ?: keys.firstOrNull()
+        ?: return
+      val existing = latestByKey[key]
+      if (
+        existing == null ||
+        snapshot.updatedAtEpochMs > existing.snapshot.updatedAtEpochMs ||
+        (
+          snapshot.updatedAtEpochMs == existing.snapshot.updatedAtEpochMs &&
+            sourcePriority > existing.sourcePriority
+          )
+      ) {
+        latestByKey[key] = DurableSubAgentSnapshot(
+          snapshot = snapshot,
+          sourcePriority = sourcePriority,
+        )
+      }
+    }
+    val session = runtimeSession(sessionId)
+    val closedHandleKeys = session.listClosedSubAgentHandles()
+      .asSequence()
+      .map { handle -> handle.parentRunId to handle.agentId }
+      .toSet()
+    session
       .listSubAgentHandles()
       .forEach { handle ->
-        val snapshot = subAgentActivitySnapshot(handle)
-        val key = subAgentRegistryKey(snapshot)
-        val existing = latestByKey[key]
-        if (existing == null || snapshot.updatedAtEpochMs >= existing.updatedAtEpochMs) {
-          latestByKey[key] = snapshot
-        }
+        mergeSnapshot(
+          snapshot = subAgentActivitySnapshot(
+            handle = handle,
+            hasActiveExecution = session.hasActiveSubAgentExecution(
+              agentId = handle.agentId,
+              parentRunId = handle.parentRunId,
+            ),
+            closed = (handle.parentRunId to handle.agentId) in closedHandleKeys,
+          ),
+          sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_HANDLE,
+        )
+      }
+    subAgentSessionLinkStoreFactory.forChatSession(sessionId)
+      .list()
+      .forEach { link ->
+        mergeSnapshot(
+          snapshot = subAgentActivitySnapshot(link),
+          sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_LINK,
+        )
       }
     promptCheckpointStoreForSession(sessionId)
       .list()
       .asReversed()
       .forEach { checkpoint ->
         checkpointSubAgentHandles(checkpoint).forEach { handle ->
-          val snapshot = subAgentActivitySnapshot(handle)
-          val key = subAgentRegistryKey(snapshot)
-          val existing = latestByKey[key]
-          if (existing == null || snapshot.updatedAtEpochMs >= existing.updatedAtEpochMs) {
-            latestByKey[key] = snapshot
-          }
+          mergeSnapshot(
+            snapshot = subAgentActivitySnapshot(
+              handle = handle,
+              hasActiveExecution = false,
+              closed = false,
+            ),
+            sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_CHECKPOINT,
+          )
         }
       }
-    return latestByKey.values.toList()
+    return latestByKey.values.map(DurableSubAgentSnapshot::snapshot)
   }
 
   private fun checkpointSubAgentHandles(
@@ -3384,12 +3477,64 @@ internal class OpenCrayHostRuntime private constructor(
   ).filterNotNull().flatMap { state -> state.subAgentHandles.asSequence() }
 
   private fun subAgentActivitySnapshot(
+    link: SubAgentSessionLink,
+  ): SubAgentActivitySnapshot {
+    val state = SubAgentExecutionState.fromWireValue(link.status) ?: SubAgentExecutionState.RUNNING
+    return SubAgentActivitySnapshot(
+      parentRunId = link.parentRunId,
+      parentTaskId = "",
+      agentId = link.agentId,
+      childSessionId = link.childSessionId,
+      childRunId = link.childRootRunId.orEmpty(),
+      childTaskId = link.childRootTaskId.orEmpty(),
+      label = link.label,
+      subagentType = link.subagentType,
+      contextMode = link.contextMode,
+      depth = link.depth,
+      phase = subAgentPhaseFor(state),
+      status = link.status,
+      executionState = link.status,
+      continuationKind = when (state) {
+        SubAgentExecutionState.BACKGROUND_RUNNING ->
+          SubAgentContinuationKind.BACKGROUND_RESUME.wireValue
+
+        else -> SubAgentContinuationKind.NONE.wireValue
+      },
+      resumable = false,
+      requiresUserAction = false,
+      isHighRisk = false,
+      closed = link.closed,
+      summary = null,
+      startedAtEpochMs = link.createdAtEpochMs,
+      updatedAtEpochMs = link.updatedAtEpochMs,
+      eventCount = 0,
+      hasActiveExecution = !link.closed && (
+        state == SubAgentExecutionState.RUNNING ||
+          state == SubAgentExecutionState.BACKGROUND_RUNNING
+        ),
+      mailboxMessageCount = 0,
+      mailboxPendingMessageCount = 0,
+      mailboxLastDeliveredMessageId = null,
+      hasPendingApprovalResume = false,
+      pendingApprovalToolName = null,
+      pendingApprovalIsHighRisk = false,
+      pendingApprovalChildRunId = null,
+      pendingApprovalChildTaskId = null,
+    )
+  }
+
+  private fun subAgentActivitySnapshot(
     handle: SubAgentHandleState,
+    hasActiveExecution: Boolean,
+    closed: Boolean,
   ): SubAgentActivitySnapshot {
     val mailbox = handle.normalizedMailbox()
+    val pendingApprovalResume = handle.pendingApprovalResume
     return SubAgentActivitySnapshot(
       parentRunId = handle.parentRunId,
       parentTaskId = handle.parentTaskId,
+      agentId = handle.agentId,
+      childSessionId = handle.childSessionId,
       childRunId = handle.childRunId,
       childTaskId = handle.childTaskId,
       label = handle.description,
@@ -3403,13 +3548,20 @@ internal class OpenCrayHostRuntime private constructor(
       resumable = handle.snapshot.resumable,
       requiresUserAction = handle.snapshot.requiresUserAction,
       isHighRisk = handle.snapshot.isHighRisk,
+      closed = closed,
       summary = handle.snapshot.headline,
       startedAtEpochMs = handle.createdAtEpochMs,
       updatedAtEpochMs = handle.updatedAtEpochMs,
       eventCount = 0,
+      hasActiveExecution = hasActiveExecution,
       mailboxMessageCount = mailbox.messages.size,
       mailboxPendingMessageCount = mailbox.pendingMessages().size,
       mailboxLastDeliveredMessageId = mailbox.lastDeliveredMessageId,
+      hasPendingApprovalResume = pendingApprovalResume != null,
+      pendingApprovalToolName = pendingApprovalResume?.approvedToolName,
+      pendingApprovalIsHighRisk = pendingApprovalResume?.isHighRisk == true,
+      pendingApprovalChildRunId = pendingApprovalResume?.childRunId,
+      pendingApprovalChildTaskId = pendingApprovalResume?.childTaskId,
     )
   }
 
@@ -3438,6 +3590,8 @@ internal class OpenCrayHostRuntime private constructor(
   private fun subAgentSnapshotToMap(snapshot: SubAgentActivitySnapshot): Map<String, Any?> = mapOf(
     "parentRunId" to snapshot.parentRunId,
     "parentTaskId" to snapshot.parentTaskId,
+    "agentId" to snapshot.agentId,
+    "childSessionId" to snapshot.childSessionId,
     "childRunId" to snapshot.childRunId,
     "childTaskId" to snapshot.childTaskId,
     "label" to snapshot.label,
@@ -3451,13 +3605,20 @@ internal class OpenCrayHostRuntime private constructor(
     "resumable" to snapshot.resumable,
     "requiresUserAction" to snapshot.requiresUserAction,
     "isHighRisk" to snapshot.isHighRisk,
+    "closed" to snapshot.closed,
     "summary" to snapshot.summary,
     "startedAtEpochMs" to snapshot.startedAtEpochMs,
     "updatedAtEpochMs" to snapshot.updatedAtEpochMs,
     "eventCount" to snapshot.eventCount,
+    "hasActiveExecution" to snapshot.hasActiveExecution,
     "mailboxMessageCount" to snapshot.mailboxMessageCount,
     "mailboxPendingMessageCount" to snapshot.mailboxPendingMessageCount,
     "mailboxLastDeliveredMessageId" to snapshot.mailboxLastDeliveredMessageId,
+    "hasPendingApprovalResume" to snapshot.hasPendingApprovalResume,
+    "pendingApprovalToolName" to snapshot.pendingApprovalToolName,
+    "pendingApprovalIsHighRisk" to snapshot.pendingApprovalIsHighRisk,
+    "pendingApprovalChildRunId" to snapshot.pendingApprovalChildRunId,
+    "pendingApprovalChildTaskId" to snapshot.pendingApprovalChildTaskId,
   )
 
   private fun displayedRunsForSnapshot(
@@ -5345,6 +5506,7 @@ internal class OpenCrayHostRuntime private constructor(
       executionId = decoded.replayString("execution_id"),
       executionOrdinal = decoded.replayInt("execution_ordinal"),
       executionKind = decoded.replayString("execution_kind"),
+      agentId = decoded.replayString("agent_id"),
       phase = phase,
       childRunId = decoded.replayString("child_run_id") ?: identifiers.first,
       childTaskId = decoded.replayString("child_task_id") ?: identifiers.second,
@@ -5362,6 +5524,7 @@ internal class OpenCrayHostRuntime private constructor(
       resumable = decoded.replayBoolean("resumable") ?: false,
       requiresUserAction = decoded.replayBoolean("requires_user_action") ?: false,
       isHighRisk = decoded.replayBoolean("is_high_risk") ?: false,
+      closed = decoded.replayBoolean("closed") ?: false,
       turn = decoded.replayInt("turn"),
       emittedAtEpochMs = 0L,
     )
@@ -6550,6 +6713,7 @@ internal class OpenCrayHostRuntime private constructor(
       "kind" to "subagent",
       "runId" to event.runId,
       "taskId" to event.taskId,
+      "agentId" to event.agentId,
       "executionId" to event.executionId,
       "executionOrdinal" to event.executionOrdinal,
       "executionKind" to event.executionKind,
@@ -6568,6 +6732,7 @@ internal class OpenCrayHostRuntime private constructor(
       "resumable" to event.resumable,
       "requiresUserAction" to event.requiresUserAction,
       "isHighRisk" to event.isHighRisk,
+      "closed" to event.closed,
       "text" to event.summary,
     )
     is OpenCrayToolCallEvent -> mapOf(
@@ -8937,6 +9102,9 @@ private data class RestoredTerminalMessage(
     private const val TOOL_GENERATED_SUPPLEMENT_ENTRY_ID_PREFIX: String = "tool-supplement-"
     private const val DEFAULT_RUN_WAIT_TIMEOUT_MS: Long = 15_000L
     private const val RUN_LOOKUP_POLL_INTERVAL_MS: Long = 50L
+    private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_CHECKPOINT: Int = 1
+    private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_LINK: Int = 2
+    private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_HANDLE: Int = 3
     private const val MAX_RUNTIME_EVENT_HISTORY: Int = 24
     private const val MAX_RUNTIME_EVENT_PREVIEW_CHARS: Int = 240
     private const val MAX_RUNTIME_EVENT_FAILURE_CONTENT_CHARS: Int = 16_384
@@ -8984,6 +9152,8 @@ private data class RestoredTerminalMessage(
       voiceMetadataBackfillExecutor: Executor,
       voiceMetadataCacheStore: AppAgentWorkspaceVoiceMetadataCacheStore? = null,
       runtimeHostAccess: OpenCrayRuntimeHostAccess,
+      subAgentSessionLinkStoreFactory: SubAgentSessionLinkStoreFactory =
+        inMemorySubAgentSessionLinkStoreFactory(),
       todoSnapshotProvider: (String) -> ChatSessionTodoPresentation,
       transcriptMessagesProvider: (String) -> List<RuntimeConversationMessage>,
       directTaskRuntimeFactory: AgentSessionTaskRuntimeFactory? = null,
@@ -9061,6 +9231,7 @@ private data class RestoredTerminalMessage(
         voiceMetadataBackfillExecutor = voiceMetadataBackfillExecutor,
         voiceMetadataCacheStore = voiceMetadataCacheStore,
         runtimeHostAccess = runtimeHostAccess,
+        subAgentSessionLinkStoreFactory = subAgentSessionLinkStoreFactory,
         todoSnapshotProvider = todoSnapshotProvider,
         transcriptMessagesProvider = transcriptMessagesProvider,
         directTaskRuntimeFactory = directTaskRuntimeFactory,
@@ -9358,9 +9529,16 @@ private data class SubAgentActivityAccumulator(
   val eventCount: Int,
 )
 
+private data class DurableSubAgentSnapshot(
+  val snapshot: SubAgentActivitySnapshot,
+  val sourcePriority: Int,
+)
+
 private data class SubAgentActivitySnapshot(
   val parentRunId: String,
   val parentTaskId: String,
+  val agentId: String?,
+  val childSessionId: String?,
   val childRunId: String,
   val childTaskId: String,
   val label: String,
@@ -9374,13 +9552,20 @@ private data class SubAgentActivitySnapshot(
   val resumable: Boolean,
   val requiresUserAction: Boolean,
   val isHighRisk: Boolean,
+  val closed: Boolean,
   val summary: String?,
   val startedAtEpochMs: Long,
   val updatedAtEpochMs: Long,
   val eventCount: Int,
+  val hasActiveExecution: Boolean,
   val mailboxMessageCount: Int,
   val mailboxPendingMessageCount: Int,
   val mailboxLastDeliveredMessageId: String?,
+  val hasPendingApprovalResume: Boolean,
+  val pendingApprovalToolName: String?,
+  val pendingApprovalIsHighRisk: Boolean,
+  val pendingApprovalChildRunId: String?,
+  val pendingApprovalChildTaskId: String?,
 )
 
 private fun OpenCrayAgentRunEvent.withEmittedAtEpochMs(emittedAtEpochMs: Long): OpenCrayAgentRunEvent =
