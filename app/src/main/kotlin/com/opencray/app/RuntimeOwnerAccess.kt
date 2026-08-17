@@ -3,8 +3,9 @@ package com.opencray.app
 import com.opencray.core.contracts.AgentTask
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.context.RuntimeConversationMessage
-import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.SubAgentPendingApprovalDecision
+import com.opencray.runtime.subagent.SubAgentPendingApprovalDecisionState
 
 internal data class OpenCrayRuntimeReplayAccess(
   val approvalRejectionRecorder: (String, String, String, String?, Boolean, RuntimeReplayExecutionContext) -> Unit,
@@ -26,9 +27,6 @@ internal interface OpenCrayRuntimeSessionAccess {
   ): AgentRunSubmission
 
   fun submitTask(task: com.opencray.core.contracts.AgentTask): AgentRunSubmission
-
-  fun submitDetachedControlTask(task: com.opencray.core.contracts.AgentTask): AgentRunSubmission =
-    submitTask(task)
 
   fun ensureProcessing()
 
@@ -70,28 +68,28 @@ internal interface OpenCrayRuntimeSessionAccess {
 
   fun listSubAgentHandles(): List<SubAgentHandleState> = emptyList()
 
-  fun hasLiveSubAgentWork(): Boolean = listSubAgentHandles().any { handle ->
-    when (handle.snapshot.state) {
-      SubAgentExecutionState.BACKGROUND_QUEUED,
-      SubAgentExecutionState.BACKGROUND_RUNNING,
-      -> true
+  fun listClosedSubAgentHandles(): List<SubAgentHandleState> = emptyList()
 
-      else -> false
-    }
-  }
+  fun hasActiveSubAgentExecution(
+    agentId: String,
+    parentRunId: String,
+  ): Boolean = false
+
+  fun hasLiveSubAgentWork(): Boolean =
+    listSubAgentHandles().any(SubAgentHandleState::hasLiveBackgroundExecution)
 
   fun retainKnownSubAgentParentRuns(parentRunIds: Set<String>) = Unit
 
-  fun listDetachedControlTasks(): List<AgentTask> = emptyList()
+  fun listVisibleSubAgentTasks(): List<AgentTask> = emptyList()
 
-  fun submitDetachedSubAgentRecoveryTask(
+  fun submitSubAgentRecoveryTask(
     agentId: String,
     parentRunId: String,
     taskId: String,
     createdAtEpochMs: Long,
     submissionSource: String,
-  ): AgentRunSubmission = submitDetachedControlTask(
-    detachedSubAgentRecoveryWaitTask(
+  ): AgentRunSubmission = submitTask(
+    syntheticSubAgentRecoveryWaitTask(
       sessionId = sessionId,
       agentId = agentId,
       parentRunId = parentRunId,
@@ -100,8 +98,6 @@ internal interface OpenCrayRuntimeSessionAccess {
       metadata = submissionSourceTaskMetadata(submissionSource),
     ),
   )
-
-  fun ensureRecoverableDetachedSubAgentTasks(): Int = 0
 }
 
 internal interface RuntimeOwnerObservationAccess {
@@ -215,9 +211,6 @@ private class AgentSessionHandleRuntimeSessionAccess(
   override fun submitTask(task: com.opencray.core.contracts.AgentTask): AgentRunSubmission =
     delegate.submitTask(task)
 
-  override fun submitDetachedControlTask(task: com.opencray.core.contracts.AgentTask): AgentRunSubmission =
-    delegate.submitDetachedControlTask(task)
-
   override fun ensureProcessing() = delegate.ensureProcessing()
 
   override fun requestCancel(taskId: String): Boolean = delegate.requestCancel(taskId)
@@ -268,29 +261,37 @@ private class AgentSessionHandleRuntimeSessionAccess(
   override fun listSubAgentHandles(): List<SubAgentHandleState> =
     delegate.listSubAgentHandles()
 
+  override fun listClosedSubAgentHandles(): List<SubAgentHandleState> =
+    delegate.listClosedSubAgentHandles()
+
+  override fun hasActiveSubAgentExecution(
+    agentId: String,
+    parentRunId: String,
+  ): Boolean = delegate.hasActiveSubAgentExecution(
+    agentId = agentId,
+    parentRunId = parentRunId,
+  )
+
   override fun retainKnownSubAgentParentRuns(parentRunIds: Set<String>) {
     delegate.retainKnownSubAgentParentRuns(parentRunIds)
   }
 
-  override fun listDetachedControlTasks(): List<AgentTask> =
-    delegate.listDetachedControlTasks()
+  override fun listVisibleSubAgentTasks(): List<AgentTask> =
+    delegate.listVisibleSubAgentTasks()
 
-  override fun submitDetachedSubAgentRecoveryTask(
+  override fun submitSubAgentRecoveryTask(
     agentId: String,
     parentRunId: String,
     taskId: String,
     createdAtEpochMs: Long,
     submissionSource: String,
-  ): AgentRunSubmission = delegate.submitDetachedSubAgentRecoveryTask(
+  ): AgentRunSubmission = delegate.submitSubAgentRecoveryTask(
     agentId = agentId,
     parentRunId = parentRunId,
     taskId = taskId,
     createdAtEpochMs = createdAtEpochMs,
     submissionSource = submissionSource,
   )
-
-  override fun ensureRecoverableDetachedSubAgentTasks(): Int =
-    delegate.ensureRecoverableDetachedSubAgentTasks()
 }
 
 internal class DefaultOpenCrayRuntimeHostAccess(
@@ -350,6 +351,11 @@ internal class DefaultOpenCrayRuntimeHostAccess(
       promptResumeState = promptResumeState,
       subAgentApprovalResume = subAgentApprovalResume,
     )
+    mirrorPendingSubAgentApprovalDecision(
+      sessionId = sessionId,
+      subAgentApprovalResume = subAgentApprovalResume,
+      approved = true,
+    )
   }
 
   override fun markApprovalRejected(
@@ -366,6 +372,11 @@ internal class DefaultOpenCrayRuntimeHostAccess(
       promptResumeState = promptResumeState,
       subAgentApprovalResume = subAgentApprovalResume,
     )
+    mirrorPendingSubAgentApprovalDecision(
+      sessionId = sessionId,
+      subAgentApprovalResume = subAgentApprovalResume,
+      approved = false,
+    )
   }
 
   override fun clearApproval(sessionId: String, taskId: String) {
@@ -381,6 +392,34 @@ internal class DefaultOpenCrayRuntimeHostAccess(
 
   override fun isApprovalRejected(sessionId: String, taskId: String): Boolean =
     approvalRegistry.isRejected(sessionId, taskId)
+
+  private fun mirrorPendingSubAgentApprovalDecision(
+    sessionId: String,
+    subAgentApprovalResume: com.opencray.runtime.subagent.SubAgentApprovalResume?,
+    approved: Boolean,
+  ) {
+    val resume = subAgentApprovalResume ?: return
+    val session = sessionRuntimeManager.forSession(sessionId)
+    val handle = session.listSubAgentHandles().firstOrNull { candidate ->
+      subAgentApprovalResumeMatchesHandle(
+        resume = resume,
+        handle = candidate,
+      )
+    } ?: return
+    session.setSubAgentPendingApprovalDecision(
+      agentId = handle.agentId,
+      parentRunId = handle.parentRunId,
+      pendingApprovalDecision = SubAgentPendingApprovalDecision(
+        state = if (approved) {
+          SubAgentPendingApprovalDecisionState.APPROVED
+        } else {
+          SubAgentPendingApprovalDecisionState.REJECTED
+        },
+        resume = resume,
+        recordedAtEpochMs = System.currentTimeMillis(),
+      ),
+    )
+  }
 }
 
 internal data class OpenCrayRuntimeOwnerAccess(
@@ -391,6 +430,19 @@ internal data class OpenCrayRuntimeOwnerAccess(
   val replayAccess: OpenCrayRuntimeReplayAccess,
   val onDeviceWarmupPlanner: (String) -> OnDeviceLlmWarmupSpec? = { null },
 )
+
+private fun subAgentApprovalResumeMatchesHandle(
+  resume: com.opencray.runtime.subagent.SubAgentApprovalResume?,
+  handle: SubAgentHandleState,
+): Boolean {
+  val candidate = resume ?: return false
+  return when {
+    !candidate.agentId.isNullOrBlank() -> candidate.agentId == handle.agentId
+    !candidate.childTaskId.isNullOrBlank() -> candidate.childTaskId == handle.childTaskId
+    !candidate.childRunId.isNullOrBlank() -> candidate.childRunId == handle.childRunId
+    else -> false
+  }
+}
 
 internal fun RetainedInProcessOpenCrayRuntimeOwnerCore.toRuntimeOwnerAccess(): OpenCrayRuntimeOwnerAccess =
   OpenCrayRuntimeOwnerAccess(

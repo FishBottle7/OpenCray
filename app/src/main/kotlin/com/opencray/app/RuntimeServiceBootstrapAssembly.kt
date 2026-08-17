@@ -440,12 +440,6 @@ private fun RuntimeServiceBootstrapAssembly.toApprovalDecisionDependencies(
   runtimeReplayAccess = runtimeServicePort.replayAccess,
 )
 
-private fun submitRecoverableSubAgentTasksForSession(
-  session: OpenCrayRuntimeSessionAccess,
-) {
-  session.ensureRecoverableDetachedSubAgentTasks()
-}
-
 internal fun bootstrapRuntimeServiceSessions(
   chatSessionStore: ChatSessionLocalStore,
   runtimeSessionDirectoryAccess: RuntimeSessionDirectoryAccess,
@@ -535,9 +529,6 @@ internal fun bootstrapRuntimeServiceSessions(
       runtimeReplayAccess.terminalReplayRepairer(sessionId, runs)
       repairedSessionIds += sessionId
     }
-    submitRecoverableSubAgentTasksForSession(
-      session = session,
-    )
   }
 
   val nextRepairRetry = nextInterruptedRunRepairRetry(
@@ -643,9 +634,6 @@ internal fun resumeInterruptedRuntimeServiceRuns(
       runtimeReplayAccess.terminalReplayRepairer(sessionId, repairedRuns)
       repairedSessionIds += sessionId
     }
-    submitRecoverableSubAgentTasksForSession(
-      session = session,
-    )
   }
 
   val nextRepairRetry = nextInterruptedRunRepairRetry(

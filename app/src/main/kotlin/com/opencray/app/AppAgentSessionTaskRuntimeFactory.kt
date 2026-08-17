@@ -38,6 +38,7 @@ import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.HostProcessPythonRuntime
 import com.opencray.runtime.InMemoryAgentTodoStore
 import com.opencray.runtime.ManagedProcessObservationTracker
+import com.opencray.runtime.NoOpOpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.OpenCrayAgentRuntime
 import com.opencray.runtime.OpenCrayAgentRuntimeConfig
 import com.opencray.runtime.OpenCrayAgentRunEvent
@@ -116,15 +117,20 @@ import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.session.InMemorySessionTranscriptStore
 import com.opencray.runtime.session.SessionTranscriptStore
 import com.opencray.runtime.skills.SkillCatalogResolver
+import com.opencray.runtime.skills.ActiveSkillCapsuleResolver
 import com.opencray.runtime.skills.ActiveSkillPromptLayer
 import com.opencray.runtime.skills.SkillInstallManifestStore
 import com.opencray.runtime.skills.SkillInventoryPromptLayer
 import com.opencray.runtime.skills.SkillInventoryResolver
 import com.opencray.runtime.skills.SkillPackageManager
+import com.opencray.runtime.subagent.SubAgentChildSessionBootstrap
+import com.opencray.runtime.subagent.SubAgentChildSessionBootstrapMetadata
+import com.opencray.runtime.subagent.SubAgentContextBuilder
 import com.opencray.runtime.subagent.SubAgentExecutionCoordinator
 import com.opencray.runtime.subagent.SubAgentExecutionKey
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.SubAgentPendingApprovalDecision
 import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
 import com.opencray.runtime.soul.NoOpSoulTurnSemanticSignalInterpreter
 import com.opencray.runtime.soul.SoulTurnSemanticSignalInterpretation
@@ -236,6 +242,8 @@ internal class AppAgentSessionTaskRuntimeFactory(
   )
   private val skillCatalogResolver: SkillCatalogResolver = SkillCatalogResolver()
   private val skillInventoryResolver: SkillInventoryResolver = SkillInventoryResolver()
+  private val activeSkillCapsuleResolver: ActiveSkillCapsuleResolver = ActiveSkillCapsuleResolver()
+  private val subAgentContextBuilder: SubAgentContextBuilder = SubAgentContextBuilder()
   private val replayJson: Json = Json { prettyPrint = false }
 
   override fun create(
@@ -263,9 +271,76 @@ internal class AppAgentSessionTaskRuntimeFactory(
     processId: String,
   ): ManagedProcessSnapshot? = processRegistryForSession(sessionId).terminate(processId)
 
-  override fun listSubAgentHandles(sessionId: String): List<SubAgentHandleState> =
-    subAgentExecutionCoordinatorsBySession[sessionId]?.allHandles()
-      ?: subAgentHandleStoreForSession(sessionId).list()
+  override fun listSubAgentHandles(sessionId: String): List<SubAgentHandleState> {
+    val coordinator = subAgentExecutionCoordinatorsBySession[sessionId]
+    val merged = if (coordinator != null) {
+      mergeSubAgentHandlesByLatestState(
+        liveHandles = coordinator.allHandles(),
+        closedHandles = coordinator.allClosedHandles(),
+      )
+    } else {
+      val store = subAgentHandleStoreForSession(sessionId)
+      mergeSubAgentHandlesByLatestState(
+        liveHandles = store.list(),
+        closedHandles = store.listClosed(),
+      )
+    }
+    return merged.map(MergedSubAgentHandleState::handle)
+  }
+
+  override fun listClosedSubAgentHandles(sessionId: String): List<SubAgentHandleState> {
+    val coordinator = subAgentExecutionCoordinatorsBySession[sessionId]
+    val merged = if (coordinator != null) {
+      mergeSubAgentHandlesByLatestState(
+        liveHandles = coordinator.allHandles(),
+        closedHandles = coordinator.allClosedHandles(),
+      )
+    } else {
+      val store = subAgentHandleStoreForSession(sessionId)
+      mergeSubAgentHandlesByLatestState(
+        liveHandles = store.list(),
+        closedHandles = store.listClosed(),
+      )
+    }
+    return merged
+      .filter(MergedSubAgentHandleState::closed)
+      .map(MergedSubAgentHandleState::handle)
+  }
+
+  override fun updateSubAgentHandlePendingApprovalDecision(
+    sessionId: String,
+    agentId: String,
+    parentRunId: String,
+    pendingApprovalDecision: SubAgentPendingApprovalDecision?,
+  ): SubAgentHandleState? = subAgentExecutionCoordinatorForSession(sessionId).updateHandle(
+    key = SubAgentExecutionKey(
+      parentRunId = parentRunId,
+      agentId = agentId,
+    ),
+  ) { existingHandle ->
+    if (pendingApprovalDecision == null) {
+      existingHandle.copy(pendingApprovalDecision = null)
+    } else {
+      existingHandle.copy(
+        pendingApprovalDecision = pendingApprovalDecision,
+        updatedAtEpochMs = maxOf(
+          existingHandle.updatedAtEpochMs,
+          pendingApprovalDecision.recordedAtEpochMs,
+        ),
+      )
+    }
+  }
+
+  override fun hasActiveSubAgentExecution(
+    sessionId: String,
+    agentId: String,
+    parentRunId: String,
+  ): Boolean = subAgentExecutionCoordinatorForSession(sessionId).activeExecution(
+    key = SubAgentExecutionKey(
+      parentRunId = parentRunId,
+      agentId = agentId,
+    ),
+  ) != null
 
   override fun retainKnownSubAgentParentRuns(
     sessionId: String,
@@ -290,23 +365,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     subAgentExecutionCoordinatorsBySession.remove(sessionId)
   }
 
-  override fun executeDetachedControlTask(
-    sessionId: String,
-    task: AgentTask,
-    hooks: RuntimeExecutionHooks,
-    eventSink: OpenCrayAgentRuntimeEventSink,
-  ): ExecutionResult? {
-    val detachedControlTask = detachedControlTaskSpec(task) ?: return null
-    return executeTask(
-      sessionId = sessionId,
-      task = task,
-      hooks = hooks,
-      eventSink = eventSink,
-      detachedControlTask = detachedControlTask,
-    )
-  }
-
-  override fun executeDetachedSubAgentRecoveryTask(
+  override fun executeSubAgentRecoveryTask(
     sessionId: String,
     task: AgentTask,
     hooks: RuntimeExecutionHooks,
@@ -319,11 +378,116 @@ internal class AppAgentSessionTaskRuntimeFactory(
       task = task,
       hooks = hooks,
       eventSink = eventSink,
-      detachedControlTask = DetachedSubAgentRecoveryWaitTaskSpec(
+      syntheticSubAgentTask = SyntheticSubAgentRecoveryWaitTaskSpec(
         agentId = agentId,
         parentRunId = parentRunId,
       ),
     )
+
+  override fun executeSubAgentActorTask(
+    sessionId: String,
+    task: AgentTask,
+    hooks: RuntimeExecutionHooks,
+    eventSink: OpenCrayAgentRuntimeEventSink,
+    agentId: String,
+    parentRunId: String,
+  ): ExecutionResult =
+    executeTask(
+      sessionId = sessionId,
+      task = task,
+      hooks = hooks,
+      eventSink = eventSink,
+      syntheticSubAgentTask = SyntheticSubAgentActorTaskSpec(
+        agentId = agentId,
+        parentRunId = parentRunId,
+      ),
+    )
+
+  override fun ensureSubAgentRecoveryExecution(
+    sessionId: String,
+    task: AgentTask,
+    hooks: RuntimeExecutionHooks,
+    eventSink: OpenCrayAgentRuntimeEventSink,
+    agentId: String,
+    parentRunId: String,
+  ): Boolean {
+    val preparedRuntime = prepareRuntimeExecution(
+      sessionId = sessionId,
+      task = task,
+      eventSink = eventSink,
+      syntheticSubAgentTask = SyntheticSubAgentRecoveryWaitTaskSpec(
+        agentId = agentId,
+        parentRunId = parentRunId,
+      ),
+    )
+    val runtime = when (preparedRuntime) {
+      is PreparedAppTaskRuntimeExecution.Ready -> preparedRuntime.runtime
+      is PreparedAppTaskRuntimeExecution.Failed -> return false
+    }
+    return runtime.ensureSubAgentRecoveryExecution(
+      task = task,
+      hooks = hooks,
+      agentId = agentId,
+      parentRunId = parentRunId,
+    ) != null
+  }
+
+  override fun ensureBackgroundSubAgentExecution(
+    sessionId: String,
+    agentId: String,
+    parentRunId: String,
+  ): Boolean {
+    val now = System.currentTimeMillis()
+    val task = syntheticSubAgentActorTask(
+      sessionId = sessionId,
+      agentId = agentId,
+      parentRunId = parentRunId,
+      createdAtEpochMs = now,
+      metadata = HostRuntimeLifecycleDescriptor().taskMetadata(
+        submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
+      ),
+    )
+    return ensureSubAgentRecoveryExecution(
+      sessionId = sessionId,
+      task = task,
+      hooks = RuntimeExecutionHooks(
+        isCancellationRequested = { false },
+        requestRetry = { _ -> Unit },
+      ),
+      eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+      agentId = agentId,
+      parentRunId = parentRunId,
+    )
+  }
+
+  override fun waitForSubAgentRecoveryExecution(
+    sessionId: String,
+    task: AgentTask,
+    hooks: RuntimeExecutionHooks,
+    eventSink: OpenCrayAgentRuntimeEventSink,
+    agentId: String,
+    parentRunId: String,
+  ): ExecutionResult? {
+    val preparedRuntime = prepareRuntimeExecution(
+      sessionId = sessionId,
+      task = task,
+      eventSink = eventSink,
+      syntheticSubAgentTask = SyntheticSubAgentRecoveryWaitTaskSpec(
+        agentId = agentId,
+        parentRunId = parentRunId,
+      ),
+    )
+    val runtime = when (preparedRuntime) {
+      is PreparedAppTaskRuntimeExecution.Ready -> preparedRuntime.runtime
+      is PreparedAppTaskRuntimeExecution.Failed -> return preparedRuntime.result
+    }
+    return runtime.executeSubAgentRecoveryWait(
+      task = task,
+      hooks = hooks,
+      agentId = agentId,
+      parentRunId = parentRunId,
+    )
+  }
 
   override fun cancelActiveSubAgentExecution(
     sessionId: String,
@@ -343,8 +507,87 @@ internal class AppAgentSessionTaskRuntimeFactory(
     task: AgentTask,
     hooks: RuntimeExecutionHooks,
     eventSink: OpenCrayAgentRuntimeEventSink,
-    detachedControlTask: DetachedControlTaskSpec? = null,
+    syntheticSubAgentTask: SyntheticSubAgentTaskSpec? = null,
   ): ExecutionResult {
+    val preparedRuntime = prepareRuntimeExecution(
+      sessionId = sessionId,
+      task = task,
+      eventSink = eventSink,
+      syntheticSubAgentTask = syntheticSubAgentTask,
+    )
+    val runtime: OpenCrayAgentRuntime
+    val preparedToolDispatcher: OpenCrayToolDispatcher
+    val preparedOnDeviceProviderMode: Boolean
+    when (preparedRuntime) {
+      is PreparedAppTaskRuntimeExecution.Failed -> return preparedRuntime.result
+      is PreparedAppTaskRuntimeExecution.Ready -> {
+        runtime = preparedRuntime.runtime
+        preparedToolDispatcher = preparedRuntime.toolDispatcher
+        preparedOnDeviceProviderMode = preparedRuntime.onDeviceProviderMode
+      }
+    }
+    val liteRtAutomaticToolExecutionContext = if (
+      enableLiteRtDevAutomaticToolExecution &&
+      preparedOnDeviceProviderMode
+    ) {
+      LiteRtAutomaticToolExecutionContext(
+        task = task,
+        hooks = hooks,
+        toolDispatcher = preparedToolDispatcher,
+      )
+    } else {
+      null
+    }
+    val result = LiteRtAutomaticToolExecutionRegistry.withContext(
+      liteRtAutomaticToolExecutionContext,
+    ) {
+      when (syntheticSubAgentTask) {
+        is SyntheticSubAgentActorTaskSpec -> {
+          runtime.executeSubAgentActorTask(
+            task = task,
+            hooks = hooks,
+            agentId = syntheticSubAgentTask.agentId,
+            parentRunId = syntheticSubAgentTask.parentRunId,
+          )
+        }
+
+        is SyntheticSubAgentRecoveryWaitTaskSpec -> {
+          runtime.ensureSubAgentRecoveryExecution(
+            task = task,
+            hooks = hooks,
+            agentId = syntheticSubAgentTask.agentId,
+            parentRunId = syntheticSubAgentTask.parentRunId,
+          )
+          runtime.executeSubAgentRecoveryWait(
+            task = task,
+            hooks = hooks,
+            agentId = syntheticSubAgentTask.agentId,
+            parentRunId = syntheticSubAgentTask.parentRunId,
+          )
+        }
+
+        null -> runtime.execute(task, hooks)
+      }
+    }
+    recordFinalAssistantTurn(
+      sessionId = sessionId,
+      task = task,
+      result = result,
+    )
+    finalizeWorkingStateAfterTask(
+      sessionId = sessionId,
+      task = task,
+      result = result,
+    )
+    return result
+  }
+
+  private fun prepareRuntimeExecution(
+    sessionId: String,
+    task: AgentTask,
+    eventSink: OpenCrayAgentRuntimeEventSink,
+    syntheticSubAgentTask: SyntheticSubAgentTaskSpec? = null,
+  ): PreparedAppTaskRuntimeExecution {
     val llmSettings = llmSettingsProvider().sanitized()
     val safetySettings = safetySettingsProvider().sanitized()
     val approvalContinuation = approvalContinuationForExecution(sessionId, task.id)
@@ -353,9 +596,9 @@ internal class AppAgentSessionTaskRuntimeFactory(
     val approvedSubAgentResume = approvalGrant?.subAgentApprovalResume
     val rejectedSubAgentResume = approvalRejection?.subAgentApprovalResume
     val requiresLlmConfig = task.type == com.opencray.core.contracts.AgentTaskType.PROMPT ||
-      detachedControlRequiresLlm(
+      syntheticSubAgentTaskRequiresLlm(
         sessionId = sessionId,
-        detachedControlTask = detachedControlTask,
+        syntheticSubAgentTask = syntheticSubAgentTask,
         approvedSubAgentResume = approvedSubAgentResume,
         rejectedSubAgentResume = rejectedSubAgentResume,
       ) ||
@@ -372,14 +615,16 @@ internal class AppAgentSessionTaskRuntimeFactory(
       else -> true
     }
     if (requiresLlmConfig && !hasOperationalLlmConfig) {
-      return ExecutionResult(
-        taskId = task.id,
-        status = ExecutionStatus.FAILED,
-        errorCode = ERROR_CODE_MISSING_LLM_CONFIG,
-        errorMessage = "LLM configuration is incomplete.",
-        startedAtEpochMs = System.currentTimeMillis(),
-        finishedAtEpochMs = System.currentTimeMillis(),
-        metadata = task.metadata,
+      return PreparedAppTaskRuntimeExecution.Failed(
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.FAILED,
+          errorCode = ERROR_CODE_MISSING_LLM_CONFIG,
+          errorMessage = "LLM configuration is incomplete.",
+          startedAtEpochMs = System.currentTimeMillis(),
+          finishedAtEpochMs = System.currentTimeMillis(),
+          metadata = task.metadata,
+        ),
       )
     }
     val routeProviderId = llmSettings.providerId.ifBlank {
@@ -451,6 +696,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
     val transcriptStore = transcriptStoreForSession(sessionId)
     val supplementStore = supplementStoreForSession(sessionId)
     val memoryRecords = memoryRecordsProvider()
+    val subAgentChildSessionBootstrap = SubAgentChildSessionBootstrapMetadata.decodeFromMetadata(
+      metadata = task.metadata,
+      json = replayJson,
+    )
     val skillPackageManager = skillPackageManagerProvider()
     val skillPolicyReadRoots = skillPackageManager?.let { manager ->
       setOf(
@@ -469,6 +718,14 @@ internal class AppAgentSessionTaskRuntimeFactory(
       setOf(manager.policyTargetPath())
     }.orEmpty()
     val workspaceId = AppWorkspaceIdentity.fromRoots(workspaceRootsProvider())
+    val skillCatalog = skillCatalogFor()
+    val inheritedSubAgentChildSkillCapsule = subAgentChildSessionBootstrap?.let { bootstrap ->
+      activeSkillCapsuleResolver.resolve(
+        catalog = skillCatalog,
+        activeSkillName = bootstrap.childTask.activeSkillName,
+        activationSource = bootstrap.childTask.activeSkillActivationSource,
+      )
+    }
     val llmMetadata = buildRuntimeLlmMetadata(
       requiresLlmConfig = requiresLlmConfig,
       taskMetadata = task.metadata,
@@ -518,6 +775,8 @@ internal class AppAgentSessionTaskRuntimeFactory(
         llmMetadata = llmMetadata,
         authHeaders = llmAuthHeaders,
       ),
+      skillCatalog = skillCatalog,
+      subAgentChildSessionBootstrap = subAgentChildSessionBootstrap,
     )
     val sessionContext = preparedContext.sessionContext
     val effectiveMemoryRecords = preparedContext.effectiveMemoryRecords
@@ -598,6 +857,8 @@ internal class AppAgentSessionTaskRuntimeFactory(
         workingStateStore = workingStateStoreForSession(sessionId),
         subAgentExecutionCoordinator = subAgentExecutionCoordinatorForSession(sessionId),
         seededSubAgentHandles = subAgentExecutionCoordinatorForSession(sessionId).allHandles(),
+        seededDetachedSubAgentHandlesRequireCoordinatorOwnership = true,
+        inheritedActiveSkillCapsule = inheritedSubAgentChildSkillCapsule,
         supplementInputProvider = { runId, taskId ->
           supplementStore.consumeForRun(runId = runId, taskId = taskId)
             .map { entry ->
@@ -632,7 +893,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
             liveContextPolicy = liveContextPolicyFor(effectiveLiveContextMode),
             memoryToolsEnabled = effectiveMemoryToolsEnabled,
             enabled = task.type == com.opencray.core.contracts.AgentTaskType.PROMPT &&
-              detachedControlTask == null,
+              syntheticSubAgentTask == null,
           )
         },
         contextManager = contextManagerFor(sourceBudgetProfile),
@@ -648,51 +909,11 @@ internal class AppAgentSessionTaskRuntimeFactory(
         delegate = eventSink,
       ),
     )
-    val liteRtAutomaticToolExecutionContext = if (
-      enableLiteRtDevAutomaticToolExecution &&
-      llmSettings.isOnDeviceProviderMode()
-    ) {
-      LiteRtAutomaticToolExecutionContext(
-        task = task,
-        hooks = hooks,
-        toolDispatcher = toolDispatcher,
-      )
-    } else {
-      null
-    }
-    val result = LiteRtAutomaticToolExecutionRegistry.withContext(
-      liteRtAutomaticToolExecutionContext,
-    ) {
-      when (detachedControlTask) {
-        is DetachedSubAgentRecoveryWaitTaskSpec -> {
-          runtime.ensureDetachedSubAgentRecoveryExecution(
-            task = task,
-            hooks = hooks,
-            agentId = detachedControlTask.agentId,
-            parentRunId = detachedControlTask.parentRunId,
-          )
-          runtime.executeDetachedSubAgentRecoveryWait(
-            task = task,
-            hooks = hooks,
-            agentId = detachedControlTask.agentId,
-            parentRunId = detachedControlTask.parentRunId,
-          )
-        }
-
-        null -> runtime.execute(task, hooks)
-      }
-    }
-    recordFinalAssistantTurn(
-      sessionId = sessionId,
-      task = task,
-      result = result,
+    return PreparedAppTaskRuntimeExecution.Ready(
+      runtime = runtime,
+      toolDispatcher = toolDispatcher,
+      onDeviceProviderMode = llmSettings.isOnDeviceProviderMode(),
     )
-    finalizeWorkingStateAfterTask(
-      sessionId = sessionId,
-      task = task,
-      result = result,
-    )
-    return result
   }
 
   internal fun todoStoreForSession(sessionId: String): AgentTodoStore =
@@ -775,49 +996,53 @@ internal class AppAgentSessionTaskRuntimeFactory(
     if (normalizedToolName != "spawn_agent" && normalizedToolName != "wait_agent") {
       return false
     }
+    val coordinator = subAgentExecutionCoordinatorForSession(sessionId)
     val agentId = directToolAgentIdFrom(task.input)
     val existingHandle = agentId?.let { resolvedAgentId ->
-      subAgentExecutionCoordinatorForSession(sessionId)
+      coordinator
         .allHandles()
         .firstOrNull { handle -> handle.agentId == resolvedAgentId }
     }
     val hasApprovalContinuation = approvedSubAgentResume != null || rejectedSubAgentResume != null
-    return when {
-      existingHandle == null -> normalizedToolName == "spawn_agent"
-      existingHandle.snapshot.state in setOf(
-        SubAgentExecutionState.COMPLETED,
-        SubAgentExecutionState.CANCELLED,
-        SubAgentExecutionState.FAILED,
-      ) && existingHandle.pendingApprovalResume == null -> false
-      existingHandle.pendingApprovalResume != null && !hasApprovalContinuation -> false
-      else -> true
+    return when (normalizedToolName) {
+      "spawn_agent" -> when {
+        existingHandle == null -> true
+        !existingHandle.canContinueDetachedExecution(hasApprovalContinuation = hasApprovalContinuation) -> false
+        else -> true
+      }
+
+      "wait_agent" -> existingHandle?.let { handle ->
+        detachedSubAgentWaitRequiresLlm(
+          coordinator = coordinator,
+          handle = handle,
+          hasApprovalContinuation = hasApprovalContinuation,
+        )
+      } ?: false
+
+      else -> false
     }
   }
 
-  private fun detachedControlRequiresLlm(
+  private fun syntheticSubAgentTaskRequiresLlm(
     sessionId: String,
-    detachedControlTask: DetachedControlTaskSpec?,
+    syntheticSubAgentTask: SyntheticSubAgentTaskSpec?,
     approvedSubAgentResume: com.opencray.runtime.subagent.SubAgentApprovalResume?,
     rejectedSubAgentResume: com.opencray.runtime.subagent.SubAgentApprovalResume?,
   ): Boolean {
-    val recoveryTask = detachedControlTask as? DetachedSubAgentRecoveryWaitTaskSpec ?: return false
-    val existingHandle = subAgentExecutionCoordinatorForSession(sessionId).currentHandle(
+    val recoveryTask = syntheticSubAgentTask ?: return false
+    val coordinator = subAgentExecutionCoordinatorForSession(sessionId)
+    val existingHandle = coordinator.currentHandle(
       com.opencray.runtime.subagent.SubAgentExecutionKey(
         parentRunId = recoveryTask.parentRunId,
         agentId = recoveryTask.agentId,
       ),
     ) ?: return false
     val hasApprovalContinuation = approvedSubAgentResume != null || rejectedSubAgentResume != null
-    return when {
-      existingHandle.snapshot.state in setOf(
-        SubAgentExecutionState.COMPLETED,
-        SubAgentExecutionState.CANCELLED,
-        SubAgentExecutionState.FAILED,
-      ) && existingHandle.pendingApprovalResume == null -> false
-
-      existingHandle.pendingApprovalResume != null && !hasApprovalContinuation -> false
-      else -> true
-    }
+    return detachedSubAgentWaitRequiresLlm(
+      coordinator = coordinator,
+      handle = existingHandle,
+      hasApprovalContinuation = hasApprovalContinuation,
+    )
   }
 
   private fun directToolNameFrom(taskInput: String): String? = runCatching {
@@ -844,6 +1069,22 @@ internal class AppAgentSessionTaskRuntimeFactory(
       value?.trim()?.takeIf(String::isNotBlank)
     }.firstOrNull()
   }.getOrNull()
+
+  private fun detachedSubAgentWaitRequiresLlm(
+    coordinator: SubAgentExecutionCoordinator,
+    handle: SubAgentHandleState,
+    hasApprovalContinuation: Boolean,
+  ): Boolean {
+    if (handle.isTerminalWithoutPendingApprovalResume()) {
+      return false
+    }
+    if (coordinator.activeExecution(SubAgentExecutionKey.from(handle)) != null) {
+      return false
+    }
+    return handle.canContinueDetachedExecution(
+      hasApprovalContinuation = hasApprovalContinuation,
+    )
+  }
 
   internal fun generalPromptResumeStateForExecution(
     sessionId: String,
@@ -1831,7 +2072,19 @@ internal class AppAgentSessionTaskRuntimeFactory(
     liveContextMode: LiveContextMode = LiveContextMode.FULL,
     memoryToolsEnabled: Boolean = safetySettingsProvider().sanitized().memoryToolsEnabled,
     remoteCompactionProvider: RemoteCompactionProvider = NoOpRemoteCompactionProvider,
+    skillCatalog: com.opencray.runtime.skills.SkillCatalog = skillCatalogFor(),
+    subAgentChildSessionBootstrap: SubAgentChildSessionBootstrap? = null,
   ): PreparedSessionContext {
+    subAgentChildSessionBootstrap?.let { bootstrap ->
+      return prepareSubAgentChildSessionContext(
+        sessionId = sessionId,
+        taskInput = taskInput,
+        transcriptStore = transcriptStore,
+        memoryRecords = memoryRecords,
+        appendTaskInputToTranscript = appendTaskInputToTranscript,
+        bootstrap = bootstrap,
+      )
+    }
     val prepareStartedAtEpochMs = System.currentTimeMillis()
     val liveContextPolicy = liveContextPolicyFor(liveContextMode)
     sessionContextDebug(
@@ -1899,7 +2152,6 @@ internal class AppAgentSessionTaskRuntimeFactory(
     sessionContextDebug(
       "context.compaction session=$sessionId task=$taskId durationMs=${System.currentTimeMillis() - compactionStartedAtEpochMs}",
     )
-    val skillCatalog = skillCatalogFor()
     val bootstrapContext = bootstrapContextFor(
       mode = if (taskType == com.opencray.core.contracts.AgentTaskType.PROMPT) {
         liveContextPolicy.bootstrapMode
@@ -1990,6 +2242,46 @@ internal class AppAgentSessionTaskRuntimeFactory(
       "context.prepareDone session=$sessionId task=$taskId durationMs=${System.currentTimeMillis() - prepareStartedAtEpochMs} turnSemanticSignal=${if (preparedContext.sessionContext.turnSemanticSignal != null) "present" else "absent"} durableMemoryCount=${preparedContext.effectiveMemoryRecords.size}",
     )
     return preparedContext
+  }
+
+  private fun prepareSubAgentChildSessionContext(
+    sessionId: String,
+    taskInput: String,
+    transcriptStore: SessionTranscriptStore,
+    memoryRecords: List<MemoryRecord>,
+    appendTaskInputToTranscript: Boolean,
+    bootstrap: SubAgentChildSessionBootstrap,
+  ): PreparedSessionContext {
+    val storedWorkingState = workingStateStoreForSession(sessionId).snapshot()
+    val initialContext = bootstrap.buildInitialContext(
+      contextBuilder = subAgentContextBuilder,
+    ).sessionContext
+    val baseContext = initialContext.copy(
+      workingState = if (storedWorkingState.isEmpty) {
+        initialContext.workingState
+      } else {
+        storedWorkingState
+      },
+    )
+    transcriptStore.seedIfEmpty(baseContext.conversation)
+    if (appendTaskInputToTranscript) {
+      taskInput.trim()
+        .takeIf(String::isNotBlank)
+        ?.let { normalizedInput ->
+          transcriptStore.appendIfDistinct(
+            RuntimeConversationMessage(
+              role = RuntimeConversationRole.USER,
+              content = normalizedInput,
+            ),
+          )
+        }
+    }
+    return PreparedSessionContext(
+      sessionContext = baseContext.copy(
+        conversation = transcriptStore.snapshot(),
+      ),
+      effectiveMemoryRecords = memoryRecords,
+    )
   }
 
   private fun runMidTurnContextMaintenance(
@@ -3276,6 +3568,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       event.executionId?.let { executionId -> put("execution_id", executionId) }
       event.executionOrdinal?.let { executionOrdinal -> put("execution_ordinal", executionOrdinal) }
       event.executionKind?.let { executionKind -> put("execution_kind", executionKind) }
+      event.agentId?.let { agentId -> put("agent_id", agentId) }
       put("turn", event.turn)
       put("phase", event.phase.name.lowercase())
       put("child_run_id", event.childRunId)
@@ -3297,6 +3590,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       put("resumable", event.resumable)
       put("requires_user_action", event.requiresUserAction)
       put("is_high_risk", event.isHighRisk)
+      put("closed", event.closed)
       event.summary
         ?.trim()
         ?.takeIf(String::isNotBlank)
@@ -3615,6 +3909,18 @@ internal data class PreparedSessionContext(
   val sessionContext: AgentRuntimeSessionContext,
   val effectiveMemoryRecords: List<MemoryRecord>,
 )
+
+private sealed interface PreparedAppTaskRuntimeExecution {
+  data class Ready(
+    val runtime: OpenCrayAgentRuntime,
+    val toolDispatcher: OpenCrayToolDispatcher,
+    val onDeviceProviderMode: Boolean,
+  ) : PreparedAppTaskRuntimeExecution
+
+  data class Failed(
+    val result: ExecutionResult,
+  ) : PreparedAppTaskRuntimeExecution
+}
 
 internal data class ApprovalContinuation(
   val grant: AgentTaskApprovalGrant? = null,

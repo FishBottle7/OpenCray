@@ -56,7 +56,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
       },
       shouldDeferDecisionUntilManualResume = ::shouldDeferApprovalDecisionUntilManualResume,
       submitDetachedApprovedRecovery = { resolution, emittedAtEpochMs ->
-        submitDetachedSubAgentRecoveryTaskForApprovedResolution(
+        submitSubAgentRecoveryTaskForApprovedResolution(
           resolution = resolution,
           nowEpochMs = emittedAtEpochMs,
         )
@@ -241,7 +241,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
       latestEvent.outcome == "user_interrupted"
   }
 
-  private fun submitDetachedSubAgentRecoveryTaskForApprovedResolution(
+  private fun submitSubAgentRecoveryTaskForApprovedResolution(
     resolution: RuntimeServicePendingApprovalResolution,
     nowEpochMs: Long,
   ): Boolean {
@@ -261,12 +261,12 @@ internal class RuntimeServiceApprovalDecisionAccess(
     } else {
       matchingHandles.firstOrNull()
     } ?: return false
-    val taskId = detachedSubAgentRecoveryTaskId(
+    val taskId = syntheticSubAgentRecoveryTaskId(
       sessionId = session.sessionId,
       agentId = handle.agentId,
       parentRunId = handle.parentRunId,
     )
-    val runId = detachedSubAgentRecoveryRunId(taskId)
+    val runId = syntheticSubAgentRecoveryRunId(taskId)
     dependencies.runtimeHostAccess.markApprovalApproved(
       sessionId = resolution.sessionId,
       taskId = taskId,
@@ -284,13 +284,6 @@ internal class RuntimeServiceApprovalDecisionAccess(
         pendingMessageIdOverride = null,
       ),
     )
-    session.submitDetachedSubAgentRecoveryTask(
-      agentId = handle.agentId,
-      parentRunId = handle.parentRunId,
-      taskId = taskId,
-      createdAtEpochMs = nowEpochMs,
-      submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
-    )
     return true
   }
 }
@@ -303,6 +296,7 @@ private data class RuntimeServiceApprovalCommandStrings(
 )
 
 private data class RuntimeServicePendingApprovalSubAgentLifecycle(
+  val agentId: String? = null,
   val childRunId: String,
   val childTaskId: String,
   val label: String,
@@ -426,6 +420,7 @@ private fun RuntimeServicePendingApprovalResolution.toApprovalDecisionRecord():
 
 private fun ApprovalDecisionSubAgentLifecycle.toRuntimeServicePendingApprovalSubAgentLifecycle():
   RuntimeServicePendingApprovalSubAgentLifecycle = RuntimeServicePendingApprovalSubAgentLifecycle(
+  agentId = agentId,
   childRunId = childRunId,
   childTaskId = childTaskId,
   label = label,
@@ -436,6 +431,7 @@ private fun ApprovalDecisionSubAgentLifecycle.toRuntimeServicePendingApprovalSub
 
 private fun RuntimeServicePendingApprovalSubAgentLifecycle.toApprovalDecisionSubAgentLifecycle():
   ApprovalDecisionSubAgentLifecycle = ApprovalDecisionSubAgentLifecycle(
+  agentId = agentId,
   childRunId = childRunId,
   childTaskId = childTaskId,
   label = label,

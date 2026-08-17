@@ -18,6 +18,7 @@ import java.util.UUID
 import kotlinx.serialization.json.Json
 
 internal data class ApprovalDecisionSubAgentLifecycle(
+  val agentId: String? = null,
   val childRunId: String,
   val childTaskId: String,
   val label: String,
@@ -101,6 +102,7 @@ internal data class ApprovalDecisionRecord(
       runId = runId,
       taskId = taskId,
       phase = OpenCraySubAgentPhase.RESUMED,
+      agentId = lifecycle.agentId,
       childRunId = lifecycle.childRunId,
       childTaskId = lifecycle.childTaskId,
       label = lifecycle.label,
@@ -125,6 +127,7 @@ internal data class ApprovalDecisionRecord(
       runId = runId,
       taskId = taskId,
       phase = OpenCraySubAgentPhase.CANCELLED,
+      agentId = lifecycle.agentId,
       childRunId = lifecycle.childRunId,
       childTaskId = lifecycle.childTaskId,
       label = lifecycle.label,
@@ -208,6 +211,7 @@ internal fun approvalMetadataSubAgentLifecycle(
   val subagentType = metadata["subagentType"]?.trim()?.takeIf(String::isNotBlank)
     ?: return null
   return ApprovalDecisionSubAgentLifecycle(
+    agentId = metadata["agentId"]?.trim()?.takeIf(String::isNotBlank),
     childRunId = childRunId,
     childTaskId = childTaskId,
     label = metadata["delegationDescription"]?.trim()?.takeIf(String::isNotBlank) ?: "Task",

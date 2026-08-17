@@ -490,6 +490,8 @@ internal class ScheduledTaskDispatcher(
     session: OpenCrayRuntimeSessionAccess,
     sessionId: String,
   ): Boolean = session.hasPendingWork() ||
+    session.hasLiveManagedProcesses() ||
+    session.hasLiveSubAgentWork() ||
     chatSessionStore.loadPendingUserInputs(sessionId).isNotEmpty()
 
   private fun cancelOlderWaitingScheduledRuns(

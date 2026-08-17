@@ -353,7 +353,10 @@
     <string name="runtime_notification_active_bootstrap_text">Preparing background work…</string>
     <string name="runtime_notification_active_idle_grace_text">Keeping the runtime warm briefly in the background.</string>
     <string name="runtime_notification_active_text">%1$d active run(s) across %2$d session(s).</string>
-    <string name="runtime_notification_active_text_with_processes">%1$d active run(s) across %2$d session(s), including live managed processes.</string>
+    <string name="runtime_notification_active_text_with_processes_only">Live managed processes are still running in %1$d session(s).</string>
+    <string name="runtime_notification_active_text_with_processes_and_runs">Live managed processes are still running in %1$d session(s); %2$d active run(s) remain visible.</string>
+    <string name="runtime_notification_active_text_with_subagents_only">Live delegated child work is still running in %1$d session(s).</string>
+    <string name="runtime_notification_active_text_with_subagents_and_runs">Live delegated child work is still running in %1$d session(s); %2$d active run(s) remain visible.</string>
     <string name="runtime_notification_approval_channel_name">Approval needed</string>
     <string name="runtime_notification_approval_channel_description">Shows when a background run is waiting for approval.</string>
     <string name="runtime_notification_completion_channel_name">Task results</string>

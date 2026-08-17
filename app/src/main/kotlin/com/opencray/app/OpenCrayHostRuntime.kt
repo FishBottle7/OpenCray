@@ -8206,6 +8206,7 @@ internal class OpenCrayHostRuntime private constructor(
 
   private fun ApprovalDecisionSubAgentLifecycle.toPendingApprovalSubAgentLifecycle():
     PendingApprovalSubAgentLifecycle = PendingApprovalSubAgentLifecycle(
+    agentId = agentId,
     childRunId = childRunId,
     childTaskId = childTaskId,
     label = label,
@@ -8216,6 +8217,7 @@ internal class OpenCrayHostRuntime private constructor(
 
   private fun PendingApprovalSubAgentLifecycle.toApprovalDecisionSubAgentLifecycle():
     ApprovalDecisionSubAgentLifecycle = ApprovalDecisionSubAgentLifecycle(
+    agentId = agentId,
     childRunId = childRunId,
     childTaskId = childTaskId,
     label = label,
@@ -9283,6 +9285,7 @@ private data class PendingApprovalMatch(
 )
 
 internal data class PendingApprovalSubAgentLifecycle(
+  val agentId: String? = null,
   val childRunId: String,
   val childTaskId: String,
   val label: String,

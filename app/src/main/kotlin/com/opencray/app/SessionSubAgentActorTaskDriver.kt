@@ -16,14 +16,8 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.FutureTask
 import java.util.concurrent.atomic.AtomicBoolean
 
-internal data class SessionSubAgentRecoveryRunState(
-  val submission: AgentRunSubmission,
-  val lastResult: ExecutionResult?,
-)
-
-internal data class SessionSubAgentRecoveryDriverCallbacks(
+internal data class SessionSubAgentActorTaskDriverCallbacks(
   val recordSubmission: (AgentRunSubmission, AgentTask) -> Unit,
-  val runStateByTaskId: (String) -> SessionSubAgentRecoveryRunState?,
   val runStateByRunId: (String) -> SessionSubAgentRecoveryRunState?,
   val replaceLastResult: (String, ExecutionResult?) -> Unit,
   val notifyTaskStarted: (AgentTask) -> Unit,
@@ -33,129 +27,148 @@ internal data class SessionSubAgentRecoveryDriverCallbacks(
   val isAwaitingManualResume: (ExecutionResult) -> Boolean,
 )
 
-internal class SessionSubAgentRecoveryDriver(
+internal class SessionSubAgentActorTaskDriver(
   private val sessionId: String,
   private val runtimeFactory: AgentSessionTaskRuntimeFactory,
   private val executor: ExecutorService,
   private val runtimeLifecycle: HostRuntimeLifecycleDescriptor,
   private val runtimeEventSink: OpenCrayAgentRuntimeEventSink,
-  private val callbacks: SessionSubAgentRecoveryDriverCallbacks,
-) : SessionSubAgentRecoveryOperations {
+  private val callbacks: SessionSubAgentActorTaskDriverCallbacks,
+) {
   private val lock = Any()
-  private val lanesByHandleKey = linkedMapOf<SubAgentExecutionKey, RecoveryLane>()
+  private val lanesByHandleKey = linkedMapOf<SubAgentExecutionKey, ActorLane>()
   private val handleKeysByTaskId = linkedMapOf<String, SubAgentExecutionKey>()
 
-  override fun submitRecoveryTask(
+  fun listTasks(): List<AgentTask> = synchronized(lock) {
+    lanesByHandleKey.values.map(ActorLane::taskSnapshotLocked)
+  }
+
+  fun submitActorTask(
     agentId: String,
     parentRunId: String,
-    taskId: String,
     createdAtEpochMs: Long,
     submissionSource: String,
-  ): AgentRunSubmission {
+  ): Boolean {
     val handleKey = SubAgentExecutionKey(
       parentRunId = parentRunId,
       agentId = agentId,
     )
-    val existingLane = synchronized(lock) {
-      lanesByHandleKey[handleKey]
-    }
-    if (existingLane != null) {
-      existingLane.wakeUpByResubmission()
-      return existingLane.submission
-    }
-    val task = syntheticSubAgentRecoveryWaitTask(
+    val taskId = syntheticSubAgentActorTaskId(
       sessionId = sessionId,
       agentId = agentId,
       parentRunId = parentRunId,
-      taskId = taskId,
-      createdAtEpochMs = createdAtEpochMs,
+    )
+    val runId = syntheticSubAgentActorRunId(taskId)
+    val persistedRunState = callbacks.runStateByRunId(runId)
+    val awaitingManualResume = persistedRunState?.lastResult?.let(callbacks.isAwaitingManualResume) == true
+    val taskAcceptedAtEpochMs = persistedRunState?.submission?.acceptedAtEpochMs
+      ?: maxOf(System.currentTimeMillis(), createdAtEpochMs)
+    val baseTask = syntheticSubAgentActorTask(
+      sessionId = sessionId,
+      agentId = agentId,
+      parentRunId = parentRunId,
+      createdAtEpochMs = taskAcceptedAtEpochMs,
       metadata = runtimeLifecycle.taskMetadata(
         submissionSource = submissionSource,
       ),
     )
-    val submission = AgentRunSubmission(
+    val initialTask = baseTask.copy(
+      state = if (awaitingManualResume) {
+        AgentTaskState.SUSPENDED
+      } else {
+        AgentTaskState.QUEUED
+      },
+      updatedAtEpochMs = maxOf(
+        baseTask.createdAtEpochMs,
+        persistedRunState?.lastResult?.finishedAtEpochMs ?: 0L,
+      ),
+    )
+    val submission = persistedRunState?.submission ?: AgentRunSubmission(
       sessionId = sessionId,
-      runId = syntheticSubAgentRecoveryRunId(taskId),
-      taskId = taskId,
-      acceptedAtEpochMs = maxOf(System.currentTimeMillis(), createdAtEpochMs),
-      lifecycleDiagnostics = runLifecycleDiagnosticsFrom(task.metadata),
+      runId = syntheticSubAgentActorRunId(initialTask.id),
+      taskId = initialTask.id,
+      acceptedAtEpochMs = taskAcceptedAtEpochMs,
+      lifecycleDiagnostics = runLifecycleDiagnosticsFrom(initialTask.metadata),
     )
-    callbacks.recordSubmission(submission, task)
-    val lane = RecoveryLane(
-      handleKey = handleKey,
-      submission = submission,
-      initialTask = task,
-    )
-    synchronized(lock) {
-      lanesByHandleKey[handleKey]?.let { existing ->
-        return existing.submission
+    var createdLane = false
+    val lane = synchronized(lock) {
+      lanesByHandleKey[handleKey] ?: run {
+        if (persistedRunState == null) {
+          callbacks.recordSubmission(submission, initialTask)
+        }
+        ActorLane(
+          handleKey = handleKey,
+          submission = submission,
+          initialTask = initialTask,
+        ).also { created ->
+          lanesByHandleKey[handleKey] = created
+          handleKeysByTaskId[submission.taskId] = handleKey
+          createdLane = true
+        }
       }
-      lanesByHandleKey[handleKey] = lane
-      handleKeysByTaskId[submission.taskId] = handleKey
+    }
+    if (!createdLane) {
+      return lane.wakeUpByResubmission()
+    }
+    if (awaitingManualResume) {
+      return false
     }
     lane.launchExecution(
-      executionKind = task.metadata[METADATA_EXECUTION_KIND]
+      executionKind = initialTask.metadata[METADATA_EXECUTION_KIND]
         ?.trim()
         ?.takeIf(String::isNotBlank)
         ?: EXECUTION_KIND_INITIAL,
-      clearPreviousResult = false,
+      clearPreviousResult = persistedRunState?.lastResult != null,
     )
-    return submission
+    return true
   }
 
-  override fun requestCancel(taskId: String): Boolean =
+  fun requestCancel(taskId: String): Boolean =
     laneForTaskId(taskId)?.requestCancel() ?: false
 
-  override fun requestResume(
+  fun requestCancel(
+    agentId: String,
+    parentRunId: String,
+  ): Boolean = laneForHandleKey(
+    SubAgentExecutionKey(
+      parentRunId = parentRunId,
+      agentId = agentId,
+    ),
+  )?.requestCancel() ?: false
+
+  fun requestResume(
     taskId: String,
     executionKind: String,
     taskMetadataUpdates: Map<String, String>,
-  ): Boolean {
-    require(
-      executionKind == EXECUTION_KIND_APPROVAL_RESUME ||
-        executionKind == EXECUTION_KIND_CHECKPOINT_RESUME,
-    ) {
-      "Unsupported subagent recovery resume execution kind: $executionKind"
-    }
-    return laneForTaskId(taskId)?.requestResume(
-      executionKind = executionKind,
-      taskMetadataUpdates = taskMetadataUpdates,
-    ) ?: false
-  }
+  ): Boolean = laneForTaskId(taskId)?.requestResume(
+    executionKind = executionKind,
+    taskMetadataUpdates = taskMetadataUpdates,
+  ) ?: false
 
-  override fun listTasks(): List<AgentTask> = synchronized(lock) {
-    lanesByHandleKey.values.map(RecoveryLane::taskSnapshotLocked)
-  }
+  fun requestResume(
+    agentId: String,
+    parentRunId: String,
+    executionKind: String,
+    taskMetadataUpdates: Map<String, String>,
+  ): Boolean = laneForHandleKey(
+    SubAgentExecutionKey(
+      parentRunId = parentRunId,
+      agentId = agentId,
+    ),
+  )?.requestResume(
+    executionKind = executionKind,
+    taskMetadataUpdates = taskMetadataUpdates,
+  ) ?: false
 
-  override fun restorePersistedTask(
-    submission: AgentRunSubmission,
-    task: AgentTask,
-  ) {
-    val recoverySpec = syntheticSubAgentTaskSpec(task) as? SyntheticSubAgentRecoveryWaitTaskSpec
-      ?: return
-    val handleKey = SubAgentExecutionKey(
-      parentRunId = recoverySpec.parentRunId,
-      agentId = recoverySpec.agentId,
-    )
-    synchronized(lock) {
-      if (lanesByHandleKey[handleKey] != null) {
-        return
-      }
-      val lane = RecoveryLane(
-        handleKey = handleKey,
-        submission = submission,
-        initialTask = task,
-      )
-      lanesByHandleKey[handleKey] = lane
-      handleKeysByTaskId[submission.taskId] = handleKey
-    }
-  }
-
-  private fun laneForTaskId(taskId: String): RecoveryLane? = synchronized(lock) {
+  private fun laneForTaskId(taskId: String): ActorLane? = synchronized(lock) {
     handleKeysByTaskId[taskId]?.let(lanesByHandleKey::get)
   }
 
-  private fun removeLaneLocked(lane: RecoveryLane) {
+  private fun laneForHandleKey(handleKey: SubAgentExecutionKey): ActorLane? = synchronized(lock) {
+    lanesByHandleKey[handleKey]
+  }
+
+  private fun removeLaneLocked(lane: ActorLane) {
     if (lanesByHandleKey[lane.handleKey] !== lane) {
       return
     }
@@ -169,7 +182,7 @@ internal class SessionSubAgentRecoveryDriver(
   ): ExecutionResult = ExecutionResult(
     taskId = task.id,
     status = ExecutionStatus.CANCELLED,
-    errorCode = "SUBAGENT_RECOVERY_CANCELLED",
+    errorCode = "SUBAGENT_ACTOR_CANCELLED",
     errorMessage = errorMessage,
     startedAtEpochMs = task.createdAtEpochMs,
     finishedAtEpochMs = System.currentTimeMillis(),
@@ -181,7 +194,7 @@ internal class SessionSubAgentRecoveryDriver(
     updatedAtEpochMs = maxOf(System.currentTimeMillis(), createdAtEpochMs, updatedAtEpochMs),
   )
 
-  private inner class RecoveryLane(
+  private inner class ActorLane(
     val handleKey: SubAgentExecutionKey,
     val submission: AgentRunSubmission,
     initialTask: AgentTask,
@@ -200,36 +213,26 @@ internal class SessionSubAgentRecoveryDriver(
         }
         when (task.state) {
           AgentTaskState.QUEUED -> {
-            val runState = callbacks.runStateByRunId(submission.runId) ?: return@synchronized null
-            if (runState.lastResult != null) {
-              null
-            } else {
-              RecoveryLaneLaunchSpec(
+            val runState = callbacks.runStateByRunId(submission.runId)
+            if (runState?.lastResult == null) {
+              ActorLaneLaunchSpec(
                 executionKind = task.metadata[METADATA_EXECUTION_KIND]
                   ?.trim()
                   ?.takeIf(String::isNotBlank)
                   ?: EXECUTION_KIND_INITIAL,
                 clearPreviousResult = false,
               )
-            }
-          }
-
-          AgentTaskState.SUSPENDED -> {
-            val runState = callbacks.runStateByRunId(submission.runId) ?: return@synchronized null
-            val lastResult = runState.lastResult ?: return@synchronized null
-            if (
-              lastResult.status == ExecutionStatus.DENIED &&
-              callbacks.isAwaitingManualResume(lastResult)
-            ) {
-              RecoveryLaneLaunchSpec(
-                executionKind = EXECUTION_KIND_APPROVAL_RESUME,
+            } else if (callbacks.isAwaitingManualResume(runState.lastResult)) {
+              null
+            } else {
+              ActorLaneLaunchSpec(
+                executionKind = EXECUTION_KIND_INITIAL,
                 clearPreviousResult = true,
               )
-            } else {
-              null
             }
           }
 
+          AgentTaskState.SUSPENDED -> null
           else -> null
         }
       }
@@ -244,10 +247,10 @@ internal class SessionSubAgentRecoveryDriver(
     }
 
     fun requestCancel(): Boolean {
-      val recoverySpec = synchronized(lock) {
-        syntheticSubAgentTaskSpec(task) as? SyntheticSubAgentRecoveryWaitTaskSpec
+      val actorSpec = synchronized(lock) {
+        syntheticSubAgentTaskSpec(task) as? SyntheticSubAgentActorTaskSpec
       }
-      recoverySpec?.let { spec ->
+      actorSpec?.let { spec ->
         runtimeFactory.cancelActiveSubAgentExecution(
           sessionId = sessionId,
           agentId = spec.agentId,
@@ -276,7 +279,7 @@ internal class SessionSubAgentRecoveryDriver(
           removeLaneLocked(this)
           return@synchronized
         }
-        val runState = callbacks.runStateByTaskId(submission.taskId)
+        val runState = callbacks.runStateByRunId(submission.runId)
         if (task.state == AgentTaskState.QUEUED && runState?.lastResult == null) {
           val cancelledTask = task.withState(AgentTaskState.CANCELLED)
           task = cancelledTask
@@ -287,19 +290,18 @@ internal class SessionSubAgentRecoveryDriver(
           removeLaneLocked(this)
           return@synchronized
         }
-        runState ?: return@synchronized
-        val lastResult = runState.lastResult ?: return@synchronized
+        val lastResult = runState?.lastResult ?: return@synchronized
         if (!callbacks.isAwaitingManualResume(lastResult)) {
           return@synchronized
         }
         task = task.withState(AgentTaskState.CANCELLED)
         pausedCancellation = PausedCancellation(
-          runId = runState.submission.runId,
+          runId = submission.runId,
           result = ExecutionResult(
             taskId = submission.taskId,
             status = ExecutionStatus.CANCELLED,
-            errorCode = "SUBAGENT_RECOVERY_CANCELLED",
-            errorMessage = "Subagent recovery execution was cancelled before it resumed.",
+            errorCode = "SUBAGENT_ACTOR_CANCELLED",
+            errorMessage = "Subagent actor execution was cancelled before it resumed.",
             startedAtEpochMs = lastResult.startedAtEpochMs,
             finishedAtEpochMs = System.currentTimeMillis(),
             metadata = lastResult.metadata,
@@ -313,7 +315,7 @@ internal class SessionSubAgentRecoveryDriver(
           cancellation.task,
           cancelledResultForTask(
             task = cancellation.task,
-            errorMessage = "Subagent recovery execution was cancelled.",
+            errorMessage = "Subagent actor execution was cancelled.",
           ),
         )
         return true
@@ -323,7 +325,7 @@ internal class SessionSubAgentRecoveryDriver(
           cancellation.runId,
           cancelledResultForTask(
             task = cancellation.task,
-            errorMessage = "Subagent recovery execution was cancelled before it restarted.",
+            errorMessage = "Subagent actor execution was cancelled before it restarted.",
           ),
         )
         return true
@@ -339,6 +341,12 @@ internal class SessionSubAgentRecoveryDriver(
       executionKind: String,
       taskMetadataUpdates: Map<String, String>,
     ): Boolean {
+      require(
+        executionKind == EXECUTION_KIND_APPROVAL_RESUME ||
+          executionKind == EXECUTION_KIND_CHECKPOINT_RESUME,
+      ) {
+        "Unsupported subagent actor resume execution kind: $executionKind"
+      }
       var shouldLaunch = false
       synchronized(lock) {
         if (lanesByHandleKey[handleKey] !== this || future != null) {
@@ -369,8 +377,8 @@ internal class SessionSubAgentRecoveryDriver(
       val baseTask = synchronized(lock) { task }
       val executionTask = callbacks.prepareExecutionTask(baseTask, executionKind)
       val queuedTask = executionTask.withState(AgentTaskState.QUEUED)
-      val recoverySpec = syntheticSubAgentTaskSpec(executionTask) as? SyntheticSubAgentRecoveryWaitTaskSpec
-        ?: error("Subagent recovery execution requires a recovery task spec.")
+      val actorSpec = syntheticSubAgentTaskSpec(executionTask) as? SyntheticSubAgentActorTaskSpec
+        ?: error("Subagent actor execution requires an actor task spec.")
       val executionCancelRequested = AtomicBoolean(false)
       val executionCompletionToken = AtomicBoolean(true)
       val futureTask = FutureTask<Unit> {
@@ -387,14 +395,14 @@ internal class SessionSubAgentRecoveryDriver(
           requestRetry = { _: RetryRequest -> Unit },
         )
         val result = try {
-          runtimeFactory.waitForSubAgentRecoveryExecution(
+          runtimeFactory.executeSubAgentActorTask(
             sessionId = sessionId,
             task = runningTask,
             hooks = executionHooks,
             eventSink = runtimeEventSink,
-            agentId = recoverySpec.agentId,
-            parentRunId = recoverySpec.parentRunId,
-          ) ?: error("Subagent recovery execution requires a runtime recovery path.")
+            agentId = actorSpec.agentId,
+            parentRunId = actorSpec.parentRunId,
+          ) ?: error("Subagent actor execution requires a runtime actor path.")
         } catch (_: InterruptedException) {
           callbacks.interruptedResultForTask(runningTask)
         }
@@ -487,7 +495,7 @@ internal class SessionSubAgentRecoveryDriver(
     val result: ExecutionResult,
   )
 
-  private data class RecoveryLaneLaunchSpec(
+  private data class ActorLaneLaunchSpec(
     val executionKind: String,
     val clearPreviousResult: Boolean,
   )

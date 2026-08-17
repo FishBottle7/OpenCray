@@ -39,10 +39,9 @@ import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONT
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.SubAgentPendingApprovalDecision
 import java.util.UUID
 import java.util.concurrent.ExecutorService
-import java.util.concurrent.FutureTask
-import java.util.concurrent.atomic.AtomicBoolean
 
 internal data class AgentRunSubmission(
   val sessionId: String,
@@ -121,14 +120,6 @@ internal data class AgentRunSnapshot(
     get() = !isTerminal || hasLiveManagedProcesses
 }
 
-private fun SubAgentHandleState.hasLiveBackgroundExecution(): Boolean = when (snapshot.state) {
-  SubAgentExecutionState.BACKGROUND_QUEUED,
-  SubAgentExecutionState.BACKGROUND_RUNNING,
-  -> true
-
-  else -> false
-}
-
 private const val RUN_ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
 private const val RUN_ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
 private const val METADATA_ACKNOWLEDGED_INTERRUPTED_PROCESS_IDS: String =
@@ -199,8 +190,6 @@ internal interface AgentSessionHandle {
   fun submitTask(task: AgentTask): AgentRunSubmission =
     throw UnsupportedOperationException("submitTask is not supported by this runtime handle.")
 
-  fun submitDetachedControlTask(task: AgentTask): AgentRunSubmission = submitTask(task)
-
   fun ensureProcessing()
 
   fun requestCancel(taskId: String): Boolean
@@ -240,21 +229,34 @@ internal interface AgentSessionHandle {
 
   fun listSubAgentHandles(): List<SubAgentHandleState> = emptyList()
 
+  fun listClosedSubAgentHandles(): List<SubAgentHandleState> = emptyList()
+
+  fun hasActiveSubAgentExecution(
+    agentId: String,
+    parentRunId: String,
+  ): Boolean = false
+
   fun hasLiveSubAgentWork(): Boolean =
-    listSubAgentHandles().any { handle -> handle.hasLiveBackgroundExecution() }
+    listSubAgentHandles().any(SubAgentHandleState::hasLiveBackgroundExecution)
 
   fun retainKnownSubAgentParentRuns(parentRunIds: Set<String>) = Unit
 
-  fun listDetachedControlTasks(): List<AgentTask> = emptyList()
+  fun setSubAgentPendingApprovalDecision(
+    agentId: String,
+    parentRunId: String,
+    pendingApprovalDecision: SubAgentPendingApprovalDecision?,
+  ): Boolean = false
 
-  fun submitDetachedSubAgentRecoveryTask(
+  fun listVisibleSubAgentTasks(): List<AgentTask> = emptyList()
+
+  fun submitSubAgentRecoveryTask(
     agentId: String,
     parentRunId: String,
     taskId: String,
     createdAtEpochMs: Long,
     submissionSource: String,
-  ): AgentRunSubmission = submitDetachedControlTask(
-    detachedSubAgentRecoveryWaitTask(
+  ): AgentRunSubmission = submitTask(
+    syntheticSubAgentRecoveryWaitTask(
       sessionId = sessionId,
       agentId = agentId,
       parentRunId = parentRunId,
@@ -263,8 +265,6 @@ internal interface AgentSessionHandle {
       metadata = submissionSourceTaskMetadata(submissionSource),
     ),
   )
-
-  fun ensureRecoverableDetachedSubAgentTasks(): Int = 0
 }
 
 internal interface AgentSessionRuntimeListener {
@@ -313,26 +313,47 @@ internal interface AgentSessionTaskRuntimeFactory {
     processId: String,
   ): ManagedProcessSnapshot? = null
 
-  fun executeDetachedControlTask(
-    sessionId: String,
-    task: AgentTask,
-    hooks: RuntimeExecutionHooks,
-    eventSink: OpenCrayAgentRuntimeEventSink,
-  ): ExecutionResult? = null
-
-  fun executeDetachedSubAgentRecoveryTask(
+  fun executeSubAgentRecoveryTask(
     sessionId: String,
     task: AgentTask,
     hooks: RuntimeExecutionHooks,
     eventSink: OpenCrayAgentRuntimeEventSink,
     agentId: String,
     parentRunId: String,
-  ): ExecutionResult? = executeDetachedControlTask(
-    sessionId = sessionId,
-    task = task,
-    hooks = hooks,
-    eventSink = eventSink,
-  )
+  ): ExecutionResult? = null
+
+  fun executeSubAgentActorTask(
+    sessionId: String,
+    task: AgentTask,
+    hooks: RuntimeExecutionHooks,
+    eventSink: OpenCrayAgentRuntimeEventSink,
+    agentId: String,
+    parentRunId: String,
+  ): ExecutionResult? = null
+
+  fun ensureSubAgentRecoveryExecution(
+    sessionId: String,
+    task: AgentTask,
+    hooks: RuntimeExecutionHooks,
+    eventSink: OpenCrayAgentRuntimeEventSink,
+    agentId: String,
+    parentRunId: String,
+  ): Boolean = false
+
+  fun ensureBackgroundSubAgentExecution(
+    sessionId: String,
+    agentId: String,
+    parentRunId: String,
+  ): Boolean = false
+
+  fun waitForSubAgentRecoveryExecution(
+    sessionId: String,
+    task: AgentTask,
+    hooks: RuntimeExecutionHooks,
+    eventSink: OpenCrayAgentRuntimeEventSink,
+    agentId: String,
+    parentRunId: String,
+  ): ExecutionResult? = null
 
   fun cancelActiveSubAgentExecution(
     sessionId: String,
@@ -340,7 +361,22 @@ internal interface AgentSessionTaskRuntimeFactory {
     parentRunId: String,
   ): Boolean = false
 
+  fun hasActiveSubAgentExecution(
+    sessionId: String,
+    agentId: String,
+    parentRunId: String,
+  ): Boolean = false
+
   fun listSubAgentHandles(sessionId: String): List<SubAgentHandleState> = emptyList()
+
+  fun listClosedSubAgentHandles(sessionId: String): List<SubAgentHandleState> = emptyList()
+
+  fun updateSubAgentHandlePendingApprovalDecision(
+    sessionId: String,
+    agentId: String,
+    parentRunId: String,
+    pendingApprovalDecision: SubAgentPendingApprovalDecision?,
+  ): SubAgentHandleState? = null
 
   fun retainKnownSubAgentParentRuns(sessionId: String, parentRunIds: Set<String>) = Unit
 }
@@ -556,8 +592,6 @@ private class ManagedAgentSessionHandle(
 ) : AgentSessionHandle {
   private val runLock = Any()
   private val runRecordsById = linkedMapOf<String, ManagedRunRecord>()
-  private val detachedControlLock = Any()
-  private val detachedControlTasksByTaskId = linkedMapOf<String, DetachedControlTaskState>()
   private val processingLock = Any()
   private var processing: Boolean = false
   private var processingThread: Thread? = null
@@ -580,6 +614,7 @@ private class ManagedAgentSessionHandle(
       )
       recordRunEvent(enrichedEvent)
       runEventJournalStore.append(enrichedEvent)
+      cleanupVisibleSubAgentRecoveryForClosedHandle(enrichedEvent)
       notifyRuntimeListenersSafely(listenerProvider, "runEvent") { listener ->
         listener.onRunEvent(sessionId = sessionId, task = task, event = enrichedEvent)
         when (enrichedEvent) {
@@ -639,14 +674,13 @@ private class ManagedAgentSessionHandle(
     sessionId = sessionId,
     runtimeFactory = runtimeFactory,
     executor = subAgentRecoveryExecutor,
-    runtimeLifecycleProvider = runtimeLifecycleProvider,
+    runtimeLifecycle = runtimeLifecycleProvider(),
     runtimeEventSink = runtimeEventSink,
     callbacks = SessionSubAgentRecoveryDriverCallbacks(
       recordSubmission = ::recordDetachedRecoverySubmission,
       runStateByTaskId = ::subAgentRecoveryRunStateByTaskId,
       runStateByRunId = ::subAgentRecoveryRunStateByRunId,
       replaceLastResult = ::replaceRunLastResult,
-      replaceDetachedTask = ::replaceRunDetachedTask,
       notifyTaskStarted = { task ->
         notifyRuntimeListenersSafely(listenerProvider, "taskStarted") { listener ->
           listener.onTaskStarted(sessionId = sessionId, task = task)
@@ -660,7 +694,7 @@ private class ManagedAgentSessionHandle(
         }
         enrichedResult
       },
-      prepareExecutionTask = ::taskWithDetachedExecutionMetadata,
+      prepareExecutionTask = ::taskWithSubAgentRecoveryExecutionMetadata,
       interruptedResultForTask = { task ->
         ExecutionResult(
           taskId = task.id,
@@ -672,7 +706,145 @@ private class ManagedAgentSessionHandle(
           metadata = executionMetadataFrom(task.metadata),
         )
       },
-      isAwaitingManualResume = ::isResultAwaitingManualResume,
+      isAwaitingManualResume = ::isSubAgentRecoveryAwaitingManualResume,
+    ),
+  )
+  private val subAgentActorTaskDriver = SessionSubAgentActorTaskDriver(
+    sessionId = sessionId,
+    runtimeFactory = runtimeFactory,
+    executor = subAgentRecoveryExecutor,
+    runtimeLifecycle = runtimeLifecycleProvider(),
+    runtimeEventSink = runtimeEventSink,
+    callbacks = SessionSubAgentActorTaskDriverCallbacks(
+      recordSubmission = ::recordDetachedRecoverySubmission,
+      runStateByRunId = ::subAgentRecoveryRunStateByRunId,
+      replaceLastResult = ::replaceRunLastResult,
+      notifyTaskStarted = { task ->
+        notifyRuntimeListenersSafely(listenerProvider, "taskStarted") { listener ->
+          listener.onTaskStarted(sessionId = sessionId, task = task)
+        }
+      },
+      finalizeTaskResult = { task, result ->
+        val finalized = enrichResultExecutionContext(
+          task = task,
+          result = result,
+        )
+        recordRunResult(task = task, result = finalized)
+        notifyRuntimeListenersSafely(listenerProvider, "taskFinished") { listener ->
+          listener.onTaskFinished(sessionId = sessionId, task = task, result = finalized)
+        }
+        finalized
+      },
+      prepareExecutionTask = ::taskWithSubAgentRecoveryExecutionMetadata,
+      interruptedResultForTask = { task ->
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.CANCELLED,
+          errorCode = "SUBAGENT_ACTOR_INTERRUPTED",
+          errorMessage = "Subagent actor execution was interrupted.",
+          startedAtEpochMs = task.createdAtEpochMs,
+          finishedAtEpochMs = System.currentTimeMillis(),
+          metadata = executionMetadataFrom(task.metadata),
+        )
+      },
+      isAwaitingManualResume = ::isSubAgentRecoveryAwaitingManualResume,
+    ),
+  )
+  private val subAgentScheduler = SessionOwnedSubAgentScheduler(
+    sessionId = sessionId,
+    handles = ::listSubAgentHandles,
+    recoveryOperations = subAgentRecoveryDriver,
+    callbacks = SessionSubAgentSchedulerCallbacks(
+      persistedRecoveryRunStates = {
+        synchronized(runLock) {
+          runRecordsById.values
+            .map { record -> record.toSubAgentRecoveryRunState() }
+        }
+      },
+    ),
+    runtimeLifecycle = runtimeLifecycleProvider(),
+    isAwaitingManualResume = ::isSubAgentRecoveryAwaitingManualResume,
+  )
+  private val subAgentActorDriver = SessionOwnedSubAgentActorDriver(
+    handles = ::listSubAgentHandles,
+    recoveryOperations = subAgentRecoveryDriver,
+    callbacks = SessionSubAgentActorDriverCallbacks(
+      activeParentRunIds = {
+        listRuns()
+          .filter(AgentRunSnapshot::isActive)
+          .mapTo(linkedSetOf(), AgentRunSnapshot::runId)
+      },
+      approvedRecoveryTaskIds = {
+        val checkpointTaskIds = promptCheckpointStore.list()
+          .asSequence()
+          .filter { checkpoint ->
+            checkpoint.checkpointKind == PromptCheckpointKind.APPROVED_PENDING_RESUME
+          }
+          .mapTo(linkedSetOf(), PersistedPromptCheckpoint::taskId)
+        val handleTaskIds = listSubAgentHandles()
+          .asSequence()
+          .filter { handle ->
+            handle.pendingApprovalDecision?.approved == true
+          }
+          .mapTo(linkedSetOf()) { handle ->
+            syntheticSubAgentRecoveryTaskId(
+              sessionId = sessionId,
+              agentId = handle.agentId,
+              parentRunId = handle.parentRunId,
+            )
+          }
+        checkpointTaskIds + handleTaskIds
+      },
+      rejectedRecoveryTaskIds = {
+        val checkpointTaskIds = promptCheckpointStore.list()
+          .asSequence()
+          .filter { checkpoint ->
+            checkpoint.checkpointKind == PromptCheckpointKind.REJECTED_PENDING_RESUME
+          }
+          .mapTo(linkedSetOf(), PersistedPromptCheckpoint::taskId)
+        val handleTaskIds = listSubAgentHandles()
+          .asSequence()
+          .filter { handle ->
+            handle.pendingApprovalDecision?.approved == false
+          }
+          .mapTo(linkedSetOf()) { handle ->
+            syntheticSubAgentRecoveryTaskId(
+              sessionId = sessionId,
+              agentId = handle.agentId,
+              parentRunId = handle.parentRunId,
+            )
+          }
+        checkpointTaskIds + handleTaskIds
+      },
+      recoveryTaskIdForHandle = { handle ->
+        syntheticSubAgentRecoveryTaskId(
+          sessionId = sessionId,
+          agentId = handle.agentId,
+          parentRunId = handle.parentRunId,
+        )
+      },
+      submitActorTask = { handle ->
+        subAgentActorTaskDriver.submitActorTask(
+          agentId = handle.agentId,
+          parentRunId = handle.parentRunId,
+          createdAtEpochMs = handle.createdAtEpochMs,
+          submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
+        )
+      },
+      resumeActorTask = { handle ->
+        subAgentActorTaskDriver.requestResume(
+          agentId = handle.agentId,
+          parentRunId = handle.parentRunId,
+          executionKind = EXECUTION_KIND_APPROVAL_RESUME,
+          taskMetadataUpdates = emptyMap(),
+        )
+      },
+      cancelActorTask = { handle ->
+        subAgentActorTaskDriver.requestCancel(
+          agentId = handle.agentId,
+          parentRunId = handle.parentRunId,
+        )
+      },
     ),
   )
   private val baseRuntime = runtimeFactory.create(
@@ -710,9 +882,9 @@ private class ManagedAgentSessionHandle(
   init {
     synchronized(runLock) {
       restorePersistedRunRecordsLocked()
-      restoreDetachedControlTasksLocked()
       seedMissingRunRecordsLocked(loop.snapshot())
     }
+    subAgentScheduler.restorePersistedVisibleTasks()
   }
 
   override fun submitPrompt(
@@ -781,46 +953,7 @@ private class ManagedAgentSessionHandle(
     return submission
   }
 
-  override fun submitDetachedControlTask(task: AgentTask): AgentRunSubmission {
-    touch()
-    val acceptedAtEpochMs = maxOf(System.currentTimeMillis(), task.createdAtEpochMs)
-    val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
-      ?.takeIf(String::isNotBlank)
-      ?: "run-$sessionId-${UUID.randomUUID().toString().take(8)}"
-    val normalizedMetadata = runtimeLifecycleProvider().stampTaskMetadata(task.metadata) + mapOf(
-      AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to runId,
-      AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID to sessionId,
-    )
-    val normalizedTask = task.copy(metadata = normalizedMetadata)
-    val submission = AgentRunSubmission(
-      sessionId = sessionId,
-      runId = runId,
-      taskId = normalizedTask.id,
-      acceptedAtEpochMs = acceptedAtEpochMs,
-      lifecycleDiagnostics = runLifecycleDiagnosticsFrom(normalizedTask.metadata),
-    )
-    synchronized(runLock) {
-      val record = ManagedRunRecord(
-        submission = submission,
-        pendingMessageId = normalizedTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
-        detachedTask = normalizedTask,
-      )
-      runRecordsById[runId] = record
-      persistRunRecordLocked(record)
-    }
-    launchDetachedControlExecution(
-      submission = submission,
-      task = normalizedTask,
-      executionKind = normalizedTask.metadata[METADATA_EXECUTION_KIND]
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-        ?: EXECUTION_KIND_INITIAL,
-      clearPreviousResult = false,
-    )
-    return submission
-  }
-
-  override fun submitDetachedSubAgentRecoveryTask(
+  override fun submitSubAgentRecoveryTask(
     agentId: String,
     parentRunId: String,
     taskId: String,
@@ -828,7 +961,27 @@ private class ManagedAgentSessionHandle(
     submissionSource: String,
   ): AgentRunSubmission {
     touch()
-    return subAgentRecoveryDriver.submit(
+    val existingVisibleTask = subAgentScheduler.listVisibleTasks()
+      .firstOrNull { visibleTask ->
+        val recoverySpec = syntheticSubAgentTaskSpec(visibleTask) as? SyntheticSubAgentRecoveryWaitTaskSpec
+          ?: return@firstOrNull false
+        recoverySpec.agentId == agentId && recoverySpec.parentRunId == parentRunId
+      }
+    subAgentActorTaskDriver.submitActorTask(
+      agentId = agentId,
+      parentRunId = parentRunId,
+      createdAtEpochMs = createdAtEpochMs,
+      submissionSource = submissionSource,
+    )
+    if (existingVisibleTask?.state == AgentTaskState.SUSPENDED) {
+      subAgentActorTaskDriver.requestResume(
+        agentId = agentId,
+        parentRunId = parentRunId,
+        executionKind = EXECUTION_KIND_APPROVAL_RESUME,
+        taskMetadataUpdates = emptyMap(),
+      )
+    }
+    return subAgentScheduler.submitRecoveryTask(
       agentId = agentId,
       parentRunId = parentRunId,
       taskId = taskId,
@@ -889,202 +1042,77 @@ private class ManagedAgentSessionHandle(
     }
   }
 
-  private fun requestDetachedControlCancel(taskId: String): Boolean {
-    val state = synchronized(detachedControlLock) {
-      detachedControlTasksByTaskId[taskId]
-    } ?: return false
-    state.cancelRequested.set(true)
-    val future = synchronized(detachedControlLock) {
-      detachedControlTasksByTaskId[taskId]?.future
-    }
-    if (future != null) {
-      future.cancel(true)
-      return true
-    }
-    val record = synchronized(runLock) {
-      runRecordsById.values.firstOrNull { persisted -> persisted.submission.taskId == taskId }
-    } ?: return false
-    val lastResult = record.lastResult ?: return false
-    if (!isResultAwaitingManualResume(lastResult)) {
-      return false
-    }
-    val cancelledResult = ExecutionResult(
-      taskId = taskId,
-      status = ExecutionStatus.CANCELLED,
-      errorCode = "DETACHED_CONTROL_CANCELLED",
-      errorMessage = "Detached control execution was cancelled before it resumed.",
-      startedAtEpochMs = lastResult.startedAtEpochMs,
-      finishedAtEpochMs = System.currentTimeMillis(),
-      metadata = lastResult.metadata,
-    )
-    synchronized(runLock) {
-      val updated = record.copy(lastResult = cancelledResult)
-      runRecordsById[record.submission.runId] = updated
-      persistRunRecordLocked(updated)
-    }
-    synchronized(detachedControlLock) {
-      detachedControlTasksByTaskId.remove(taskId)
-    }
-    return true
-  }
-
-  private fun requestSubAgentRecoveryCancel(taskId: String): Boolean =
-    subAgentRecoveryDriver.requestCancel(taskId)
-
-  private fun requestDetachedControlResume(
-    taskId: String,
-    executionKind: String,
-    taskMetadataUpdates: Map<String, String>,
-  ): Boolean {
-    require(
-      executionKind == EXECUTION_KIND_APPROVAL_RESUME ||
-        executionKind == EXECUTION_KIND_CHECKPOINT_RESUME,
-    ) {
-      "Unsupported detached resume execution kind: $executionKind"
-    }
-    val state = synchronized(detachedControlLock) {
-      detachedControlTasksByTaskId[taskId]
-    } ?: return false
-    if (state.future != null) {
-      return false
-    }
-    val record = synchronized(runLock) {
-      runRecordsById[state.submission.runId]
-    } ?: return false
-    val lastResult = record.lastResult ?: return false
-    if (!isResultAwaitingManualResume(lastResult)) {
-      return false
-    }
-    val resumedTask = state.task.copy(
-      metadata = state.task.metadata + taskMetadataUpdates,
-    )
-    launchDetachedControlExecution(
-      submission = state.submission,
-      task = resumedTask,
-      executionKind = executionKind,
-      clearPreviousResult = true,
-    )
-    return true
+  private fun requestSubAgentRecoveryCancel(taskId: String): Boolean {
+    val cancelledHiddenActorByRecoveryTask = cancelHiddenActorForRecoveryTask(taskId)
+    val cancelledHiddenActorByTaskId = subAgentActorTaskDriver.requestCancel(taskId)
+    val cancelledVisibleRecovery = subAgentScheduler.requestCancel(taskId)
+    return (
+      cancelledHiddenActorByRecoveryTask ||
+        cancelledHiddenActorByTaskId ||
+        cancelledVisibleRecovery
+      )
   }
 
   private fun requestSubAgentRecoveryResume(
     taskId: String,
     executionKind: String,
     taskMetadataUpdates: Map<String, String>,
-  ): Boolean = subAgentRecoveryDriver.requestResume(
-    taskId = taskId,
-    executionKind = executionKind,
-    taskMetadataUpdates = taskMetadataUpdates,
-  )
+  ): Boolean {
+    val recoveryTaskContext = visibleRecoveryTaskContext(taskId)
+    recoveryTaskContext?.let { context ->
+      subAgentActorTaskDriver.submitActorTask(
+        agentId = context.agentId,
+        parentRunId = context.parentRunId,
+        createdAtEpochMs = context.createdAtEpochMs,
+        submissionSource = context.submissionSource,
+      )
+    }
+    val actorResumed = when (recoveryTaskContext) {
+      null -> subAgentActorTaskDriver.requestResume(
+        taskId = taskId,
+        executionKind = executionKind,
+        taskMetadataUpdates = taskMetadataUpdates,
+      )
 
-  private fun launchDetachedControlExecution(
-    submission: AgentRunSubmission,
-    task: AgentTask,
-    executionKind: String,
-    clearPreviousResult: Boolean,
-  ) {
-    val executionTask = taskWithDetachedExecutionMetadata(
-      task = task,
+      else -> subAgentActorTaskDriver.requestResume(
+        agentId = recoveryTaskContext.agentId,
+        parentRunId = recoveryTaskContext.parentRunId,
+        executionKind = executionKind,
+        taskMetadataUpdates = taskMetadataUpdates,
+      )
+    }
+    val recoveryResumed = subAgentScheduler.requestResume(
+      taskId = taskId,
       executionKind = executionKind,
+      taskMetadataUpdates = taskMetadataUpdates,
     )
-    val cancelRequested = AtomicBoolean(false)
-    val future = FutureTask<Unit> {
-      runtimeFlowDebug(
-        "runtime.detachedTaskStarted session=$sessionId task=${executionTask.id} run=${executionTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: "-"} kind=$executionKind",
-      )
-      notifyRuntimeListenersSafely(listenerProvider, "detachedTaskStarted") { listener ->
-        listener.onTaskStarted(sessionId = sessionId, task = executionTask)
-      }
-      val executionHooks = RuntimeExecutionHooks(
-        isCancellationRequested = cancelRequested::get,
-        requestRetry = { _: RetryRequest -> Unit },
-      )
-      val result = try {
-        enrichResultExecutionContext(
-          task = executionTask,
-          result = runtimeFactory.executeDetachedControlTask(
-            sessionId = sessionId,
-            task = executionTask,
-            hooks = executionHooks,
-            eventSink = runtimeEventSink,
-          ) ?: baseRuntime.execute(
-            executionTask,
-            executionHooks,
-          ),
-        )
-      } catch (_: InterruptedException) {
-        ExecutionResult(
-          taskId = executionTask.id,
-          status = ExecutionStatus.CANCELLED,
-          errorCode = "DETACHED_CONTROL_INTERRUPTED",
-          errorMessage = "Detached control execution was interrupted.",
-          startedAtEpochMs = executionTask.createdAtEpochMs,
-          finishedAtEpochMs = System.currentTimeMillis(),
-          metadata = executionMetadataFrom(executionTask.metadata),
-        )
-      }
-      runtimeFlowDebug(
-        "runtime.detachedTaskFinished session=$sessionId task=${executionTask.id} run=${executionTask.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: "-"} status=${result.status} error=${result.errorCode ?: "-"}",
-      )
-      completeDetachedControlExecution(
-        submission = submission,
-        task = executionTask,
-        result = result,
-      )
-    }
-    synchronized(detachedControlLock) {
-      detachedControlTasksByTaskId[submission.taskId] = DetachedControlTaskState(
-        submission = submission,
-        task = executionTask,
-        cancelRequested = cancelRequested,
-        future = future,
-      )
-    }
-    if (clearPreviousResult) {
-      synchronized(runLock) {
-        val existing = runRecordsById[submission.runId]
-        if (existing != null) {
-          val updated = existing.copy(lastResult = null)
-          runRecordsById[submission.runId] = updated
-          persistRunRecordLocked(updated)
-        }
-      }
-    }
-    executor.execute(future)
+    return actorResumed || recoveryResumed
   }
 
-  private fun completeDetachedControlExecution(
-    submission: AgentRunSubmission,
-    task: AgentTask,
-    result: ExecutionResult,
-  ) {
-    val enrichedResult = enrichResultExecutionContext(task = task, result = result)
-    recordRunResult(task = task, result = enrichedResult)
-    notifyRuntimeListenersSafely(listenerProvider, "detachedTaskFinished") { listener ->
-      listener.onTaskFinished(sessionId = sessionId, task = task, result = enrichedResult)
-    }
-    synchronized(detachedControlLock) {
-      val latest = detachedControlTasksByTaskId[submission.taskId] ?: return
-      detachedControlTasksByTaskId[submission.taskId] = latest.copy(future = null)
-      if (!isResultAwaitingManualResume(enrichedResult)) {
-        detachedControlTasksByTaskId.remove(submission.taskId)
-      }
-    }
-  }
-
-  private fun detachedControlRecoveryKey(task: AgentTask): Pair<String, String>? {
-    val agentId = task.metadata[METADATA_SUBAGENT_RECOVERY_AGENT_ID]
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
+  private fun visibleRecoveryTaskContext(taskId: String): VisibleRecoveryTaskContext? {
+    val task = subAgentScheduler.listVisibleTasks()
+      .firstOrNull { visibleTask -> visibleTask.id == taskId }
       ?: return null
-    val parentRunId = task.metadata[METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID]
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
+    val recoverySpec = syntheticSubAgentTaskSpec(task) as? SyntheticSubAgentRecoveryWaitTaskSpec
       ?: return null
-    return parentRunId to agentId
+    return VisibleRecoveryTaskContext(
+      agentId = recoverySpec.agentId,
+      parentRunId = recoverySpec.parentRunId,
+      createdAtEpochMs = task.createdAtEpochMs,
+      submissionSource = task.metadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE]
+        ?: RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
+    )
   }
 
-  private fun taskWithDetachedExecutionMetadata(
+  private fun cancelHiddenActorForRecoveryTask(taskId: String): Boolean {
+    val recoveryTaskContext = visibleRecoveryTaskContext(taskId) ?: return false
+    return subAgentActorTaskDriver.requestCancel(
+      agentId = recoveryTaskContext.agentId,
+      parentRunId = recoveryTaskContext.parentRunId,
+    )
+  }
+
+  private fun taskWithSubAgentRecoveryExecutionMetadata(
     task: AgentTask,
     executionKind: String,
   ): AgentTask {
@@ -1122,7 +1150,7 @@ private class ManagedAgentSessionHandle(
     )
   }
 
-  private fun isResultAwaitingManualResume(
+  private fun isSubAgentRecoveryAwaitingManualResume(
     result: ExecutionResult,
   ): Boolean = when {
     result.status == ExecutionStatus.DENIED &&
@@ -1141,9 +1169,6 @@ private class ManagedAgentSessionHandle(
       if (isQueueTaskAwaitingCancellation(taskId)) {
         interruptProcessingThread()
       }
-      return true
-    }
-    if (requestDetachedControlCancel(taskId)) {
       return true
     }
     return requestSubAgentRecoveryCancel(taskId)
@@ -1224,15 +1249,6 @@ private class ManagedAgentSessionHandle(
       ensureProcessing()
       return true
     }
-    if (
-      requestDetachedControlResume(
-        taskId = taskId,
-        executionKind = executionKind,
-        taskMetadataUpdates = taskMetadataUpdates,
-      )
-    ) {
-      return true
-    }
     return requestSubAgentRecoveryResume(
       taskId = taskId,
       executionKind = executionKind,
@@ -1286,7 +1302,7 @@ private class ManagedAgentSessionHandle(
           taskSnapshot.task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] in pendingMessageIds
       }
       .map { taskSnapshot -> taskSnapshot.task.id } +
-      listDetachedControlTasks()
+      listVisibleSubAgentTasks()
         .filter { task ->
           task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] in pendingMessageIds
         }
@@ -1306,6 +1322,7 @@ private class ManagedAgentSessionHandle(
     touch()
     refreshDueManagedProcessReconnectRecovery()
     val state = loop.resume()
+    subAgentActorDriver.onSessionResumed()
     if (hasRunnableWork()) {
       ensureProcessing()
     }
@@ -1396,6 +1413,36 @@ private class ManagedAgentSessionHandle(
   override fun listSubAgentHandles(): List<SubAgentHandleState> =
     runtimeFactory.listSubAgentHandles(sessionId)
 
+  override fun listClosedSubAgentHandles(): List<SubAgentHandleState> =
+    runtimeFactory.listClosedSubAgentHandles(sessionId)
+
+  override fun setSubAgentPendingApprovalDecision(
+    agentId: String,
+    parentRunId: String,
+    pendingApprovalDecision: SubAgentPendingApprovalDecision?,
+  ): Boolean {
+    touch()
+    val updatedHandle = runtimeFactory.updateSubAgentHandlePendingApprovalDecision(
+      sessionId = sessionId,
+      agentId = agentId,
+      parentRunId = parentRunId,
+      pendingApprovalDecision = pendingApprovalDecision,
+    ) ?: return false
+    if (updatedHandle.shouldEnsureDetachedBackgroundExecution()) {
+      subAgentActorDriver.scheduleRecoverableSubAgents()
+    }
+    return true
+  }
+
+  override fun hasActiveSubAgentExecution(
+    agentId: String,
+    parentRunId: String,
+  ): Boolean = runtimeFactory.hasActiveSubAgentExecution(
+    sessionId = sessionId,
+    agentId = agentId,
+    parentRunId = parentRunId,
+  )
+
   override fun retainKnownSubAgentParentRuns(parentRunIds: Set<String>) {
     runtimeFactory.retainKnownSubAgentParentRuns(
       sessionId = sessionId,
@@ -1403,58 +1450,8 @@ private class ManagedAgentSessionHandle(
     )
   }
 
-  override fun listDetachedControlTasks(): List<AgentTask> = synchronized(detachedControlLock) {
-    detachedControlTasksByTaskId.values.map(DetachedControlTaskState::task)
-  } + subAgentRecoveryDriver.listTasks()
-
-  override fun ensureRecoverableDetachedSubAgentTasks(): Int {
-    touch()
-    val activeParentRunIds = listRuns()
-      .filter(AgentRunSnapshot::isActive)
-      .map(AgentRunSnapshot::runId)
-      .toSet()
-    val pendingRecoveryKeys = snapshot().tasks
-      .asSequence()
-      .filter { taskSnapshot ->
-        taskSnapshot.lifecycleState != QueueTaskLifecycleState.COMPLETED &&
-          taskSnapshot.lifecycleState != QueueTaskLifecycleState.CANCELLED &&
-          taskSnapshot.lifecycleState != QueueTaskLifecycleState.FAILED &&
-          taskSnapshot.task.metadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE] ==
-          RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY
-      }
-      .mapNotNull { taskSnapshot -> detachedControlRecoveryKey(taskSnapshot.task) }
-      .toSet()
-    val pendingDetachedRecoveryKeys = listDetachedControlTasks()
-      .asSequence()
-      .filter { task ->
-        task.metadata[RunLifecycleMetadataKeys.SUBMISSION_SOURCE] ==
-          RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY
-      }
-      .mapNotNull(::detachedControlRecoveryKey)
-      .toSet()
-    val resumableHandles = listSubAgentHandles().filter { handle ->
-      handle.snapshot.state == SubAgentExecutionState.BACKGROUND_QUEUED &&
-        handle.pendingApprovalResume == null &&
-        handle.parentRunId !in activeParentRunIds &&
-        (handle.parentRunId to handle.agentId) !in pendingRecoveryKeys &&
-        (handle.parentRunId to handle.agentId) !in pendingDetachedRecoveryKeys
-    }
-    resumableHandles.forEach { handle ->
-      val taskId = detachedSubAgentRecoveryTaskId(
-        sessionId = sessionId,
-        agentId = handle.agentId,
-        parentRunId = handle.parentRunId,
-      )
-      submitDetachedSubAgentRecoveryTask(
-        agentId = handle.agentId,
-        parentRunId = handle.parentRunId,
-        taskId = taskId,
-        createdAtEpochMs = System.currentTimeMillis(),
-        submissionSource = RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
-      )
-    }
-    return resumableHandles.size
-  }
+  override fun listVisibleSubAgentTasks(): List<AgentTask> =
+    subAgentScheduler.listVisibleTasks()
 
   override fun terminateManagedProcesses(
     processIds: Set<String>,
@@ -1489,7 +1486,6 @@ private class ManagedAgentSessionHandle(
       val record = ManagedRunRecord(
         submission = submission,
         pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID],
-        detachedTask = task,
       )
       runRecordsById[submission.runId] = record
       persistRunRecordLocked(record)
@@ -1498,7 +1494,7 @@ private class ManagedAgentSessionHandle(
 
   private fun subAgentRecoveryRunStateByTaskId(taskId: String): SessionSubAgentRecoveryRunState? =
     synchronized(runLock) {
-      runRecordsById[detachedSubAgentRecoveryRunId(taskId)]
+      runRecordsById[syntheticSubAgentRecoveryRunId(taskId)]
         ?.toSubAgentRecoveryRunState()
     }
 
@@ -1514,18 +1510,6 @@ private class ManagedAgentSessionHandle(
     synchronized(runLock) {
       val existing = runRecordsById[runId] ?: return
       val updated = existing.copy(lastResult = result)
-      runRecordsById[runId] = updated
-      persistRunRecordLocked(updated)
-    }
-  }
-
-  private fun replaceRunDetachedTask(
-    runId: String,
-    task: AgentTask?,
-  ) {
-    synchronized(runLock) {
-      val existing = runRecordsById[runId] ?: return
-      val updated = existing.copy(detachedTask = task)
       runRecordsById[runId] = updated
       persistRunRecordLocked(updated)
     }
@@ -1553,6 +1537,43 @@ private class ManagedAgentSessionHandle(
     }
   }
 
+  private fun cleanupVisibleSubAgentRecoveryForClosedHandle(
+    event: OpenCrayAgentRunEvent,
+  ) {
+    val toolResultEvent = event as? com.opencray.runtime.OpenCrayToolResultEvent ?: return
+    if (!toolResultEvent.call.toolName.equals("close_agent", ignoreCase = true)) {
+      return
+    }
+    if (toolResultEvent.result.status != com.opencray.runtime.AgentToolResultStatus.SUCCESS) {
+      return
+    }
+    if (
+      !toolResultEvent.result.metadata["closed"]
+        .equals("true", ignoreCase = true)
+    ) {
+      return
+    }
+    val agentId = toolResultEvent.result.metadata["agentId"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: return
+    val parentRunId = toolResultEvent.runId
+      .trim()
+      .takeIf(String::isNotBlank)
+      ?: return
+    subAgentScheduler.requestCancel(
+      syntheticSubAgentRecoveryTaskId(
+        sessionId = sessionId,
+        agentId = agentId,
+        parentRunId = parentRunId,
+      ),
+    )
+    subAgentActorTaskDriver.requestCancel(
+      agentId = agentId,
+      parentRunId = parentRunId,
+    )
+  }
+
   private fun recordRunResult(task: AgentTask, result: ExecutionResult) {
     val runId = runIdFor(task)
     synchronized(runLock) {
@@ -1574,7 +1595,7 @@ private class ManagedAgentSessionHandle(
       persistRunRecordLocked(updated)
     }
     // Keep terminal checkpoint cleanup under runtime ownership across host-listener rebinds.
-    if (!isResultAwaitingManualResume(result)) {
+    if (!isSubAgentRecoveryAwaitingManualResume(result)) {
       promptCheckpointStore.remove(task.id)
     }
   }
@@ -1593,7 +1614,10 @@ private class ManagedAgentSessionHandle(
       }
     }
     val managedProcessesById = managedProcesses.associateBy(ManagedProcessSnapshot::processId)
-    val taskSnapshotsByRunId = queueSnapshot.tasks.associateBy { taskSnapshot ->
+    val detachedTaskSnapshotsByRunId = detachedRunTaskSnapshots().associateBy { taskSnapshot ->
+      runIdFor(taskSnapshot.task)
+    }
+    val taskSnapshotsByRunId = detachedTaskSnapshotsByRunId + queueSnapshot.tasks.associateBy { taskSnapshot ->
       runIdFor(taskSnapshot.task)
     }
     val records = synchronized(runLock) { runRecordsById.toMap() }
@@ -1779,52 +1803,6 @@ private class ManagedAgentSessionHandle(
     }
   }
 
-  private fun restoreDetachedControlTasksLocked() {
-    runRecordsById.values.forEach { record ->
-      val task = record.detachedTask ?: return@forEach
-      val lastResult = record.lastResult
-      val isRecoveryTask = detachedControlTaskSpec(task) is DetachedSubAgentRecoveryWaitTaskSpec
-      if (lastResult == null) {
-        if (isRecoveryTask) {
-          subAgentRecoveryDriver.restoreInFlightTask(
-            submission = record.submission,
-            task = task,
-          )
-        } else {
-          launchDetachedControlExecution(
-            submission = record.submission,
-            task = task,
-            executionKind = task.metadata[METADATA_EXECUTION_KIND]
-              ?.trim()
-              ?.takeIf(String::isNotBlank)
-              ?: EXECUTION_KIND_INITIAL,
-            clearPreviousResult = false,
-          )
-        }
-        return@forEach
-      }
-      if (!isResultAwaitingManualResume(lastResult)) {
-        return@forEach
-      }
-      if (isRecoveryTask) {
-        subAgentRecoveryDriver.restorePendingTask(
-          submission = record.submission,
-          task = task,
-          lastResult = lastResult,
-        )
-      } else {
-        synchronized(detachedControlLock) {
-          detachedControlTasksByTaskId[record.submission.taskId] = DetachedControlTaskState(
-            submission = record.submission,
-            task = task,
-            cancelRequested = AtomicBoolean(false),
-            future = null,
-          )
-        }
-      }
-    }
-  }
-
   private fun seedMissingRunRecordsLocked(queueSnapshot: SessionQueueSnapshot) {
     queueSnapshot.tasks.forEach { taskSnapshot ->
       val runId = runIdFor(taskSnapshot.task)
@@ -1869,6 +1847,22 @@ private class ManagedAgentSessionHandle(
       ),
     )
   }
+
+  private fun detachedRunTaskSnapshots(): List<SessionQueueTaskSnapshot> = (
+    subAgentScheduler.listVisibleTasks() +
+      subAgentActorTaskDriver.listTasks()
+    ).distinctBy(AgentTask::id)
+    .sortedBy(AgentTask::createdAtEpochMs)
+    .mapIndexed { index, task ->
+      SessionQueueTaskSnapshot(
+        enqueueOrder = index.toLong(),
+        task = task,
+        lifecycleState = detachedTaskLifecycleState(task.state),
+        executionOrdinal = task.metadata[METADATA_EXECUTION_ORDINAL]?.toIntOrNull() ?: 0,
+        executionId = task.metadata[METADATA_EXECUTION_ID]?.trim()?.takeIf(String::isNotBlank),
+        executionKind = task.metadata[METADATA_EXECUTION_KIND]?.trim()?.takeIf(String::isNotBlank),
+      )
+    }
 
   private fun managedProcessIdFrom(event: OpenCrayAgentRunEvent): String? =
     (event as? com.opencray.runtime.OpenCrayToolResultEvent)
@@ -2126,8 +2120,10 @@ private class ManagedAgentSessionHandle(
     (original == null || !isTerminalLifecycle(original))
   ) {
     QueueTaskLifecycleState.FAILED
-  } else {
+  } else if (original != null) {
     original
+  } else {
+    terminalLifecycleState(result)
   }
 
   private fun projectedTaskState(
@@ -2138,8 +2134,10 @@ private class ManagedAgentSessionHandle(
     (original == null || !isTerminalTaskState(original))
   ) {
     AgentTaskState.FAILED
-  } else {
+  } else if (original != null) {
     original
+  } else {
+    terminalTaskState(result)
   }
 
   private fun isInterruptedOnRestoreResult(result: ExecutionResult?): Boolean =
@@ -2170,6 +2168,52 @@ private class ManagedAgentSessionHandle(
     AgentTaskState.RUNNING,
     AgentTaskState.SUSPENDED,
     -> false
+  }
+
+  private fun terminalLifecycleState(result: ExecutionResult?): QueueTaskLifecycleState? = when {
+    result == null -> null
+    isAwaitingExplicitResumeResult(result) -> null
+    result.status == ExecutionStatus.SUCCESS -> QueueTaskLifecycleState.COMPLETED
+    result.status == ExecutionStatus.CANCELLED -> QueueTaskLifecycleState.CANCELLED
+    result.status == ExecutionStatus.FAILED ||
+      result.status == ExecutionStatus.TIMEOUT ||
+      result.status == ExecutionStatus.DENIED
+    -> QueueTaskLifecycleState.FAILED
+
+    else -> null
+  }
+
+  private fun terminalTaskState(result: ExecutionResult?): AgentTaskState? = when {
+    result == null -> null
+    isAwaitingExplicitResumeResult(result) -> null
+    result.status == ExecutionStatus.SUCCESS -> AgentTaskState.COMPLETED
+    result.status == ExecutionStatus.CANCELLED -> AgentTaskState.CANCELLED
+    result.status == ExecutionStatus.FAILED ||
+      result.status == ExecutionStatus.TIMEOUT ||
+      result.status == ExecutionStatus.DENIED
+    -> AgentTaskState.FAILED
+
+    else -> null
+  }
+
+  private fun isAwaitingExplicitResumeResult(result: ExecutionResult): Boolean = when {
+    result.status == ExecutionStatus.DENIED &&
+      (
+        result.errorCode == RUN_ERROR_APPROVAL_REQUIRED ||
+          result.errorCode == RUN_ERROR_HIGH_RISK_APPROVAL_REQUIRED
+        ) -> true
+
+    result.errorCode == ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME -> true
+    else -> false
+  }
+
+  private fun detachedTaskLifecycleState(state: AgentTaskState): QueueTaskLifecycleState = when (state) {
+    AgentTaskState.QUEUED -> QueueTaskLifecycleState.QUEUED
+    AgentTaskState.RUNNING -> QueueTaskLifecycleState.RUNNING
+    AgentTaskState.SUSPENDED -> QueueTaskLifecycleState.SUSPENDED
+    AgentTaskState.COMPLETED -> QueueTaskLifecycleState.COMPLETED
+    AgentTaskState.FAILED -> QueueTaskLifecycleState.FAILED
+    AgentTaskState.CANCELLED -> QueueTaskLifecycleState.CANCELLED
   }
 
   private fun visibleRunResult(
@@ -2230,11 +2274,11 @@ private class ManagedAgentSessionHandle(
     val lastResult: ExecutionResult? = null,
   )
 
-  private data class DetachedControlTaskState(
-    val submission: AgentRunSubmission,
-    val task: AgentTask,
-    val cancelRequested: AtomicBoolean,
-    val future: FutureTask<Unit>?,
+  private data class VisibleRecoveryTaskContext(
+    val agentId: String,
+    val parentRunId: String,
+    val createdAtEpochMs: Long,
+    val submissionSource: String,
   )
 
   private fun ManagedRunRecord.toSubAgentRecoveryRunState(): SessionSubAgentRecoveryRunState =

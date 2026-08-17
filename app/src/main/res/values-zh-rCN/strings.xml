@@ -352,7 +352,10 @@
     <string name="runtime_notification_active_title">OpenCray 正在后台运行</string>
     <string name="runtime_notification_active_bootstrap_text">正在准备后台任务…</string>
     <string name="runtime_notification_active_text">%1$d 个运行分布在 %2$d 个会话中。</string>
-    <string name="runtime_notification_active_text_with_processes">%1$d 个运行分布在 %2$d 个会话中，包含存活中的托管进程。</string>
+    <string name="runtime_notification_active_text_with_processes_only">%1$d 个会话里仍有托管进程在运行。</string>
+    <string name="runtime_notification_active_text_with_processes_and_runs">%1$d 个会话里仍有托管进程在运行，另有 %2$d 个可见运行仍在活动。</string>
+    <string name="runtime_notification_active_text_with_subagents_only">%1$d 个会话里仍有子代理后台任务在运行。</string>
+    <string name="runtime_notification_active_text_with_subagents_and_runs">%1$d 个会话里仍有子代理后台任务在运行，另有 %2$d 个可见运行仍在活动。</string>
     <string name="runtime_notification_approval_channel_name">等待审批</string>
     <string name="runtime_notification_approval_channel_description">当后台运行正在等待审批时显示。</string>
     <string name="runtime_notification_completion_channel_name">任务结果</string>

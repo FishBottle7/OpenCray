@@ -108,6 +108,8 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private val processRegistryFactory: AgentProcessRegistryFactory,
   private val supplementStoreFactory: AgentSessionSupplementStoreFactory,
   private val subAgentHandleStoreFactory: SubAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory(),
+  private val subAgentSessionLinkStoreFactory: SubAgentSessionLinkStoreFactory =
+    inMemorySubAgentSessionLinkStoreFactory(),
   private val strings: ProjectionOnlyChatStrings,
   private val stringsProvider: (() -> ProjectionOnlyChatStrings)? = null,
   private val connectionStateProvider: () -> RuntimeServiceConnectionState,
@@ -2471,6 +2473,9 @@ internal fun projectionOnlyOpenCrayChatRuntimeGateway(
     ),
     supplementStoreFactory = FileBackedAgentSessionSupplementStoreFactory.fromContext(appContext),
     subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext),
+    subAgentSessionLinkStoreFactory = FileBackedSubAgentSessionLinkStoreFactory.fromContext(
+      appContext,
+    ),
     strings = strings,
     stringsProvider = stringsProvider,
     connectionStateProvider = diagnosticsSource.connectionStateProvider,

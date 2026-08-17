@@ -17,6 +17,8 @@ internal data class RuntimeForegroundState(
   val notificationVisible: Boolean = false,
   val activeRunCount: Int = 0,
   val activeSessionCount: Int = 0,
+  val liveManagedProcessSessionCount: Int = 0,
+  val liveSubAgentSessionCount: Int = 0,
   val keepAliveReason: String? = null,
   val changedAtEpochMs: Long = System.currentTimeMillis(),
 ) {
@@ -25,6 +27,8 @@ internal data class RuntimeForegroundState(
     put("notificationVisible", notificationVisible)
     put("activeRunCount", activeRunCount)
     put("activeSessionCount", activeSessionCount)
+    put("liveManagedProcessSessionCount", liveManagedProcessSessionCount)
+    put("liveSubAgentSessionCount", liveSubAgentSessionCount)
     keepAliveReason?.let { reason ->
       put("keepAliveReason", reason)
     }
@@ -42,6 +46,7 @@ internal data class RuntimeForegroundNotificationModel(
   val activeRunCount: Int,
   val activeSessionCount: Int,
   val liveManagedProcessSessionCount: Int,
+  val liveSubAgentSessionCount: Int,
   val keepAliveReason: String?,
 )
 
@@ -51,6 +56,7 @@ internal fun runtimeServiceBootstrapForegroundNotificationModel(
   activeRunCount = 0,
   activeSessionCount = 0,
   liveManagedProcessSessionCount = 0,
+  liveSubAgentSessionCount = 0,
   keepAliveReason = keepAliveReason,
 )
 
@@ -303,6 +309,8 @@ internal class RuntimeForegroundController(
         notificationVisible = false,
         activeRunCount = lastObservedWorkState.activeRunCount,
         activeSessionCount = lastObservedWorkState.activeSessionCount,
+        liveManagedProcessSessionCount = lastObservedWorkState.liveManagedProcessSessionCount,
+        liveSubAgentSessionCount = lastObservedWorkState.liveSubAgentSessionCount,
         changedAtEpochMs = now,
       )
       currentNotificationModel = null
@@ -315,6 +323,8 @@ internal class RuntimeForegroundController(
       currentState.phase == RuntimeForegroundState.PHASE_FOREGROUND &&
       currentState.activeRunCount == model.activeRunCount &&
       currentState.activeSessionCount == model.activeSessionCount &&
+      currentState.liveManagedProcessSessionCount == model.liveManagedProcessSessionCount &&
+      currentState.liveSubAgentSessionCount == model.liveSubAgentSessionCount &&
       currentState.keepAliveReason == model.keepAliveReason
     ) {
       return RuntimeForegroundTransition(
@@ -328,6 +338,8 @@ internal class RuntimeForegroundController(
       notificationVisible = true,
       activeRunCount = model.activeRunCount,
       activeSessionCount = model.activeSessionCount,
+      liveManagedProcessSessionCount = model.liveManagedProcessSessionCount,
+      liveSubAgentSessionCount = model.liveSubAgentSessionCount,
       keepAliveReason = model.keepAliveReason,
       changedAtEpochMs = now,
     )
@@ -343,6 +355,7 @@ internal class RuntimeForegroundController(
         activeRunCount = lastObservedWorkState.activeRunCount,
         activeSessionCount = lastObservedWorkState.activeSessionCount,
         liveManagedProcessSessionCount = lastObservedWorkState.liveManagedProcessSessionCount,
+        liveSubAgentSessionCount = lastObservedWorkState.liveSubAgentSessionCount,
         keepAliveReason = lastObservedWorkState.keepAliveReason,
       )
     }
@@ -353,6 +366,7 @@ internal class RuntimeForegroundController(
       activeRunCount = lastObservedWorkState.activeRunCount,
       activeSessionCount = lastObservedWorkState.activeSessionCount,
       liveManagedProcessSessionCount = lastObservedWorkState.liveManagedProcessSessionCount,
+      liveSubAgentSessionCount = lastObservedWorkState.liveSubAgentSessionCount,
       keepAliveReason = RuntimeServiceWorkState.KEEP_ALIVE_REASON_IDLE_GRACE,
     )
   }
@@ -444,12 +458,31 @@ internal class RuntimeActiveNotificationFactory(
       model.keepAliveReason == RuntimeServiceWorkState.KEEP_ALIVE_REASON_IDLE_GRACE ->
         context.getString(R.string.runtime_notification_active_idle_grace_text)
       model.keepAliveReason == RuntimeServiceWorkState.KEEP_ALIVE_REASON_MANAGED_PROCESS &&
-        model.liveManagedProcessSessionCount > 0 ->
+        model.liveManagedProcessSessionCount > 0 -> if (model.activeRunCount > 0) {
+          context.getString(
+            R.string.runtime_notification_active_text_with_processes_and_runs,
+            model.liveManagedProcessSessionCount,
+            model.activeRunCount,
+          )
+        } else {
+          context.getString(
+            R.string.runtime_notification_active_text_with_processes_only,
+            model.liveManagedProcessSessionCount,
+          )
+        }
+      model.keepAliveReason == RuntimeServiceWorkState.KEEP_ALIVE_REASON_ACTIVE_SUBAGENT &&
+        model.liveSubAgentSessionCount > 0 -> if (model.activeRunCount > 0) {
         context.getString(
-          R.string.runtime_notification_active_text_with_processes,
+          R.string.runtime_notification_active_text_with_subagents_and_runs,
+          model.liveSubAgentSessionCount,
           model.activeRunCount,
-          model.activeSessionCount,
         )
+      } else {
+        context.getString(
+          R.string.runtime_notification_active_text_with_subagents_only,
+          model.liveSubAgentSessionCount,
+        )
+      }
       else ->
         context.getString(
           R.string.runtime_notification_active_text,

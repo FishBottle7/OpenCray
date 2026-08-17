@@ -386,6 +386,7 @@ internal class ServiceOwnedChatRunControlAccess(
       runId = runId,
       taskId = taskId,
       phase = OpenCraySubAgentPhase.CANCELLED,
+      agentId = lifecycle.agentId,
       childRunId = lifecycle.childRunId,
       childTaskId = lifecycle.childTaskId,
       label = lifecycle.label,

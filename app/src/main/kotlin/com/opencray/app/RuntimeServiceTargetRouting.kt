@@ -15,7 +15,7 @@ internal fun runtimeServiceTargetForTaskMetadata(
   !metadata[ScheduledTaskMetadataKeys.SCHEDULE_ID].isNullOrBlank() ->
     RuntimeServiceTarget.DETACHED_BACKGROUND
 
-  !metadata[METADATA_DETACHED_CONTROL_KIND].isNullOrBlank() ->
+  !metadata[METADATA_SYNTHETIC_SUBAGENT_TASK_KIND].isNullOrBlank() ->
     RuntimeServiceTarget.DETACHED_BACKGROUND
 
   else -> RuntimeServiceTarget.INTERACTIVE
