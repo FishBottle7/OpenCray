@@ -1,5 +1,8 @@
 package com.opencray.runtime.subagent
 
+import kotlinx.serialization.Serializable
+
+@Serializable
 data class SubAgentTask(
   val description: String,
   val prompt: String,

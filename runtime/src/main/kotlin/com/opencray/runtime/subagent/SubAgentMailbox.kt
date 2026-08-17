@@ -40,6 +40,17 @@ data class SubAgentMailbox(
     }
     return copy(lastDeliveredMessageId = normalizedMessageId)
   }
+
+  fun rewindDeliveredThrough(messageId: String?): SubAgentMailbox {
+    val normalizedMessageId = messageId?.trim()?.takeIf(String::isNotBlank)
+    if (normalizedMessageId == null) {
+      return copy(lastDeliveredMessageId = null)
+    }
+    if (messages.none { it.messageId == normalizedMessageId }) {
+      return copy(lastDeliveredMessageId = null)
+    }
+    return copy(lastDeliveredMessageId = normalizedMessageId)
+  }
 }
 
 @Serializable

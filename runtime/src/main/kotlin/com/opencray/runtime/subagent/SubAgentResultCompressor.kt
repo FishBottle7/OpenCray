@@ -18,6 +18,8 @@ enum class SubAgentExecutionState(
   FAILED("failed"),
   CANCELLED("cancelled");
 
+  fun isTerminal(): Boolean = this == COMPLETED || this == FAILED || this == CANCELLED
+
   companion object {
     fun fromWireValue(rawValue: String?): SubAgentExecutionState? = entries.firstOrNull { state ->
       state.wireValue.equals(rawValue?.trim(), ignoreCase = true)

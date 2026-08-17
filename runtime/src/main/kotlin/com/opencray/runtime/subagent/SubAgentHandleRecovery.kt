@@ -25,6 +25,26 @@ fun SubAgentHandleState.withClearedChildPromptCheckpoint(
   updatedAtEpochMs = updatedAtEpochMs,
 )
 
+fun SubAgentHandleState.withPendingApprovalDecision(
+  state: SubAgentPendingApprovalDecisionState,
+  resume: SubAgentApprovalResume,
+  recordedAtEpochMs: Long,
+): SubAgentHandleState = copy(
+  pendingApprovalDecision = SubAgentPendingApprovalDecision(
+    state = state,
+    resume = resume,
+    recordedAtEpochMs = recordedAtEpochMs,
+  ),
+  updatedAtEpochMs = maxOf(updatedAtEpochMs, recordedAtEpochMs),
+)
+
+fun SubAgentHandleState.withClearedPendingApprovalDecision(
+  updatedAtEpochMs: Long = this.updatedAtEpochMs,
+): SubAgentHandleState = copy(
+  pendingApprovalDecision = null,
+  updatedAtEpochMs = maxOf(this.updatedAtEpochMs, updatedAtEpochMs),
+)
+
 fun restoredInterruptedBackgroundSubAgentHandle(
   handle: SubAgentHandleState,
   restoredAtEpochMs: Long,
@@ -35,6 +55,7 @@ fun restoredInterruptedBackgroundSubAgentHandle(
       headline = "Background delegated child run '${handle.description}' was interrupted by a cold restart and is queued to resume from its last durable checkpoint.",
     ),
     pendingApprovalResume = null,
+    pendingApprovalDecision = null,
     updatedAtEpochMs = restoredAtEpochMs,
   )
 
@@ -52,6 +73,7 @@ fun restoredInterruptedBackgroundSubAgentHandle(
         childErrorCode = ERROR_CODE_BACKGROUND_INTERRUPTED,
       ),
       pendingApprovalResume = null,
+      pendingApprovalDecision = null,
       childExecutionStatus = ExecutionStatus.FAILED.name,
     )
 }

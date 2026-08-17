@@ -1,7 +1,9 @@
 package com.opencray.runtime.subagent
 
 import java.util.Locale
+import kotlinx.serialization.Serializable
 
+@Serializable
 enum class SubAgentContextMode(
   val wireValue: String,
   val publicControlPlaneEnabled: Boolean = true,

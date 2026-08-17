@@ -32,6 +32,19 @@ internal class PersistentSessionSubAgentExecutionCoordinator(
     return handle
   }
 
+  override fun upsertHandleIfOwnedByExecution(
+    handle: SubAgentHandleState,
+    expectedExecution: SubAgentActiveExecution,
+  ): SubAgentHandleState? = synchronized(lock) {
+    val key = SubAgentExecutionKey.from(handle)
+    val activeExecution = activeExecutionsByKey[key] ?: return@synchronized null
+    if (activeExecution !== expectedExecution) {
+      return@synchronized null
+    }
+    store.upsert(handle)
+    handle
+  }
+
   override fun removeHandle(key: SubAgentExecutionKey): SubAgentHandleState? =
     store.remove(parentRunId = key.parentRunId, agentId = key.agentId)
 
@@ -56,7 +69,14 @@ internal class PersistentSessionSubAgentExecutionCoordinator(
     }
   }
 
-  override fun takeActiveExecution(key: SubAgentExecutionKey): SubAgentActiveExecution? = synchronized(lock) {
+  override fun takeActiveExecution(
+    key: SubAgentExecutionKey,
+    expectedExecution: SubAgentActiveExecution?,
+  ): SubAgentActiveExecution? = synchronized(lock) {
+    val existingExecution = activeExecutionsByKey[key] ?: return@synchronized null
+    if (expectedExecution != null && existingExecution !== expectedExecution) {
+      return@synchronized null
+    }
     activeExecutionsByKey.remove(key)
   }
 
@@ -86,8 +106,15 @@ internal class PersistentSessionSubAgentExecutionCoordinator(
   override fun finishExecution(
     handle: SubAgentHandleState,
     removeHandle: Boolean,
+    expectedExecution: SubAgentActiveExecution?,
   ): SubAgentHandleState? = synchronized(lock) {
     val key = SubAgentExecutionKey.from(handle)
+    if (expectedExecution != null) {
+      val activeExecution = activeExecutionsByKey[key] ?: return@synchronized null
+      if (activeExecution !== expectedExecution) {
+        return@synchronized null
+      }
+    }
     activeExecutionsByKey.remove(key)
     return if (removeHandle) {
       store.remove(parentRunId = key.parentRunId, agentId = key.agentId)

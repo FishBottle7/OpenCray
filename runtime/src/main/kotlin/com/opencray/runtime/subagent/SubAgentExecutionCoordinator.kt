@@ -33,6 +33,7 @@ data class SubAgentActiveExecution(
   val future: Future<Unit>,
   val cancelRequested: AtomicBoolean,
   val closed: AtomicBoolean,
+  val mailboxDeliveryCursorBeforeCurrentTurn: String? = null,
 ) {
   fun cancel(
     markClosed: Boolean = false,
@@ -55,15 +56,34 @@ data class SubAgentExecutionStartResult(
 interface SubAgentExecutionCoordinator {
   fun allHandles(): List<SubAgentHandleState> = emptyList()
 
+  fun allClosedHandles(): List<SubAgentHandleState> = emptyList()
+
   fun handlesForParentRun(parentRunId: String): List<SubAgentHandleState> = allHandles().filter { handle ->
     handle.parentRunId == parentRunId
   }
 
   fun currentHandle(key: SubAgentExecutionKey): SubAgentHandleState?
 
+  fun closedHandle(key: SubAgentExecutionKey): SubAgentHandleState? = null
+
   fun upsertHandle(handle: SubAgentHandleState): SubAgentHandleState
 
+  fun noteClosedHandle(handle: SubAgentHandleState): SubAgentHandleState = handle
+
+  fun upsertHandleIfOwnedByExecution(
+    handle: SubAgentHandleState,
+    expectedExecution: SubAgentActiveExecution,
+  ): SubAgentHandleState?
+
   fun removeHandle(key: SubAgentExecutionKey): SubAgentHandleState?
+
+  fun updateHandle(
+    key: SubAgentExecutionKey,
+    transform: (SubAgentHandleState) -> SubAgentHandleState,
+  ): SubAgentHandleState? {
+    val current = currentHandle(key) ?: return null
+    return upsertHandle(transform(current))
+  }
 
   fun retainKnownParentRuns(parentRunIds: Set<String>) = Unit
 
@@ -74,7 +94,10 @@ interface SubAgentExecutionCoordinator {
     execution: SubAgentActiveExecution,
   ): SubAgentActiveExecution?
 
-  fun takeActiveExecution(key: SubAgentExecutionKey): SubAgentActiveExecution?
+  fun takeActiveExecution(
+    key: SubAgentExecutionKey,
+    expectedExecution: SubAgentActiveExecution? = null,
+  ): SubAgentActiveExecution?
 
   fun beginExecution(
     handle: SubAgentHandleState,
@@ -104,9 +127,13 @@ interface SubAgentExecutionCoordinator {
   fun finishExecution(
     handle: SubAgentHandleState,
     removeHandle: Boolean = false,
+    expectedExecution: SubAgentActiveExecution? = null,
   ): SubAgentHandleState? {
     val key = SubAgentExecutionKey.from(handle)
-    takeActiveExecution(key)
+    if (expectedExecution != null && activeExecution(key) !== expectedExecution) {
+      return null
+    }
+    takeActiveExecution(key, expectedExecution = expectedExecution)
     return if (removeHandle) {
       removeHandle(key)
       null
@@ -126,10 +153,16 @@ interface SubAgentExecutionCoordinator {
 class InMemorySubAgentExecutionCoordinator : SubAgentExecutionCoordinator {
   private val lock = Any()
   private val handlesByKey = linkedMapOf<SubAgentExecutionKey, SubAgentHandleState>()
+  private val closedHandlesByKey = linkedMapOf<SubAgentExecutionKey, SubAgentHandleState>()
   private val activeExecutionsByKey = linkedMapOf<SubAgentExecutionKey, SubAgentActiveExecution>()
 
   override fun allHandles(): List<SubAgentHandleState> = synchronized(lock) {
     handlesByKey.values
+      .sortedByDescending(SubAgentHandleState::updatedAtEpochMs)
+  }
+
+  override fun allClosedHandles(): List<SubAgentHandleState> = synchronized(lock) {
+    closedHandlesByKey.values
       .sortedByDescending(SubAgentHandleState::updatedAtEpochMs)
   }
 
@@ -143,8 +176,32 @@ class InMemorySubAgentExecutionCoordinator : SubAgentExecutionCoordinator {
     handlesByKey[key]
   }
 
+  override fun closedHandle(key: SubAgentExecutionKey): SubAgentHandleState? = synchronized(lock) {
+    closedHandlesByKey[key]
+  }
+
   override fun upsertHandle(handle: SubAgentHandleState): SubAgentHandleState = synchronized(lock) {
-    handlesByKey[SubAgentExecutionKey.from(handle)] = handle
+    val key = SubAgentExecutionKey.from(handle)
+    closedHandlesByKey.remove(key)
+    handlesByKey[key] = handle
+    handle
+  }
+
+  override fun noteClosedHandle(handle: SubAgentHandleState): SubAgentHandleState = synchronized(lock) {
+    closedHandlesByKey[SubAgentExecutionKey.from(handle)] = handle
+    handle
+  }
+
+  override fun upsertHandleIfOwnedByExecution(
+    handle: SubAgentHandleState,
+    expectedExecution: SubAgentActiveExecution,
+  ): SubAgentHandleState? = synchronized(lock) {
+    val key = SubAgentExecutionKey.from(handle)
+    val activeExecution = activeExecutionsByKey[key] ?: return@synchronized null
+    if (activeExecution !== expectedExecution) {
+      return@synchronized null
+    }
+    handlesByKey[key] = handle
     handle
   }
 
@@ -156,12 +213,16 @@ class InMemorySubAgentExecutionCoordinator : SubAgentExecutionCoordinator {
     if (parentRunIds.isEmpty()) {
       synchronized(lock) {
         handlesByKey.clear()
+        closedHandlesByKey.clear()
         activeExecutionsByKey.clear()
       }
       return
     }
     synchronized(lock) {
       handlesByKey.entries.removeIf { (_, handle) ->
+        handle.parentRunId !in parentRunIds
+      }
+      closedHandlesByKey.entries.removeIf { (_, handle) ->
         handle.parentRunId !in parentRunIds
       }
       activeExecutionsByKey.entries.removeIf { (key, _) ->
@@ -187,7 +248,14 @@ class InMemorySubAgentExecutionCoordinator : SubAgentExecutionCoordinator {
     }
   }
 
-  override fun takeActiveExecution(key: SubAgentExecutionKey): SubAgentActiveExecution? = synchronized(lock) {
+  override fun takeActiveExecution(
+    key: SubAgentExecutionKey,
+    expectedExecution: SubAgentActiveExecution?,
+  ): SubAgentActiveExecution? = synchronized(lock) {
+    val existingExecution = activeExecutionsByKey[key] ?: return@synchronized null
+    if (expectedExecution != null && existingExecution !== expectedExecution) {
+      return@synchronized null
+    }
     activeExecutionsByKey.remove(key)
   }
 
@@ -204,6 +272,7 @@ class InMemorySubAgentExecutionCoordinator : SubAgentExecutionCoordinator {
         activeExecution = existingExecution,
       )
     } else {
+      closedHandlesByKey.remove(key)
       handlesByKey[key] = handle
       activeExecutionsByKey[key] = execution
       SubAgentExecutionStartResult(
@@ -217,13 +286,21 @@ class InMemorySubAgentExecutionCoordinator : SubAgentExecutionCoordinator {
   override fun finishExecution(
     handle: SubAgentHandleState,
     removeHandle: Boolean,
+    expectedExecution: SubAgentActiveExecution?,
   ): SubAgentHandleState? = synchronized(lock) {
     val key = SubAgentExecutionKey.from(handle)
+    if (expectedExecution != null) {
+      val activeExecution = activeExecutionsByKey[key] ?: return@synchronized null
+      if (activeExecution !== expectedExecution) {
+        return@synchronized null
+      }
+    }
     activeExecutionsByKey.remove(key)
     if (removeHandle) {
       handlesByKey.remove(key)
       null
     } else {
+      closedHandlesByKey.remove(key)
       handlesByKey[key] = handle
       handle
     }

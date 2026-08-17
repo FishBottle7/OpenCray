@@ -7,6 +7,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class SubAgentHandleState(
   val agentId: String,
+  val childSessionId: String = newSubAgentChildSessionId(agentId),
   val childRunId: String,
   val childTaskId: String,
   val description: String,
@@ -24,6 +25,7 @@ data class SubAgentHandleState(
   val activeSkillPinned: Boolean = false,
   val snapshot: SubAgentExecutionSnapshot,
   val pendingApprovalResume: SubAgentApprovalResume? = null,
+  val pendingApprovalDecision: SubAgentPendingApprovalDecision? = null,
   val childPromptResumeState: OpenCrayPromptResumeState? = null,
   val childPromptCheckpointBoundary: OpenCrayPromptCheckpointBoundary? = null,
   val childPromptCheckpointAtEpochMs: Long? = null,
@@ -36,6 +38,7 @@ data class SubAgentHandleState(
 ) {
   init {
     require(agentId.isNotBlank()) { "SubAgentHandleState agentId must not be blank." }
+    require(childSessionId.isNotBlank()) { "SubAgentHandleState childSessionId must not be blank." }
     require(childRunId.isNotBlank()) { "SubAgentHandleState childRunId must not be blank." }
     require(childTaskId.isNotBlank()) { "SubAgentHandleState childTaskId must not be blank." }
     require(description.isNotBlank()) { "SubAgentHandleState description must not be blank." }
@@ -55,6 +58,48 @@ data class SubAgentHandleState(
 
   val handleId: String
     get() = agentId
+
+  fun isTerminalWithoutPendingApprovalResume(): Boolean =
+    snapshot.state.isTerminal() && pendingApprovalResume == null
+
+  fun isDetachedBackgroundQueued(): Boolean =
+    snapshot.state == SubAgentExecutionState.BACKGROUND_QUEUED &&
+      pendingApprovalResume == null
+
+  fun shouldEnsureDetachedBackgroundExecution(): Boolean =
+    pendingApprovalDecision != null || isDetachedBackgroundQueued()
+
+  fun hasLiveBackgroundExecution(): Boolean = when (snapshot.state) {
+    SubAgentExecutionState.BACKGROUND_QUEUED,
+    SubAgentExecutionState.BACKGROUND_RUNNING,
+    -> true
+
+    else -> false
+  }
+
+  fun canAcceptMailboxInput(): Boolean = when (snapshot.state) {
+    SubAgentExecutionState.BACKGROUND_QUEUED,
+    SubAgentExecutionState.BACKGROUND_RUNNING,
+    -> true
+
+    SubAgentExecutionState.WAITING_APPROVAL,
+    SubAgentExecutionState.WAITING_HIGH_RISK_APPROVAL,
+    -> pendingApprovalResume != null
+
+    else -> false
+  }
+
+  fun canContinueDetachedExecution(
+    hasApprovalContinuation: Boolean,
+  ): Boolean {
+    if (isTerminalWithoutPendingApprovalResume()) {
+      return false
+    }
+    if (pendingApprovalResume != null && !hasApprovalContinuation) {
+      return false
+    }
+    return true
+  }
 
   fun normalizedMailbox(): SubAgentMailbox = when {
     mailbox.messages.isNotEmpty() -> mailbox
@@ -169,6 +214,7 @@ data class SubAgentHandleState(
   companion object {
     fun queued(
       agentId: String,
+      childSessionId: String = newSubAgentChildSessionId(agentId),
       childRunId: String,
       childTaskId: String,
       description: String,
@@ -185,6 +231,7 @@ data class SubAgentHandleState(
       createdAtEpochMs: Long,
     ): SubAgentHandleState = SubAgentHandleState(
       agentId = agentId,
+      childSessionId = childSessionId,
       childRunId = childRunId,
       childTaskId = childTaskId,
       description = description,
@@ -206,3 +253,7 @@ data class SubAgentHandleState(
     )
   }
 }
+
+internal fun newSubAgentChildSessionId(
+  agentId: String,
+): String = "child-session-${agentId.trim()}"
