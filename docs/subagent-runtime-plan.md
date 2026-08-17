@@ -2,6 +2,22 @@
 
 ## 目标
 
+## 状态更新（2026-04-10）
+
+这轮主线把 detached child 的 owner / observer 语义进一步收口了：
+
+- session-scoped hidden actor shell 现在已经是 detached child recovery 的真实 durable owner lane：
+  - cold restart 会复用同一条 hidden actor run id
+  - approved / rejected approval decision，以及 checkpoint 驱动的 approved / rejected 恢复，现在都会先路由到这条 hidden actor lane
+- visible `wait_agent` / synthetic recovery lane 现在只承担 observer / join 职责：
+  - 它可以把最新稳定状态暴露给 run / transcript / UI
+  - 但它不再是 child 启动、approval 解锁、checkpoint 续跑的真正 owner
+- recovery cancel / `close_agent` 相关收口现在也会同时覆盖 hidden owner lane 和 visible observer lane：
+  - 不会再出现 owner 已取消，但旧 visible wait lane 还留在外面悬挂的情况
+- 之前盘点里列出来的“还有少量 `activeRuns`-only 路径”仍然不是问题：
+  - 那些路径本来就只服务父 run 仍可见时的局部投影
+  - 当前刻意不把 detached child 伪装成 recent run
+
 ## 状态更新（2026-03-31）
 
 这份文档最早是按“先做一期，再补二期 control plane”的思路写的。
@@ -20,11 +36,13 @@
 - subagent handle 已经有独立 durable store：
   - session 目录下的 `runtime-subagent-handles.json`
   - host snapshot 会把 durable handle source 和 prompt checkpoint handle 一起合并
+  - host `runtimeActivity.subAgents` / projection-only durable read 面现在也会把 durable closed tombstone 一起合并，并保留一等 `closed=true`
   - app / runtime 重建后，latest child handle state 不再只靠父 prompt checkpoint 恢复
 - `send_input` 不再只是直接改 child prompt / resume state：
   - child handle 现在有显式 `SubAgentMailbox`
   - mailbox 会 durable 保存 pending follow-up messages
   - child 真正启动 / 恢复时，runtime 才会把 mailbox delivery 物化进 prompt 或 resume transcript，并推进 last delivered marker
+  - 如果 follow-up 是在 detached `BACKGROUND_RUNNING` child 执行途中写入的，当前轮结束后也不会丢；runtime 会保留这批 pending mailbox，并在当前轮完成后自动续跑下一轮 detached child turn
 - active child execution 已经不再挂在 `PromptTurnCursor.activeSubAgentExecutions` 里
 - 父 run 现在不会在 `final` 退出时自动取消仍在后台运行的 child
 - `AgentSessionRuntimeManager` / `OpenCrayRuntimeServiceHost` 现在会把 live subagent 当作 active work，避免 session 在 child 还活着时被 idle release
@@ -35,8 +53,10 @@
 
 - `spawn_agent` 会立刻启动 child，并让它在同一个 runtime host / process 里后台运行；父 run 返回 `final` 后不会默认把它取消掉
 - `wait_agent` 负责在后续 turn / 后续 run 里等待 child 到达最新稳定状态并收割结果；它不是 approval 解锁后的真实恢复触发器
-- cold-restart / interrupted-repair 场景下，session handle 现在会自己扫描 durable handle 并补 detached recovery task；host 只负责触发 session 恢复，不再自己拼 recovery task
-- 显式 handle child 在 approval 通过后，会由 host 先完成 approval bookkeeping / checkpoint，然后交给 session handle 的 subagent recovery driver 提交恢复执行，让 child 在没有新 `wait_agent` 调用的情况下继续推进
+- cold-restart / interrupted-repair 场景下，session handle 现在会自己扫描 durable handle，确保 queued child actor 恢复后台执行，并按需要唤醒/取消已有 visible recovery lane；host 只负责触发 session 恢复，不再自己拼 recovery task
+- 显式 handle child 在 approval decision 写入后，host 现在只负责 approval bookkeeping / checkpoint；session handle 会自己接管后续恢复：
+  - 如果当前没有 visible recovery lane，会先排一条稳定的 hidden actor shell，再让 child 在没有新 `wait_agent` 调用的情况下继续推进
+  - 如果当前已经有 visible recovery lane，则继续由这条 visible lane 在 `resume()` 边界上统一唤醒 / 取消，不再让写 decision 这一步顺手把 visible lane 提前消费掉
 - app 侧 recovery 组件边界现在也已经单独收口：
   - `SessionSubAgentRecoveryDriver` 负责 session 内的 subagent recovery 提交 / resume / cancel / synthetic detached task 生命周期
   - `ManagedAgentSessionHandle` 只保留 run record 持久化、listener 通知、detached task 可见面这些回调接线，不再自己维护第二套 subagent recovery task map / lock / future 状态机
@@ -48,19 +68,57 @@
 - coordinator 现在也已经接管 child execution 的 begin/finish 注册边界：
   - `beginExecution` 会原子登记 running handle 和 `activeExecution`
   - `finishExecution` 会统一摘掉 `activeExecution` 并落最终 handle
+  - active execution owner 现在也已经延伸到 handle 写入边界：
+    - child prompt checkpoint、detached auto-continue queued handle、以及 terminal finish 都只允许当前 `activeExecution` 原子回写
+    - 被 `send_input interrupt=true` 或其它重启路径淘汰掉的旧 execution，即使晚到，也不会再覆盖新 execution 的 handle / checkpoint / terminal state
   - runtime 的 active-turn background child 和 detached recovery child 现在都走同一套 begin/finish 生命周期，不再各自手写 “先 upsert handle、再 register/take execution” 的双阶段流程
 - 生产宿主里的 detached subagent recovery wait 现在也不再和主 chat loop 共用同一个 single-thread executor：
   - `SessionSubAgentRecoveryDriver` 已切到独立 recovery executor
   - driver 现在也会按 child handle key 做 single-flight，重复 submit 同一个 child 时会复用已有 recovery task，而不是再起第二条 wait
+  - driver 内部现在也不再是全局 task map 直接起 future，而是 child handle key 一条 recovery lane，submit / resume / cancel 都先落到这条 lane 上
+  - recovery lane 在真正排自己的 wait future 之前，也会先显式把 detached child execution handoff 给 runtime/coordinator 去 `ensure`；child 的启动不再依赖 wait future 先跑起来
+  - 如果 approval 解锁后再次对同一条 suspended lane 提交 recovery，driver 现在会续跑这条已有 lane，而不是只做静默 dedupe
+  - session `resume()` 恢复出来的 queued visible lane 现在也通过同一个 recovery submit / wake-up 语义续跑，不再额外保留一条专门的 persisted-queued resume API
+  - active recovery 如果在真正执行前就被取消，也会立刻收口成 terminal cancelled result，不会再残留一条卡住的 synthetic recovery task
   - synthetic detached recovery task id 现在也已经改成 session + child handle key 派生的稳定值，cold restart / interrupted repair 不会再因为重新补壳而漂移成另一条 recovery run
-  - 这还不是 child-owned actor / queue，但 join-only recovery wait 至少不再卡住宿主主会话执行资源，也不会因为重复触发再堆一层并发 recovery task
+  - 现在已经有稳定的 hidden actor owner lane，visible recovery wait 只做 join / observer；但它仍然不是独立 child session / child queue actor，本质上还是挂在父 session orchestration 下的 owner 壳
 - session recovery cancel 现在也会优先转发到 coordinator `activeExecution`，不再只是打断外层 recovery driver future
-- `send_input` 现在会把 follow-up 输入排进 child mailbox；它仍然不是 mid-run interrupt，只会在 child 下一次启动 / 恢复时投递
+- `send_input` 现在会把 follow-up 输入排进 child mailbox；它仍然不是 mid-run interrupt，但如果目标 child 已经是 idle 的 `BACKGROUND_QUEUED`，会在这次 control-plane 边界上顺手自动续跑；如果目标 child 已经是 detached `BACKGROUND_RUNNING`，输入会留在 mailbox，等当前轮完成后由同一条 child-scoped `activeExecution` actor loop 自动接成下一轮 child turn，而不是 completion 后再换一条新的 detached execution
 - `close_agent` 可以取消一个正在运行或等待中的 child handle
+- `close_agent` 现在也不再只是 runtime 内部把 handle 收掉：
+  - runtime subagent event、durable replay、host `subAgents` snapshot、projection/UI snapshot 都会带一等 `closed=true` terminal edge
+  - 同一条链路现在也会带一等 `agentId` / child handle id，host/UI/replay 不再只能靠 `childRunId` / `childTaskId` 去猜是哪条 child handle
+  - session 也会在 `close_agent` 成功后同步取消同一条 child handle 对应的 visible synthetic recovery lane，并把 recovery run 持久化为 terminal cancelled；cold restart 不会再把这条壳恢复出来
+  - UI / replay 可以区分“普通 cancelled”与“用户显式 close 掉 child”
+  - 如果另一条 runtime / recovery lane 正在 `wait_agent` 这条 detached child，wait 结束后现在也会把“handle 已被移除”解释成 terminal cancelled，而不是拿旧 snapshot 再把 child 拉起来
+  - live session 传进 runtime 的 seeded detached handles 现在也明确被当成 coordinator-backed snapshot；一旦 coordinator 已经不再持有这条 handle，就不会再被误判成 cold-restart repair seed
+  - 即使当前这次 direct `wait_agent(agent_id=...)` 已经拿不到旧 seeded handle，只要 session coordinator 里还保留这条 child 的 closed tombstone，也会按 terminal cancelled 收口，而不是退回 `UNKNOWN_SUBAGENT_HANDLE`
+  - closed tombstone 现在也已经 durable 落进 session handle store；`releaseSession()` / host 重建之后，direct `wait_agent(agent_id=...)` 仍然可以把刚关闭的 child 收口成 cancelled，而不是因为 coordinator 内存态丢失退回 unknown
+  - `close_agent(agent_id=...)` 现在也对 durable closed tombstone 保持幂等 success；session release / cold-restart 之后重复 close 同一条刚关闭的 child，不会再退回 unknown
+  - `list_subagents` 现在也会把 coordinator / durable store 里的 closed tombstone 合并进结果；control-plane read 面不再只看 live/open handles
+  - `send_input(agent_id=...)` 命中 durable closed tombstone 时，现在也会稳定返回 `SUBAGENT_NOT_QUEUEABLE`，而不是因为 live handle 已移除退回 unknown
+  - host `runtimeActivity.subAgents` / projection-only durable handle 投影现在也会把这些 closed tombstone 视作关闭边，而不是只把它们当成普通 `cancelled` handle
 - session keepalive 现在会因为 live subagent 持续保活，所以 child 已经可以跨父 run completion 继续推进
 - child runtime 现在会把自己的 durable prompt checkpoint 持久化回 handle store，而不再只靠 approval suspend/resume 特判
 - 如果 runtime / host 实例重建，`BACKGROUND_RUNNING` child 在有 durable checkpoint 时会被修复成可恢复的 `BACKGROUND_QUEUED`
-- runtime service bootstrap / interrupted-run repair 现在会触发 session 侧 recovery queue 补齐这些 detached queued handle 的 detached control recovery task，所以 cold restart 后 child 可以继续推进
+- session `resume()` 现在会自带一次 queued detached child actor ensure，并统一处理 restored visible recovery lane 的 wake/cancel；runtime service bootstrap / interrupted-run repair 只需要恢复 session，本身不再额外记得调 subagent scheduler
+- 如果 synthetic subagent recovery task 在 cold restart 前已经进入 `SUSPENDED` 等待人工继续，session 重建时现在会用 durable run record + durable handle 把这条 visible recovery lane 还原出来；后续 `resume` / `cancel` 不再依赖 host 重新扫 queued handle 再补壳
+- 如果 synthetic recovery lane 在 cold restart 前已经提交但还停在 queued / in-flight 阶段，session 重建时现在也会先恢复同一条 visible queued lane，再由 session `resume()` 继续执行，而不是重新生成一条新的 recovery submission
+- 如果 explicit child approval 已经 durable 记录为 `APPROVED_PENDING_RESUME`，但进程在真正续跑前重启，session `resume()` 现在也会把这条 restored suspended recovery lane 自动唤醒，不再要求再手动点一次 resume
+- 如果 explicit child approval 已经 durable 记录为 `REJECTED_PENDING_RESUME`，但进程在真正取消前重启，session `resume()` 现在也会把这条 restored suspended recovery lane 自动取消，不再把一条其实已经拒绝的 lane 留在 UI 里悬挂
+- 如果 detached child 本身没有 visible recovery lane，但已经因为 queued / approval-decision 准备进入后台恢复，session 现在也会给它挂一条稳定的 hidden actor shell；同一条 child handle 在重启前后会复用同一个 hidden actor run id，而不是每次恢复都漂移出新的内部壳
+- detached synthetic run 的 task state 现在也不再只在 live queue / driver 内部可见：
+  - session `listRuns()` 会把 visible recovery lane 和 hidden actor shell 合并进同一份 run snapshot
+  - queued / suspended / running 这些 live state 会直接映射成一等 `lifecycleState` / `taskState`
+  - task shell 结束后，如果 durable `lastResult` 已经落盘，projection-only / restored read 面也会继续把 run 投影成 `completed` / `cancelled` / `failed`，而不是退回 `null`
+- session 内部现在也已有独立的 `SessionSubAgentScheduler` 边界：
+  - `AgentSessionRuntimeManager` 现在只负责把 submit / resume / cancel / list / restore / session-resume recovery handoff 委托给 scheduler / driver
+  - `SessionSubAgentScheduler` 现在只保留 visible recovery shell 的 submit / resume / cancel / list / restore，不再顺手承担 detached child 扫描和 auto-wake
+  - queued detached child auto-recovery 扫描，以及 session `resume()` 时对 restored queued / approved / rejected lane 的 submit / wake / cancel，现在由独立的 `SessionSubAgentActorDriver` 负责
+  - persisted visible recovery lane restore、queued child auto-recovery 扫描、以及 session `resume()` 时的 queued lane 续跑都不再散落在 manager 本体
+  - subagent recovery 的 synthetic task shell / spec / parser 现在也已经统一成显式的 synthetic-subagent-recovery 命名；旧 `detached-control` 术语只保留给 generic 内部执行壳，不再作为 subagent recovery 的主语义边界
+  - app/runtime recovery seam 暴露的方法名也已经收口成 `executeSubAgentActorTask` / `executeSubAgentRecoveryTask` / `ensureSubAgentRecoveryExecution` / `executeSubAgentRecoveryWait`，不再把 `Detached*` 当成 subagent recovery 的对外主语义
+  - session / host 对外也不再暴露 generic `submitDetachedControlTask` 这类中间入口；synthetic recovery shell 只通过显式 subagent recovery path 提交
 - 现在已经支持“显式 handle + host-local 后台 child，可跨父 run completion，并可在 cold restart 后从 durable checkpoint 自动续跑”
 - 现在恢复链路已经不再复用宿主 session queue，也不再伪装成隐藏 `wait_agent` tool-call task
 - 但 child 仍不是独立 child session / child queue actor
@@ -952,12 +1010,12 @@ OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
 - last delivered message id
 - old `supplementalInputs` 句柄会在 store / runtime 读取时迁移进 mailbox
 - `send_input` 会写 mailbox，而不是直接改 child prompt
-- child 启动 / 恢复时才会真正消费 mailbox，并把已投递边界 durable 记下来
+- child 启动 / 恢复时才会真正消费 mailbox，并把已投递边界 durable 记下来；如果 `send_input` 命中的就是 idle queued child，这次写入后会立刻触发一次 detached resume；如果命中的是 detached `BACKGROUND_RUNNING` child，这批 mailbox 会在当前轮结束后自动接成下一轮 detached child execution
 
 但还没做到：
 
 - mid-loop arbitrary interrupt delivery
-- 独立 child actor 自己消费 mailbox
+- 完整独立 child actor / queue 自己在单独生命周期里消费 mailbox
 - mailbox 级别的单独 host/UI 检查面
 
 ### 3. child registry
@@ -974,25 +1032,31 @@ OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
 
 - runtime 持有真正独立于父 prompt loop 的 active child handles / child queue
 - host 现在已经能恢复 child latest state；其中 cold restart repair 和显式 handle approval 通过后的 detached recovery 提交都已经下沉到 session handle；host 只保留 approval bookkeeping / checkpoint 与触发 session 恢复；整个链路都不再借宿主 session queue 注入隐藏 `wait_agent`
+- 显式 handle approval 通过后，host 也不再额外手动 `resumeSubAgentActors()`；pending approval decision 一旦 mirror 回 session handle，就会由 session 内部自己触发 actor/recovery lane 的唤醒
 - session 里也已经不再把显式 handle recovery 挂在 generic detached-control state 上，而是单独的 `SessionSubAgentRecoveryDriver`
 - `ManagedAgentSessionHandle` 现在只通过 callbacks 把 run record、listener、detached-task 列举这些宿主能力接给 driver；driver 本身才是 app-side recovery owner
+- app session 侧现在也已经把两个职责拆开：
+  - `SessionSubAgentScheduler` 只维护 visible synthetic recovery task shell
+  - `SessionSubAgentActorDriver` 负责 queued detached handle 扫描，以及 restored queued / approved / rejected lane 的 submit / wake / cancel
 - runtime 里的 detached recovery 执行 owner 也已经进一步收口到 coordinator `activeExecution`
 - child execution 的 live registration 也已经继续下沉到 coordinator `beginExecution / finishExecution`
-- 生产宿主里的 recovery driver 也已经不再和主 chat queue 共用同一个 single-thread executor，并且会按 child handle key 做 single-flight，synthetic recovery task id 也已经稳定到同一条 child handle shell 上；但它仍然只是 session-owned recovery worker，不是 child 自己的 actor / queue
-- 真正还没做的是把 recovery driver 的执行 owner 再下沉成 child 自己的独立 actor / queue，而不是继续由 session-owned recovery driver 驱动
+- detached child 的 queued / approval-paused / mailbox / continuation readiness 判断现在也已经收口到共享 `SubAgentHandleState` contract；runtime、actor driver、scheduler、以及 app runtime factory 不再各自散落一套 `BACKGROUND_QUEUED` / approval 条件分支
+- 生产宿主里的 recovery driver 也已经不再和主 chat queue 共用同一个 single-thread executor，并且会按 child handle key 做 single-flight，synthetic recovery task id 也已经稳定到同一条 child handle shell 上；driver 内部现在也已经收口成 child-scoped recovery lane，而不是一坨全局 task/future 状态
+- 真正还没做的是把这层 session-owned recovery lane 再下沉成 durable child 自己的 actor / queue，而不是继续由 session-owned recovery owner 驱动
 - replay 可恢复 child 生命周期边界，并为 detached child 恢复提供 durable 边界
 
 ### 4. `Task` 改成 sugar
 
 `Task` 在二期里不应继续直接 new child runtime 后同步执行到底。
 
-更合理的方式是：
+现在已经改成：
 
-1. `Task` 内部调用 `spawn_agent`
-2. 然后调用 `wait_agent`
-3. 把 terminal / waiting summary 再包装成 tool result
+1. 先走和 `spawn_agent` 相同的 child handle 创建 / continuation / background start helper
+2. 然后立刻走和 `wait_agent` 相同的 latest-stable-state 收割 helper
+3. 最后把结果重新包装成 `Task` 自己的 tool result
 
-这样可以避免维护两套 child 语义。
+这样 runtime 里只剩一套 child lifecycle / approval / close / replay 语义。
+内部不会额外生成一层假的 `spawn_agent` / `wait_agent` tool trace，所以 prompt transcript 和 tool event 仍保持 `Task` 自己的一层对外形态。
 
 ## approval / cancel / replay 规则
 
@@ -1016,7 +1080,7 @@ OpenCray 当前产品目标不是 Codex 的完整执行环境矩阵。
 
 规则建议：
 
-- parent cancel -> 级联 cancel child
+- parent cancel -> runtime 已对 running / queued / waiting_approval 这类 open child 做级联 cancel；更细粒度的 close semantics 后续再补
 - close_agent -> 只关闭指定 child
 - 被关闭或被取消的 child 都要写 durable replay
 
@@ -1102,12 +1166,12 @@ child 不能只留下最后一句摘要。
   - child handle 模型
   - approval continuation 恢复锚点
   - child runtime 执行路径
+  - latest-stable-state wait / harvest 逻辑
 - `Task` 仍保持原有的对外语义：
   - 继续表现为一个同步 tool call
   - 继续返回 `Task` 自己的 tool result 形态
   - 继续向 host / replay 发 `subagent` lifecycle event
-- 当前还没有做成“字面上内部再发一个 `spawn_agent` tool call 再发一个 `wait_agent` tool call”，而是共享同一套内部 helper 和 handle state。
-  这样做是为了先收敛 runtime 语义，同时避免把 prompt transcript 和 tool trace 额外膨胀一层。
+- 现在已经不再保留 `Task` 自己那条独立同步 child execution 路径；只是不会为了实现 sugar 再额外伪造一层内部 tool-call / tool-result event。
 
 ### P2-6 `send_input`
 
@@ -1127,8 +1191,9 @@ child 不能只留下最后一句摘要。
 - spawn -> approval wait -> approve -> wait
 - spawn -> approval wait -> reject -> wait
 - spawn -> send_input while idle / waiting
+- detached child running -> send_input -> auto-continue next turn -> wait
 - spawn -> close
-- parent cancel cascades to child
+- parent cancel cascades to running / queued / approval-paused child
 - replay restores child registry and wait-visible states
 
 ## 暂时不做的内容

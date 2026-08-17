@@ -1,6 +1,6 @@
 # Codex Long-Task Workflow Gap Analysis
 
-Updated: 2026-03-31
+Updated: 2026-04-10
 
 This document summarizes the currently verified gap between OpenCray and Codex for long, tool-heavy, self-driven tasks.
 
@@ -206,11 +206,14 @@ The current shape is:
 
 - `spawn_agent` starts a child handle immediately
 - child execution can now continue in the background within the same runtime host/process even after the parent run returns `final`
-- `wait_agent` waits for that handle to reach its latest stable state later, or resumes it after approval unlocks a paused child
+- `wait_agent` waits for that handle to reach its latest stable state later and harvests the result; approval unlock no longer depends on a new `wait_agent` call to resume the child
 - a later run can harvest that child through `wait_agent`
 - session/runtime keepalive now treats live subagents as active work, so idle release does not tear them down while they are still running
 - latest child handle state is now durable across runtime/host rebuild through the session handle store
-- but that child is still not a detached actor that survives process death or cold restart
+- host/runtimeActivity and projection-only durable read surfaces now also merge durable closed tombstones and preserve `closed=true`, instead of only surfacing that edge when replay events happen to still be present
+- a stable hidden actor owner lane is now restored per child handle across cold restart; approved/rejected recovery and checkpoint-driven replay resume through that same hidden lane
+- visible `wait_agent` / recovery waits are now observer lanes that join the latest stable child state instead of owning the restart path themselves
+- but that owner lane is still session-owned orchestration, not a fully separate persistent child product/session/worktree boundary
 
 That narrower execution model still matters for the remaining gap.
 
@@ -573,10 +576,21 @@ But the execution semantics are still narrower than Codex:
 - `spawn_agent` launches a background child worker immediately and that worker can outlive the parent run within the same runtime host/process
 - child runtime checkpoints are now persisted back into the durable handle store, not just approval resume state
 - cold restart repair now turns checkpointed `BACKGROUND_RUNNING` children into resumable `BACKGROUND_QUEUED` handles instead of blindly failing them
-- `wait_agent` joins or harvests that child later, and resumes it after approval when needed
+- `wait_agent` joins or harvests that child later; approval unlock is resumed by the detached recovery path instead of by `wait_agent`
 - session/runtime keepalive now also treats live subagents as active work, so background children are not released as idle session noise
-- runtime service bootstrap/recovery now auto-submits internal `wait_agent` recovery tasks for detached queued handles, so cold restart can continue child execution from its last durable checkpoint
-- the result is still narrower than Codex because this recovery still reuses the parent session queue and `wait_agent` path instead of a truly independent child actor/scheduler
+- runtime service bootstrap/recovery now restores the session and lets the session-owned subagent actor/recovery path ensure queued child execution and wake any persisted recovery shell when needed, so cold restart can continue child execution from its last durable checkpoint
+- mailbox follow-up for a detached `BACKGROUND_RUNNING` child now drains through the same child-scoped `activeExecution` loop instead of spinning up a brand new detached execution after each completed turn
+- detached-child runnable/mailbox/approval-resume readiness is now modeled in shared `SubAgentHandleState` helpers instead of being split across runtime, app scheduling, and direct-tool gating
+- explicit-handle approval no longer requires the host layer to manually wake `resumeSubAgentActors()` after mirroring the decision; the session-owned subagent path now resumes itself once the handle-level decision is recorded
+- if one runtime instance closes a detached child while another runtime instance is blocked in `wait_agent`, the waiter now terminates as cancelled instead of rehydrating the stale handle and accidentally restarting the closed child
+- even when a later direct `wait_agent(agent_id=...)` no longer carries the old seeded handle snapshot, the session coordinator can still resolve the latest closed tombstone and return terminal cancelled instead of `UNKNOWN_SUBAGENT_HANDLE`
+- that closed tombstone is now also durable in the session subagent-handle store, so the same cancelled result survives session release and cold-restart style runtime rebuild instead of depending on live in-memory coordinator state
+- `close_agent` now treats that same durable closed tombstone as an idempotent success path, so retrying or replaying the close after session rebuild does not fall back to `UNKNOWN_SUBAGENT_HANDLE`
+- `list_subagents` now also surfaces those closed tombstones, so the control-plane read surface stays aligned with the durable wait/close semantics instead of only showing live handles
+- `send_input` now resolves the same durable closed tombstone into `SUBAGENT_NOT_QUEUEABLE`, so post-close mailbox writes fail deterministically instead of looking like unknown-handle drift
+- live session seeded detached handles are now treated as coordinator-backed snapshots instead of generic cold-restart repair seeds, so once coordinator ownership is gone those stale snapshots do not trigger resume/restart paths anymore
+- session/host no longer expose a generic detached-control submission surface for these recovery shells; explicit subagent recovery is now the only public path
+- the result is still narrower than Codex because this is still a session-owned recovery lane plus actor driver, not a truly durable child-owned actor/queue
 
 The built-in subagent profiles now include:
 
