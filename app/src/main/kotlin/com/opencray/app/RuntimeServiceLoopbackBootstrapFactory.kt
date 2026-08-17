@@ -51,7 +51,7 @@ internal class DefaultRuntimeServiceLoopbackBootstrapFactory(
     var activeDescriptor: RuntimeServiceLoopbackDescriptor? = null
     var disposed = false
     return RuntimeServiceLoopbackBootstrap(
-      ensureStarted = {
+      ensureStarted = ensureStarted@{
         val startedServer = synchronized(serverLock) {
           if (disposed) {
             return@synchronized null

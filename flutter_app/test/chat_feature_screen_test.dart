@@ -1995,7 +1995,7 @@ void main() {
         findsWidgets,
       );
       expect(
-        find.text('Streaming answer after the process starts.'),
+        _findStreamedText('Streaming answer after the process starts.'),
         findsOneWidget,
       );
     },
@@ -2336,7 +2336,7 @@ void main() {
       expect(
         find.descendant(
           of: pendingBubble,
-          matching: find.text('Streaming answer in progress'),
+          matching: _findStreamedText('Streaming answer in progress'),
         ),
         findsOneWidget,
       );
@@ -2526,7 +2526,7 @@ void main() {
       expect(
         find.descendant(
           of: pendingBubble,
-          matching: find.text('Streaming answer in progress'),
+          matching: _findStreamedText('Streaming answer in progress'),
         ),
         findsOneWidget,
       );
@@ -2578,7 +2578,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('First streamed chunk'), findsOneWidget);
+      expect(_findStreamedText('First streamed chunk'), findsOneWidget);
 
       draftEvents.add(
         const OpenCrayChatLiveAssistantDraftEvent(
@@ -2592,8 +2592,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('First streamed chunk'), findsNothing);
-      expect(find.text('First streamed chunk and more'), findsOneWidget);
+      expect(_findStreamedText('First streamed chunk'), findsNothing);
+      expect(_findStreamedText('First streamed chunk and more'), findsOneWidget);
     },
   );
 
@@ -2663,7 +2663,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Complete streamed answer.'), findsOneWidget);
+      expect(_findStreamedText('Complete streamed answer.'), findsOneWidget);
       expect(find.text('Complete'), findsNothing);
     },
   );
@@ -2721,7 +2721,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Streaming answer in progress'), findsOneWidget);
+    expect(_findStreamedText('Streaming answer in progress'), findsOneWidget);
 
     runtimeEventDeltas.add(
       const OpenCrayChatRuntimeEventDelta(
@@ -2744,7 +2744,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Streaming answer in progress'), findsOneWidget);
+    expect(_findStreamedText('Streaming answer in progress'), findsOneWidget);
   });
 
   testWidgets('runtime deltas clear stale live assistant draft bubbles', (
@@ -2800,7 +2800,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Streaming answer in progress'), findsOneWidget);
+    expect(_findStreamedText('Streaming answer in progress'), findsOneWidget);
 
     runtimeEventDeltas.add(
       const OpenCrayChatRuntimeEventDelta(
@@ -2816,7 +2816,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Streaming answer in progress'), findsNothing);
+    expect(_findStreamedText('Streaming answer in progress'), findsNothing);
   });
 
   testWidgets('runtime live draft clear patches remove local draft overrides', (
@@ -2885,7 +2885,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Override draft should clear.'), findsOneWidget);
+    expect(_findStreamedText('Override draft should clear.'), findsOneWidget);
 
     runtimeEventDeltas.add(
       const OpenCrayChatRuntimeEventDelta(
@@ -2902,7 +2902,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('Override draft should clear.'), findsNothing);
+    expect(_findStreamedText('Override draft should clear.'), findsNothing);
     expect(find.text('Thinking'), findsOneWidget);
   });
 
@@ -3084,7 +3084,7 @@ void main() {
       expect(
         find.descendant(
           of: find.byKey(const ValueKey<String>('chat-bubble-pending-1')),
-          matching: find.text('Streaming answer in progress'),
+          matching: _findStreamedText('Streaming answer in progress'),
         ),
         findsNothing,
       );
@@ -4682,7 +4682,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    expect(find.text('New execution draft stays visible.'), findsOneWidget);
+    expect(_findStreamedText('New execution draft stays visible.'), findsOneWidget);
     expect(find.text('Old execution draft must stay hidden.'), findsNothing);
   });
 
@@ -5244,7 +5244,7 @@ void main() {
 
       expect(find.text('Process proc-live-process'), findsOneWidget);
       expect(
-        find.text('The dev server is ready; I am checking the result.'),
+        _findStreamedText('The dev server is ready; I am checking the result.'),
         findsOneWidget,
       );
       expect(liveProcessBubbleFinder, findsOneWidget);
@@ -5283,7 +5283,7 @@ void main() {
 
       expect(find.text('Process proc-live-process'), findsOneWidget);
       expect(
-        find.text('The dev server is ready; I am checking the result.'),
+        _findStreamedText('The dev server is ready; I am checking the result.'),
         findsOneWidget,
       );
       expect(
@@ -6613,7 +6613,7 @@ void main() {
       expect(
         find.descendant(
           of: settledBubble,
-          matching: find.text('Streaming answer in progress'),
+          matching: _findStreamedText('Streaming answer in progress'),
         ),
         findsNothing,
       );
@@ -6758,7 +6758,7 @@ void main() {
       );
       final pendingFinder = find.descendant(
         of: find.byKey(const ValueKey<String>('chat-bubble-pending-1')),
-        matching: find.text('Streaming answer in progress'),
+        matching: _findStreamedText('Streaming answer in progress'),
       );
 
       expect(phaseFinder, findsOneWidget);
@@ -8632,7 +8632,7 @@ void main() {
       );
       await tester.pumpAndSettle();
 
-      expect(find.text('Streaming answer in progress'), findsWidgets);
+      expect(_findStreamedText('Streaming answer in progress'), findsWidgets);
 
       await tester.tap(
         find.byKey(const ValueKey<String>('chat-composer-interrupt-button')),
@@ -14737,10 +14737,90 @@ void main() {
     expect(firstBubble, findsOneWidget);
     expect(lastBubble, findsNothing);
 
-    scrollableState.position.jumpTo(scrollableState.position.maxScrollExtent);
-    await tester.pumpAndSettle();
+    // Lazy viewports re-estimate maxScrollExtent as rows build; keep jumping
+    // until the reported end stops moving so the real bottom is reached.
+    double previousExtent = -1;
+    while (scrollableState.position.maxScrollExtent != previousExtent) {
+      previousExtent = scrollableState.position.maxScrollExtent;
+      scrollableState.position.jumpTo(previousExtent);
+      await tester.pumpAndSettle();
+    }
 
     expect(lastBubble, findsOneWidget);
+  });
+
+  testWidgets('streaming indicator renders inline after the last character', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _buildChatHarness(
+        runTraces: const <ChatRunTraceData>[],
+        messages: const <ChatMessageData>[
+          ChatMessageData(
+            messageId: 'streaming-inline',
+            kind: ChatMessageKind.inbound,
+            text: 'Hello streaming world',
+            isStreaming: true,
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+
+    final Finder inlineTailText = find.byWidgetPredicate((widget) {
+      if (widget is! Text) {
+        return false;
+      }
+      final String plain = widget.data ?? widget.textSpan?.toPlainText() ?? '';
+      return plain == 'Hello streaming world￼';
+    }, description: 'text with trailing inline streaming indicator');
+    expect(inlineTailText, findsOneWidget);
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey<String>('chat-bubble-streaming-inline')),
+        matching: find.byKey(
+          const ValueKey<String>('chat-streaming-indicator-streaming-inline'),
+        ),
+      ),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('streaming indicator falls back below unfinished code fences', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _buildChatHarness(
+        runTraces: const <ChatRunTraceData>[],
+        messages: const <ChatMessageData>[
+          ChatMessageData(
+            messageId: 'streaming-fence',
+            kind: ChatMessageKind.inbound,
+            text: '```dart',
+            isStreaming: true,
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey<String>('chat-bubble-streaming-fence')),
+        matching: find.byKey(
+          const ValueKey<String>('chat-streaming-indicator-streaming-fence'),
+        ),
+      ),
+      findsOneWidget,
+    );
+    final Finder placeholderInsideText = find.byWidgetPredicate((widget) {
+      if (widget is! Text) {
+        return false;
+      }
+      final String plain = widget.data ?? widget.textSpan?.toPlainText() ?? '';
+      return plain.contains('￼');
+    }, description: 'text containing an inline placeholder');
+    expect(placeholderInsideText, findsNothing);
   });
 
   testWidgets(

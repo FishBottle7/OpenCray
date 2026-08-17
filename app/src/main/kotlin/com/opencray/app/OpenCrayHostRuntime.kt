@@ -5064,20 +5064,11 @@ internal class OpenCrayHostRuntime private constructor(
   )
 
   private fun runtimeProjectedMessageId(event: OpenCrayAgentRunEvent): String = when (event) {
-    is OpenCrayAssistantPhaseEvent -> event.eventId
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let { eventId -> "runtime-assistant-event-$eventId" }
-      ?: buildString {
-        append("runtime-assistant-")
-        append(event.phase.name.lowercase(Locale.US))
-        append('-')
-        append(event.runId)
-        append('-')
-        append(event.turn ?: -1)
-        append('-')
-        append(event.stage?.trim()?.ifEmpty { "-" } ?: "-")
-      }
+    // Persist, projection, and wire snapshots must derive the same id for the
+    // same event whether or not a durable eventId has been stamped yet;
+    // runtimeEventStableId reuses the stamped id or the semantic hash the
+    // journal/record stores stamp on replayed events.
+    is OpenCrayAssistantPhaseEvent -> "runtime-assistant-event-${runtimeEventStableId(event)}"
     is OpenCraySupplementEvent -> "runtime-supplement-${event.entryId}"
     is OpenCrayApprovalEvent -> "runtime-approval-${event.phase.name.lowercase(Locale.US)}-${event.runId}-${event.emittedAtEpochMs}"
     is OpenCrayToolCallEvent -> "runtime-tool-call-${event.runId}-${event.turn}-${event.emittedAtEpochMs}"

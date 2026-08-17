@@ -1837,20 +1837,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       ?: task.id
 
   private fun runtimeProjectedMessageId(event: OpenCrayAgentRunEvent): String = when (event) {
-    is OpenCrayAssistantPhaseEvent -> event.eventId
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let { eventId -> "runtime-assistant-event-$eventId" }
-      ?: buildString {
-        append("runtime-assistant-")
-        append(event.phase.name.lowercase(Locale.US))
-        append('-')
-        append(event.runId)
-        append('-')
-        append(event.turn ?: -1)
-        append('-')
-        append(event.stage?.trim()?.ifEmpty { "-" } ?: "-")
-      }
+    // Mirrors OpenCrayHostRuntime.runtimeProjectedMessageId: all consumers must
+    // derive one id per event regardless of eventId stamping state.
+    is OpenCrayAssistantPhaseEvent -> "runtime-assistant-event-${runtimeEventStableId(event)}"
     is OpenCraySupplementEvent -> "runtime-supplement-${event.entryId}"
     is OpenCrayApprovalEvent ->
       "runtime-approval-${event.phase.name.lowercase(Locale.US)}-${event.runId}-${event.emittedAtEpochMs}"
