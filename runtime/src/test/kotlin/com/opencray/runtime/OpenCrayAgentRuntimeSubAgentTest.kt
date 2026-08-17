@@ -54,6 +54,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -480,7 +482,11 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertEquals("SUBAGENT_TOOL_NOT_ALLOWED", result.metadata[SubAgentResultMetadataKeys.ERROR_CODE])
     assertEquals("Task", result.metadata["toolName"])
     assertEquals(
-      listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.FAILED),
+      listOf(
+        OpenCraySubAgentPhase.STARTED,
+        OpenCraySubAgentPhase.RESUMED,
+        OpenCraySubAgentPhase.FAILED,
+      ),
       eventSink.events
         .filterIsInstance<OpenCraySubAgentEvent>()
         .map(OpenCraySubAgentEvent::phase),
@@ -568,7 +574,11 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertEquals("worker", result.metadata["subagentType"])
     assertTrue(result.errorMessage.orEmpty().contains("unavailable"))
     assertEquals(
-      listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.FAILED),
+      listOf(
+        OpenCraySubAgentPhase.STARTED,
+        OpenCraySubAgentPhase.RESUMED,
+        OpenCraySubAgentPhase.FAILED,
+      ),
       eventSink.events
         .filterIsInstance<OpenCraySubAgentEvent>()
         .map(OpenCraySubAgentEvent::phase),
@@ -628,20 +638,32 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertEquals("Edit", result.metadata[SubAgentApprovalResumeMetadata.KEY_APPROVED_TOOL_NAME])
     val subAgentEvents = eventSink.events.filterIsInstance<OpenCraySubAgentEvent>()
     assertEquals(
-      listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.FAILED),
+      listOf(
+        OpenCraySubAgentPhase.STARTED,
+        OpenCraySubAgentPhase.RESUMED,
+        OpenCraySubAgentPhase.FAILED,
+      ),
       subAgentEvents.map(OpenCraySubAgentEvent::phase),
     )
     assertEquals(
-      listOf(SubAgentExecutionState.RUNNING, SubAgentExecutionState.WAITING_APPROVAL),
+      listOf(
+        SubAgentExecutionState.BACKGROUND_QUEUED,
+        SubAgentExecutionState.BACKGROUND_RUNNING,
+        SubAgentExecutionState.WAITING_APPROVAL,
+      ),
       subAgentEvents.map(OpenCraySubAgentEvent::executionState),
     )
     assertEquals(
-      listOf(SubAgentContinuationKind.NONE, SubAgentContinuationKind.PROMPT_RESUME),
+      listOf(
+        SubAgentContinuationKind.BACKGROUND_RESUME,
+        SubAgentContinuationKind.BACKGROUND_RESUME,
+        SubAgentContinuationKind.PROMPT_RESUME,
+      ),
       subAgentEvents.map(OpenCraySubAgentEvent::continuationKind),
     )
-    assertEquals(listOf(false, true), subAgentEvents.map(OpenCraySubAgentEvent::resumable))
-    assertEquals(listOf(false, true), subAgentEvents.map(OpenCraySubAgentEvent::requiresUserAction))
-    assertEquals(listOf(false, false), subAgentEvents.map(OpenCraySubAgentEvent::isHighRisk))
+    assertEquals(listOf(true, true, true), subAgentEvents.map(OpenCraySubAgentEvent::resumable))
+    assertEquals(listOf(false, false, true), subAgentEvents.map(OpenCraySubAgentEvent::requiresUserAction))
+    assertEquals(listOf(false, false, false), subAgentEvents.map(OpenCraySubAgentEvent::isHighRisk))
     assertEquals(1, gateway.requests.size)
   }
 
@@ -827,7 +849,11 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertEquals("SUBAGENT_TOOL_NOT_ALLOWED", result.metadata[SubAgentResultMetadataKeys.ERROR_CODE])
     assertTrue(result.errorMessage.orEmpty().contains("unavailable"))
     assertEquals(
-      listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.FAILED),
+      listOf(
+        OpenCraySubAgentPhase.STARTED,
+        OpenCraySubAgentPhase.RESUMED,
+        OpenCraySubAgentPhase.FAILED,
+      ),
       eventSink.events
         .filterIsInstance<OpenCraySubAgentEvent>()
         .map(OpenCraySubAgentEvent::phase),
@@ -886,20 +912,32 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertEquals("Read", result.metadata[SubAgentApprovalResumeMetadata.KEY_APPROVED_TOOL_NAME])
     val subAgentEvents = eventSink.events.filterIsInstance<OpenCraySubAgentEvent>()
     assertEquals(
-      listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.FAILED),
+      listOf(
+        OpenCraySubAgentPhase.STARTED,
+        OpenCraySubAgentPhase.RESUMED,
+        OpenCraySubAgentPhase.FAILED,
+      ),
       subAgentEvents.map(OpenCraySubAgentEvent::phase),
     )
     assertEquals(
-      listOf(SubAgentExecutionState.RUNNING, SubAgentExecutionState.WAITING_APPROVAL),
+      listOf(
+        SubAgentExecutionState.BACKGROUND_QUEUED,
+        SubAgentExecutionState.BACKGROUND_RUNNING,
+        SubAgentExecutionState.WAITING_APPROVAL,
+      ),
       subAgentEvents.map(OpenCraySubAgentEvent::executionState),
     )
     assertEquals(
-      listOf(SubAgentContinuationKind.NONE, SubAgentContinuationKind.PROMPT_RESUME),
+      listOf(
+        SubAgentContinuationKind.BACKGROUND_RESUME,
+        SubAgentContinuationKind.BACKGROUND_RESUME,
+        SubAgentContinuationKind.PROMPT_RESUME,
+      ),
       subAgentEvents.map(OpenCraySubAgentEvent::continuationKind),
     )
-    assertEquals(listOf(false, true), subAgentEvents.map(OpenCraySubAgentEvent::resumable))
-    assertEquals(listOf(false, true), subAgentEvents.map(OpenCraySubAgentEvent::requiresUserAction))
-    assertEquals(listOf(false, false), subAgentEvents.map(OpenCraySubAgentEvent::isHighRisk))
+    assertEquals(listOf(true, true, true), subAgentEvents.map(OpenCraySubAgentEvent::resumable))
+    assertEquals(listOf(false, false, true), subAgentEvents.map(OpenCraySubAgentEvent::requiresUserAction))
+    assertEquals(listOf(false, false, false), subAgentEvents.map(OpenCraySubAgentEvent::isHighRisk))
     assertEquals(1, gateway.requests.size)
   }
 
@@ -1058,15 +1096,27 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertEquals("Child summary: README says hello.", result.stdout)
     val subAgentEvents = eventSink.events.filterIsInstance<OpenCraySubAgentEvent>()
     assertEquals(
-      listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.COMPLETED),
+      listOf(
+        OpenCraySubAgentPhase.STARTED,
+        OpenCraySubAgentPhase.RESUMED,
+        OpenCraySubAgentPhase.COMPLETED,
+      ),
       subAgentEvents.map(OpenCraySubAgentEvent::phase),
     )
     assertEquals(
-      listOf(SubAgentExecutionState.RUNNING, SubAgentExecutionState.COMPLETED),
+      listOf(
+        SubAgentExecutionState.BACKGROUND_QUEUED,
+        SubAgentExecutionState.BACKGROUND_RUNNING,
+        SubAgentExecutionState.COMPLETED,
+      ),
       subAgentEvents.map(OpenCraySubAgentEvent::executionState),
     )
     assertEquals(
-      listOf(SubAgentContinuationKind.NONE, SubAgentContinuationKind.NONE),
+      listOf(
+        SubAgentContinuationKind.BACKGROUND_RESUME,
+        SubAgentContinuationKind.BACKGROUND_RESUME,
+        SubAgentContinuationKind.NONE,
+      ),
       subAgentEvents.map(OpenCraySubAgentEvent::continuationKind),
     )
     assertEquals(
@@ -1346,10 +1396,15 @@ class OpenCrayAgentRuntimeSubAgentTest {
           0 -> """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-1","description":"inspect docs","prompt":"Inspect README.md only.","subagent_type":"researcher"}}"""
           1 -> {
             assertTrue(childFinished.await(5, TimeUnit.SECONDS))
+            """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-1"}}"""
+          }
+
+          2 -> {
+            assertTrue(childFinished.await(5, TimeUnit.SECONDS))
             """{"type":"tool_call","tool_name":"send_input","arguments":{"agent_id":"child-1","message":"Also inspect docs/notes.md and mention it."}}"""
           }
 
-          2 -> """{"type":"final","answer":"Completed child rejected more input."}"""
+          3 -> """{"type":"final","answer":"Completed child rejected more input."}"""
           else -> error("Unexpected parent turn for ${request.requestId}.")
         }
 
@@ -1370,7 +1425,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
 
     assertEquals(ExecutionStatus.SUCCESS, result.status)
     assertEquals("Completed child rejected more input.", result.stdout)
-    assertEquals(4, gateway.requests.size)
+    assertEquals(5, gateway.requests.size)
     assertTrue(
       gateway.requests.any { request ->
         request.prompt.contains("Inspect README.md only.")
@@ -1382,6 +1437,672 @@ class OpenCrayAgentRuntimeSubAgentTest {
       .result
     assertEquals(AgentToolResultStatus.FAILED, sendInputResult.status)
     assertEquals("SUBAGENT_NOT_QUEUEABLE", sendInputResult.errorCode)
+  }
+
+  @Test
+  fun sendInputAutoResumesQueuedDetachedChildAndWaitAgentHarvestsIt() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-send-input-queued-auto-resume").toPath()
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val queuedHandle = SubAgentHandleState.queued(
+      agentId = "child-queued",
+      childRunId = "child-run-queued",
+      childTaskId = "child-task-queued",
+      description = "inspect readme",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "parent-run-queued",
+      parentTaskId = "parent-task-queued",
+      parentTurn = 0,
+      depth = 1,
+      activeSkillName = null,
+      activeSkillActivationSource = null,
+      createdAtEpochMs = 1_000L,
+    )
+    val childStarted = CountDownLatch(1)
+    val childMayFinish = CountDownLatch(1)
+    val gateway = ScriptedGateway { request ->
+      childStarted.countDown()
+      assertTrue(
+        request.prompt.contains("After reading README.md, mention that the follow-up was received."),
+      )
+      assertTrue(childMayFinish.await(5, TimeUnit.SECONDS))
+      """{"type":"final","answer":"README inspected with queued follow-up."}"""
+    }
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      seededSubAgentHandles = listOf(queuedHandle),
+      subAgentExecutionCoordinator = coordinator,
+    )
+
+    val sendInputResult = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"send_input","arguments":{"agent_id":"child-queued","message":"After reading README.md, mention that the follow-up was received."}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, sendInputResult.status)
+    assertEquals("true", sendInputResult.metadata["autoResumed"])
+    assertEquals("background_running", sendInputResult.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    assertEquals("0", sendInputResult.metadata["mailboxPendingInputCount"])
+    assertTrue(childStarted.await(5, TimeUnit.SECONDS))
+    assertTrue(
+      coordinator.activeExecution(
+        SubAgentExecutionKey(
+          parentRunId = "parent-run-queued",
+          agentId = "child-queued",
+        ),
+      ) != null,
+    )
+
+    childMayFinish.countDown()
+    Thread.sleep(100L)
+
+    val waitResult = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-queued"}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, waitResult.status)
+    assertTrue(waitResult.stdout.contains("README inspected with queued follow-up."))
+    assertEquals("completed", waitResult.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    assertEquals(null, coordinator.activeExecution(SubAgentExecutionKey.from(queuedHandle)))
+  }
+
+  @Test
+  fun sendInputQueuesMailboxForRunningDetachedChildAndAutoContinuesNextTurn() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-send-input-running-mailbox").toPath()
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val queuedHandle = SubAgentHandleState.queued(
+      agentId = "child-running",
+      childRunId = "child-run-running",
+      childTaskId = "child-task-running",
+      description = "inspect docs",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "parent-run-running",
+      parentTaskId = "parent-task-running",
+      parentTurn = 0,
+      depth = 1,
+      activeSkillName = null,
+      activeSkillActivationSource = null,
+      createdAtEpochMs = 1_000L,
+    )
+    val firstStarted = CountDownLatch(1)
+    val firstMayFinish = CountDownLatch(1)
+    val secondStarted = CountDownLatch(1)
+    val secondMayFinish = CountDownLatch(1)
+    var childTurn = 0
+    val gateway = ScriptedGateway { request ->
+      when (childTurn++) {
+        0 -> {
+          firstStarted.countDown()
+          assertTrue(request.prompt.contains("Mention the first follow-up."))
+          assertFalse(request.prompt.contains("Also inspect docs/notes.md and mention it."))
+          assertTrue(firstMayFinish.await(5, TimeUnit.SECONDS))
+          """{"type":"final","answer":"README inspected with first follow-up."}"""
+        }
+
+        1 -> {
+          secondStarted.countDown()
+          assertTrue(request.prompt.contains("Also inspect docs/notes.md and mention it."))
+          assertTrue(secondMayFinish.await(5, TimeUnit.SECONDS))
+          """{"type":"final","answer":"README and docs/notes.md inspected."}"""
+        }
+
+        else -> error("Unexpected child turn ${childTurn - 1}.")
+      }
+    }
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      seededSubAgentHandles = listOf(queuedHandle),
+      subAgentExecutionCoordinator = coordinator,
+    )
+
+    val firstSendInputResult = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"send_input","arguments":{"agent_id":"child-running","message":"Mention the first follow-up."}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, firstSendInputResult.status)
+    assertEquals("true", firstSendInputResult.metadata["autoResumed"])
+    assertEquals("background_running", firstSendInputResult.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    assertTrue(firstStarted.await(5, TimeUnit.SECONDS))
+    val executionKey = SubAgentExecutionKey.from(queuedHandle)
+    val activeExecution = requireNotNull(
+      coordinator.activeExecution(executionKey),
+    )
+
+    val secondSendInputResult = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"send_input","arguments":{"agent_id":"child-running","message":"Also inspect docs/notes.md and mention it."}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, secondSendInputResult.status)
+    assertEquals("false", secondSendInputResult.metadata["autoResumed"])
+    assertEquals("background_running", secondSendInputResult.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    assertEquals("1", secondSendInputResult.metadata["mailboxPendingInputCount"])
+    assertEquals("2", secondSendInputResult.metadata["supplementalInputCount"])
+
+    val waitExecutor = Executors.newSingleThreadExecutor()
+    try {
+      val waitTask = FutureTask {
+        runtime.execute(
+          task = directToolCallTask(
+            """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-running"}}""",
+          ),
+          hooks = runtimeHooks(),
+        )
+      }
+      waitExecutor.execute(waitTask)
+      firstMayFinish.countDown()
+      assertTrue(secondStarted.await(5, TimeUnit.SECONDS))
+      assertSame(activeExecution, coordinator.activeExecution(executionKey))
+      secondMayFinish.countDown()
+
+      val waitResult = waitTask.get(5, TimeUnit.SECONDS)
+      assertEquals(ExecutionStatus.SUCCESS, waitResult.status)
+      assertTrue(waitResult.stdout.contains("README and docs/notes.md inspected."))
+      assertEquals("completed", waitResult.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    } finally {
+      waitExecutor.shutdownNow()
+    }
+
+    assertEquals(2, gateway.requests.size)
+    assertTrue(
+      gateway.requests[1].prompt.contains("Also inspect docs/notes.md and mention it."),
+    )
+    assertEquals(null, coordinator.activeExecution(executionKey))
+  }
+
+  @Test
+  fun sendInputInterruptRestartsRunningDetachedChildAndReplaysInFlightMailbox() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-send-input-running-interrupt").toPath()
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val queuedHandle = SubAgentHandleState.queued(
+      agentId = "child-running-interrupt",
+      childRunId = "child-run-running-interrupt",
+      childTaskId = "child-task-running-interrupt",
+      description = "inspect docs",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "parent-run-running-interrupt",
+      parentTaskId = "parent-task-running-interrupt",
+      parentTurn = 0,
+      depth = 1,
+      activeSkillName = null,
+      activeSkillActivationSource = null,
+      createdAtEpochMs = 1_000L,
+    )
+    val firstStarted = CountDownLatch(1)
+    val secondStarted = CountDownLatch(1)
+    val secondMayFinish = CountDownLatch(1)
+    var childTurn = 0
+    val gateway = ScriptedGateway { request ->
+      when (childTurn++) {
+        0 -> {
+          firstStarted.countDown()
+          assertTrue(request.prompt.contains("Mention the first follow-up."))
+          assertFalse(request.prompt.contains("Also inspect docs/notes.md and mention it."))
+          try {
+            Thread.sleep(30_000L)
+            error("Interrupted child turn should not complete normally.")
+          } catch (_: InterruptedException) {
+            throw InterruptedException()
+          }
+        }
+
+        1 -> {
+          secondStarted.countDown()
+          assertTrue(request.prompt.contains("Mention the first follow-up."))
+          assertTrue(request.prompt.contains("Also inspect docs/notes.md and mention it."))
+          assertTrue(secondMayFinish.await(5, TimeUnit.SECONDS))
+          """{"type":"final","answer":"README and docs/notes.md inspected after redirect."}"""
+        }
+
+        else -> error("Unexpected child turn ${childTurn - 1}.")
+      }
+    }
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      seededSubAgentHandles = listOf(queuedHandle),
+      subAgentExecutionCoordinator = coordinator,
+    )
+
+    val firstSendInputResult = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"send_input","arguments":{"agent_id":"child-running-interrupt","message":"Mention the first follow-up."}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, firstSendInputResult.status)
+    assertEquals("true", firstSendInputResult.metadata["autoResumed"])
+    assertTrue(firstStarted.await(5, TimeUnit.SECONDS))
+
+    val executionKey = SubAgentExecutionKey.from(queuedHandle)
+    val firstExecution = requireNotNull(coordinator.activeExecution(executionKey))
+
+    val secondSendInputResult = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"send_input","arguments":{"agent_id":"child-running-interrupt","message":"Also inspect docs/notes.md and mention it.","interrupt":true}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, secondSendInputResult.status)
+    assertEquals("true", secondSendInputResult.metadata["interruptRequested"])
+    assertEquals("true", secondSendInputResult.metadata["interruptedExistingExecution"])
+    assertEquals("true", secondSendInputResult.metadata["autoResumed"])
+    assertEquals("background_running", secondSendInputResult.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    assertTrue(secondStarted.await(5, TimeUnit.SECONDS))
+
+    val restartedExecution = requireNotNull(coordinator.activeExecution(executionKey))
+    assertNotSame(firstExecution, restartedExecution)
+
+    secondMayFinish.countDown()
+
+    val waitResult = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-running-interrupt"}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, waitResult.status)
+    assertTrue(waitResult.stdout.contains("README and docs/notes.md inspected after redirect."))
+    assertEquals("completed", waitResult.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
+    assertEquals(2, gateway.requests.size)
+    assertTrue(gateway.requests[1].prompt.contains("Mention the first follow-up."))
+    assertTrue(gateway.requests[1].prompt.contains("Also inspect docs/notes.md and mention it."))
+    assertEquals(null, coordinator.activeExecution(executionKey))
+  }
+
+  @Test
+  fun waitAgentReturnsCancelledInsteadOfRestartingWhenAnotherRuntimeClosesDetachedChild() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-wait-close-race").toPath()
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val runningHandle = SubAgentHandleState.queued(
+      agentId = "child-close-race",
+      childRunId = "child-run-close-race",
+      childTaskId = "child-task-close-race",
+      description = "inspect docs",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "parent-run-close-race",
+      parentTaskId = "parent-task-close-race",
+      parentTurn = 0,
+      depth = 1,
+      activeSkillName = null,
+      activeSkillActivationSource = null,
+      createdAtEpochMs = 1_000L,
+    ).copy(
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Detached delegated child run is still running in the background.",
+      ),
+      updatedAtEpochMs = 1_100L,
+    )
+    val waitGateway = RecordingGateway(outputs = emptyList())
+    val closeGateway = RecordingGateway(outputs = emptyList())
+    val waitRuntime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = waitGateway,
+      seededSubAgentHandles = listOf(runningHandle),
+      subAgentExecutionCoordinator = coordinator,
+    )
+    val closeRuntime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = closeGateway,
+      seededSubAgentHandles = listOf(runningHandle),
+      subAgentExecutionCoordinator = coordinator,
+    )
+    val activeExecutor = Executors.newSingleThreadExecutor()
+    val activeFuture = FutureTask<Unit> {
+      Thread.sleep(30_000L)
+    }
+    val activeExecution = SubAgentActiveExecution(
+      executor = activeExecutor,
+      future = activeFuture,
+      cancelRequested = AtomicBoolean(false),
+      closed = AtomicBoolean(false),
+    )
+    coordinator.upsertHandle(runningHandle)
+    coordinator.registerActiveExecution(
+      SubAgentExecutionKey.from(runningHandle),
+      activeExecution,
+    )
+    activeExecutor.execute(activeFuture)
+
+    var waitResult: ExecutionResult? = null
+    val waitThread = Thread {
+      waitResult = waitRuntime.execute(
+        task = directToolCallTask(
+          """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-close-race"}}""",
+        ),
+        hooks = runtimeHooks(),
+      )
+    }
+
+    try {
+      waitThread.start()
+      Thread.sleep(100L)
+
+      val closeResult = closeRuntime.execute(
+        task = directToolCallTask(
+          """{"type":"tool_call","tool_name":"close_agent","arguments":{"agent_id":"child-close-race"}}""",
+        ),
+        hooks = runtimeHooks(),
+      )
+
+      waitThread.join(5_000L)
+
+      assertEquals(ExecutionStatus.SUCCESS, closeResult.status)
+      assertEquals("true", closeResult.metadata["closed"])
+      assertFalse(waitThread.isAlive)
+      assertEquals(ExecutionStatus.CANCELLED, waitResult?.status)
+      assertEquals("SUBAGENT_CANCELLED", waitResult?.errorCode)
+      val waitStderr = requireNotNull(waitResult).stderr
+      assertTrue(
+        waitStderr,
+        waitStderr.contains("Subagent cancelled") ||
+          waitStderr.contains("cancelled before wait_agent could harvest it."),
+      )
+      assertEquals(null, coordinator.currentHandle(SubAgentExecutionKey.from(runningHandle)))
+      assertEquals(null, coordinator.activeExecution(SubAgentExecutionKey.from(runningHandle)))
+      assertTrue(waitGateway.requests.isEmpty())
+      assertTrue(closeGateway.requests.isEmpty())
+    } finally {
+      waitThread.interrupt()
+      waitThread.join(1_000L)
+      activeExecutor.shutdownNow()
+    }
+  }
+
+  @Test
+  fun coordinatorBackedSeededWaitAgentReturnsCancelledWhenHandleWasClosedBeforeWaitStarts() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-wait-close-stale-seed").toPath()
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val runningHandle = SubAgentHandleState.queued(
+      agentId = "child-stale-close-race",
+      childRunId = "child-run-stale-close-race",
+      childTaskId = "child-task-stale-close-race",
+      description = "inspect docs",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "parent-run-stale-close-race",
+      parentTaskId = "parent-task-stale-close-race",
+      parentTurn = 0,
+      depth = 1,
+      activeSkillName = null,
+      activeSkillActivationSource = null,
+      createdAtEpochMs = 1_000L,
+    ).copy(
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Detached delegated child run is still running in the background.",
+      ),
+      updatedAtEpochMs = 1_100L,
+    )
+    coordinator.upsertHandle(runningHandle)
+    coordinator.removeHandle(SubAgentExecutionKey.from(runningHandle))
+    val gateway = RecordingGateway(outputs = emptyList())
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      seededSubAgentHandles = listOf(runningHandle),
+      subAgentExecutionCoordinator = coordinator,
+      seededDetachedSubAgentHandlesRequireCoordinatorOwnership = true,
+    )
+
+    val result = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-stale-close-race"}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(
+      "status=${result.status} errorCode=${result.errorCode} errorMessage=${result.errorMessage} stdout=${result.stdout} stderr=${result.stderr}",
+      ExecutionStatus.CANCELLED,
+      result.status,
+    )
+    assertEquals("SUBAGENT_CANCELLED", result.errorCode)
+    assertTrue(result.stderr.contains("cancelled before wait_agent could harvest it."))
+    assertTrue(gateway.requests.isEmpty())
+  }
+
+  @Test
+  fun waitAgentReturnsCancelledFromCoordinatorClosedTombstoneWithoutSeededHandle() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-wait-close-tombstone").toPath()
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val closedHandle = SubAgentHandleState.queued(
+      agentId = "child-closed-tombstone",
+      childRunId = "child-run-closed-tombstone",
+      childTaskId = "child-task-closed-tombstone",
+      description = "inspect docs",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "parent-run-closed-tombstone",
+      parentTaskId = "parent-task-closed-tombstone",
+      parentTurn = 0,
+      depth = 1,
+      activeSkillName = null,
+      activeSkillActivationSource = null,
+      createdAtEpochMs = 1_000L,
+    ).copy(
+      snapshot = SubAgentExecutionSnapshot(
+        state = SubAgentExecutionState.CANCELLED,
+        continuationKind = SubAgentContinuationKind.NONE,
+        resumable = false,
+        requiresUserAction = false,
+        isHighRisk = false,
+        headline = "Delegated child run 'inspect docs' was cancelled before wait_agent could harvest it.",
+      ),
+      childExecutionStatus = ExecutionStatus.CANCELLED.name,
+      updatedAtEpochMs = 1_200L,
+    )
+    coordinator.noteClosedHandle(closedHandle)
+    val gateway = RecordingGateway(outputs = emptyList())
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      seededSubAgentHandles = emptyList(),
+      subAgentExecutionCoordinator = coordinator,
+      seededDetachedSubAgentHandlesRequireCoordinatorOwnership = true,
+    )
+
+    val result = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-closed-tombstone"}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(
+      "status=${result.status} errorCode=${result.errorCode} errorMessage=${result.errorMessage} stdout=${result.stdout} stderr=${result.stderr}",
+      ExecutionStatus.CANCELLED,
+      result.status,
+    )
+    assertEquals("SUBAGENT_CANCELLED", result.errorCode)
+    assertTrue(result.stderr.contains("cancelled before wait_agent could harvest it."))
+    assertTrue(gateway.requests.isEmpty())
+  }
+
+  @Test
+  fun closeAgentReturnsSuccessFromCoordinatorClosedTombstoneWithoutSeededHandle() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-close-closed-tombstone").toPath()
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val closedHandle = SubAgentHandleState.queued(
+      agentId = "child-close-closed-tombstone",
+      childRunId = "child-run-close-closed-tombstone",
+      childTaskId = "child-task-close-closed-tombstone",
+      description = "inspect docs",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "parent-run-close-closed-tombstone",
+      parentTaskId = "parent-task-close-closed-tombstone",
+      parentTurn = 0,
+      depth = 1,
+      activeSkillName = null,
+      activeSkillActivationSource = null,
+      createdAtEpochMs = 1_000L,
+    ).copy(
+      snapshot = SubAgentExecutionSnapshot(
+        state = SubAgentExecutionState.CANCELLED,
+        continuationKind = SubAgentContinuationKind.NONE,
+        resumable = false,
+        requiresUserAction = false,
+        isHighRisk = false,
+        headline = "Delegated child run 'inspect docs' was closed.",
+      ),
+      childExecutionStatus = ExecutionStatus.CANCELLED.name,
+      updatedAtEpochMs = 1_200L,
+    )
+    coordinator.noteClosedHandle(closedHandle)
+    val gateway = RecordingGateway(outputs = emptyList())
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      seededSubAgentHandles = emptyList(),
+      subAgentExecutionCoordinator = coordinator,
+      seededDetachedSubAgentHandlesRequireCoordinatorOwnership = true,
+    )
+
+    val result = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"close_agent","arguments":{"agent_id":"child-close-closed-tombstone"}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("true", result.metadata["closed"])
+    assertEquals("child-close-closed-tombstone", result.metadata["agentId"])
+    assertTrue(gateway.requests.isEmpty())
+  }
+
+  @Test
+  fun listSubagentsIncludesCoordinatorClosedTombstones() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-list-closed-tombstone").toPath()
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    coordinator.noteClosedHandle(
+      SubAgentHandleState.queued(
+        agentId = "child-list-closed-tombstone",
+        childRunId = "child-run-list-closed-tombstone",
+        childTaskId = "child-task-list-closed-tombstone",
+        description = "inspect docs",
+        prompt = "Read README.md and summarize it.",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        parentRunId = "parent-run-list-closed-tombstone",
+        parentTaskId = "parent-task-list-closed-tombstone",
+        parentTurn = 0,
+        depth = 1,
+        activeSkillName = null,
+        activeSkillActivationSource = null,
+        createdAtEpochMs = 1_000L,
+      ).copy(
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.CANCELLED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Delegated child run 'inspect docs' was closed.",
+        ),
+        childExecutionStatus = ExecutionStatus.CANCELLED.name,
+        updatedAtEpochMs = 1_200L,
+      ),
+    )
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = RecordingGateway(outputs = emptyList()),
+      subAgentExecutionCoordinator = coordinator,
+      seededDetachedSubAgentHandlesRequireCoordinatorOwnership = true,
+    )
+
+    val result = runtime.execute(
+      task = directToolCallTask("""{"type":"tool_call","tool_name":"list_subagents","arguments":{}}"""),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("1", result.metadata["subagentCount"])
+    assertEquals("0", result.metadata["openSubagentCount"])
+    val payload = TEST_JSON.parseToJsonElement(result.stdout).jsonObject
+    assertEquals("1", payload.getValue("count").jsonPrimitive.content)
+    assertEquals("0", payload.getValue("openCount").jsonPrimitive.content)
+    val handle = payload.getValue("subagents").jsonArray.single().jsonObject
+    assertEquals("child-list-closed-tombstone", handle.getValue("agentId").jsonPrimitive.content)
+    assertEquals("cancelled", handle.getValue("state").jsonPrimitive.content)
+    assertEquals("false", handle.getValue("hasActiveExecution").jsonPrimitive.content)
+  }
+
+  @Test
+  fun sendInputReturnsNotQueueableFromCoordinatorClosedTombstoneWithoutSeededHandle() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-send-input-closed-tombstone").toPath()
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    coordinator.noteClosedHandle(
+      SubAgentHandleState.queued(
+        agentId = "child-send-input-closed-tombstone",
+        childRunId = "child-run-send-input-closed-tombstone",
+        childTaskId = "child-task-send-input-closed-tombstone",
+        description = "inspect docs",
+        prompt = "Read README.md and summarize it.",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        parentRunId = "parent-run-send-input-closed-tombstone",
+        parentTaskId = "parent-task-send-input-closed-tombstone",
+        parentTurn = 0,
+        depth = 1,
+        activeSkillName = null,
+        activeSkillActivationSource = null,
+        createdAtEpochMs = 1_000L,
+      ).copy(
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.CANCELLED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Delegated child run 'inspect docs' was closed.",
+        ),
+        childExecutionStatus = ExecutionStatus.CANCELLED.name,
+        updatedAtEpochMs = 1_200L,
+      ),
+    )
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = RecordingGateway(outputs = emptyList()),
+      subAgentExecutionCoordinator = coordinator,
+      seededDetachedSubAgentHandlesRequireCoordinatorOwnership = true,
+    )
+
+    val result = runtime.execute(
+      task = directToolCallTask(
+        """{"type":"tool_call","tool_name":"send_input","arguments":{"agent_id":"child-send-input-closed-tombstone","message":"follow up"}}""",
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals("SUBAGENT_NOT_QUEUEABLE", result.errorCode)
+    assertEquals("child-send-input-closed-tombstone", result.metadata["agentId"])
   }
 
   @Test
@@ -1435,12 +2156,198 @@ class OpenCrayAgentRuntimeSubAgentTest {
       .first { event -> event.call.toolName == "close_agent" }
       .result
       .metadata
+    val subAgentEvents = eventSink.events.filterIsInstance<OpenCraySubAgentEvent>()
     assertEquals("true", closeResultMetadata["closed"])
     assertEquals(
       listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.RESUMED, OpenCraySubAgentPhase.CANCELLED),
+      subAgentEvents.map(OpenCraySubAgentEvent::phase),
+    )
+    assertEquals(listOf("child-1", "child-1", "child-1"), subAgentEvents.map(OpenCraySubAgentEvent::agentId))
+    assertEquals(listOf(false, false, true), subAgentEvents.map(OpenCraySubAgentEvent::closed))
+  }
+
+  @Test
+  fun parentCancellationCascadesToRunningDetachedChild() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-parent-cancel-cascade").toPath()
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val childStarted = CountDownLatch(1)
+    val childMayFinish = CountDownLatch(1)
+    val cancelRequested = AtomicBoolean(false)
+    var parentTurn = 0
+    val gateway = ScriptedGateway { request ->
+      when {
+        requestHasTool(request, "Read") && !requestHasTool(request, "spawn_agent") -> {
+          childStarted.countDown()
+          childMayFinish.await(30, TimeUnit.SECONDS)
+          """{"type":"final","answer":"README says hello."}"""
+        }
+
+        requestHasTool(request, "spawn_agent") -> when (parentTurn++) {
+          0 -> """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-cancelled","description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}"""
+          1 -> {
+            while (!cancelRequested.get()) {
+              Thread.sleep(10)
+            }
+            """{"type":"commentary","text":"Parent run is about to be cancelled."}"""
+          }
+
+          else -> error("Unexpected extra parent turn after cancellation.")
+        }
+
+        else -> error("Unexpected prompt for ${request.requestId}.")
+      }
+    }
+    val eventSink = RecordingEventSink()
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = eventSink,
+      subAgentExecutionCoordinator = coordinator,
+    )
+    val executionExecutor = Executors.newSingleThreadExecutor()
+    try {
+      val runTask = FutureTask {
+        runtime.execute(
+          task = promptTask("Launch a child and then cancel the parent."),
+          hooks = runtimeHooks(isCancellationRequested = cancelRequested::get),
+        )
+      }
+      executionExecutor.execute(runTask)
+
+      assertTrue(childStarted.await(5, TimeUnit.SECONDS))
+      cancelRequested.set(true)
+
+      val result = runTask.get(5, TimeUnit.SECONDS)
+      assertEquals(ExecutionStatus.CANCELLED, result.status)
+      assertEquals("AGENT_CANCELLED", result.errorCode)
+      assertTrue(gateway.requests.size in 2..3)
+
+      val cancelledHandle = coordinator.allHandles().single()
+      assertEquals("child-cancelled", cancelledHandle.agentId)
+      assertEquals(SubAgentExecutionState.CANCELLED, cancelledHandle.snapshot.state)
+      assertEquals(ExecutionStatus.CANCELLED.name, cancelledHandle.childExecutionStatus)
+      assertTrue(
+        cancelledHandle.snapshot.detailLines.contains("Parent run was cancelled by the user."),
+      )
+      assertEquals(null, coordinator.activeExecution(SubAgentExecutionKey.from(cancelledHandle)))
+      assertEquals(
+        listOf(OpenCraySubAgentPhase.STARTED, OpenCraySubAgentPhase.RESUMED, OpenCraySubAgentPhase.CANCELLED),
+        eventSink.events
+          .filterIsInstance<OpenCraySubAgentEvent>()
+          .map(OpenCraySubAgentEvent::phase),
+      )
+    } finally {
+      childMayFinish.countDown()
+      executionExecutor.shutdownNow()
+    }
+  }
+
+  @Test
+  fun parentCancellationAlsoCancelsQueuedAndApprovalPausedDetachedChildren() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-parent-cancel-open-handles").toPath()
+    val queuedHandle = SubAgentHandleState.queued(
+      agentId = "child-queued-cancelled",
+      childRunId = "child-run-queued-cancelled",
+      childTaskId = "child-task-queued-cancelled",
+      description = "Inspect README later",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "parent-run-queued-cancelled",
+      parentTaskId = "parent-task-queued-cancelled",
+      parentTurn = 0,
+      depth = 1,
+      activeSkillName = null,
+      activeSkillActivationSource = null,
+      createdAtEpochMs = 1_000L,
+    )
+    val waitingHandle = SubAgentHandleState(
+      agentId = "child-waiting-cancelled",
+      childRunId = "child-run-waiting-cancelled",
+      childTaskId = "child-task-waiting-cancelled",
+      description = "Edit notes after approval",
+      prompt = "Replace TODO with DONE in notes.txt.",
+      subagentType = "worker",
+      contextMode = "delegated",
+      parentRunId = "parent-run-waiting-cancelled",
+      parentTaskId = "parent-task-waiting-cancelled",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot(
+        state = SubAgentExecutionState.WAITING_APPROVAL,
+        continuationKind = SubAgentContinuationKind.PROMPT_RESUME,
+        resumable = true,
+        requiresUserAction = true,
+        isHighRisk = false,
+        headline = "Waiting for edit approval.",
+      ),
+      pendingApprovalResume = SubAgentApprovalResume(
+        approvedToolName = "Edit",
+        promptResumeState = OpenCrayPromptResumeState(
+          turnIndex = 1,
+          toolCallCount = 1,
+        ),
+        isHighRisk = false,
+        agentId = "child-waiting-cancelled",
+        childRunId = "child-run-waiting-cancelled",
+        childTaskId = "child-task-waiting-cancelled",
+      ),
+      childPromptResumeState = OpenCrayPromptResumeState(
+        turnIndex = 1,
+        toolCallCount = 1,
+      ),
+      createdAtEpochMs = 1_100L,
+      updatedAtEpochMs = 1_150L,
+    )
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val eventSink = RecordingEventSink()
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = RecordingGateway(outputs = emptyList()),
+      promptResumeState = OpenCrayPromptResumeState(
+        turnIndex = 0,
+        toolCallCount = 0,
+        subAgentHandles = listOf(queuedHandle, waitingHandle),
+      ),
+      eventSink = eventSink,
+      subAgentExecutionCoordinator = coordinator,
+    )
+
+    val result = runtime.execute(
+      task = promptTask("Cancel the parent immediately."),
+      hooks = runtimeHooks(isCancellationRequested = { true }),
+    )
+
+    assertEquals(ExecutionStatus.CANCELLED, result.status)
+    assertEquals("AGENT_CANCELLED", result.errorCode)
+    val cancelledHandles = coordinator.allHandles()
+      .associateBy(SubAgentHandleState::agentId)
+    assertEquals(
+      setOf("child-queued-cancelled", "child-waiting-cancelled"),
+      cancelledHandles.keys,
+    )
+    cancelledHandles.values.forEach { handle ->
+      assertEquals(SubAgentExecutionState.CANCELLED, handle.snapshot.state)
+      assertEquals(ExecutionStatus.CANCELLED.name, handle.childExecutionStatus)
+      assertTrue(
+        handle.snapshot.detailLines.contains("Parent run was cancelled by the user."),
+      )
+      assertEquals(null, coordinator.activeExecution(SubAgentExecutionKey.from(handle)))
+    }
+    assertEquals(
+      listOf(OpenCraySubAgentPhase.CANCELLED, OpenCraySubAgentPhase.CANCELLED),
       eventSink.events
         .filterIsInstance<OpenCraySubAgentEvent>()
         .map(OpenCraySubAgentEvent::phase),
+    )
+    assertEquals(
+      listOf(
+        SubAgentExecutionState.CANCELLED,
+        SubAgentExecutionState.CANCELLED,
+      ),
+      eventSink.events
+        .filterIsInstance<OpenCraySubAgentEvent>()
+        .map(OpenCraySubAgentEvent::executionState),
     )
   }
 
@@ -1784,7 +2691,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
       createdAtEpochMs = 1_000L,
     )
 
-    val result = runtime.executeDetachedSubAgentRecoveryWait(
+    val result = runtime.executeSubAgentRecoveryWait(
       task = recoveryTask,
       hooks = runtimeHooks(),
       agentId = "child-recovery-idle",
@@ -1866,7 +2773,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
       createdAtEpochMs = 1_000L,
     )
 
-    val startedHandle = runtime.ensureDetachedSubAgentRecoveryExecution(
+    val startedHandle = runtime.ensureSubAgentRecoveryExecution(
       task = recoveryTask,
       hooks = runtimeHooks(),
       agentId = "child-recovery-started",
@@ -1886,7 +2793,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
 
     val execution = Executors.newSingleThreadExecutor()
     val resultFuture = execution.submit<ExecutionResult> {
-      runtime.executeDetachedSubAgentRecoveryWait(
+      runtime.executeSubAgentRecoveryWait(
         task = recoveryTask,
         hooks = runtimeHooks(),
         agentId = "child-recovery-started",
@@ -2177,6 +3084,17 @@ class OpenCrayAgentRuntimeSubAgentTest {
         isHighRisk = false,
         headline = "Waiting for edit approval.",
       ),
+      pendingApprovalResume = SubAgentApprovalResume(
+        approvedToolName = "Edit",
+        promptResumeState = OpenCrayPromptResumeState(
+          turnIndex = 1,
+          toolCallCount = 1,
+        ),
+        isHighRisk = false,
+        agentId = "child-waiting",
+        childRunId = "child-run-waiting",
+        childTaskId = "child-task-waiting",
+      ),
       childPromptResumeState = OpenCrayPromptResumeState(
         turnIndex = 1,
         toolCallCount = 1,
@@ -2187,6 +3105,24 @@ class OpenCrayAgentRuntimeSubAgentTest {
       childToolCallCount = 1,
       createdAtEpochMs = 1_000L,
       updatedAtEpochMs = 1_300L,
+    )
+    val runningHandle = SubAgentHandleState(
+      agentId = "child-running",
+      childRunId = "child-run-running",
+      childTaskId = "child-task-running",
+      description = "Inspect docs",
+      prompt = "Read docs/notes.md and summarize it.",
+      subagentType = "worker",
+      contextMode = "delegated",
+      parentRunId = "parent-run-running",
+      parentTaskId = "parent-task-running",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Docs inspection is still running.",
+      ),
+      createdAtEpochMs = 950L,
+      updatedAtEpochMs = 1_200L,
     )
     val completedHandle = SubAgentHandleState(
       agentId = "child-done",
@@ -2214,6 +3150,22 @@ class OpenCrayAgentRuntimeSubAgentTest {
       createdAtEpochMs = 900L,
       updatedAtEpochMs = 1_100L,
     )
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val activeExecutor = Executors.newSingleThreadExecutor()
+    val activeFuture = FutureTask<Unit> { }
+    coordinator.upsertHandle(runningHandle)
+    coordinator.registerActiveExecution(
+      SubAgentExecutionKey(
+        parentRunId = runningHandle.parentRunId,
+        agentId = runningHandle.agentId,
+      ),
+      SubAgentActiveExecution(
+        executor = activeExecutor,
+        future = activeFuture,
+        cancelRequested = AtomicBoolean(false),
+        closed = AtomicBoolean(false),
+      ),
+    )
     val runtime = runtime(
       workspaceRoot = workspaceRoot,
       gateway = RecordingGateway(outputs = emptyList()),
@@ -2222,43 +3174,59 @@ class OpenCrayAgentRuntimeSubAgentTest {
         toolCallCount = 0,
         subAgentHandles = listOf(waitingHandle, completedHandle),
       ),
+      subAgentExecutionCoordinator = coordinator,
     )
 
-    val result = runtime.execute(
-      task = directToolCallTask("""{"type":"tool_call","tool_name":"list_subagents","arguments":{}}"""),
-      hooks = runtimeHooks(),
-    )
+    try {
+      val result = runtime.execute(
+        task = directToolCallTask("""{"type":"tool_call","tool_name":"list_subagents","arguments":{}}"""),
+        hooks = runtimeHooks(),
+      )
 
-    assertEquals(ExecutionStatus.SUCCESS, result.status)
-    assertEquals("2", result.metadata["subagentCount"])
-    assertEquals("1", result.metadata["openSubagentCount"])
-    val payload = TEST_JSON.parseToJsonElement(result.stdout).jsonObject
-    assertEquals("2", payload.getValue("count").jsonPrimitive.content)
-    assertEquals("1", payload.getValue("openCount").jsonPrimitive.content)
-    val subagents = payload.getValue("subagents").jsonArray
-    assertEquals(2, subagents.size)
-    val firstHandle = subagents[0].jsonObject
-    assertEquals("child-waiting", firstHandle.getValue("agentId").jsonPrimitive.content)
-    assertEquals("parent-run-a", firstHandle.getValue("parentRunId").jsonPrimitive.content)
-    assertEquals("worker", firstHandle.getValue("subagentType").jsonPrimitive.content)
-    assertEquals("waiting_approval", firstHandle.getValue("state").jsonPrimitive.content)
-    assertEquals("prompt_resume", firstHandle.getValue("continuationKind").jsonPrimitive.content)
-    assertEquals("true", firstHandle.getValue("resumable").jsonPrimitive.content)
-    assertEquals("true", firstHandle.getValue("requiresUserAction").jsonPrimitive.content)
-    assertEquals("Waiting for edit approval.", firstHandle.getValue("summary").jsonPrimitive.content)
-    assertEquals("2", firstHandle.getValue("mailboxMessageCount").jsonPrimitive.content)
-    assertEquals("1", firstHandle.getValue("mailboxPendingMessageCount").jsonPrimitive.content)
-    assertEquals("msg-1", firstHandle.getValue("mailboxLastDeliveredMessageId").jsonPrimitive.content)
-    assertEquals("1", firstHandle.getValue("childTurnCount").jsonPrimitive.content)
-    assertEquals("1", firstHandle.getValue("childToolCallCount").jsonPrimitive.content)
-    assertEquals(
-      "tool_result_committed",
-      firstHandle.getValue("childPromptCheckpointBoundary").jsonPrimitive.content,
-    )
-    val secondHandle = subagents[1].jsonObject
-    assertEquals("child-done", secondHandle.getValue("agentId").jsonPrimitive.content)
-    assertEquals("completed", secondHandle.getValue("state").jsonPrimitive.content)
-    assertEquals("SUCCESS", secondHandle.getValue("childExecutionStatus").jsonPrimitive.content)
+      assertEquals(ExecutionStatus.SUCCESS, result.status)
+      assertEquals("3", result.metadata["subagentCount"])
+      assertEquals("2", result.metadata["openSubagentCount"])
+      val payload = TEST_JSON.parseToJsonElement(result.stdout).jsonObject
+      assertEquals("3", payload.getValue("count").jsonPrimitive.content)
+      assertEquals("2", payload.getValue("openCount").jsonPrimitive.content)
+      val subagents = payload.getValue("subagents").jsonArray
+      assertEquals(3, subagents.size)
+      val firstHandle = subagents[0].jsonObject
+      assertEquals("child-waiting", firstHandle.getValue("agentId").jsonPrimitive.content)
+      assertEquals("parent-run-a", firstHandle.getValue("parentRunId").jsonPrimitive.content)
+      assertEquals("worker", firstHandle.getValue("subagentType").jsonPrimitive.content)
+      assertEquals("waiting_approval", firstHandle.getValue("state").jsonPrimitive.content)
+      assertEquals("false", firstHandle.getValue("hasActiveExecution").jsonPrimitive.content)
+      assertEquals("true", firstHandle.getValue("hasPendingApprovalResume").jsonPrimitive.content)
+      assertEquals("Edit", firstHandle.getValue("pendingApprovalToolName").jsonPrimitive.content)
+      assertEquals("child-run-waiting", firstHandle.getValue("pendingApprovalChildRunId").jsonPrimitive.content)
+      assertEquals("child-task-waiting", firstHandle.getValue("pendingApprovalChildTaskId").jsonPrimitive.content)
+      assertEquals("false", firstHandle.getValue("pendingApprovalIsHighRisk").jsonPrimitive.content)
+      assertEquals("prompt_resume", firstHandle.getValue("continuationKind").jsonPrimitive.content)
+      assertEquals("true", firstHandle.getValue("resumable").jsonPrimitive.content)
+      assertEquals("true", firstHandle.getValue("requiresUserAction").jsonPrimitive.content)
+      assertEquals("Waiting for edit approval.", firstHandle.getValue("summary").jsonPrimitive.content)
+      assertEquals("2", firstHandle.getValue("mailboxMessageCount").jsonPrimitive.content)
+      assertEquals("1", firstHandle.getValue("mailboxPendingMessageCount").jsonPrimitive.content)
+      assertEquals("msg-1", firstHandle.getValue("mailboxLastDeliveredMessageId").jsonPrimitive.content)
+      assertEquals("1", firstHandle.getValue("childTurnCount").jsonPrimitive.content)
+      assertEquals("1", firstHandle.getValue("childToolCallCount").jsonPrimitive.content)
+      assertEquals(
+        "tool_result_committed",
+        firstHandle.getValue("childPromptCheckpointBoundary").jsonPrimitive.content,
+      )
+      val secondHandle = subagents[1].jsonObject
+      assertEquals("child-running", secondHandle.getValue("agentId").jsonPrimitive.content)
+      assertEquals("background_running", secondHandle.getValue("state").jsonPrimitive.content)
+      assertEquals("true", secondHandle.getValue("hasActiveExecution").jsonPrimitive.content)
+      val thirdHandle = subagents[2].jsonObject
+      assertEquals("child-done", thirdHandle.getValue("agentId").jsonPrimitive.content)
+      assertEquals("completed", thirdHandle.getValue("state").jsonPrimitive.content)
+      assertEquals("SUCCESS", thirdHandle.getValue("childExecutionStatus").jsonPrimitive.content)
+      assertEquals("false", thirdHandle.getValue("hasActiveExecution").jsonPrimitive.content)
+    } finally {
+      activeExecutor.shutdownNow()
+    }
   }
 
   private fun runtime(
@@ -2271,6 +3239,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
     approvedSubAgentResume: SubAgentApprovalResume? = null,
     rejectedSubAgentResume: SubAgentApprovalResume? = null,
     seededSubAgentHandles: List<SubAgentHandleState> = emptyList(),
+    seededDetachedSubAgentHandlesRequireCoordinatorOwnership: Boolean = false,
     subAgentExecutionCoordinator: com.opencray.runtime.subagent.SubAgentExecutionCoordinator =
       InMemorySubAgentExecutionCoordinator(),
   ): OpenCrayAgentRuntime = OpenCrayAgentRuntime(
@@ -2289,6 +3258,8 @@ class OpenCrayAgentRuntimeSubAgentTest {
       approvedSubAgentResume = approvedSubAgentResume,
       rejectedSubAgentResume = rejectedSubAgentResume,
       seededSubAgentHandles = seededSubAgentHandles,
+      seededDetachedSubAgentHandlesRequireCoordinatorOwnership =
+        seededDetachedSubAgentHandlesRequireCoordinatorOwnership,
       subAgentExecutionCoordinator = subAgentExecutionCoordinator,
       json = TEST_JSON,
     ),

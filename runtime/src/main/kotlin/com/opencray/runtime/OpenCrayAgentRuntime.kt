@@ -84,6 +84,7 @@ import com.opencray.runtime.subagent.SubAgentMetadataKeys
 import com.opencray.runtime.subagent.SubAgentProfile
 import com.opencray.runtime.subagent.SubAgentResultCompressor
 import com.opencray.runtime.subagent.SubAgentTask
+import com.opencray.runtime.subagent.newSubAgentChildSessionId
 import com.opencray.runtime.subagent.restoredInterruptedBackgroundSubAgentHandle
 import com.opencray.runtime.subagent.withClearedChildPromptCheckpoint
 import com.opencray.runtime.subagent.withUpdatedChildPromptCheckpoint
@@ -150,6 +151,7 @@ data class OpenCrayAgentRuntimeConfig(
       conversation = request.conversation,
     )
   },
+  val seededDetachedSubAgentHandlesRequireCoordinatorOwnership: Boolean = false,
   val maxSubAgentDepth: Int = 1,
   val json: Json = Json { ignoreUnknownKeys = true; prettyPrint = true },
   val sleep: (Long) -> Unit = { durationMs -> Thread.sleep(durationMs) },
@@ -258,7 +260,7 @@ class OpenCrayAgentRuntime(
     }
   }
 
-  fun executeDetachedSubAgentRecoveryWait(
+  fun executeSubAgentActorTask(
     task: AgentTask,
     hooks: RuntimeExecutionHooks,
     agentId: String,
@@ -289,7 +291,7 @@ class OpenCrayAgentRuntime(
       pinned = config.promptResumeState?.activeSkillPinned
         ?: config.inheritedActiveSkillCapsule?.pinned,
     )
-    val toolResult = waitOnDetachedRecoverySubAgentHandle(
+    val toolResult = waitOnRecoverySubAgentHandle(
       task = task,
       turn = 0,
       call = call,
@@ -298,6 +300,81 @@ class OpenCrayAgentRuntime(
       activeSkillCapsule = activeSkillCapsule,
       agentId = agentId,
       parentRunId = parentRunId,
+      startDetachedExecutionIfNeeded = true,
+    )
+    eventSink.onRunEvent(
+      task = task,
+      event = OpenCrayToolResultEvent(
+        runId = runIdFor(task),
+        taskId = task.id,
+        turn = 0,
+        call = call,
+        result = toolResult,
+        emittedAtEpochMs = clock(),
+      ),
+    )
+    emitMemoryRetrievalEvent(
+      task = task,
+      turn = 0,
+      call = call,
+      result = toolResult,
+    )
+    return toolResult.toExecutionResult(
+      task = task,
+      startedAt = startedAt,
+      finishedAt = clock(),
+      json = config.json,
+    ).also { result ->
+      if (toolResult.isApprovalRequiredDenial()) {
+        hooks.requestSuspend(
+          SuspensionRequest(
+            reasonCode = result.errorCode ?: "APPROVAL_REQUIRED",
+            detail = result.errorMessage,
+          ),
+        )
+      }
+    }
+  }
+
+  fun executeSubAgentRecoveryWait(
+    task: AgentTask,
+    hooks: RuntimeExecutionHooks,
+    agentId: String,
+    parentRunId: String,
+  ): ExecutionResult {
+    val startedAt = clock()
+    val call = AgentToolCall(
+      toolName = "wait_agent",
+      arguments = buildJsonObject {
+        put("agent_id", agentId)
+      },
+    )
+    eventSink.onRunEvent(
+      task = task,
+      event = OpenCrayToolCallEvent(
+        runId = runIdFor(task),
+        taskId = task.id,
+        turn = 0,
+        call = call,
+        emittedAtEpochMs = clock(),
+      ),
+    )
+    val activeSkillCapsule = resolveActiveSkillCapsule(
+      activeSkillName = config.promptResumeState?.activeSkillName
+        ?: config.inheritedActiveSkillCapsule?.name,
+      activationSource = config.promptResumeState?.activeSkillActivationSource
+        ?: config.inheritedActiveSkillCapsule?.activationSource,
+    )
+    val toolResult = waitOnRecoverySubAgentHandle(
+      task = task,
+      turn = 0,
+      call = call,
+      transcript = config.sessionContext.conversation,
+      hooks = hooks,
+      activeSkillCapsule = activeSkillCapsule,
+      agentId = agentId,
+      parentRunId = parentRunId,
+      startDetachedExecutionIfNeeded = false,
     )
     eventSink.onRunEvent(
       task = task,
@@ -1090,6 +1167,7 @@ class OpenCrayAgentRuntime(
           cursor = cursor,
           reason = cancelOpenSubAgentsReason,
           removeHandles = false,
+          includeInactiveHandles = true,
         )
       }
     }
@@ -1234,7 +1312,7 @@ class OpenCrayAgentRuntime(
     )
   }
 
-  fun ensureDetachedSubAgentRecoveryExecution(
+  fun ensureSubAgentRecoveryExecution(
     task: AgentTask,
     hooks: RuntimeExecutionHooks,
     agentId: String,
@@ -1269,6 +1347,32 @@ class OpenCrayAgentRuntime(
       handles = linkedMapOf(restoredHandle.agentId to restoredHandle),
     )
   }
+
+  /** Compatibility alias for the pre-absorption master entry point name. */
+  fun ensureDetachedSubAgentRecoveryExecution(
+    task: AgentTask,
+    hooks: RuntimeExecutionHooks,
+    agentId: String,
+    parentRunId: String,
+  ): SubAgentHandleState? = ensureSubAgentRecoveryExecution(
+    task = task,
+    hooks = hooks,
+    agentId = agentId,
+    parentRunId = parentRunId,
+  )
+
+  /** Compatibility alias for the pre-absorption master entry point name. */
+  fun executeDetachedSubAgentRecoveryWait(
+    task: AgentTask,
+    hooks: RuntimeExecutionHooks,
+    agentId: String,
+    parentRunId: String,
+  ): ExecutionResult = executeSubAgentRecoveryWait(
+    task = task,
+    hooks = hooks,
+    agentId = agentId,
+    parentRunId = parentRunId,
+  )
 
   private fun parseModelActionBatch(rawOutput: String): ParsedModelActionBatch {
     val trimmed = rawOutput.trim()
@@ -4251,6 +4355,19 @@ class OpenCrayAgentRuntime(
       ?.takeIf(String::isNotBlank)
       ?.toBooleanStrictOrNull()
 
+  private fun JsonObject.optionalBooleanContent(key: String): Boolean? =
+    primitiveContent(key)
+      ?.trim()
+      ?.lowercase()
+      ?.takeIf(String::isNotBlank)
+      ?.let { value ->
+        when (value) {
+          "true" -> true
+          "false" -> false
+          else -> null
+        }
+      }
+
   private fun JsonObject.longContent(key: String): Long? =
     (this[key] as? JsonPrimitive)
       ?.content
@@ -6899,7 +7016,12 @@ class OpenCrayAgentRuntime(
       )
 
       "send_input" -> return sendInputToSubAgentHandle(
+        task = task,
+        turn = turn,
         call = call,
+        transcript = transcript,
+        hooks = hooks,
+        activeSkillCapsule = activeSkillCapsule,
         cursor = cursor,
       )
 
@@ -6933,53 +7055,53 @@ class OpenCrayAgentRuntime(
       is PreparedSubAgentDelegationResult.Invalid -> return prepared.result
       is PreparedSubAgentDelegationResult.Ready -> prepared.delegation
     }
-    val handles = subAgentHandleRegistry(cursor)
-    val existingHandle = findContinuationHandle(handles)
-    val handle = existingHandle ?: createSubAgentHandle(
-      task = task,
-      prepared = preparedDelegation,
-      agentId = continuationResume()?.agentId,
-      childRunId = continuationResume()?.childRunId,
-      childTaskId = continuationResume()?.childTaskId,
-    ).also { createdHandle ->
-      if (cursor != null) {
-        handles[createdHandle.agentId] = createdHandle
+    return when (
+      val spawned = spawnPreparedSubAgentHandle(
+        task = task,
+        turn = turn,
+        call = call,
+        transcript = transcript,
+        cursor = cursor,
+        hooks = hooks,
+        activeSkillCapsule = activeSkillCapsule,
+        preparedDelegation = preparedDelegation,
+      )
+    ) {
+      is SpawnPreparedSubAgentHandleResult.Invalid -> taskDelegationToolResult(
+        call = call,
+        delegationPlan = preparedDelegation.delegationPlan,
+        result = spawned.result,
+      )
+
+      is SpawnPreparedSubAgentHandleResult.Ready -> {
+        val childResult = spawned.execution.childResult
+        if (childResult != null) {
+          return childResultToTaskToolResult(
+            call = call,
+            handle = spawned.execution.handle,
+            delegationPlan = preparedDelegation.delegationPlan,
+            childResult = childResult,
+            compressedChildResult = spawned.execution.handle.snapshot,
+          )
+        }
+        val waitResult = waitOnResolvedSubAgentHandle(
+          task = task,
+          turn = turn,
+          call = call,
+          transcript = transcript,
+          cursor = cursor,
+          hooks = hooks,
+          activeSkillCapsule = activeSkillCapsule,
+          handle = spawned.execution.handle,
+          handles = spawned.execution.handles,
+        )
+        taskDelegationToolResult(
+          call = call,
+          delegationPlan = preparedDelegation.delegationPlan,
+          result = waitResult,
+        )
       }
     }
-    val childTask = handle.toTask()
-    emitSubAgentEvent(
-      task = task,
-      turn = turn,
-      phase = OpenCraySubAgentPhase.STARTED,
-      childTask = childTask,
-      childRunId = handle.childRunId,
-      childTaskId = handle.childTaskId,
-      summary = null,
-      snapshot = SubAgentExecutionSnapshot.running(),
-      liveContext = handle.childLiveContext,
-    )
-    val approvalContinuation = takePendingApprovalContinuation(handle, handles)
-    val execution = executeSubAgentHandleLifecycle(
-      task = task,
-      turn = turn,
-      transcript = transcript,
-      parentSessionContext = cursor?.sessionContext ?: config.sessionContext,
-      hooks = hooks,
-      activeSkillCapsule = activeSkillCapsule,
-      handle = handle,
-      profile = preparedDelegation.profile,
-      handles = handles,
-      approvalContinuation = approvalContinuation,
-      emitResumedPhaseWithoutApproval = false,
-      retainTerminalHandle = false,
-    )
-    return childResultToTaskToolResult(
-      call = call,
-      handle = execution.handle,
-      delegationPlan = preparedDelegation.delegationPlan,
-      childResult = execution.childResult,
-      compressedChildResult = execution.handle.snapshot,
-    )
   }
 
   private fun canonicalSubAgentToolName(toolName: String): String? = when (toolName.trim().lowercase()) {
@@ -7034,6 +7156,50 @@ class OpenCrayAgentRuntime(
       is PreparedSubAgentDelegationResult.Invalid -> return prepared.result
       is PreparedSubAgentDelegationResult.Ready -> prepared.delegation
     }
+    return when (
+      val spawned = spawnPreparedSubAgentHandle(
+        task = task,
+        turn = turn,
+        call = call,
+        transcript = transcript,
+        cursor = cursor,
+        hooks = hooks,
+        activeSkillCapsule = activeSkillCapsule,
+        preparedDelegation = preparedDelegation,
+      )
+    ) {
+      is SpawnPreparedSubAgentHandleResult.Invalid -> spawned.result
+      is SpawnPreparedSubAgentHandleResult.Ready -> {
+        val childResult = spawned.execution.childResult
+        if (childResult != null) {
+          childResultToSpawnAgentToolResult(
+            call = call,
+            handle = spawned.execution.handle,
+            delegationPlan = preparedDelegation.delegationPlan,
+            childResult = childResult,
+            childApprovalResume = spawned.execution.childApprovalResume,
+          )
+        } else {
+          storedSpawnAgentHandleResult(
+            call = call,
+            handle = spawned.execution.handle,
+            delegationPlan = preparedDelegation.delegationPlan,
+          )
+        }
+      }
+    }
+  }
+
+  private fun spawnPreparedSubAgentHandle(
+    task: AgentTask,
+    turn: Int,
+    call: AgentToolCall,
+    transcript: List<RuntimeConversationMessage>,
+    cursor: PromptTurnCursor?,
+    hooks: RuntimeExecutionHooks,
+    activeSkillCapsule: ActiveSkillCapsule?,
+    preparedDelegation: PreparedSubAgentDelegation,
+  ): SpawnPreparedSubAgentHandleResult {
     val handles = subAgentHandleRegistry(cursor)
     val existingHandle = findContinuationHandle(handles)
     val requestedAgentId = call.arguments.primitiveContent("agent_id")
@@ -7044,40 +7210,47 @@ class OpenCrayAgentRuntime(
       requestedAgentId != null &&
       requestedAgentId != existingHandle.agentId
     ) {
-      return AgentToolResult(
-        toolName = call.toolName,
-        status = AgentToolResultStatus.FAILED,
-        content = "Delegated child handle '$requestedAgentId' does not match the resumable child handle '${existingHandle.agentId}'.",
-        errorCode = "SUBAGENT_HANDLE_MISMATCH",
-        errorMessage = "Delegated child handle '$requestedAgentId' does not match the resumable child handle '${existingHandle.agentId}'.",
-        metadata = mapOf(
-          "agentId" to existingHandle.agentId,
-          "requestedAgentId" to requestedAgentId,
+      return SpawnPreparedSubAgentHandleResult.Invalid(
+        AgentToolResult(
+          toolName = call.toolName,
+          status = AgentToolResultStatus.FAILED,
+          content = "Delegated child handle '$requestedAgentId' does not match the resumable child handle '${existingHandle.agentId}'.",
+          errorCode = "SUBAGENT_HANDLE_MISMATCH",
+          errorMessage = "Delegated child handle '$requestedAgentId' does not match the resumable child handle '${existingHandle.agentId}'.",
+          metadata = mapOf(
+            "agentId" to existingHandle.agentId,
+            "requestedAgentId" to requestedAgentId,
+          ),
         ),
       )
     }
     val handle = existingHandle ?: run {
-      val agentId = requestedAgentId ?: "agent-${UUID.randomUUID().toString().take(8)}"
+      val agentId = requestedAgentId ?: continuationResume()?.agentId ?: "agent-${UUID.randomUUID().toString().take(8)}"
       if (handles.containsKey(agentId)) {
-        return AgentToolResult(
-          toolName = call.toolName,
-          status = AgentToolResultStatus.FAILED,
-          content = "Delegated child handle '$agentId' already exists.",
-          errorCode = "SUBAGENT_HANDLE_EXISTS",
-          errorMessage = "Delegated child handle '$agentId' already exists.",
-          metadata = mapOf("agentId" to agentId),
+        return SpawnPreparedSubAgentHandleResult.Invalid(
+          AgentToolResult(
+            toolName = call.toolName,
+            status = AgentToolResultStatus.FAILED,
+            content = "Delegated child handle '$agentId' already exists.",
+            errorCode = "SUBAGENT_HANDLE_EXISTS",
+            errorMessage = "Delegated child handle '$agentId' already exists.",
+            metadata = mapOf("agentId" to agentId),
+          ),
         )
       }
       createSubAgentHandle(
         task = task,
         prepared = preparedDelegation,
         agentId = agentId,
+        childRunId = continuationResume()?.childRunId,
+        childTaskId = continuationResume()?.childTaskId,
       ).also { createdHandle ->
         handles[createdHandle.agentId] = createdHandle
         config.subAgentExecutionCoordinator.upsertHandle(createdHandle)
         emitSubAgentEvent(
           task = task,
           turn = turn,
+          agentId = createdHandle.agentId,
           phase = OpenCraySubAgentPhase.STARTED,
           childTask = preparedDelegation.childTask,
           childRunId = createdHandle.childRunId,
@@ -7090,32 +7263,34 @@ class OpenCrayAgentRuntime(
     }
     if (cursor != null) {
       activeSubAgentExecution(cursor = cursor, agentId = handle.agentId)?.let {
-        val latestHandle = synchronizedSubAgentHandle(
-          cursor = cursor,
-          agentId = handle.agentId,
-        ) ?: handle
-        return storedSpawnAgentHandleResult(
-          call = call,
-          handle = latestHandle,
-          delegationPlan = preparedDelegation.delegationPlan,
+        return SpawnPreparedSubAgentHandleResult.Ready(
+          SpawnPreparedSubAgentHandleExecution(
+            handle = synchronizedSubAgentHandle(
+              cursor = cursor,
+              agentId = handle.agentId,
+            ) ?: handle,
+            handles = handles,
+          ),
         )
       }
-      if (isTerminalSubAgentState(handle.snapshot.state) && handle.pendingApprovalResume == null) {
-        return storedSpawnAgentHandleResult(
-          call = call,
-          handle = handle,
-          delegationPlan = preparedDelegation.delegationPlan,
+      if (handle.isTerminalWithoutPendingApprovalResume()) {
+        return SpawnPreparedSubAgentHandleResult.Ready(
+          SpawnPreparedSubAgentHandleExecution(
+            handle = handle,
+            handles = handles,
+          ),
         )
       }
       val approvalContinuation = takePendingApprovalContinuation(
         handle = handle,
         handles = handles,
       )
-      if (handle.pendingApprovalResume != null && approvalContinuation == null) {
-        return storedSpawnAgentHandleResult(
-          call = call,
-          handle = handle,
-          delegationPlan = preparedDelegation.delegationPlan,
+      if (!handle.canContinueDetachedExecution(hasApprovalContinuation = approvalContinuation != null)) {
+        return SpawnPreparedSubAgentHandleResult.Ready(
+          SpawnPreparedSubAgentHandleExecution(
+            handle = handle,
+            handles = handles,
+          ),
         )
       }
       val startedHandle = startSubAgentHandleBackgroundExecution(
@@ -7131,28 +7306,31 @@ class OpenCrayAgentRuntime(
         approvalContinuation = approvalContinuation,
         emitResumedPhaseWithoutApproval = existingHandle == null,
       )
-      return storedSpawnAgentHandleResult(
-        call = call,
-        handle = startedHandle,
-        delegationPlan = preparedDelegation.delegationPlan,
+      return SpawnPreparedSubAgentHandleResult.Ready(
+        SpawnPreparedSubAgentHandleExecution(
+          handle = startedHandle,
+          handles = handles,
+        ),
       )
     }
-    if (isTerminalSubAgentState(handle.snapshot.state) && handle.pendingApprovalResume == null) {
-      return storedSpawnAgentHandleResult(
-        call = call,
-        handle = handle,
-        delegationPlan = preparedDelegation.delegationPlan,
+    if (handle.isTerminalWithoutPendingApprovalResume()) {
+      return SpawnPreparedSubAgentHandleResult.Ready(
+        SpawnPreparedSubAgentHandleExecution(
+          handle = handle,
+          handles = handles,
+        ),
       )
     }
     val approvalContinuation = takePendingApprovalContinuation(
       handle = handle,
       handles = handles,
     )
-    if (handle.pendingApprovalResume != null && approvalContinuation == null) {
-      return storedSpawnAgentHandleResult(
-        call = call,
-        handle = handle,
-        delegationPlan = preparedDelegation.delegationPlan,
+    if (!handle.canContinueDetachedExecution(hasApprovalContinuation = approvalContinuation != null)) {
+      return SpawnPreparedSubAgentHandleResult.Ready(
+        SpawnPreparedSubAgentHandleExecution(
+          handle = handle,
+          handles = handles,
+        ),
       )
     }
     val execution = executeSubAgentHandleLifecycle(
@@ -7169,12 +7347,13 @@ class OpenCrayAgentRuntime(
       emitResumedPhaseWithoutApproval = existingHandle == null,
       retainTerminalHandle = true,
     )
-    return childResultToSpawnAgentToolResult(
-      call = call,
-      handle = execution.handle,
-      delegationPlan = preparedDelegation.delegationPlan,
-      childResult = execution.childResult,
-      childApprovalResume = execution.childApprovalResume,
+    return SpawnPreparedSubAgentHandleResult.Ready(
+      SpawnPreparedSubAgentHandleExecution(
+        handle = execution.handle,
+        handles = handles,
+        childResult = execution.childResult,
+        childApprovalResume = execution.childApprovalResume,
+      ),
     )
   }
 
@@ -7190,10 +7369,17 @@ class OpenCrayAgentRuntime(
     val handles = subAgentHandleRegistry(cursor)
     val agentId = resolveSubAgentHandleId(call)
       ?: return invalidSubAgentCallResult(call, "wait_agent agent_id must not be blank.")
-    val handle = handles[agentId] ?: return unknownSubAgentHandleResult(
-      call = call,
-      agentId = agentId,
-    )
+    val handle = handles[agentId]
+      ?: if (cursor == null) {
+        latestCoordinatedSubAgentHandleByAgentId(agentId)
+          ?: latestClosedCoordinatedSubAgentHandleByAgentId(agentId)
+      } else {
+        null
+      }
+      ?: return unknownSubAgentHandleResult(
+        call = call,
+        agentId = agentId,
+      )
     return waitOnResolvedSubAgentHandle(
       task = task,
       turn = turn,
@@ -7207,7 +7393,7 @@ class OpenCrayAgentRuntime(
     )
   }
 
-  private fun waitOnDetachedRecoverySubAgentHandle(
+  private fun waitOnRecoverySubAgentHandle(
     task: AgentTask,
     turn: Int,
     call: AgentToolCall,
@@ -7216,12 +7402,14 @@ class OpenCrayAgentRuntime(
     activeSkillCapsule: ActiveSkillCapsule?,
     agentId: String,
     parentRunId: String,
+    startDetachedExecutionIfNeeded: Boolean = false,
   ): AgentToolResult {
     val key = SubAgentExecutionKey(
       parentRunId = parentRunId,
       agentId = agentId,
     )
     val handle = config.subAgentExecutionCoordinator.currentHandle(key)
+      ?: config.subAgentExecutionCoordinator.closedHandle(key)
       ?: config.seededSubAgentHandles.firstOrNull { seeded ->
         seeded.agentId == agentId && seeded.parentRunId == parentRunId
       }
@@ -7240,7 +7428,7 @@ class OpenCrayAgentRuntime(
       activeSkillCapsule = activeSkillCapsule,
       handle = restoredHandle,
       handles = linkedMapOf(restoredHandle.agentId to restoredHandle),
-      startDetachedExecutionIfNeeded = false,
+      startDetachedExecutionIfNeeded = startDetachedExecutionIfNeeded,
     )
   }
 
@@ -7257,7 +7445,7 @@ class OpenCrayAgentRuntime(
     startDetachedExecutionIfNeeded: Boolean = true,
   ): AgentToolResult {
     val agentId = handle.agentId
-    if (isTerminalSubAgentState(handle.snapshot.state) && handle.pendingApprovalResume == null) {
+    if (handle.isTerminalWithoutPendingApprovalResume()) {
       return storedSubAgentHandleResult(call = call, handle = handle)
     }
     val hadActiveExecution = cursor != null && activeSubAgentExecution(cursor = cursor, agentId = agentId) != null
@@ -7277,9 +7465,9 @@ class OpenCrayAgentRuntime(
         cursor = cursor,
         agentId = agentId,
       )
-      if (latestHandleAfterJoin != null &&
-        (isTerminalSubAgentState(latestHandleAfterJoin.snapshot.state) ||
-          latestHandleAfterJoin.pendingApprovalResume != null)
+      if (
+        latestHandleAfterJoin != null &&
+        !latestHandleAfterJoin.canContinueDetachedExecution(hasApprovalContinuation = false)
       ) {
         return storedSubAgentHandleResult(call = call, handle = latestHandleAfterJoin)
       }
@@ -7297,12 +7485,21 @@ class OpenCrayAgentRuntime(
           )
         },
       )
-      val latestHandleAfterJoin = coordinatedSubAgentHandle(handle) ?: handle
-      if (
-        isTerminalSubAgentState(latestHandleAfterJoin.snapshot.state) ||
-        latestHandleAfterJoin.pendingApprovalResume != null
-      ) {
+      val latestHandleAfterJoin = coordinatedSubAgentHandle(handle)
+        ?: return detachedSubAgentHandleUnavailableAfterJoinResult(
+          call = call,
+          handle = handle,
+        )
+      if (!latestHandleAfterJoin.canContinueDetachedExecution(hasApprovalContinuation = false)) {
         return storedSubAgentHandleResult(call = call, handle = latestHandleAfterJoin)
+      }
+    }
+    if (cursor == null) {
+      unavailableCoordinatorBackedDetachedHandleResult(
+        call = call,
+        handle = handle,
+      )?.let { unavailableResult ->
+        return unavailableResult
       }
     }
     if (cursor == null && !startDetachedExecutionIfNeeded) {
@@ -7315,7 +7512,7 @@ class OpenCrayAgentRuntime(
       handle = handle,
       handles = handles,
     )
-    if (handle.pendingApprovalResume != null && approvalContinuation == null) {
+    if (!handle.canContinueDetachedExecution(hasApprovalContinuation = approvalContinuation != null)) {
       return storedSubAgentHandleResult(call = call, handle = handle)
     }
     val profile = BuiltInSubAgentProfiles.resolve(handle.subagentType)
@@ -7389,10 +7586,7 @@ class OpenCrayAgentRuntime(
     handles: MutableMap<String, SubAgentHandleState>,
   ): SubAgentHandleState? {
     val normalizedHandle = coordinatedSubAgentHandle(handle) ?: handle
-    if (
-      isTerminalSubAgentState(normalizedHandle.snapshot.state) &&
-      normalizedHandle.pendingApprovalResume == null
-    ) {
+    if (normalizedHandle.isTerminalWithoutPendingApprovalResume()) {
       return normalizedHandle
     }
     if (
@@ -7404,7 +7598,7 @@ class OpenCrayAgentRuntime(
       handle = normalizedHandle,
       handles = handles,
     )
-    if (normalizedHandle.pendingApprovalResume != null && approvalContinuation == null) {
+    if (!normalizedHandle.canContinueDetachedExecution(hasApprovalContinuation = approvalContinuation != null)) {
       return normalizedHandle
     }
     val profile = BuiltInSubAgentProfiles.resolve(normalizedHandle.subagentType)
@@ -7429,6 +7623,7 @@ class OpenCrayAgentRuntime(
   ): PreparedSubAgentMailboxDelivery {
     val normalizedHandle = handle.withNormalizedMailbox()
     val mailbox = normalizedHandle.normalizedMailbox()
+    val mailboxDeliveryCursorBeforeCurrentTurn = mailbox.lastDeliveredMessageId
     val pendingMessages = mailbox.pendingMessages()
     val promptResumeState = pendingMessages.fold(
       approvalContinuation?.resume?.promptResumeState ?: normalizedHandle.childPromptResumeState,
@@ -7440,6 +7635,7 @@ class OpenCrayAgentRuntime(
         handle = normalizedHandle,
         promptResumeState = promptResumeState,
         includeMailboxMessagesInPrompt = promptResumeState == null,
+        mailboxDeliveryCursorBeforeCurrentTurn = mailboxDeliveryCursorBeforeCurrentTurn,
       )
     }
     val deliveredMailbox = mailbox.markDeliveredThrough(pendingMessages.last().messageId)
@@ -7455,6 +7651,7 @@ class OpenCrayAgentRuntime(
       ),
       promptResumeState = promptResumeState,
       includeMailboxMessagesInPrompt = promptResumeState == null,
+      mailboxDeliveryCursorBeforeCurrentTurn = mailboxDeliveryCursorBeforeCurrentTurn,
     )
   }
 
@@ -7486,6 +7683,7 @@ class OpenCrayAgentRuntime(
     val runningHandle = preparedMailboxDelivery.handle.copy(
       snapshot = runningSnapshot,
       pendingApprovalResume = null,
+      pendingApprovalDecision = null,
       updatedAtEpochMs = clock(),
     )
     handles[handle.agentId] = runningHandle
@@ -7494,6 +7692,7 @@ class OpenCrayAgentRuntime(
       emitSubAgentEvent(
         task = task,
         turn = turn,
+        agentId = runningHandle.agentId,
         phase = OpenCraySubAgentPhase.RESUMED,
         childTask = runningHandle.toTask(),
         childRunId = runningHandle.childRunId,
@@ -7535,6 +7734,7 @@ class OpenCrayAgentRuntime(
         snapshot = compressedChildResult,
         pendingApprovalResume = childApprovalResume,
         childLiveContext = childLiveContext,
+        pendingApprovalDecision = null,
         childExecutionStatus = childResult.status.name,
         childTurnCount = childResult.metadata["turnCount"]?.toIntOrNull(),
         childToolCallCount = childResult.metadata["toolCallCount"]?.toIntOrNull(),
@@ -7549,6 +7749,7 @@ class OpenCrayAgentRuntime(
     emitSubAgentEvent(
       task = task,
       turn = turn,
+      agentId = updatedHandle.agentId,
       phase = when (childResult.status) {
         ExecutionStatus.SUCCESS -> OpenCraySubAgentPhase.COMPLETED
         ExecutionStatus.CANCELLED -> OpenCraySubAgentPhase.CANCELLED
@@ -7595,12 +7796,14 @@ class OpenCrayAgentRuntime(
     val runningHandle = preparedMailboxDelivery.handle.copy(
       snapshot = runningSnapshot,
       pendingApprovalResume = null,
+      pendingApprovalDecision = null,
       updatedAtEpochMs = clock(),
     )
     val shouldEmitResumed = approvalContinuation != null || emitResumedPhaseWithoutApproval
     val cancelRequested = AtomicBoolean(false)
     val closed = AtomicBoolean(false)
     val executor = Executors.newSingleThreadExecutor()
+    lateinit var activeExecution: SubAgentActiveExecution
     val future = FutureTask<Unit> {
       val childResult = runCatching {
         executeSubAgentHandleRuntime(
@@ -7618,6 +7821,7 @@ class OpenCrayAgentRuntime(
           handle = runningHandle,
           profile = profile,
           approvalContinuation = approvalContinuation,
+          owningExecution = activeExecution,
           promptResumeStateOverride = preparedMailboxDelivery.promptResumeState,
           includeMailboxMessagesInPrompt = preparedMailboxDelivery.includeMailboxMessagesInPrompt,
         )
@@ -7635,13 +7839,16 @@ class OpenCrayAgentRuntime(
         childResult = childResult,
         executor = executor,
         closed = closed,
+        activeExecution = activeExecution,
       )
     }
-    val activeExecution = SubAgentActiveExecution(
+    activeExecution = SubAgentActiveExecution(
       executor = executor,
       future = future,
       cancelRequested = cancelRequested,
       closed = closed,
+      mailboxDeliveryCursorBeforeCurrentTurn =
+        preparedMailboxDelivery.mailboxDeliveryCursorBeforeCurrentTurn,
     )
     val registration = config.subAgentExecutionCoordinator.beginExecution(
       handle = runningHandle,
@@ -7674,8 +7881,12 @@ class OpenCrayAgentRuntime(
     agentId: String,
     onProgress: ((SubAgentHandleState) -> Unit)? = null,
   ) {
-    waitForSubAgentExecution(
-      execution = activeSubAgentExecution(cursor = cursor, agentId = agentId),
+    val handle = synchronizedSubAgentHandle(
+      cursor = cursor,
+      agentId = agentId,
+    ) ?: return
+    waitForStableSubAgentExecution(
+      key = subAgentExecutionKey(handle),
       latestHandleProvider = {
         synchronizedSubAgentHandle(cursor = cursor, agentId = agentId)
       },
@@ -7688,8 +7899,8 @@ class OpenCrayAgentRuntime(
     onProgress: ((SubAgentHandleState) -> Unit)? = null,
   ) {
     val key = subAgentExecutionKey(handle)
-    waitForSubAgentExecution(
-      execution = config.subAgentExecutionCoordinator.activeExecution(key),
+    waitForStableSubAgentExecution(
+      key = key,
       latestHandleProvider = {
         config.subAgentExecutionCoordinator.currentHandle(key) ?: handle
       },
@@ -7697,45 +7908,48 @@ class OpenCrayAgentRuntime(
     )
   }
 
-  private fun waitForSubAgentExecution(
-    execution: SubAgentActiveExecution?,
+  private fun waitForStableSubAgentExecution(
+    key: SubAgentExecutionKey,
     latestHandleProvider: (() -> SubAgentHandleState?)? = null,
     onProgress: ((SubAgentHandleState) -> Unit)? = null,
   ) {
-    val activeExecution = execution ?: return
     var emittedHeartbeat = false
     var lastCheckpointAtEpochMs = latestHandleProvider?.invoke()?.childPromptCheckpointAtEpochMs
-    try {
-      while (true) {
-        try {
-          activeExecution.future.get(
-            SUBAGENT_WAIT_PROGRESS_POLL_INTERVAL_MS,
-            TimeUnit.MILLISECONDS,
-          )
-          return
-        } catch (_: TimeoutException) {
-          val latestHandle = latestHandleProvider?.invoke() ?: continue
-          val checkpointAtEpochMs = latestHandle.childPromptCheckpointAtEpochMs
-          val shouldEmitProgress = when {
-            checkpointAtEpochMs != null && checkpointAtEpochMs != lastCheckpointAtEpochMs -> true
-            !emittedHeartbeat && isWaitingSubAgentState(latestHandle.snapshot.state) -> true
-            else -> false
-          }
-          if (checkpointAtEpochMs != null) {
-            lastCheckpointAtEpochMs = checkpointAtEpochMs
-          }
-          if (shouldEmitProgress) {
-            emittedHeartbeat = true
-            onProgress?.invoke(latestHandle)
-          }
+    while (true) {
+      val execution = config.subAgentExecutionCoordinator.activeExecution(key) ?: return
+      try {
+        execution.future.get(
+          SUBAGENT_WAIT_PROGRESS_POLL_INTERVAL_MS,
+          TimeUnit.MILLISECONDS,
+        )
+      } catch (_: TimeoutException) {
+        val latestHandle = latestHandleProvider?.invoke() ?: continue
+        val checkpointAtEpochMs = latestHandle.childPromptCheckpointAtEpochMs
+        val shouldEmitProgress = when {
+          checkpointAtEpochMs != null && checkpointAtEpochMs != lastCheckpointAtEpochMs -> true
+          !emittedHeartbeat && isWaitingSubAgentState(latestHandle.snapshot.state) -> true
+          else -> false
         }
+        if (checkpointAtEpochMs != null) {
+          lastCheckpointAtEpochMs = checkpointAtEpochMs
+        }
+        if (shouldEmitProgress) {
+          emittedHeartbeat = true
+          onProgress?.invoke(latestHandle)
+        }
+        continue
+      } catch (_: InterruptedException) {
+        Thread.currentThread().interrupt()
+        return
+      } catch (_: java.util.concurrent.CancellationException) {
+        Unit
+      } catch (_: java.util.concurrent.ExecutionException) {
+        Unit
       }
-    } catch (_: InterruptedException) {
-      Thread.currentThread().interrupt()
-    } catch (_: java.util.concurrent.CancellationException) {
-      Unit
-    } catch (_: java.util.concurrent.ExecutionException) {
-      Unit
+      val nextExecution = config.subAgentExecutionCoordinator.activeExecution(key)
+      if (nextExecution == null || nextExecution === execution) {
+        return
+      }
     }
   }
 
@@ -7768,41 +7982,42 @@ class OpenCrayAgentRuntime(
     childResult: ExecutionResult,
     executor: ExecutorService,
     closed: AtomicBoolean,
+    activeExecution: SubAgentActiveExecution,
   ) {
-    var updatedHandle: SubAgentHandleState? = null
-    var updatedSnapshot: SubAgentExecutionSnapshot? = null
-    var completionPhase: OpenCraySubAgentPhase? = null
     if (closed.get()) {
-      config.subAgentExecutionCoordinator.takeActiveExecution(subAgentExecutionKey(handle))
+      config.subAgentExecutionCoordinator.takeActiveExecution(
+        key = subAgentExecutionKey(handle),
+        expectedExecution = activeExecution,
+      )
       executor.shutdownNow()
       return
     }
-    synchronized(cursor.subAgentExecutionLock) {
-      val compressedChildResult = SubAgentResultCompressor.compress(childResult)
-      val childApprovalResume = childApprovalResume(
-        childResult = childResult,
-        agentId = handle.agentId,
-        childRunId = handle.childRunId,
-        childTaskId = handle.childTaskId,
-      )
-      val childLiveContext = SubAgentLiveContextSnapshot.fromRuntimeMetadata(childResult.metadata)
-      updatedHandle = handle
-        .withClearedChildPromptCheckpoint(updatedAtEpochMs = clock())
-        .copy(
-          snapshot = compressedChildResult,
-          pendingApprovalResume = childApprovalResume,
-          childLiveContext = childLiveContext,
-          childExecutionStatus = childResult.status.name,
-          childTurnCount = childResult.metadata["turnCount"]?.toIntOrNull(),
-          childToolCallCount = childResult.metadata["toolCallCount"]?.toIntOrNull(),
-        )
-      cursor.subAgentHandles[handle.agentId] = requireNotNull(updatedHandle)
-      updatedSnapshot = compressedChildResult
-      completionPhase = subAgentCompletionPhase(childResult.status)
-    }
-    val finalizedHandle = requireNotNull(
-      config.subAgentExecutionCoordinator.finishExecution(requireNotNull(updatedHandle)),
+    val updatedSnapshot = SubAgentResultCompressor.compress(childResult)
+    val childApprovalResume = childApprovalResume(
+      childResult = childResult,
+      agentId = handle.agentId,
+      childRunId = handle.childRunId,
+      childTaskId = handle.childTaskId,
     )
+    val childLiveContext = SubAgentLiveContextSnapshot.fromRuntimeMetadata(childResult.metadata)
+    val updatedHandle = handle
+      .withClearedChildPromptCheckpoint(updatedAtEpochMs = clock())
+      .copy(
+        snapshot = updatedSnapshot,
+        pendingApprovalResume = childApprovalResume,
+        pendingApprovalDecision = null,
+        childLiveContext = childLiveContext,
+        childExecutionStatus = childResult.status.name,
+        childTurnCount = childResult.metadata["turnCount"]?.toIntOrNull(),
+        childToolCallCount = childResult.metadata["toolCallCount"]?.toIntOrNull(),
+      )
+    val finalizedHandle = config.subAgentExecutionCoordinator.finishExecution(
+      handle = updatedHandle,
+      expectedExecution = activeExecution,
+    ) ?: run {
+      executor.shutdownNow()
+      return
+    }
     synchronized(cursor.subAgentExecutionLock) {
       cursor.subAgentHandles[handle.agentId] = finalizedHandle
     }
@@ -7810,12 +8025,13 @@ class OpenCrayAgentRuntime(
     emitSubAgentEvent(
       task = task,
       turn = turn,
-      phase = requireNotNull(completionPhase),
+      agentId = finalizedHandle.agentId,
+      phase = subAgentCompletionPhase(childResult.status),
       childTask = finalizedHandle.toTask(),
       childRunId = finalizedHandle.childRunId,
       childTaskId = finalizedHandle.childTaskId,
-      summary = requireNotNull(updatedSnapshot).summaryText(),
-      snapshot = requireNotNull(updatedSnapshot),
+      summary = updatedSnapshot.summaryText(),
+      snapshot = updatedSnapshot,
       liveContext = finalizedHandle.childLiveContext,
     )
   }
@@ -7838,73 +8054,138 @@ class OpenCrayAgentRuntime(
     if (existingExecution != null) {
       return coordinatedSubAgentHandle(handle) ?: handle
     }
-    val preparedMailboxDelivery = prepareSubAgentMailboxDelivery(
+    val initialTurn = prepareDetachedSubAgentRunningTurn(
       handle = handle,
       approvalContinuation = approvalContinuation,
+      emitResumedPhaseWithoutApproval = emitResumedPhaseWithoutApproval,
     )
-    val runningSnapshot = backgroundRunningSnapshot(approvalContinuation)
-    val runningHandle = preparedMailboxDelivery.handle.copy(
-      snapshot = runningSnapshot,
-      pendingApprovalResume = null,
-      updatedAtEpochMs = clock(),
-    )
-    val shouldEmitResumed = approvalContinuation != null || emitResumedPhaseWithoutApproval
     val cancelRequested = AtomicBoolean(false)
     val closed = AtomicBoolean(false)
     val executor = Executors.newSingleThreadExecutor()
+    lateinit var activeExecution: SubAgentActiveExecution
+    val detachedHooks = RuntimeExecutionHooks(
+      isCancellationRequested = {
+        cancelRequested.get() || hooks.isCancellationRequested()
+      },
+      requestRetry = { _ -> Unit },
+      requestSuspend = { _ -> Unit },
+    )
     val future = FutureTask<Unit> {
-      val childResult = runCatching {
-        executeSubAgentHandleRuntime(
-          parentTask = task,
-          transcript = transcript,
-          parentSessionContext = parentSessionContext,
-          hooks = RuntimeExecutionHooks(
-            isCancellationRequested = {
-              cancelRequested.get() || hooks.isCancellationRequested()
-            },
-            requestRetry = { _ -> Unit },
-            requestSuspend = { _ -> Unit },
-          ),
-          activeSkillCapsule = activeSkillCapsule,
-          handle = runningHandle,
-          profile = profile,
-          approvalContinuation = approvalContinuation,
-          promptResumeStateOverride = preparedMailboxDelivery.promptResumeState,
-          includeMailboxMessagesInPrompt = preparedMailboxDelivery.includeMailboxMessagesInPrompt,
+      var nextTurn: DetachedSubAgentRunningTurn? = initialTurn
+      while (nextTurn != null) {
+        if (closed.get()) {
+          config.subAgentExecutionCoordinator.takeActiveExecution(
+            subAgentExecutionKey(nextTurn.handle),
+            activeExecution,
+          )
+          executor.shutdownNow()
+          return@FutureTask
+        }
+        val runningTurn = nextTurn
+        val childResult = runCatching {
+          executeSubAgentHandleRuntime(
+            parentTask = task,
+            transcript = transcript,
+            parentSessionContext = parentSessionContext,
+            hooks = detachedHooks,
+            activeSkillCapsule = activeSkillCapsule,
+            handle = runningTurn.handle,
+            profile = profile,
+            approvalContinuation = runningTurn.approvalContinuation,
+            owningExecution = activeExecution,
+            promptResumeStateOverride = runningTurn.promptResumeStateOverride,
+            includeMailboxMessagesInPrompt = runningTurn.includeMailboxMessagesInPrompt,
+          )
+        }.getOrElse { error ->
+          unexpectedSubAgentBackgroundExecutionResult(
+            handle = runningTurn.handle,
+            error = error,
+          )
+        }
+        if (closed.get()) {
+          config.subAgentExecutionCoordinator.takeActiveExecution(
+            subAgentExecutionKey(runningTurn.handle),
+            activeExecution,
+          )
+          executor.shutdownNow()
+          return@FutureTask
+        }
+        val completedTurn = completeDetachedBackgroundSubAgentTurn(
+          handle = runningTurn.handle,
+          childResult = childResult,
         )
-      }.getOrElse { error ->
-        unexpectedSubAgentBackgroundExecutionResult(
-          handle = runningHandle,
-          error = error,
+        val storedHandle = if (completedTurn.shouldAutoContinue) {
+          config.subAgentExecutionCoordinator.upsertHandleIfOwnedByExecution(
+            handle = completedTurn.storedHandle,
+            expectedExecution = activeExecution,
+          )
+        } else {
+          config.subAgentExecutionCoordinator.finishExecution(
+            handle = completedTurn.storedHandle,
+            expectedExecution = activeExecution,
+          )
+        } ?: run {
+          executor.shutdownNow()
+          return@FutureTask
+        }
+        emitSubAgentEvent(
+          task = task,
+          turn = turn,
+          agentId = storedHandle.agentId,
+          phase = completedTurn.completionPhase,
+          childTask = completedTurn.completedHandle.toTask(),
+          childRunId = storedHandle.childRunId,
+          childTaskId = storedHandle.childTaskId,
+          summary = completedTurn.snapshot.summaryText(),
+          snapshot = completedTurn.snapshot,
         )
+        if (!completedTurn.shouldAutoContinue || closed.get()) {
+          executor.shutdownNow()
+          return@FutureTask
+        }
+        nextTurn = prepareDetachedSubAgentRunningTurn(
+          handle = latestSubAgentHandle(storedHandle).withNormalizedMailbox(),
+          approvalContinuation = null,
+          emitResumedPhaseWithoutApproval = true,
+        )
+        val continuedHandle = config.subAgentExecutionCoordinator.upsertHandleIfOwnedByExecution(
+          handle = nextTurn.handle,
+          expectedExecution = activeExecution,
+        ) ?: run {
+          executor.shutdownNow()
+          return@FutureTask
+        }
+        nextTurn = nextTurn.copy(handle = continuedHandle)
+        if (nextTurn.emitResumedPhase) {
+          emitResumedSubAgentEvent(
+            task = task,
+            turn = turn,
+            handle = nextTurn.handle,
+            approvalContinuation = nextTurn.approvalContinuation,
+          )
+        }
       }
-      completeDetachedBackgroundSubAgentExecution(
-        task = task,
-        turn = turn,
-        handle = runningHandle,
-        childResult = childResult,
-        executor = executor,
-        closed = closed,
-      )
     }
-    val activeExecution = SubAgentActiveExecution(
+    activeExecution = SubAgentActiveExecution(
       executor = executor,
       future = future,
       cancelRequested = cancelRequested,
       closed = closed,
+      mailboxDeliveryCursorBeforeCurrentTurn =
+        initialTurn.mailboxDeliveryCursorBeforeCurrentTurn,
     )
     val registration = config.subAgentExecutionCoordinator.beginExecution(
-      handle = runningHandle,
+      handle = initialTurn.handle,
       execution = activeExecution,
     )
     if (!registration.started) {
       closed.set(true)
       future.cancel(true)
       executor.shutdownNow()
-      return coordinatedSubAgentHandle(runningHandle) ?: registration.handle
+      return coordinatedSubAgentHandle(initialTurn.handle) ?: registration.handle
     }
     executor.execute(future)
-    if (shouldEmitResumed) {
+    if (initialTurn.emitResumedPhase) {
       emitResumedSubAgentEvent(
         task = task,
         turn = turn,
@@ -7912,59 +8193,78 @@ class OpenCrayAgentRuntime(
         approvalContinuation = approvalContinuation,
       )
     }
-    return coordinatedSubAgentHandle(runningHandle) ?: registration.handle
+    return coordinatedSubAgentHandle(initialTurn.handle) ?: registration.handle
   }
 
-  private fun completeDetachedBackgroundSubAgentExecution(
-    task: AgentTask,
-    turn: Int,
+  private fun prepareDetachedSubAgentRunningTurn(
+    handle: SubAgentHandleState,
+    approvalContinuation: PendingSubAgentApprovalContinuation?,
+    emitResumedPhaseWithoutApproval: Boolean,
+  ): DetachedSubAgentRunningTurn {
+    val preparedMailboxDelivery = prepareSubAgentMailboxDelivery(
+      handle = handle,
+      approvalContinuation = approvalContinuation,
+    )
+    val runningHandle = preparedMailboxDelivery.handle.copy(
+      snapshot = backgroundRunningSnapshot(approvalContinuation),
+      pendingApprovalResume = null,
+      pendingApprovalDecision = null,
+      updatedAtEpochMs = clock(),
+    )
+    return DetachedSubAgentRunningTurn(
+      handle = runningHandle,
+      approvalContinuation = approvalContinuation,
+      promptResumeStateOverride = preparedMailboxDelivery.promptResumeState,
+      includeMailboxMessagesInPrompt = preparedMailboxDelivery.includeMailboxMessagesInPrompt,
+      emitResumedPhase = approvalContinuation != null || emitResumedPhaseWithoutApproval,
+      mailboxDeliveryCursorBeforeCurrentTurn =
+        preparedMailboxDelivery.mailboxDeliveryCursorBeforeCurrentTurn,
+    )
+  }
+
+  private fun completeDetachedBackgroundSubAgentTurn(
     handle: SubAgentHandleState,
     childResult: ExecutionResult,
-    executor: ExecutorService,
-    closed: AtomicBoolean,
-  ) {
-    var updatedHandle: SubAgentHandleState? = null
-    var updatedSnapshot: SubAgentExecutionSnapshot? = null
-    var completionPhase: OpenCraySubAgentPhase? = null
-    if (closed.get()) {
-      config.subAgentExecutionCoordinator.takeActiveExecution(subAgentExecutionKey(handle))
-      executor.shutdownNow()
-      return
-    }
+  ): DetachedSubAgentTurnCompletion {
+    val latestHandle = latestSubAgentHandle(handle).withNormalizedMailbox()
     val compressedChildResult = SubAgentResultCompressor.compress(childResult)
     val childApprovalResume = childApprovalResume(
       childResult = childResult,
-      agentId = handle.agentId,
-      childRunId = handle.childRunId,
-      childTaskId = handle.childTaskId,
+      agentId = latestHandle.agentId,
+      childRunId = latestHandle.childRunId,
+      childTaskId = latestHandle.childTaskId,
     )
     val childLiveContext = SubAgentLiveContextSnapshot.fromRuntimeMetadata(childResult.metadata)
-    updatedHandle = handle
+    val completedHandle = latestHandle
       .withClearedChildPromptCheckpoint(updatedAtEpochMs = clock())
       .copy(
         snapshot = compressedChildResult,
         pendingApprovalResume = childApprovalResume,
         childLiveContext = childLiveContext,
+        pendingApprovalDecision = null,
         childExecutionStatus = childResult.status.name,
         childTurnCount = childResult.metadata["turnCount"]?.toIntOrNull(),
         childToolCallCount = childResult.metadata["toolCallCount"]?.toIntOrNull(),
       )
-    updatedSnapshot = compressedChildResult
-    completionPhase = subAgentCompletionPhase(childResult.status)
-    val finalizedHandle = requireNotNull(
-      config.subAgentExecutionCoordinator.finishExecution(requireNotNull(updatedHandle)),
+    val shouldAutoContinue = shouldAutoContinueDetachedMailboxContinuation(
+      handle = completedHandle,
+      childResult = childResult,
+      childApprovalResume = childApprovalResume,
     )
-    executor.shutdownNow()
-    emitSubAgentEvent(
-      task = task,
-      turn = turn,
-      phase = requireNotNull(completionPhase),
-      childTask = finalizedHandle.toTask(),
-      childRunId = finalizedHandle.childRunId,
-      childTaskId = finalizedHandle.childTaskId,
-      summary = requireNotNull(updatedSnapshot).summaryText(),
-      snapshot = requireNotNull(updatedSnapshot),
-      liveContext = finalizedHandle.childLiveContext,
+    val storedHandle = if (shouldAutoContinue) {
+      completedHandle.copy(
+        snapshot = detachedMailboxContinuationQueuedSnapshot(completedHandle),
+        updatedAtEpochMs = clock(),
+      )
+    } else {
+      completedHandle
+    }
+    return DetachedSubAgentTurnCompletion(
+      storedHandle = storedHandle,
+      completedHandle = completedHandle,
+      snapshot = compressedChildResult,
+      completionPhase = subAgentCompletionPhase(childResult.status),
+      shouldAutoContinue = shouldAutoContinue,
     )
   }
 
@@ -7972,18 +8272,44 @@ class OpenCrayAgentRuntime(
     handle: SubAgentHandleState,
   ): SubAgentExecutionKey = SubAgentExecutionKey.from(handle)
 
+  private fun coordinatedClosedSubAgentHandle(
+    handle: SubAgentHandleState,
+  ): SubAgentHandleState? = config.subAgentExecutionCoordinator
+    .closedHandle(subAgentExecutionKey(handle))
+    ?.takeIf { coordinated -> matchesCoordinatedSubAgentHandle(handle, coordinated) }
+
   private fun coordinatedSubAgentHandle(
     handle: SubAgentHandleState,
   ): SubAgentHandleState? = config.subAgentExecutionCoordinator
     .currentHandle(subAgentExecutionKey(handle))
-    ?.takeIf { coordinated ->
-      coordinated.childRunId == handle.childRunId ||
-        coordinated.childTaskId == handle.childTaskId ||
-        (
-          coordinated.parentRunId == handle.parentRunId &&
-            coordinated.parentTaskId == handle.parentTaskId
-          )
-    }
+    ?.takeIf { coordinated -> matchesCoordinatedSubAgentHandle(handle, coordinated) }
+
+  private fun latestCoordinatedSubAgentHandleByAgentId(
+    agentId: String,
+  ): SubAgentHandleState? = config.subAgentExecutionCoordinator
+    .allHandles()
+    .asSequence()
+    .filter { handle -> handle.agentId == agentId }
+    .maxByOrNull(SubAgentHandleState::updatedAtEpochMs)
+
+  private fun latestClosedCoordinatedSubAgentHandleByAgentId(
+    agentId: String,
+  ): SubAgentHandleState? = config.subAgentExecutionCoordinator
+    .allClosedHandles()
+    .asSequence()
+    .filter { handle -> handle.agentId == agentId }
+    .maxByOrNull(SubAgentHandleState::updatedAtEpochMs)
+
+  private fun matchesCoordinatedSubAgentHandle(
+    handle: SubAgentHandleState,
+    coordinated: SubAgentHandleState,
+  ): Boolean =
+    coordinated.childRunId == handle.childRunId ||
+      coordinated.childTaskId == handle.childTaskId ||
+      (
+        coordinated.parentRunId == handle.parentRunId &&
+          coordinated.parentTaskId == handle.parentTaskId
+        )
 
   private fun synchronizedSubAgentHandle(
     cursor: PromptTurnCursor,
@@ -8039,6 +8365,7 @@ class OpenCrayAgentRuntime(
     emitSubAgentEvent(
       task = task,
       turn = turn,
+      agentId = handle.agentId,
       phase = OpenCraySubAgentPhase.RESUMED,
       childTask = handle.toTask(),
       childRunId = handle.childRunId,
@@ -8113,6 +8440,57 @@ class OpenCrayAgentRuntime(
     -> OpenCraySubAgentPhase.FAILED
   }
 
+  private fun shouldAutoContinueDetachedMailboxContinuation(
+    handle: SubAgentHandleState,
+    childResult: ExecutionResult,
+    childApprovalResume: SubAgentApprovalResume?,
+  ): Boolean = childResult.status == ExecutionStatus.SUCCESS &&
+    childApprovalResume == null &&
+    handle.normalizedMailbox().pendingMessages().isNotEmpty()
+
+  private fun detachedMailboxContinuationQueuedSnapshot(
+    handle: SubAgentHandleState,
+  ): SubAgentExecutionSnapshot = SubAgentExecutionSnapshot.backgroundQueued(
+    headline =
+      "Delegated child run '${handle.description}' received additional parent input and is queued to continue in the background.",
+  )
+
+  private fun interruptedMailboxContinuationQueuedSnapshot(
+    handle: SubAgentHandleState,
+  ): SubAgentExecutionSnapshot = SubAgentExecutionSnapshot.backgroundQueued(
+    headline =
+      "Delegated child run '${handle.description}' was redirected by new parent input and is restarting in the background.",
+  )
+
+  private fun SubAgentHandleState.withInterruptedMailboxRestart(
+    mailboxDeliveryCursorBeforeCurrentTurn: String?,
+    updatedAtEpochMs: Long,
+  ): SubAgentHandleState = copy(
+    supplementalInputs = emptyList(),
+    mailbox = normalizedMailbox().rewindDeliveredThrough(mailboxDeliveryCursorBeforeCurrentTurn),
+    snapshot = interruptedMailboxContinuationQueuedSnapshot(this),
+    pendingApprovalResume = null,
+    pendingApprovalDecision = null,
+    updatedAtEpochMs = maxOf(this.updatedAtEpochMs, updatedAtEpochMs),
+  )
+
+  private data class DetachedSubAgentRunningTurn(
+    val handle: SubAgentHandleState,
+    val approvalContinuation: PendingSubAgentApprovalContinuation?,
+    val promptResumeStateOverride: OpenCrayPromptResumeState?,
+    val includeMailboxMessagesInPrompt: Boolean,
+    val emitResumedPhase: Boolean,
+    val mailboxDeliveryCursorBeforeCurrentTurn: String?,
+  )
+
+  private data class DetachedSubAgentTurnCompletion(
+    val storedHandle: SubAgentHandleState,
+    val completedHandle: SubAgentHandleState,
+    val snapshot: SubAgentExecutionSnapshot,
+    val completionPhase: OpenCraySubAgentPhase,
+    val shouldAutoContinue: Boolean,
+  )
+
   private fun unexpectedSubAgentBackgroundExecutionResult(
     handle: SubAgentHandleState,
     error: Throwable,
@@ -8127,7 +8505,12 @@ class OpenCrayAgentRuntime(
   )
 
   private fun sendInputToSubAgentHandle(
+    task: AgentTask,
+    turn: Int,
     call: AgentToolCall,
+    transcript: List<RuntimeConversationMessage>,
+    hooks: RuntimeExecutionHooks,
+    activeSkillCapsule: ActiveSkillCapsule?,
     cursor: PromptTurnCursor?,
   ): AgentToolResult {
     val handles = subAgentHandleRegistry(cursor)
@@ -8137,20 +8520,30 @@ class OpenCrayAgentRuntime(
       ?.trim()
       ?.takeIf(String::isNotBlank)
       ?: call.arguments.primitiveContent("input")
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
       ?: return invalidSubAgentCallResult(call, "send_input message must not be blank.")
-    val handle = handles[agentId] ?: return unknownSubAgentHandleResult(
-      call = call,
-      agentId = agentId,
-    )
-    if (!canAppendSupplementalInput(handle)) {
+    val interruptRequested = call.arguments.optionalBooleanContent("interrupt") == true
+    val handle = handles[agentId]
+      ?: if (cursor == null) {
+        latestCoordinatedSubAgentHandleByAgentId(agentId)
+          ?: latestClosedCoordinatedSubAgentHandleByAgentId(agentId)
+      } else {
+        null
+      }
+      ?: return unknownSubAgentHandleResult(
+        call = call,
+        agentId = agentId,
+      )
+    if (!handle.canAcceptMailboxInput()) {
       return AgentToolResult(
         toolName = call.toolName,
         status = AgentToolResultStatus.FAILED,
-        content = "send_input can only target a queued or approval-waiting delegated child handle mailbox.",
+        content =
+          "send_input can only target a queued, background-running, or approval-waiting delegated child handle mailbox.",
         errorCode = "SUBAGENT_NOT_QUEUEABLE",
-        errorMessage = "send_input can only target a queued or approval-waiting delegated child handle mailbox.",
+        errorMessage =
+          "send_input can only target a queued, background-running, or approval-waiting delegated child handle mailbox.",
         metadata = subAgentHandleMetadata(handle),
       )
     }
@@ -8160,26 +8553,115 @@ class OpenCrayAgentRuntime(
       message = message,
       createdAtEpochMs = now,
     )
-    handles[agentId] = updatedHandle
-    config.subAgentExecutionCoordinator.upsertHandle(updatedHandle)
-    val mailbox = updatedHandle.normalizedMailbox()
+    val activeExecution = config.subAgentExecutionCoordinator.activeExecution(
+      subAgentExecutionKey(handle),
+    )
+    val interruptedExistingExecution =
+      interruptRequested &&
+        handle.snapshot.state == SubAgentExecutionState.BACKGROUND_RUNNING &&
+        activeExecution != null
+    val restartHandle = if (interruptedExistingExecution) {
+      val runningExecution = requireNotNull(activeExecution)
+      config.subAgentExecutionCoordinator.cancelActiveExecution(
+        key = subAgentExecutionKey(handle),
+        markClosed = true,
+      )
+      updatedHandle.withInterruptedMailboxRestart(
+        mailboxDeliveryCursorBeforeCurrentTurn = runningExecution.mailboxDeliveryCursorBeforeCurrentTurn,
+        updatedAtEpochMs = now,
+      )
+    } else {
+      updatedHandle
+    }
+    handles[agentId] = restartHandle
+    config.subAgentExecutionCoordinator.upsertHandle(restartHandle)
+    val autoResumedHandle = if (interruptedExistingExecution) {
+      restartInterruptedSubAgentHandleExecution(
+        task = task,
+        turn = turn,
+        transcript = transcript,
+        parentSessionContext = cursor?.sessionContext ?: config.sessionContext,
+        hooks = hooks,
+        activeSkillCapsule = activeSkillCapsule,
+        cursor = cursor,
+        handle = restartHandle,
+        handles = handles,
+      )
+    } else if (restartHandle.isDetachedBackgroundQueued()) {
+      ensureDetachedSubAgentHandleBackgroundExecution(
+        task = task,
+        turn = turn,
+        transcript = transcript,
+        parentSessionContext = cursor?.sessionContext ?: config.sessionContext,
+        hooks = hooks,
+        activeSkillCapsule = activeSkillCapsule,
+        handle = restartHandle,
+        handles = handles,
+      )
+    } else {
+      null
+    }
+    val effectiveHandle = autoResumedHandle?.let(::coordinatedSubAgentHandle) ?: coordinatedSubAgentHandle(restartHandle)
+      ?: autoResumedHandle
+      ?: restartHandle
+    val mailbox = effectiveHandle.normalizedMailbox()
     return AgentToolResult(
       toolName = call.toolName,
       status = AgentToolResultStatus.SUCCESS,
-      content = "Delegated child input queued in mailbox.",
-      metadata = subAgentHandleMetadata(updatedHandle) + mapOf(
+      content = if (interruptedExistingExecution) {
+        "Delegated child input queued and running child redirected."
+      } else {
+        "Delegated child input queued in mailbox."
+      },
+      metadata = subAgentHandleMetadata(effectiveHandle) + mapOf(
         "supplementalInputCount" to mailbox.messages.size.toString(),
         "mailboxPendingInputCount" to mailbox.pendingMessages().size.toString(),
+        "autoResumed" to (autoResumedHandle != null).toString(),
+        "interruptRequested" to interruptRequested.toString(),
+        "interruptedExistingExecution" to interruptedExistingExecution.toString(),
       ),
     )
   }
 
-  private fun canAppendSupplementalInput(handle: SubAgentHandleState): Boolean = when (handle.snapshot.state) {
-    SubAgentExecutionState.BACKGROUND_QUEUED -> true
-    SubAgentExecutionState.WAITING_APPROVAL,
-    SubAgentExecutionState.WAITING_HIGH_RISK_APPROVAL,
-    -> handle.pendingApprovalResume != null
-    else -> false
+  private fun restartInterruptedSubAgentHandleExecution(
+    task: AgentTask,
+    turn: Int,
+    transcript: List<RuntimeConversationMessage>,
+    parentSessionContext: AgentRuntimeSessionContext,
+    hooks: RuntimeExecutionHooks,
+    activeSkillCapsule: ActiveSkillCapsule?,
+    cursor: PromptTurnCursor?,
+    handle: SubAgentHandleState,
+    handles: MutableMap<String, SubAgentHandleState>,
+  ): SubAgentHandleState? {
+    val profile = BuiltInSubAgentProfiles.resolve(handle.subagentType)
+      ?: return null
+    return if (cursor != null) {
+      startSubAgentHandleBackgroundExecution(
+        task = task,
+        turn = turn,
+        transcript = transcript,
+        parentSessionContext = parentSessionContext,
+        hooks = hooks,
+        activeSkillCapsule = activeSkillCapsule,
+        cursor = cursor,
+        handle = handle,
+        profile = profile,
+        approvalContinuation = null,
+        emitResumedPhaseWithoutApproval = true,
+      )
+    } else {
+      ensureDetachedSubAgentHandleBackgroundExecution(
+        task = task,
+        turn = turn,
+        transcript = transcript,
+        parentSessionContext = parentSessionContext,
+        hooks = hooks,
+        activeSkillCapsule = activeSkillCapsule,
+        handle = handle,
+        handles = handles,
+      )
+    }
   }
 
   private fun closeSubAgentHandle(
@@ -8191,10 +8673,37 @@ class OpenCrayAgentRuntime(
     val handles = subAgentHandleRegistry(cursor)
     val agentId = resolveSubAgentHandleId(call)
       ?: return invalidSubAgentCallResult(call, "close_agent agent_id must not be blank.")
-    val handle = handles[agentId] ?: return unknownSubAgentHandleResult(
-      call = call,
-      agentId = agentId,
-    )
+    val handle = handles[agentId]
+      ?: if (cursor == null) {
+        latestCoordinatedSubAgentHandleByAgentId(agentId)
+          ?: latestClosedCoordinatedSubAgentHandleByAgentId(agentId)
+      } else {
+        null
+      }
+      ?: return unknownSubAgentHandleResult(
+        call = call,
+        agentId = agentId,
+      )
+    val cancelledHandle = handle
+      .takeUnless { existingHandle -> existingHandle.snapshot.state.isTerminal() }
+      ?.let { existingHandle ->
+        existingHandle
+          .withClearedChildPromptCheckpoint()
+          .copy(
+            snapshot = SubAgentExecutionSnapshot(
+              state = SubAgentExecutionState.CANCELLED,
+              continuationKind = SubAgentContinuationKind.NONE,
+              resumable = false,
+              requiresUserAction = false,
+              isHighRisk = false,
+              headline = "Queued delegated child run '${existingHandle.description}' was closed.",
+            ),
+            pendingApprovalResume = null,
+            pendingApprovalDecision = null,
+            childExecutionStatus = ExecutionStatus.CANCELLED.name,
+          )
+      }
+    cancelledHandle?.let(config.subAgentExecutionCoordinator::noteClosedHandle)
     config.subAgentExecutionCoordinator.cancelActiveExecution(
       key = subAgentExecutionKey(handle),
       markClosed = true,
@@ -8208,18 +8717,12 @@ class OpenCrayAgentRuntime(
     }
     config.subAgentExecutionCoordinator.removeHandle(subAgentExecutionKey(handle))
     clearPendingApprovalContinuationForHandle(handle)
-    if (!isTerminalSubAgentState(handle.snapshot.state)) {
-      val cancelledSnapshot = SubAgentExecutionSnapshot(
-        state = SubAgentExecutionState.CANCELLED,
-        continuationKind = SubAgentContinuationKind.NONE,
-        resumable = false,
-        requiresUserAction = false,
-        isHighRisk = false,
-        headline = "Queued delegated child run '${handle.description}' was closed.",
-      )
+    if (cancelledHandle != null) {
+      val cancelledSnapshot = cancelledHandle.snapshot
       emitSubAgentEvent(
         task = task,
         turn = turn,
+        agentId = handle.agentId,
         phase = OpenCraySubAgentPhase.CANCELLED,
         childTask = handle.toTask(),
         childRunId = handle.childRunId,
@@ -8227,20 +8730,13 @@ class OpenCrayAgentRuntime(
         summary = cancelledSnapshot.summaryText(),
         snapshot = cancelledSnapshot,
         liveContext = handle.childLiveContext,
+        closed = true,
       )
       return AgentToolResult(
         toolName = call.toolName,
         status = AgentToolResultStatus.SUCCESS,
         content = cancelledSnapshot.summaryText(),
-        metadata = subAgentHandleMetadata(
-          handle
-            .withClearedChildPromptCheckpoint()
-            .copy(
-              snapshot = cancelledSnapshot,
-              pendingApprovalResume = null,
-              childExecutionStatus = ExecutionStatus.CANCELLED.name,
-            ),
-        ) + mapOf("closed" to "true"),
+        metadata = subAgentHandleMetadata(cancelledHandle) + mapOf("closed" to "true"),
       )
     }
     return AgentToolResult(
@@ -8257,7 +8753,7 @@ class OpenCrayAgentRuntime(
   ): AgentToolResult {
     val handles = listableSubAgentHandles(cursor)
     val openHandleCount = handles.count { handle ->
-      !isTerminalSubAgentState(handle.snapshot.state)
+      !handle.snapshot.state.isTerminal()
     }
     val payload = buildJsonObject {
       put("count", handles.size)
@@ -8282,7 +8778,7 @@ class OpenCrayAgentRuntime(
     cursor: PromptTurnCursor,
   ): String? {
     val openHandles = synchronizedSubAgentHandles(cursor).filter { handle ->
-      !isTerminalSubAgentState(handle.snapshot.state)
+      !handle.snapshot.state.isTerminal()
     }
     if (openHandles.isEmpty()) {
       return null
@@ -8305,13 +8801,20 @@ class OpenCrayAgentRuntime(
     cursor: PromptTurnCursor,
     reason: String,
     removeHandles: Boolean,
+    includeInactiveHandles: Boolean = false,
   ) {
     val cancelledEvents = mutableListOf<Pair<SubAgentHandleState, SubAgentExecutionSnapshot>>()
     synchronizedSubAgentHandles(cursor).forEach { handle ->
-      config.subAgentExecutionCoordinator.cancelActiveExecution(
+      if (handle.snapshot.state.isTerminal()) {
+        return@forEach
+      }
+      val cancelledActiveExecution = config.subAgentExecutionCoordinator.cancelActiveExecution(
         subAgentExecutionKey(handle),
         markClosed = true,
-      ) ?: return@forEach
+      )
+      if (cancelledActiveExecution == null && !includeInactiveHandles) {
+        return@forEach
+      }
       val cancelledHandle = cancelledSubAgentHandle(
         handle = handle,
         reason = reason,
@@ -8335,6 +8838,7 @@ class OpenCrayAgentRuntime(
       emitSubAgentEvent(
         task = task,
         turn = turn,
+        agentId = handle.agentId,
         phase = OpenCraySubAgentPhase.CANCELLED,
         childTask = handle.toTask(),
         childRunId = handle.childRunId,
@@ -8365,6 +8869,7 @@ class OpenCrayAgentRuntime(
         detailLines = listOf(reason),
       ),
       pendingApprovalResume = null,
+      pendingApprovalDecision = null,
       childPromptResumeState = null,
       childPromptCheckpointBoundary = null,
       childPromptCheckpointAtEpochMs = null,
@@ -8395,7 +8900,9 @@ class OpenCrayAgentRuntime(
   private fun restoredSubAgentHandle(
     handle: SubAgentHandleState,
   ): SubAgentHandleState = (
-    coordinatedSubAgentHandle(handle)
+    coordinatedClosedSubAgentHandle(handle)
+      ?: coordinatedSubAgentHandle(handle)
+      ?: unavailableCoordinatorBackedDetachedHandle(handle)
       ?: restoredInterruptedBackgroundSubAgentHandle(
         handle = handle,
         restoredAtEpochMs = clock(),
@@ -8434,6 +8941,7 @@ class OpenCrayAgentRuntime(
       }
       addAll(config.seededSubAgentHandles)
       addAll(config.subAgentExecutionCoordinator.allHandles())
+      addAll(config.subAgentExecutionCoordinator.allClosedHandles())
     }.map(::restoredSubAgentHandle)
       .forEach { handle ->
         val key = subAgentExecutionKey(handle)
@@ -8473,19 +8981,19 @@ class OpenCrayAgentRuntime(
     metadata = mapOf("agentId" to agentId),
   )
 
-  private fun isTerminalSubAgentState(state: SubAgentExecutionState): Boolean = when (state) {
-    SubAgentExecutionState.COMPLETED,
-    SubAgentExecutionState.FAILED,
-    SubAgentExecutionState.CANCELLED,
-    -> true
-
-    else -> false
-  }
-
   private fun takePendingApprovalContinuation(
     handle: SubAgentHandleState,
     handles: Map<String, SubAgentHandleState>,
   ): PendingSubAgentApprovalContinuation? {
+    handle.pendingApprovalDecision?.takeIf { decision ->
+      resumeMatchesHandle(decision.resume, handle, handles)
+    }?.let { decision ->
+      clearPendingApprovalContinuationForHandle(handle)
+      return PendingSubAgentApprovalContinuation(
+        resume = effectiveApprovalResume(handle, decision.resume),
+        approved = decision.approved,
+      )
+    }
     val approvedResume = pendingApprovedSubAgentResume
     val rejectedResume = pendingRejectedSubAgentResume
     check(approvedResume == null || rejectedResume == null) {
@@ -8539,6 +9047,7 @@ class OpenCrayAgentRuntime(
     handle: SubAgentHandleState,
     profile: SubAgentProfile,
     approvalContinuation: PendingSubAgentApprovalContinuation?,
+    owningExecution: SubAgentActiveExecution? = null,
     promptResumeStateOverride: OpenCrayPromptResumeState?,
     includeMailboxMessagesInPrompt: Boolean,
   ): ExecutionResult {
@@ -8598,13 +9107,19 @@ class OpenCrayAgentRuntime(
         promptCheckpointSink = { emission ->
           config.promptCheckpointSink(emission)
           val checkpointBaseHandle = latestSubAgentHandle(handle)
-          config.subAgentExecutionCoordinator.upsertHandle(
-            checkpointBaseHandle.withUpdatedChildPromptCheckpoint(
-              checkpointState = emission.state,
-              checkpointBoundary = emission.boundary,
-              emittedAtEpochMs = emission.emittedAtEpochMs,
-            ),
+          val checkpointHandle = checkpointBaseHandle.withUpdatedChildPromptCheckpoint(
+            checkpointState = emission.state,
+            checkpointBoundary = emission.boundary,
+            emittedAtEpochMs = emission.emittedAtEpochMs,
           )
+          if (owningExecution != null) {
+            config.subAgentExecutionCoordinator.upsertHandleIfOwnedByExecution(
+              handle = checkpointHandle,
+              expectedExecution = owningExecution,
+            )
+          } else {
+            config.subAgentExecutionCoordinator.upsertHandle(checkpointHandle)
+          }
         },
       ),
       eventSink = NoOpOpenCrayAgentRuntimeEventSink,
@@ -8623,15 +9138,23 @@ class OpenCrayAgentRuntime(
     }
   } ?: handle
 
+  private fun hasActiveSubAgentExecution(
+    handle: SubAgentHandleState,
+  ): Boolean = config.subAgentExecutionCoordinator.activeExecution(
+    subAgentExecutionKey(handle),
+  ) != null
+
   private fun subAgentHandleMetadata(
     handle: SubAgentHandleState,
   ): Map<String, String> = linkedMapOf(
     "agentId" to handle.agentId,
+    "childSessionId" to handle.childSessionId,
     "subagentType" to handle.subagentType,
     "subagentContextMode" to handle.contextMode,
     "subagentDepth" to handle.depth.toString(),
     "childRunId" to handle.childRunId,
     "childTaskId" to handle.childTaskId,
+    "hasActiveExecution" to hasActiveSubAgentExecution(handle).toString(),
   ).apply {
     val mailbox = handle.normalizedMailbox()
     if (mailbox.messages.isNotEmpty()) {
@@ -8652,6 +9175,15 @@ class OpenCrayAgentRuntime(
     putAll(handle.childLiveContext.toMetadataMap())
     putAll(handle.snapshot.metadata())
     handle.pendingApprovalResume?.let { resume ->
+      put("hasPendingApprovalResume", "true")
+      put("pendingApprovalToolName", resume.approvedToolName)
+      put("pendingApprovalIsHighRisk", resume.isHighRisk.toString())
+      resume.childRunId
+        ?.takeIf(String::isNotBlank)
+        ?.let { childRunId -> put("pendingApprovalChildRunId", childRunId) }
+      resume.childTaskId
+        ?.takeIf(String::isNotBlank)
+        ?.let { childTaskId -> put("pendingApprovalChildTaskId", childTaskId) }
       putAll(
         SubAgentApprovalResumeMetadata.encodeToMetadata(
           resume = resume,
@@ -8667,6 +9199,7 @@ class OpenCrayAgentRuntime(
     val mailbox = handle.normalizedMailbox()
     return buildJsonObject {
       put("agentId", handle.agentId)
+      put("childSessionId", handle.childSessionId)
       put("parentRunId", handle.parentRunId)
       put("parentTaskId", handle.parentTaskId)
       put("childRunId", handle.childRunId)
@@ -8676,6 +9209,7 @@ class OpenCrayAgentRuntime(
       put("contextMode", handle.contextMode)
       put("depth", handle.depth)
       put("state", handle.snapshot.state.wireValue)
+      put("hasActiveExecution", hasActiveSubAgentExecution(handle))
       put("continuationKind", handle.snapshot.continuationKind.wireValue)
       put("resumable", handle.snapshot.resumable)
       put("requiresUserAction", handle.snapshot.requiresUserAction)
@@ -8718,6 +9252,17 @@ class OpenCrayAgentRuntime(
       }
       handle.childPromptCheckpointAtEpochMs?.let { checkpointAt ->
         put("childPromptCheckpointAtEpochMs", checkpointAt)
+      }
+      handle.pendingApprovalResume?.let { resume ->
+        put("hasPendingApprovalResume", true)
+        put("pendingApprovalToolName", resume.approvedToolName)
+        put("pendingApprovalIsHighRisk", resume.isHighRisk)
+        resume.childRunId
+          ?.takeIf(String::isNotBlank)
+          ?.let { childRunId -> put("pendingApprovalChildRunId", childRunId) }
+        resume.childTaskId
+          ?.takeIf(String::isNotBlank)
+          ?.let { childTaskId -> put("pendingApprovalChildTaskId", childTaskId) }
       }
       handle.activeSkillName
         ?.takeIf(String::isNotBlank)
@@ -8774,6 +9319,72 @@ class OpenCrayAgentRuntime(
         SubAgentMetadataKeys.CONTROL_TOOL to call.toolName.lowercase(),
       ),
     )
+  }
+
+  private fun detachedSubAgentHandleUnavailableAfterJoinResult(
+    call: AgentToolCall,
+    handle: SubAgentHandleState,
+  ): AgentToolResult = storedSubAgentHandleResult(
+    call = call,
+    handle = unavailableCoordinatorBackedDetachedHandle(handle)
+      ?: handle,
+  )
+
+  private fun unavailableCoordinatorBackedDetachedHandleResult(
+    call: AgentToolCall,
+    handle: SubAgentHandleState,
+  ): AgentToolResult? {
+    coordinatedClosedSubAgentHandle(handle)?.let { closedHandle ->
+      return storedSubAgentHandleResult(
+        call = call,
+        handle = closedHandle,
+      )
+    }
+    if (!config.seededDetachedSubAgentHandlesRequireCoordinatorOwnership) {
+      return null
+    }
+    if (!handle.canContinueDetachedExecution(hasApprovalContinuation = false)) {
+      return null
+    }
+    if (coordinatedSubAgentHandle(handle) != null) {
+      return null
+    }
+    return detachedSubAgentHandleUnavailableAfterJoinResult(
+      call = call,
+      handle = handle,
+    )
+  }
+
+  private fun unavailableCoordinatorBackedDetachedHandle(
+    handle: SubAgentHandleState,
+  ): SubAgentHandleState? {
+    coordinatedClosedSubAgentHandle(handle)?.let { closedHandle ->
+      return closedHandle
+    }
+    if (!config.seededDetachedSubAgentHandlesRequireCoordinatorOwnership) {
+      return null
+    }
+    if (!handle.canContinueDetachedExecution(hasApprovalContinuation = false)) {
+      return null
+    }
+    if (coordinatedSubAgentHandle(handle) != null) {
+      return null
+    }
+    return handle
+      .withClearedChildPromptCheckpoint(updatedAtEpochMs = clock())
+      .copy(
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.CANCELLED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Delegated child run '${handle.description}' was cancelled before wait_agent could harvest it.",
+        ),
+        pendingApprovalResume = null,
+        pendingApprovalDecision = null,
+        childExecutionStatus = ExecutionStatus.CANCELLED.name,
+      )
   }
 
   private fun childResultToWaitAgentToolResult(
@@ -8874,6 +9485,18 @@ class OpenCrayAgentRuntime(
       ),
     )
   }
+
+  private fun taskDelegationToolResult(
+    call: AgentToolCall,
+    delegationPlan: ToolPolicyPlan,
+    result: AgentToolResult,
+  ): AgentToolResult = result.copy(
+    toolName = call.toolName,
+    metadata = toolDispatcher.taskDelegationResultMetadata(
+      plan = delegationPlan,
+      metadata = result.metadata,
+    ),
+  )
 
   private fun invalidSubAgentCallResult(
     call: AgentToolCall,
@@ -9007,12 +9630,15 @@ class OpenCrayAgentRuntime(
     task: AgentTask,
     prepared: PreparedSubAgentDelegation,
     agentId: String? = null,
+    childSessionId: String? = null,
     childRunId: String? = null,
     childTaskId: String? = null,
   ): SubAgentHandleState {
     val createdAt = clock()
+    val resolvedAgentId = agentId ?: "agent-${UUID.randomUUID().toString().take(8)}"
     return SubAgentHandleState.queued(
-      agentId = agentId ?: "agent-${UUID.randomUUID().toString().take(8)}",
+      agentId = resolvedAgentId,
+      childSessionId = childSessionId ?: newSubAgentChildSessionId(resolvedAgentId),
       childRunId = childRunId ?: "subagent-${runIdFor(task)}-${prepared.childTask.parentTurn}-${UUID.randomUUID().toString().take(8)}",
       childTaskId = childTaskId ?: "subagent-task-${UUID.randomUUID().toString().take(8)}",
       description = prepared.childTask.description,
@@ -9075,6 +9701,7 @@ class OpenCrayAgentRuntime(
     )
     val baseMetadata = linkedMapOf(
       "agentId" to handle.agentId,
+      "childSessionId" to handle.childSessionId,
       "subagentType" to handle.subagentType,
       "subagentContextMode" to handle.contextMode,
       "subagentDepth" to handle.depth.toString(),
@@ -9155,6 +9782,7 @@ class OpenCrayAgentRuntime(
   private fun emitSubAgentEvent(
     task: AgentTask,
     turn: Int,
+    agentId: String? = null,
     phase: OpenCraySubAgentPhase,
     childTask: SubAgentTask,
     childRunId: String,
@@ -9162,12 +9790,14 @@ class OpenCrayAgentRuntime(
     summary: String?,
     snapshot: SubAgentExecutionSnapshot,
     liveContext: SubAgentLiveContextSnapshot? = null,
+    closed: Boolean = false,
   ) {
     eventSink.onRunEvent(
       task = task,
       event = OpenCraySubAgentEvent(
         runId = runIdFor(task),
         taskId = task.id,
+        agentId = agentId,
         phase = phase,
         childRunId = childRunId,
         childTaskId = childTaskId,
@@ -9184,6 +9814,7 @@ class OpenCrayAgentRuntime(
         isHighRisk = snapshot.isHighRisk,
         turn = turn,
         emittedAtEpochMs = clock(),
+        closed = closed,
       ),
     )
   }
@@ -9835,6 +10466,7 @@ class OpenCrayAgentRuntime(
     val handle: SubAgentHandleState,
     val promptResumeState: OpenCrayPromptResumeState?,
     val includeMailboxMessagesInPrompt: Boolean,
+    val mailboxDeliveryCursorBeforeCurrentTurn: String?,
   )
 
   private data class PreparedSubAgentDelegation(
@@ -9842,6 +10474,23 @@ class OpenCrayAgentRuntime(
     val childTask: SubAgentTask,
     val delegationPlan: ToolPolicyPlan,
   )
+
+  private data class SpawnPreparedSubAgentHandleExecution(
+    val handle: SubAgentHandleState,
+    val handles: MutableMap<String, SubAgentHandleState>,
+    val childResult: ExecutionResult? = null,
+    val childApprovalResume: SubAgentApprovalResume? = null,
+  )
+
+  private sealed interface SpawnPreparedSubAgentHandleResult {
+    data class Ready(
+      val execution: SpawnPreparedSubAgentHandleExecution,
+    ) : SpawnPreparedSubAgentHandleResult
+
+    data class Invalid(
+      val result: AgentToolResult,
+    ) : SpawnPreparedSubAgentHandleResult
+  }
 
   private sealed interface PreparedSubAgentDelegationResult {
     data class Ready(
