@@ -174,6 +174,7 @@ internal data class PersistedAgentRunEvent(
   val approvalPhase: String? = null,
   val isHighRisk: Boolean? = null,
   val toolName: String? = null,
+  val subAgentAgentId: String? = null,
   val childRunId: String? = null,
   val childTaskId: String? = null,
   val subAgentLabel: String? = null,
@@ -186,6 +187,7 @@ internal data class PersistedAgentRunEvent(
   val subAgentResumable: Boolean? = null,
   val subAgentRequiresUserAction: Boolean? = null,
   val subAgentIsHighRisk: Boolean? = null,
+  val subAgentClosed: Boolean? = null,
   val toolReason: String? = null,
   val argumentsJson: String? = null,
   val toolStatus: String? = null,
@@ -496,6 +498,7 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     turn = turn,
     emittedAtEpochMs = emittedAtEpochMs,
     phase = phase.name,
+    subAgentAgentId = agentId,
     childRunId = childRunId,
     childTaskId = childTaskId,
     subAgentLabel = label,
@@ -508,6 +511,7 @@ internal fun OpenCrayAgentRunEvent.toPersistedRecord(): PersistedAgentRunEvent =
     subAgentResumable = resumable,
     subAgentRequiresUserAction = requiresUserAction,
     subAgentIsHighRisk = isHighRisk,
+    subAgentClosed = closed,
     text = summary,
   )
   is OpenCrayToolCallEvent -> PersistedAgentRunEvent(
@@ -724,6 +728,7 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
       executionId = executionId,
       executionOrdinal = executionOrdinal,
       executionKind = executionKind,
+      agentId = subAgentAgentId?.trim()?.takeIf(String::isNotBlank),
       phase = restoredPhase,
       childRunId = childRunId?.trim()?.takeIf(String::isNotBlank) ?: runId,
       childTaskId = childTaskId?.trim()?.takeIf(String::isNotBlank) ?: taskId,
@@ -743,6 +748,7 @@ internal fun PersistedAgentRunEvent.toRuntimeEvent(): OpenCrayAgentRunEvent = wh
       isHighRisk = subAgentIsHighRisk ?: (
         restoredExecutionState == SubAgentExecutionState.WAITING_HIGH_RISK_APPROVAL
       ),
+      closed = subAgentClosed ?: false,
       turn = turn,
       emittedAtEpochMs = emittedAtEpochMs,
     )

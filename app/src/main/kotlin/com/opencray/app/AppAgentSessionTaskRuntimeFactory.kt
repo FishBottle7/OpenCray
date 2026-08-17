@@ -185,6 +185,9 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val subAgentHandleStoreProvider: (String) -> SubAgentHandleStore = { sessionId ->
     InMemorySubAgentHandleStoreFactory().forChatSession(sessionId)
   },
+  private val subAgentSessionLinkStoreProvider: (String) -> SubAgentSessionLinkStore = { sessionId ->
+    InMemorySubAgentSessionLinkStoreFactory().forChatSession(sessionId)
+  },
   private val memoryIngestionCoordinator: ChatMemoryIngestionCoordinator? = null,
   private val soulTurnSemanticSignalInterpreter: SoulTurnSemanticSignalInterpreter =
     NoOpSoulTurnSemanticSignalInterpreter,
@@ -222,6 +225,8 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val supplementStoresBySession: ConcurrentMap<String, SessionSupplementStore> = ConcurrentHashMap()
   private val compactionStoresBySession: ConcurrentMap<String, SessionCompactionStore> = ConcurrentHashMap()
   private val subAgentHandleStoresBySession: ConcurrentMap<String, SubAgentHandleStore> = ConcurrentHashMap()
+  private val subAgentSessionLinkStoresBySession: ConcurrentMap<String, SubAgentSessionLinkStore> =
+    ConcurrentHashMap()
   private val subAgentExecutionCoordinatorsBySession: ConcurrentMap<String, SubAgentExecutionCoordinator> =
     ConcurrentHashMap()
   private val contextSourceBudgetPolicy: ContextSourceBudgetPolicy = ContextSourceBudgetPolicy()
@@ -281,6 +286,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     supplementStoresBySession.remove(sessionId)
     compactionStoresBySession.remove(sessionId)
     subAgentHandleStoresBySession.remove(sessionId)
+    subAgentSessionLinkStoresBySession.remove(sessionId)
     subAgentExecutionCoordinatorsBySession.remove(sessionId)
   }
 
@@ -932,6 +938,9 @@ internal class AppAgentSessionTaskRuntimeFactory(
   internal fun subAgentHandleStoreForSession(sessionId: String): SubAgentHandleStore =
     subAgentHandleStoresBySession.computeIfAbsent(sessionId, subAgentHandleStoreProvider)
 
+  internal fun subAgentSessionLinkStoreForSession(sessionId: String): SubAgentSessionLinkStore =
+    subAgentSessionLinkStoresBySession.computeIfAbsent(sessionId, subAgentSessionLinkStoreProvider)
+
   internal fun subAgentExecutionCoordinatorForSession(
     sessionId: String,
   ): SubAgentExecutionCoordinator =
@@ -940,7 +949,9 @@ internal class AppAgentSessionTaskRuntimeFactory(
     ) { resolvedSessionId ->
       subAgentExecutionCoordinatorProvider?.invoke(resolvedSessionId)
         ?: PersistentSessionSubAgentExecutionCoordinator(
+          sessionId = resolvedSessionId,
           store = subAgentHandleStoreForSession(resolvedSessionId),
+          linkStore = subAgentSessionLinkStoreForSession(resolvedSessionId),
         )
     }
 

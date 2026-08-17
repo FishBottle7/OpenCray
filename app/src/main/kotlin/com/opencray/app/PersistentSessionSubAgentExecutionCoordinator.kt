@@ -6,14 +6,18 @@ import com.opencray.runtime.subagent.SubAgentExecutionKey
 import com.opencray.runtime.subagent.SubAgentExecutionStartResult
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.SubAgentSessionLink
 import com.opencray.runtime.subagent.restoredInterruptedBackgroundSubAgentHandle
 
 internal class PersistentSessionSubAgentExecutionCoordinator(
+  private val sessionId: String,
   private val store: SubAgentHandleStore,
+  private val linkStore: SubAgentSessionLinkStore,
   private val clock: () -> Long = { System.currentTimeMillis() },
 ) : SubAgentExecutionCoordinator {
   private val lock = Any()
   private val activeExecutionsByKey = linkedMapOf<SubAgentExecutionKey, SubAgentActiveExecution>()
+  private val closedHandlesByKey = linkedMapOf<SubAgentExecutionKey, SubAgentHandleState>()
 
   init {
     repairInterruptedBackgroundHandles()
@@ -21,14 +25,36 @@ internal class PersistentSessionSubAgentExecutionCoordinator(
 
   override fun allHandles(): List<SubAgentHandleState> = store.list()
 
+  override fun allClosedHandles(): List<SubAgentHandleState> = synchronized(lock) {
+    mergedClosedHandlesLocked()
+  }
+
   override fun handlesForParentRun(parentRunId: String): List<SubAgentHandleState> =
     store.listForParentRun(parentRunId)
 
   override fun currentHandle(key: SubAgentExecutionKey): SubAgentHandleState? =
     store.get(parentRunId = key.parentRunId, agentId = key.agentId)
 
+  override fun closedHandle(key: SubAgentExecutionKey): SubAgentHandleState? = synchronized(lock) {
+    closedHandlesByKey[key]
+      ?: store.getClosed(parentRunId = key.parentRunId, agentId = key.agentId)
+  }
+
   override fun upsertHandle(handle: SubAgentHandleState): SubAgentHandleState {
+    synchronized(lock) {
+      closedHandlesByKey.remove(SubAgentExecutionKey.from(handle))
+    }
     store.upsert(handle)
+    syncLink(handle = handle, closed = false)
+    return handle
+  }
+
+  override fun noteClosedHandle(handle: SubAgentHandleState): SubAgentHandleState {
+    synchronized(lock) {
+      closedHandlesByKey[SubAgentExecutionKey.from(handle)] = handle
+    }
+    store.upsertClosed(handle)
+    syncLink(handle = handle, closed = true)
     return handle
   }
 
@@ -41,15 +67,29 @@ internal class PersistentSessionSubAgentExecutionCoordinator(
     if (activeExecution !== expectedExecution) {
       return@synchronized null
     }
+    closedHandlesByKey.remove(key)
     store.upsert(handle)
+    syncLink(handle = handle, closed = false)
     handle
   }
 
   override fun removeHandle(key: SubAgentExecutionKey): SubAgentHandleState? =
-    store.remove(parentRunId = key.parentRunId, agentId = key.agentId)
+    store.remove(parentRunId = key.parentRunId, agentId = key.agentId)?.also { removed ->
+      syncLink(handle = removed, closed = true)
+    }
 
   override fun retainKnownParentRuns(parentRunIds: Set<String>) {
+    synchronized(lock) {
+      if (parentRunIds.isEmpty()) {
+        closedHandlesByKey.clear()
+      } else {
+        closedHandlesByKey.entries.removeIf { (_, handle) ->
+          handle.parentRunId !in parentRunIds
+        }
+      }
+    }
     store.retainKnownParentRuns(parentRunIds)
+    linkStore.retainKnownParentRuns(parentRunIds)
   }
 
   override fun activeExecution(key: SubAgentExecutionKey): SubAgentActiveExecution? = synchronized(lock) {
@@ -93,6 +133,7 @@ internal class PersistentSessionSubAgentExecutionCoordinator(
         activeExecution = existingExecution,
       )
     } else {
+      closedHandlesByKey.remove(key)
       store.upsert(handle)
       activeExecutionsByKey[key] = execution
       SubAgentExecutionStartResult(
@@ -120,6 +161,7 @@ internal class PersistentSessionSubAgentExecutionCoordinator(
       store.remove(parentRunId = key.parentRunId, agentId = key.agentId)
       null
     } else {
+      closedHandlesByKey.remove(key)
       store.upsert(handle)
       handle
     }
@@ -138,8 +180,38 @@ internal class PersistentSessionSubAgentExecutionCoordinator(
         restoredInterruptedBackgroundSubAgentHandle(
           handle = handle,
           restoredAtEpochMs = clock(),
-        ),
+        ).also { repaired ->
+          syncLink(handle = repaired, closed = false)
+        },
       )
     }
+  }
+
+  private fun syncLink(
+    handle: SubAgentHandleState,
+    closed: Boolean,
+  ) {
+    linkStore.upsert(
+      SubAgentSessionLink.fromHandle(
+        parentSessionId = sessionId,
+        handle = handle,
+        closed = closed,
+      ),
+    )
+  }
+
+  private fun mergedClosedHandlesLocked(): List<SubAgentHandleState> {
+    val merged = linkedMapOf<SubAgentExecutionKey, SubAgentHandleState>()
+    (store.listClosed() + closedHandlesByKey.values)
+      .sortedByDescending(SubAgentHandleState::updatedAtEpochMs)
+      .forEach { handle ->
+        val key = SubAgentExecutionKey.from(handle)
+        val existing = merged[key]
+        if (existing == null || handle.updatedAtEpochMs >= existing.updatedAtEpochMs) {
+          merged[key] = handle
+        }
+      }
+    return merged.values
+      .sortedByDescending(SubAgentHandleState::updatedAtEpochMs)
   }
 }

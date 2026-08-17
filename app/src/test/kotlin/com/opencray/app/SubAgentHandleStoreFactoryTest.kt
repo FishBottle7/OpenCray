@@ -6,15 +6,23 @@ import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptResumeState
+import com.opencray.runtime.subagent.SubAgentActiveExecution
+import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionKey
 import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.SubAgentSessionLink
 import java.io.File
+import java.util.concurrent.Executors
+import java.util.concurrent.FutureTask
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.serialization.Serializable
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -72,6 +80,38 @@ class SubAgentHandleStoreFactoryTest {
   }
 
   @Test
+  fun fileBackedStoreRoundTripsClosedHandles() {
+    val runtimeRoot = temporaryFolder.newFolder("subagent-handle-store-closed")
+    val firstStore = FileBackedSubAgentHandleStoreFactory(runtimeRoot).forChatSession("session-1")
+    val closedHandle = sampleHandle(
+      agentId = "child-closed-roundtrip",
+      childRunId = "child-run-closed-roundtrip",
+      childTaskId = "child-task-closed-roundtrip",
+      snapshot = SubAgentExecutionSnapshot(
+        state = SubAgentExecutionState.CANCELLED,
+        continuationKind = SubAgentContinuationKind.NONE,
+        resumable = false,
+        requiresUserAction = false,
+        isHighRisk = false,
+        headline = "Delegated child run was closed.",
+      ),
+      updatedAtEpochMs = 1_300L,
+    ).copy(
+      childExecutionStatus = ExecutionStatus.CANCELLED.name,
+    )
+
+    firstStore.upsertClosed(closedHandle)
+
+    val restoredStore = FileBackedSubAgentHandleStoreFactory(runtimeRoot).forChatSession("session-1")
+    assertTrue(restoredStore.list().isEmpty())
+    assertEquals(listOf(closedHandle), restoredStore.listClosed())
+    assertEquals(
+      closedHandle,
+      restoredStore.getClosed(parentRunId = closedHandle.parentRunId, agentId = closedHandle.agentId),
+    )
+  }
+
+  @Test
   fun fileBackedStoreListRepairUsesSingleStorageUpdate() {
     val storage = StaleReadDurableTextStorage()
     val store = fileBackedSubAgentHandleStore(
@@ -115,6 +155,29 @@ class SubAgentHandleStoreFactoryTest {
   }
 
   @Test
+  fun fileBackedSessionLinkStoreRoundTripsTrackedLinks() {
+    val runtimeRoot = temporaryFolder.newFolder("subagent-session-link-store")
+    val firstStore = FileBackedSubAgentSessionLinkStoreFactory(runtimeRoot).forChatSession("session-1")
+    val handle = sampleHandle(
+      agentId = "child-link-roundtrip",
+      childRunId = "child-run-link-roundtrip",
+      childTaskId = "child-task-link-roundtrip",
+      updatedAtEpochMs = 1_220L,
+    )
+    val link = SubAgentSessionLink.fromHandle(
+      parentSessionId = "session-1",
+      handle = handle,
+      closed = false,
+    )
+
+    firstStore.upsert(link)
+
+    val restoredStore = FileBackedSubAgentSessionLinkStoreFactory(runtimeRoot).forChatSession("session-1")
+    assertEquals(listOf(link), restoredStore.list())
+    assertEquals(link, restoredStore.get(parentRunId = handle.parentRunId, agentId = handle.agentId))
+  }
+
+  @Test
   fun persistentCoordinatorRepairsInterruptedBackgroundHandlesOnStartup() {
     val runtimeRoot = temporaryFolder.newFolder("subagent-handle-repair")
     FileBackedSubAgentHandleStoreFactory(runtimeRoot)
@@ -133,7 +196,9 @@ class SubAgentHandleStoreFactoryTest {
 
     val repairedStore = FileBackedSubAgentHandleStoreFactory(runtimeRoot).forChatSession("session-1")
     val coordinator = PersistentSessionSubAgentExecutionCoordinator(
+      sessionId = "session-1",
       store = repairedStore,
+      linkStore = FileBackedSubAgentSessionLinkStoreFactory(runtimeRoot).forChatSession("session-1"),
       clock = { 2_000L },
     )
 
@@ -151,6 +216,14 @@ class SubAgentHandleStoreFactoryTest {
     assertEquals(ExecutionStatus.FAILED.name, repaired?.childExecutionStatus)
     assertEquals(2_000L, repaired?.updatedAtEpochMs)
     assertEquals(repaired, repairedStore.list().single())
+    assertEquals(
+      repaired?.childSessionId,
+      FileBackedSubAgentSessionLinkStoreFactory(runtimeRoot)
+        .forChatSession("session-1")
+        .list()
+        .single()
+        .childSessionId,
+    )
   }
 
   @Test
@@ -178,7 +251,9 @@ class SubAgentHandleStoreFactoryTest {
 
     val repairedStore = FileBackedSubAgentHandleStoreFactory(runtimeRoot).forChatSession("session-1")
     val coordinator = PersistentSessionSubAgentExecutionCoordinator(
+      sessionId = "session-1",
       store = repairedStore,
+      linkStore = FileBackedSubAgentSessionLinkStoreFactory(runtimeRoot).forChatSession("session-1"),
       clock = { 2_000L },
     )
 
@@ -195,6 +270,98 @@ class SubAgentHandleStoreFactoryTest {
     assertEquals(OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST, repaired?.childPromptCheckpointBoundary)
     assertEquals(1_140L, repaired?.childPromptCheckpointAtEpochMs)
     assertEquals(2_000L, repaired?.updatedAtEpochMs)
+  }
+
+  @Test
+  fun persistentCoordinatorRejectsStaleExecutionOwnedWrites() {
+    val runtimeRoot = temporaryFolder.newFolder("subagent-handle-owned-write-guard")
+    val coordinator = PersistentSessionSubAgentExecutionCoordinator(
+      sessionId = "session-1",
+      store = FileBackedSubAgentHandleStoreFactory(runtimeRoot).forChatSession("session-1"),
+      linkStore = FileBackedSubAgentSessionLinkStoreFactory(runtimeRoot).forChatSession("session-1"),
+    )
+    val initialHandle = sampleHandle(updatedAtEpochMs = 1_000L)
+    val executionKey = SubAgentExecutionKey.from(initialHandle)
+    val staleExecution = activeExecution()
+    val currentExecution = activeExecution()
+
+    try {
+      coordinator.upsertHandle(initialHandle)
+      coordinator.registerActiveExecution(executionKey, staleExecution)
+
+      coordinator.takeActiveExecution(executionKey, expectedExecution = staleExecution)
+      val restartedHandle = initialHandle.copy(
+        snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+          headline = "Restarted delegated child is running.",
+        ),
+        updatedAtEpochMs = 1_100L,
+      )
+      coordinator.upsertHandle(restartedHandle)
+      coordinator.registerActiveExecution(executionKey, currentExecution)
+
+      val staleCheckpointHandle = initialHandle.copy(
+        childPromptResumeState = OpenCrayPromptResumeState(
+          turnIndex = 1,
+          toolCallCount = 2,
+        ),
+        childPromptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST,
+        childPromptCheckpointAtEpochMs = 1_200L,
+        updatedAtEpochMs = 1_200L,
+      )
+      assertNull(
+        coordinator.upsertHandleIfOwnedByExecution(
+          handle = staleCheckpointHandle,
+          expectedExecution = staleExecution,
+        ),
+      )
+      assertEquals(restartedHandle, coordinator.currentHandle(executionKey))
+
+      val staleCompletedHandle = initialHandle.copy(
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.COMPLETED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Stale delegated child completion.",
+        ),
+        childExecutionStatus = ExecutionStatus.SUCCESS.name,
+        updatedAtEpochMs = 1_300L,
+      )
+      assertNull(
+        coordinator.finishExecution(
+          handle = staleCompletedHandle,
+          expectedExecution = staleExecution,
+        ),
+      )
+      assertSame(currentExecution, coordinator.activeExecution(executionKey))
+      assertEquals(restartedHandle, coordinator.currentHandle(executionKey))
+
+      val currentCompletedHandle = restartedHandle.copy(
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.COMPLETED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Fresh delegated child completion.",
+        ),
+        childExecutionStatus = ExecutionStatus.SUCCESS.name,
+        updatedAtEpochMs = 1_400L,
+      )
+      assertEquals(
+        currentCompletedHandle,
+        coordinator.finishExecution(
+          handle = currentCompletedHandle,
+          expectedExecution = currentExecution,
+        ),
+      )
+      assertNull(coordinator.activeExecution(executionKey))
+      assertEquals(currentCompletedHandle, coordinator.currentHandle(executionKey))
+    } finally {
+      staleExecution.executor.shutdownNow()
+      currentExecution.executor.shutdownNow()
+    }
   }
 
   @Test
@@ -325,6 +492,16 @@ class SubAgentHandleStoreFactoryTest {
       }
       return updated.result
     }
+  }
+
+  private fun activeExecution(): SubAgentActiveExecution {
+    val executor = Executors.newSingleThreadExecutor()
+    return SubAgentActiveExecution(
+      executor = executor,
+      future = FutureTask<Unit> { },
+      cancelRequested = AtomicBoolean(false),
+      closed = AtomicBoolean(false),
+    )
   }
 
   @Serializable

@@ -247,6 +247,7 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
   val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext)
   val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext)
   val subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext)
+  val subAgentSessionLinkStoreFactory = FileBackedSubAgentSessionLinkStoreFactory.fromContext(appContext)
   val workingStateStoreFactory = FileBackedWorkingStateStoreFactory.fromContext(appContext)
   val processRegistryFactory = FileBackedAgentProcessRegistryFactory(
     runtimeRootDirectory = runtimeRootDirectory,
@@ -368,6 +369,7 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
     supplementStoreProvider = supplementStoreFactory::forChatSession,
     compactionStoreProvider = compactionStoreFactory::forChatSession,
     subAgentHandleStoreProvider = subAgentHandleStoreFactory::forChatSession,
+    subAgentSessionLinkStoreProvider = subAgentSessionLinkStoreFactory::forChatSession,
     memoryIngestionCoordinator = memoryIngestionCoordinator,
     soulTurnSemanticSignalInterpreter = soulTurnSignalInterpreter,
     providerClient = liteLlmProviderClient,

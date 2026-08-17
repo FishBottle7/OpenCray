@@ -21,11 +21,17 @@ internal interface SubAgentHandleStoreFactory {
 internal interface SubAgentHandleStore {
   fun list(): List<SubAgentHandleState>
 
+  fun listClosed(): List<SubAgentHandleState> = emptyList()
+
   fun listForParentRun(parentRunId: String): List<SubAgentHandleState>
 
   fun get(parentRunId: String, agentId: String): SubAgentHandleState?
 
+  fun getClosed(parentRunId: String, agentId: String): SubAgentHandleState? = null
+
   fun upsert(handle: SubAgentHandleState)
+
+  fun upsertClosed(handle: SubAgentHandleState) = Unit
 
   fun remove(parentRunId: String, agentId: String): SubAgentHandleState?
 
@@ -118,9 +124,14 @@ private class InMemorySubAgentHandleStore(
 ) : SubAgentHandleStore {
   private val lock = Any()
   private val handlesByKey = linkedMapOf<SubAgentExecutionKey, SubAgentHandleState>()
+  private val closedHandlesByKey = linkedMapOf<SubAgentExecutionKey, SubAgentHandleState>()
 
   override fun list(): List<SubAgentHandleState> = synchronized(lock) {
     handlesByKey.values.sortedByDescending(SubAgentHandleState::updatedAtEpochMs)
+  }
+
+  override fun listClosed(): List<SubAgentHandleState> = synchronized(lock) {
+    closedHandlesByKey.values.sortedByDescending(SubAgentHandleState::updatedAtEpochMs)
   }
 
   override fun listForParentRun(parentRunId: String): List<SubAgentHandleState> = synchronized(lock) {
@@ -133,12 +144,29 @@ private class InMemorySubAgentHandleStore(
     handlesByKey[SubAgentExecutionKey(parentRunId = parentRunId, agentId = agentId)]
   }
 
+  override fun getClosed(parentRunId: String, agentId: String): SubAgentHandleState? = synchronized(lock) {
+    closedHandlesByKey[SubAgentExecutionKey(parentRunId = parentRunId, agentId = agentId)]
+  }
+
   override fun upsert(handle: SubAgentHandleState) {
     require(handle.parentRunId.isNotBlank()) {
       "Subagent handle parentRunId must not be blank."
     }
     synchronized(lock) {
-      handlesByKey[SubAgentExecutionKey.from(handle)] = handle
+      val key = SubAgentExecutionKey.from(handle)
+      closedHandlesByKey.remove(key)
+      handlesByKey[key] = handle
+    }
+  }
+
+  override fun upsertClosed(handle: SubAgentHandleState) {
+    require(handle.parentRunId.isNotBlank()) {
+      "Closed subagent handle parentRunId must not be blank."
+    }
+    synchronized(lock) {
+      val key = SubAgentExecutionKey.from(handle)
+      handlesByKey.remove(key)
+      closedHandlesByKey[key] = handle
     }
   }
 
@@ -149,12 +177,14 @@ private class InMemorySubAgentHandleStore(
   override fun retainKnownParentRuns(parentRunIds: Set<String>) {
     synchronized(lock) {
       handlesByKey.entries.removeIf { (_, handle) -> handle.parentRunId !in parentRunIds }
+      closedHandlesByKey.entries.removeIf { (_, handle) -> handle.parentRunId !in parentRunIds }
     }
   }
 
   override fun clear() {
     synchronized(lock) {
       handlesByKey.clear()
+      closedHandlesByKey.clear()
     }
   }
 }
@@ -170,6 +200,10 @@ private class FileBackedSubAgentHandleStore(
     loadNormalizedRecord().handles
   }
 
+  override fun listClosed(): List<SubAgentHandleState> = synchronized(lock) {
+    loadNormalizedRecord().closedHandles
+  }
+
   override fun listForParentRun(parentRunId: String): List<SubAgentHandleState> = synchronized(lock) {
     loadNormalizedRecord().handles
       .filter { handle -> handle.parentRunId == parentRunId }
@@ -177,6 +211,12 @@ private class FileBackedSubAgentHandleStore(
 
   override fun get(parentRunId: String, agentId: String): SubAgentHandleState? = synchronized(lock) {
     loadNormalizedRecord().handles.firstOrNull { handle ->
+      handle.parentRunId == parentRunId && handle.agentId == agentId
+    }
+  }
+
+  override fun getClosed(parentRunId: String, agentId: String): SubAgentHandleState? = synchronized(lock) {
+    loadNormalizedRecord().closedHandles.firstOrNull { handle ->
       handle.parentRunId == parentRunId && handle.agentId == agentId
     }
   }
@@ -194,6 +234,32 @@ private class FileBackedSubAgentHandleStore(
             recordVersion = existing.recordVersion + 1L,
             updatedAtEpochMs = clock(),
             handles = normalizedHandles,
+            closedHandles = existing.closedHandles.filterNot { stored ->
+              stored.parentRunId == handle.parentRunId && stored.agentId == handle.agentId
+            },
+          ),
+          result = Unit,
+        )
+      }
+    }
+  }
+
+  override fun upsertClosed(handle: SubAgentHandleState) {
+    synchronized(lock) {
+      updateRecord { existing ->
+        val normalizedClosedHandles = normalizeHandles(
+          existing.closedHandles.filterNot { stored ->
+            stored.parentRunId == handle.parentRunId && stored.agentId == handle.agentId
+          } + handle,
+        )
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            handles = existing.handles.filterNot { stored ->
+              stored.parentRunId == handle.parentRunId && stored.agentId == handle.agentId
+            },
+            closedHandles = normalizedClosedHandles,
           ),
           result = Unit,
         )
@@ -227,7 +293,8 @@ private class FileBackedSubAgentHandleStore(
     synchronized(lock) {
       updateRecord { existing ->
         val retained = existing.handles.filter { handle -> handle.parentRunId in parentRunIds }
-        if (retained.size == existing.handles.size) {
+        val retainedClosed = existing.closedHandles.filter { handle -> handle.parentRunId in parentRunIds }
+        if (retained.size == existing.handles.size && retainedClosed.size == existing.closedHandles.size) {
           return@updateRecord RecordStorageUpdate(
             value = existing,
             result = Unit,
@@ -239,6 +306,7 @@ private class FileBackedSubAgentHandleStore(
             recordVersion = existing.recordVersion + 1L,
             updatedAtEpochMs = clock(),
             handles = retained,
+            closedHandles = retainedClosed,
           ),
           result = Unit,
         )
@@ -278,7 +346,17 @@ private class FileBackedSubAgentHandleStore(
 
   private fun normalizeRecord(record: SubAgentHandleRecord): SubAgentHandleRecord {
     val normalizedHandles = normalizeHandles(record.handles)
-    return if (normalizedHandles == record.handles && record.sessionId == sessionId) {
+    val normalizedClosedHandles = normalizeHandles(record.closedHandles).filterNot { closedHandle ->
+      normalizedHandles.any { currentHandle ->
+        currentHandle.parentRunId == closedHandle.parentRunId &&
+          currentHandle.agentId == closedHandle.agentId
+      }
+    }
+    return if (
+      normalizedHandles == record.handles &&
+      normalizedClosedHandles == record.closedHandles &&
+      record.sessionId == sessionId
+    ) {
       record
     } else {
       record.copy(
@@ -286,6 +364,7 @@ private class FileBackedSubAgentHandleStore(
         recordVersion = record.recordVersion + 1L,
         updatedAtEpochMs = clock(),
         handles = normalizedHandles,
+        closedHandles = normalizedClosedHandles,
       )
     }
   }
@@ -324,6 +403,7 @@ private class FileBackedSubAgentHandleStore(
     val recordVersion: Long = 0L,
     val updatedAtEpochMs: Long = 0L,
     val handles: List<SubAgentHandleState> = emptyList(),
+    val closedHandles: List<SubAgentHandleState> = emptyList(),
   )
 
   private companion object {
