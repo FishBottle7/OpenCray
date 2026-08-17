@@ -24,11 +24,13 @@ import 'settings_models.dart';
 import 'strong_background_settings_models.dart';
 
 part 'agent_settings_pages.dart';
+part 'agent_gradient_data.dart';
 part 'settings_notification_pages.dart';
 part 'settings_scheduled_task_pages.dart';
 part 'settings_api_pages.dart';
 part 'safety_settings_pages.dart';
 part 'settings_debug_pages.dart';
+part 'settings_debug_formatters.dart';
 
 bool _llmEndpointAllowsBlankApiKey({
   required String protocol,
