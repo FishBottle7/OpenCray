@@ -53,6 +53,9 @@ import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentExecutionSnapshot
 import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.SubAgentPendingApprovalDecision
+import com.opencray.runtime.subagent.SubAgentPendingApprovalDecisionState
+import com.opencray.runtime.subagent.SubAgentSessionLink
 import com.opencray.runtime.subagent.SubAgentMailbox
 import com.opencray.runtime.subagent.SubAgentMailboxMessage
 import com.opencray.runtime.subagent.SubAgentMetadataKeys
@@ -344,7 +347,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun runtimeServiceHostApprovePendingApprovalForExplicitHandleSubmitsDetachedRecoveryTask() {
+  fun runtimeServiceHostApprovePendingApprovalForExplicitHandleResumesDetachedSubAgentActor() {
     val childResume = SubAgentApprovalResume(
       approvedToolName = "Edit",
       promptResumeState = OpenCrayPromptResumeState(turnIndex = 0, toolCallCount = 1),
@@ -373,32 +376,24 @@ class OpenCrayRuntimeServiceHostTest {
 
     fixture.serviceHost.approvePendingApproval(fixture.runId, nowEpochMs = 1_500L)
 
+    val detachedTaskId = syntheticSubAgentRecoveryTaskId(
+      sessionId = fixture.sessionId,
+      agentId = "child-explicit",
+      parentRunId = "parent-run-child-explicit",
+    )
+
     assertEquals(emptyList<String>(), fixture.handle.resumedTaskIds)
+    assertEquals(1, fixture.handle.resumeSubAgentActorsCallCount)
     assertFalse(fixture.approvalRegistry.isApproved(fixture.sessionId, fixture.taskId))
-    assertEquals(1, fixture.handle.detachedControlTasks.size)
-    val detachedTask = fixture.handle.detachedControlTasks.single()
-    assertEquals(AgentTaskType.SYSTEM, detachedTask.type)
+    assertTrue(fixture.handle.detachedControlTasks.isEmpty())
     assertEquals(
-      DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
-      detachedTask.metadata[METADATA_DETACHED_CONTROL_KIND],
+      SubAgentPendingApprovalDecisionState.APPROVED,
+      fixture.handle.listSubAgentHandles().single().pendingApprovalDecision?.state,
     )
-    assertEquals(
-      detachedSubAgentRecoveryTaskId(
-        sessionId = fixture.sessionId,
-        agentId = "child-explicit",
-        parentRunId = "parent-run-child-explicit",
-      ),
-      detachedTask.id,
-    )
-    assertEquals("child-explicit", detachedTask.metadata[METADATA_SUBAGENT_RECOVERY_AGENT_ID])
-    assertEquals(
-      "parent-run-child-explicit",
-      detachedTask.metadata[METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID],
-    )
-    assertTrue(fixture.approvalRegistry.isApproved(fixture.sessionId, detachedTask.id))
+    assertTrue(fixture.approvalRegistry.isApproved(fixture.sessionId, detachedTaskId))
     assertEquals(
       PromptCheckpointKind.APPROVED_PENDING_RESUME,
-      fixture.checkpointStore.get(detachedTask.id)?.checkpointKind,
+      fixture.checkpointStore.get(detachedTaskId)?.checkpointKind,
     )
     assertTrue(
       fixture.chatStore.loadSession(fixture.sessionId)?.messages?.lastOrNull()?.text in setOf(
@@ -409,7 +404,7 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
-  fun runtimeServiceHostApprovePendingApprovalForSessionWithExplicitHandleSubmitsDetachedRecoveryTask() {
+  fun runtimeServiceHostApprovePendingApprovalForSessionWithExplicitHandleResumesDetachedSubAgentActor() {
     val childResume = SubAgentApprovalResume(
       approvedToolName = ProviderNativeWebSearchSupport.RESUME_TOOL_NAME,
       promptResumeState = OpenCrayPromptResumeState(turnIndex = 0, toolCallCount = 1),
@@ -443,32 +438,25 @@ class OpenCrayRuntimeServiceHostTest {
 
     fixture.serviceHost.approvePendingApprovalForSession(fixture.runId, nowEpochMs = 1_500L)
 
+    val detachedTaskId = syntheticSubAgentRecoveryTaskId(
+      sessionId = fixture.sessionId,
+      agentId = "child-explicit-session",
+      parentRunId = "parent-run-child-explicit-session",
+    )
+
     assertEquals(emptyList<String>(), fixture.handle.resumedTaskIds)
+    assertEquals(1, fixture.handle.resumeSubAgentActorsCallCount)
     assertTrue(fixture.chatStore.isNativeWebSearchSessionApproved(fixture.sessionId))
     assertFalse(fixture.approvalRegistry.isApproved(fixture.sessionId, fixture.taskId))
-    assertEquals(1, fixture.handle.detachedControlTasks.size)
-    val detachedTask = fixture.handle.detachedControlTasks.single()
-    assertEquals(AgentTaskType.SYSTEM, detachedTask.type)
+    assertTrue(fixture.handle.detachedControlTasks.isEmpty())
     assertEquals(
-      DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
-      detachedTask.metadata[METADATA_DETACHED_CONTROL_KIND],
+      SubAgentPendingApprovalDecisionState.APPROVED,
+      fixture.handle.listSubAgentHandles().single().pendingApprovalDecision?.state,
     )
-    assertEquals(
-      detachedSubAgentRecoveryTaskId(
-        sessionId = fixture.sessionId,
-        agentId = "child-explicit-session",
-        parentRunId = "parent-run-child-explicit-session",
-      ),
-      detachedTask.id,
-    )
-    assertEquals(
-      "child-explicit-session",
-      detachedTask.metadata[METADATA_SUBAGENT_RECOVERY_AGENT_ID],
-    )
-    assertTrue(fixture.approvalRegistry.isApproved(fixture.sessionId, detachedTask.id))
+    assertTrue(fixture.approvalRegistry.isApproved(fixture.sessionId, detachedTaskId))
     assertEquals(
       PromptCheckpointKind.APPROVED_PENDING_RESUME,
-      fixture.checkpointStore.get(detachedTask.id)?.checkpointKind,
+      fixture.checkpointStore.get(detachedTaskId)?.checkpointKind,
     )
     assertTrue(
       fixture.chatStore.loadSession(fixture.sessionId)?.messages?.lastOrNull()?.text in setOf(
@@ -982,45 +970,103 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(2, adapter.startedModels.last().activeSessionCount)
   }
 
+
   @Test
-  fun runtimeForegroundControllerBootstrapForegroundStopsWhenServiceReturnsIdle() {
-    var now = 6_500L
+  fun runtimeForegroundControllerUpdatesForegroundWhenLiveManagedProcessCountsChange() {
+    var now = 6_400L
     val adapter = RecordingRuntimeForegroundServiceAdapter()
     val controller = RuntimeForegroundController(
       serviceAdapter = adapter,
-      appVisibleProvider = { true },
+      appVisibleProvider = { false },
       mainThreadPoster = ImmediateMainThreadPoster,
       clock = { now },
     )
 
-    val bootstrap = controller.startBootstrapForeground()
-
-    assertEquals(RuntimeForegroundState.PHASE_FOREGROUND, bootstrap.phase)
-    assertEquals(true, bootstrap.notificationVisible)
-    assertEquals(
-      RuntimeServiceWorkState.KEEP_ALIVE_REASON_SERVICE_STARTUP,
-      bootstrap.keepAliveReason,
-    )
-    assertEquals(1, adapter.startedModels.size)
-    assertEquals(
-      RuntimeServiceWorkState.KEEP_ALIVE_REASON_SERVICE_STARTUP,
-      adapter.startedModels.single().keepAliveReason,
-    )
-
-    now = 6_800L
-    val idle = controller.onWorkStateChanged(
+    controller.onWorkStateChanged(
       RuntimeServiceWorkState(
-        phase = RuntimeServiceWorkState.PHASE_IDLE,
-        hasActiveWork = false,
-        keepAliveRequired = false,
+        phase = RuntimeServiceWorkState.PHASE_ACTIVE_WORK,
+        hasActiveWork = true,
+        activeRunCount = 1,
+        activeSessionCount = 3,
+        pendingWorkSessionCount = 1,
+        liveManagedProcessSessionCount = 1,
+        keepAliveRequired = true,
+        keepAliveReason = RuntimeServiceWorkState.KEEP_ALIVE_REASON_MANAGED_PROCESS,
         changedAtEpochMs = now,
-        idleSinceEpochMs = now,
+        activeSinceEpochMs = now,
       ),
     )
 
-    assertEquals(RuntimeForegroundState.PHASE_IDLE, idle.phase)
-    assertEquals(false, idle.notificationVisible)
-    assertEquals(1, adapter.stopCount)
+    now = 6_700L
+    val updated = controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_ACTIVE_WORK,
+        hasActiveWork = true,
+        activeRunCount = 1,
+        activeSessionCount = 3,
+        pendingWorkSessionCount = 1,
+        liveManagedProcessSessionCount = 2,
+        keepAliveRequired = true,
+        keepAliveReason = RuntimeServiceWorkState.KEEP_ALIVE_REASON_MANAGED_PROCESS,
+        changedAtEpochMs = now,
+        activeSinceEpochMs = 6_400L,
+      ),
+    )
+
+    assertEquals(RuntimeForegroundState.PHASE_FOREGROUND, updated.phase)
+    assertEquals(2, updated.liveManagedProcessSessionCount)
+    assertEquals(2, adapter.startedModels.size)
+    assertEquals(2, adapter.startedModels.last().liveManagedProcessSessionCount)
+  }
+
+  @Test
+  fun runtimeForegroundControllerUpdatesForegroundWhenLiveSubAgentCountsChange() {
+    var now = 6_900L
+    val adapter = RecordingRuntimeForegroundServiceAdapter()
+    val controller = RuntimeForegroundController(
+      serviceAdapter = adapter,
+      appVisibleProvider = { false },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { now },
+    )
+
+    controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_ACTIVE_WORK,
+        hasActiveWork = true,
+        activeRunCount = 0,
+        activeSessionCount = 3,
+        liveSubAgentSessionCount = 1,
+        keepAliveRequired = true,
+        keepAliveReason = RuntimeServiceWorkState.KEEP_ALIVE_REASON_ACTIVE_SUBAGENT,
+        changedAtEpochMs = now,
+        activeSinceEpochMs = now,
+      ),
+    )
+
+    now = 7_200L
+    val updated = controller.onWorkStateChanged(
+      RuntimeServiceWorkState(
+        phase = RuntimeServiceWorkState.PHASE_ACTIVE_WORK,
+        hasActiveWork = true,
+        activeRunCount = 0,
+        activeSessionCount = 3,
+        liveSubAgentSessionCount = 2,
+        keepAliveRequired = true,
+        keepAliveReason = RuntimeServiceWorkState.KEEP_ALIVE_REASON_ACTIVE_SUBAGENT,
+        changedAtEpochMs = now,
+        activeSinceEpochMs = 6_900L,
+      ),
+    )
+
+    assertEquals(RuntimeForegroundState.PHASE_FOREGROUND, updated.phase)
+    assertEquals(2, updated.liveSubAgentSessionCount)
+    assertEquals(2, adapter.startedModels.size)
+    assertEquals(2, adapter.startedModels.last().liveSubAgentSessionCount)
+    assertEquals(
+      RuntimeServiceWorkState.KEEP_ALIVE_REASON_ACTIVE_SUBAGENT,
+      adapter.startedModels.last().keepAliveReason,
+    )
   }
 
   @Test
@@ -1189,7 +1235,7 @@ class OpenCrayRuntimeServiceHostTest {
       RecordingAgentSessionHandle(
         sessionId = subAgentSessionId,
         resumedSessionIds = runtimeManager.resumedSessionIds,
-        subAgentHandles = listOf(backgroundSubAgentHandle(agentId = "child-live")),
+        initialSubAgentHandles = listOf(backgroundSubAgentHandle(agentId = "child-live")),
       ),
     )
     runtimeManager.putHandle(
@@ -1346,7 +1392,7 @@ class OpenCrayRuntimeServiceHostTest {
     val recoverySession = RecordingAgentSessionHandle(
       sessionId = recoverySessionId,
       resumedSessionIds = runtimeManager.resumedSessionIds,
-      subAgentHandles = listOf(recoveryHandle),
+      initialSubAgentHandles = listOf(recoveryHandle),
     )
     runtimeManager.putHandle(recoverySession)
     val lifecycleDescriptor = HostRuntimeLifecycleDescriptor()
@@ -1382,8 +1428,8 @@ class OpenCrayRuntimeServiceHostTest {
     val recoveryTask = recoverySession.detachedControlTasks.single()
     assertEquals(AgentTaskType.SYSTEM, recoveryTask.type)
     assertEquals(
-      DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
-      recoveryTask.metadata[METADATA_DETACHED_CONTROL_KIND],
+      SYNTHETIC_SUBAGENT_TASK_KIND_RECOVERY_WAIT,
+      recoveryTask.metadata[METADATA_SYNTHETIC_SUBAGENT_TASK_KIND],
     )
     assertEquals(
       RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY,
@@ -1487,11 +1533,17 @@ class OpenCrayRuntimeServiceHostTest {
 
     fixture.serviceHost.approvePendingApproval(fixture.runId, nowEpochMs = 1_500L)
 
-    assertEquals(1, fixture.handle.detachedControlTasks.size)
+    assertEquals(emptyList<String>(), fixture.handle.resumedTaskIds)
+    assertTrue(fixture.handle.detachedControlTasks.isEmpty())
+    val detachedTaskId = syntheticSubAgentRecoveryTaskId(
+      sessionId = fixture.sessionId,
+      agentId = "child-explicit",
+      parentRunId = "parent-run-child-explicit",
+    )
+    assertTrue(fixture.approvalRegistry.isApproved(fixture.sessionId, detachedTaskId))
     assertEquals(
-      "parent-run-child-explicit",
-      fixture.handle.detachedControlTasks.single()
-        .metadata[METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID],
+      PromptCheckpointKind.APPROVED_PENDING_RESUME,
+      fixture.checkpointStore.get(detachedTaskId)?.checkpointKind,
     )
   }
 
@@ -1526,11 +1578,16 @@ class OpenCrayRuntimeServiceHostTest {
     fixture.serviceHost.approvePendingApproval(fixture.runId, nowEpochMs = 1_500L)
 
     assertEquals(emptyList<String>(), fixture.handle.resumedTaskIds)
-    assertEquals(1, fixture.handle.detachedControlTasks.size)
+    assertTrue(fixture.handle.detachedControlTasks.isEmpty())
+    val detachedTaskId = syntheticSubAgentRecoveryTaskId(
+      sessionId = fixture.sessionId,
+      agentId = "child-explicit",
+      parentRunId = "parent-run-child-explicit",
+    )
+    assertTrue(fixture.approvalRegistry.isApproved(fixture.sessionId, detachedTaskId))
     assertEquals(
-      "parent-run-child-explicit",
-      fixture.handle.detachedControlTasks.single()
-        .metadata[METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID],
+      PromptCheckpointKind.APPROVED_PENDING_RESUME,
+      fixture.checkpointStore.get(detachedTaskId)?.checkpointKind,
     )
   }
 
@@ -5309,6 +5366,61 @@ class OpenCrayRuntimeServiceHostTest {
   }
 
   @Test
+  fun projectionOnlyChatRuntimeGatewayProjectsDurableTerminalRunStateWithoutQueueTask() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-terminal-run-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-terminal-run-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    chatStore.appendUserMessage(sessionId, "show durable terminal run state")
+
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val runRecordFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val journalFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val processFactory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+    val supplementFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot)
+
+    val runId = "run-terminal-only"
+    val taskId = "task-terminal-only"
+    runRecordFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = runId,
+        taskId = taskId,
+        acceptedAtEpochMs = 1_000L,
+        lastResult = ExecutionResult(
+          taskId = taskId,
+          status = ExecutionStatus.CANCELLED,
+          errorCode = "SUBAGENT_RECOVERY_CANCELLED",
+          errorMessage = "Detached recovery was cancelled before it resumed.",
+          startedAtEpochMs = 1_000L,
+          finishedAtEpochMs = 1_200L,
+        ),
+      ),
+    )
+
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      runRecordStoreFactory = runRecordFactory,
+      runEventJournalStoreFactory = journalFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      processRegistryFactory = processFactory,
+      supplementStoreFactory = supplementFactory,
+      strings = projectionOnlyChatStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 1_500L },
+    )
+
+    val runSnapshot = requireNotNull(gateway.loadChatRunSnapshot(runId))
+
+    assertEquals("cancelled", runSnapshot["lifecycleState"])
+    assertEquals("cancelled", runSnapshot["taskState"])
+    assertEquals("cancelled", runSnapshot["executionStatus"])
+    assertEquals("SUBAGENT_RECOVERY_CANCELLED", runSnapshot["errorCode"])
+  }
+
+  @Test
   fun projectionOnlyChatRuntimeGatewayProjectsDurableSubAgentHandleState() {
     val chatRoot = temporaryFolder.newFolder("projection-chat-subagent-durable-store")
     val runtimeRoot = temporaryFolder.newFolder("projection-runtime-subagent-durable-store")
@@ -5443,6 +5555,276 @@ class OpenCrayRuntimeServiceHostTest {
     assertEquals(2, child["mailboxMessageCount"])
     assertEquals(1, child["mailboxPendingMessageCount"])
     assertEquals("mailbox-projection-1", child["mailboxLastDeliveredMessageId"])
+  }
+
+  @Test
+  fun projectionOnlyChatRuntimeGatewayProjectsDurableClosedSubAgentHandleState() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-subagent-durable-closed-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-subagent-durable-closed-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    chatStore.appendUserMessage(sessionId, "show durable closed child")
+
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val runRecordFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val journalFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val processFactory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+    val supplementFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot)
+    val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
+
+    subAgentHandleStoreFactory.forChatSession(sessionId).upsertClosed(
+      backgroundSubAgentHandle(agentId = "child-durable-closed").copy(
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.CANCELLED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Delegated child handle was explicitly closed.",
+        ),
+        updatedAtEpochMs = 1_300L,
+      ),
+    )
+
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      runRecordStoreFactory = runRecordFactory,
+      runEventJournalStoreFactory = journalFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      processRegistryFactory = processFactory,
+      supplementStoreFactory = supplementFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      strings = projectionOnlyChatStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 1_500L },
+    )
+
+    val runtimeSnapshot = gateway.loadChatRuntimeSnapshot()
+    val subAgents = (runtimeSnapshot["subAgents"] as List<Map<String, Any?>>)
+    val child = subAgents.single()
+
+    assertEquals("child-durable-closed", child["agentId"])
+    assertEquals("cancelled", child["phase"])
+    assertEquals("cancelled", child["status"])
+    assertEquals(true, child["closed"])
+    assertEquals("Delegated child handle was explicitly closed.", child["summary"])
+    assertEquals(0, child["eventCount"])
+  }
+
+  @Test
+  fun projectionOnlyChatRuntimeGatewayProjectsDurableSubAgentSessionLinkState() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-subagent-link-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-subagent-link-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    chatStore.appendUserMessage(sessionId, "project detached child from durable link")
+
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val runRecordFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val journalFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val processFactory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+    val supplementFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot)
+    val subAgentSessionLinkStoreFactory = inMemorySubAgentSessionLinkStoreFactory()
+
+    val parentRunId = "parent-run-link"
+    val parentTaskId = "parent-task-link"
+    queueFactory.forChatSession(sessionId).save(
+      SessionQueueSnapshot(
+        sessionId = sessionId,
+        agentId = "test-agent",
+        lifecycleState = SessionLifecycleState.RUNNING,
+        updatedAtEpochMs = 1_300L,
+        tasks = listOf(
+          SessionQueueTaskSnapshot(
+            enqueueOrder = 1L,
+            task = AgentTask(
+              id = parentTaskId,
+              type = AgentTaskType.PROMPT,
+              input = "project detached child from durable link",
+              state = AgentTaskState.RUNNING,
+              policyDecision = PolicyDecision(
+                outcome = com.opencray.core.contracts.PolicyDecisionOutcome.ALLOW,
+                reasonCode = "test",
+              ),
+              createdAtEpochMs = 1_000L,
+              updatedAtEpochMs = 1_300L,
+              metadata = mapOf(
+                AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to parentRunId,
+                AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to "pending-link",
+              ),
+            ),
+            lifecycleState = QueueTaskLifecycleState.RUNNING,
+            attempt = 1,
+          ),
+        ),
+      ),
+    )
+    runRecordFactory.forChatSession(sessionId).upsert(
+      PersistedAgentRunRecord(
+        runId = parentRunId,
+        taskId = parentTaskId,
+        acceptedAtEpochMs = 1_000L,
+        pendingMessageId = "pending-link",
+      ),
+    )
+    subAgentSessionLinkStoreFactory.forChatSession(sessionId).upsert(
+      SubAgentSessionLink(
+        parentSessionId = sessionId,
+        parentRunId = parentRunId,
+        agentId = "child-link-only",
+        childSessionId = "child-session-link-only",
+        childRootRunId = "child-run-link-only",
+        childRootTaskId = "child-task-link-only",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        depth = 1,
+        label = "Inspect detached child link",
+        status = "background_running",
+        closed = false,
+        createdAtEpochMs = 900L,
+        updatedAtEpochMs = 1_300L,
+      ),
+    )
+
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      runRecordStoreFactory = runRecordFactory,
+      runEventJournalStoreFactory = journalFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      processRegistryFactory = processFactory,
+      supplementStoreFactory = supplementFactory,
+      subAgentSessionLinkStoreFactory = subAgentSessionLinkStoreFactory,
+      strings = projectionOnlyChatStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 1_500L },
+    )
+
+    val runtimeSnapshot = gateway.loadChatRuntimeSnapshot()
+    @Suppress("UNCHECKED_CAST")
+    val subAgents = runtimeSnapshot["subAgents"] as List<Map<String, Any?>>
+    val child = subAgents.single()
+
+    assertEquals(parentRunId, child["parentRunId"])
+    assertEquals("child-link-only", child["agentId"])
+    assertEquals("child-session-link-only", child["childSessionId"])
+    assertEquals("child-run-link-only", child["childRunId"])
+    assertEquals("child-task-link-only", child["childTaskId"])
+    assertEquals("Inspect detached child link", child["label"])
+    assertEquals("researcher", child["subagentType"])
+    assertEquals("minimal", child["contextMode"])
+    assertEquals(1, child["depth"])
+    assertEquals("resumed", child["phase"])
+    assertEquals("background_running", child["status"])
+    assertEquals("background_running", child["executionState"])
+    assertEquals("background_resume", child["continuationKind"])
+    assertEquals(false, child["resumable"])
+    assertEquals(false, child["requiresUserAction"])
+    assertEquals(false, child["isHighRisk"])
+    assertEquals(false, child["closed"])
+    assertEquals(true, child["hasActiveExecution"])
+    assertEquals(0, child["eventCount"])
+    assertEquals(0, child["mailboxMessageCount"])
+    assertEquals(0, child["mailboxPendingMessageCount"])
+    assertNull(child["summary"])
+  }
+
+  @Test
+  fun projectionOnlyChatRuntimeGatewayProjectsClosedSubAgentEvent() {
+    val chatRoot = temporaryFolder.newFolder("projection-chat-subagent-closed-store")
+    val runtimeRoot = temporaryFolder.newFolder("projection-runtime-subagent-closed-store")
+    val chatStore = ChatSessionLocalStore(chatRoot)
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    chatStore.appendUserMessage(sessionId, "close delegated child")
+
+    val queueFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val runRecordFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
+    val journalFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
+    val checkpointFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val processFactory = FileBackedAgentProcessRegistryFactory(runtimeRoot)
+    val supplementFactory = FileBackedAgentSessionSupplementStoreFactory(runtimeRoot)
+
+    journalFactory.forChatSession(sessionId).append(
+      OpenCraySubAgentEvent(
+        runId = "projection-run-close",
+        taskId = "projection-task-close",
+        agentId = "child-handle-close",
+        phase = OpenCraySubAgentPhase.STARTED,
+        childRunId = "child-run-close",
+        childTaskId = "child-task-close",
+        label = "Inspect README",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        depth = 1,
+        executionState = SubAgentExecutionState.RUNNING,
+        continuationKind = SubAgentContinuationKind.NONE,
+        resumable = false,
+        requiresUserAction = false,
+        isHighRisk = false,
+        turn = 0,
+        emittedAtEpochMs = 1_000L,
+      ),
+    )
+    journalFactory.forChatSession(sessionId).append(
+      OpenCraySubAgentEvent(
+        runId = "projection-run-close",
+        taskId = "projection-task-close",
+        agentId = "child-handle-close",
+        phase = OpenCraySubAgentPhase.CANCELLED,
+        childRunId = "child-run-close",
+        childTaskId = "child-task-close",
+        label = "Inspect README",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        depth = 1,
+        summary = "Delegated child handle closed.",
+        executionState = SubAgentExecutionState.CANCELLED,
+        continuationKind = SubAgentContinuationKind.NONE,
+        resumable = false,
+        requiresUserAction = false,
+        isHighRisk = false,
+        turn = 1,
+        emittedAtEpochMs = 1_200L,
+        closed = true,
+      ),
+    )
+
+    val gateway = ProjectionOnlyOpenCrayChatRuntimeGateway(
+      chatSessionStore = chatStore,
+      queueSnapshotStoreFactory = queueFactory,
+      runRecordStoreFactory = runRecordFactory,
+      runEventJournalStoreFactory = journalFactory,
+      promptCheckpointStoreFactory = checkpointFactory,
+      processRegistryFactory = processFactory,
+      supplementStoreFactory = supplementFactory,
+      strings = projectionOnlyChatStrings(),
+      connectionStateProvider = { RuntimeServiceConnectionState.inProcessFallback() },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      clock = { 1_500L },
+    )
+
+    val runtimeSnapshot = gateway.loadChatRuntimeSnapshot()
+    val events = (runtimeSnapshot["events"] as List<Map<String, Any?>>)
+    val subAgents = (runtimeSnapshot["subAgents"] as List<Map<String, Any?>>)
+    val closedEvent = events.last { event -> event["kind"] == "subagent" }
+    val closedChild = subAgents.single()
+
+    assertEquals(true, closedEvent["closed"])
+    assertEquals("child-handle-close", closedEvent["agentId"])
+    assertEquals("cancelled", closedEvent["phase"])
+    assertEquals("cancelled", closedEvent["status"])
+    assertEquals("Delegated child handle closed.", closedEvent["text"])
+    assertEquals(true, closedChild["closed"])
+    assertEquals("child-handle-close", closedChild["agentId"])
+    assertEquals("cancelled", closedChild["phase"])
+    assertEquals("cancelled", closedChild["status"])
+    assertEquals("Delegated child handle closed.", closedChild["summary"])
+    assertEquals(2, closedChild["eventCount"])
   }
 
   @Test
@@ -6989,7 +7371,7 @@ class OpenCrayRuntimeServiceHostTest {
     private val queueSnapshot: SessionQueueSnapshot? = null,
     private val hasPendingWork: Boolean = false,
     private val hasLiveManagedProcesses: Boolean = false,
-    private val subAgentHandles: List<SubAgentHandleState> = emptyList(),
+    initialSubAgentHandles: List<SubAgentHandleState> = emptyList(),
     private val cancelRequestResult: Boolean = false,
     private val resumeRequestResult: Boolean = false,
   ) : AgentSessionHandle {
@@ -6997,7 +7379,10 @@ class OpenCrayRuntimeServiceHostTest {
     val detachedControlTasks = mutableListOf<AgentTask>()
     val cancelledTaskIds = mutableListOf<String>()
     val resumedTaskIds = mutableListOf<String>()
+    private var subAgentHandles: List<SubAgentHandleState> = initialSubAgentHandles
     var ensureProcessingCallCount: Int = 0
+      private set
+    var resumeSubAgentActorsCallCount: Int = 0
       private set
 
     override fun submitPrompt(
@@ -7010,18 +7395,6 @@ class OpenCrayRuntimeServiceHostTest {
 
     override fun submitTask(task: AgentTask): AgentRunSubmission {
       submittedTasks += task
-      val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
-        ?: "run-${task.id}"
-      return AgentRunSubmission(
-        sessionId = sessionId,
-        runId = runId,
-        taskId = task.id,
-        acceptedAtEpochMs = task.createdAtEpochMs,
-      )
-    }
-
-    override fun submitDetachedControlTask(task: AgentTask): AgentRunSubmission {
-      detachedControlTasks += task
       val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
         ?: "run-${task.id}"
       return AgentRunSubmission(
@@ -7058,7 +7431,19 @@ class OpenCrayRuntimeServiceHostTest {
 
     override fun resume(): SessionLifecycleState {
       resumedSessionIds += sessionId
+      scheduleRecoverableSubAgents()
       return SessionLifecycleState.IDLE
+    }
+
+    private fun triggerSubAgentActors(): Int {
+      resumeSubAgentActorsCallCount += 1
+      return subAgentHandles.count { handle ->
+        handle.pendingApprovalDecision != null ||
+          (
+            handle.snapshot.state == SubAgentExecutionState.BACKGROUND_QUEUED &&
+              handle.pendingApprovalResume == null
+            )
+      }
     }
 
     override fun snapshot(): SessionQueueSnapshot = queueSnapshot ?: SessionQueueSnapshot(
@@ -7080,16 +7465,46 @@ class OpenCrayRuntimeServiceHostTest {
 
     override fun listSubAgentHandles(): List<SubAgentHandleState> = subAgentHandles
 
-    override fun listDetachedControlTasks(): List<AgentTask> = detachedControlTasks.toList()
+    override fun setSubAgentPendingApprovalDecision(
+      agentId: String,
+      parentRunId: String,
+      pendingApprovalDecision: SubAgentPendingApprovalDecision?,
+    ): Boolean {
+      var updated = false
+      subAgentHandles = subAgentHandles.map { handle ->
+        if (handle.agentId != agentId || handle.parentRunId != parentRunId) {
+          handle
+        } else {
+          updated = true
+          if (pendingApprovalDecision == null) {
+            handle.copy(pendingApprovalDecision = null)
+          } else {
+            handle.copy(
+              pendingApprovalDecision = pendingApprovalDecision,
+              updatedAtEpochMs = maxOf(
+                handle.updatedAtEpochMs,
+                pendingApprovalDecision.recordedAtEpochMs,
+              ),
+            )
+          }
+        }
+      }
+      if (updated && pendingApprovalDecision != null) {
+        triggerSubAgentActors()
+      }
+      return updated
+    }
 
-    override fun submitDetachedSubAgentRecoveryTask(
+    override fun listVisibleSubAgentTasks(): List<AgentTask> = detachedControlTasks.toList()
+
+    override fun submitSubAgentRecoveryTask(
       agentId: String,
       parentRunId: String,
       taskId: String,
       createdAtEpochMs: Long,
       submissionSource: String,
-    ): AgentRunSubmission = submitDetachedControlTask(
-      detachedSubAgentRecoveryWaitTask(
+    ): AgentRunSubmission {
+      val task = syntheticSubAgentRecoveryWaitTask(
         sessionId = sessionId,
         agentId = agentId,
         parentRunId = parentRunId,
@@ -7098,10 +7513,19 @@ class OpenCrayRuntimeServiceHostTest {
         metadata = HostRuntimeLifecycleDescriptor().taskMetadata(
           submissionSource = submissionSource,
         ),
-      ),
-    )
+      )
+      detachedControlTasks += task
+      val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
+        ?: "run-${task.id}"
+      return AgentRunSubmission(
+        sessionId = sessionId,
+        runId = runId,
+        taskId = task.id,
+        acceptedAtEpochMs = task.createdAtEpochMs,
+      )
+    }
 
-    override fun ensureRecoverableDetachedSubAgentTasks(): Int {
+    fun scheduleRecoverableSubAgents(): Int {
       val activeParentRunIds = runs
         .filter(AgentRunSnapshot::isActive)
         .map(AgentRunSnapshot::runId)
@@ -7126,12 +7550,12 @@ class OpenCrayRuntimeServiceHostTest {
           (handle.parentRunId to handle.agentId) !in pendingRecoveryKeys
       }
       resumableHandles.forEach { handle ->
-        val taskId = detachedSubAgentRecoveryTaskId(
+        val taskId = syntheticSubAgentRecoveryTaskId(
           sessionId = sessionId,
           agentId = handle.agentId,
           parentRunId = handle.parentRunId,
         )
-        submitDetachedSubAgentRecoveryTask(
+        submitSubAgentRecoveryTask(
           agentId = handle.agentId,
           parentRunId = handle.parentRunId,
           taskId = taskId,
@@ -9281,7 +9705,7 @@ class OpenCrayRuntimeServiceHostTest {
       queueSnapshot = queueSnapshot,
       cancelRequestResult = cancelRequestResult,
       resumeRequestResult = resumeRequestResult,
-      subAgentHandles = subAgentHandles,
+      initialSubAgentHandles = subAgentHandles,
     )
     runtimeManager.putHandle(handle)
     val runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory()

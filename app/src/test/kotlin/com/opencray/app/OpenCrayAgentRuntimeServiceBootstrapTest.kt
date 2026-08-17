@@ -6232,7 +6232,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
     val target = runtimeServiceTargetForNotificationTask(
       notificationTargetTestTask(
         metadata = mapOf(
-          METADATA_DETACHED_CONTROL_KIND to DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
+          METADATA_SYNTHETIC_SUBAGENT_TASK_KIND to SYNTHETIC_SUBAGENT_TASK_KIND_RECOVERY_WAIT,
         ),
       ),
     )

@@ -876,11 +876,11 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     val recoveryTask = recoverySession.submittedTasks.single()
     assertEquals(AgentTaskType.SYSTEM, recoveryTask.type)
     assertEquals(
-      DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
-      recoveryTask.metadata[METADATA_DETACHED_CONTROL_KIND],
+      SYNTHETIC_SUBAGENT_TASK_KIND_RECOVERY_WAIT,
+      recoveryTask.metadata[METADATA_SYNTHETIC_SUBAGENT_TASK_KIND],
     )
     assertEquals(
-      detachedSubAgentRecoveryTaskId(
+      syntheticSubAgentRecoveryTaskId(
         sessionId = recoverySessionId,
         agentId = "child-resume",
         parentRunId = "parent-run-child-resume",
@@ -1066,6 +1066,7 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
 
     override fun resume(): SessionLifecycleState {
       resumeCallCount += 1
+      scheduleRecoverableSubAgents()
       return SessionLifecycleState.RUNNING
     }
 
@@ -1118,14 +1119,14 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
 
     override fun listSubAgentHandles(): List<SubAgentHandleState> = subAgentHandles
 
-    override fun submitDetachedSubAgentRecoveryTask(
+    override fun submitSubAgentRecoveryTask(
       agentId: String,
       parentRunId: String,
       taskId: String,
       createdAtEpochMs: Long,
       submissionSource: String,
     ): AgentRunSubmission = submitTask(
-      detachedSubAgentRecoveryWaitTask(
+      syntheticSubAgentRecoveryWaitTask(
         sessionId = sessionId,
         agentId = agentId,
         parentRunId = parentRunId,
@@ -1137,7 +1138,7 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
       ),
     )
 
-    override fun ensureRecoverableDetachedSubAgentTasks(): Int {
+    fun scheduleRecoverableSubAgents(): Int {
       val activeParentRunIds = runs
         .filter(AgentRunSnapshot::isActive)
         .map(AgentRunSnapshot::runId)
@@ -1162,12 +1163,12 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
           (handle.parentRunId to handle.agentId) !in pendingRecoveryKeys
       }
       resumableHandles.forEach { handle ->
-        val taskId = detachedSubAgentRecoveryTaskId(
+        val taskId = syntheticSubAgentRecoveryTaskId(
           sessionId = sessionId,
           agentId = handle.agentId,
           parentRunId = handle.parentRunId,
         )
-        submitDetachedSubAgentRecoveryTask(
+        submitSubAgentRecoveryTask(
           agentId = handle.agentId,
           parentRunId = handle.parentRunId,
           taskId = taskId,

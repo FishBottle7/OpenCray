@@ -1513,14 +1513,14 @@ class ScheduledTaskRuntimeTest {
 
     override fun hasLiveManagedProcesses(): Boolean = false
 
-    override fun submitDetachedSubAgentRecoveryTask(
+    override fun submitSubAgentRecoveryTask(
       agentId: String,
       parentRunId: String,
       taskId: String,
       createdAtEpochMs: Long,
       submissionSource: String,
     ): AgentRunSubmission = submitTask(
-      detachedSubAgentRecoveryWaitTask(
+      syntheticSubAgentRecoveryWaitTask(
         sessionId = sessionId,
         agentId = agentId,
         parentRunId = parentRunId,

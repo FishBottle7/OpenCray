@@ -72,7 +72,7 @@ class ChatRuntimeWriteTargetResolverTest {
           taskId = "task-approval",
           runId = "run-approval",
           metadata = mapOf(
-            METADATA_DETACHED_CONTROL_KIND to DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
+            METADATA_SYNTHETIC_SUBAGENT_TASK_KIND to SYNTHETIC_SUBAGENT_TASK_KIND_RECOVERY_WAIT,
           ),
           state = AgentTaskState.SUSPENDED,
           updatedAtEpochMs = 300L,
@@ -107,7 +107,7 @@ class ChatRuntimeWriteTargetResolverTest {
           taskId = "task-run-control",
           runId = "run-run-control",
           metadata = mapOf(
-            METADATA_DETACHED_CONTROL_KIND to DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
+            METADATA_SYNTHETIC_SUBAGENT_TASK_KIND to SYNTHETIC_SUBAGENT_TASK_KIND_RECOVERY_WAIT,
           ),
           state = AgentTaskState.RUNNING,
           updatedAtEpochMs = 500L,

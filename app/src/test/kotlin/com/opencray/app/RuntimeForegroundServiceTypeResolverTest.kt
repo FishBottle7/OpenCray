@@ -33,6 +33,7 @@ class RuntimeForegroundServiceTypeResolverTest {
       activeRunCount = 1,
       activeSessionCount = 1,
       liveManagedProcessSessionCount = 0,
+      liveSubAgentSessionCount = 0,
       keepAliveReason = RuntimeServiceWorkState.KEEP_ALIVE_REASON_ACTIVE_RUN,
     )
 }

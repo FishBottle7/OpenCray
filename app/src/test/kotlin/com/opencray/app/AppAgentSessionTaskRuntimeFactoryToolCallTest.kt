@@ -768,14 +768,14 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
       ),
       createdAtEpochMs = 1_200L,
       metadata = mapOf(
-        METADATA_DETACHED_CONTROL_KIND to DETACHED_CONTROL_KIND_SUBAGENT_RECOVERY_WAIT,
+        METADATA_SYNTHETIC_SUBAGENT_TASK_KIND to SYNTHETIC_SUBAGENT_TASK_KIND_RECOVERY_WAIT,
         METADATA_SUBAGENT_RECOVERY_AGENT_ID to "child-shared",
         METADATA_SUBAGENT_RECOVERY_PARENT_RUN_ID to "run-parent-target",
       ),
     )
 
     val result = requireNotNull(
-      runtimeFactory.executeDetachedControlTask(
+      runtimeFactory.executeSubAgentRecoveryTask(
         sessionId = sessionId,
         task = task,
         hooks = RuntimeExecutionHooks(
@@ -783,6 +783,8 @@ class AppAgentSessionTaskRuntimeFactoryToolCallTest {
           requestRetry = { _ -> error("Retry was not expected for detached control wait test.") },
         ),
         eventSink = NoOpOpenCrayAgentRuntimeEventSink,
+        agentId = "child-shared",
+        parentRunId = "run-parent-target",
       ),
     )
 
