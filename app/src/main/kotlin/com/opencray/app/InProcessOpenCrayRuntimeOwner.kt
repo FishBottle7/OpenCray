@@ -419,6 +419,15 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
     nativeWebSearchSessionApprovalProvider = { sessionId ->
       chatSessionStore.isNativeWebSearchSessionApproved(sessionId)
     },
+    maintainedContextWindowTokensProvider = { sessionId ->
+      chatSessionStore.loadMaintainedContextWindowTokens(sessionId)
+    },
+    maintainedContextWindowTokensRecorder = { sessionId, contextWindowTokens ->
+      chatSessionStore.replaceMaintainedContextWindowTokens(
+        sessionId = sessionId,
+        contextWindowTokens = contextWindowTokens,
+      )
+    },
     hiddenToolNamePrefixesProvider = {
       SandboxNativeToolVisibility.hiddenToolNamePrefixes(sandboxSettingsRepository.load())
     },

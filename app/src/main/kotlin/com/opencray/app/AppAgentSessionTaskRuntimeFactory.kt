@@ -217,6 +217,8 @@ internal class AppAgentSessionTaskRuntimeFactory(
     defaultOpenCrayMediaArtifactRegistry(workspaceRootsProvider().first())
   },
   private val nativeWebSearchSessionApprovalProvider: (String) -> Boolean = { false },
+  private val maintainedContextWindowTokensProvider: (String) -> Int? = { null },
+  private val maintainedContextWindowTokensRecorder: (String, Int?) -> Unit = { _, _ -> },
   private val hiddenToolNamePrefixesProvider: () -> Set<String> = { emptySet() },
   private val subAgentExecutionCoordinatorProvider: ((String) -> SubAgentExecutionCoordinator)? = null,
 ) : AgentSessionTaskRuntimeFactory {
@@ -1988,7 +1990,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
 
   private val strictWarmupToolSchemaChildArrayKeys: Set<String> = setOf("anyOf", "allOf", "oneOf")
 
-  private fun buildRuntimeLlmMetadata(
+  internal fun buildRuntimeLlmMetadata(
     requiresLlmConfig: Boolean,
     taskMetadata: Map<String, String>,
     sessionId: String,
@@ -1997,26 +1999,67 @@ internal class AppAgentSessionTaskRuntimeFactory(
     llmSettings: LlmSettingsState,
     routeMetadata: Map<String, String>,
   ): Map<String, String> = if (requiresLlmConfig) {
-    buildMap {
-      putAll(taskMetadata.filterKeys(::isLlmVisibleMetadataKey))
-      put("sessionId", sessionId)
-      put(
-        ProviderNativeWebSearchSupport.LLM_METADATA_RUN_APPROVED,
-        nativeWebSearchRunApproved.toString(),
-      )
-      put(
-        ProviderNativeWebSearchSupport.LLM_METADATA_SESSION_APPROVED,
-        nativeWebSearchSessionApproved.toString(),
-      )
-      put(HOST_METADATA_PROVIDER_ID, llmSettings.providerId)
-      put(HOST_METADATA_BASE_URL, llmSettings.baseUrl)
-      putAll(routeMetadata)
-      putAll(llmSettings.contextBudgetRuntimeMetadataOverrides())
-      putAll(llmSettings.agentCapability.runtimeMetadataOverrides())
-    }
+    withMaintainedContextWindowMetadata(
+      sessionId = sessionId,
+      metadata = buildMap {
+        putAll(taskMetadata.filterKeys(::isLlmVisibleMetadataKey))
+        put("sessionId", sessionId)
+        put(
+          ProviderNativeWebSearchSupport.LLM_METADATA_RUN_APPROVED,
+          nativeWebSearchRunApproved.toString(),
+        )
+        put(
+          ProviderNativeWebSearchSupport.LLM_METADATA_SESSION_APPROVED,
+          nativeWebSearchSessionApproved.toString(),
+        )
+        put(HOST_METADATA_PROVIDER_ID, llmSettings.providerId)
+        put(HOST_METADATA_BASE_URL, llmSettings.baseUrl)
+        putAll(routeMetadata)
+        putAll(llmSettings.contextBudgetRuntimeMetadataOverrides())
+        putAll(llmSettings.agentCapability.runtimeMetadataOverrides())
+      },
+    )
   } else {
     mapOf("sessionId" to sessionId)
   }
+
+  private fun withMaintainedContextWindowMetadata(
+    sessionId: String,
+    metadata: Map<String, String>,
+  ): Map<String, String> {
+    val explicitPreviousContextWindowTokens = metadata.positiveIntValue(
+      "previousContextWindowTokens",
+      "previous_context_window_tokens",
+    )
+    if (explicitPreviousContextWindowTokens != null) {
+      return metadata
+    }
+    val currentContextWindowTokens = metadata.positiveIntValue(
+      "contextWindowTokens",
+      "context_window_tokens",
+    ) ?: return metadata
+    val maintainedContextWindowTokens = maintainedContextWindowTokensProvider(sessionId)
+      ?.takeIf { previous -> previous > currentContextWindowTokens }
+      ?: return metadata
+    return metadata + ("previous_context_window_tokens" to maintainedContextWindowTokens.toString())
+  }
+
+  private fun recordMaintainedContextWindowTokens(
+    sessionId: String,
+    llmMetadata: Map<String, String>,
+  ) {
+    val contextWindowTokens = llmMetadata.positiveIntValue(
+      "contextWindowTokens",
+      "context_window_tokens",
+    ) ?: return
+    maintainedContextWindowTokensRecorder(sessionId, contextWindowTokens)
+  }
+
+  private fun Map<String, String>.positiveIntValue(vararg keys: String): Int? = keys
+    .asSequence()
+    .mapNotNull { key -> this[key] }
+    .map { value -> value.trim() }
+    .firstNotNullOfOrNull { value -> value.toIntOrNull()?.takeIf { it > 0 } }
 
   private fun effectiveRuntimeRouteMetadata(
     settings: LlmSettingsState,
@@ -2241,6 +2284,12 @@ internal class AppAgentSessionTaskRuntimeFactory(
     sessionContextDebug(
       "context.prepareDone session=$sessionId task=$taskId durationMs=${System.currentTimeMillis() - prepareStartedAtEpochMs} turnSemanticSignal=${if (preparedContext.sessionContext.turnSemanticSignal != null) "present" else "absent"} durableMemoryCount=${preparedContext.effectiveMemoryRecords.size}",
     )
+    if (taskType == com.opencray.core.contracts.AgentTaskType.PROMPT) {
+      recordMaintainedContextWindowTokens(
+        sessionId = sessionId,
+        llmMetadata = llmMetadata,
+      )
+    }
     return preparedContext
   }
 
@@ -2284,7 +2333,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     )
   }
 
-  private fun runMidTurnContextMaintenance(
+  internal fun runMidTurnContextMaintenance(
     sessionId: String,
     workspaceId: String?,
     request: OpenCrayMidTurnMaintenanceRequest,
@@ -2360,6 +2409,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
     )
     sessionContextDebug(
       "context.midTurnMaintenance session=$sessionId task=${request.task.id} turn=${request.turn} durationMs=${System.currentTimeMillis() - maintenanceStartedAtEpochMs} flush=${memoryFlushSummary?.trace?.outcome ?: "skipped"} compacted=${durableCompaction.trace.compactedThisRun} messages=${updatedConversation.size}",
+    )
+    recordMaintainedContextWindowTokens(
+      sessionId = sessionId,
+      llmMetadata = llmMetadata,
     )
     return OpenCrayMidTurnMaintenanceResult(
       sessionContext = updatedContext,

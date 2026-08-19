@@ -223,6 +223,7 @@ internal open class ChatSessionLocalStore(
           todoExtensionKey(sessionId) -
           archivedTodoExtensionKey(sessionId) -
           workingStateExtensionKey(sessionId) -
+          maintainedContextWindowTokensExtensionKey(sessionId) -
           nativeWebSearchApprovalExtensionKey(sessionId) -
           sessionScopedStateExtensionKey(sessionId),
         recordVersion = currentWorkspace.recordVersion + 1,
@@ -755,6 +756,14 @@ internal open class ChatSessionLocalStore(
     return workingStateFrom(workspace = workspace, sessionId = sessionId)
   }
 
+  fun loadMaintainedContextWindowTokens(sessionId: String): Int? {
+    if (sessionId.isBlank()) {
+      return null
+    }
+    val workspace = loadWorkspaceOrCreate()
+    return maintainedContextWindowTokensFrom(workspace = workspace, sessionId = sessionId)
+  }
+
   fun loadTodoPresentation(
     sessionId: String,
     archivedVisibilityDurationMs: Long,
@@ -796,6 +805,46 @@ internal open class ChatSessionLocalStore(
     }
     val workspace = loadWorkspaceOrCreate()
     return nativeWebSearchApprovalFrom(workspace = workspace, sessionId = sessionId)
+  }
+
+  fun replaceMaintainedContextWindowTokens(
+    sessionId: String,
+    contextWindowTokens: Int?,
+  ) {
+    if (sessionId.isBlank()) {
+      return
+    }
+    loadWorkspaceOrCreate()
+    val now = nowEpochMs()
+    workspaceStore.update { workspace ->
+      if (workspace == null || workspace.sessions.none { session -> session.sessionId == sessionId }) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = Unit,
+          write = false,
+        )
+      }
+      val key = maintainedContextWindowTokensExtensionKey(sessionId)
+      val updatedExtensions = contextWindowTokens
+        ?.takeIf { value -> value > 0 }
+        ?.let { resolvedTokens -> workspace.extensions + (key to resolvedTokens.toString()) }
+        ?: (workspace.extensions - key)
+      if (updatedExtensions == workspace.extensions) {
+        return@update ChatWorkspaceStoreUpdate(
+          record = workspace,
+          result = Unit,
+          write = false,
+        )
+      }
+      ChatWorkspaceStoreUpdate(
+        record = workspace.copy(
+          extensions = updatedExtensions,
+          recordVersion = workspace.recordVersion + 1,
+          updatedAtEpochMs = now,
+        ),
+        result = Unit,
+      )
+    }
   }
 
   fun setNativeWebSearchSessionApproved(
@@ -1488,6 +1537,14 @@ internal open class ChatSessionLocalStore(
     ?.let(::decodePersistedWorkingState)
     ?: WorkingState()
 
+  private fun maintainedContextWindowTokensFrom(
+    workspace: ChatWorkspaceRecord,
+    sessionId: String,
+  ): Int? = workspace.extensions[maintainedContextWindowTokensExtensionKey(sessionId)]
+    ?.trim()
+    ?.toIntOrNull()
+    ?.takeIf { value -> value > 0 }
+
   private fun nativeWebSearchApprovalFrom(
     workspace: ChatWorkspaceRecord,
     sessionId: String,
@@ -1623,6 +1680,8 @@ internal open class ChatSessionLocalStore(
   private fun todoExtensionKey(sessionId: String): String = "todos.$sessionId"
   private fun archivedTodoExtensionKey(sessionId: String): String = "todosArchived.$sessionId"
   private fun workingStateExtensionKey(sessionId: String): String = "workingState.$sessionId"
+  private fun maintainedContextWindowTokensExtensionKey(sessionId: String): String =
+    "maintainedContextWindowTokens.$sessionId"
   private fun nativeWebSearchApprovalExtensionKey(sessionId: String): String =
     "nativeWebSearchApproval.$sessionId"
   private fun sessionScopedStateExtensionKey(sessionId: String): String =
@@ -1646,6 +1705,10 @@ internal open class ChatSessionLocalStore(
       extensions[workingStateExtensionKey(sourceSessionId)]?.let { sourceValue ->
         updatedExtensions = updatedExtensions + (workingStateExtensionKey(targetSessionId) to sourceValue)
       }
+    }
+    extensions[maintainedContextWindowTokensExtensionKey(sourceSessionId)]?.let { sourceValue ->
+      updatedExtensions =
+        updatedExtensions + (maintainedContextWindowTokensExtensionKey(targetSessionId) to sourceValue)
     }
     return updatedExtensions
   }

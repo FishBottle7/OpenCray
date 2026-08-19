@@ -4,9 +4,11 @@ import kotlin.math.min
 
 data class ReplayPressureSnapshot(
   val contextWindowTokens: Int,
+  val previousContextWindowTokens: Int? = null,
   val autoCompactTokenLimit: Int,
   val estimatedReplayTokens: Int,
   val tokenThresholdTriggered: Boolean,
+  val smallerWindowModelSwitchDetected: Boolean = false,
 )
 
 class ReplayPressureEvaluator(
@@ -18,19 +20,36 @@ class ReplayPressureEvaluator(
   ): ReplayPressureSnapshot {
     val envelope = budgetPolicy.resolve(llmMetadata)
     val contextWindowLimit = (envelope.contextWindowTokens * AUTO_COMPACT_CONTEXT_WINDOW_PERCENT) / 100
+    val previousContextWindowTokens = llmMetadata.intValue(
+      "previousContextWindowTokens",
+      "previous_context_window_tokens",
+    )
+    val smallerWindowModelSwitchDetected = previousContextWindowTokens?.let { previous ->
+      previous > envelope.contextWindowTokens
+    } ?: false
     val configuredLimit = llmMetadata.intValue(
       "autoCompactTokenLimit",
       "auto_compact_token_limit",
     )
-    val autoCompactTokenLimit = configuredLimit?.let { limit ->
+    val baselineAutoCompactTokenLimit = configuredLimit?.let { limit ->
       min(limit, contextWindowLimit)
     } ?: contextWindowLimit
+    val modelSwitchAutoCompactTokenLimit = if (smallerWindowModelSwitchDetected) {
+      (envelope.contextWindowTokens * MODEL_SWITCH_AUTO_COMPACT_CONTEXT_WINDOW_PERCENT) / 100
+    } else {
+      null
+    }
+    val autoCompactTokenLimit = modelSwitchAutoCompactTokenLimit?.let { switchLimit ->
+      min(baselineAutoCompactTokenLimit, switchLimit)
+    } ?: baselineAutoCompactTokenLimit
     val estimatedReplayTokens = estimateReplayTokens(conversation)
     return ReplayPressureSnapshot(
       contextWindowTokens = envelope.contextWindowTokens,
+      previousContextWindowTokens = previousContextWindowTokens,
       autoCompactTokenLimit = autoCompactTokenLimit,
       estimatedReplayTokens = estimatedReplayTokens,
       tokenThresholdTriggered = estimatedReplayTokens >= autoCompactTokenLimit,
+      smallerWindowModelSwitchDetected = smallerWindowModelSwitchDetected,
     )
   }
 
@@ -62,5 +81,6 @@ class ReplayPressureEvaluator(
 
   private companion object {
     const val AUTO_COMPACT_CONTEXT_WINDOW_PERCENT: Int = 90
+    const val MODEL_SWITCH_AUTO_COMPACT_CONTEXT_WINDOW_PERCENT: Int = 85
   }
 }

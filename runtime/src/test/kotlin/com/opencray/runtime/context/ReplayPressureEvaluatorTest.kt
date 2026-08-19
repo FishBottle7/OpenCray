@@ -44,4 +44,50 @@ class ReplayPressureEvaluatorTest {
     assertEquals(900, snapshot.autoCompactTokenLimit)
     assertTrue(snapshot.tokenThresholdTriggered)
   }
+
+  @Test
+  fun evaluateTightensAutoCompactLimitWhenCurrentModelWindowShrinks() {
+    val snapshot = evaluator.evaluate(
+      conversation = listOf(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.USER,
+          content = "c".repeat(3_420),
+        ),
+      ),
+      llmMetadata = mapOf(
+        "context_window_tokens" to "1000",
+        "previous_context_window_tokens" to "4000",
+      ),
+    )
+
+    assertEquals(1_000, snapshot.contextWindowTokens)
+    assertEquals(4_000, snapshot.previousContextWindowTokens)
+    assertTrue(snapshot.smallerWindowModelSwitchDetected)
+    assertEquals(850, snapshot.autoCompactTokenLimit)
+    assertTrue(snapshot.estimatedReplayTokens in 850 until 900)
+    assertTrue(snapshot.tokenThresholdTriggered)
+  }
+
+  @Test
+  fun evaluateDoesNotTightenAutoCompactLimitWhenPreviousWindowWasNotLarger() {
+    val snapshot = evaluator.evaluate(
+      conversation = listOf(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.USER,
+          content = "d".repeat(3_420),
+        ),
+      ),
+      llmMetadata = mapOf(
+        "context_window_tokens" to "1000",
+        "previous_context_window_tokens" to "800",
+      ),
+    )
+
+    assertEquals(1_000, snapshot.contextWindowTokens)
+    assertEquals(800, snapshot.previousContextWindowTokens)
+    assertFalse(snapshot.smallerWindowModelSwitchDetected)
+    assertEquals(900, snapshot.autoCompactTokenLimit)
+    assertTrue(snapshot.estimatedReplayTokens in 850 until 900)
+    assertFalse(snapshot.tokenThresholdTriggered)
+  }
 }
