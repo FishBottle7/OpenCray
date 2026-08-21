@@ -4,7 +4,28 @@ import java.util.Locale
 
 data class SubAgentContextModeResolution(
   val mode: SubAgentContextMode,
+  val source: SubAgentContextModeResolutionSource,
 )
+
+enum class SubAgentContextModeResolutionSource(
+  val wireValue: String,
+) {
+  EXPLICIT_REQUEST("explicit_request"),
+  POLICY_PROFILE_OVERRIDE("policy_profile_override"),
+  POLICY_DEFAULT("policy_default"),
+  PROFILE_DEFAULT("profile_default");
+
+  companion object {
+    fun fromWireValue(value: String?): SubAgentContextModeResolutionSource? {
+      val normalized = value
+        ?.trim()
+        ?.lowercase(Locale.US)
+        ?.takeIf(String::isNotBlank)
+        ?: return null
+      return values().firstOrNull { source -> source.wireValue == normalized }
+    }
+  }
+}
 
 data class SubAgentContextPolicy(
   val defaultContextMode: SubAgentContextMode? = null,
@@ -27,15 +48,27 @@ data class SubAgentContextPolicy(
     explicitMode: SubAgentContextMode? = null,
   ): SubAgentContextModeResolution {
     explicitMode?.let { mode ->
-      return SubAgentContextModeResolution(mode = mode)
+      return SubAgentContextModeResolution(
+        mode = mode,
+        source = SubAgentContextModeResolutionSource.EXPLICIT_REQUEST,
+      )
     }
     normalizedProfileOverrides[normalizeProfileId(profile.id)]?.let { mode ->
-      return SubAgentContextModeResolution(mode = mode)
+      return SubAgentContextModeResolution(
+        mode = mode,
+        source = SubAgentContextModeResolutionSource.POLICY_PROFILE_OVERRIDE,
+      )
     }
     defaultContextMode?.let { mode ->
-      return SubAgentContextModeResolution(mode = mode)
+      return SubAgentContextModeResolution(
+        mode = mode,
+        source = SubAgentContextModeResolutionSource.POLICY_DEFAULT,
+      )
     }
-    return SubAgentContextModeResolution(mode = profile.defaultContextMode)
+    return SubAgentContextModeResolution(
+      mode = profile.defaultContextMode,
+      source = SubAgentContextModeResolutionSource.PROFILE_DEFAULT,
+    )
   }
 
   private fun normalizeProfileId(profileId: String): String {
