@@ -27,9 +27,11 @@ data class MemoryFlushTrace(
   val maintenanceTask: String = "",
   val executionMode: String = "",
   val contextWindowTokens: Int = 0,
+  val previousContextWindowTokens: Int? = null,
   val autoCompactTokenLimit: Int = 0,
   val estimatedReplayTokens: Int = 0,
   val tokenThresholdTriggered: Boolean = false,
+  val smallerWindowModelSwitchDetected: Boolean = false,
   val omittedMessageCount: Int = 0,
   val omittedCharCount: Int = 0,
   val signature: String? = null,
@@ -45,9 +47,11 @@ data class MemoryFlushTrace(
       maintenanceTask.isBlank() &&
       executionMode.isBlank() &&
       contextWindowTokens == 0 &&
+      previousContextWindowTokens == null &&
       autoCompactTokenLimit == 0 &&
       estimatedReplayTokens == 0 &&
       !tokenThresholdTriggered &&
+      !smallerWindowModelSwitchDetected &&
       omittedMessageCount == 0 &&
       omittedCharCount == 0 &&
       signature == null &&
@@ -273,9 +277,11 @@ private fun memoryFlushTrace(
   maintenanceTask = "memory_flush:$triggerStage",
   executionMode = MEMORY_MAINTENANCE_EXECUTION_MODE_INLINE,
   contextWindowTokens = replayPressure.contextWindowTokens,
+  previousContextWindowTokens = replayPressure.previousContextWindowTokens,
   autoCompactTokenLimit = replayPressure.autoCompactTokenLimit,
   estimatedReplayTokens = replayPressure.estimatedReplayTokens,
   tokenThresholdTriggered = replayPressure.tokenThresholdTriggered,
+  smallerWindowModelSwitchDetected = replayPressure.smallerWindowModelSwitchDetected,
   omittedMessageCount = omittedMessageCount,
   omittedCharCount = omittedCharCount,
   signature = signature,

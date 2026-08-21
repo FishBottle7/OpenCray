@@ -2054,6 +2054,11 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                           ? 'hit'
                           : 'clear',
                     ),
+                  if (memoryFlush.smallerWindowModelSwitchDetected == true)
+                    const _DebugValueChip(
+                      label: 'Model switch',
+                      value: 'smaller window',
+                    ),
                 ],
               ),
               if (memoryFlush.triggerStage?.trim().isNotEmpty == true)
@@ -2070,6 +2075,11 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                 _DebugKeyValueLine(
                   'Context window',
                   '${memoryFlush.contextWindowTokens}',
+                ),
+              if ((memoryFlush.previousContextWindowTokens ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Previous context window',
+                  '${memoryFlush.previousContextWindowTokens}',
                 ),
               if ((memoryFlush.autoCompactTokenLimit ?? 0) > 0)
                 _DebugKeyValueLine(
@@ -2176,6 +2186,11 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                           ? 'hit'
                           : 'clear',
                     ),
+                  if (durableCompaction.smallerWindowModelSwitchDetected == true)
+                    const _DebugValueChip(
+                      label: 'Model switch',
+                      value: 'smaller window',
+                    ),
                 ],
               ),
               if (durableCompaction.triggerStage?.trim().isNotEmpty == true)
@@ -2209,6 +2224,11 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                 _DebugKeyValueLine(
                   'Context window',
                   '${durableCompaction.contextWindowTokens}',
+                ),
+              if ((durableCompaction.previousContextWindowTokens ?? 0) > 0)
+                _DebugKeyValueLine(
+                  'Previous context window',
+                  '${durableCompaction.previousContextWindowTokens}',
                 ),
               if ((durableCompaction.autoCompactTokenLimit ?? 0) > 0)
                 _DebugKeyValueLine(

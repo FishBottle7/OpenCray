@@ -1661,9 +1661,11 @@ Map<String, Object?>? _runtimeMemoryFlushDisplaySignature(
     'triggerStage': flush.triggerStage,
     'executionMode': flush.executionMode,
     'contextWindowTokens': flush.contextWindowTokens,
+    'previousContextWindowTokens': flush.previousContextWindowTokens,
     'autoCompactTokenLimit': flush.autoCompactTokenLimit,
     'estimatedReplayTokens': flush.estimatedReplayTokens,
     'tokenThresholdTriggered': flush.tokenThresholdTriggered,
+    'smallerWindowModelSwitchDetected': flush.smallerWindowModelSwitchDetected,
     'omittedMessageCount': flush.omittedMessageCount,
     'omittedCharCount': flush.omittedCharCount,
     'signature': flush.signature,
@@ -1724,9 +1726,12 @@ Map<String, Object?>? _runtimeDurableCompactionDisplaySignature(
     'triggerStage': compaction.triggerStage,
     'executionMode': compaction.executionMode,
     'contextWindowTokens': compaction.contextWindowTokens,
+    'previousContextWindowTokens': compaction.previousContextWindowTokens,
     'autoCompactTokenLimit': compaction.autoCompactTokenLimit,
     'estimatedReplayTokens': compaction.estimatedReplayTokens,
     'tokenThresholdTriggered': compaction.tokenThresholdTriggered,
+    'smallerWindowModelSwitchDetected':
+        compaction.smallerWindowModelSwitchDetected,
     'sourceTranscriptMessageCount': compaction.sourceTranscriptMessageCount,
     'retainedTranscriptMessageCount': compaction.retainedTranscriptMessageCount,
     'latestCompactedMessageCount': compaction.latestCompactedMessageCount,
@@ -9442,6 +9447,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         widget.copy.isChinese
             ? '窗口 ${flush.contextWindowTokens}'
             : 'Window ${flush.contextWindowTokens}',
+      if (flush.previousContextWindowTokens != null)
+        widget.copy.isChinese
+            ? '原窗口 ${flush.previousContextWindowTokens}'
+            : 'Previous window ${flush.previousContextWindowTokens}',
       if (flush.autoCompactTokenLimit != null)
         widget.copy.isChinese
             ? '阈值 ${flush.autoCompactTokenLimit}'
@@ -9456,6 +9465,8 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             : (flush.tokenThresholdTriggered!
                   ? 'Threshold triggered'
                   : 'Threshold not triggered'),
+      if (flush.smallerWindowModelSwitchDetected == true)
+        widget.copy.isChinese ? '检测到更小窗口模型' : 'Smaller-window model switch',
     ];
     return _joinTraceSections(<String?>[
       summary.isEmpty ? null : summary.join(widget.copy.isChinese ? '，' : ', '),
@@ -9591,6 +9602,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         widget.copy.isChinese
             ? '窗口 ${durableCompaction.contextWindowTokens}'
             : 'Window ${durableCompaction.contextWindowTokens}',
+      if (durableCompaction.previousContextWindowTokens != null)
+        widget.copy.isChinese
+            ? '原窗口 ${durableCompaction.previousContextWindowTokens}'
+            : 'Previous window ${durableCompaction.previousContextWindowTokens}',
       if (durableCompaction.autoCompactTokenLimit != null)
         widget.copy.isChinese
             ? '阈值 ${durableCompaction.autoCompactTokenLimit}'
@@ -9605,6 +9620,10 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             : (durableCompaction.tokenThresholdTriggered!
                   ? 'Threshold triggered'
                   : 'Threshold not triggered'),
+      if (durableCompaction.smallerWindowModelSwitchDetected == true)
+        widget.copy.isChinese
+            ? '检测到更小窗口模型'
+            : 'Smaller-window model switch',
     ];
     final remote = durableCompaction.remoteCompaction;
     final List<String> remoteState = <String>[];

@@ -6175,9 +6175,13 @@ internal class OpenCrayHostRuntime private constructor(
     val maintenanceTask = metadata["contextMemoryFlushMaintenanceTask"]?.takeIf(String::isNotBlank)
     val executionMode = metadata["contextMemoryFlushExecutionMode"]?.takeIf(String::isNotBlank)
     val contextWindowTokens = metadata["contextMemoryFlushContextWindowTokens"]?.toIntOrNull()
+    val previousContextWindowTokens =
+      metadata["contextMemoryFlushPreviousContextWindowTokens"]?.toIntOrNull()
     val autoCompactTokenLimit = metadata["contextMemoryFlushAutoCompactTokenLimit"]?.toIntOrNull()
     val estimatedReplayTokens = metadata["contextMemoryFlushEstimatedReplayTokens"]?.toIntOrNull()
     val tokenThresholdTriggered = metadata["contextMemoryFlushTokenThresholdTriggered"]?.toBooleanStrictOrNull()
+    val smallerWindowModelSwitchDetected =
+      metadata["contextMemoryFlushSmallerWindowModelSwitchDetected"]?.toBooleanStrictOrNull()
     val omittedMessageCount = metadata["contextMemoryFlushOmittedMessageCount"]?.toIntOrNull()
     val omittedCharCount = metadata["contextMemoryFlushOmittedCharCount"]?.toIntOrNull()
     val signature = metadata["contextMemoryFlushSignature"]?.takeIf(String::isNotBlank)
@@ -6204,9 +6208,11 @@ internal class OpenCrayHostRuntime private constructor(
       maintenanceTask == null &&
       executionMode == null &&
       contextWindowTokens == null &&
+      previousContextWindowTokens == null &&
       autoCompactTokenLimit == null &&
       estimatedReplayTokens == null &&
       tokenThresholdTriggered == null &&
+      smallerWindowModelSwitchDetected == null &&
       omittedMessageCount == null &&
       omittedCharCount == null &&
       signature == null &&
@@ -6224,9 +6230,11 @@ internal class OpenCrayHostRuntime private constructor(
       maintenanceTask?.let { put("maintenanceTask", it) }
       executionMode?.let { put("executionMode", it) }
       contextWindowTokens?.let { put("contextWindowTokens", it) }
+      previousContextWindowTokens?.let { put("previousContextWindowTokens", it) }
       autoCompactTokenLimit?.let { put("autoCompactTokenLimit", it) }
       estimatedReplayTokens?.let { put("estimatedReplayTokens", it) }
       tokenThresholdTriggered?.let { put("tokenThresholdTriggered", it) }
+      smallerWindowModelSwitchDetected?.let { put("smallerWindowModelSwitchDetected", it) }
       omittedMessageCount?.let { put("omittedMessageCount", it) }
       omittedCharCount?.let { put("omittedCharCount", it) }
       signature?.let { put("signature", it) }
@@ -6332,12 +6340,16 @@ internal class OpenCrayHostRuntime private constructor(
     val executionMode = metadata["contextDurableCompactionExecutionMode"]?.takeIf(String::isNotBlank)
     val contextWindowTokens =
       metadata["contextDurableCompactionContextWindowTokens"]?.toIntOrNull()
+    val previousContextWindowTokens =
+      metadata["contextDurableCompactionPreviousContextWindowTokens"]?.toIntOrNull()
     val autoCompactTokenLimit =
       metadata["contextDurableCompactionAutoCompactTokenLimit"]?.toIntOrNull()
     val estimatedReplayTokens =
       metadata["contextDurableCompactionEstimatedReplayTokens"]?.toIntOrNull()
     val tokenThresholdTriggered =
       metadata["contextDurableCompactionTokenThresholdTriggered"]?.toBooleanStrictOrNull()
+    val smallerWindowModelSwitchDetected =
+      metadata["contextDurableCompactionSmallerWindowModelSwitchDetected"]?.toBooleanStrictOrNull()
     val sourceTranscriptMessageCount =
       metadata["contextDurableCompactionSourceTranscriptMessageCount"]?.toIntOrNull()
     val retainedTranscriptMessageCount =
@@ -6367,9 +6379,11 @@ internal class OpenCrayHostRuntime private constructor(
       maintenanceTask == null &&
       executionMode == null &&
       contextWindowTokens == null &&
+      previousContextWindowTokens == null &&
       autoCompactTokenLimit == null &&
       estimatedReplayTokens == null &&
       tokenThresholdTriggered == null &&
+      smallerWindowModelSwitchDetected == null &&
       sourceTranscriptMessageCount == null &&
       retainedTranscriptMessageCount == null &&
       latestCompactedMessageCount == null &&
@@ -6388,9 +6402,11 @@ internal class OpenCrayHostRuntime private constructor(
       maintenanceTask?.let { put("maintenanceTask", it) }
       executionMode?.let { put("executionMode", it) }
       contextWindowTokens?.let { put("contextWindowTokens", it) }
+      previousContextWindowTokens?.let { put("previousContextWindowTokens", it) }
       autoCompactTokenLimit?.let { put("autoCompactTokenLimit", it) }
       estimatedReplayTokens?.let { put("estimatedReplayTokens", it) }
       tokenThresholdTriggered?.let { put("tokenThresholdTriggered", it) }
+      smallerWindowModelSwitchDetected?.let { put("smallerWindowModelSwitchDetected", it) }
       sourceTranscriptMessageCount?.let { put("sourceTranscriptMessageCount", it) }
       retainedTranscriptMessageCount?.let { put("retainedTranscriptMessageCount", it) }
       latestCompactedMessageCount?.let { put("latestCompactedMessageCount", it) }

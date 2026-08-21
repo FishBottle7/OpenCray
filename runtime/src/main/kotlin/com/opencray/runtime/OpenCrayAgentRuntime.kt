@@ -3361,9 +3361,18 @@ class OpenCrayAgentRuntime(
           .takeIf(String::isNotBlank)
           ?.let { executionMode -> put("contextMemoryFlushExecutionMode", executionMode) }
         put("contextMemoryFlushContextWindowTokens", report.memoryFlushTrace.contextWindowTokens.toString())
+        report.memoryFlushTrace.previousContextWindowTokens?.let { previousContextWindowTokens ->
+          put("contextMemoryFlushPreviousContextWindowTokens", previousContextWindowTokens.toString())
+        }
         put("contextMemoryFlushAutoCompactTokenLimit", report.memoryFlushTrace.autoCompactTokenLimit.toString())
         put("contextMemoryFlushEstimatedReplayTokens", report.memoryFlushTrace.estimatedReplayTokens.toString())
         put("contextMemoryFlushTokenThresholdTriggered", report.memoryFlushTrace.tokenThresholdTriggered.toString())
+        if (report.memoryFlushTrace.smallerWindowModelSwitchDetected) {
+          put(
+            "contextMemoryFlushSmallerWindowModelSwitchDetected",
+            report.memoryFlushTrace.smallerWindowModelSwitchDetected.toString(),
+          )
+        }
         put("contextMemoryFlushOmittedMessageCount", report.memoryFlushTrace.omittedMessageCount.toString())
         put("contextMemoryFlushOmittedCharCount", report.memoryFlushTrace.omittedCharCount.toString())
         report.memoryFlushTrace.signature?.let { signature ->
@@ -3405,6 +3414,12 @@ class OpenCrayAgentRuntime(
           "contextDurableCompactionContextWindowTokens",
           report.durableCompactionTrace.contextWindowTokens.toString(),
         )
+        report.durableCompactionTrace.previousContextWindowTokens?.let { previousContextWindowTokens ->
+          put(
+            "contextDurableCompactionPreviousContextWindowTokens",
+            previousContextWindowTokens.toString(),
+          )
+        }
         put(
           "contextDurableCompactionAutoCompactTokenLimit",
           report.durableCompactionTrace.autoCompactTokenLimit.toString(),
@@ -3417,6 +3432,12 @@ class OpenCrayAgentRuntime(
           "contextDurableCompactionTokenThresholdTriggered",
           report.durableCompactionTrace.tokenThresholdTriggered.toString(),
         )
+        if (report.durableCompactionTrace.smallerWindowModelSwitchDetected) {
+          put(
+            "contextDurableCompactionSmallerWindowModelSwitchDetected",
+            report.durableCompactionTrace.smallerWindowModelSwitchDetected.toString(),
+          )
+        }
         put(
           "contextDurableCompactionSourceTranscriptMessageCount",
           report.durableCompactionTrace.sourceTranscriptMessageCount.toString(),

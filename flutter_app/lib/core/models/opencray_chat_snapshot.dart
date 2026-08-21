@@ -585,9 +585,11 @@ class OpenCrayChatRunMemoryFlushSnapshot {
     this.triggerStage,
     this.executionMode,
     this.contextWindowTokens,
+    this.previousContextWindowTokens,
     this.autoCompactTokenLimit,
     this.estimatedReplayTokens,
     this.tokenThresholdTriggered,
+    this.smallerWindowModelSwitchDetected,
     this.omittedMessageCount,
     this.omittedCharCount,
     this.signature,
@@ -601,9 +603,11 @@ class OpenCrayChatRunMemoryFlushSnapshot {
   final String? triggerStage;
   final String? executionMode;
   final int? contextWindowTokens;
+  final int? previousContextWindowTokens;
   final int? autoCompactTokenLimit;
   final int? estimatedReplayTokens;
   final bool? tokenThresholdTriggered;
+  final bool? smallerWindowModelSwitchDetected;
   final int? omittedMessageCount;
   final int? omittedCharCount;
   final String? signature;
@@ -624,9 +628,12 @@ class OpenCrayChatRunMemoryFlushSnapshot {
       triggerStage: map['triggerStage'] as String?,
       executionMode: map['executionMode'] as String?,
       contextWindowTokens: map['contextWindowTokens'] as int?,
+      previousContextWindowTokens: map['previousContextWindowTokens'] as int?,
       autoCompactTokenLimit: map['autoCompactTokenLimit'] as int?,
       estimatedReplayTokens: map['estimatedReplayTokens'] as int?,
       tokenThresholdTriggered: map['tokenThresholdTriggered'] as bool?,
+      smallerWindowModelSwitchDetected:
+          map['smallerWindowModelSwitchDetected'] as bool?,
       omittedMessageCount: map['omittedMessageCount'] as int?,
       omittedCharCount: map['omittedCharCount'] as int?,
       signature: map['signature'] as String?,
@@ -975,9 +982,11 @@ class OpenCrayChatRunDurableCompactionSnapshot {
     this.triggerStage,
     this.executionMode,
     this.contextWindowTokens,
+    this.previousContextWindowTokens,
     this.autoCompactTokenLimit,
     this.estimatedReplayTokens,
     this.tokenThresholdTriggered,
+    this.smallerWindowModelSwitchDetected,
     this.sourceTranscriptMessageCount,
     this.retainedTranscriptMessageCount,
     this.latestCompactedMessageCount,
@@ -993,9 +1002,11 @@ class OpenCrayChatRunDurableCompactionSnapshot {
   final String? triggerStage;
   final String? executionMode;
   final int? contextWindowTokens;
+  final int? previousContextWindowTokens;
   final int? autoCompactTokenLimit;
   final int? estimatedReplayTokens;
   final bool? tokenThresholdTriggered;
+  final bool? smallerWindowModelSwitchDetected;
   final int? sourceTranscriptMessageCount;
   final int? retainedTranscriptMessageCount;
   final int? latestCompactedMessageCount;
@@ -1015,9 +1026,12 @@ class OpenCrayChatRunDurableCompactionSnapshot {
       triggerStage: map['triggerStage'] as String?,
       executionMode: map['executionMode'] as String?,
       contextWindowTokens: map['contextWindowTokens'] as int?,
+      previousContextWindowTokens: map['previousContextWindowTokens'] as int?,
       autoCompactTokenLimit: map['autoCompactTokenLimit'] as int?,
       estimatedReplayTokens: map['estimatedReplayTokens'] as int?,
       tokenThresholdTriggered: map['tokenThresholdTriggered'] as bool?,
+      smallerWindowModelSwitchDetected:
+          map['smallerWindowModelSwitchDetected'] as bool?,
       sourceTranscriptMessageCount: map['sourceTranscriptMessageCount'] as int?,
       retainedTranscriptMessageCount:
           map['retainedTranscriptMessageCount'] as int?,
