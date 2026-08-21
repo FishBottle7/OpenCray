@@ -127,7 +127,7 @@ class AgentSessionTranscriptStoreFactoryTest {
       ),
     )
 
-    firstStore.replace(messages)
+    firstStore.replaceReplayWorkingCopy(messages)
 
     val secondFactory = FileBackedAgentSessionTranscriptStoreFactory(root)
     val restoredStore = secondFactory.forChatSession("session-structured")
@@ -212,7 +212,7 @@ class AgentSessionTranscriptStoreFactoryTest {
         ),
       ),
     )
-    firstStore.replace(
+    firstStore.replaceReplayWorkingCopy(
       listOf(
         RuntimeConversationMessage(
           role = RuntimeConversationRole.USER,

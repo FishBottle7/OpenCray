@@ -133,7 +133,7 @@ private class FileBackedSessionTranscriptStore(
     }
   }
 
-  override fun replace(messages: List<RuntimeConversationMessage>) {
+  override fun replaceReplayWorkingCopy(messages: List<RuntimeConversationMessage>) {
     val normalized = SessionTranscriptRules.normalize(messages)
     synchronized(lock) {
       updateRecord { existing ->

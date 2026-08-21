@@ -218,7 +218,7 @@ class MemoryFlushCoordinatorTest {
       sessionId = "session-balanced",
       workspaceId = "workspace-main",
       conversation = conversation,
-      llmMetadata = mapOf("context_window_tokens" to "64"),
+      llmMetadata = mapOf("context_window_tokens" to "65536"),
       taskId = "task-balanced",
     )
     val expandedSummary = expandedCoordinator.flushBeforeCompaction(
@@ -226,24 +226,175 @@ class MemoryFlushCoordinatorTest {
       workspaceId = "workspace-main",
       conversation = conversation,
       llmMetadata = mapOf(
-        "context_window_tokens" to "64",
+        "context_window_tokens" to "65536",
         "context_budget_preset" to "expanded",
       ),
       taskId = "task-expanded",
     )
 
-    assertTrue(balancedSummary.wasWritten)
-    assertEquals(MemoryFlushOutcome.WRITTEN, balancedSummary.trace.outcome)
+    assertFalse(balancedSummary.wasWritten)
+    assertEquals(MemoryFlushOutcome.NO_PRESSURE, balancedSummary.trace.outcome)
     assertEquals("pre_compaction", balancedSummary.trace.triggerStage)
-    assertEquals(64, balancedSummary.trace.contextWindowTokens)
-    assertEquals(57, balancedSummary.trace.autoCompactTokenLimit)
-    assertTrue(balancedSummary.trace.tokenThresholdTriggered)
+    assertEquals(65536, balancedSummary.trace.contextWindowTokens)
+    assertFalse(balancedSummary.trace.tokenThresholdTriggered)
     assertEquals(4, balancedSummary.trace.omittedMessageCount)
-    assertEquals(1, balancedSummary.writtenRecords.size)
     assertFalse(expandedSummary.wasWritten)
     assertEquals(MemoryFlushOutcome.NO_PRESSURE, expandedSummary.trace.outcome)
     assertEquals("pre_compaction", expandedSummary.trace.triggerStage)
     assertEquals(0, expandedSummary.trace.omittedMessageCount)
+  }
+
+  @Test
+  fun flushBeforeCompactionHonorsExplicitAutoCompactTokenLimit() {
+    val store = InMemoryMemoryStore()
+    val coordinator = MemoryFlushCoordinator(
+      contextPruner = ContextPruner(),
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 1,
+          maxCharsPerMessage = 240,
+        ),
+      ),
+      policy = MemoryFlushPolicy(
+        minOmittedMessages = 1,
+        minOmittedChars = 120,
+      ),
+      writer = MemoryWriter(store = store),
+    )
+
+    val summary = coordinator.flushBeforeCompaction(
+      sessionId = "session-1",
+      workspaceId = "workspace-main",
+      conversation = listOf(
+        RuntimeConversationMessage(
+          RuntimeConversationRole.USER,
+          "Capture the project fact with enough replay body to cross the explicit compact limit. ".repeat(3).trim(),
+        ),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.ASSISTANT,
+          content = """{"run_id":"run-1","task_id":"task-1","turn":0,"tool_call_id":"call-1","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+          kind = RuntimeConversationMessageKind.TOOL_CALL,
+          toolCall = RuntimeConversationToolCall(
+            id = "call-1",
+            toolName = "Read",
+          ),
+        ),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.TOOL,
+          content = """{"run_id":"run-1","task_id":"task-1","turn":0,"tool_call_id":"call-1","tool_name":"Read","status":"success","content":"Project uses Gradle Kotlin DSL and ships a local runtime bridge for context-budget tests","metadata":{"filePath":"README.md"}}""",
+          kind = RuntimeConversationMessageKind.TOOL_RESULT,
+          toolResult = RuntimeConversationToolResult(
+            toolCallId = "call-1",
+            toolName = "Read",
+            status = "success",
+            isError = false,
+          ),
+        ),
+        RuntimeConversationMessage(
+          RuntimeConversationRole.USER,
+          "Latest live turn that should remain after the window builder trims the omitted replay.",
+        ),
+      ),
+      llmMetadata = mapOf(
+        "context_window_tokens" to "4096",
+        "auto_compact_token_limit" to "100",
+      ),
+      taskId = "task-1",
+    )
+
+    assertTrue(summary.wasWritten)
+    assertEquals(MemoryFlushOutcome.WRITTEN, summary.trace.outcome)
+    assertEquals(1, summary.writtenRecords.size)
+    assertEquals(4096, summary.trace.contextWindowTokens)
+    assertEquals(100, summary.trace.autoCompactTokenLimit)
+    assertTrue(summary.trace.tokenThresholdTriggered)
+    assertEquals(
+      "Project uses Gradle Kotlin DSL and ships a local runtime bridge for context-budget tests",
+      summary.writtenRecords.single().content,
+    )
+  }
+
+  @Test
+  fun flushBeforeCompactionCanCreatePressureDrivenOmittedPrefix() {
+    val store = InMemoryMemoryStore()
+    val coordinator = MemoryFlushCoordinator(
+      contextPruner = ContextPruner(),
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 8,
+          maxCharsPerMessage = 240,
+        ),
+      ),
+      policy = MemoryFlushPolicy(
+        minOmittedMessages = 1,
+        minOmittedChars = 120,
+      ),
+      writer = MemoryWriter(store = store),
+    )
+
+    val summary = coordinator.flushBeforeCompaction(
+      sessionId = "session-1",
+      workspaceId = "workspace-main",
+      conversation = listOf(
+        RuntimeConversationMessage(
+          RuntimeConversationRole.USER,
+          "Capture the older project fact before replay pressure forces a narrower maintenance window.",
+        ),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.ASSISTANT,
+          content = """{"run_id":"run-1","task_id":"task-1","turn":0,"tool_call_id":"call-1","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+          kind = RuntimeConversationMessageKind.TOOL_CALL,
+          toolCall = RuntimeConversationToolCall(
+            id = "call-1",
+            toolName = "Read",
+          ),
+        ),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.TOOL,
+          content = """{"run_id":"run-1","task_id":"task-1","turn":0,"tool_call_id":"call-1","tool_name":"Read","status":"success","content":"Project uses Gradle Kotlin DSL and keeps replay/canonical history separate under pressure-driven maintenance.","metadata":{"filePath":"README.md"}}""",
+          kind = RuntimeConversationMessageKind.TOOL_RESULT,
+          toolResult = RuntimeConversationToolResult(
+            toolCallId = "call-1",
+            toolName = "Read",
+            status = "success",
+            isError = false,
+          ),
+        ),
+        RuntimeConversationMessage(
+          RuntimeConversationRole.ASSISTANT,
+          ("Older assistant explanation that should be compacted before the latest tail. ").repeat(5).trim(),
+        ),
+        RuntimeConversationMessage(
+          RuntimeConversationRole.USER,
+          ("Recent user follow-up one keeps the current task moving while replay stays large. ").repeat(5).trim(),
+        ),
+        RuntimeConversationMessage(
+          RuntimeConversationRole.ASSISTANT,
+          ("Recent assistant follow-up one keeps the current task moving while replay stays large. ").repeat(5).trim(),
+        ),
+        RuntimeConversationMessage(
+          RuntimeConversationRole.USER,
+          ("Recent user follow-up two keeps the current task moving while replay stays large. ").repeat(5).trim(),
+        ),
+        RuntimeConversationMessage(
+          RuntimeConversationRole.USER,
+          "Latest live turn should remain in the retained replay tail.",
+        ),
+      ),
+      llmMetadata = mapOf(
+        "context_window_tokens" to "4096",
+        "auto_compact_token_limit" to "80",
+      ),
+      taskId = "task-1",
+    )
+
+    assertTrue(summary.wasWritten)
+    assertTrue(summary.trace.omittedMessageCount >= 2)
+    assertEquals(1, summary.writtenRecords.size)
+    assertEquals(
+      "Project uses Gradle Kotlin DSL and keeps replay/canonical history separate under pressure-driven maintenance",
+      summary.writtenRecords.single().content,
+    )
   }
 
   private class InMemoryMemoryStore : MemoryStore {

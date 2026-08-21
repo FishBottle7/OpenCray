@@ -6,6 +6,7 @@ import com.opencray.runtime.context.ContextPruner
 import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import com.opencray.runtime.context.ReplayPressureEvaluator
 import com.opencray.runtime.context.ReplayPressureSnapshot
+import com.opencray.runtime.context.ReplayPressureTranscriptMaintenanceSelector
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.TranscriptWindowBuilder
 import com.opencray.runtime.session.SessionTranscriptStore
@@ -378,7 +379,15 @@ class DurableCompactionCoordinator(
       ?.resolve(llmMetadata)
       ?.let { profile -> TranscriptWindowBuilder(profile.transcriptWindowConfig) }
       ?: transcriptWindowBuilder
-    val selection = effectiveTranscriptWindowBuilder.buildSelection(conversation)
+    val maintenanceSelector = ReplayPressureTranscriptMaintenanceSelector(
+      transcriptWindowBuilder = effectiveTranscriptWindowBuilder,
+      contextPruner = contextPruner,
+      replayPressureEvaluator = replayPressureEvaluator,
+    )
+    val selection = maintenanceSelector.select(
+      conversation = conversation,
+      llmMetadata = llmMetadata,
+    )
     val replayPressure = replayPressureEvaluator.evaluate(
       conversation = contextPruner.prune(conversation).messages,
       llmMetadata = llmMetadata,
@@ -428,7 +437,7 @@ class DurableCompactionCoordinator(
         compactedAtEpochMs = compactedAtEpochMs,
       )
     }
-    transcriptStore.replace(selection.window.messages)
+    transcriptStore.replaceReplayWorkingCopy(selection.window.messages)
     return toContext(
       rendered = renderer.render(updatedState),
       compactedThisRun = true,

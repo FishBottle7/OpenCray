@@ -2353,7 +2353,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       )
     }
     val maintenanceStartedAtEpochMs = System.currentTimeMillis()
-    transcriptStore.replace(request.conversation)
+    transcriptStore.replaceReplayWorkingCopy(request.conversation)
     val memoryFlushSummary = memoryIngestionCoordinator?.flushMidTurn(
       sessionId = sessionId,
       conversation = transcriptStore.snapshot(),

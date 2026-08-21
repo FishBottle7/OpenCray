@@ -212,7 +212,7 @@ class SessionTranscriptStoreTest {
   }
 
   @Test
-  fun replaceOverwritesStoreWithNormalizedTranscript() {
+  fun replaceReplayWorkingCopyOverwritesStoreWithNormalizedTranscript() {
     val store = InMemorySessionTranscriptStore()
 
     store.seedIfEmpty(
@@ -228,7 +228,7 @@ class SessionTranscriptStoreTest {
       ),
     )
 
-    store.replace(
+    store.replaceReplayWorkingCopy(
       listOf(
         RuntimeConversationMessage(
           role = RuntimeConversationRole.USER,

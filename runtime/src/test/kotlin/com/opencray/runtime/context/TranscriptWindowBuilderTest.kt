@@ -122,4 +122,36 @@ class TranscriptWindowBuilderTest {
     assertTrue(window.messages.any { it.role == RuntimeConversationRole.USER && it.content == "user-2" })
     assertTrue(window.messages.any { it.role == RuntimeConversationRole.ASSISTANT && it.content == "assistant-2" })
   }
+
+  @Test
+  fun buildSelectionHonorsPerCallWindowConfigWithoutMutatingBuilderDefaults() {
+    val builder = TranscriptWindowBuilder(
+      TranscriptWindowConfig(
+        maxMessages = 5,
+        maxCharsPerMessage = 120,
+      ),
+    )
+    val conversation = listOf(
+      RuntimeConversationMessage(RuntimeConversationRole.USER, "user-1"),
+      RuntimeConversationMessage(RuntimeConversationRole.ASSISTANT, "assistant-1"),
+      RuntimeConversationMessage(RuntimeConversationRole.USER, "user-2"),
+      RuntimeConversationMessage(RuntimeConversationRole.ASSISTANT, "assistant-2"),
+      RuntimeConversationMessage(RuntimeConversationRole.USER, "user-3"),
+    )
+
+    val narrowedSelection = builder.buildSelection(
+      messages = conversation,
+      windowConfig = builder.config.copy(maxMessages = 2),
+    )
+    val defaultSelection = builder.buildSelection(conversation)
+
+    assertEquals(2, narrowedSelection.window.messages.size)
+    assertEquals(3, narrowedSelection.omittedMessages.size)
+    assertEquals(
+      listOf("assistant-2", "user-3"),
+      narrowedSelection.window.messages.map { it.content },
+    )
+    assertEquals(5, defaultSelection.window.messages.size)
+    assertTrue(defaultSelection.omittedMessages.isEmpty())
+  }
 }

@@ -5,6 +5,7 @@ import com.opencray.runtime.context.ContextPruner
 import com.opencray.runtime.context.ContextSourceBudgetPolicy
 import com.opencray.runtime.context.ReplayPressureEvaluator
 import com.opencray.runtime.context.ReplayPressureSnapshot
+import com.opencray.runtime.context.ReplayPressureTranscriptMaintenanceSelector
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.TranscriptWindowBuilder
@@ -125,8 +126,16 @@ class MemoryFlushCoordinator(
       conversation = prunedConversation,
       llmMetadata = llmMetadata,
     )
-    val omittedMessages = effectiveTranscriptWindowBuilder
-      .buildSelection(prunedConversation)
+    val maintenanceSelector = ReplayPressureTranscriptMaintenanceSelector(
+      transcriptWindowBuilder = effectiveTranscriptWindowBuilder,
+      contextPruner = contextPruner,
+      replayPressureEvaluator = replayPressureEvaluator,
+    )
+    val omittedMessages = maintenanceSelector
+      .select(
+        conversation = prunedConversation,
+        llmMetadata = llmMetadata,
+      )
       .omittedMessages
     val omittedCharCount = omittedMessages.sumOf { message -> message.content.length }
     if (!effectivePolicy.shouldFlush(omittedMessages, replayPressure)) {

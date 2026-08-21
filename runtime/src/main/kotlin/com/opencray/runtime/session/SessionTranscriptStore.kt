@@ -2,6 +2,13 @@ package com.opencray.runtime.session
 
 import com.opencray.runtime.context.RuntimeConversationMessage
 
+/**
+ * Stores the runtime replay transcript used to rebuild model-facing conversation context.
+ *
+ * This is not the canonical user-visible chat history. Implementations are allowed to rewrite,
+ * compact, or rebuild this working copy under replay-pressure maintenance as long as canonical
+ * chat/rollout history is preserved elsewhere.
+ */
 interface SessionTranscriptStore {
   fun snapshot(): List<RuntimeConversationMessage>
 
@@ -9,7 +16,15 @@ interface SessionTranscriptStore {
 
   fun appendIfDistinct(message: RuntimeConversationMessage)
 
-  fun replace(messages: List<RuntimeConversationMessage>)
+  fun replaceReplayWorkingCopy(messages: List<RuntimeConversationMessage>)
+
+  @Deprecated(
+    message = "Use replaceReplayWorkingCopy(...) to make replay-working-copy mutation explicit.",
+    replaceWith = ReplaceWith("replaceReplayWorkingCopy(messages)"),
+  )
+  fun replace(messages: List<RuntimeConversationMessage>) {
+    replaceReplayWorkingCopy(messages)
+  }
 
   fun clear()
 }
@@ -47,7 +62,7 @@ class InMemorySessionTranscriptStore : SessionTranscriptStore {
     }
   }
 
-  override fun replace(messages: List<RuntimeConversationMessage>) {
+  override fun replaceReplayWorkingCopy(messages: List<RuntimeConversationMessage>) {
     val normalized = SessionTranscriptRules.normalize(messages)
     synchronized(lock) {
       this.messages.clear()
