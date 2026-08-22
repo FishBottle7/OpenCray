@@ -184,6 +184,7 @@ void main() {
           'label': 'Inspect README',
           'subagentType': 'researcher',
           'contextMode': 'minimal',
+          'contextModeSource': 'policy_profile_override',
           'depth': 1,
           'phase': 'resumed',
           'status': 'background_running',
@@ -220,6 +221,7 @@ void main() {
     expect(subAgent.label, 'Inspect README');
     expect(subAgent.subagentType, 'researcher');
     expect(subAgent.contextMode, 'minimal');
+    expect(subAgent.contextModeSource, 'policy_profile_override');
     expect(subAgent.depth, 1);
     expect(subAgent.phase, 'resumed');
     expect(subAgent.status, 'background_running');

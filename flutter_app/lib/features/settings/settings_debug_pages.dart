@@ -1421,6 +1421,11 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
                   'Pending approval child',
                   _pendingApprovalChildLabel(subAgents[index])!,
                 ),
+              if (_formatSubAgentContextModeSource(subAgents[index]) != null)
+                _DebugKeyValueLine(
+                  'Context mode source',
+                  _formatSubAgentContextModeSource(subAgents[index])!,
+                ),
               if (_formatSubAgentLiveContext(subAgents[index]) != null)
                 _DebugKeyValueLine(
                   'Live context',
@@ -1695,6 +1700,13 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
         '${entry.key}=${entry.value}',
     ];
     return parts.isEmpty ? null : parts.join(' / ');
+  }
+
+  String? _formatSubAgentContextModeSource(
+    OpenCrayChatSubAgentSnapshot subAgent,
+  ) {
+    final String source = subAgent.contextModeSource?.trim() ?? '';
+    return source.isEmpty ? null : source;
   }
 }
 

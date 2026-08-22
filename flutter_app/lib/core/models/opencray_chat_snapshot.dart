@@ -2010,6 +2010,7 @@ class OpenCrayChatSubAgentSnapshot {
     required this.label,
     required this.subagentType,
     required this.contextMode,
+    this.contextModeSource,
     required this.depth,
     required this.startedAtEpochMs,
     required this.updatedAtEpochMs,
@@ -2043,6 +2044,7 @@ class OpenCrayChatSubAgentSnapshot {
   final String label;
   final String subagentType;
   final String contextMode;
+  final String? contextModeSource;
   final int depth;
   final String? phase;
   final String? status;
@@ -2076,6 +2078,7 @@ class OpenCrayChatSubAgentSnapshot {
       label: map['label'] as String? ?? '',
       subagentType: map['subagentType'] as String? ?? '',
       contextMode: map['contextMode'] as String? ?? '',
+      contextModeSource: map['contextModeSource'] as String?,
       depth: map['depth'] as int? ?? 0,
       phase: map['phase'] as String?,
       status: map['status'] as String?,
