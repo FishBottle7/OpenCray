@@ -2132,6 +2132,7 @@ internal class ServiceOwnedSettingsGateway(
     onDeviceAccelerator: String,
     onDeviceThinkingEnabled: Boolean,
     onDeviceLiteModeEnabled: Boolean,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = llmConfigFacade.save(
     com.opencray.app.facade.llm.SaveLlmConfigRequest(
       enabled = enabled,
@@ -2164,6 +2165,7 @@ internal class ServiceOwnedSettingsGateway(
       onDeviceAccelerator = onDeviceAccelerator,
       onDeviceThinkingEnabled = onDeviceThinkingEnabled,
       onDeviceLiteModeEnabled = onDeviceLiteModeEnabled,
+      contextWindowTokensOverride = contextWindowTokensOverride,
     ),
   ).toGatewayMap().also {
     onDeviceWarmupAccess.ensureWarmForActiveSession()
@@ -2189,6 +2191,7 @@ internal class ServiceOwnedSettingsGateway(
     contextBudgetReservedOutputTokens: Int?,
     contextBudgetSafetyMarginTokens: Int?,
     contextBudgetEffectiveInputPercent: Double?,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = llmConfigFacade.saveCustomProvider(
     com.opencray.app.facade.llm.SaveCustomLlmProviderRequest(
       selectedProviderOptionId = selectedProviderOptionId,
@@ -2213,6 +2216,7 @@ internal class ServiceOwnedSettingsGateway(
       contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
       contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
       contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
+      contextWindowTokensOverride = contextWindowTokensOverride,
     ),
   ).toGatewayMap()
 
@@ -2223,6 +2227,7 @@ internal class ServiceOwnedSettingsGateway(
     apiKey: String,
     model: String,
     reasoningEffort: String,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = llmConfigFacade.validate(
     com.opencray.app.facade.llm.ValidateLlmConfigRequest(
       providerId = providerId,
@@ -2231,6 +2236,7 @@ internal class ServiceOwnedSettingsGateway(
       apiKey = apiKey,
       model = model,
       reasoningEffort = reasoningEffort,
+      contextWindowTokensOverride = contextWindowTokensOverride,
     ),
   ).toGatewayMap()
 

@@ -132,6 +132,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
     onDeviceAccelerator: String,
     onDeviceThinkingEnabled: Boolean,
     onDeviceLiteModeEnabled: Boolean,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = dispatchPayloadWriteCommand(
     operation = "saveLlmConfig",
     command = OpenCraySettingsWriteCommand.SaveLlmConfig(
@@ -165,6 +166,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
       onDeviceAccelerator = onDeviceAccelerator,
       onDeviceThinkingEnabled = onDeviceThinkingEnabled,
       onDeviceLiteModeEnabled = onDeviceLiteModeEnabled,
+      contextWindowTokensOverride = contextWindowTokensOverride,
     ),
   )
 
@@ -187,6 +189,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
     contextBudgetReservedOutputTokens: Int?,
     contextBudgetSafetyMarginTokens: Int?,
     contextBudgetEffectiveInputPercent: Double?,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = dispatchPayloadWriteCommand(
     operation = "saveCustomLlmProvider",
     command = OpenCraySettingsWriteCommand.SaveCustomLlmProvider(
@@ -208,6 +211,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
       contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
       contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
       contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
+      contextWindowTokensOverride = contextWindowTokensOverride,
     ),
   )
 
@@ -218,6 +222,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
     apiKey: String,
     model: String,
     reasoningEffort: String,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = dispatchPayloadWriteCommand(
     operation = "validateLlmConfig",
     command = OpenCraySettingsWriteCommand.ValidateLlmConfig(
@@ -227,6 +232,7 @@ internal class ServiceBackedOpenCraySettingsGateway(
       apiKey = apiKey,
       model = model,
       reasoningEffort = reasoningEffort,
+      contextWindowTokensOverride = contextWindowTokensOverride,
     ),
   )
 

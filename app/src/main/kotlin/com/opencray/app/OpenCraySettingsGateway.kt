@@ -79,6 +79,7 @@ internal interface OpenCraySettingsGateway {
     onDeviceAccelerator: String = LlmSettingsState.DEFAULT_ON_DEVICE_ACCELERATOR,
     onDeviceThinkingEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_THINKING_ENABLED,
     onDeviceLiteModeEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
+    contextWindowTokensOverride: Int? = null,
   ): Map<String, Any?>
 
   fun saveCustomLlmProvider(
@@ -100,6 +101,7 @@ internal interface OpenCraySettingsGateway {
     contextBudgetReservedOutputTokens: Int? = null,
     contextBudgetSafetyMarginTokens: Int? = null,
     contextBudgetEffectiveInputPercent: Double? = null,
+    contextWindowTokensOverride: Int? = null,
   ): Map<String, Any?>
 
   fun validateLlmConfig(
@@ -109,6 +111,7 @@ internal interface OpenCraySettingsGateway {
     apiKey: String,
     model: String,
     reasoningEffort: String,
+    contextWindowTokensOverride: Int? = null,
   ): Map<String, Any?>
 
   fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?>
@@ -230,6 +233,7 @@ internal sealed interface OpenCraySettingsWriteCommand {
     val onDeviceAccelerator: String = LlmSettingsState.DEFAULT_ON_DEVICE_ACCELERATOR,
     val onDeviceThinkingEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_THINKING_ENABLED,
     val onDeviceLiteModeEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
+    val contextWindowTokensOverride: Int? = null,
   ) : OpenCraySettingsWriteCommand
 
   data class SaveCustomLlmProvider(
@@ -251,6 +255,7 @@ internal sealed interface OpenCraySettingsWriteCommand {
     val contextBudgetReservedOutputTokens: Int? = null,
     val contextBudgetSafetyMarginTokens: Int? = null,
     val contextBudgetEffectiveInputPercent: Double? = null,
+    val contextWindowTokensOverride: Int? = null,
   ) : OpenCraySettingsWriteCommand
 
   data class ValidateLlmConfig(
@@ -260,6 +265,7 @@ internal sealed interface OpenCraySettingsWriteCommand {
     val apiKey: String,
     val model: String,
     val reasoningEffort: String,
+    val contextWindowTokensOverride: Int? = null,
   ) : OpenCraySettingsWriteCommand
 
   data class DownloadOnDeviceLlmModel(
@@ -403,6 +409,7 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
       onDeviceAccelerator = command.onDeviceAccelerator,
       onDeviceThinkingEnabled = command.onDeviceThinkingEnabled,
       onDeviceLiteModeEnabled = command.onDeviceLiteModeEnabled,
+      contextWindowTokensOverride = command.contextWindowTokensOverride,
     ),
   )
 
@@ -426,6 +433,7 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
       contextBudgetReservedOutputTokens = command.contextBudgetReservedOutputTokens,
       contextBudgetSafetyMarginTokens = command.contextBudgetSafetyMarginTokens,
       contextBudgetEffectiveInputPercent = command.contextBudgetEffectiveInputPercent,
+      contextWindowTokensOverride = command.contextWindowTokensOverride,
     ),
   )
 
@@ -437,6 +445,7 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
       apiKey = command.apiKey,
       model = command.model,
       reasoningEffort = command.reasoningEffort,
+      contextWindowTokensOverride = command.contextWindowTokensOverride,
     ),
   )
 

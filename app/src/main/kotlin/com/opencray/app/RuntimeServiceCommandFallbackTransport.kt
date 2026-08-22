@@ -936,6 +936,7 @@ private class LoopbackHttpOpenCraySettingsGateway(
     onDeviceAccelerator: String,
     onDeviceThinkingEnabled: Boolean,
     onDeviceLiteModeEnabled: Boolean,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = commandTransport.requireSettingsPayload(
     OpenCraySettingsWriteCommand.SaveLlmConfig(
       enabled = enabled,
@@ -968,6 +969,7 @@ private class LoopbackHttpOpenCraySettingsGateway(
       onDeviceAccelerator = onDeviceAccelerator,
       onDeviceThinkingEnabled = onDeviceThinkingEnabled,
       onDeviceLiteModeEnabled = onDeviceLiteModeEnabled,
+      contextWindowTokensOverride = contextWindowTokensOverride,
     ),
   )
 
@@ -990,6 +992,7 @@ private class LoopbackHttpOpenCraySettingsGateway(
     contextBudgetReservedOutputTokens: Int?,
     contextBudgetSafetyMarginTokens: Int?,
     contextBudgetEffectiveInputPercent: Double?,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = commandTransport.requireSettingsPayload(
     OpenCraySettingsWriteCommand.SaveCustomLlmProvider(
       selectedProviderOptionId = selectedProviderOptionId,
@@ -1010,6 +1013,7 @@ private class LoopbackHttpOpenCraySettingsGateway(
       contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
       contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
       contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
+      contextWindowTokensOverride = contextWindowTokensOverride,
     ),
   )
 
@@ -1020,6 +1024,7 @@ private class LoopbackHttpOpenCraySettingsGateway(
     apiKey: String,
     model: String,
     reasoningEffort: String,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = commandTransport.requireSettingsPayload(
     OpenCraySettingsWriteCommand.ValidateLlmConfig(
       providerId = providerId,
@@ -1028,6 +1033,7 @@ private class LoopbackHttpOpenCraySettingsGateway(
       apiKey = apiKey,
       model = model,
       reasoningEffort = reasoningEffort,
+      contextWindowTokensOverride = contextWindowTokensOverride,
     ),
   )
 

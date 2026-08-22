@@ -212,6 +212,7 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     onDeviceAccelerator: String,
     onDeviceThinkingEnabled: Boolean,
     onDeviceLiteModeEnabled: Boolean,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = throw writeUnavailable("saveLlmConfig")
 
   override fun saveCustomLlmProvider(
@@ -233,6 +234,7 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     contextBudgetReservedOutputTokens: Int?,
     contextBudgetSafetyMarginTokens: Int?,
     contextBudgetEffectiveInputPercent: Double?,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = throw writeUnavailable("saveCustomLlmProvider")
 
   override fun validateLlmConfig(
@@ -242,6 +244,7 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     apiKey: String,
     model: String,
     reasoningEffort: String,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = throw writeUnavailable("validateLlmConfig")
 
   override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =

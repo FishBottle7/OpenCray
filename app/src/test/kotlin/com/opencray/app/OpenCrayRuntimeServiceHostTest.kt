@@ -8658,6 +8658,7 @@ class OpenCrayRuntimeServiceHostTest {
       onDeviceAccelerator: String,
       onDeviceThinkingEnabled: Boolean,
       onDeviceLiteModeEnabled: Boolean,
+      contextWindowTokensOverride: Int?,
     ): Map<String, Any?> = mapOf(
       "source" to "$label-llm-save",
       "enabled" to enabled,
@@ -8684,6 +8685,7 @@ class OpenCrayRuntimeServiceHostTest {
       contextBudgetReservedOutputTokens: Int?,
       contextBudgetSafetyMarginTokens: Int?,
       contextBudgetEffectiveInputPercent: Double?,
+      contextWindowTokensOverride: Int?,
     ): Map<String, Any?> = mapOf("source" to "$label-custom-llm")
 
     override fun validateLlmConfig(
@@ -8693,6 +8695,7 @@ class OpenCrayRuntimeServiceHostTest {
       apiKey: String,
       model: String,
       reasoningEffort: String,
+      contextWindowTokensOverride: Int?,
     ): Map<String, Any?> = mapOf("source" to "$label-llm-validate", "providerId" to providerId)
 
     override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =

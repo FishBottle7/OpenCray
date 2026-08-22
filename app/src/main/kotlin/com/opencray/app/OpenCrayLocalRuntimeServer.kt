@@ -477,6 +477,14 @@ internal class OpenCrayLocalRuntimeServer(
           "onDeviceLiteModeEnabled",
           LlmSettingsState.DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
         ),
+        contextWindowTokensOverride = if (
+          body.has("contextWindowTokensOverride") &&
+          !body.isNull("contextWindowTokensOverride")
+        ) {
+          body.optInt("contextWindowTokensOverride")
+        } else {
+          null
+        },
       )
       "POST" to "/v1/save_custom_llm_provider" -> settingsGateway.saveCustomLlmProvider(
         selectedProviderOptionId = body.optString("selectedProviderOptionId"),
@@ -527,6 +535,14 @@ internal class OpenCrayLocalRuntimeServer(
         contextBudgetEffectiveInputPercent =
           body.takeIf { !it.isNull("contextBudgetEffectiveInputPercent") }
             ?.optDouble("contextBudgetEffectiveInputPercent"),
+        contextWindowTokensOverride = if (
+          body.has("contextWindowTokensOverride") &&
+          !body.isNull("contextWindowTokensOverride")
+        ) {
+          body.optInt("contextWindowTokensOverride")
+        } else {
+          null
+        },
       )
       "POST" to "/v1/validate_llm_config" -> settingsGateway.validateLlmConfig(
         providerId = body.optString("providerId"),
@@ -535,6 +551,14 @@ internal class OpenCrayLocalRuntimeServer(
         apiKey = body.optString("apiKey"),
         model = body.optString("model"),
         reasoningEffort = body.optString("reasoningEffort"),
+        contextWindowTokensOverride = if (
+          body.has("contextWindowTokensOverride") &&
+          !body.isNull("contextWindowTokensOverride")
+        ) {
+          body.optInt("contextWindowTokensOverride")
+        } else {
+          null
+        },
       )
       "POST" to "/v1/download_on_device_llm_model" -> settingsGateway.downloadOnDeviceLlmModel(
         modelId = body.optString("modelId"),

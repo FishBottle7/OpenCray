@@ -448,6 +448,8 @@ internal class OpenCrayFlutterHostBridge(
               onDeviceLiteModeEnabled =
                 call.argument<Boolean>("onDeviceLiteModeEnabled")
                   ?: LlmSettingsState.DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
+              contextWindowTokensOverride =
+                call.argument<Number>("contextWindowTokensOverride")?.toInt(),
             )
           }
           return
@@ -477,6 +479,8 @@ internal class OpenCrayFlutterHostBridge(
                 call.argument<Number>("contextBudgetSafetyMarginTokens")?.toInt(),
               contextBudgetEffectiveInputPercent =
                 call.argument<Number>("contextBudgetEffectiveInputPercent")?.toDouble(),
+              contextWindowTokensOverride =
+                call.argument<Number>("contextWindowTokensOverride")?.toInt(),
             )
           }
           return
@@ -490,6 +494,8 @@ internal class OpenCrayFlutterHostBridge(
               apiKey = call.argument<String>("apiKey").orEmpty(),
               model = call.argument<String>("model").orEmpty(),
               reasoningEffort = call.argument<String>("reasoningEffort").orEmpty(),
+              contextWindowTokensOverride =
+                call.argument<Number>("contextWindowTokensOverride")?.toInt(),
             )
           }
           return

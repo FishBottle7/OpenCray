@@ -1087,6 +1087,7 @@ internal class OpenCrayHostRuntime private constructor(
     onDeviceAccelerator: String,
     onDeviceThinkingEnabled: Boolean,
     onDeviceLiteModeEnabled: Boolean,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> {
     val snapshot = synchronized(lock) {
       llmConfigFacade.save(
@@ -1121,6 +1122,7 @@ internal class OpenCrayHostRuntime private constructor(
           onDeviceAccelerator = onDeviceAccelerator,
           onDeviceThinkingEnabled = onDeviceThinkingEnabled,
           onDeviceLiteModeEnabled = onDeviceLiteModeEnabled,
+          contextWindowTokensOverride = contextWindowTokensOverride,
         ),
       )
     }
@@ -1146,6 +1148,7 @@ internal class OpenCrayHostRuntime private constructor(
     contextBudgetReservedOutputTokens: Int?,
     contextBudgetSafetyMarginTokens: Int?,
     contextBudgetEffectiveInputPercent: Double?,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> {
     val snapshot = synchronized(lock) {
       llmConfigFacade.saveCustomProvider(
@@ -1172,6 +1175,7 @@ internal class OpenCrayHostRuntime private constructor(
           contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
           contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
           contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
+          contextWindowTokensOverride = contextWindowTokensOverride,
         ),
       )
     }
@@ -1185,6 +1189,7 @@ internal class OpenCrayHostRuntime private constructor(
     apiKey: String,
     model: String,
     reasoningEffort: String,
+    contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = llmConfigFacade.validate(
     ValidateLlmConfigRequest(
       providerId = providerId,
@@ -1193,6 +1198,7 @@ internal class OpenCrayHostRuntime private constructor(
       apiKey = apiKey,
       model = model,
       reasoningEffort = reasoningEffort,
+      contextWindowTokensOverride = contextWindowTokensOverride,
     ),
   ).toMap()
 

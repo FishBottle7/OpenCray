@@ -29,6 +29,8 @@ internal fun LlmConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "contextBudgetReservedOutputTokens" to contextBudgetReservedOutputTokens,
   "contextBudgetSafetyMarginTokens" to contextBudgetSafetyMarginTokens,
   "contextBudgetEffectiveInputPercent" to contextBudgetEffectiveInputPercent,
+  "manualContextWindowTokens" to manualContextWindowTokens,
+  "resolvedContextWindowTokens" to resolvedContextWindowTokens,
   "onDeviceModels" to onDeviceModels.map { option -> option.toGatewayMap() },
   "selectedOnDeviceModelId" to selectedOnDeviceModelId,
   "onDeviceMaxContextWindow" to onDeviceMaxContextWindow,

@@ -288,6 +288,7 @@ internal fun runtimeServiceWriteCommandEnvelope(
       putIfNotNull("contextBudgetReservedOutputTokens", command.contextBudgetReservedOutputTokens)
       putIfNotNull("contextBudgetSafetyMarginTokens", command.contextBudgetSafetyMarginTokens)
       putIfNotNull("contextBudgetEffectiveInputPercent", command.contextBudgetEffectiveInputPercent)
+      putIfNotNull("contextWindowTokensOverride", command.contextWindowTokensOverride)
       put("selectedOnDeviceModelId", command.selectedOnDeviceModelId)
       put("onDeviceMaxContextWindow", command.onDeviceMaxContextWindow)
       put("onDeviceMaxTokens", command.onDeviceMaxTokens)
@@ -321,6 +322,7 @@ internal fun runtimeServiceWriteCommandEnvelope(
       putIfNotNull("contextBudgetReservedOutputTokens", command.contextBudgetReservedOutputTokens)
       putIfNotNull("contextBudgetSafetyMarginTokens", command.contextBudgetSafetyMarginTokens)
       putIfNotNull("contextBudgetEffectiveInputPercent", command.contextBudgetEffectiveInputPercent)
+      putIfNotNull("contextWindowTokensOverride", command.contextWindowTokensOverride)
     },
   )
 
@@ -333,6 +335,7 @@ internal fun runtimeServiceWriteCommandEnvelope(
       put("apiKey", command.apiKey)
       put("model", command.model)
       put("reasoningEffort", command.reasoningEffort)
+      putIfNotNull("contextWindowTokensOverride", command.contextWindowTokensOverride)
     },
   )
 
@@ -731,6 +734,7 @@ private fun RuntimeServiceWriteCommandEnvelope.decodeSettingsCommand(): OpenCray
       contextBudgetReservedOutputTokens = payload.optionalInt("contextBudgetReservedOutputTokens"),
       contextBudgetSafetyMarginTokens = payload.optionalInt("contextBudgetSafetyMarginTokens"),
       contextBudgetEffectiveInputPercent = payload.optionalDouble("contextBudgetEffectiveInputPercent"),
+      contextWindowTokensOverride = payload.optionalInt("contextWindowTokensOverride"),
       selectedOnDeviceModelId = payload.requireString("selectedOnDeviceModelId"),
       onDeviceMaxContextWindow = payload.requireInt("onDeviceMaxContextWindow"),
       onDeviceMaxTokens = payload.requireInt("onDeviceMaxTokens"),
@@ -762,6 +766,7 @@ private fun RuntimeServiceWriteCommandEnvelope.decodeSettingsCommand(): OpenCray
         contextBudgetReservedOutputTokens = payload.optionalInt("contextBudgetReservedOutputTokens"),
         contextBudgetSafetyMarginTokens = payload.optionalInt("contextBudgetSafetyMarginTokens"),
         contextBudgetEffectiveInputPercent = payload.optionalDouble("contextBudgetEffectiveInputPercent"),
+        contextWindowTokensOverride = payload.optionalInt("contextWindowTokensOverride"),
       )
 
     "POST" to "v1/validate_llm_config" -> OpenCraySettingsWriteCommand.ValidateLlmConfig(
@@ -771,6 +776,7 @@ private fun RuntimeServiceWriteCommandEnvelope.decodeSettingsCommand(): OpenCray
       apiKey = payload.requireString("apiKey"),
       model = payload.requireString("model"),
       reasoningEffort = payload.requireString("reasoningEffort"),
+      contextWindowTokensOverride = payload.optionalInt("contextWindowTokensOverride"),
     )
 
     "POST" to "v1/download_on_device_llm_model" ->

@@ -3575,6 +3575,7 @@ class OpenCrayLocalRuntimeServerTest {
       onDeviceAccelerator: String,
       onDeviceThinkingEnabled: Boolean,
       onDeviceLiteModeEnabled: Boolean,
+      contextWindowTokensOverride: Int?,
     ): Map<String, Any?> = mapOf(
       "source" to "gateway-llm-save",
       "enabled" to enabled,
@@ -3601,6 +3602,7 @@ class OpenCrayLocalRuntimeServerTest {
       contextBudgetReservedOutputTokens: Int?,
       contextBudgetSafetyMarginTokens: Int?,
       contextBudgetEffectiveInputPercent: Double?,
+      contextWindowTokensOverride: Int?,
     ): Map<String, Any?> = mapOf("source" to "gateway-custom-llm")
 
     override fun validateLlmConfig(
@@ -3610,6 +3612,7 @@ class OpenCrayLocalRuntimeServerTest {
       apiKey: String,
       model: String,
       reasoningEffort: String,
+      contextWindowTokensOverride: Int?,
     ): Map<String, Any?> = mapOf("source" to "gateway-llm-validate", "providerId" to providerId)
 
     override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =

@@ -8113,6 +8113,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           onDeviceAccelerator: String,
           onDeviceThinkingEnabled: Boolean,
           onDeviceLiteModeEnabled: Boolean,
+          contextWindowTokensOverride: Int?,
         ): Map<String, Any?> = emptyMap()
 
         override fun saveCustomLlmProvider(
@@ -8134,6 +8135,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           contextBudgetReservedOutputTokens: Int?,
           contextBudgetSafetyMarginTokens: Int?,
           contextBudgetEffectiveInputPercent: Double?,
+          contextWindowTokensOverride: Int?,
         ): Map<String, Any?> = emptyMap()
 
         override fun validateLlmConfig(
@@ -8143,6 +8145,7 @@ class OpenCrayAgentRuntimeServiceBootstrapTest {
           apiKey: String,
           model: String,
           reasoningEffort: String,
+          contextWindowTokensOverride: Int?,
         ): Map<String, Any?> = emptyMap()
 
         override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> = emptyMap()

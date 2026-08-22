@@ -1005,6 +1005,7 @@ class OpenCrayFlutterHostBridgeTest {
       onDeviceAccelerator: String,
       onDeviceThinkingEnabled: Boolean,
       onDeviceLiteModeEnabled: Boolean,
+      contextWindowTokensOverride: Int?,
     ): Map<String, Any?> = throw UnsupportedOperationException()
 
     override fun saveCustomLlmProvider(
@@ -1026,6 +1027,7 @@ class OpenCrayFlutterHostBridgeTest {
       contextBudgetReservedOutputTokens: Int?,
       contextBudgetSafetyMarginTokens: Int?,
       contextBudgetEffectiveInputPercent: Double?,
+      contextWindowTokensOverride: Int?,
     ): Map<String, Any?> = throw UnsupportedOperationException()
 
     override fun validateLlmConfig(
@@ -1035,6 +1037,7 @@ class OpenCrayFlutterHostBridgeTest {
       apiKey: String,
       model: String,
       reasoningEffort: String,
+      contextWindowTokensOverride: Int?,
     ): Map<String, Any?> = throw UnsupportedOperationException()
 
     override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =
@@ -1130,6 +1133,7 @@ class OpenCrayFlutterHostBridgeTest {
       onDeviceAccelerator: String,
       onDeviceThinkingEnabled: Boolean,
       onDeviceLiteModeEnabled: Boolean,
+      contextWindowTokensOverride: Int?,
     ): Map<String, Any?> {
       lastSavedLlmConfig = SavedLlmConfigCall(
         enabled = enabled,
