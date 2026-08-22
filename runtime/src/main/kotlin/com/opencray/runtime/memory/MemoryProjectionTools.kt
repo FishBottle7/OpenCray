@@ -3,6 +3,7 @@ package com.opencray.runtime.memory
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayToolDispatcher
+import com.opencray.runtime.inlinePreview
 import com.opencray.runtime.optionalInt
 import com.opencray.runtime.policy.ToolTargetKind
 import com.opencray.runtime.policy.ToolWorkspaceRelation

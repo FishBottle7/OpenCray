@@ -21,6 +21,7 @@ import com.opencray.runtime.OpenCrayToolDispatcher
 import com.opencray.runtime.OpenCrayVideoGenerationClient
 import com.opencray.runtime.OpenCrayVideoGenerationRequest
 import com.opencray.runtime.OpenCrayVideoGenerationSettings
+import com.opencray.runtime.inlinePreview
 import com.opencray.runtime.optionalBoolean
 import com.opencray.runtime.optionalInt
 import com.opencray.runtime.optionalString

@@ -5,6 +5,8 @@ import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayExecutionMetadataKeys
 import com.opencray.runtime.OpenCrayToolDispatcher
+import com.opencray.runtime.WINDOWS_ABSOLUTE_PATH_REGEX
+import com.opencray.runtime.inlinePreview
 import com.opencray.runtime.optionalBooleanFrom
 import com.opencray.runtime.optionalInt
 import com.opencray.runtime.optionalString
@@ -1203,5 +1205,5 @@ internal fun OpenCrayToolDispatcher.looksLikeExplicitLocalSkillSource(sourceRef:
       normalized.startsWith("/") ||
       normalized.startsWith("\\") ||
       normalized.contains("\\") ||
-      OpenCrayToolDispatcher.WINDOWS_ABSOLUTE_PATH_REGEX.matches(normalized)
+      WINDOWS_ABSOLUTE_PATH_REGEX.matches(normalized)
   }
