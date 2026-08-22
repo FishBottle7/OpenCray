@@ -9567,17 +9567,17 @@ class OpenCrayAgentRuntime(
     val requestedContextMode = call.arguments.primitiveContent("context_mode")
       ?.trim()
       ?.takeIf(String::isNotBlank)
-    val resolvedContextMode = when {
-      requestedContextMode == null -> profile.defaultContextMode
+    val requestedMode = when {
+      requestedContextMode == null -> null
       else -> {
-        val requestedMode = SubAgentContextMode.fromWireValue(requestedContextMode)
+        val parsedMode = SubAgentContextMode.fromWireValue(requestedContextMode)
           ?: return PreparedSubAgentDelegationResult.Invalid(
             invalidSubAgentCallResult(
               call = call,
               message = "Unknown $toolName context_mode '$requestedContextMode'. Expected one of: ${SubAgentContextMode.publicWireValuesDescription()}.",
             ),
           )
-        if (!requestedMode.publicControlPlaneEnabled) {
+        if (!parsedMode.publicControlPlaneEnabled) {
           return PreparedSubAgentDelegationResult.Invalid(
             invalidSubAgentCallResult(
               call = call,
@@ -9585,9 +9585,13 @@ class OpenCrayAgentRuntime(
             ),
           )
         }
-        requestedMode
+        parsedMode
       }
     }
+    val contextModeResolution = config.subAgentContextPolicy.resolve(
+      profile = profile,
+      explicitMode = requestedMode,
+    )
     val parentDepth = task.metadata[SubAgentMetadataKeys.DEPTH]
       ?.trim()
       ?.takeIf(String::isNotBlank)
@@ -9614,7 +9618,7 @@ class OpenCrayAgentRuntime(
       description = description,
       prompt = prompt,
       subagentType = resolvedSubagentType,
-      contextMode = resolvedContextMode,
+      contextMode = contextModeResolution.mode,
       parentRunId = runIdFor(task),
       parentTaskId = task.id,
       parentTurn = turn,

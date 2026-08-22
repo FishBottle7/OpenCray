@@ -34,6 +34,8 @@ import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentHandleState
 import com.opencray.runtime.subagent.SubAgentMailbox
 import com.opencray.runtime.subagent.SubAgentMailboxMessage
+import com.opencray.runtime.subagent.SubAgentContextMode
+import com.opencray.runtime.subagent.SubAgentContextPolicy
 import com.opencray.runtime.subagent.SubAgentMetadataKeys
 import com.opencray.runtime.subagent.SubAgentResultMetadataKeys
 import com.opencray.runtime.skills.SkillCatalog
@@ -285,12 +287,170 @@ class OpenCrayAgentRuntimeSubAgentTest {
 
     assertEquals(ExecutionStatus.FAILED, result.status)
     assertEquals("INVALID_SUBAGENT_TASK", result.errorCode)
-    assertEquals(
-      "Unsupported spawn_agent context_mode 'mirrored'. Expected one of: minimal, delegated. mirrored is reserved for internal-only child-runtime flows.",
-      result.errorMessage,
-    )
-    assertEquals(0, gateway.requests.size)
-  }
+      assertEquals(
+        "Unsupported spawn_agent context_mode 'mirrored'. Expected one of: minimal, delegated. mirrored is reserved for internal-only child-runtime flows.",
+        result.errorMessage,
+      )
+      assertEquals(0, gateway.requests.size)
+    }
+
+    @Test
+    fun taskToolHonorsExplicitContextModeWithEmptyPolicy() {
+      val workspaceRoot = temporaryFolder.newFolder("subagent-policy-explicit-empty").toPath()
+      Files.write(
+        workspaceRoot.resolve("README.md"),
+        "hello".toByteArray(StandardCharsets.UTF_8),
+      )
+      val gateway = RecordingGateway(
+        outputs = listOf(
+          """{"type":"tool_call","tool_name":"Task","arguments":{"description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"general-purpose","context_mode":"minimal"}}""",
+          """{"type":"final","answer":"README says hello."}""",
+          """{"type":"final","answer":"Parent accepted the minimal child result."}""",
+        ),
+      )
+      val eventSink = RecordingEventSink()
+      val runtime = runtime(
+        workspaceRoot = workspaceRoot,
+        gateway = gateway,
+        eventSink = eventSink,
+      )
+
+      val result = runtime.execute(
+        task = promptTask("Please delegate README inspection with a minimal child."),
+        hooks = runtimeHooks(),
+      )
+
+      assertEquals(ExecutionStatus.SUCCESS, result.status)
+      assertEquals("Parent accepted the minimal child result.", result.stdout)
+      val taskResultMetadata = eventSink.events
+        .filterIsInstance<OpenCrayToolResultEvent>()
+        .single()
+        .result
+        .metadata
+      assertEquals("general-purpose", taskResultMetadata["delegationSubagentType"])
+      assertEquals("minimal", taskResultMetadata["delegationContextMode"])
+      assertFalse(gateway.requests[1].prompt.contains("Delegated parent context for this child run."))
+      assertTrue(gateway.requests[1].prompt.contains("Read README.md and summarize it."))
+    }
+
+    @Test
+    fun taskToolAppliesRuntimeContextPolicyDefaultWhenNoExplicitContextMode() {
+      val workspaceRoot =
+        temporaryFolder.newFolder("subagent-policy-default").toPath()
+      val gateway = RecordingGateway(
+        outputs = listOf(
+          """{"type":"tool_call","tool_name":"Task","arguments":{"description":"continue investigation","prompt":"Check the repo layout and report back.","subagent_type":"general-purpose"}}""",
+          """{"type":"final","answer":"Layout inspected under policy default."}""",
+          """{"type":"final","answer":"Parent accepted the policy-default child result."}""",
+        ),
+      )
+      val eventSink = RecordingEventSink()
+      val runtime = runtime(
+        workspaceRoot = workspaceRoot,
+        gateway = gateway,
+        eventSink = eventSink,
+        subAgentContextPolicy = SubAgentContextPolicy(
+          defaultContextMode = SubAgentContextMode.MINIMAL,
+        ),
+      )
+
+      val result = runtime.execute(
+        task = promptTask("Investigate the codebase and continue carefully."),
+        hooks = runtimeHooks(),
+      )
+
+      assertEquals(ExecutionStatus.SUCCESS, result.status)
+      assertEquals("Parent accepted the policy-default child result.", result.stdout)
+      val taskResultMetadata = eventSink.events
+        .filterIsInstance<OpenCrayToolResultEvent>()
+        .single()
+        .result
+        .metadata
+      assertEquals("general-purpose", taskResultMetadata["delegationSubagentType"])
+      assertEquals("minimal", taskResultMetadata["delegationContextMode"])
+      assertFalse(gateway.requests[1].prompt.contains("Delegated parent context for this child run."))
+      assertTrue(gateway.requests[1].prompt.contains("Check the repo layout and report back."))
+    }
+
+    @Test
+    fun taskToolAppliesRuntimeContextPolicyProfileOverrideWhenNoExplicitContextMode() {
+      val workspaceRoot =
+        temporaryFolder.newFolder("subagent-policy-profile-override").toPath()
+      val gateway = RecordingGateway(
+        outputs = listOf(
+          """{"type":"tool_call","tool_name":"Task","arguments":{"description":"inspect repo","prompt":"Inspect the repo layout and summarize it.","subagent_type":"researcher"}}""",
+          """{"type":"final","answer":"Delegated researcher inspected the repo."}""",
+          """{"type":"final","answer":"Parent accepted the delegated researcher result."}""",
+        ),
+      )
+      val eventSink = RecordingEventSink()
+      val runtime = runtime(
+        workspaceRoot = workspaceRoot,
+        gateway = gateway,
+        eventSink = eventSink,
+        subAgentContextPolicy = SubAgentContextPolicy(
+          profileOverrides = mapOf("researcher" to SubAgentContextMode.DELEGATED),
+        ),
+      )
+
+      val result = runtime.execute(
+        task = promptTask("Ask the researcher to inspect the repo and continue."),
+        hooks = runtimeHooks(),
+      )
+
+      assertEquals(ExecutionStatus.SUCCESS, result.status)
+      assertEquals("Parent accepted the delegated researcher result.", result.stdout)
+      val taskResultMetadata = eventSink.events
+        .filterIsInstance<OpenCrayToolResultEvent>()
+        .single()
+        .result
+        .metadata
+      assertEquals("researcher", taskResultMetadata["delegationSubagentType"])
+      assertEquals("delegated", taskResultMetadata["delegationContextMode"])
+      assertTrue(gateway.requests[1].prompt.contains("Delegated parent context for this child run."))
+      assertTrue(gateway.requests[1].prompt.contains("user_goal=Ask the researcher to inspect the repo and continue."))
+      assertTrue(gateway.requests[1].prompt.contains("Inspect the repo layout and summarize it."))
+    }
+
+    @Test
+    fun taskToolExplicitContextModeWinsOverRuntimeSubAgentContextPolicy() {
+      val workspaceRoot =
+        temporaryFolder.newFolder("subagent-policy-explicit-wins").toPath()
+      val gateway = RecordingGateway(
+        outputs = listOf(
+          """{"type":"tool_call","tool_name":"Task","arguments":{"description":"keep parent summary","prompt":"Continue the repo investigation with inherited findings.","subagent_type":"general-purpose","context_mode":"delegated"}}""",
+          """{"type":"final","answer":"Explicit delegated child finished."}""",
+          """{"type":"final","answer":"Parent kept the explicit delegated result."}""",
+        ),
+      )
+      val eventSink = RecordingEventSink()
+      val runtime = runtime(
+        workspaceRoot = workspaceRoot,
+        gateway = gateway,
+        eventSink = eventSink,
+        subAgentContextPolicy = SubAgentContextPolicy(
+          defaultContextMode = SubAgentContextMode.MINIMAL,
+          profileOverrides = mapOf("general-purpose" to SubAgentContextMode.MINIMAL),
+        ),
+      )
+
+      val result = runtime.execute(
+        task = promptTask("Delegate the repo investigation and preserve useful context."),
+        hooks = runtimeHooks(),
+      )
+
+      assertEquals(ExecutionStatus.SUCCESS, result.status)
+      assertEquals("Parent kept the explicit delegated result.", result.stdout)
+      val taskResultMetadata = eventSink.events
+        .filterIsInstance<OpenCrayToolResultEvent>()
+        .single()
+        .result
+        .metadata
+      assertEquals("general-purpose", taskResultMetadata["delegationSubagentType"])
+      assertEquals("delegated", taskResultMetadata["delegationContextMode"])
+      assertTrue(gateway.requests[1].prompt.contains("Delegated parent context for this child run."))
+      assertTrue(gateway.requests[1].prompt.contains("user_goal=Delegate the repo investigation and preserve useful context."))
+    }
 
   @Test
   fun delegatedChildKeepsWorkspaceDiscoveryOutOfRecentObservationSummaries() {
@@ -3242,6 +3402,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
     seededDetachedSubAgentHandlesRequireCoordinatorOwnership: Boolean = false,
     subAgentExecutionCoordinator: com.opencray.runtime.subagent.SubAgentExecutionCoordinator =
       InMemorySubAgentExecutionCoordinator(),
+    subAgentContextPolicy: SubAgentContextPolicy = SubAgentContextPolicy(),
   ): OpenCrayAgentRuntime = OpenCrayAgentRuntime(
     gateway = gateway,
     toolDispatcher = OpenCrayToolDispatcher(
@@ -3261,6 +3422,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
       seededDetachedSubAgentHandlesRequireCoordinatorOwnership =
         seededDetachedSubAgentHandlesRequireCoordinatorOwnership,
       subAgentExecutionCoordinator = subAgentExecutionCoordinator,
+      subAgentContextPolicy = subAgentContextPolicy,
       json = TEST_JSON,
     ),
     eventSink = eventSink,
