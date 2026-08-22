@@ -1373,6 +1373,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
             pendingApprovalChildRunId = snapshot.pendingApprovalChildRunId,
             pendingApprovalChildTaskId = snapshot.pendingApprovalChildTaskId,
             liveContext = snapshot.liveContext ?: existing.liveContext,
+            contextModeSource = snapshot.contextModeSource ?: existing.contextModeSource,
           )
         }
       }
@@ -1531,6 +1532,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       label = handle.description,
       subagentType = handle.subagentType,
       contextMode = handle.contextMode,
+      contextModeSource = handle.contextModeSource,
       depth = handle.depth,
       phase = subAgentPhaseFor(handle.snapshot.state),
       status = handle.snapshot.state.wireValue,
@@ -1590,6 +1592,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     "label" to snapshot.label,
     "subagentType" to snapshot.subagentType,
     "contextMode" to snapshot.contextMode,
+    "contextModeSource" to snapshot.contextModeSource,
     "depth" to snapshot.depth,
     "phase" to snapshot.phase,
     "status" to snapshot.status,
@@ -2552,6 +2555,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val label: String,
     val subagentType: String,
     val contextMode: String,
+    val contextModeSource: String? = null,
     val depth: Int,
     val phase: String,
     val status: String?,

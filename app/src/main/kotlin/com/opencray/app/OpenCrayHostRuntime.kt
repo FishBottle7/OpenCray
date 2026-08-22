@@ -3353,6 +3353,7 @@ internal class OpenCrayHostRuntime private constructor(
             pendingApprovalChildRunId = snapshot.pendingApprovalChildRunId,
             pendingApprovalChildTaskId = snapshot.pendingApprovalChildTaskId,
             liveContext = snapshot.liveContext ?: existing.liveContext,
+            contextModeSource = snapshot.contextModeSource ?: existing.contextModeSource,
           )
         }
       }
@@ -3542,6 +3543,7 @@ internal class OpenCrayHostRuntime private constructor(
       label = handle.description,
       subagentType = handle.subagentType,
       contextMode = handle.contextMode,
+      contextModeSource = handle.contextModeSource,
       depth = handle.depth,
       phase = subAgentPhaseFor(handle.snapshot.state),
       status = handle.snapshot.state.wireValue,
@@ -3600,6 +3602,7 @@ internal class OpenCrayHostRuntime private constructor(
     "label" to snapshot.label,
     "subagentType" to snapshot.subagentType,
     "contextMode" to snapshot.contextMode,
+    "contextModeSource" to snapshot.contextModeSource,
     "depth" to snapshot.depth,
     "phase" to snapshot.phase,
     "status" to snapshot.status,
@@ -9567,6 +9570,7 @@ private data class SubAgentActivitySnapshot(
   val label: String,
   val subagentType: String,
   val contextMode: String,
+  val contextModeSource: String? = null,
   val depth: Int,
   val phase: String,
   val status: String?,

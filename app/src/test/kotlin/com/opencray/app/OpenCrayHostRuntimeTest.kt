@@ -5936,6 +5936,7 @@ class OpenCrayHostRuntimeTest {
                 prompt = "Read the external notes file and summarize it.",
                 subagentType = "researcher",
                 contextMode = "minimal",
+                contextModeSource = "profile_default",
                 parentRunId = "run-parent",
                 parentTaskId = "task-parent",
                 parentTurn = 1,
@@ -5974,6 +5975,7 @@ class OpenCrayHostRuntimeTest {
     assertEquals("Inspect external notes", child["label"])
     assertEquals("researcher", child["subagentType"])
     assertEquals("minimal", child["contextMode"])
+    assertEquals("profile_default", child["contextModeSource"])
     assertEquals("failed", child["phase"])
     assertEquals("waiting_approval", child["status"])
     assertEquals("waiting_approval", child["executionState"])
@@ -6001,6 +6003,7 @@ class OpenCrayHostRuntimeTest {
         prompt = "Inspect the runtime snapshot pipeline and summarize it.",
         subagentType = "researcher",
         contextMode = "minimal",
+        contextModeSource = "policy_profile_override",
         parentRunId = "run-parent-durable",
         parentTaskId = "task-parent-durable",
         parentTurn = 1,
@@ -6046,6 +6049,7 @@ class OpenCrayHostRuntimeTest {
     assertEquals("Inspect runtime snapshot", child["label"])
     assertEquals("researcher", child["subagentType"])
     assertEquals("minimal", child["contextMode"])
+    assertEquals("policy_profile_override", child["contextModeSource"])
     assertEquals("resumed", child["phase"])
     assertEquals("background_running", child["status"])
     assertEquals("background_running", child["executionState"])
