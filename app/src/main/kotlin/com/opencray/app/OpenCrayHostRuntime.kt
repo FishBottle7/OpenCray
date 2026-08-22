@@ -3319,6 +3319,7 @@ internal class OpenCrayHostRuntime private constructor(
         pendingApprovalIsHighRisk = false,
         pendingApprovalChildRunId = null,
         pendingApprovalChildTaskId = null,
+        liveContext = latestEvent.liveContext?.toMap(),
       )
       val snapshotKeys = subAgentRegistryKeys(snapshot)
       val snapshotKey = eventSnapshotsByKey.aliasSubAgentRegistryKey(snapshotKeys)
@@ -3351,6 +3352,7 @@ internal class OpenCrayHostRuntime private constructor(
             pendingApprovalIsHighRisk = snapshot.pendingApprovalIsHighRisk,
             pendingApprovalChildRunId = snapshot.pendingApprovalChildRunId,
             pendingApprovalChildTaskId = snapshot.pendingApprovalChildTaskId,
+            liveContext = snapshot.liveContext ?: existing.liveContext,
           )
         }
       }
@@ -3562,6 +3564,7 @@ internal class OpenCrayHostRuntime private constructor(
       pendingApprovalIsHighRisk = pendingApprovalResume?.isHighRisk == true,
       pendingApprovalChildRunId = pendingApprovalResume?.childRunId,
       pendingApprovalChildTaskId = pendingApprovalResume?.childTaskId,
+      liveContext = handle.childLiveContext.toMap(),
     )
   }
 
@@ -3619,6 +3622,7 @@ internal class OpenCrayHostRuntime private constructor(
     "pendingApprovalIsHighRisk" to snapshot.pendingApprovalIsHighRisk,
     "pendingApprovalChildRunId" to snapshot.pendingApprovalChildRunId,
     "pendingApprovalChildTaskId" to snapshot.pendingApprovalChildTaskId,
+    "liveContext" to snapshot.liveContext,
   )
 
   private fun displayedRunsForSnapshot(
@@ -9582,6 +9586,7 @@ private data class SubAgentActivitySnapshot(
   val pendingApprovalIsHighRisk: Boolean,
   val pendingApprovalChildRunId: String?,
   val pendingApprovalChildTaskId: String?,
+  val liveContext: Map<String, Any?>? = null,
 )
 
 private fun OpenCrayAgentRunEvent.withEmittedAtEpochMs(emittedAtEpochMs: Long): OpenCrayAgentRunEvent =

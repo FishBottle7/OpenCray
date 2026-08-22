@@ -1346,6 +1346,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
         pendingApprovalIsHighRisk = false,
         pendingApprovalChildRunId = null,
         pendingApprovalChildTaskId = null,
+        liveContext = latestEvent.liveContext?.toMap(),
       )
       eventSnapshotsByKey[subAgentRegistryKey(snapshot)] = snapshot
     }
@@ -1371,6 +1372,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
             pendingApprovalIsHighRisk = snapshot.pendingApprovalIsHighRisk,
             pendingApprovalChildRunId = snapshot.pendingApprovalChildRunId,
             pendingApprovalChildTaskId = snapshot.pendingApprovalChildTaskId,
+            liveContext = snapshot.liveContext ?: existing.liveContext,
           )
         }
       }
@@ -1552,6 +1554,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       pendingApprovalIsHighRisk = pendingApprovalResume?.isHighRisk == true,
       pendingApprovalChildRunId = pendingApprovalResume?.childRunId,
       pendingApprovalChildTaskId = pendingApprovalResume?.childTaskId,
+      liveContext = handle.childLiveContext.toMap(),
     )
   }
 
@@ -1609,6 +1612,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     "pendingApprovalIsHighRisk" to snapshot.pendingApprovalIsHighRisk,
     "pendingApprovalChildRunId" to snapshot.pendingApprovalChildRunId,
     "pendingApprovalChildTaskId" to snapshot.pendingApprovalChildTaskId,
+    "liveContext" to snapshot.liveContext,
   )
 
   private fun retainedRunsFor(runs: List<AgentRunSnapshot>): List<AgentRunSnapshot> {
@@ -2570,6 +2574,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val pendingApprovalIsHighRisk: Boolean,
     val pendingApprovalChildRunId: String?,
     val pendingApprovalChildTaskId: String?,
+    val liveContext: Map<String, Any?>? = null,
   )
 
   private companion object {
