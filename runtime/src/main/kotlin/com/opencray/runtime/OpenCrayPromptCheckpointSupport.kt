@@ -4,6 +4,7 @@ import com.opencray.core.contracts.AgentTask
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.context.RuntimeConversationRole
+import com.opencray.runtime.subagent.synchronizedSubAgentHandles
 import java.util.UUID
 
 private const val SUPPLEMENT_CHECKPOINT_TURN_START: String = "turn_start"
