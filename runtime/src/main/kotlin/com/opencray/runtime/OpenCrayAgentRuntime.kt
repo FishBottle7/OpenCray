@@ -18,7 +18,6 @@ import com.opencray.core.orchestrator.SuspensionRequest
 import com.opencray.core.orchestrator.SystemQueueClock
 import com.opencray.llm.LiteLlmAssistantPhase
 import com.opencray.llm.LiteLlmBuiltinToolDefinition
-import com.opencray.llm.LiteLlmBuiltinWebSearchObservation
 import com.opencray.llm.LiteLlmBuiltinToolType
 import com.opencray.llm.LiteLlmGateway
 import com.opencray.llm.LiteLlmGatewayAttachment
@@ -88,6 +87,7 @@ import com.opencray.runtime.subagent.withUpdatedChildPromptCheckpoint
 import com.opencray.runtime.skills.ActiveSkillCapsule
 import com.opencray.runtime.skills.ActiveSkillCapsuleResolver
 import com.opencray.runtime.skills.VisibleSkill
+import com.opencray.runtime.web.emitBuiltinWebSearchObservations
 import com.opencray.runtime.workingstate.InMemoryWorkingStateStore
 import com.opencray.runtime.workingstate.WorkingStateResumeContext
 import com.opencray.runtime.workingstate.WorkingStateSupport
@@ -3983,7 +3983,7 @@ class OpenCrayAgentRuntime(
     }
   }
 
-  private fun announcePromptToolCall(
+  internal fun announcePromptToolCall(
     task: AgentTask,
     turn: Int,
     call: AgentToolCall,
@@ -4868,245 +4868,6 @@ class OpenCrayAgentRuntime(
     ),
   )
 
-  private fun emitBuiltinWebSearchObservations(
-    task: AgentTask,
-    turn: Int,
-    cursor: PromptTurnCursor,
-    gatewayResult: LiteLlmGatewayResult,
-    diagnostics: PromptRunDiagnostics,
-    localContinuationContextPrompts: List<String>? = null,
-    localContinuationStableAnchor: String? = null,
-    localContinuationGatewayMessagesEnabled: Boolean = false,
-    localContinuationToolPoolFingerprint: String? = null,
-    localContinuationToolSchemaFingerprint: String? = null,
-    localContinuationRequestSettingsFingerprint: String? = null,
-  ) {
-    val observations = decodeBuiltinWebSearchObservations(gatewayResult)
-    if (observations.isEmpty()) {
-      return
-    }
-    observations.forEach { observation ->
-      val call = syntheticProviderNativeWebSearchCall(cursor, observation)
-      val result = providerNativeWebSearchResult(observation)
-      val checkpointMetadata = promptCheckpointMetadata(
-        boundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
-        cursor = cursor,
-        turnIndex = cursor.turn + 1,
-        localContinuationContextPrompts = localContinuationContextPrompts,
-        localContinuationStableAnchor = localContinuationStableAnchor,
-        localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
-        localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
-        localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
-        localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
-      )
-      val eventToolResult = if (checkpointMetadata.isEmpty()) {
-        result
-      } else {
-        result.copy(metadata = result.metadata + checkpointMetadata)
-      }
-      announcePromptToolCall(
-        task = task,
-        turn = turn,
-        call = call,
-        cursor = cursor,
-        diagnostics = diagnostics,
-        suppressToolCallEvent = false,
-      )
-      cursor.transcript += RuntimeConversationMessage(
-        role = RuntimeConversationRole.TOOL,
-        kind = RuntimeConversationMessageKind.TOOL_RESULT,
-        content = buildToolResultTranscriptEntry(
-          task = task,
-          turn = turn,
-          call = call,
-          result = eventToolResult,
-        ),
-        toolResult = RuntimeConversationToolResult(
-          toolCallId = call.id,
-          toolName = eventToolResult.toolName,
-          status = eventToolResult.status.name.lowercase(),
-          isError = eventToolResult.status != AgentToolResultStatus.SUCCESS,
-        ),
-      )
-      emitToolResultEvent(
-        task = task,
-        turn = turn,
-        call = call,
-        result = eventToolResult,
-        diagnostics = diagnostics,
-      )
-    }
-  }
-
-  private fun decodeBuiltinWebSearchObservations(
-    gatewayResult: LiteLlmGatewayResult,
-  ): List<LiteLlmBuiltinWebSearchObservation> {
-    val raw = gatewayResult.metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON]
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?: return emptyList()
-    return runCatching {
-      config.json.decodeFromString(
-        ListSerializer(LiteLlmBuiltinWebSearchObservation.serializer()),
-        raw,
-      )
-    }.getOrDefault(emptyList())
-  }
-
-  private fun syntheticProviderNativeWebSearchCall(
-    cursor: PromptTurnCursor,
-    observation: LiteLlmBuiltinWebSearchObservation,
-  ): AgentToolCall = AgentToolCall(
-    id = "oc-call-${cursor.nextSyntheticToolCallSequence++}",
-    toolName = "WebSearch",
-    arguments = providerNativeWebSearchArguments(observation),
-  )
-
-  private fun providerNativeWebSearchArguments(
-    observation: LiteLlmBuiltinWebSearchObservation,
-  ): JsonObject = buildJsonObject {
-    put("operation", observation.actionType)
-    observation.queries.firstOrNull()?.let { query -> put("query", query) }
-    if (observation.queries.isNotEmpty()) {
-      put(
-        "queries",
-        JsonArray(observation.queries.map(::JsonPrimitive)),
-      )
-    }
-    if (observation.domains.isNotEmpty()) {
-      put(
-        "domains",
-        JsonArray(observation.domains.map(::JsonPrimitive)),
-      )
-    }
-    observation.url?.let { url -> put("url", url) }
-    observation.findText?.let { text -> put("text", text) }
-  }
-
-  private fun providerNativeWebSearchResult(
-    observation: LiteLlmBuiltinWebSearchObservation,
-  ): AgentToolResult {
-    val status = providerNativeWebSearchResultStatus(observation)
-    val content = providerNativeWebSearchResultContent(observation)
-    val errorCode = if (status == AgentToolResultStatus.SUCCESS) {
-      null
-    } else {
-      "PROVIDER_MANAGED_WEB_SEARCH_FAILED"
-    }
-    val errorMessage = if (status == AgentToolResultStatus.SUCCESS) {
-      null
-    } else {
-      content
-    }
-    return AgentToolResult(
-      toolName = "WebSearch",
-      status = status,
-      content = content,
-      errorCode = errorCode,
-      errorMessage = errorMessage,
-      metadata = buildMap {
-        put(ProviderNativeWebSearchSupport.RESULT_METADATA_PROVIDER_MANAGED, "true")
-        put(ProviderNativeWebSearchSupport.RESULT_METADATA_OPERATION, observation.actionType)
-        observation.status
-          ?.trim()
-          ?.takeIf(String::isNotBlank)
-          ?.let { statusValue ->
-            put(ProviderNativeWebSearchSupport.RESULT_METADATA_STATUS, statusValue)
-          }
-        observation.queries.firstOrNull()?.let { query -> put("query", query) }
-        if (observation.queries.isNotEmpty()) {
-          put("queries", observation.queries.joinToString(separator = ","))
-        }
-        if (observation.domains.isNotEmpty()) {
-          put("domains", observation.domains.joinToString(separator = ","))
-        }
-        observation.url?.let { url -> put("url", url) }
-        observation.findText?.let { text -> put("text", text) }
-        if (observation.sources.isNotEmpty()) {
-          put("sourceCount", observation.sources.size.toString())
-          put(
-            "sourceUrls",
-            observation.sources.joinToString(separator = ",") { source -> source.url },
-          )
-        }
-      },
-    )
-  }
-
-  private fun providerNativeWebSearchResultStatus(
-    observation: LiteLlmBuiltinWebSearchObservation,
-  ): AgentToolResultStatus = when (observation.status?.trim()?.lowercase()) {
-    "failed",
-    "error",
-    "incomplete",
-    "cancelled",
-    -> AgentToolResultStatus.FAILED
-
-    else -> AgentToolResultStatus.SUCCESS
-  }
-
-  private fun providerNativeWebSearchResultContent(
-    observation: LiteLlmBuiltinWebSearchObservation,
-  ): String = buildString {
-    when (observation.actionType.trim().lowercase()) {
-      "open_page" -> {
-        append("Provider-native web search opened a page")
-        observation.url?.let { url ->
-          append(": ")
-          append(url)
-        }
-        append(".")
-      }
-
-      "find_in_page" -> {
-        append("Provider-native web search searched within a page")
-        observation.url?.let { url ->
-          append(": ")
-          append(url)
-        }
-        observation.findText?.let { text ->
-          append(" for \"")
-          append(text)
-          append("\"")
-        }
-        append(".")
-      }
-
-      else -> {
-        append("Provider-native web search ran")
-        observation.queries.firstOrNull()?.let { query ->
-          append(" for \"")
-          append(query)
-          append("\"")
-        }
-        if (observation.domains.isNotEmpty()) {
-          append(" within ")
-          append(observation.domains.joinToString(separator = ", "))
-        }
-        append(".")
-      }
-    }
-    observation.status
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let { status ->
-        appendLine()
-        append("Status: ")
-        append(status)
-      }
-    if (observation.sources.isNotEmpty()) {
-      appendLine()
-      appendLine("Sources:")
-      observation.sources.forEach { source ->
-        append("- ")
-        append(source.title?.takeIf(String::isNotBlank) ?: source.url)
-        append(" - ")
-        append(source.url)
-        appendLine()
-      }
-    }
-  }.trim()
-
   private fun hasTurnBudgetRemaining(turn: Int): Boolean =
     config.maxTurns == 0 || turn < config.maxTurns
 
@@ -5518,7 +5279,7 @@ class OpenCrayAgentRuntime(
     },
   )
 
-  private fun buildToolResultTranscriptEntry(
+  internal fun buildToolResultTranscriptEntry(
     task: AgentTask,
     turn: Int,
     call: AgentToolCall,
@@ -8971,7 +8732,7 @@ class OpenCrayAgentRuntime(
     subAgentHandles = synchronizedSubAgentHandles(cursor),
   )
 
-  private fun promptCheckpointMetadata(
+  internal fun promptCheckpointMetadata(
     boundary: OpenCrayPromptCheckpointBoundary,
     cursor: PromptTurnCursor,
     turnIndex: Int,
@@ -9132,7 +8893,7 @@ class OpenCrayAgentRuntime(
     )
   }
 
-  private fun emitToolResultEvent(
+  internal fun emitToolResultEvent(
     task: AgentTask,
     turn: Int,
     call: AgentToolCall,
@@ -9334,7 +9095,7 @@ class OpenCrayAgentRuntime(
     ) : AgentModelAction
   }
 
-  private data class PromptTurnCursor(
+  internal data class PromptTurnCursor(
     val transcript: MutableList<RuntimeConversationMessage>,
     var sessionContext: AgentRuntimeSessionContext,
     var turn: Int,
@@ -9464,7 +9225,7 @@ class OpenCrayAgentRuntime(
     ) : PreparedSubAgentDelegationResult
   }
 
-  private data class LocalContinuationEnvelope(
+  internal data class LocalContinuationEnvelope(
     val stableAnchor: String,
     val frontContextZones: FrontContextZones,
     val toolPoolFingerprint: String? = null,
@@ -9490,7 +9251,7 @@ class OpenCrayAgentRuntime(
       gatewayMessages = gatewayMessages.map(OpenCraySerializableGatewayMessage::from),
     )
 
-  private data class ResponsesContinuationShape(
+  internal data class ResponsesContinuationShape(
     val stableAnchor: String,
     val baseline: ResponsesContextBaselineSnapshot,
     val referenceState: ResponsesContextReferenceState,
@@ -9499,11 +9260,11 @@ class OpenCrayAgentRuntime(
     val requestSettingsFingerprint: String,
   )
 
-  private data class ResponsesContextBaselineSnapshot(
+  internal data class ResponsesContextBaselineSnapshot(
     val durableContextPrompt: String,
   )
 
-  private data class ResponsesContextReferenceState(
+  internal data class ResponsesContextReferenceState(
     val dynamicContextHash: String,
     val appliedUpdateCount: Int = 0,
   )
