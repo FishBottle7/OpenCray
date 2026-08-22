@@ -66,6 +66,7 @@ internal data class DelegationIntent(
   val kind: DelegationIntentKind,
   val subagentType: String,
   val contextMode: String,
+  val contextModeSource: String? = null,
   val description: String? = null,
   val promptPreview: String? = null,
   val allowedToolNames: Set<String> = emptySet(),
@@ -77,6 +78,9 @@ internal data class DelegationIntent(
     put("delegationIntentKind", kind.wireValue)
     put("delegationSubagentType", subagentType)
     put("delegationContextMode", contextMode)
+    contextModeSource
+      ?.takeIf(String::isNotBlank)
+      ?.let { put("delegationContextModeSource", it) }
     description?.takeIf(String::isNotBlank)?.let { put("delegationDescription", it) }
     promptPreview?.takeIf(String::isNotBlank)?.let { put("delegationPromptPreview", it) }
     if (allowedToolNames.isNotEmpty()) {

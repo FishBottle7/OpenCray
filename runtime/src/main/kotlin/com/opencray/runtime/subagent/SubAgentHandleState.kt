@@ -16,6 +16,7 @@ data class SubAgentHandleState(
   val mailbox: SubAgentMailbox = SubAgentMailbox(),
   val subagentType: String,
   val contextMode: String,
+  val contextModeSource: String = SubAgentContextModeResolutionSource.PROFILE_DEFAULT.wireValue,
   val parentRunId: String,
   val parentTaskId: String,
   val parentTurn: Int,
@@ -45,6 +46,9 @@ data class SubAgentHandleState(
     require(prompt.isNotBlank()) { "SubAgentHandleState prompt must not be blank." }
     require(subagentType.isNotBlank()) { "SubAgentHandleState subagentType must not be blank." }
     require(contextMode.isNotBlank()) { "SubAgentHandleState contextMode must not be blank." }
+    require(contextModeSource.isNotBlank()) {
+      "SubAgentHandleState contextModeSource must not be blank."
+    }
     require(parentRunId.isNotBlank()) { "SubAgentHandleState parentRunId must not be blank." }
     require(parentTaskId.isNotBlank()) { "SubAgentHandleState parentTaskId must not be blank." }
     require(parentTurn >= 0) { "SubAgentHandleState parentTurn must be >= 0." }
@@ -191,6 +195,10 @@ data class SubAgentHandleState(
     "Unknown subagent context mode '$contextMode'."
   }
 
+  fun resolvedContextModeSource(): SubAgentContextModeResolutionSource =
+    SubAgentContextModeResolutionSource.fromWireValue(contextModeSource)
+      ?: SubAgentContextModeResolutionSource.PROFILE_DEFAULT
+
   fun toTask(
     includeMailboxMessagesInPrompt: Boolean = true,
   ): SubAgentTask = SubAgentTask(
@@ -202,6 +210,7 @@ data class SubAgentHandleState(
     },
     subagentType = subagentType,
     contextMode = resolvedContextMode(),
+    contextModeSource = resolvedContextModeSource(),
     parentRunId = parentRunId,
     parentTaskId = parentTaskId,
     parentTurn = parentTurn,
@@ -221,6 +230,7 @@ data class SubAgentHandleState(
       prompt: String,
       subagentType: String,
       contextMode: String,
+      contextModeSource: String = SubAgentContextModeResolutionSource.PROFILE_DEFAULT.wireValue,
       parentRunId: String,
       parentTaskId: String,
       parentTurn: Int,
@@ -238,6 +248,7 @@ data class SubAgentHandleState(
       prompt = prompt,
       subagentType = subagentType,
       contextMode = contextMode,
+      contextModeSource = contextModeSource,
       parentRunId = parentRunId,
       parentTaskId = parentTaskId,
       parentTurn = parentTurn,

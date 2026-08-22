@@ -969,6 +969,7 @@ class OpenCrayToolDispatcher(
     prompt: String,
     subagentType: String,
     contextMode: String,
+    contextModeSource: String? = null,
     allowedToolNames: Set<String>,
   ): ToolPolicyPlan = toolPolicyPipeline.plan(
     task = task,
@@ -981,6 +982,7 @@ class OpenCrayToolDispatcher(
       kind = DelegationIntentKind.SUBAGENT_TASK,
       subagentType = subagentType,
       contextMode = contextMode,
+      contextModeSource = contextModeSource,
       description = inlinePreview(description, maxChars = 256),
       promptPreview = inlinePreview(prompt, maxChars = 512),
       allowedToolNames = allowedToolNames,

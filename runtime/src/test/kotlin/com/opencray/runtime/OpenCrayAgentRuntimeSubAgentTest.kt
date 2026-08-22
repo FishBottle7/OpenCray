@@ -35,6 +35,7 @@ import com.opencray.runtime.subagent.SubAgentHandleState
 import com.opencray.runtime.subagent.SubAgentMailbox
 import com.opencray.runtime.subagent.SubAgentMailboxMessage
 import com.opencray.runtime.subagent.SubAgentContextMode
+import com.opencray.runtime.subagent.SubAgentContextModeResolutionSource
 import com.opencray.runtime.subagent.SubAgentContextPolicy
 import com.opencray.runtime.subagent.SubAgentMetadataKeys
 import com.opencray.runtime.subagent.SubAgentResultMetadataKeys
@@ -106,6 +107,10 @@ class OpenCrayAgentRuntimeSubAgentTest {
     assertEquals("subagent_task", taskResultMetadata["delegationIntentKind"])
     assertEquals("researcher", taskResultMetadata["delegationSubagentType"])
     assertEquals("minimal", taskResultMetadata["delegationContextMode"])
+    assertEquals(
+      SubAgentContextModeResolutionSource.PROFILE_DEFAULT.wireValue,
+      taskResultMetadata["delegationContextModeSource"],
+    )
     assertEquals("Glob,Grep,LS,Read", taskResultMetadata["delegationAllowedTools"])
     assertEquals("completed", taskResultMetadata[SubAgentResultMetadataKeys.EXECUTION_STATE])
     assertEquals("none", taskResultMetadata[SubAgentResultMetadataKeys.CONTINUATION_KIND])
@@ -116,6 +121,10 @@ class OpenCrayAgentRuntimeSubAgentTest {
     )
     assertEquals("false", taskResultMetadata[SubAgentResultMetadataKeys.CONTINUATION_IS_HIGH_RISK])
     assertEquals("README says hello.", taskResultMetadata[SubAgentResultMetadataKeys.SUMMARY_HEADLINE])
+    assertEquals(
+      SubAgentContextModeResolutionSource.PROFILE_DEFAULT.wireValue,
+      taskResultMetadata["subagentContextModeSource"],
+    )
     assertFalse(gateway.requests[1].prompt.contains("Please delegate README inspection and then answer."))
     assertTrue(gateway.requests[1].prompt.contains("Read README.md and summarize it."))
     val childToolNames = gateway.requests[1].tools.map { definition -> definition.name }
@@ -163,6 +172,14 @@ class OpenCrayAgentRuntimeSubAgentTest {
       .metadata
     assertEquals("explorer", taskResultMetadata["delegationSubagentType"])
     assertEquals("minimal", taskResultMetadata["delegationContextMode"])
+    assertEquals(
+      SubAgentContextModeResolutionSource.PROFILE_DEFAULT.wireValue,
+      taskResultMetadata["delegationContextModeSource"],
+    )
+    assertEquals(
+      SubAgentContextModeResolutionSource.PROFILE_DEFAULT.wireValue,
+      taskResultMetadata["subagentContextModeSource"],
+    )
     assertFalse(gateway.requests[1].prompt.contains("Please delegate README inspection through the explorer alias."))
     val childToolNames = gateway.requests[1].tools.map { definition -> definition.name }
     assertTrue(childToolNames.contains("Read"))
@@ -368,6 +385,14 @@ class OpenCrayAgentRuntimeSubAgentTest {
         .metadata
       assertEquals("general-purpose", taskResultMetadata["delegationSubagentType"])
       assertEquals("minimal", taskResultMetadata["delegationContextMode"])
+      assertEquals(
+        SubAgentContextModeResolutionSource.POLICY_DEFAULT.wireValue,
+        taskResultMetadata["delegationContextModeSource"],
+      )
+      assertEquals(
+        SubAgentContextModeResolutionSource.POLICY_DEFAULT.wireValue,
+        taskResultMetadata["subagentContextModeSource"],
+      )
       assertFalse(gateway.requests[1].prompt.contains("Delegated parent context for this child run."))
       assertTrue(gateway.requests[1].prompt.contains("Check the repo layout and report back."))
     }
@@ -407,6 +432,14 @@ class OpenCrayAgentRuntimeSubAgentTest {
         .metadata
       assertEquals("researcher", taskResultMetadata["delegationSubagentType"])
       assertEquals("delegated", taskResultMetadata["delegationContextMode"])
+      assertEquals(
+        SubAgentContextModeResolutionSource.POLICY_PROFILE_OVERRIDE.wireValue,
+        taskResultMetadata["delegationContextModeSource"],
+      )
+      assertEquals(
+        SubAgentContextModeResolutionSource.POLICY_PROFILE_OVERRIDE.wireValue,
+        taskResultMetadata["subagentContextModeSource"],
+      )
       assertTrue(gateway.requests[1].prompt.contains("Delegated parent context for this child run."))
       assertTrue(gateway.requests[1].prompt.contains("user_goal=Ask the researcher to inspect the repo and continue."))
       assertTrue(gateway.requests[1].prompt.contains("Inspect the repo layout and summarize it."))
@@ -448,6 +481,14 @@ class OpenCrayAgentRuntimeSubAgentTest {
         .metadata
       assertEquals("general-purpose", taskResultMetadata["delegationSubagentType"])
       assertEquals("delegated", taskResultMetadata["delegationContextMode"])
+      assertEquals(
+        SubAgentContextModeResolutionSource.EXPLICIT_REQUEST.wireValue,
+        taskResultMetadata["delegationContextModeSource"],
+      )
+      assertEquals(
+        SubAgentContextModeResolutionSource.EXPLICIT_REQUEST.wireValue,
+        taskResultMetadata["subagentContextModeSource"],
+      )
       assertTrue(gateway.requests[1].prompt.contains("Delegated parent context for this child run."))
       assertTrue(gateway.requests[1].prompt.contains("user_goal=Delegate the repo investigation and preserve useful context."))
     }

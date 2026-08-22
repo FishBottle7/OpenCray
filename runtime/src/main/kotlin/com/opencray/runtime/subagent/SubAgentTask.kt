@@ -8,6 +8,8 @@ data class SubAgentTask(
   val prompt: String,
   val subagentType: String,
   val contextMode: SubAgentContextMode,
+  val contextModeSource: SubAgentContextModeResolutionSource =
+    SubAgentContextModeResolutionSource.PROFILE_DEFAULT,
   val parentRunId: String,
   val parentTaskId: String,
   val parentTurn: Int,
@@ -29,6 +31,7 @@ data class SubAgentTask(
   fun metadata(): Map<String, String> = buildMap {
     put(SubAgentMetadataKeys.SUBAGENT_TYPE, subagentType)
     put(SubAgentMetadataKeys.CONTEXT_MODE, contextMode.wireValue)
+    put(SubAgentMetadataKeys.CONTEXT_MODE_SOURCE, contextModeSource.wireValue)
     put(SubAgentMetadataKeys.PARENT_RUN_ID, parentRunId)
     put(SubAgentMetadataKeys.PARENT_TASK_ID, parentTaskId)
     put(SubAgentMetadataKeys.PARENT_TURN, parentTurn.toString())
@@ -54,6 +57,7 @@ data class SubAgentTask(
 object SubAgentMetadataKeys {
   const val SUBAGENT_TYPE: String = "subagentType"
   const val CONTEXT_MODE: String = "subagentContextMode"
+  const val CONTEXT_MODE_SOURCE: String = "subagentContextModeSource"
   const val PARENT_RUN_ID: String = "parentRunId"
   const val PARENT_TASK_ID: String = "parentTaskId"
   const val PARENT_TURN: String = "parentTurn"
