@@ -1159,6 +1159,75 @@ class LlmConfigFacadeTest {
     assertNull(cleared.contextBudgetEffectiveInputPercent)
   }
 
+  @Test
+  fun savePersistsManualContextWindowOverrideAndResolvesItIntoSnapshot() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val facade = LocalLlmConfigFacade.create(
+      llmSettingsStore = store,
+      providerClient = RecordingProviderClient(
+        LiteLlmProviderResult.Success(outputText = "OK"),
+      ),
+    )
+
+    val snapshot = facade.save(
+      SaveLlmConfigRequest(
+        enabled = true,
+        providerId = "custom",
+        selectedProviderOptionId = "custom",
+        protocol = LlmProviderProtocols.OPENAI,
+        providerName = "Proxy",
+        providerNotes = "",
+        baseUrl = "https://proxy.example/v1",
+        apiKey = "token",
+        model = "gpt-4.1",
+        reasoningEffort = "medium",
+        systemPrompt = "",
+        contextWindowTokensOverride = 262_144,
+      ),
+    )
+
+    assertEquals(262_144, snapshot.manualContextWindowTokens)
+    assertEquals(262_144, snapshot.resolvedContextWindowTokens)
+    assertEquals(
+      262_144,
+      store.load(
+        defaults = LlmSettingsState(
+          protocol = LlmProviderProtocols.OPENAI,
+          baseUrl = "https://proxy.example/v1",
+          apiKey = "token",
+          model = "gpt-4.1",
+        ),
+      ).manualContextWindowTokens,
+    )
+  }
+
+  @Test
+  fun validateIncludesManualContextWindowOverrideInRouteMetadata() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+    val providerClient = RecordingProviderClient(
+      LiteLlmProviderResult.Success(outputText = "OK"),
+    )
+    val facade = LocalLlmConfigFacade.create(
+      llmSettingsStore = store,
+      providerClient = providerClient,
+    )
+
+    val result = facade.validate(
+      ValidateLlmConfigRequest(
+        providerId = "custom",
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://proxy.example/v1",
+        apiKey = "token",
+        model = "gpt-4.1",
+        reasoningEffort = "medium",
+        contextWindowTokensOverride = 262_144,
+      ),
+    )
+
+    assertFalse(result.isSuccess)
+    assertEquals("262144", providerClient.requests[0].route.metadata["context_window_tokens"])
+  }
+
   private class RecordingProviderClient(
     vararg queuedResults: LiteLlmProviderResult,
   ) : LiteLlmProviderClient {

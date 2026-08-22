@@ -98,6 +98,8 @@ data class LlmConfigSnapshot(
   val contextBudgetReservedOutputTokens: Int? = null,
   val contextBudgetSafetyMarginTokens: Int? = null,
   val contextBudgetEffectiveInputPercent: Double? = null,
+  val manualContextWindowTokens: Int? = null,
+  val resolvedContextWindowTokens: Int? = null,
   val onDeviceModels: List<OnDeviceLlmModelOptionSnapshot> = emptyList(),
   val selectedOnDeviceModelId: String = LlmSettingsState.DEFAULT_ON_DEVICE_MODEL_ID,
   val onDeviceMaxContextWindow: Int = LlmSettingsState.DEFAULT_ON_DEVICE_MAX_CONTEXT_WINDOW,
@@ -143,6 +145,7 @@ data class SaveLlmConfigRequest(
   val onDeviceAccelerator: String = LlmSettingsState.DEFAULT_ON_DEVICE_ACCELERATOR,
   val onDeviceThinkingEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_THINKING_ENABLED,
   val onDeviceLiteModeEnabled: Boolean = LlmSettingsState.DEFAULT_ON_DEVICE_LITE_MODE_ENABLED,
+  val contextWindowTokensOverride: Int? = null,
 )
 
 data class SaveCustomLlmProviderRequest(
@@ -167,6 +170,7 @@ data class SaveCustomLlmProviderRequest(
   val contextBudgetReservedOutputTokens: Int? = null,
   val contextBudgetSafetyMarginTokens: Int? = null,
   val contextBudgetEffectiveInputPercent: Double? = null,
+  val contextWindowTokensOverride: Int? = null,
 )
 
 data class ValidateLlmConfigRequest(
@@ -176,6 +180,7 @@ data class ValidateLlmConfigRequest(
   val apiKey: String,
   val model: String,
   val reasoningEffort: String,
+  val contextWindowTokensOverride: Int? = null,
 )
 
 data class LlmValidationResult(
@@ -290,6 +295,7 @@ internal class LocalLlmConfigFacade private constructor(
         contextBudgetReservedOutputTokens = request.contextBudgetReservedOutputTokens,
         contextBudgetSafetyMarginTokens = request.contextBudgetSafetyMarginTokens,
         contextBudgetEffectiveInputPercent = request.contextBudgetEffectiveInputPercent,
+        contextWindowTokensOverride = request.contextWindowTokensOverride,
       ),
     )
     llmSettingsStore.save(
@@ -333,6 +339,7 @@ internal class LocalLlmConfigFacade private constructor(
         baseUrl = baseUrl,
         model = model,
         reasoningEffort = request.reasoningEffort,
+        contextWindowTokensOverride = request.contextWindowTokensOverride,
       ),
     )
     val gateway = DefaultLiteLlmGateway(
@@ -524,6 +531,23 @@ internal class LocalLlmConfigFacade private constructor(
 
   private fun snapshotFor(state: LlmSettingsState): LlmConfigSnapshot {
     val sanitized = state.sanitized()
+    val routeMetadata = effectiveLlmRouteMetadata(
+      providerId = sanitized.providerId,
+      protocol = sanitized.protocol,
+      model = sanitized.model,
+      reasoningEffort = sanitized.reasoningEffort,
+      baseUrl = sanitized.baseUrl,
+      streamingEnabled = sanitized.streamingEnabled,
+      agentCapability = sanitized.agentCapability,
+      contextWindowTokensOverride = sanitized.manualContextWindowTokens,
+      openAiPromptCacheKeyStrategy = sanitized.openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention = sanitized.openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled = sanitized.anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl = sanitized.anthropicPromptCacheTtl,
+    )
+    val resolvedContextWindowTokens = routeMetadata["context_window_tokens"]
+      ?.toIntOrNull()
+      ?: routeMetadata["contextWindowTokens"]?.toIntOrNull()
     val providerOptions = providerOptions()
     val enabled = sanitized.isOperationallyConfigured(onDeviceModelInstallStore)
     val selectedProviderOptionId = llmSettingsStore.loadSelectedProviderOptionId(
@@ -566,6 +590,8 @@ internal class LocalLlmConfigFacade private constructor(
       contextBudgetReservedOutputTokens = sanitized.contextBudgetReservedOutputTokens,
       contextBudgetSafetyMarginTokens = sanitized.contextBudgetSafetyMarginTokens,
       contextBudgetEffectiveInputPercent = sanitized.contextBudgetEffectiveInputPercent,
+      manualContextWindowTokens = sanitized.manualContextWindowTokens,
+      resolvedContextWindowTokens = resolvedContextWindowTokens,
       onDeviceModels = onDeviceModels(selectedModelId = sanitized.selectedOnDeviceModelId),
       selectedOnDeviceModelId = sanitized.selectedOnDeviceModelId,
       onDeviceMaxContextWindow = sanitized.onDeviceMaxContextWindow,
@@ -690,6 +716,7 @@ internal class LocalLlmConfigFacade private constructor(
     baseUrl: String,
     model: String,
     reasoningEffort: String,
+    contextWindowTokensOverride: Int? = null,
   ): Map<String, String> = effectiveLlmRouteMetadata(
     providerId = providerId,
     protocol = protocol,
@@ -702,6 +729,7 @@ internal class LocalLlmConfigFacade private constructor(
       baseUrl = baseUrl,
       model = model,
     ),
+    contextWindowTokensOverride = contextWindowTokensOverride,
   )
 
   private fun shouldProbeProviderBuiltinWebSearch(
@@ -812,6 +840,7 @@ internal class LocalLlmConfigFacade private constructor(
       contextBudgetReservedOutputTokens = contextBudgetSettings.contextBudgetReservedOutputTokens,
       contextBudgetSafetyMarginTokens = contextBudgetSettings.contextBudgetSafetyMarginTokens,
       contextBudgetEffectiveInputPercent = contextBudgetSettings.contextBudgetEffectiveInputPercent,
+      manualContextWindowTokens = request.contextWindowTokensOverride,
       selectedOnDeviceModelId = request.selectedOnDeviceModelId,
       onDeviceMaxContextWindow = request.onDeviceMaxContextWindow,
       onDeviceMaxTokens = request.onDeviceMaxTokens,

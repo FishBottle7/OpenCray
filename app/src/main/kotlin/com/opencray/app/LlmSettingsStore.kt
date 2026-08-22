@@ -53,6 +53,7 @@ internal object LlmSettingsStoreKeys {
   const val ON_DEVICE_LITE_MODE_ENABLED = "on_device_lite_mode_enabled"
   const val SAVED_CUSTOM_PROVIDERS = "saved_custom_providers"
   const val AGENT_CAPABILITY_CACHE = "agent_capability_cache"
+  const val ROUTE_CAPABILITY_OVERRIDE_CACHE = "route_capability_override_cache"
 }
 
 internal data class LlmSettingsState(
@@ -72,6 +73,7 @@ internal data class LlmSettingsState(
   val openAiPromptCacheRetention: String = DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
   val anthropicPromptCachingEnabled: Boolean = DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
   val anthropicPromptCacheTtl: String = DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
+  val manualContextWindowTokens: Int? = null,
   val contextBudgetPreset: String = DEFAULT_CONTEXT_BUDGET_PRESET,
   val contextBudgetReservedOutputTokens: Int? = null,
   val contextBudgetSafetyMarginTokens: Int? = null,
@@ -146,6 +148,7 @@ internal data class LlmSettingsState(
       anthropicPromptCacheTtl = normalizedAnthropicPromptCacheTtl(
         anthropicPromptCacheTtl,
       ),
+      manualContextWindowTokens = manualContextWindowTokens?.takeIf { value -> value > 0 },
       contextBudgetPreset = normalizedContextBudgetPreset(contextBudgetPreset),
       contextBudgetReservedOutputTokens = normalizedContextBudgetTokenOverride(
         contextBudgetReservedOutputTokens,
@@ -277,6 +280,56 @@ internal data class LlmSettingsState(
     fun normalizedOnDeviceTemperature(rawValue: Double): Double =
       rawValue.coerceIn(MIN_ON_DEVICE_TEMPERATURE, MAX_ON_DEVICE_TEMPERATURE)
         .roundToDecimals(2)
+  }
+}
+
+internal data class LlmRouteCapabilityOverrideSnapshot(
+  val routeFingerprint: String,
+  val contextWindowTokens: Int? = null,
+) {
+  val hasValues: Boolean
+    get() = contextWindowTokens != null
+
+  fun matchesRoute(
+    protocol: String,
+    baseUrl: String,
+    model: String,
+  ): Boolean = routeFingerprint == llmRouteFingerprint(
+    protocol = protocol,
+    baseUrl = baseUrl,
+    model = model,
+  )
+
+  fun toJson(): JSONObject = JSONObject()
+    .put("routeFingerprint", routeFingerprint)
+    .put("contextWindowTokens", contextWindowTokens)
+
+  companion object {
+    fun create(
+      protocol: String,
+      baseUrl: String,
+      model: String,
+      contextWindowTokens: Int?,
+    ): LlmRouteCapabilityOverrideSnapshot = LlmRouteCapabilityOverrideSnapshot(
+      routeFingerprint = llmRouteFingerprint(
+        protocol = protocol,
+        baseUrl = baseUrl,
+        model = model,
+      ),
+      contextWindowTokens = contextWindowTokens?.takeIf { value -> value > 0 },
+    )
+
+    fun fromJson(payload: JSONObject): LlmRouteCapabilityOverrideSnapshot? {
+      val routeFingerprint = payload.optString("routeFingerprint").trim()
+      if (routeFingerprint.isBlank()) {
+        return null
+      }
+      return LlmRouteCapabilityOverrideSnapshot(
+        routeFingerprint = routeFingerprint,
+        contextWindowTokens = payload.optInt("contextWindowTokens")
+          .takeIf { value -> value > 0 },
+      ).takeIf(LlmRouteCapabilityOverrideSnapshot::hasValues)
+    }
   }
 }
 
@@ -833,8 +886,14 @@ internal class LlmSettingsStore(
 ) {
   fun load(defaults: LlmSettingsState = LlmSettingsState()): LlmSettingsState {
     val resolved = keyValueStore.loadState(defaults).sanitized()
+    val manualContextWindowTokens = loadRouteCapabilityOverride(
+      protocol = resolved.protocol,
+      baseUrl = resolved.baseUrl,
+      model = resolved.model,
+    )?.contextWindowTokens
     return resolved.copy(
       enabled = resolved.isConfigured(),
+      manualContextWindowTokens = manualContextWindowTokens,
       agentCapability = if (resolved.isOnDeviceProviderMode()) {
         resolved.agentCapability
       } else {
@@ -860,6 +919,12 @@ internal class LlmSettingsStore(
     keyValueStore.saveState(
       state = sanitized,
       selectedProviderOptionId = selectedProviderOptionId,
+    )
+    saveRouteCapabilityOverride(
+      protocol = sanitized.protocol,
+      baseUrl = sanitized.baseUrl,
+      model = sanitized.model,
+      contextWindowTokens = sanitized.manualContextWindowTokens,
     )
     if (sanitized.agentCapability.wasVerified) {
       saveAgentCapability(sanitized.agentCapability)
@@ -941,6 +1006,75 @@ internal class LlmSettingsStore(
 
   fun clear() {
     keyValueStore.clear()
+  }
+
+  private fun loadRouteCapabilityOverride(
+    protocol: String,
+    baseUrl: String,
+    model: String,
+  ): LlmRouteCapabilityOverrideSnapshot? = loadRouteCapabilityOverrideCache()
+    .firstOrNull { override ->
+      override.matchesRoute(
+        protocol = protocol,
+        baseUrl = baseUrl,
+        model = model,
+      )
+    }
+
+  private fun saveRouteCapabilityOverride(
+    protocol: String,
+    baseUrl: String,
+    model: String,
+    contextWindowTokens: Int?,
+  ) {
+    val normalizedOverride = LlmRouteCapabilityOverrideSnapshot.create(
+      protocol = protocol,
+      baseUrl = baseUrl,
+      model = model,
+      contextWindowTokens = contextWindowTokens,
+    )
+    val updatedCache = buildList {
+      if (normalizedOverride.hasValues) {
+        add(normalizedOverride)
+      }
+      loadRouteCapabilityOverrideCache()
+        .filterNot { existing -> existing.routeFingerprint == normalizedOverride.routeFingerprint }
+        .forEach(::add)
+    }.take(MAX_AGENT_CAPABILITY_CACHE_ENTRIES)
+    saveRouteCapabilityOverrideCache(updatedCache)
+  }
+
+  private fun loadRouteCapabilityOverrideCache(): List<LlmRouteCapabilityOverrideSnapshot> {
+    val rawPayload = keyValueStore.getString(
+      LlmSettingsStoreKeys.ROUTE_CAPABILITY_OVERRIDE_CACHE,
+    ).orEmpty()
+    if (rawPayload.isBlank()) {
+      return emptyList()
+    }
+    val payload = runCatching { JSONArray(rawPayload) }
+      .getOrElse { return emptyList() }
+    return buildList {
+      repeat(payload.length()) { index ->
+        val snapshot = payload.optJSONObject(index)
+          ?.let(LlmRouteCapabilityOverrideSnapshot::fromJson)
+        if (snapshot != null) {
+          add(snapshot)
+        }
+      }
+    }
+  }
+
+  private fun saveRouteCapabilityOverrideCache(entries: List<LlmRouteCapabilityOverrideSnapshot>) {
+    val normalized = JSONArray().apply {
+      entries
+        .filter(LlmRouteCapabilityOverrideSnapshot::hasValues)
+        .take(MAX_AGENT_CAPABILITY_CACHE_ENTRIES)
+        .forEach { entry -> put(entry.toJson()) }
+    }
+    keyValueStore.putString(
+      LlmSettingsStoreKeys.ROUTE_CAPABILITY_OVERRIDE_CACHE,
+      normalized.toString(),
+    )
   }
 
   private fun loadAgentCapabilityCache(): List<LlmAgentCapabilitySnapshot> {

@@ -987,9 +987,15 @@ internal fun effectiveLlmCapabilityMetadata(
   protocol: String,
   model: String,
   agentCapability: LlmAgentCapabilitySnapshot,
+  contextWindowTokensOverride: Int? = null,
   baseRouteMetadata: Map<String, String> = emptyMap(),
 ): Map<String, String> {
-  val persistedMetadata = agentCapability.runtimeMetadataOverrides()
+  val effectiveAgentCapability = if (contextWindowTokensOverride != null) {
+    agentCapability.copy(contextWindowTokens = contextWindowTokensOverride)
+  } else {
+    agentCapability
+  }
+  val persistedMetadata = effectiveAgentCapability.runtimeMetadataOverrides()
   val resolvedContextWindowMetadata = if (
     persistedMetadata.containsKey("contextWindowTokens") ||
     persistedMetadata.containsKey("context_window_tokens")
@@ -1061,6 +1067,7 @@ internal fun effectiveLlmRouteMetadata(
   baseUrl: String? = null,
   streamingEnabled: Boolean = LlmSettingsState.DEFAULT_STREAMING_ENABLED,
   agentCapability: LlmAgentCapabilitySnapshot,
+  contextWindowTokensOverride: Int? = null,
   openAiPromptCacheKeyStrategy: String = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY,
   openAiPromptCacheRetention: String = LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
   anthropicPromptCachingEnabled: Boolean =
@@ -1083,6 +1090,7 @@ internal fun effectiveLlmRouteMetadata(
     protocol = protocol,
     model = model,
     agentCapability = agentCapability,
+    contextWindowTokensOverride = contextWindowTokensOverride,
     baseRouteMetadata = baseRouteMetadata,
   )
 }

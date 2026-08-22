@@ -544,4 +544,66 @@ class LlmSettingsStoreTest {
     assertNull(sanitized.contextBudgetSafetyMarginTokens)
     assertEquals(1.0, sanitized.contextBudgetEffectiveInputPercent)
   }
+
+  @Test
+  fun saveAndLoadPersistsRouteScopedContextWindowOverride() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+
+    store.save(
+      LlmSettingsState(
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://proxy.example/v1",
+        apiKey = "token",
+        model = "gpt-4.1",
+        manualContextWindowTokens = 262_144,
+      ),
+    )
+
+    val loaded = store.load(
+      defaults = LlmSettingsState(
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://proxy.example/v1",
+        apiKey = "token",
+        model = "gpt-4.1",
+      ),
+    )
+
+    assertEquals(262_144, loaded.manualContextWindowTokens)
+    assertFalse(loaded.agentCapability.wasVerified)
+  }
+
+  @Test
+  fun loadDoesNotReuseRouteScopedContextWindowOverrideAfterSwitchingRoutes() {
+    val store = LlmSettingsStore(InMemoryLlmSettingsKeyValueStore())
+
+    store.save(
+      LlmSettingsState(
+        protocol = LlmProviderProtocols.OPENAI,
+        baseUrl = "https://proxy.example/v1",
+        apiKey = "token",
+        model = "gpt-4.1",
+        manualContextWindowTokens = 262_144,
+      ),
+    )
+
+    store.save(
+      LlmSettingsState(
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://api.anthropic.com",
+        apiKey = "token",
+        model = "claude-3-7-sonnet",
+      ),
+    )
+
+    val loaded = store.load(
+      defaults = LlmSettingsState(
+        protocol = LlmProviderProtocols.ANTHROPIC,
+        baseUrl = "https://api.anthropic.com",
+        apiKey = "token",
+        model = "claude-3-7-sonnet",
+      ),
+    )
+
+    assertNull(loaded.manualContextWindowTokens)
+  }
 }
