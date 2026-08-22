@@ -10,7 +10,7 @@ enum _SafetySubpage {
   approvedPaths,
 }
 
-enum _WorkspaceSubpage { root, approvedPaths }
+enum _WorkspaceSubpage { root, approvedPaths, childAgentContext }
 
 class _SafetySettingsPage extends StatefulWidget {
   const _SafetySettingsPage({
@@ -804,14 +804,18 @@ class _WorkspaceAccessSettingsPageState
           Text(
             _page == _WorkspaceSubpage.root
                 ? SafetySettingsCopy.workspaceTitle
-                : SafetySettingsCopy.approvedPathsTitle,
+                : _page == _WorkspaceSubpage.approvedPaths
+                ? SafetySettingsCopy.approvedPathsTitle
+                : SafetySettingsCopy.childAgentContextTitle,
             style: _SettingsTextStyles.pageTitleSubpage,
           ),
           const SizedBox(height: 8),
           Text(
             _page == _WorkspaceSubpage.root
                 ? SafetySettingsCopy.workspaceSubtitle
-                : SafetySettingsCopy.approvedPathsSubtitle,
+                : _page == _WorkspaceSubpage.approvedPaths
+                ? SafetySettingsCopy.approvedPathsSubtitle
+                : SafetySettingsCopy.childAgentContextSubtitle,
             style: _SettingsTextStyles.subtitle,
           ),
           const SizedBox(height: 16),
@@ -840,13 +844,20 @@ class _WorkspaceAccessSettingsPageState
                     isSaving: _isSaving,
                     onPersist: _persist,
                     onOpenLiveContextModePicker: _openLiveContextModePicker,
+                    onOpenChildAgentContext: () {
+                      setState(() {
+                        _page = _WorkspaceSubpage.childAgentContext;
+                      });
+                    },
                     onOpenApprovedPaths: () {
                       setState(() {
                         _page = _WorkspaceSubpage.approvedPaths;
                       });
                     },
                   )
-                : _buildApprovedPathsContent(_snapshot!)),
+                : _page == _WorkspaceSubpage.approvedPaths
+                ? _buildApprovedPathsContent(_snapshot!)
+                : _buildChildAgentContextContent(_snapshot!)),
           ],
         ],
       ),
@@ -983,6 +994,174 @@ class _WorkspaceAccessSettingsPageState
     await _persist(snapshot.copyWith(liveContextMode: selected));
   }
 
+  Future<void> _openSubAgentContextDefaultModePicker() async {
+    final snapshot = _snapshot;
+    if (snapshot == null || _isSaving) {
+      return;
+    }
+    final selectedMode = await _showSubAgentContextModePicker(
+      title: SafetySettingsCopy.childAgentContextTitle,
+      subtitle: SafetySettingsCopy.childAgentContextSubtitle,
+      selectedMode: snapshot.subAgentContextDefaultMode,
+      inheritLabel: 'Profile default',
+      inheritSummary: SafetySettingsCopy.subAgentContextModeSummary(null),
+    );
+    if (selectedMode == null && snapshot.subAgentContextDefaultMode == null) {
+      return;
+    }
+    if (selectedMode == snapshot.subAgentContextDefaultMode) {
+      return;
+    }
+    await _persist(snapshot.withSubAgentContextDefaultMode(selectedMode));
+  }
+
+  Future<void> _openSubAgentContextProfileOverridePicker(String profileId) async {
+    final snapshot = _snapshot;
+    if (snapshot == null || _isSaving) {
+      return;
+    }
+    final currentMode = snapshot.subAgentContextModeForProfile(profileId);
+    final selectedMode = await _showSubAgentContextModePicker(
+      title: SafetySettingsCopy.subAgentProfileLabel(profileId),
+      subtitle: SafetySettingsCopy.subAgentContextOverrideSummary(profileId),
+      selectedMode: currentMode,
+      inheritLabel: 'Use default',
+      inheritSummary:
+          'Fall through to the global child-agent default, or the built-in profile default when no global default is set.',
+    );
+    if (selectedMode == null && currentMode == null) {
+      return;
+    }
+    if (selectedMode == currentMode) {
+      return;
+    }
+    await _persist(
+      snapshot.withSubAgentContextProfileOverride(profileId, selectedMode),
+    );
+  }
+
+  Future<SubAgentContextMode?> _showSubAgentContextModePicker({
+    required String title,
+    required String subtitle,
+    required SubAgentContextMode? selectedMode,
+    required String inheritLabel,
+    required String inheritSummary,
+  }) async {
+    final selectedId = selectedMode?.id ?? '__inherit__';
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
+      builder: (context) {
+        final maxHeight = MediaQuery.sizeOf(context).height * 0.85;
+        return SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: maxHeight),
+              child: DecoratedBox(
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.all(Radius.circular(22)),
+                ),
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(16, 18, 16, 14),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Center(
+                        child: Container(
+                          width: 40,
+                          height: 4,
+                          margin: const EdgeInsets.only(bottom: 16),
+                          decoration: BoxDecoration(
+                            color: OpenCrayColors.divider,
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                        ),
+                      ),
+                      Text(title, style: _SettingsTextStyles.cardTitle),
+                      const SizedBox(height: 8),
+                      Text(subtitle, style: _SettingsTextStyles.body),
+                      const SizedBox(height: 12),
+                      for (final option in <MapEntry<String, SubAgentContextMode?>>[
+                        MapEntry<String, SubAgentContextMode?>(
+                          '__inherit__',
+                          null,
+                        ),
+                        ...SubAgentContextMode.values.map(
+                          (mode) => MapEntry<String, SubAgentContextMode?>(
+                            mode.id,
+                            mode,
+                          ),
+                        ),
+                      ])
+                        InkWell(
+                          borderRadius: BorderRadius.circular(14),
+                          onTap: () => Navigator.of(context).pop(option.key),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        option.value == null
+                                            ? inheritLabel
+                                            : SafetySettingsCopy
+                                                  .subAgentContextModeLabel(
+                                                    option.value,
+                                                  ),
+                                        style: _SettingsTextStyles.rowTitle,
+                                      ),
+                                      const SizedBox(height: 4),
+                                      Text(
+                                        option.value == null
+                                            ? inheritSummary
+                                            : SafetySettingsCopy
+                                                  .subAgentContextModeSummary(
+                                                    option.value,
+                                                  ),
+                                        style: _SettingsTextStyles.rowSubtitle,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                if (option.key == selectedId)
+                                  const Padding(
+                                    padding: EdgeInsets.only(left: 12, top: 2),
+                                    child: Icon(
+                                      Icons.check_rounded,
+                                      color: OpenCrayColors.primary,
+                                      size: 18,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    if (result == null) {
+      return selectedMode;
+    }
+    return result == '__inherit__' ? null : subAgentContextModeFromId(result);
+  }
+
   Future<void> _persist(SafetySettingsSnapshot snapshot) async {
     setState(() {
       _snapshot = snapshot;
@@ -1008,6 +1187,89 @@ class _WorkspaceAccessSettingsPageState
       });
     }
   }
+
+  List<Widget> _buildChildAgentContextContent(SafetySettingsSnapshot snapshot) {
+    return <Widget>[
+      _SettingsCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Default mode', style: _SettingsTextStyles.cardTitle),
+            const SizedBox(height: 8),
+            Text(
+              'This applies when a specific child-agent profile has no explicit override.',
+              style: _SettingsTextStyles.body,
+            ),
+            const SizedBox(height: 12),
+            _PrototypeDisclosureRow(
+              title: 'Mode',
+              value: SafetySettingsCopy.subAgentContextModeLabel(
+                snapshot.subAgentContextDefaultMode,
+              ),
+              onTap: _isSaving ? null : _openSubAgentContextDefaultModePicker,
+            ),
+            const SizedBox(height: 12),
+            Text(
+              SafetySettingsCopy.subAgentContextModeSummary(
+                snapshot.subAgentContextDefaultMode,
+              ),
+              style: _SettingsTextStyles.rowSubtitle,
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 16),
+      _SettingsCard(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Profile overrides',
+              style: _SettingsTextStyles.cardTitle,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Optional. Use these only when one built-in child profile should behave differently from the shared default.',
+              style: _SettingsTextStyles.body,
+            ),
+            const SizedBox(height: 12),
+            for (int index = 0;
+                index < builtInSubAgentProfileIds.length;
+                index++) ...[
+              _PrototypeDisclosureRow(
+                title: SafetySettingsCopy.subAgentProfileLabel(
+                  builtInSubAgentProfileIds[index],
+                ),
+                value: SafetySettingsCopy.subAgentContextOverrideLabel(
+                  snapshot.subAgentContextModeForProfile(
+                    builtInSubAgentProfileIds[index],
+                  ),
+                ),
+                verticalPadding: 14,
+                onTap: _isSaving
+                    ? null
+                    : () => _openSubAgentContextProfileOverridePicker(
+                        builtInSubAgentProfileIds[index],
+                      ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                SafetySettingsCopy.subAgentContextOverrideSummary(
+                  builtInSubAgentProfileIds[index],
+                ),
+                style: _SettingsTextStyles.rowSubtitle,
+              ),
+              if (index < builtInSubAgentProfileIds.length - 1) ...[
+                const SizedBox(height: 12),
+                const Divider(height: 1, color: OpenCrayColors.divider),
+                const SizedBox(height: 12),
+              ],
+            ],
+          ],
+        ),
+      ),
+    ];
+  }
 }
 
 List<Widget> _buildWorkspaceAccessShared(
@@ -1015,6 +1277,7 @@ List<Widget> _buildWorkspaceAccessShared(
   required bool isSaving,
   required Future<void> Function(SafetySettingsSnapshot snapshot) onPersist,
   required VoidCallback onOpenLiveContextModePicker,
+  required VoidCallback onOpenChildAgentContext,
   required VoidCallback onOpenApprovedPaths,
 }) {
   return <Widget>[
@@ -1056,6 +1319,38 @@ List<Widget> _buildWorkspaceAccessShared(
           const SizedBox(height: 8),
           Text(
             SafetySettingsCopy.memoryToolsSummary(snapshot.memoryToolsEnabled),
+            style: _SettingsTextStyles.rowSubtitle,
+          ),
+        ],
+      ),
+    ),
+    const SizedBox(height: 16),
+    _SettingsCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            SafetySettingsCopy.childAgentContextTitle,
+            style: _SettingsTextStyles.cardTitle,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            SafetySettingsCopy.childAgentContextSubtitle,
+            style: _SettingsTextStyles.body,
+          ),
+          const SizedBox(height: 12),
+          _PrototypeDisclosureRow(
+            title: 'Default mode',
+            value: SafetySettingsCopy.subAgentContextModeLabel(
+              snapshot.subAgentContextDefaultMode,
+            ),
+            onTap: isSaving ? null : onOpenChildAgentContext,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            SafetySettingsCopy.subAgentContextModeSummary(
+              snapshot.subAgentContextDefaultMode,
+            ),
             style: _SettingsTextStyles.rowSubtitle,
           ),
         ],

@@ -3979,6 +3979,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      await tester.ensureVisible(find.text('OPEN'));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('OPEN'));
       await tester.pumpAndSettle();
 
@@ -3987,7 +3989,11 @@ void main() {
         WorkspaceAccessProfile.open,
       );
 
-      await tester.tap(find.byType(Switch).first);
+      await tester.ensureVisible(find.text('Memory tools'));
+      await tester.pumpAndSettle();
+      await tester.tapAt(
+        Offset(760, tester.getCenter(find.text('Memory tools')).dy),
+      );
       await tester.pumpAndSettle();
 
       expect(facade.safetySettings.memoryToolsEnabled, isFalse);
@@ -4009,6 +4015,42 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(facade.safetySettings.liveContextMode, LiveContextMode.noSoul);
+
+      await tester.ensureVisible(find.text('Default mode').last);
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Default mode').last);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Child agent context'), findsOneWidget);
+
+      await tester.ensureVisible(find.text('Mode'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Mode'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Delegated').last);
+      await tester.pumpAndSettle();
+
+      expect(
+        facade.safetySettings.subAgentContextDefaultMode,
+        SubAgentContextMode.delegated,
+      );
+
+      await tester.ensureVisible(find.text('Reviewer'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Reviewer'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Minimal').last);
+      await tester.pumpAndSettle();
+
+      expect(
+        facade.safetySettings.subAgentContextModeForProfile('reviewer'),
+        SubAgentContextMode.minimal,
+      );
+
+      await tester.ensureVisible(find.text('Workspace Access'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Workspace Access'));
+      await tester.pumpAndSettle();
 
       await tester.ensureVisible(find.text('Review approved paths'));
       await tester.pumpAndSettle();
