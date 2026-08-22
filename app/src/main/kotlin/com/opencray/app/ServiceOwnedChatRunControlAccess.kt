@@ -396,6 +396,7 @@ internal class ServiceOwnedChatRunControlAccess(
       summary = summary,
       executionState = SubAgentExecutionState.CANCELLED,
       continuationKind = SubAgentContinuationKind.NONE,
+      liveContext = lifecycle.liveContext,
       resumable = false,
       requiresUserAction = false,
       isHighRisk = isHighRisk,
@@ -430,6 +431,7 @@ internal class ServiceOwnedChatRunControlAccess(
     subagentType = subagentType,
     contextMode = contextMode,
     depth = depth,
+    liveContext = liveContext,
   )
 
   private fun delegatedChildCancelledWhileWaitingSummary(): String = if (isChineseLocale()) {

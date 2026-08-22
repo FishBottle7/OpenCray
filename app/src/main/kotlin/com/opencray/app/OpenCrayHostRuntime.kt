@@ -8398,6 +8398,7 @@ internal class OpenCrayHostRuntime private constructor(
     subagentType = subagentType,
     contextMode = contextMode,
     depth = depth,
+    liveContext = liveContext,
   )
 
   private fun PendingApprovalSubAgentLifecycle.toApprovalDecisionSubAgentLifecycle():
@@ -8409,6 +8410,7 @@ internal class OpenCrayHostRuntime private constructor(
     subagentType = subagentType,
     contextMode = contextMode,
     depth = depth,
+    liveContext = liveContext,
   )
 
   private fun delegatedChildApprovalApprovedSummary(): String = if (isChineseHostLocale()) {
@@ -9483,6 +9485,7 @@ internal data class PendingApprovalSubAgentLifecycle(
   val subagentType: String,
   val contextMode: String,
   val depth: Int,
+  val liveContext: SubAgentLiveContextSnapshot? = null,
 )
 
 private data class ReplayedRuntimeEvent(

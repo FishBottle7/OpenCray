@@ -14,6 +14,7 @@ import com.opencray.runtime.subagent.SubAgentApprovalResume
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
+import com.opencray.runtime.subagent.SubAgentLiveContextSnapshot
 import java.util.UUID
 import kotlinx.serialization.json.Json
 
@@ -25,6 +26,7 @@ internal data class ApprovalDecisionSubAgentLifecycle(
   val subagentType: String,
   val contextMode: String,
   val depth: Int,
+  val liveContext: SubAgentLiveContextSnapshot? = null,
 )
 
 internal data class ApprovalDecisionRecord(
@@ -137,6 +139,7 @@ internal data class ApprovalDecisionRecord(
       summary = summary,
       executionState = SubAgentExecutionState.CANCELLED,
       continuationKind = SubAgentContinuationKind.NONE,
+      liveContext = lifecycle.liveContext,
       resumable = false,
       requiresUserAction = false,
       isHighRisk = isHighRisk,
@@ -219,6 +222,8 @@ internal fun approvalMetadataSubAgentLifecycle(
     contextMode = metadata["subagentContextMode"]?.trim()?.takeIf(String::isNotBlank)
       ?: "delegated",
     depth = metadata["subagentDepth"]?.trim()?.toIntOrNull() ?: 1,
+    liveContext = SubAgentLiveContextSnapshot.fromRuntimeMetadata(metadata)
+      .takeUnless { it.isEmpty },
   )
 }
 

@@ -7,6 +7,7 @@ import com.opencray.runtime.OpenCrayApprovalPhase
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.subagent.SubAgentApprovalResume
 import com.opencray.runtime.subagent.SubAgentHandleState
+import com.opencray.runtime.subagent.SubAgentLiveContextSnapshot
 import com.opencray.runtime.subagent.SubAgentMetadataKeys
 import java.util.Locale
 import org.opencray.app.R
@@ -303,6 +304,7 @@ private data class RuntimeServicePendingApprovalSubAgentLifecycle(
   val subagentType: String,
   val contextMode: String,
   val depth: Int,
+  val liveContext: SubAgentLiveContextSnapshot? = null,
 )
 
 private data class RuntimeServicePendingApprovalResolution(
@@ -427,6 +429,7 @@ private fun ApprovalDecisionSubAgentLifecycle.toRuntimeServicePendingApprovalSub
   subagentType = subagentType,
   contextMode = contextMode,
   depth = depth,
+  liveContext = liveContext,
 )
 
 private fun RuntimeServicePendingApprovalSubAgentLifecycle.toApprovalDecisionSubAgentLifecycle():
@@ -438,6 +441,7 @@ private fun RuntimeServicePendingApprovalSubAgentLifecycle.toApprovalDecisionSub
   subagentType = subagentType,
   contextMode = contextMode,
   depth = depth,
+  liveContext = liveContext,
 )
 
 private fun subAgentApprovalResumeMatchesHandle(
