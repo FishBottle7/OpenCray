@@ -2032,6 +2032,7 @@ class OpenCrayChatSubAgentSnapshot {
     this.requiresUserAction = false,
     this.isHighRisk = false,
     this.summary,
+    this.liveContext,
   });
 
   final String parentRunId;
@@ -2051,6 +2052,7 @@ class OpenCrayChatSubAgentSnapshot {
   final bool requiresUserAction;
   final bool isHighRisk;
   final String? summary;
+  final Map<String, Object?>? liveContext;
   final int startedAtEpochMs;
   final int updatedAtEpochMs;
   final int eventCount;
@@ -2083,6 +2085,9 @@ class OpenCrayChatSubAgentSnapshot {
       requiresUserAction: map['requiresUserAction'] as bool? ?? false,
       isHighRisk: map['isHighRisk'] as bool? ?? false,
       summary: map['summary'] as String?,
+      liveContext: map['liveContext'] is Map<Object?, Object?>
+          ? (map['liveContext']! as Map<Object?, Object?>).cast<String, Object?>()
+          : null,
       startedAtEpochMs: map['startedAtEpochMs'] as int? ?? 0,
       updatedAtEpochMs: map['updatedAtEpochMs'] as int? ?? 0,
       eventCount: map['eventCount'] as int? ?? 0,

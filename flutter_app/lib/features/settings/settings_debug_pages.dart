@@ -1421,6 +1421,11 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
                   'Pending approval child',
                   _pendingApprovalChildLabel(subAgents[index])!,
                 ),
+              if (_formatSubAgentLiveContext(subAgents[index]) != null)
+                _DebugKeyValueLine(
+                  'Live context',
+                  _formatSubAgentLiveContext(subAgents[index])!,
+                ),
               if (index < subAgents.length - 1) ...[
                 const SizedBox(height: 12),
                 const Divider(height: 1, color: OpenCrayColors.divider),
@@ -1676,6 +1681,18 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
         'run ${subAgent.pendingApprovalChildRunId!.trim()}',
       if (subAgent.pendingApprovalChildTaskId?.trim().isNotEmpty == true)
         'task ${subAgent.pendingApprovalChildTaskId!.trim()}',
+    ];
+    return parts.isEmpty ? null : parts.join(' / ');
+  }
+
+  String? _formatSubAgentLiveContext(OpenCrayChatSubAgentSnapshot subAgent) {
+    final Map<String, Object?>? liveContext = subAgent.liveContext;
+    if (liveContext == null || liveContext.isEmpty) {
+      return null;
+    }
+    final List<String> parts = <String>[
+      for (final MapEntry<String, Object?> entry in liveContext.entries)
+        '${entry.key}=${entry.value}',
     ];
     return parts.isEmpty ? null : parts.join(' / ');
   }
