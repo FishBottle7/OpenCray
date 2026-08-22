@@ -19,8 +19,7 @@ class AppAgentSessionTaskRuntimeFactoryLlmMetadataTest {
   fun buildRuntimeLlmMetadataIncludesContextBudgetOverridesWhenLlmIsRequired() {
     val factory = createFactory()
 
-    val metadata = buildRuntimeLlmMetadataForTest(
-      factory = factory,
+    val metadata = factory.buildRuntimeLlmMetadata(
       requiresLlmConfig = true,
       taskMetadata = mapOf("source" to "chat"),
       sessionId = "session-budget",
@@ -51,8 +50,7 @@ class AppAgentSessionTaskRuntimeFactoryLlmMetadataTest {
   fun buildRuntimeLlmMetadataStaysMinimalWhenLlmIsNotRequired() {
     val factory = createFactory()
 
-    val metadata = buildRuntimeLlmMetadataForTest(
-      factory = factory,
+    val metadata = factory.buildRuntimeLlmMetadata(
       requiresLlmConfig = false,
       taskMetadata = mapOf("source" to "chat"),
       sessionId = "session-no-llm",
@@ -174,41 +172,6 @@ class AppAgentSessionTaskRuntimeFactoryLlmMetadataTest {
     )
   }
 
-  @Suppress("UNCHECKED_CAST")
-  private fun buildRuntimeLlmMetadataForTest(
-    factory: AppAgentSessionTaskRuntimeFactory,
-    requiresLlmConfig: Boolean,
-    taskMetadata: Map<String, String>,
-    sessionId: String,
-    nativeWebSearchRunApproved: Boolean,
-    nativeWebSearchSessionApproved: Boolean,
-    llmSettings: LlmSettingsState,
-    routeMetadata: Map<String, String>,
-  ): Map<String, String> {
-    val method = AppAgentSessionTaskRuntimeFactory::class.java.getDeclaredMethod(
-      "buildRuntimeLlmMetadata",
-      Boolean::class.javaPrimitiveType,
-      Map::class.java,
-      String::class.java,
-      Boolean::class.javaPrimitiveType,
-      Boolean::class.javaPrimitiveType,
-      LlmSettingsState::class.java,
-      Map::class.java,
-    )
-    method.isAccessible = true
-    return method.invoke(
-      factory,
-      requiresLlmConfig,
-      taskMetadata,
-      sessionId,
-      nativeWebSearchRunApproved,
-      nativeWebSearchSessionApproved,
-      llmSettings,
-      routeMetadata,
-    ) as Map<String, String>
-  }
-
-  @Suppress("UNCHECKED_CAST")
   private fun builtinToolsForWarmupForTest(
     factory: AppAgentSessionTaskRuntimeFactory,
     visibleToolDefinitions: List<AgentToolDefinition>,

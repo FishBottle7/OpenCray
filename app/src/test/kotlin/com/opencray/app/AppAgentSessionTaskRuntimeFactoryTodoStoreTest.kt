@@ -2275,12 +2275,12 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertTrue(prepared.sessionContext.durableCompaction.text.contains("Older session history has been durably compacted into summaries."))
     assertTrue(prepared.sessionContext.durableCompaction.trace.compactedThisRun)
     assertEquals(16, prepared.sessionContext.durableCompaction.trace.sourceTranscriptMessageCount)
-    assertEquals(12, prepared.sessionContext.durableCompaction.trace.retainedTranscriptMessageCount)
-    assertEquals(4, prepared.sessionContext.durableCompaction.trace.latestCompactedMessageCount)
+    assertEquals(11, prepared.sessionContext.durableCompaction.trace.retainedTranscriptMessageCount)
+    assertEquals(5, prepared.sessionContext.durableCompaction.trace.latestCompactedMessageCount)
     assertEquals(1, prepared.sessionContext.durableCompaction.trace.includedSummaryCount)
-    assertEquals(4, prepared.sessionContext.durableCompaction.trace.totalCompactedMessageCount)
-    assertEquals(12, prepared.sessionContext.conversation.size)
-    assertEquals(12, factory.transcriptStoreForSession(sessionId).snapshot().size)
+    assertEquals(5, prepared.sessionContext.durableCompaction.trace.totalCompactedMessageCount)
+    assertEquals(11, prepared.sessionContext.conversation.size)
+    assertEquals(11, factory.transcriptStoreForSession(sessionId).snapshot().size)
     assertFalse(prepared.sessionContext.conversation.first().content.contains("Conversation message 1"))
   }
 
@@ -2338,15 +2338,15 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
     assertTrue(prepared.sessionContext.durableCompaction.text.contains("Provider-side compacted history capsule."))
     assertFalse(
       prepared.sessionContext.durableCompaction.text.contains(
-        "Compacted 4 older message",
+        "Compacted 5 older message",
         ignoreCase = true,
       ),
     )
     assertEquals(1, remoteProvider.requests.size)
     assertEquals("pre_compaction", remoteProvider.requests.single().triggerStage)
-    assertEquals(4, remoteProvider.requests.single().omittedMessages.size)
+    assertEquals(5, remoteProvider.requests.single().omittedMessages.size)
     assertTrue(prepared.sessionContext.durableCompaction.trace.compactedThisRun)
-    assertEquals(12, prepared.sessionContext.conversation.size)
+    assertEquals(11, prepared.sessionContext.conversation.size)
     assertEquals(
       "true",
       prepared.sessionContext.durableCompaction.trace

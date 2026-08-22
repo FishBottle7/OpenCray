@@ -213,7 +213,7 @@ class ChatMemoryIngestionCoordinatorTest {
       sessionId = "session-expanded-delta",
       taskId = "task-delta-1",
       conversation = baseConversation,
-      llmMetadata = constrainedFlushLlmMetadata(),
+      llmMetadata = expandedWindowDeltaFlushLlmMetadata(),
     )
     val second = coordinator.flushBeforeCompaction(
       sessionId = "session-expanded-delta",
@@ -222,7 +222,7 @@ class ChatMemoryIngestionCoordinatorTest {
         role = RuntimeConversationRole.USER,
         content = "Padding user message 12 to keep the active transcript window bounded.",
       ),
-      llmMetadata = constrainedFlushLlmMetadata(),
+      llmMetadata = expandedWindowDeltaFlushLlmMetadata(),
     )
 
     assertEquals(MemoryFlushOutcome.WRITTEN, first.trace.outcome)
@@ -2033,6 +2033,11 @@ class ChatMemoryIngestionCoordinatorTest {
 
   private fun constrainedFlushLlmMetadata(): Map<String, String> = mapOf(
     "context_window_tokens" to "64",
+  )
+
+  private fun expandedWindowDeltaFlushLlmMetadata(): Map<String, String> = mapOf(
+    "context_window_tokens" to "65536",
+    "auto_compact_token_limit" to "240",
   )
 
   private class InMemoryMemoryStore : MemoryStore {
