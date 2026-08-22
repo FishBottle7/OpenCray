@@ -35,6 +35,7 @@ part 'settings_debug_pages.dart';
 part 'settings_debug_formatters.dart';
 part 'settings_widgets.dart';
 part 'llm_settings_pages.dart';
+part 'context_memory_trace_page.dart';
 
 void _dismissActiveInput() {
   final FocusNode? primaryFocus = FocusManager.instance.primaryFocus;
