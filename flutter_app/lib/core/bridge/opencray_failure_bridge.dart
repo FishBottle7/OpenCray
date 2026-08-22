@@ -463,6 +463,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     int? contextBudgetReservedOutputTokens,
     int? contextBudgetSafetyMarginTokens,
     double? contextBudgetEffectiveInputPercent,
+    int? contextWindowTokensOverride,
   }) async => throw StateError(_failureMessage);
 
   @override
@@ -481,6 +482,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    int? contextWindowTokensOverride,
   }) async => throw StateError(_failureMessage);
 
   @override
@@ -491,6 +493,7 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     required String apiKey,
     required String model,
     required String reasoningEffort,
+    int? contextWindowTokensOverride,
   }) async =>
       OpenCrayLlmValidationResult(isSuccess: false, message: _failureMessage);
 

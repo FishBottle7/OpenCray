@@ -581,6 +581,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     int? contextBudgetReservedOutputTokens,
     int? contextBudgetSafetyMarginTokens,
     double? contextBudgetEffectiveInputPercent,
+    int? contextWindowTokensOverride,
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _invokeMap(
       'saveLlmConfig',
@@ -620,6 +621,8 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
         'contextBudgetSafetyMarginTokens': contextBudgetSafetyMarginTokens,
         'contextBudgetEffectiveInputPercent':
             contextBudgetEffectiveInputPercent,
+        if (contextWindowTokensOverride != null)
+          'contextWindowTokensOverride': contextWindowTokensOverride,
       },
     ),
   );
@@ -640,6 +643,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    int? contextWindowTokensOverride,
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _invokeMap(
       'saveCustomLlmProvider',
@@ -662,6 +666,8 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
           'anthropicPromptCachingEnabled': anthropicPromptCachingEnabled,
         if (anthropicPromptCacheTtl != null)
           'anthropicPromptCacheTtl': anthropicPromptCacheTtl,
+        if (contextWindowTokensOverride != null)
+          'contextWindowTokensOverride': contextWindowTokensOverride,
       },
     ),
   );
@@ -674,6 +680,7 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     required String apiKey,
     required String model,
     required String reasoningEffort,
+    int? contextWindowTokensOverride,
   }) async => OpenCrayLlmValidationResult.fromMap(
     await _invokeMap(
       'validateLlmConfig',
@@ -684,6 +691,8 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
         'apiKey': apiKey,
         'model': model,
         'reasoningEffort': reasoningEffort,
+        if (contextWindowTokensOverride != null)
+          'contextWindowTokensOverride': contextWindowTokensOverride,
       },
     ),
   );

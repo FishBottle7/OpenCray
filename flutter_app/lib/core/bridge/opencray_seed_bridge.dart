@@ -1042,6 +1042,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     int? contextBudgetReservedOutputTokens,
     int? contextBudgetSafetyMarginTokens,
     double? contextBudgetEffectiveInputPercent,
+    int? contextWindowTokensOverride,
   }) async {
     final isConfigured = providerMode == 'on_device_model'
         ? _llmConfig.onDeviceModels.any(
@@ -1080,6 +1081,11 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
           _llmConfig.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl:
           anthropicPromptCacheTtl ?? _llmConfig.anthropicPromptCacheTtl,
+      manualContextWindowTokens:
+          contextWindowTokensOverride ?? _llmConfig.manualContextWindowTokens,
+      resolvedContextWindowTokens:
+          contextWindowTokensOverride ??
+          _llmConfig.resolvedContextWindowTokens,
       onDeviceModels: _llmConfig.onDeviceModels,
       selectedOnDeviceModelId: selectedOnDeviceModelId,
       onDeviceMaxContextWindow: onDeviceMaxContextWindow,
@@ -1121,6 +1127,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    int? contextWindowTokensOverride,
   }) async {
     final providerOptionId =
         selectedProviderOptionId.trim().isEmpty ||
@@ -1175,6 +1182,11 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
           _llmConfig.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl:
           anthropicPromptCacheTtl ?? _llmConfig.anthropicPromptCacheTtl,
+      manualContextWindowTokens:
+          contextWindowTokensOverride ?? _llmConfig.manualContextWindowTokens,
+      resolvedContextWindowTokens:
+          contextWindowTokensOverride ??
+          _llmConfig.resolvedContextWindowTokens,
       onDeviceModels: _llmConfig.onDeviceModels,
       selectedOnDeviceModelId: _llmConfig.selectedOnDeviceModelId,
       onDeviceMaxContextWindow: _llmConfig.onDeviceMaxContextWindow,
@@ -1204,6 +1216,7 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     required String apiKey,
     required String model,
     required String reasoningEffort,
+    int? contextWindowTokensOverride,
   }) async => const OpenCrayLlmValidationResult(
     isSuccess: false,
     message: 'Seed bridge does not support live model validation.',

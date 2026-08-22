@@ -252,6 +252,7 @@ abstract interface class OpenCrayHostBridge {
     int? contextBudgetReservedOutputTokens,
     int? contextBudgetSafetyMarginTokens,
     double? contextBudgetEffectiveInputPercent,
+    int? contextWindowTokensOverride,
   });
 
   Future<OpenCrayLlmConfigSnapshot> saveCustomLlmProvider({
@@ -269,6 +270,7 @@ abstract interface class OpenCrayHostBridge {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    int? contextWindowTokensOverride,
   });
 
   Future<OpenCrayLlmValidationResult> validateLlmConfig({
@@ -278,6 +280,7 @@ abstract interface class OpenCrayHostBridge {
     required String apiKey,
     required String model,
     required String reasoningEffort,
+    int? contextWindowTokensOverride,
   });
 
   Future<OpenCrayLlmConfigSnapshot> downloadOnDeviceLlmModel(String modelId);

@@ -254,6 +254,7 @@ class BridgeSettingsFacade implements SettingsFacade {
     int? contextBudgetReservedOutputTokens,
     int? contextBudgetSafetyMarginTokens,
     double? contextBudgetEffectiveInputPercent,
+    int? contextWindowTokensOverride,
   }) async => _mapLlmConfig(
     await _bridge.saveLlmConfig(
       enabled: enabled,
@@ -286,6 +287,7 @@ class BridgeSettingsFacade implements SettingsFacade {
       contextBudgetReservedOutputTokens: contextBudgetReservedOutputTokens,
       contextBudgetSafetyMarginTokens: contextBudgetSafetyMarginTokens,
       contextBudgetEffectiveInputPercent: contextBudgetEffectiveInputPercent,
+      contextWindowTokensOverride: contextWindowTokensOverride,
     ),
   );
 
@@ -305,6 +307,7 @@ class BridgeSettingsFacade implements SettingsFacade {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    int? contextWindowTokensOverride,
   }) async => _mapLlmConfig(
     await _bridge.saveCustomLlmProvider(
       selectedProviderOptionId: selectedProviderOptionId,
@@ -321,6 +324,7 @@ class BridgeSettingsFacade implements SettingsFacade {
       openAiPromptCacheRetention: openAiPromptCacheRetention,
       anthropicPromptCachingEnabled: anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl: anthropicPromptCacheTtl,
+      contextWindowTokensOverride: contextWindowTokensOverride,
     ),
   );
 
@@ -332,6 +336,7 @@ class BridgeSettingsFacade implements SettingsFacade {
     required String apiKey,
     required String model,
     required String reasoningEffort,
+    int? contextWindowTokensOverride,
   }) async => _mapLlmValidation(
     await _bridge.validateLlmConfig(
       providerId: providerId,
@@ -340,6 +345,7 @@ class BridgeSettingsFacade implements SettingsFacade {
       apiKey: apiKey,
       model: model,
       reasoningEffort: reasoningEffort,
+      contextWindowTokensOverride: contextWindowTokensOverride,
     ),
   );
 
@@ -751,6 +757,8 @@ class BridgeSettingsFacade implements SettingsFacade {
       contextBudgetSafetyMarginTokens: snapshot.contextBudgetSafetyMarginTokens,
       contextBudgetEffectiveInputPercent:
           snapshot.contextBudgetEffectiveInputPercent,
+      manualContextWindowTokens: snapshot.manualContextWindowTokens,
+      resolvedContextWindowTokens: snapshot.resolvedContextWindowTokens,
     );
   }
 

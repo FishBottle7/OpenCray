@@ -90,6 +90,7 @@ abstract interface class SettingsFacade {
     int? contextBudgetReservedOutputTokens,
     int? contextBudgetSafetyMarginTokens,
     double? contextBudgetEffectiveInputPercent,
+    int? contextWindowTokensOverride,
   });
 
   Future<LlmConfigSnapshot> saveCustomLlmProvider({
@@ -107,6 +108,7 @@ abstract interface class SettingsFacade {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    int? contextWindowTokensOverride,
   });
 
   Future<LlmValidationResult> validateLlmConfig({
@@ -116,6 +118,7 @@ abstract interface class SettingsFacade {
     required String apiKey,
     required String model,
     required String reasoningEffort,
+    int? contextWindowTokensOverride,
   });
 
   Future<LlmConfigSnapshot> downloadOnDeviceLlmModel(String modelId);

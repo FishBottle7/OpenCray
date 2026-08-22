@@ -34,6 +34,8 @@ class OpenCrayLlmConfigSnapshot {
     this.contextBudgetReservedOutputTokens,
     this.contextBudgetSafetyMarginTokens,
     this.contextBudgetEffectiveInputPercent,
+    this.manualContextWindowTokens,
+    this.resolvedContextWindowTokens,
   });
 
   final String localeTag;
@@ -70,6 +72,8 @@ class OpenCrayLlmConfigSnapshot {
   final int? contextBudgetReservedOutputTokens;
   final int? contextBudgetSafetyMarginTokens;
   final double? contextBudgetEffectiveInputPercent;
+  final int? manualContextWindowTokens;
+  final int? resolvedContextWindowTokens;
 
   OpenCrayLlmConfigSnapshot copyWith({
     List<OpenCrayOnDeviceLlmModelOptionSnapshot>? onDeviceModels,
@@ -172,6 +176,10 @@ class OpenCrayLlmConfigSnapshot {
           (payload['contextBudgetSafetyMarginTokens'] as num?)?.toInt(),
       contextBudgetEffectiveInputPercent:
           (payload['contextBudgetEffectiveInputPercent'] as num?)?.toDouble(),
+      manualContextWindowTokens:
+          (payload['manualContextWindowTokens'] as num?)?.toInt(),
+      resolvedContextWindowTokens:
+          (payload['resolvedContextWindowTokens'] as num?)?.toInt(),
     );
   }
 }

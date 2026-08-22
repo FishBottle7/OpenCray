@@ -549,6 +549,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     int? contextBudgetReservedOutputTokens,
     int? contextBudgetSafetyMarginTokens,
     double? contextBudgetEffectiveInputPercent,
+    int? contextWindowTokensOverride,
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _postMap('v1/save_llm_config', <String, Object?>{
       'enabled': enabled,
@@ -585,6 +586,8 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       'contextBudgetReservedOutputTokens': contextBudgetReservedOutputTokens,
       'contextBudgetSafetyMarginTokens': contextBudgetSafetyMarginTokens,
       'contextBudgetEffectiveInputPercent': contextBudgetEffectiveInputPercent,
+      if (contextWindowTokensOverride != null)
+        'contextWindowTokensOverride': contextWindowTokensOverride,
     }),
   );
 
@@ -604,6 +607,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    int? contextWindowTokensOverride,
   }) async => OpenCrayLlmConfigSnapshot.fromMap(
     await _postMap('v1/save_custom_llm_provider', <String, Object?>{
       'selectedProviderOptionId': selectedProviderOptionId,
@@ -624,6 +628,8 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
         'anthropicPromptCachingEnabled': anthropicPromptCachingEnabled,
       if (anthropicPromptCacheTtl != null)
         'anthropicPromptCacheTtl': anthropicPromptCacheTtl,
+      if (contextWindowTokensOverride != null)
+        'contextWindowTokensOverride': contextWindowTokensOverride,
     }),
   );
 
@@ -635,6 +641,7 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     required String apiKey,
     required String model,
     required String reasoningEffort,
+    int? contextWindowTokensOverride,
   }) async => OpenCrayLlmValidationResult.fromMap(
     await _postMap('v1/validate_llm_config', <String, Object?>{
       'providerId': providerId,
@@ -643,6 +650,8 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       'apiKey': apiKey,
       'model': model,
       'reasoningEffort': reasoningEffort,
+      if (contextWindowTokensOverride != null)
+        'contextWindowTokensOverride': contextWindowTokensOverride,
     }),
   );
 

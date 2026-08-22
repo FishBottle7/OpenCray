@@ -2636,6 +2636,83 @@ void main() {
     expect(find.text(finalOption.title), findsOneWidget);
   });
 
+  testWidgets(
+    'llm settings raw context window override saves as dev when it diverges from presets',
+    (tester) async {
+      final facade = _FakeSettingsFacade(
+        llmConfig: const LlmConfigSnapshot(
+          localeTag: 'en',
+          enabled: true,
+          providerId: 'custom',
+          selectedProviderOptionId: 'custom',
+          protocol: 'openai',
+          providerOptions: <LlmProviderOption>[
+            LlmProviderOption(
+              id: 'custom',
+              providerId: 'custom',
+              title: 'Custom provider',
+              subtitle:
+                  'Any OpenAI-compatible, OpenAI Responses, or Anthropic endpoint.',
+              defaultBaseUrl: '',
+              defaultModel: '',
+              protocol: 'openai',
+              apiKey: '',
+              isCustom: true,
+            ),
+          ],
+          providerName: 'Custom provider',
+          providerNotes: '',
+          baseUrl: 'https://proxy.example/v1',
+          apiKey: 'secret',
+          model: 'gpt-4.1',
+          reasoningEffort: 'medium',
+          systemPrompt: '',
+          helperText: 'Helper text',
+          resolvedContextWindowTokens: 128000,
+        ),
+        validationResult: const LlmValidationResult(
+          isSuccess: true,
+          message: 'Validated.',
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SettingsFeatureScreen(
+            facade: facade,
+            initialPage: SettingsPage.llm,
+            standalone: true,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final rawActionFinder = find.byKey(
+        const ValueKey<String>('settings-llm-context-budget-raw-action'),
+      );
+      await tester.ensureVisible(rawActionFinder);
+      await tester.tap(rawActionFinder);
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).last, '350000');
+      await tester.tap(find.text('Apply'));
+      await tester.pumpAndSettle();
+
+      expect(facade.llmConfig.manualContextWindowTokens, 350000);
+      expect(facade.llmConfig.resolvedContextWindowTokens, 350000);
+      expect(
+        find.descendant(
+          of: find.byKey(
+            const ValueKey<String>('settings-llm-context-budget-preset'),
+          ),
+          matching: find.text('Dev'),
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Manual override: 350K'), findsOneWidget);
+    },
+  );
+
   testWidgets('about version page opens debug tools and renders context trace details', (
     tester,
   ) async {
@@ -5787,6 +5864,7 @@ class _FakeSettingsFacade implements SettingsFacade {
     int? contextBudgetReservedOutputTokens,
     int? contextBudgetSafetyMarginTokens,
     double? contextBudgetEffectiveInputPercent,
+    int? contextWindowTokensOverride,
   }) async {
     saveCallCount += 1;
     await onSaveLlmConfig?.call();
@@ -5818,6 +5896,10 @@ class _FakeSettingsFacade implements SettingsFacade {
           llmConfig.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl:
           anthropicPromptCacheTtl ?? llmConfig.anthropicPromptCacheTtl,
+      manualContextWindowTokens:
+          contextWindowTokensOverride ?? llmConfig.manualContextWindowTokens,
+      resolvedContextWindowTokens:
+          contextWindowTokensOverride ?? llmConfig.resolvedContextWindowTokens,
       onDeviceModels: llmConfig.onDeviceModels,
       selectedOnDeviceModelId: selectedOnDeviceModelId,
       onDeviceMaxContextWindow: onDeviceMaxContextWindow,
@@ -5858,6 +5940,7 @@ class _FakeSettingsFacade implements SettingsFacade {
     String? openAiPromptCacheRetention,
     bool? anthropicPromptCachingEnabled,
     String? anthropicPromptCacheTtl,
+    int? contextWindowTokensOverride,
   }) async {
     saveCallCount += 1;
     final savedOptionId = selectedProviderOptionId == 'custom'
@@ -5911,6 +5994,10 @@ class _FakeSettingsFacade implements SettingsFacade {
           llmConfig.anthropicPromptCachingEnabled,
       anthropicPromptCacheTtl:
           anthropicPromptCacheTtl ?? llmConfig.anthropicPromptCacheTtl,
+      manualContextWindowTokens:
+          contextWindowTokensOverride ?? llmConfig.manualContextWindowTokens,
+      resolvedContextWindowTokens:
+          contextWindowTokensOverride ?? llmConfig.resolvedContextWindowTokens,
       onDeviceModels: llmConfig.onDeviceModels,
       selectedOnDeviceModelId: llmConfig.selectedOnDeviceModelId,
       onDeviceMaxContextWindow: llmConfig.onDeviceMaxContextWindow,
@@ -5940,6 +6027,7 @@ class _FakeSettingsFacade implements SettingsFacade {
     required String apiKey,
     required String model,
     required String reasoningEffort,
+    int? contextWindowTokensOverride,
   }) async {
     validationCallCount += 1;
     return validationResult;

@@ -373,6 +373,34 @@ class OpenCrayUiCopy {
       : 'Send Anthropic cache_control for reusable prompt blocks.';
   String get llmAnthropicPromptCacheTtlLabel =>
       isChinese ? '缓存 TTL' : 'Cache TTL';
+  String get llmContextBudgetTitle => isChinese ? '上下文预算' : 'Context budget';
+  String get llmContextBudgetPresetLabel =>
+      isChinese ? '预算档位' : 'Budget preset';
+  String get llmContextBudgetHelper => isChinese
+      ? '这里只调整模型可见的上下文窗口假设。更大的窗口当前主要会降低压缩压力，还不会自动扩大记忆、转录或技能采集上限。'
+      : 'This only adjusts the model-visible context-window assumption. Larger windows currently reduce compaction pressure but do not yet expand memory, transcript, or skill acquisition caps automatically.';
+  String get llmContextBudgetPresetAuto => isChinese ? '自动' : 'Automatic';
+  String get llmContextBudgetPresetDev => isChinese ? '开发者' : 'Dev';
+  String get llmContextBudgetEditRawAction =>
+      isChinese ? '编辑原始值' : 'Edit raw value';
+  String llmContextBudgetResolved(String label) => isChinese
+      ? '当前解析值：$label'
+      : 'Resolved now: $label';
+  String llmContextBudgetOverride(String label) => isChinese
+      ? '手动覆盖：$label'
+      : 'Manual override: $label';
+  String get llmContextBudgetRawTitle =>
+      isChinese ? '原始上下文窗口' : 'Raw context window';
+  String get llmContextBudgetRawHint =>
+      isChinese ? '例如 262144' : 'For example 262144';
+  String get llmContextBudgetRawHelper => isChinese
+      ? '留空会恢复自动判断。填写后会按当前路由保存为手动覆盖。'
+      : 'Leave this empty to return to automatic detection. When set, the value is stored as a manual override for the current route.';
+  String get llmContextBudgetRawApply => isChinese ? '应用' : 'Apply';
+  String get llmContextBudgetResetAuto =>
+      isChinese ? '恢复自动' : 'Reset to auto';
+  String get llmContextBudgetInvalid =>
+      isChinese ? '请输入大于 0 的整数。' : 'Enter an integer greater than 0.';
   String get llmAdvancedPromptTitle => isChinese ? '高级提示词' : 'Advanced prompt';
   String get llmPromptOverrideLabel => isChinese ? '提示词覆盖' : 'Prompt override';
   String get llmPromptOverrideHint => isChinese

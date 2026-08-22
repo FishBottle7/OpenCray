@@ -1832,6 +1832,15 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     '5m',
     '1h',
   ];
+  static const String _contextWindowPresetAuto = 'auto';
+  static const String _contextWindowPresetDev = 'dev';
+  static const Map<String, int> _contextWindowPresetValues = <String, int>{
+    '128k': 128000,
+    '200k': 200000,
+    '256k': 262144,
+    '400k': 400000,
+    '1m': 1048576,
+  };
   static const List<String> _contextBudgetPresetOptions = <String>[
     'compact',
     'balanced',
@@ -1905,6 +1914,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   int? _contextBudgetReservedOutputTokens;
   int? _contextBudgetSafetyMarginTokens;
   double? _contextBudgetEffectiveInputPercent;
+  int? _manualContextWindowTokens;
   bool _isApplyingSnapshot = false;
   bool _isSavingDraft = false;
   bool _isSavingCustomProvider = false;
@@ -2321,19 +2331,77 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
   }
 
   Widget _buildContextBudgetCard(OpenCrayUiCopy copy) {
+    final resolvedContextWindowTokens = _snapshot?.resolvedContextWindowTokens;
     return _SettingsCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Context budget', style: _SettingsTextStyles.cardTitle),
-          const SizedBox(height: 8),
-          const Text(
-            'Preset controls the normal context envelope; raw overrides are for development.',
-            style: _SettingsTextStyles.body,
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  copy.llmContextBudgetTitle,
+                  style: _SettingsTextStyles.cardTitle,
+                ),
+              ),
+              InkWell(
+                key: const ValueKey<String>(
+                  'settings-llm-context-budget-raw-action',
+                ),
+                borderRadius: BorderRadius.circular(8),
+                onTap: _openContextWindowRawSheet,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 2,
+                  ),
+                  child: Text(
+                    copy.llmContextBudgetEditRawAction,
+                    style: _SettingsTextStyles.inlineAction,
+                  ),
+                ),
+              ),
+            ],
           ),
+          const SizedBox(height: 8),
+          Text(copy.llmContextBudgetHelper, style: _SettingsTextStyles.body),
+          const SizedBox(height: 12),
+          KeyedSubtree(
+            key: const ValueKey<String>(
+              'settings-llm-context-budget-preset',
+            ),
+            child: _PrototypeSelectionField(
+              label: copy.llmContextBudgetPresetLabel,
+              title: _contextWindowPresetTitle(_contextWindowPresetId()),
+              trailingLabel: resolvedContextWindowTokens == null
+                  ? null
+                  : _formatTokenCount(resolvedContextWindowTokens),
+              onTap: _openContextWindowPresetSheet,
+            ),
+          ),
+          if (resolvedContextWindowTokens != null) ...[
+            const SizedBox(height: 8),
+            Text(
+              copy.llmContextBudgetResolved(
+                _formatTokenCount(resolvedContextWindowTokens),
+              ),
+              style: _SettingsTextStyles.body,
+            ),
+          ],
+          if (_manualContextWindowTokens != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              copy.llmContextBudgetOverride(
+                _formatTokenCount(_manualContextWindowTokens!),
+              ),
+              style: _SettingsTextStyles.body,
+            ),
+          ],
+          const SizedBox(height: 12),
+          const Divider(height: 1, color: OpenCrayColors.divider),
           const SizedBox(height: 12),
           _SegmentedSettingRow(
-            label: 'Preset',
+            label: 'Envelope preset',
             width: 248,
             selectedId: _contextBudgetPreset,
             options: _contextBudgetPresetOptions,
@@ -2707,6 +2775,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         openAiPromptCacheRetention: _openAiPromptCacheRetention,
         anthropicPromptCachingEnabled: _anthropicPromptCachingEnabled,
         anthropicPromptCacheTtl: _anthropicPromptCacheTtl,
+        contextWindowTokensOverride: _manualContextWindowTokens,
       );
       if (!mounted) {
         return;
@@ -2758,6 +2827,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         apiKey: _apiKeyController.text,
         model: _modelController.text,
         reasoningEffort: _reasoningEffort,
+        contextWindowTokensOverride: _manualContextWindowTokens,
       );
       if (!mounted) {
         return;
@@ -2774,6 +2844,186 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         });
       }
     }
+  }
+
+  Future<void> _openContextWindowPresetSheet() async {
+    final copy = _copyForSnapshot();
+    final selected = await _openStringSelectionSheet(
+      title: copy.llmContextBudgetPresetLabel,
+      options: <String>[
+        _contextWindowPresetAuto,
+        ..._contextWindowPresetValues.keys,
+      ],
+      selectedValue: _contextWindowPresetId(),
+      labelBuilder: _contextWindowPresetTitle,
+    );
+    if (selected == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _manualContextWindowTokens = switch (selected) {
+        _contextWindowPresetAuto => null,
+        _ => _contextWindowPresetValues[selected],
+      };
+    });
+    unawaited(_saveDraft());
+  }
+
+  Future<void> _openContextWindowRawSheet() async {
+    final copy = _copyForSnapshot();
+    var draftValue = _manualContextWindowTokens?.toString() ?? '';
+    final rawResult = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
+      builder: (context) {
+        return SafeArea(
+          top: false,
+          child: SingleChildScrollView(
+            padding: EdgeInsets.fromLTRB(
+              12,
+              0,
+              12,
+              MediaQuery.of(context).viewInsets.bottom + 12,
+            ),
+            child: DecoratedBox(
+              decoration: const BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.all(Radius.circular(22)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: OpenCrayColors.divider,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                    ),
+                    Text(
+                      copy.llmContextBudgetRawTitle,
+                      style: _SettingsTextStyles.cardTitle,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      copy.llmContextBudgetRawHelper,
+                      style: _SettingsTextStyles.body,
+                    ),
+                    const SizedBox(height: 12),
+                    _PrototypeFieldSurface(
+                      child: TextFormField(
+                        initialValue: draftValue,
+                        keyboardType: TextInputType.number,
+                        textInputAction: TextInputAction.done,
+                        onChanged: (value) => draftValue = value,
+                        onFieldSubmitted: (value) {
+                          FocusScope.of(context).unfocus();
+                          Navigator.of(context).pop(value.trim());
+                        },
+                        decoration: InputDecoration(
+                          hintText: copy.llmContextBudgetRawHint,
+                          border: InputBorder.none,
+                          contentPadding: const EdgeInsets.symmetric(
+                            horizontal: 12,
+                            vertical: 14,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        TextButton(
+                          onPressed: () {
+                            FocusScope.of(context).unfocus();
+                            Navigator.of(context).pop('');
+                          },
+                          child: Text(copy.llmContextBudgetResetAuto),
+                        ),
+                        const Spacer(),
+                        FilledButton(
+                          onPressed: () {
+                            FocusScope.of(context).unfocus();
+                            Navigator.of(context).pop(draftValue.trim());
+                          },
+                          child: Text(copy.llmContextBudgetRawApply),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    if (rawResult == null || !mounted) {
+      return;
+    }
+    final trimmed = rawResult.trim();
+    if (trimmed.isEmpty) {
+      setState(() {
+        _manualContextWindowTokens = null;
+      });
+      unawaited(_saveDraft());
+      return;
+    }
+    final parsed = int.tryParse(trimmed);
+    if (parsed == null || parsed <= 0) {
+      _showMessage(copy.llmContextBudgetInvalid);
+      return;
+    }
+    setState(() {
+      _manualContextWindowTokens = parsed;
+    });
+    unawaited(_saveDraft());
+  }
+
+  String _contextWindowPresetId() {
+    final manualOverride = _manualContextWindowTokens;
+    if (manualOverride == null) {
+      return _contextWindowPresetAuto;
+    }
+    return _contextWindowPresetValues.entries
+        .firstWhere(
+          (entry) => entry.value == manualOverride,
+          orElse: () => const MapEntry(_contextWindowPresetDev, -1),
+        )
+        .key;
+  }
+
+  String _contextWindowPresetTitle(String presetId) {
+    final copy = _copyForSnapshot();
+    return switch (presetId) {
+      _contextWindowPresetAuto => copy.llmContextBudgetPresetAuto,
+      _contextWindowPresetDev => copy.llmContextBudgetPresetDev,
+      '128k' => '128K',
+      '200k' => '200K',
+      '256k' => '256K',
+      '400k' => '400K',
+      '1m' => '1M',
+      _ => presetId,
+    };
+  }
+
+  String _formatTokenCount(int value) {
+    if (value >= 1000000) {
+      return '${(value / 1048576).toStringAsFixed(1)}M';
+    }
+    if (value >= 1000) {
+      return '${(value / 1000).toStringAsFixed(value % 1000 == 0 ? 0 : 1)}K';
+    }
+    return '$value';
   }
 
   Future<void> _openProviderSheet() async {
@@ -3263,6 +3513,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
     _openAiPromptCacheRetention = snapshot.openAiPromptCacheRetention;
     _anthropicPromptCachingEnabled = snapshot.anthropicPromptCachingEnabled;
     _anthropicPromptCacheTtl = snapshot.anthropicPromptCacheTtl;
+    _manualContextWindowTokens = snapshot.manualContextWindowTokens;
     _selectedOnDeviceModelId = snapshot.selectedOnDeviceModelId.trim().isEmpty
         ? _selectedOnDeviceModelId
         : snapshot.selectedOnDeviceModelId;
@@ -3324,6 +3575,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         _anthropicPromptCachingEnabled !=
             snapshot.anthropicPromptCachingEnabled ||
         _anthropicPromptCacheTtl != snapshot.anthropicPromptCacheTtl ||
+        _manualContextWindowTokens != snapshot.manualContextWindowTokens ||
         _selectedOnDeviceModelId != snapshot.selectedOnDeviceModelId ||
         _onDeviceMaxContextWindow != snapshot.onDeviceMaxContextWindow ||
         _onDeviceMaxTokens != snapshot.onDeviceMaxTokens ||
@@ -3417,6 +3669,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         contextBudgetReservedOutputTokens: _contextBudgetReservedOutputTokens,
         contextBudgetSafetyMarginTokens: _contextBudgetSafetyMarginTokens,
         contextBudgetEffectiveInputPercent: _contextBudgetEffectiveInputPercent,
+        contextWindowTokensOverride: _manualContextWindowTokens,
       );
       if (!mounted) {
         return;

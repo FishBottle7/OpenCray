@@ -572,6 +572,8 @@ class LlmConfigSnapshot {
     this.contextBudgetReservedOutputTokens,
     this.contextBudgetSafetyMarginTokens,
     this.contextBudgetEffectiveInputPercent,
+    this.manualContextWindowTokens,
+    this.resolvedContextWindowTokens,
   });
 
   final String localeTag;
@@ -608,6 +610,8 @@ class LlmConfigSnapshot {
   final int? contextBudgetReservedOutputTokens;
   final int? contextBudgetSafetyMarginTokens;
   final double? contextBudgetEffectiveInputPercent;
+  final int? manualContextWindowTokens;
+  final int? resolvedContextWindowTokens;
 
   LlmConfigSnapshot copyWith({
     List<LlmOnDeviceModelOption>? onDeviceModels,
