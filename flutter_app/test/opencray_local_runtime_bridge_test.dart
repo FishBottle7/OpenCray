@@ -678,6 +678,10 @@ void main() {
           'readOnlyOutsideWorkspace': true,
           'liveContextModeId': capturedBody['liveContextModeId'],
           'memoryToolsEnabled': capturedBody['memoryToolsEnabled'],
+          'subAgentContextDefaultModeId':
+              capturedBody['subAgentContextDefaultModeId'],
+          'subAgentContextProfileOverrides':
+              capturedBody['subAgentContextProfileOverrides'],
         });
       };
 
@@ -701,6 +705,10 @@ void main() {
         readOnlyOutsideWorkspace: true,
         liveContextModeId: 'no_soul',
         memoryToolsEnabled: false,
+        subAgentContextDefaultModeId: 'delegated',
+        subAgentContextProfileOverrides: const <String, String>{
+          'researcher': 'minimal',
+        },
       );
 
       expect(capturedBody['automationModeId'], 'dev');
@@ -709,12 +717,22 @@ void main() {
       expect(capturedBody['fileDeletesPolicyId'], 'block');
       expect(capturedBody['liveContextModeId'], 'no_soul');
       expect(capturedBody['memoryToolsEnabled'], false);
+      expect(capturedBody['subAgentContextDefaultModeId'], 'delegated');
+      expect(
+        capturedBody['subAgentContextProfileOverrides'],
+        const <String, Object?>{'researcher': 'minimal'},
+      );
       expect(snapshot.automationModeId, 'dev');
       expect(snapshot.maxAgentTurns, 0);
       expect(snapshot.maxToolCalls, 0);
       expect(snapshot.fileDeletesPolicyId, 'block');
       expect(snapshot.liveContextModeId, 'no_soul');
       expect(snapshot.memoryToolsEnabled, false);
+      expect(snapshot.subAgentContextDefaultModeId, 'delegated');
+      expect(
+        snapshot.subAgentContextProfileOverrides,
+        const <String, String>{'researcher': 'minimal'},
+      );
     },
   );
 

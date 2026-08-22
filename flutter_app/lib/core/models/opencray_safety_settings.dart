@@ -15,6 +15,8 @@ class OpenCraySafetySettingsSnapshot {
     required this.readOnlyOutsideWorkspace,
     this.liveContextModeId = 'full',
     this.memoryToolsEnabled = true,
+    this.subAgentContextDefaultModeId,
+    this.subAgentContextProfileOverrides = const <String, String>{},
   });
 
   final String automationModeId;
@@ -32,6 +34,8 @@ class OpenCraySafetySettingsSnapshot {
   final bool readOnlyOutsideWorkspace;
   final String liveContextModeId;
   final bool memoryToolsEnabled;
+  final String? subAgentContextDefaultModeId;
+  final Map<String, String> subAgentContextProfileOverrides;
 
   factory OpenCraySafetySettingsSnapshot.fromMap(
     Map<Object?, Object?> payload,
@@ -62,6 +66,12 @@ class OpenCraySafetySettingsSnapshot {
           payload['readOnlyOutsideWorkspace'] as bool? ?? true,
       liveContextModeId: payload['liveContextModeId'] as String? ?? 'full',
       memoryToolsEnabled: payload['memoryToolsEnabled'] as bool? ?? true,
+      subAgentContextDefaultModeId: _normalizeNullableString(
+        payload['subAgentContextDefaultModeId'],
+      ),
+      subAgentContextProfileOverrides: _requireStringMap(
+        payload['subAgentContextProfileOverrides'],
+      ),
     );
   }
 }
@@ -99,4 +109,31 @@ Map<Object?, Object?> _requireMap(Object? payload) {
     throw const FormatException('Expected a map payload from host bridge.');
   }
   return map;
+}
+
+Map<String, String> _requireStringMap(Object? payload) {
+  final map = payload as Map<Object?, Object?>?;
+  if (map == null) {
+    return const <String, String>{};
+  }
+  return Map<String, String>.unmodifiable(
+    Map<String, String>.fromEntries(
+      map.entries
+          .map(
+            (entry) => MapEntry(
+              (entry.key as String?)?.trim() ?? '',
+              (entry.value as String?)?.trim() ?? '',
+            ),
+          )
+          .where((entry) => entry.key.isNotEmpty && entry.value.isNotEmpty),
+    ),
+  );
+}
+
+String? _normalizeNullableString(Object? payload) {
+  final value = (payload as String?)?.trim();
+  if (value == null || value.isEmpty) {
+    return null;
+  }
+  return value;
 }

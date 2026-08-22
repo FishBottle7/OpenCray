@@ -340,6 +340,8 @@ abstract interface class OpenCrayHostBridge {
     required bool readOnlyOutsideWorkspace,
     String liveContextModeId = 'full',
     bool memoryToolsEnabled = true,
+    String? subAgentContextDefaultModeId,
+    Map<String, String> subAgentContextProfileOverrides = const <String, String>{},
   });
 
   Future<OpenCraySkillsSnapshot> loadSkillsSnapshot({

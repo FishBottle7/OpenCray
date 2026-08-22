@@ -1454,6 +1454,8 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
     required bool readOnlyOutsideWorkspace,
     String liveContextModeId = 'full',
     bool memoryToolsEnabled = true,
+    String? subAgentContextDefaultModeId,
+    Map<String, String> subAgentContextProfileOverrides = const <String, String>{},
   }) async {
     _safetySettings = OpenCraySafetySettingsSnapshot(
       automationModeId: automationModeId,
@@ -1488,6 +1490,9 @@ class OpenCraySeedBridge implements OpenCrayHostBridge {
       readOnlyOutsideWorkspace: readOnlyOutsideWorkspace,
       liveContextModeId: liveContextModeId,
       memoryToolsEnabled: memoryToolsEnabled,
+      subAgentContextDefaultModeId: subAgentContextDefaultModeId,
+      subAgentContextProfileOverrides:
+          Map<String, String>.unmodifiable(subAgentContextProfileOverrides),
     );
     return _safetySettings;
   }

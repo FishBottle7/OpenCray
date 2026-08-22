@@ -8,6 +8,16 @@ enum ExternalAccessMode { blockAll, selectPaths }
 
 enum LiveContextMode { full, lightweight, none, noSoul, noMemoryOrSoul }
 
+enum SubAgentContextMode { minimal, delegated }
+
+const Object _unsetNullableSubAgentContextMode = Object();
+const List<String> builtInSubAgentProfileIds = <String>[
+  'general-purpose',
+  'researcher',
+  'reviewer',
+  'worker',
+];
+
 extension SafetyAutomationModeWire on SafetyAutomationMode {
   String get id {
     switch (this) {
@@ -77,6 +87,17 @@ extension LiveContextModeWire on LiveContextMode {
   }
 }
 
+extension SubAgentContextModeWire on SubAgentContextMode {
+  String get id {
+    switch (this) {
+      case SubAgentContextMode.minimal:
+        return 'minimal';
+      case SubAgentContextMode.delegated:
+        return 'delegated';
+    }
+  }
+}
+
 SafetyAutomationMode safetyAutomationModeFromId(String id) {
   switch (id) {
     case 'safe':
@@ -136,6 +157,17 @@ LiveContextMode liveContextModeFromId(String id) {
   }
 }
 
+SubAgentContextMode? subAgentContextModeFromId(String? id) {
+  switch (id) {
+    case 'minimal':
+      return SubAgentContextMode.minimal;
+    case 'delegated':
+      return SubAgentContextMode.delegated;
+    default:
+      return null;
+  }
+}
+
 class SafetyLocationSetting {
   const SafetyLocationSetting({required this.id, required this.enabled});
 
@@ -163,6 +195,8 @@ class SafetySettingsSnapshot {
     required this.readOnlyOutsideWorkspace,
     this.liveContextMode = LiveContextMode.full,
     this.memoryToolsEnabled = true,
+    this.subAgentContextDefaultMode,
+    this.subAgentContextProfileOverrides = const <String, SubAgentContextMode>{},
   });
 
   final SafetyAutomationMode automationMode;
@@ -180,6 +214,8 @@ class SafetySettingsSnapshot {
   final bool readOnlyOutsideWorkspace;
   final LiveContextMode liveContextMode;
   final bool memoryToolsEnabled;
+  final SubAgentContextMode? subAgentContextDefaultMode;
+  final Map<String, SubAgentContextMode> subAgentContextProfileOverrides;
 
   int get approvedRootsCount =>
       1 +
@@ -192,6 +228,9 @@ class SafetySettingsSnapshot {
 
   bool isLocationEnabled(String id) =>
       locations.any((location) => location.id == id && location.enabled);
+
+  SubAgentContextMode? subAgentContextModeForProfile(String profileId) =>
+      subAgentContextProfileOverrides[profileId];
 
   SafetySettingsSnapshot copyWith({
     SafetyAutomationMode? automationMode,
@@ -209,6 +248,8 @@ class SafetySettingsSnapshot {
     bool? readOnlyOutsideWorkspace,
     LiveContextMode? liveContextMode,
     bool? memoryToolsEnabled,
+    Object? subAgentContextDefaultMode = _unsetNullableSubAgentContextMode,
+    Map<String, SubAgentContextMode>? subAgentContextProfileOverrides,
   }) {
     return SafetySettingsSnapshot(
       automationMode: automationMode ?? this.automationMode,
@@ -229,6 +270,15 @@ class SafetySettingsSnapshot {
           readOnlyOutsideWorkspace ?? this.readOnlyOutsideWorkspace,
       liveContextMode: liveContextMode ?? this.liveContextMode,
       memoryToolsEnabled: memoryToolsEnabled ?? this.memoryToolsEnabled,
+      subAgentContextDefaultMode:
+          identical(
+                subAgentContextDefaultMode,
+                _unsetNullableSubAgentContextMode,
+              )
+          ? this.subAgentContextDefaultMode
+          : subAgentContextDefaultMode as SubAgentContextMode?,
+      subAgentContextProfileOverrides:
+          subAgentContextProfileOverrides ?? this.subAgentContextProfileOverrides,
     );
   }
 
@@ -241,6 +291,31 @@ class SafetySettingsSnapshot {
                 : location,
           )
           .toList(growable: false),
+    );
+  }
+
+  SafetySettingsSnapshot withSubAgentContextDefaultMode(
+    SubAgentContextMode? mode,
+  ) {
+    return copyWith(subAgentContextDefaultMode: mode);
+  }
+
+  SafetySettingsSnapshot withSubAgentContextProfileOverride(
+    String profileId,
+    SubAgentContextMode? mode,
+  ) {
+    final nextOverrides = Map<String, SubAgentContextMode>.from(
+      subAgentContextProfileOverrides,
+    );
+    if (mode == null) {
+      nextOverrides.remove(profileId);
+    } else {
+      nextOverrides[profileId] = mode;
+    }
+    return copyWith(
+      subAgentContextProfileOverrides: Map<String, SubAgentContextMode>.unmodifiable(
+        nextOverrides,
+      ),
     );
   }
 }

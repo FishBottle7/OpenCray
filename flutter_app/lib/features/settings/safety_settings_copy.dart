@@ -12,6 +12,9 @@ class SafetySettingsCopy {
   static const String liveContextTitle = 'Live context';
   static const String liveContextSubtitle =
       'Choose how much repo/bootstrap, soul, and automatic memory recall are injected into each live run.';
+  static const String childAgentContextTitle = 'Child agent context';
+  static const String childAgentContextSubtitle =
+      'Choose how much parent-run context newly delegated child agents inherit.';
   static const String sensitiveActionsTitle = 'Sensitive actions';
   static const String fileChangesTitle = 'File changes';
   static const String fileChangesSubtitle =
@@ -180,6 +183,67 @@ class SafetySettingsCopy {
         return 'Keep AGENTS.md and PROJECT.md plus automatic memory recall, but suppress soul.';
       case LiveContextMode.noMemoryOrSoul:
         return 'Keep AGENTS.md and PROJECT.md only. Soul and automatic memory recall stay off.';
+    }
+  }
+
+  static String subAgentContextModeLabel(SubAgentContextMode? mode) {
+    switch (mode) {
+      case SubAgentContextMode.minimal:
+        return 'Minimal';
+      case SubAgentContextMode.delegated:
+        return 'Delegated';
+      case null:
+        return 'Profile default';
+    }
+  }
+
+  static String subAgentContextModeSummary(SubAgentContextMode? mode) {
+    switch (mode) {
+      case SubAgentContextMode.minimal:
+        return 'Start the child with workspace instructions and bounded task context only.';
+      case SubAgentContextMode.delegated:
+        return 'Also inject one bounded delegated summary of the parent run.';
+      case null:
+        return 'Follow the built-in profile default unless a more specific override applies.';
+    }
+  }
+
+  static String subAgentContextOverrideLabel(SubAgentContextMode? mode) {
+    switch (mode) {
+      case SubAgentContextMode.minimal:
+        return 'Minimal';
+      case SubAgentContextMode.delegated:
+        return 'Delegated';
+      case null:
+        return 'Use default';
+    }
+  }
+
+  static String subAgentContextOverrideSummary(String profileId) {
+    switch (profileId) {
+      case 'researcher':
+        return 'Built-in default: Minimal.';
+      case 'general-purpose':
+      case 'reviewer':
+      case 'worker':
+        return 'Built-in default: Delegated.';
+      default:
+        return 'Use default unless you need a profile-specific override.';
+    }
+  }
+
+  static String subAgentProfileLabel(String profileId) {
+    switch (profileId) {
+      case 'general-purpose':
+        return 'General purpose';
+      case 'researcher':
+        return 'Researcher';
+      case 'reviewer':
+        return 'Reviewer';
+      case 'worker':
+        return 'Worker';
+      default:
+        return profileId;
     }
   }
 

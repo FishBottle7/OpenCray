@@ -783,6 +783,10 @@ void main() {
             'readOnlyOutsideWorkspace': true,
             'liveContextModeId': arguments['liveContextModeId'],
             'memoryToolsEnabled': arguments['memoryToolsEnabled'],
+            'subAgentContextDefaultModeId':
+                arguments['subAgentContextDefaultModeId'],
+            'subAgentContextProfileOverrides':
+                arguments['subAgentContextProfileOverrides'],
           };
         });
 
@@ -805,6 +809,10 @@ void main() {
       readOnlyOutsideWorkspace: true,
       liveContextModeId: 'no_soul',
       memoryToolsEnabled: false,
+      subAgentContextDefaultModeId: 'delegated',
+      subAgentContextProfileOverrides: const <String, String>{
+        'reviewer': 'minimal',
+      },
     );
 
     expect(capturedCall.method, 'saveSafetySettings');
@@ -816,12 +824,22 @@ void main() {
     expect(arguments['fileDeletesPolicyId'], 'block');
     expect(arguments['liveContextModeId'], 'no_soul');
     expect(arguments['memoryToolsEnabled'], false);
+    expect(arguments['subAgentContextDefaultModeId'], 'delegated');
+    expect(
+      arguments['subAgentContextProfileOverrides'],
+      const <String, String>{'reviewer': 'minimal'},
+    );
     expect(snapshot.automationModeId, 'dev');
     expect(snapshot.maxAgentTurns, 0);
     expect(snapshot.maxToolCalls, 0);
     expect(snapshot.fileDeletesPolicyId, 'block');
     expect(snapshot.liveContextModeId, 'no_soul');
     expect(snapshot.memoryToolsEnabled, false);
+    expect(snapshot.subAgentContextDefaultModeId, 'delegated');
+    expect(
+      snapshot.subAgentContextProfileOverrides,
+      const <String, String>{'reviewer': 'minimal'},
+    );
   });
 
   test('platform bridge loads strong background snapshots', () async {

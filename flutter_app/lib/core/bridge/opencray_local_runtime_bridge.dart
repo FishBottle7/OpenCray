@@ -772,6 +772,8 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
     required bool readOnlyOutsideWorkspace,
     String liveContextModeId = 'full',
     bool memoryToolsEnabled = true,
+    String? subAgentContextDefaultModeId,
+    Map<String, String> subAgentContextProfileOverrides = const <String, String>{},
   }) async => OpenCraySafetySettingsSnapshot.fromMap(
     await _postMap('v1/save_safety_settings', <String, Object?>{
       'automationModeId': automationModeId,
@@ -792,6 +794,8 @@ class OpenCrayLocalRuntimeBridge implements OpenCrayHostBridge {
       'readOnlyOutsideWorkspace': readOnlyOutsideWorkspace,
       'liveContextModeId': liveContextModeId,
       'memoryToolsEnabled': memoryToolsEnabled,
+      'subAgentContextDefaultModeId': subAgentContextDefaultModeId,
+      'subAgentContextProfileOverrides': subAgentContextProfileOverrides,
     }),
   );
 

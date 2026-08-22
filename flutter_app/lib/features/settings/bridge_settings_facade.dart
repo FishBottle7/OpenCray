@@ -432,6 +432,11 @@ class BridgeSettingsFacade implements SettingsFacade {
       readOnlyOutsideWorkspace: snapshot.readOnlyOutsideWorkspace,
       liveContextModeId: snapshot.liveContextMode.id,
       memoryToolsEnabled: snapshot.memoryToolsEnabled,
+      subAgentContextDefaultModeId: snapshot.subAgentContextDefaultMode?.id,
+      subAgentContextProfileOverrides:
+          snapshot.subAgentContextProfileOverrides.map(
+            (profileId, mode) => MapEntry(profileId, mode.id),
+          ),
     ),
   );
 
@@ -965,6 +970,25 @@ class BridgeSettingsFacade implements SettingsFacade {
       readOnlyOutsideWorkspace: snapshot.readOnlyOutsideWorkspace,
       liveContextMode: liveContextModeFromId(snapshot.liveContextModeId),
       memoryToolsEnabled: snapshot.memoryToolsEnabled,
+      subAgentContextDefaultMode: subAgentContextModeFromId(
+        snapshot.subAgentContextDefaultModeId,
+      ),
+      subAgentContextProfileOverrides:
+          Map<String, SubAgentContextMode>.unmodifiable(
+            Map<String, SubAgentContextMode>.fromEntries(
+              snapshot.subAgentContextProfileOverrides.entries
+                  .map(
+                    (entry) => MapEntry(
+                      entry.key,
+                      subAgentContextModeFromId(entry.value),
+                    ),
+                  )
+                  .where((entry) => entry.value != null)
+                  .map(
+                    (entry) => MapEntry(entry.key, entry.value!),
+                  ),
+            ),
+          ),
     );
   }
 }

@@ -829,6 +829,8 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
     required bool readOnlyOutsideWorkspace,
     String liveContextModeId = 'full',
     bool memoryToolsEnabled = true,
+    String? subAgentContextDefaultModeId,
+    Map<String, String> subAgentContextProfileOverrides = const <String, String>{},
   }) async => OpenCraySafetySettingsSnapshot.fromMap(
     await _invokeMap(
       'saveSafetySettings',
@@ -851,6 +853,8 @@ class OpenCrayPlatformBridge implements OpenCrayHostBridge {
         'readOnlyOutsideWorkspace': readOnlyOutsideWorkspace,
         'liveContextModeId': liveContextModeId,
         'memoryToolsEnabled': memoryToolsEnabled,
+        'subAgentContextDefaultModeId': subAgentContextDefaultModeId,
+        'subAgentContextProfileOverrides': subAgentContextProfileOverrides,
       },
     ),
   );

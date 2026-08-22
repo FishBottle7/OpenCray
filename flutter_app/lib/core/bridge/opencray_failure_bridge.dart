@@ -704,6 +704,8 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
     required bool readOnlyOutsideWorkspace,
     String liveContextModeId = 'full',
     bool memoryToolsEnabled = true,
+    String? subAgentContextDefaultModeId,
+    Map<String, String> subAgentContextProfileOverrides = const <String, String>{},
   }) async => throw StateError(_failureMessage);
 
   @override
