@@ -1422,237 +1422,6 @@ class OpenCrayAgentRuntime(
     }
   }
 
-  private fun recoverableGatewayRetryDelayMs(gatewayResult: LiteLlmGatewayResult): Long? = when {
-    gatewayResult.status == LiteLlmGatewayStatus.TIMEOUT &&
-      !isTerminalProviderTimeout(gatewayResult) ->
-      config.recoverableLlmRetryDelayMs
-
-    gatewayResult.status == LiteLlmGatewayStatus.RATE_LIMITED ->
-      maxOf(
-        config.recoverableLlmRetryDelayMs,
-        gatewayResult.metadata["retryAfterMs"]?.toLongOrNull() ?: 0L,
-      )
-
-    gatewayResult.status == LiteLlmGatewayStatus.FAILED &&
-      gatewayResult.errorCode.isTransientGatewayFailureCode() ->
-      config.recoverableLlmRetryDelayMs
-
-    else -> null
-  }
-
-  private fun isTerminalProviderTimeout(gatewayResult: LiteLlmGatewayResult): Boolean =
-    gatewayResult.metadata["statusCode"] in TERMINAL_PROVIDER_TIMEOUT_STATUS_CODES
-
-  private fun recoverableGatewayFailureObservation(
-    gatewayResult: LiteLlmGatewayResult,
-    nativeToolCallingEnabled: Boolean,
-    legacyJsonFallbackEnabled: Boolean,
-    diagnostics: PromptRunDiagnostics,
-  ): String? {
-    if (!isProviderEmptyResponseFailure(gatewayResult)) {
-      return null
-    }
-    if (diagnostics.emptyResponseRecoveryCount >= config.maxRecoverableLlmRetries) {
-      return null
-    }
-    diagnostics.emptyResponseRecoveryCount += 1
-    return buildEmptyResponseRecoveryObservation(
-      nativeToolCallingEnabled = nativeToolCallingEnabled,
-      legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
-      detail = gatewayResult.errorMessage ?: "Provider returned an empty completion payload.",
-      reasoningText = gatewayResult.completion?.reasoningText,
-      rawOutput = gatewayResult.completion?.rawText ?: gatewayResult.outputText,
-    )
-  }
-
-  private fun responsesContinuationRecoveryReason(
-    request: LiteLlmGatewayRequest,
-    gatewayResult: LiteLlmGatewayResult,
-  ): String? {
-    if (!isResponsesProtocol()) {
-      return null
-    }
-    if (request.previousResponseId.isNullOrBlank()) {
-      return null
-    }
-    if (gatewayResult.status != LiteLlmGatewayStatus.FAILED) {
-      return null
-    }
-    val diagnosticText = buildString {
-      append(gatewayResult.errorCode.orEmpty())
-      append('\n')
-      append(gatewayResult.errorMessage.orEmpty())
-      gatewayResult.metadata.forEach { (key, value) ->
-        append('\n')
-        append(key)
-        append('=')
-        append(value)
-      }
-    }.lowercase()
-    val missingToolCallForOutput =
-      diagnosticText.contains("no tool call found") &&
-        diagnosticText.contains("call_id") &&
-        (
-          diagnosticText.contains("function call output") ||
-            diagnosticText.contains("function_call_output")
-        )
-    val previousResponseMismatch =
-      diagnosticText.contains("previous_response_id") &&
-        (
-          diagnosticText.contains("not found") ||
-            diagnosticText.contains("invalid") ||
-            diagnosticText.contains("mismatch")
-        )
-    return when {
-      missingToolCallForOutput -> "missing_tool_call_for_output"
-      previousResponseMismatch -> "previous_response_mismatch"
-      else -> null
-    }
-  }
-
-  private fun recoverableSuccessfulEmptyResponseObservation(
-    gatewayResult: LiteLlmGatewayResult,
-    nativeToolCallingEnabled: Boolean,
-    legacyJsonFallbackEnabled: Boolean,
-    diagnostics: PromptRunDiagnostics,
-  ): String? {
-    if (!isSuccessfulEmptyResponse(gatewayResult)) {
-      return null
-    }
-    if (diagnostics.emptyResponseRecoveryCount >= config.maxRecoverableLlmRetries) {
-      return null
-    }
-    diagnostics.emptyResponseRecoveryCount += 1
-    return buildEmptyResponseRecoveryObservation(
-      nativeToolCallingEnabled = nativeToolCallingEnabled,
-      legacyJsonFallbackEnabled = legacyJsonFallbackEnabled,
-      detail = "The previous response contained no usable tool call, commentary update, or final answer.",
-      reasoningText = gatewayResult.completion?.reasoningText,
-      rawOutput = null,
-    )
-  }
-
-  private fun isProviderEmptyResponseFailure(
-    gatewayResult: LiteLlmGatewayResult,
-  ): Boolean = gatewayResult.status == LiteLlmGatewayStatus.FAILED &&
-    gatewayResult.errorCode == "PROVIDER_EMPTY_RESPONSE"
-
-  private fun isSuccessfulEmptyResponse(
-    gatewayResult: LiteLlmGatewayResult,
-  ): Boolean = gatewayResult.status == LiteLlmGatewayStatus.SUCCESS &&
-    !hasVisibleOutput(gatewayResult)
-
-  private fun hasVisibleOutput(
-    gatewayResult: LiteLlmGatewayResult,
-  ): Boolean = !gatewayResult.outputText.isNullOrBlank() ||
-    !gatewayResult.completion?.rawText.isNullOrBlank() ||
-    !gatewayResult.completion?.finalText.isNullOrBlank() ||
-    gatewayResult.completion?.finalAttachments?.isNotEmpty() == true ||
-    gatewayResult.completion?.let(::structuredCompletionCommentaryTexts).orEmpty().isNotEmpty() ||
-    gatewayResult.completion?.toolCalls?.isNotEmpty() == true
-
-  private fun sleepForRecoverableRetry(
-    delayMs: Long,
-    hooks: RuntimeExecutionHooks,
-  ): Boolean {
-    var remainingDelayMs = delayMs.coerceAtLeast(0L)
-    while (remainingDelayMs > 0) {
-      if (hooks.isCancellationRequested()) {
-        return false
-      }
-      val sleepChunkMs = minOf(remainingDelayMs, RECOVERABLE_LLM_RETRY_SLEEP_CHUNK_MS)
-      val sleepOutcome = runCatching { config.sleep(sleepChunkMs) }
-      if (sleepOutcome.isFailure) {
-        sleepOutcome.exceptionOrNull()
-          ?.takeIf { error -> error is InterruptedException }
-          ?.let { Thread.currentThread().interrupt() }
-        return false
-      }
-      remainingDelayMs -= sleepChunkMs
-    }
-    return !hooks.isCancellationRequested()
-  }
-
-  private fun buildRecoverableRetryCommentaryText(
-    gatewayResult: LiteLlmGatewayResult,
-    retryCount: Int,
-    delayMs: Long,
-  ): String {
-    val reason = gatewayResult.errorCode
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?: gatewayResult.status.name
-    val detail = gatewayResult.errorMessage
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?: "LLM request failed."
-    return buildString {
-      append("LLM request failed with ")
-      append(reason)
-      append(". Retrying in ")
-      append(delayMs / 1_000L)
-      append("s (retry ")
-      append(retryCount)
-      append("/")
-      append(config.maxRecoverableLlmRetries)
-      append("). ")
-      append(detail)
-    }
-  }
-
-  private fun buildRecoverableRetryExhaustedMessage(
-    gatewayResult: LiteLlmGatewayResult,
-    retryCount: Int,
-  ): String {
-    val reason = gatewayResult.errorCode
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?: gatewayResult.status.name
-    val detail = gatewayResult.errorMessage
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?: "LLM request failed."
-    return buildString {
-      append("Recoverable LLM retries were exhausted after ")
-      append(retryCount)
-      append(" retries. The run is paused and can resume from the current checkpoint. ")
-      append("Latest failure: ")
-      append(reason)
-      append(". ")
-      append(detail)
-    }
-  }
-
-  internal fun buildStructuredToolCallRecoveryReason(
-    toolCallErrors: List<String>,
-  ): String = buildString {
-    append("Native tool call payload could not be parsed. ")
-    append("Return the same next step again with a valid tool call payload. ")
-    append("Diagnostics: ")
-    append(
-      toolCallErrors
-        .take(MAX_STRUCTURED_TOOL_CALL_ERROR_COUNT)
-        .joinToString(separator = " | "),
-    )
-  }
-
-  internal fun duplicateStructuredToolCallErrors(
-    toolCalls: List<LiteLlmStructuredToolCall>,
-  ): List<String> {
-    if (toolCalls.isEmpty()) {
-      return emptyList()
-    }
-    val seenToolCallIds = linkedSetOf<String>()
-    val errors = mutableListOf<String>()
-    toolCalls.forEachIndexed { index, toolCall ->
-      val toolCallId = toolCall.id?.trim()?.takeIf(String::isNotBlank) ?: return@forEachIndexed
-      if (!seenToolCallIds.add(toolCallId)) {
-        errors += "tool_calls[$index].id duplicates tool call id '$toolCallId'."
-      }
-    }
-    return errors
-  }
-
   private fun nativeToolCallingEnabledForTurn(
     visibleToolDefinitions: List<AgentToolDefinition>,
     builtinTools: List<LiteLlmBuiltinToolDefinition> = emptyList(),
@@ -1776,7 +1545,7 @@ class OpenCrayAgentRuntime(
     return rawValue == "true"
   }
 
-  private fun isResponsesProtocol(): Boolean =
+  internal fun isResponsesProtocol(): Boolean =
     config.llmMetadata["protocol"]?.trim()?.lowercase() == RESPONSES_PROTOCOL
 
   private fun nativeProviderWebSearchEnabled(): Boolean {
@@ -9440,7 +9209,7 @@ class OpenCrayAgentRuntime(
   }.trim()
 
   @Suppress("UNUSED_PARAMETER")
-  private fun buildEmptyResponseRecoveryObservation(
+  internal fun buildEmptyResponseRecoveryObservation(
     nativeToolCallingEnabled: Boolean,
     legacyJsonFallbackEnabled: Boolean,
     detail: String,
@@ -9477,22 +9246,6 @@ class OpenCrayAgentRuntime(
         append(preview.take(MAX_PROTOCOL_ERROR_PREVIEW_CHARS))
       }
   }.trim()
-
-  private fun String?.isTransientGatewayFailureCode(): Boolean {
-    val normalized = this?.trim()?.uppercase() ?: return false
-    if (normalized == "PROVIDER_TRANSPORT_ERROR" || normalized == "PROVIDER_CLIENT_EXCEPTION") {
-      return true
-    }
-    if (!normalized.startsWith("HTTP_")) {
-      return false
-    }
-    val statusCode = normalized.removePrefix("HTTP_").toIntOrNull() ?: return false
-    return statusCode == 408 ||
-      statusCode == 409 ||
-      statusCode == 425 ||
-      statusCode == 429 ||
-      statusCode in 500..599
-  }
 
   private fun finalTurnSystemPromptAppendix(
     legacyJsonFallbackEnabled: Boolean,
@@ -9883,11 +9636,8 @@ class OpenCrayAgentRuntime(
     const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
     const val ERROR_SKILL_TOOL_POLICY_BLOCKED: String = "SKILL_TOOL_POLICY_BLOCKED"
     const val MAX_PROTOCOL_ERROR_PREVIEW_CHARS: Int = 600
-    const val MAX_STRUCTURED_TOOL_CALL_ERROR_COUNT: Int = 3
     const val RESPONSES_CONTEXT_UPDATE_CHAIN_LIMIT: Int = 8
     const val RESPONSES_CONTEXT_UPDATE_MAX_CHARS: Int = 6_000
-    const val RECOVERABLE_LLM_RETRY_SLEEP_CHUNK_MS: Long = 250L
-    val TERMINAL_PROVIDER_TIMEOUT_STATUS_CODES: Set<String> = setOf("449", "499")
     const val ACTIVATION_SOURCE_SKILL_READ: String = "skill_read"
     const val ACTIVATION_SOURCE_SKILL_EXECUTE: String = "skill_execute"
     const val ACTIVATION_SOURCE_IMPLICIT_SKILL: String = "implicit_skill"
