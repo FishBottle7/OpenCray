@@ -10,6 +10,7 @@ import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayAgentRuntime
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.ProviderNativeWebSearchSupport
+import com.opencray.runtime.promptCheckpointMetadata
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationMessageKind
 import com.opencray.runtime.context.RuntimeConversationRole

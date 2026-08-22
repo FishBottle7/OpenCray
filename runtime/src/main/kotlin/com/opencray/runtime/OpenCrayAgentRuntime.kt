@@ -2233,7 +2233,7 @@ class OpenCrayAgentRuntime(
     cursor.localContinuationEnvelope = null
   }
 
-  private fun buildLocalContinuationEnvelope(
+  internal fun buildLocalContinuationEnvelope(
     cursor: PromptTurnCursor,
     frontContextPrompts: List<String>,
     stableAnchor: String,
@@ -3377,7 +3377,7 @@ class OpenCrayAgentRuntime(
     (value as? JsonPrimitive)?.content?.let { content -> key to content }
   }.toMap()
 
-  private fun runIdFor(task: AgentTask): String =
+  internal fun runIdFor(task: AgentTask): String =
     task.metadata[RUN_ID_METADATA_KEY]
       ?.takeIf(String::isNotBlank)
       ?: task.id
@@ -4914,16 +4914,6 @@ class OpenCrayAgentRuntime(
     }
   }
 
-  private fun supplementCheckpointFor(
-    transcript: List<RuntimeConversationMessage>,
-  ): String = transcript.lastOrNull()
-    ?.takeIf { message ->
-      message.role == RuntimeConversationRole.TOOL &&
-        message.kind == RuntimeConversationMessageKind.TOOL_RESULT
-    }
-    ?.let { SUPPLEMENT_CHECKPOINT_POST_TOOL_PRE_MODEL }
-    ?: SUPPLEMENT_CHECKPOINT_TURN_START
-
   private fun remainingTurnBudget(turn: Int): Int? =
     config.maxTurns
       .takeIf { configuredLimit -> configuredLimit > 0 }
@@ -5666,7 +5656,7 @@ class OpenCrayAgentRuntime(
     RuntimeConversationAssistantPhase.FINAL_ANSWER -> LiteLlmAssistantPhase.FINAL_ANSWER
   }
 
-  private fun AgentModelAction.toSerializableModelAction(): OpenCraySerializableModelAction = when (this) {
+  internal fun AgentModelAction.toSerializableModelAction(): OpenCraySerializableModelAction = when (this) {
     is AgentModelAction.Commentary -> OpenCraySerializableModelAction.Commentary(
       text = text,
       stage = stage,
@@ -7056,7 +7046,7 @@ class OpenCrayAgentRuntime(
     return coordinatedHandle
   }
 
-  private fun synchronizedSubAgentHandles(
+  internal fun synchronizedSubAgentHandles(
     cursor: PromptTurnCursor,
   ): List<SubAgentHandleState> {
     val localHandles = synchronized(cursor.subAgentExecutionLock) {
@@ -8679,220 +8669,6 @@ class OpenCrayAgentRuntime(
     }
   }.trim()
 
-  private fun promptCheckpointState(
-    cursor: PromptTurnCursor,
-    turnIndex: Int,
-    pendingActions: List<AgentModelAction> = emptyList(),
-    nextActionIndex: Int = 0,
-    requiresSingleActionReminder: Boolean = false,
-    localContinuationContextPrompts: List<String>? = null,
-    localContinuationStableAnchor: String? = null,
-    localContinuationGatewayMessagesEnabled: Boolean = false,
-    localContinuationToolPoolFingerprint: String? = null,
-    localContinuationToolSchemaFingerprint: String? = null,
-    localContinuationRequestSettingsFingerprint: String? = null,
-  ): OpenCrayPromptResumeState = OpenCrayPromptResumeState(
-    transcript = cursor.transcript.toList(),
-    turnIndex = turnIndex,
-    toolCallCount = cursor.toolCallCount,
-    pendingActions = pendingActions.map { action -> action.toSerializableModelAction() },
-    nextActionIndex = nextActionIndex,
-    requiresSingleActionReminder = requiresSingleActionReminder,
-    activeSkillName = cursor.activeSkillName,
-    activeSkillActivationSource = cursor.activeSkillActivationSource,
-    activeSkillPinned = cursor.activeSkillPinned,
-    localContinuationEnvelope = localContinuationContextPrompts
-      ?.takeIf { prompts -> prompts.isNotEmpty() }
-      ?.let { frontContextPrompts ->
-        localContinuationStableAnchor?.let { stableAnchor ->
-          buildLocalContinuationEnvelope(
-            cursor = cursor,
-            frontContextPrompts = frontContextPrompts,
-            stableAnchor = stableAnchor,
-            gatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
-            toolPoolFingerprint = localContinuationToolPoolFingerprint
-              ?: cursor.localContinuationEnvelope?.toolPoolFingerprint
-              ?: "absent",
-            toolSchemaFingerprint = localContinuationToolSchemaFingerprint
-              ?: cursor.localContinuationEnvelope?.toolSchemaFingerprint
-              ?: "absent",
-            requestSettingsFingerprint = localContinuationRequestSettingsFingerprint
-              ?: cursor.localContinuationEnvelope?.requestSettingsFingerprint
-              ?: "absent",
-          )?.toSerializable()
-        }
-      }
-      ?: cursor.localContinuationEnvelope?.toSerializable(),
-    responsesPreviousResponseId = cursor.responsesPreviousResponseId,
-    responsesProviderLineageId = cursor.responsesProviderLineageId,
-    responsesLineageTrusted = cursor.responsesLineageTrusted,
-    responsesContinuationShape = cursor.responsesContinuationShape?.toSerializable(),
-    responsesPendingMessages = cursor.responsesPendingMessages.map(OpenCraySerializableGatewayMessage::from),
-    replayToolResultProjections = cursor.replayToolResultProjections.toSortedMap(),
-    subAgentHandles = synchronizedSubAgentHandles(cursor),
-  )
-
-  internal fun promptCheckpointMetadata(
-    boundary: OpenCrayPromptCheckpointBoundary,
-    cursor: PromptTurnCursor,
-    turnIndex: Int,
-    pendingActions: List<AgentModelAction> = emptyList(),
-    nextActionIndex: Int = 0,
-    requiresSingleActionReminder: Boolean = false,
-    localContinuationContextPrompts: List<String>? = null,
-    localContinuationStableAnchor: String? = null,
-    localContinuationGatewayMessagesEnabled: Boolean = false,
-    localContinuationToolPoolFingerprint: String? = null,
-    localContinuationToolSchemaFingerprint: String? = null,
-    localContinuationRequestSettingsFingerprint: String? = null,
-  ): Map<String, String> = OpenCrayPromptResumeMetadata.encodeToMetadata(
-    state = promptCheckpointState(
-      cursor = cursor,
-      turnIndex = turnIndex,
-      pendingActions = pendingActions,
-      nextActionIndex = nextActionIndex,
-      requiresSingleActionReminder = requiresSingleActionReminder,
-      localContinuationContextPrompts = localContinuationContextPrompts,
-      localContinuationStableAnchor = localContinuationStableAnchor,
-      localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
-      localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
-      localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
-      localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
-    ),
-    json = config.json,
-    checkpointBoundary = boundary,
-  )
-
-  private fun emitPromptCheckpoint(
-    boundary: OpenCrayPromptCheckpointBoundary,
-    cursor: PromptTurnCursor,
-    turnIndex: Int,
-    emittedAtEpochMs: Long,
-    toolName: String? = null,
-    pendingActions: List<AgentModelAction> = emptyList(),
-    nextActionIndex: Int = 0,
-    requiresSingleActionReminder: Boolean = false,
-    localContinuationContextPrompts: List<String>? = null,
-    localContinuationStableAnchor: String? = null,
-    localContinuationGatewayMessagesEnabled: Boolean = false,
-    localContinuationToolPoolFingerprint: String? = null,
-    localContinuationToolSchemaFingerprint: String? = null,
-    localContinuationRequestSettingsFingerprint: String? = null,
-  ) {
-    config.promptCheckpointSink(
-      OpenCrayPromptCheckpointEmission(
-        boundary = boundary,
-        state = promptCheckpointState(
-          cursor = cursor,
-          turnIndex = turnIndex,
-          pendingActions = pendingActions,
-          nextActionIndex = nextActionIndex,
-          requiresSingleActionReminder = requiresSingleActionReminder,
-          localContinuationContextPrompts = localContinuationContextPrompts,
-          localContinuationStableAnchor = localContinuationStableAnchor,
-          localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
-          localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
-          localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
-          localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
-        ),
-        emittedAtEpochMs = emittedAtEpochMs,
-        toolName = toolName,
-      ),
-    )
-  }
-
-  private fun emitInternalCheckpointJournalMarker(
-    task: AgentTask,
-    turn: Int,
-    boundary: OpenCrayPromptCheckpointBoundary,
-    cursor: PromptTurnCursor,
-    turnIndex: Int,
-    emittedAtEpochMs: Long,
-    pendingActions: List<AgentModelAction> = emptyList(),
-    nextActionIndex: Int = 0,
-    requiresSingleActionReminder: Boolean = false,
-    localContinuationContextPrompts: List<String>? = null,
-    localContinuationStableAnchor: String? = null,
-    localContinuationGatewayMessagesEnabled: Boolean = false,
-    localContinuationToolPoolFingerprint: String? = null,
-    localContinuationToolSchemaFingerprint: String? = null,
-    localContinuationRequestSettingsFingerprint: String? = null,
-  ) {
-    if (
-      boundary != OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST &&
-        boundary != OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED
-    ) {
-      return
-    }
-    eventSink.onRunEvent(
-      task = task,
-      event = OpenCraySupplementEvent(
-        runId = runIdFor(task),
-        taskId = task.id,
-        turn = turn,
-        entryId = "checkpoint-${boundary.wireValue}-${UUID.randomUUID().toString().take(8)}",
-        text = "",
-        checkpoint = INTERNAL_PROMPT_CHECKPOINT_MARKER,
-        metadata = promptCheckpointMetadata(
-          boundary = boundary,
-          cursor = cursor,
-          turnIndex = turnIndex,
-          pendingActions = pendingActions,
-          nextActionIndex = nextActionIndex,
-          requiresSingleActionReminder = requiresSingleActionReminder,
-          localContinuationContextPrompts = localContinuationContextPrompts,
-          localContinuationStableAnchor = localContinuationStableAnchor,
-          localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
-          localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
-          localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
-          localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
-        ),
-        emittedAtEpochMs = emittedAtEpochMs,
-      ),
-    )
-  }
-
-  private fun promptCheckpointMetadataAfterActionIndex(
-    boundary: OpenCrayPromptCheckpointBoundary,
-    cursor: PromptTurnCursor,
-    batchActions: List<AgentModelAction>,
-    nextActionIndex: Int,
-    requiresSingleActionReminder: Boolean,
-    localContinuationContextPrompts: List<String>? = null,
-    localContinuationStableAnchor: String? = null,
-    localContinuationGatewayMessagesEnabled: Boolean = false,
-    localContinuationToolPoolFingerprint: String? = null,
-    localContinuationToolSchemaFingerprint: String? = null,
-    localContinuationRequestSettingsFingerprint: String? = null,
-  ): Map<String, String> = if (nextActionIndex < batchActions.size) {
-    promptCheckpointMetadata(
-      boundary = boundary,
-      cursor = cursor,
-      turnIndex = cursor.turn,
-      pendingActions = batchActions,
-      nextActionIndex = nextActionIndex,
-      requiresSingleActionReminder = requiresSingleActionReminder,
-      localContinuationContextPrompts = localContinuationContextPrompts,
-      localContinuationStableAnchor = localContinuationStableAnchor,
-      localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
-      localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
-      localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
-      localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
-    )
-  } else {
-    promptCheckpointMetadata(
-      boundary = boundary,
-      cursor = cursor,
-      turnIndex = cursor.turn + 1,
-      localContinuationContextPrompts = localContinuationContextPrompts,
-      localContinuationStableAnchor = localContinuationStableAnchor,
-      localContinuationGatewayMessagesEnabled = localContinuationGatewayMessagesEnabled,
-      localContinuationToolPoolFingerprint = localContinuationToolPoolFingerprint,
-      localContinuationToolSchemaFingerprint = localContinuationToolSchemaFingerprint,
-      localContinuationRequestSettingsFingerprint = localContinuationRequestSettingsFingerprint,
-    )
-  }
-
   internal fun emitToolResultEvent(
     task: AgentTask,
     turn: Int,
@@ -9238,7 +9014,7 @@ class OpenCrayAgentRuntime(
       get() = frontContextZones.promptsInTransportOrder
   }
 
-  private fun LocalContinuationEnvelope.toSerializable(): OpenCraySerializableLocalContinuationEnvelope =
+  internal fun LocalContinuationEnvelope.toSerializable(): OpenCraySerializableLocalContinuationEnvelope =
     OpenCraySerializableLocalContinuationEnvelope(
       stableAnchor = stableAnchor,
       frontContextPrompts = frontContextPrompts,
@@ -9276,7 +9052,7 @@ class OpenCrayAgentRuntime(
     val truncated: Boolean,
   )
 
-  private fun ResponsesContinuationShape.toSerializable(): OpenCraySerializableResponsesContinuationShape =
+  internal fun ResponsesContinuationShape.toSerializable(): OpenCraySerializableResponsesContinuationShape =
     OpenCraySerializableResponsesContinuationShape(
       stableAnchor = stableAnchor,
       durableContextPrompt = baseline.durableContextPrompt.takeIf(String::isNotBlank),
@@ -9390,9 +9166,6 @@ class OpenCrayAgentRuntime(
     const val RUN_ID_METADATA_KEY: String = "${HIDDEN_METADATA_PREFIX}runId"
     const val PROMPT_USER_TEXT_METADATA_KEY: String = "${HIDDEN_METADATA_PREFIX}promptUserText"
     const val PROMPT_RUNTIME_ATTACHMENTS_JSON_METADATA_KEY: String = "${HIDDEN_METADATA_PREFIX}promptRuntimeAttachmentsJson"
-    const val SUPPLEMENT_CHECKPOINT_TURN_START: String = "turn_start"
-    const val SUPPLEMENT_CHECKPOINT_POST_TOOL_PRE_MODEL: String = "post_tool_pre_model"
-    const val INTERNAL_PROMPT_CHECKPOINT_MARKER: String = "internal_prompt_checkpoint"
     const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
     const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
     const val ERROR_SKILL_TOOL_POLICY_BLOCKED: String = "SKILL_TOOL_POLICY_BLOCKED"
