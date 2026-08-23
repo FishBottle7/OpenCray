@@ -3232,7 +3232,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
     if (text.isBlank()) {
       return TranscriptAttachmentMarkdownCompatibility(rewrittenText = text)
     }
-    val references = parseTranscriptAttachmentMarkdownReferences(text)
+    val references = parseAttachmentMarkdownReferences(text)
     if (references.isEmpty()) {
       return TranscriptAttachmentMarkdownCompatibility(rewrittenText = text)
     }
@@ -3244,16 +3244,16 @@ internal class AppAgentSessionTaskRuntimeFactory(
       return TranscriptAttachmentMarkdownCompatibility(rewrittenText = text)
     }
     val resolvedReferences = references.map { reference ->
-      TranscriptResolvedAttachmentMarkdownReference(
+      ResolvedAttachmentMarkdownReference(
         reference = reference,
-        attachment = resolveTranscriptAttachmentMarkdownReference(
+        attachment = resolveAttachmentMarkdownReference(
           reference = reference,
           candidates = candidates,
         ),
       )
     }
     return TranscriptAttachmentMarkdownCompatibility(
-      rewrittenText = rewriteTranscriptAttachmentMarkdownText(
+      rewrittenText = rewriteAttachmentMarkdownText(
         text = text,
         resolvedReferences = resolvedReferences,
       ),
@@ -3270,7 +3270,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private fun transcriptAttachmentMarkdownCandidates(
     sessionId: String,
     result: ExecutionResult,
-  ): List<TranscriptAttachmentMarkdownCandidate> {
+  ): List<AttachmentMarkdownCandidate> {
     val workspaceRoot = workspaceRootsProvider()
       .firstOrNull()
       ?.toAbsolutePath()
@@ -3303,7 +3303,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       }
     }
     val runCandidates = artifactsById.values.map { artifact ->
-      TranscriptAttachmentMarkdownCandidate(
+      AttachmentMarkdownCandidate(
         attachmentId = artifact.artifactId,
         artifactId = artifact.artifactId,
         relativePath = artifact.relativePath,
@@ -3334,7 +3334,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
           return@forEach
         }
         add(
-          TranscriptAttachmentMarkdownCandidate(
+          AttachmentMarkdownCandidate(
             attachmentId = attachment.attachmentId.trim().takeIf(String::isNotBlank),
             relativePath = attachment.localPath,
             displayName = attachment.displayName,
@@ -3364,101 +3364,6 @@ internal class AppAgentSessionTaskRuntimeFactory(
     }
     return runCandidates + sessionCandidates
   }
-
-  private fun resolveTranscriptAttachmentMarkdownReference(
-    reference: TranscriptAttachmentMarkdownReference,
-    candidates: List<TranscriptAttachmentMarkdownCandidate>,
-  ): TranscriptAttachmentMarkdownCandidate? {
-    if (candidates.isEmpty()) {
-      return null
-    }
-    val preferredCandidates = if (reference.isImage) {
-      candidates.filter(TranscriptAttachmentMarkdownCandidate::isImageLike).ifEmpty { candidates }
-    } else {
-      candidates
-    }
-    val targetToken = reference.targetToken
-    if (targetToken.isNotBlank() && targetToken != "artifact") {
-      preferredCandidates.firstOrNull { candidate -> candidate.matches(targetToken) }?.let { match ->
-        return match
-      }
-    }
-    val labelToken = normalizeTranscriptAttachmentMarkdownToken(reference.label)
-    if (labelToken.isNotBlank()) {
-      preferredCandidates.firstOrNull { candidate ->
-        candidate.matches(
-          labelToken,
-          includeArtifactId = false,
-          includeAttachmentId = false,
-        )
-      }?.let { match ->
-        return match
-      }
-    }
-    return if ((targetToken.isBlank() || targetToken == "artifact") && preferredCandidates.size == 1) {
-      preferredCandidates.first()
-    } else {
-      null
-    }
-  }
-
-  private fun rewriteTranscriptAttachmentMarkdownText(
-    text: String,
-    resolvedReferences: List<TranscriptResolvedAttachmentMarkdownReference>,
-  ): String {
-    if (resolvedReferences.isEmpty()) {
-      return text
-    }
-    val resolvedTokens = resolvedReferences.filter { it.attachment != null }
-    if (resolvedTokens.isNotEmpty()) {
-      val stripped = resolvedTokens.fold(text) { current, resolved ->
-        current.replace(resolved.reference.raw, "")
-      }
-      if (cleanupTranscriptAttachmentMarkdownText(stripped).isBlank()) {
-        return ""
-      }
-    }
-    var rewritten = text
-    resolvedReferences.forEach { resolved ->
-      val replacement = when {
-        resolved.attachment != null && resolved.reference.isImage -> ""
-        else -> resolved.reference.fallbackLabel
-      }
-      rewritten = rewritten.replace(resolved.reference.raw, replacement)
-    }
-    return cleanupTranscriptAttachmentMarkdownText(rewritten)
-  }
-
-  private fun cleanupTranscriptAttachmentMarkdownText(text: String): String = text
-    .replace(Regex("""[ \t]+\n"""), "\n")
-    .replace(Regex("""\n[ \t]+"""), "\n")
-    .replace(Regex("""\n{3,}"""), "\n\n")
-    .trim()
-
-  private fun parseTranscriptAttachmentMarkdownReferences(
-    text: String,
-  ): List<TranscriptAttachmentMarkdownReference> =
-    TRANSCRIPT_ATTACHMENT_MARKDOWN_REFERENCE_REGEX.findAll(text)
-      .mapNotNull { match ->
-        val href = match.groupValues[3]
-          .trim()
-          .substringBefore(' ')
-          .trim()
-        if (!isTranscriptAttachmentMarkdownHref(href)) {
-          return@mapNotNull null
-        }
-        val normalizedHref = href
-          .removePrefix("attachment:")
-          .removePrefix("//")
-          .trim()
-        TranscriptAttachmentMarkdownReference(
-          raw = match.value,
-          label = match.groupValues[2].trim(),
-          targetToken = normalizeTranscriptAttachmentMarkdownToken(normalizedHref),
-          isImage = match.groupValues[1] == "!",
-        )
-      }
-      .toList()
 
   private fun dedupeTranscriptAttachments(
     attachments: List<RuntimeConversationAttachment>,
@@ -3869,94 +3774,35 @@ private data class TranscriptAttachmentMarkdownCompatibility(
   val attachments: List<RuntimeConversationAttachment> = emptyList(),
 )
 
-private data class TranscriptAttachmentMarkdownReference(
-  val raw: String,
-  val label: String,
-  val targetToken: String,
-  val isImage: Boolean,
-) {
-  val fallbackLabel: String
-    get() = label.ifBlank { targetToken.substringAfterLast('/').trim() }
-}
-
-private data class TranscriptResolvedAttachmentMarkdownReference(
-  val reference: TranscriptAttachmentMarkdownReference,
-  val attachment: TranscriptAttachmentMarkdownCandidate?,
-)
-
-private data class TranscriptAttachmentMarkdownCandidate(
-  val attachmentId: String? = null,
-  val relativePath: String,
-  val displayName: String,
-  val kindHint: String? = null,
-  val mimeType: String? = null,
-  val transcriptText: String? = null,
-  val artifactId: String? = null,
-  val filePath: String? = null,
-) {
-  private val normalizedRelativePath: String = normalizeTranscriptAttachmentMarkdownToken(relativePath)
-  private val normalizedDisplayName: String = normalizeTranscriptAttachmentMarkdownToken(displayName)
-  private val normalizedBaseName: String = normalizedRelativePath.substringAfterLast('/')
-  private val normalizedArtifactId: String? = artifactId
+private fun AttachmentMarkdownCandidate.toRuntimeConversationAttachment(
+  forceImage: Boolean,
+): RuntimeConversationAttachment = RuntimeConversationAttachment(
+  attachmentId = attachmentId
     ?.trim()
     ?.takeIf(String::isNotBlank)
-    ?.lowercase(Locale.US)
-  private val normalizedAttachmentId: String? = attachmentId
-    ?.trim()
-    ?.takeIf(String::isNotBlank)
-    ?.lowercase(Locale.US)
-
-  val isImageLike: Boolean
-    get() = kindHint?.trim()?.lowercase(Locale.US) == "image" ||
-      mimeType?.trim()?.lowercase(Locale.US)?.startsWith("image/") == true ||
-      TRANSCRIPT_IMAGE_ATTACHMENT_EXTENSIONS.contains(normalizedDisplayName.substringAfterLast('.', ""))
-
-  fun matches(
-    token: String,
-    includeArtifactId: Boolean = true,
-    includeAttachmentId: Boolean = true,
-  ): Boolean {
-    val normalizedToken = normalizeTranscriptAttachmentMarkdownToken(token)
-    if (normalizedToken.isBlank()) {
-      return false
-    }
-    return normalizedToken == normalizedRelativePath ||
-      normalizedToken == normalizedDisplayName ||
-      normalizedToken == normalizedBaseName ||
-      (includeAttachmentId && normalizedToken == normalizedAttachmentId) ||
-      (includeArtifactId && normalizedToken == normalizedArtifactId)
-  }
-
-  fun toRuntimeConversationAttachment(
-    forceImage: Boolean,
-  ): RuntimeConversationAttachment = RuntimeConversationAttachment(
-    attachmentId = attachmentId
+    ?: artifactId
       ?.trim()
       ?.takeIf(String::isNotBlank)
-      ?: artifactId
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-      ?: filePath
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-        ?.hashCode()
-        ?.toString()
-      ?: normalizeTranscriptAttachmentMarkdownToken(relativePath),
-    kind = when {
-      forceImage -> RuntimeConversationAttachmentKind.IMAGE
-      kindHint?.trim()?.equals("image", ignoreCase = true) == true -> RuntimeConversationAttachmentKind.IMAGE
-      kindHint?.trim()?.equals("voice", ignoreCase = true) == true -> RuntimeConversationAttachmentKind.VOICE
-      kindHint?.trim()?.equals("audio", ignoreCase = true) == true -> RuntimeConversationAttachmentKind.AUDIO
-      mimeType?.trim()?.lowercase(Locale.US)?.startsWith("image/") == true ->
-        RuntimeConversationAttachmentKind.IMAGE
-      else -> RuntimeConversationAttachmentKind.FILE
-    },
-    displayName = displayName,
-    filePath = filePath,
-    mimeType = mimeType,
-    transcriptText = transcriptText,
-  )
-}
+    ?: filePath
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.hashCode()
+      ?.toString()
+    ?: normalizeAttachmentMarkdownToken(relativePath),
+  kind = when {
+    forceImage -> RuntimeConversationAttachmentKind.IMAGE
+    kindHint?.trim()?.equals("image", ignoreCase = true) == true -> RuntimeConversationAttachmentKind.IMAGE
+    kindHint?.trim()?.equals("voice", ignoreCase = true) == true -> RuntimeConversationAttachmentKind.VOICE
+    kindHint?.trim()?.equals("audio", ignoreCase = true) == true -> RuntimeConversationAttachmentKind.AUDIO
+    mimeType?.trim()?.lowercase(Locale.US)?.startsWith("image/") == true ->
+      RuntimeConversationAttachmentKind.IMAGE
+    else -> RuntimeConversationAttachmentKind.FILE
+  },
+  displayName = displayName,
+  filePath = filePath,
+  mimeType = mimeType,
+  transcriptText = transcriptText,
+)
 
 internal data class PreparedSessionContext(
   val sessionContext: AgentRuntimeSessionContext,
@@ -4086,40 +3932,6 @@ private const val ERROR_CODE_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE: String =
   "PROCESS_INTERRUPTED_ON_RESTORE"
 private const val METADATA_KEY_RESTORED_TERMINAL_STATE: String = "restoredTerminalState"
 private const val RESTORED_TERMINAL_STATE_VALUE_INTERRUPTED: String = "interrupted"
-
-private val TRANSCRIPT_ATTACHMENT_MARKDOWN_REFERENCE_REGEX: Regex =
-  Regex("""(!?)\[([^\]]*)]\(([^)]+)\)""")
-
-private val TRANSCRIPT_IMAGE_ATTACHMENT_EXTENSIONS: Set<String> = setOf(
-  "apng",
-  "avif",
-  "bmp",
-  "gif",
-  "jpeg",
-  "jpg",
-  "png",
-  "svg",
-  "webp",
-)
-
-private fun normalizeTranscriptAttachmentMarkdownToken(value: String): String = value
-  .trim()
-  .removePrefix("/")
-  .replace('\\', '/')
-  .lowercase(Locale.US)
-
-private fun isTranscriptAttachmentMarkdownHref(href: String): Boolean {
-  val normalized = href.trim()
-  if (normalized.isBlank()) {
-    return false
-  }
-  if (normalized.startsWith("attachment:", ignoreCase = true)) {
-    return true
-  }
-  return !listOf("http://", "https://", "mailto:", "data:").any { prefix ->
-    normalized.startsWith(prefix, ignoreCase = true)
-  }
-}
 
 private fun com.opencray.persistence.model.ChatAttachmentKind.toTranscriptAttachmentKindHint(): String =
   when (this) {
