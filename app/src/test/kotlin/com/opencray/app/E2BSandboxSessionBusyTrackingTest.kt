@@ -3,10 +3,13 @@ package com.opencray.app
 import com.opencray.app.e2b.E2BBinaryResponse
 import com.opencray.app.e2b.E2BCodeInterpreterPythonRuntime
 import com.opencray.app.e2b.E2BDownloadRequest
+import com.opencray.app.e2b.E2BEnvdCommandTransport
+import com.opencray.app.e2b.E2BEnvdCommandTransportRequest
 import com.opencray.app.e2b.E2BEnvdProcessEvent
 import com.opencray.app.e2b.E2BEnvdProcessProtoCodec
 import com.opencray.app.e2b.E2BRequest
 import com.opencray.app.e2b.E2BResponse
+import com.opencray.app.e2b.E2BTransport
 import com.opencray.app.e2b.E2BUploadRequest
 import com.opencray.app.e2b.SharedE2BSandboxActivityTracker
 import com.opencray.app.e2b.durableE2BNativeRunningRequestIdsProvider

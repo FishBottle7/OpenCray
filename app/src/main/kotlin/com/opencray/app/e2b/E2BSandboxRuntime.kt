@@ -2,7 +2,6 @@ package com.opencray.app.e2b
 
 import com.opencray.app.E2BSandboxSessionSnapshot
 import com.opencray.app.E2BSandboxSessionStore
-import com.opencray.app.E2BTransport
 import com.opencray.app.E2BWorkspaceSyncFileState
 import com.opencray.app.E2BWorkspaceSyncStateSnapshot
 import com.opencray.app.E2BWorkspaceSyncStateStore
@@ -11,7 +10,6 @@ import com.opencray.app.SandboxProviderId
 import com.opencray.app.SandboxSessionMode
 import com.opencray.app.SandboxSettingsState
 import com.opencray.app.SandboxTimeoutAction
-import com.opencray.app.UrlConnectionE2BTransport
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.runtime.CancellablePythonScriptRuntime

@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import com.opencray.app.e2b.E2BEnvdCommandTransport
+import com.opencray.app.e2b.UrlConnectionE2BEnvdCommandTransport
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.orchestrator.RuntimeExecutionHooks

@@ -6,6 +6,7 @@ import com.opencray.app.e2b.E2BDownloadArchiveRetentionPolicy
 import com.opencray.app.e2b.E2BDownloadRequest
 import com.opencray.app.e2b.E2BRequest
 import com.opencray.app.e2b.E2BResponse
+import com.opencray.app.e2b.E2BTransport
 import com.opencray.app.e2b.E2BUploadRequest
 import com.opencray.app.e2b.RemoteWorkspaceDiffManifest
 import com.opencray.app.e2b.SharedE2BSandboxActivityTracker

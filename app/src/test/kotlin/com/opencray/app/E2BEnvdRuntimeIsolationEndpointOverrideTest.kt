@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import com.opencray.app.e2b.E2BEnvdCommandTransport
+import com.opencray.app.e2b.E2BEnvdCommandTransportRequest
 import com.opencray.app.e2b.E2BResponse
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File
