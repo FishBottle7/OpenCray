@@ -7,13 +7,11 @@ import com.opencray.app.projection.LiveAssistantDraftSnapshot
 import com.opencray.app.projection.ProjectedRuntimeChatMessage
 import com.opencray.app.projection.SubAgentActivitySnapshot
 import com.opencray.app.projection.assignRuntimeRealtimeEnvelope
-import com.opencray.app.projection.chatAttachmentSnapshotMap
 import com.opencray.app.projection.checkpointSubAgentHandles
 import com.opencray.app.projection.eventMatchesRunExecution
 import com.opencray.app.projection.executionScopedRunEvents
 import com.opencray.app.projection.liveAssistantDraftToMap
 import com.opencray.app.projection.liveAssistantDraftsForSnapshot
-import com.opencray.app.projection.managedProcessSnapshotToMap
 import com.opencray.app.projection.projectedRuntimeMessagesForChat
 import com.opencray.app.projection.retainedRunsForSnapshot
 import com.opencray.app.projection.runIdFor
@@ -1488,51 +1486,20 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private fun ManagedProcessSnapshot.isProjectionTerminalAfterRestore(): Boolean =
     isProjectionTerminalAfterRestoreState()
 
-  private fun runSnapshotToMap(run: AgentRunSnapshot): Map<String, Any?> = mapOf(
-    "sessionId" to run.sessionId,
-    "runId" to run.runId,
-    "taskId" to run.taskId,
-    "acceptedAtEpochMs" to run.acceptedAtEpochMs,
-    "updatedAtEpochMs" to run.updatedAtEpochMs,
-    "lifecycleState" to run.lifecycleState?.name?.lowercase(),
-    "taskState" to run.taskState?.name?.lowercase(),
-    "attempt" to run.attempt,
-    "executionOrdinal" to run.executionOrdinal,
-    "executionId" to run.executionId,
-    "executionKind" to run.executionKind,
-    "pendingExecutionKind" to run.pendingExecutionKind,
-    "executionStatus" to run.executionStatus?.name?.lowercase(),
-    "errorCode" to run.errorCode,
-    "errorMessage" to run.errorMessage,
-    "responseFormat" to run.responseFormat,
-    "llmDiagnostics" to runSnapshotLlmDiagnosticsFromMetadata(run.resultMetadata),
-    "liveContext" to runSnapshotLiveContextFromMetadata(run.resultMetadata),
-    "contextBudget" to runSnapshotContextBudgetFromMetadata(run.resultMetadata),
-    "memoryTrace" to runSnapshotMemoryTraceFromMetadata(run.resultMetadata),
-    "stickyMemory" to runSnapshotStickyMemoryFromMetadata(run.resultMetadata),
-    "memoryFlush" to runSnapshotMemoryFlushFromMetadata(run.resultMetadata),
-    "bootstrap" to runSnapshotBootstrapFromMetadata(run.resultMetadata),
-    "durableCompaction" to runSnapshotDurableCompactionFromMetadata(run.resultMetadata),
-    "skillInventory" to runSnapshotSkillInventoryFromMetadata(run.resultMetadata),
-    "activeSkill" to runSnapshotActiveSkillFromMetadata(run.resultMetadata),
-    "pendingMessageId" to run.pendingMessageId,
-    "managedProcessIds" to run.managedProcessIds,
-    "managedProcesses" to run.managedProcesses.map(::managedProcessSnapshotToMap),
-    "finalAttachments" to finalAttachmentsForRun(run).map(::chatAttachmentSnapshotMap),
-    "runningManagedProcessCount" to run.runningManagedProcessCount,
-    "hasLiveManagedProcesses" to run.hasLiveManagedProcesses,
-    "isActive" to run.isActive,
-    "isTerminal" to run.isTerminal,
-    "lastEvent" to run.lastEvent?.let(::runtimeEventToMap),
-    "diagnostics" to run.lifecycleDiagnostics.toMap(),
-    "recoveryPlan" to recoveryPlanForRun(run)?.toMap(),
-  )
+  private fun runSnapshotToMap(run: AgentRunSnapshot): Map<String, Any?> =
+    com.opencray.app.projection.runSnapshotToMap(
+      run = run,
+      finalAttachmentsForRun = ::finalAttachmentsForRun,
+      recoveryPlanForRun = ::recoveryPlanForRun,
+      runtimeEventMapper = ::runtimeEventToMap,
+    )
 
   private fun recoveryPlanForRun(run: AgentRunSnapshot): RunRecoveryPlan? =
-    loadStoredRunRecoveryPlan(
+    com.opencray.app.projection.recoveryPlanForRun(
       run = run,
-      checkpointStore = promptCheckpointStoreFactory.forChatSession(run.sessionId),
-      journalStore = runEventJournalStoreFactory.forChatSession(run.sessionId),
+      approvalStateForTask = { _, _ -> null },
+      promptCheckpointStoreFor = promptCheckpointStoreFactory::forChatSession,
+      journalStoreFor = runEventJournalStoreFactory::forChatSession,
       planner = recoveryPlanner,
     )
 

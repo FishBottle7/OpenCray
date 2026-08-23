@@ -337,9 +337,11 @@ internal fun runSnapshotMemoryFlushFromMetadata(
     maintenanceTask == null &&
     executionMode == null &&
     contextWindowTokens == null &&
+    previousContextWindowTokens == null &&
     autoCompactTokenLimit == null &&
     estimatedReplayTokens == null &&
     tokenThresholdTriggered == null &&
+    smallerWindowModelSwitchDetected == null &&
     omittedMessageCount == null &&
     omittedCharCount == null &&
     signature == null &&
@@ -357,9 +359,11 @@ internal fun runSnapshotMemoryFlushFromMetadata(
     maintenanceTask?.let { put("maintenanceTask", it) }
     executionMode?.let { put("executionMode", it) }
     contextWindowTokens?.let { put("contextWindowTokens", it) }
+    previousContextWindowTokens?.let { put("previousContextWindowTokens", it) }
     autoCompactTokenLimit?.let { put("autoCompactTokenLimit", it) }
     estimatedReplayTokens?.let { put("estimatedReplayTokens", it) }
     tokenThresholdTriggered?.let { put("tokenThresholdTriggered", it) }
+    smallerWindowModelSwitchDetected?.let { put("smallerWindowModelSwitchDetected", it) }
     omittedMessageCount?.let { put("omittedMessageCount", it) }
     omittedCharCount?.let { put("omittedCharCount", it) }
     signature?.let { put("signature", it) }
