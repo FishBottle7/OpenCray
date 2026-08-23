@@ -10,6 +10,53 @@ import java.net.URL
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
+private fun openHttpConnection(
+  method: String,
+  url: String,
+  headers: Map<String, String>,
+  connectTimeoutMs: Int,
+  readTimeoutMs: Int,
+  doOutput: Boolean,
+): HttpURLConnection = (URL(url).openConnection() as HttpURLConnection).apply {
+  requestMethod = method
+  connectTimeout = connectTimeoutMs
+  readTimeout = readTimeoutMs
+  instanceFollowRedirects = true
+  doInput = true
+  this.doOutput = doOutput
+  useCaches = false
+  headers.forEach { (name, value) ->
+    if (name.isNotBlank() && value.isNotBlank()) {
+      setRequestProperty(name, value)
+    }
+  }
+}
+
+private fun readFully(input: InputStream?): String {
+  if (input == null) {
+    return ""
+  }
+  input.use { stream ->
+    val output = ByteArrayOutputStream()
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    while (true) {
+      val read = stream.read(buffer)
+      if (read <= 0) {
+        break
+      }
+      output.write(buffer, 0, read)
+    }
+    return output.toString(StandardCharsets.UTF_8.name())
+  }
+}
+
+private fun readResponseText(
+  connection: HttpURLConnection,
+  statusCode: Int,
+): String = readFully(
+  input = if (statusCode in 200..299) connection.inputStream else connection.errorStream,
+)
+
 internal interface E2BTransport {
   fun request(request: E2BRequest): E2BResponse
 
@@ -25,7 +72,7 @@ internal interface E2BTransport {
 
 internal class UrlConnectionE2BTransport : E2BTransport {
   override fun request(request: E2BRequest): E2BResponse {
-    val connection = openConnection(
+    val connection = openHttpConnection(
       method = request.method,
       url = request.url,
       headers = request.headers,
@@ -42,9 +89,7 @@ internal class UrlConnectionE2BTransport : E2BTransport {
       val statusCode = connection.responseCode
       E2BResponse(
         statusCode = statusCode,
-        body = readFully(
-          input = if (statusCode in 200..299) connection.inputStream else connection.errorStream,
-        ),
+        body = readResponseText(connection, statusCode),
       )
     } finally {
       connection.disconnect()
@@ -56,7 +101,7 @@ internal class UrlConnectionE2BTransport : E2BTransport {
     val headers = request.headers + mapOf(
       "Content-Type" to "multipart/form-data; boundary=$boundary",
     )
-    val connection = openConnection(
+    val connection = openHttpConnection(
       method = "POST",
       url = request.url,
       headers = headers,
@@ -83,9 +128,7 @@ internal class UrlConnectionE2BTransport : E2BTransport {
       val statusCode = connection.responseCode
       E2BResponse(
         statusCode = statusCode,
-        body = readFully(
-          input = if (statusCode in 200..299) connection.inputStream else connection.errorStream,
-        ),
+        body = readResponseText(connection, statusCode),
       )
     } finally {
       connection.disconnect()
@@ -93,7 +136,7 @@ internal class UrlConnectionE2BTransport : E2BTransport {
   }
 
   override fun download(request: E2BDownloadRequest): E2BBinaryResponse {
-    val connection = openConnection(
+    val connection = openHttpConnection(
       method = "GET",
       url = request.url,
       headers = request.headers,
@@ -123,7 +166,7 @@ internal class UrlConnectionE2BTransport : E2BTransport {
     request: E2BRequest,
     onLine: (String) -> Unit,
   ): E2BResponse {
-    val connection = openConnection(
+    val connection = openHttpConnection(
       method = request.method,
       url = request.url,
       headers = request.headers,
@@ -158,46 +201,6 @@ internal class UrlConnectionE2BTransport : E2BTransport {
       }
     } finally {
       connection.disconnect()
-    }
-  }
-
-  private fun openConnection(
-    method: String,
-    url: String,
-    headers: Map<String, String>,
-    connectTimeoutMs: Int,
-    readTimeoutMs: Int,
-    doOutput: Boolean,
-  ): HttpURLConnection = (URL(url).openConnection() as HttpURLConnection).apply {
-    requestMethod = method
-    connectTimeout = connectTimeoutMs
-    readTimeout = readTimeoutMs
-    instanceFollowRedirects = true
-    doInput = true
-    this.doOutput = doOutput
-    useCaches = false
-    headers.forEach { (name, value) ->
-      if (name.isNotBlank() && value.isNotBlank()) {
-        setRequestProperty(name, value)
-      }
-    }
-  }
-
-  private fun readFully(input: InputStream?): String {
-    if (input == null) {
-      return ""
-    }
-    input.use { stream ->
-      val output = ByteArrayOutputStream()
-      val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-      while (true) {
-        val read = stream.read(buffer)
-        if (read <= 0) {
-          break
-        }
-        output.write(buffer, 0, read)
-      }
-      return output.toString(StandardCharsets.UTF_8.name())
     }
   }
 
@@ -245,20 +248,14 @@ internal class UrlConnectionE2BEnvdCommandTransport : E2BEnvdCommandTransport {
     request: E2BEnvdCommandTransportRequest,
     onEnvelope: (flags: Int, payload: ByteArray) -> Unit,
   ): E2BResponse {
-    val connection = (URL(request.url).openConnection() as HttpURLConnection).apply {
-      requestMethod = request.method
-      connectTimeout = request.connectTimeoutMs
-      readTimeout = request.readTimeoutMs
-      instanceFollowRedirects = true
-      doInput = true
-      doOutput = request.bodyBytes.isNotEmpty()
-      useCaches = false
-      request.headers.forEach { (name, value) ->
-        if (name.isNotBlank() && value.isNotBlank()) {
-          setRequestProperty(name, value)
-        }
-      }
-    }
+    val connection = openHttpConnection(
+      method = request.method,
+      url = request.url,
+      headers = request.headers,
+      connectTimeoutMs = request.connectTimeoutMs,
+      readTimeoutMs = request.readTimeoutMs,
+      doOutput = request.bodyBytes.isNotEmpty(),
+    )
     return try {
       if (request.bodyBytes.isNotEmpty()) {
         connection.outputStream.use { output ->
@@ -303,20 +300,14 @@ internal class UrlConnectionE2BEnvdCommandTransport : E2BEnvdCommandTransport {
   override fun unary(
     request: E2BEnvdCommandTransportRequest,
   ): E2BResponse {
-    val connection = (URL(request.url).openConnection() as HttpURLConnection).apply {
-      requestMethod = request.method
-      connectTimeout = request.connectTimeoutMs
-      readTimeout = request.readTimeoutMs
-      instanceFollowRedirects = true
-      doInput = true
-      doOutput = request.bodyBytes.isNotEmpty()
-      useCaches = false
-      request.headers.forEach { (name, value) ->
-        if (name.isNotBlank() && value.isNotBlank()) {
-          setRequestProperty(name, value)
-        }
-      }
-    }
+    val connection = openHttpConnection(
+      method = request.method,
+      url = request.url,
+      headers = request.headers,
+      connectTimeoutMs = request.connectTimeoutMs,
+      readTimeoutMs = request.readTimeoutMs,
+      doOutput = request.bodyBytes.isNotEmpty(),
+    )
     return try {
       if (request.bodyBytes.isNotEmpty()) {
         connection.outputStream.use { output ->
@@ -324,11 +315,7 @@ internal class UrlConnectionE2BEnvdCommandTransport : E2BEnvdCommandTransport {
         }
       }
       val statusCode = connection.responseCode
-      val body = if (statusCode in 200..299) {
-        readFully(connection.inputStream)
-      } else {
-        readFully(connection.errorStream)
-      }
+      val body = readResponseText(connection, statusCode)
       E2BResponse(statusCode = statusCode, body = body)
     } finally {
       connection.disconnect()
@@ -350,24 +337,6 @@ internal class UrlConnectionE2BEnvdCommandTransport : E2BEnvdCommandTransport {
       }
       remaining -= read
       currentOffset += read
-    }
-  }
-
-  private fun readFully(input: InputStream?): String {
-    if (input == null) {
-      return ""
-    }
-    input.use { stream ->
-      val output = ByteArrayOutputStream()
-      val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-      while (true) {
-        val read = stream.read(buffer)
-        if (read <= 0) {
-          break
-        }
-        output.write(buffer, 0, read)
-      }
-      return output.toString(StandardCharsets.UTF_8.name())
     }
   }
 }
