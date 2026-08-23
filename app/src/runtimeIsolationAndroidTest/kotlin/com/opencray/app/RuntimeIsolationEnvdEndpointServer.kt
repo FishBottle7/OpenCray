@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import com.opencray.app.e2b.E2BEnvdProcessEvent
+import com.opencray.app.e2b.E2BEnvdProcessProtoCodec
 import java.io.BufferedInputStream
 import java.io.BufferedOutputStream
 import java.io.ByteArrayOutputStream

@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import com.opencray.app.e2b.E2BEnvdProcessEvent
+import com.opencray.app.e2b.E2BEnvdProcessProtoCodec
 import com.opencray.runtime.process.FileBackedAgentProcessRegistry
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY
 import com.opencray.runtime.process.MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY

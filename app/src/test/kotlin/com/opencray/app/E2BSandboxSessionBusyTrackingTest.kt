@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import com.opencray.app.e2b.E2BEnvdProcessEvent
+import com.opencray.app.e2b.E2BEnvdProcessProtoCodec
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.runtime.PythonExecRequest
