@@ -6,6 +6,7 @@ import android.os.Looper
 import com.opencray.app.projection.LiveAssistantDraftSnapshot
 import com.opencray.app.projection.ProjectedRuntimeChatMessage
 import com.opencray.app.projection.SubAgentActivitySnapshot
+import com.opencray.app.projection.assignRuntimeRealtimeEnvelope
 import com.opencray.app.projection.chatAttachmentSnapshotMap
 import com.opencray.app.projection.checkpointSubAgentHandles
 import com.opencray.app.projection.eventMatchesRunExecution
@@ -17,9 +18,9 @@ import com.opencray.app.projection.projectedRuntimeMessagesForChat
 import com.opencray.app.projection.retainedRunsForSnapshot
 import com.opencray.app.projection.runIdFor
 import com.opencray.app.projection.runtimeActivityUpdatedAtEpochMs
+import com.opencray.app.projection.runtimeEventToMap
 import com.opencray.app.projection.subAgentActivitySnapshot
 import com.opencray.app.projection.subAgentSnapshotToMap
-import com.opencray.app.projection.toolResultDetailedContentSnapshot
 import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
@@ -35,17 +36,12 @@ import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayApprovalEvent
 import com.opencray.runtime.OpenCrayApprovalPhase
-import com.opencray.runtime.OpenCrayAssistantPhaseEvent
 import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayFinalAttachment
-import com.opencray.runtime.OpenCrayLifecycleEvent
-import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySupplementEvent
-import com.opencray.runtime.OpenCrayToolCallEvent
-import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.memory.MemoryOperator
 import com.opencray.runtime.memory.MemoryOperatorAction
@@ -1541,213 +1537,28 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     )
 
   private fun runtimeEventToMap(event: OpenCrayAgentRunEvent): Map<String, Any?> =
-    runtimeEventPayload(event).toMutableMap().apply {
-      put("eventId", runtimeEventStableId(event))
-    }
+    runtimeEventToMap(
+      event = event,
+      hasPromptResumeCheckpointMetadata = ::hasPromptResumeCheckpointMetadata,
+      supplementMetadataSnapshot = ::toolResultMetadataSnapshot,
+      toolResultMetadataSnapshot = ::toolResultMetadataSnapshot,
+    )
 
   private fun assignRuntimeRealtimeEnvelope(payload: Map<String, Any?>): Map<String, Any?> {
     val sessionId = (payload["sessionId"] as? String)?.trim().orEmpty()
-    if (sessionId.isBlank()) {
-      return payload
-    }
-    val sequence = synchronized(runtimeEventStreamLock) {
-      val next = (runtimeEventSequencesBySession[sessionId] ?: 0L) + 1L
-      runtimeEventSequencesBySession[sessionId] = next
-      next
-    }
-    return payload.toMutableMap().apply {
-      put("streamInstanceId", runtimeEventStreamInstanceId)
-      put("sequence", sequence)
-      put("lastSequence", sequence)
-      put("eventId", "runtime-stream-$runtimeEventStreamInstanceId-$sessionId-$sequence")
-      put("executionId", payload["executionId"] ?: payload["runId"])
-    }
-  }
-
-  private fun runtimeEventPayload(event: OpenCrayAgentRunEvent): Map<String, Any?> = when (event) {
-    is OpenCrayLifecycleEvent -> mapOf(
-      "kind" to "lifecycle",
-      "runId" to event.runId,
-      "taskId" to event.taskId,
-      "executionId" to event.executionId,
-      "executionOrdinal" to event.executionOrdinal,
-      "executionKind" to event.executionKind,
-      "turn" to event.turn,
-      "emittedAtEpochMs" to event.emittedAtEpochMs,
-      "phase" to event.phase.name.lowercase(),
-      "status" to event.status?.name?.lowercase(),
-      "errorCode" to event.errorCode,
-      "errorMessage" to event.errorMessage,
-    )
-    is OpenCrayAssistantPhaseEvent -> buildMap<String, Any?> {
-      put("kind", "assistant_phase")
-      put("runId", event.runId)
-      put("taskId", event.taskId)
-      put("executionId", event.executionId)
-      put("executionOrdinal", event.executionOrdinal)
-      put("executionKind", event.executionKind)
-      put("turn", event.turn)
-      put("emittedAtEpochMs", event.emittedAtEpochMs)
-      put("phase", event.phase.name.lowercase())
-      put("responseFormat", event.responseFormat)
-      put("isFinal", event.isFinal)
-      put("stage", event.stage)
-      put("text", event.text)
-      if (
-        event.metadata[OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON]
-          ?.trim()
-          ?.isNotBlank() == true
-      ) {
-        put("hasResumeCheckpointMetadata", true)
-      }
-    }
-    is OpenCraySupplementEvent -> buildMap<String, Any?> {
-      put("kind", "supplement")
-      put("runId", event.runId)
-      put("taskId", event.taskId)
-      put("executionId", event.executionId)
-      put("executionOrdinal", event.executionOrdinal)
-      put("executionKind", event.executionKind)
-      put("turn", event.turn)
-      put("emittedAtEpochMs", event.emittedAtEpochMs)
-      put("entryId", event.entryId)
-      put("text", event.text)
-      put("checkpoint", event.checkpoint)
-      val metadataSnapshot = toolResultMetadataSnapshot(event.metadata)
-      if (metadataSnapshot.isNotEmpty()) {
-        put("metadata", metadataSnapshot)
-      }
-      if (
-        event.metadata[OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON]
-          ?.trim()
-          ?.isNotBlank() == true
-      ) {
-        put("hasResumeCheckpointMetadata", true)
-      }
-    }
-    is OpenCrayApprovalEvent -> mapOf(
-      "kind" to if (event.phase == OpenCrayApprovalPhase.REQUIRED) "approval_wait" else "approval_result",
-      "runId" to event.runId,
-      "taskId" to event.taskId,
-      "executionId" to event.executionId,
-      "executionOrdinal" to event.executionOrdinal,
-      "executionKind" to event.executionKind,
-      "turn" to event.turn,
-      "emittedAtEpochMs" to event.emittedAtEpochMs,
-      "toolName" to event.toolName,
-      "text" to event.text,
-      "stage" to event.phase.name.lowercase(),
-      "status" to event.phase.name.lowercase(),
-      "isHighRisk" to event.isHighRisk,
-    )
-    is OpenCraySubAgentEvent -> mapOf(
-      "kind" to "subagent",
-      "runId" to event.runId,
-      "taskId" to event.taskId,
-      "agentId" to event.agentId,
-      "executionId" to event.executionId,
-      "executionOrdinal" to event.executionOrdinal,
-      "executionKind" to event.executionKind,
-      "turn" to event.turn,
-      "emittedAtEpochMs" to event.emittedAtEpochMs,
-      "phase" to event.phase.name.lowercase(),
-      "status" to event.executionState?.wireValue,
-      "childRunId" to event.childRunId,
-      "childTaskId" to event.childTaskId,
-      "label" to event.label,
-      "subagentType" to event.subagentType,
-      "contextMode" to event.contextMode,
-      "depth" to event.depth,
-      "executionState" to event.executionState?.wireValue,
-      "continuationKind" to event.continuationKind?.wireValue,
-      "closed" to event.closed,
-      "text" to event.summary,
-    )
-    is OpenCrayToolCallEvent -> mapOf(
-      "kind" to "tool_call",
-      "runId" to event.runId,
-      "taskId" to event.taskId,
-      "executionId" to event.executionId,
-      "executionOrdinal" to event.executionOrdinal,
-      "executionKind" to event.executionKind,
-      "turn" to event.turn,
-      "emittedAtEpochMs" to event.emittedAtEpochMs,
-      "toolName" to event.call.toolName,
-      "toolReason" to event.call.reason,
-      "argumentsJson" to event.call.arguments.toString(),
-    )
-    is OpenCrayToolResultEvent -> mapOf(
-      "kind" to "tool_result",
-      "runId" to event.runId,
-      "taskId" to event.taskId,
-      "executionId" to event.executionId,
-      "executionOrdinal" to event.executionOrdinal,
-      "executionKind" to event.executionKind,
-      "turn" to event.turn,
-      "emittedAtEpochMs" to event.emittedAtEpochMs,
-      "toolName" to event.call.toolName,
-      "toolStatus" to event.result.status.name.lowercase(),
-      "errorCode" to event.result.errorCode,
-      "errorMessage" to event.result.errorMessage,
-      "content" to toolResultDetailedContentSnapshot(event.result),
-      "contentPreview" to event.result.content.take(MAX_PROJECTION_RUNTIME_EVENT_PREVIEW_CHARS),
-      "resultMetadata" to toolResultMetadataSnapshot(event.result.metadata),
-    )
-    is OpenCrayMemoryRetrievalEvent -> mapOf(
-      "kind" to "memory_retrieval",
-      "runId" to event.runId,
-      "taskId" to event.taskId,
-      "executionId" to event.executionId,
-      "executionOrdinal" to event.executionOrdinal,
-      "executionKind" to event.executionKind,
-      "turn" to event.turn,
-      "emittedAtEpochMs" to event.emittedAtEpochMs,
-      "toolName" to event.toolName,
-      "operation" to event.operation,
-      "query" to event.query,
-      "queryTerms" to event.queryTerms,
-      "resultCount" to event.resultCount,
-      "corpusFileCount" to event.corpusFileCount,
-      "recordIds" to event.recordIds,
-      "paths" to event.paths,
-      "lineRanges" to event.lineRanges,
-      "path" to event.path,
-      "fromLine" to event.fromLine,
-      "returnedLineCount" to event.returnedLineCount,
-      "totalLineCount" to event.totalLineCount,
-    )
-    is OpenCrayMemoryWriteEvent -> mapOf(
-      "kind" to "memory_write",
-      "runId" to event.runId,
-      "taskId" to event.taskId,
-      "executionId" to event.executionId,
-      "executionOrdinal" to event.executionOrdinal,
-      "executionKind" to event.executionKind,
-      "turn" to event.turn,
-      "emittedAtEpochMs" to event.emittedAtEpochMs,
-      "writtenRecordIds" to event.writtenRecordIds,
-      "writtenKinds" to event.writtenKinds,
-      "resolvedRecordIds" to event.resolvedRecordIds,
-      "suppressedRecordIds" to event.suppressedRecordIds,
-      "reopenedRecordIds" to event.reopenedRecordIds,
-      "reaffirmedRecordIds" to event.reaffirmedRecordIds,
-      "expiredRecordIds" to event.expiredRecordIds,
-      "stewardshipPlanSteps" to event.stewardshipPlanSteps.map(::stewardshipPlanStepToMap),
-      "stewardshipPlanGraph" to stewardshipPlanGraphToMap(event.stewardshipPlanGraph),
-    )
-    is OpenCrayCancellationEvent -> mapOf(
-      "kind" to "interrupted",
-      "runId" to event.runId,
-      "taskId" to event.taskId,
-      "executionId" to event.executionId,
-      "executionOrdinal" to event.executionOrdinal,
-      "executionKind" to event.executionKind,
-      "turn" to event.turn,
-      "emittedAtEpochMs" to event.emittedAtEpochMs,
-      "toolName" to event.toolName,
-      "text" to event.text,
-      "stage" to event.outcome,
-      "status" to event.outcome,
+    return assignRuntimeRealtimeEnvelope(
+      sessionId = sessionId,
+      payload = payload,
+      streamInstanceId = runtimeEventStreamInstanceId,
+      nextSequence = {
+        synchronized(runtimeEventStreamLock) {
+          val next = (runtimeEventSequencesBySession[sessionId] ?: 0L) + 1L
+          runtimeEventSequencesBySession[sessionId] = next
+          next
+        }
+      },
+      skipWhenSessionIdBlank = true,
+      fallbackExecutionIdToRunId = true,
     )
   }
 
@@ -1830,6 +1641,11 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       .orEmpty()
   }
 
+  private fun hasPromptResumeCheckpointMetadata(metadata: Map<String, String>): Boolean =
+    metadata[OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON]
+      ?.trim()
+      ?.isNotBlank() == true
+
   private fun toolResultMetadataSnapshot(metadata: Map<String, String>): Map<String, String> {
     val hiddenKeys = setOf(
       "checkpointId",
@@ -1890,7 +1706,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     private const val PROJECTION_APPROVAL_REQUIRED_ERROR_CODE: String = "APPROVAL_REQUIRED"
     private const val PROJECTION_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE: String =
       "HIGH_RISK_APPROVAL_REQUIRED"
-    private const val MAX_PROJECTION_RUNTIME_EVENT_PREVIEW_CHARS: Int = 240
     private const val PROJECTION_RUN_WAIT_POLL_INTERVAL_MS: Long = 50L
     private const val DEFAULT_PROJECTION_POLL_INTERVAL_MS: Long = 350L
   }

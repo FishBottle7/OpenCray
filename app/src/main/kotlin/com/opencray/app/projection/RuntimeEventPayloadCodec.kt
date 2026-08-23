@@ -233,13 +233,21 @@ internal fun assignRuntimeRealtimeEnvelope(
   payload: Map<String, Any?>,
   streamInstanceId: String,
   nextSequence: () -> Long,
+  skipWhenSessionIdBlank: Boolean = false,
+  fallbackExecutionIdToRunId: Boolean = false,
 ): Map<String, Any?> {
+  if (skipWhenSessionIdBlank && sessionId.isBlank()) {
+    return payload
+  }
   val sequence = nextSequence()
   return payload.toMutableMap().apply {
     put("streamInstanceId", streamInstanceId)
     put("sequence", sequence)
     put("lastSequence", sequence)
     put("eventId", runtimeRealtimeEnvelopeEventId(sessionId, sequence, streamInstanceId))
+    if (fallbackExecutionIdToRunId) {
+      put("executionId", payload["executionId"] ?: payload["runId"])
+    }
   }
 }
 
