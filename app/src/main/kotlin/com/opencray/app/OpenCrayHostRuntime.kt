@@ -7,54 +7,26 @@ import android.util.Log
 import com.opencray.app.facade.llm.EmptyLlmConfigFacade
 import com.opencray.app.facade.llm.LlmConfigFacade
 import com.opencray.app.facade.llm.LlmConfigSnapshot
-import com.opencray.app.facade.llm.LlmProviderOptionSnapshot
-import com.opencray.app.facade.llm.LlmValidationResult
 import com.opencray.app.facade.llm.LocalLlmConfigFacade
-import com.opencray.app.facade.llm.OnDeviceLlmModelOptionSnapshot
-import com.opencray.app.facade.llm.SaveCustomLlmProviderRequest
-import com.opencray.app.facade.llm.SaveLlmConfigRequest
-import com.opencray.app.facade.llm.ValidateLlmConfigRequest
 import com.opencray.app.facade.media.EmptyMediaSpeechSettingsFacade
 import com.opencray.app.facade.media.LocalMediaSpeechSettingsFacade
-import com.opencray.app.facade.media.MediaProviderSnapshot
-import com.opencray.app.facade.media.MediaSpeechConfigSnapshot
 import com.opencray.app.facade.media.MediaSpeechSettingsFacade
-import com.opencray.app.facade.media.OnDeviceSttSnapshot
-import com.opencray.app.facade.media.SaveMediaProviderRequest
-import com.opencray.app.facade.media.SaveMediaSpeechConfigRequest
-import com.opencray.app.facade.media.SaveOnDeviceSttRequest
-import com.opencray.app.facade.media.SaveVoiceProviderRequest
-import com.opencray.app.facade.media.VoiceProviderSnapshot
 import com.opencray.runtime.memory.MemoryCandidateExtractor
 import com.opencray.app.facade.mcp.EmptyMcpSettingsFacade
 import com.opencray.app.facade.mcp.LocalMcpSettingsFacade
-import com.opencray.app.facade.mcp.McpServerSettingsSnapshot
 import com.opencray.app.facade.mcp.McpSettingsFacade
-import com.opencray.app.facade.mcp.McpSettingsSnapshot
 import com.opencray.app.facade.notifications.EmptyNotificationSettingsFacade
 import com.opencray.app.facade.notifications.LocalNotificationSettingsFacade
 import com.opencray.app.facade.notifications.NotificationSettingsFacade
 import com.opencray.app.facade.personalization.EmptyPersonalizationFacade
 import com.opencray.app.facade.personalization.LocalPersonalizationFacade
-import com.opencray.app.facade.personalization.PersonalizationConfigSnapshot
-import com.opencray.app.facade.personalization.PersonalizationLanguageOptionSnapshot
 import com.opencray.app.facade.personalization.PersonalizationFacade
-import com.opencray.app.facade.personalization.PersonalizationPresetSnapshot
-import com.opencray.app.facade.personalization.PersonalizationResetActionSnapshot
-import com.opencray.app.facade.personalization.PersonalizationResetScope
-import com.opencray.app.facade.personalization.SavePersonalizationConfigRequest
 import com.opencray.app.facade.search.EmptyNetworkSearchConfigFacade
 import com.opencray.app.facade.search.LocalNetworkSearchConfigFacade
 import com.opencray.app.facade.search.NetworkSearchConfigFacade
-import com.opencray.app.facade.search.NetworkSearchConfigSnapshot
-import com.opencray.app.facade.search.NetworkSearchSlotSnapshot
-import com.opencray.app.facade.search.SaveNetworkSearchConfigRequest
-import com.opencray.app.facade.search.SaveNetworkSearchSlotRequest
 import com.opencray.app.facade.safety.EmptySafetySettingsFacade
 import com.opencray.app.facade.safety.LocalSafetySettingsFacade
-import com.opencray.app.facade.safety.SaveSafetySettingsRequest
 import com.opencray.app.facade.safety.SafetySettingsFacade
-import com.opencray.app.facade.safety.SafetySettingsLocationSnapshot
 import com.opencray.app.facade.safety.SafetySettingsSnapshot
 import com.opencray.app.facade.skills.EmptySkillsFacade
 import com.opencray.app.facade.skills.LocalSkillsFacade
@@ -62,13 +34,7 @@ import com.opencray.app.facade.skills.SkillInstructionsSnapshot
 import com.opencray.app.facade.skills.SkillsFacade
 import com.opencray.app.facade.skills.SkillsSnapshot
 import com.opencray.app.facade.settings.LocalSettingsFacade
-import com.opencray.app.facade.settings.SettingsDetailSnapshot
 import com.opencray.app.facade.settings.SettingsFacade
-import com.opencray.app.facade.settings.SettingsOverviewSnapshot
-import com.opencray.app.facade.settings.SettingsRouteId
-import com.opencray.app.facade.settings.SettingsRowSnapshot
-import com.opencray.app.facade.settings.SettingsSectionSnapshot
-import com.opencray.app.shell.AppShellDestination
 import com.opencray.app.shell.AppShellStateStore
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.AgentTaskType
@@ -182,21 +148,21 @@ private fun hostChatDebug(message: String) {
 }
 
 internal class OpenCrayHostRuntime private constructor(
-  private val appContext: Context?,
-  private val stateStore: AppShellStateStore,
+  internal val appContext: Context?,
+  internal val stateStore: AppShellStateStore,
   private val chatSessionStore: ChatSessionLocalStore,
-  private var settingsFacade: SettingsFacade,
-  private var notificationSettingsFacade: NotificationSettingsFacade,
-  private var networkSearchConfigFacade: NetworkSearchConfigFacade,
-  private var mediaSpeechSettingsFacade: MediaSpeechSettingsFacade,
-  private val sandboxSettingsRepository: SandboxSettingsRepository? =
+  internal var settingsFacade: SettingsFacade,
+  internal var notificationSettingsFacade: NotificationSettingsFacade,
+  internal var networkSearchConfigFacade: NetworkSearchConfigFacade,
+  internal var mediaSpeechSettingsFacade: MediaSpeechSettingsFacade,
+  internal val sandboxSettingsRepository: SandboxSettingsRepository? =
     appContext?.let(SandboxSettingsRepository::fromContext),
-  private var llmConfigFacade: LlmConfigFacade,
-  private var personalizationFacade: PersonalizationFacade,
+  internal var llmConfigFacade: LlmConfigFacade,
+  internal var personalizationFacade: PersonalizationFacade,
   private val personalizationLocalStore: PersonalizationLocalStore? = null,
   private val workspaceSoulProfileStore: WorkspaceSoulProfileStore = WorkspaceSoulProfileStore(),
-  private var mcpSettingsFacade: McpSettingsFacade,
-  private var safetySettingsFacade: SafetySettingsFacade,
+  internal var mcpSettingsFacade: McpSettingsFacade,
+  internal var safetySettingsFacade: SafetySettingsFacade,
   private var skillsFacade: SkillsFacade,
   private val workspaceRootProvider: (() -> Path)?,
   private val workspaceEntryOpener: ((Path, String) -> Unit)? = null,
@@ -208,12 +174,12 @@ internal class OpenCrayHostRuntime private constructor(
     )
   },
   private val workspaceSnapshotProvider: () -> Map<String, Any?>,
-  private val strongBackgroundSettingsAccess: StrongBackgroundSettingsAccess =
+  internal val strongBackgroundSettingsAccess: StrongBackgroundSettingsAccess =
     NoOpStrongBackgroundSettingsAccess,
   private val voiceMetadataAnalyzer: AppAgentWorkspaceVoiceMetadataAnalyzer,
   private val voiceMetadataBackfillExecutor: Executor,
   private val voiceMetadataCacheStore: AppAgentWorkspaceVoiceMetadataCacheStore? = null,
-  private val runtimeHostAccess: OpenCrayRuntimeHostAccess,
+  internal val runtimeHostAccess: OpenCrayRuntimeHostAccess,
   private val subAgentSessionLinkStoreFactory: SubAgentSessionLinkStoreFactory =
     inMemorySubAgentSessionLinkStoreFactory(),
   private val todoSnapshotProvider: (String) -> ChatSessionTodoPresentation = {
@@ -227,8 +193,8 @@ internal class OpenCrayHostRuntime private constructor(
   private val subAgentReplayRecorder: (String, OpenCraySubAgentEvent) -> Unit = { _, _ -> },
   private val runCancellationReplayRecorder: (String, String, String, String?, RuntimeReplayExecutionContext) -> Unit = { _, _, _, _, _ -> },
   private val terminalReplayRepairer: (String, List<AgentRunSnapshot>) -> Unit = { _, _ -> },
-  private var strings: HostRuntimeStrings,
-  private val mainThreadPoster: MainThreadPoster,
+  internal var strings: HostRuntimeStrings,
+  internal val mainThreadPoster: MainThreadPoster,
   private val providedOnDeviceLlmWarmupController: OnDeviceLlmWarmupController? = null,
   private val localHostGateway: OpenCrayLocalHostGateway = DefaultOpenCrayLocalHostGateway(
     appContext = appContext,
@@ -238,8 +204,8 @@ internal class OpenCrayHostRuntime private constructor(
     workspaceSnapshotProvider = workspaceSnapshotProvider,
     mainThreadPoster = mainThreadPoster,
   ),
-  private val lifecycleDescriptor: HostRuntimeLifecycleDescriptor,
-  private val runtimeDiagnosticsBridge: HostRuntimeDiagnosticsBridge =
+  internal val lifecycleDescriptor: HostRuntimeLifecycleDescriptor,
+  internal val runtimeDiagnosticsBridge: HostRuntimeDiagnosticsBridge =
     HostRuntimeDiagnosticsBridge(
       runtimeOwnerDescriptor = lifecycleDescriptor,
       localRuntimeServerStateProvider = { defaultLocalRuntimeServerState() },
@@ -253,17 +219,13 @@ internal class OpenCrayHostRuntime private constructor(
   OpenCrayChatRuntimeGateway,
   OpenCraySkillsGateway,
   OpenCraySettingsGateway {
-  private val lock = Any()
+  internal val lock = Any()
   private var disposed: Boolean = false
   private var runtimeObservationDisposer: (() -> Unit)? = null
   private var runtimeDiagnosticsObservationDisposer: (() -> Unit)? = null
   private val liveAssistantDraftLock = Any()
-  private val fallbackSandboxSettingsRepository: SandboxSettingsRepository by lazy {
-    Companion.inMemorySandboxSettingsRepository()
-  }
-  private val scheduledTaskManager: AppScheduledTaskManager? by lazy {
-    appContext?.let(AppScheduledTaskManager::fromContext)
-  }
+  private val shellGateway = HostShellGatewayImpl(this)
+  private val settingsGateway = HostSettingsGatewayImpl(this)
   private val soulProfileResolver = SoulProfileResolver()
   private val runtimeSoulProfileSeedFactory = RuntimeSoulProfileSeedFactory()
   private val memoryBackedSoulProfileResolver = MemoryBackedSoulProfileResolver()
@@ -466,8 +428,8 @@ internal class OpenCrayHostRuntime private constructor(
     },
     nowEpochMsProvider = System::currentTimeMillis,
   )
-  private val shellListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
-  private val settingsOverviewListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  internal val shellListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  internal val settingsOverviewListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val skillsListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
@@ -478,9 +440,6 @@ internal class OpenCrayHostRuntime private constructor(
   private val onDeviceLlmWarmupController: OnDeviceLlmWarmupController =
     providedOnDeviceLlmWarmupController ?: defaultOnDeviceLlmWarmupController()
   private val voiceMetadataBackfillInFlight = ConcurrentHashMap.newKeySet<String>()
-
-  private fun resolvedSandboxSettingsRepository(): SandboxSettingsRepository =
-    sandboxSettingsRepository ?: fallbackSandboxSettingsRepository
 
   init {
     runtimeObservationDisposer = runtimeHostAccess.observe(
@@ -838,223 +797,84 @@ internal class OpenCrayHostRuntime private constructor(
     scheduleStartupOnDeviceWarmup()
   }
 
-  override fun loadShellSnapshot(): Map<String, Any?> = buildMap {
-    val destination = stateStore.load()
-    put("initialTab", destination.selectedTab.routeKey)
-    put("settingsSubpage", destination.settingsSubpage.routeKey)
-    put("localeTag", strings.localeTag)
-    put("hostLabel", strings.shellHostLabel)
-    put("hostSummary", strings.shellHostSummary)
-    put("isHostConnected", true)
-    putRuntimeServiceDiagnosticsSnapshot(
-      localRuntimeServerState = runtimeDiagnosticsBridge.localRuntimeServerStateProvider(),
-      hostLifecycle = lifecycleDescriptor,
-      runtimeControllerLifecycle = runtimeDiagnosticsBridge.runtimeControllerDescriptor,
-      runtimeOwnerLifecycle = runtimeDiagnosticsBridge.runtimeOwnerDescriptor,
-      runtimeOwnerWorkSummary = runtimeHostAccess.activeWorkSummary(),
-      runtimeServiceLifecycle = runtimeDiagnosticsBridge.runtimeServiceDescriptor,
-      runtimeServiceWorkState = runtimeDiagnosticsBridge.runtimeServiceWorkStateProvider(),
-      runtimeServiceKeepAliveState = runtimeDiagnosticsBridge.runtimeServiceKeepAliveStateProvider(),
-      runtimeServiceOwnerLease = runtimeDiagnosticsBridge.runtimeServiceOwnerLeaseProvider(),
-      runtimeServiceConnectionState =
-        runtimeDiagnosticsBridge.runtimeServiceConnectionStateProvider(),
-      includeNullRuntimeServiceFields = true,
-    )
-  }
+  override fun loadShellSnapshot(): Map<String, Any?> = shellGateway.loadShellSnapshot()
 
   override fun observeShell(listener: (Map<String, Any?>) -> Unit): () -> Unit =
-    observeWithInitial(
-      listeners = shellListeners,
-      initialPayload = loadShellSnapshot(),
-      listener = listener,
-    )
+    shellGateway.observeShell(listener)
 
   override fun saveShellDestination(
     selectedTab: String,
     settingsSubpage: String?,
   ) {
-    val destination = AppShellDestination.fromRaw(
-      selectedTabRaw = selectedTab,
-      settingsSubpageRaw = settingsSubpage,
-    )
-    stateStore.save(destination)
-    emitShellSnapshot()
+    shellGateway.saveShellDestination(selectedTab, settingsSubpage)
   }
 
-  override fun loadSettingsOverview(): Map<String, Any?> =
-    synchronized(lock) { settingsFacade.loadOverview() }.toMap()
+  override fun loadSettingsOverview(): Map<String, Any?> = settingsGateway.loadSettingsOverview()
 
   override fun observeSettingsOverview(listener: (Map<String, Any?>) -> Unit): () -> Unit =
-    observeWithInitial(
-      listeners = settingsOverviewListeners,
-      initialPayload = loadSettingsOverview(),
-      listener = listener,
-    )
+    settingsGateway.observeSettingsOverview(listener)
 
-  override fun loadSettingsDetail(routeIdRaw: String): Map<String, Any?> {
-    val routeId = SettingsRouteId.fromWireValue(routeIdRaw) ?: SettingsRouteId.WORKSPACE_ACCESS
-    return synchronized(lock) { settingsFacade.loadDetail(routeId) }.toMap()
-  }
+  override fun loadSettingsDetail(routeIdRaw: String): Map<String, Any?> =
+    settingsGateway.loadSettingsDetail(routeIdRaw)
 
   override fun loadNotificationSettings(): Map<String, Any?> =
-    synchronized(lock) { notificationSettingsFacade.load() }.toGatewayMap()
+    settingsGateway.loadNotificationSettings()
 
-  override fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?> {
-    val snapshot = synchronized(lock) {
-      notificationSettingsFacade.save(payload.toSaveNotificationSettingsRequest())
-    }
-    return snapshot.toGatewayMap()
-  }
+  override fun saveNotificationSettings(payload: Map<String, Any?>): Map<String, Any?> =
+    settingsGateway.saveNotificationSettings(payload)
 
   override fun loadScheduledTasks(): Map<String, Any?> =
-    requireScheduledTaskManager().loadScheduledTasksGatewayMap()
+    settingsGateway.loadScheduledTasks()
 
   override fun loadScheduledTask(scheduleId: String): Map<String, Any?> =
-    requireScheduledTaskManager().loadScheduledTaskGatewayMap(scheduleId)
+    settingsGateway.loadScheduledTask(scheduleId)
 
   override fun updateScheduledTaskEnabled(
     scheduleId: String,
     enabled: Boolean,
-  ): Map<String, Any?> = requireScheduledTaskManager().updateScheduledTaskEnabledGatewayMap(
+  ): Map<String, Any?> = settingsGateway.updateScheduledTaskEnabled(
     scheduleId = scheduleId,
     enabled = enabled,
   )
 
   override fun runScheduledTaskNow(scheduleId: String): Map<String, Any?> =
-    requireScheduledTaskManager().runScheduledTaskNowGatewayMap(scheduleId)
+    settingsGateway.runScheduledTaskNow(scheduleId)
 
   override fun snoozeScheduledTask(
     scheduleId: String,
     durationMinutes: Int,
-  ): Map<String, Any?> = requireScheduledTaskManager().snoozeScheduledTaskGatewayMap(
+  ): Map<String, Any?> = settingsGateway.snoozeScheduledTask(
     scheduleId = scheduleId,
     durationMinutes = durationMinutes,
   )
 
-  private fun requireScheduledTaskManager(): AppScheduledTaskManager =
-    checkNotNull(scheduledTaskManager) { "Scheduled task management is unavailable." }
-
-  override fun loadStrongBackgroundSnapshot(): Map<String, Any?> = buildMap {
-    putAll(strongBackgroundSettingsAccess.loadSnapshot())
-    put(
-      "runtimeServiceConnectionState",
-      runtimeDiagnosticsBridge.runtimeServiceConnectionStateProvider()?.snapshotMap(),
-    )
-  }
+  override fun loadStrongBackgroundSnapshot(): Map<String, Any?> =
+    settingsGateway.loadStrongBackgroundSnapshot()
 
   override fun performStrongBackgroundAction(actionId: String): Map<String, Any?> =
-    strongBackgroundSettingsAccess.performAction(actionId)
+    settingsGateway.performStrongBackgroundAction(actionId)
 
   override fun loadNetworkSearchConfig(): Map<String, Any?> =
-    synchronized(lock) { networkSearchConfigFacade.load() }.toMap()
+    settingsGateway.loadNetworkSearchConfig()
 
   override fun saveNetworkSearchConfig(
     slots: List<Map<String, Any?>>,
-  ): Map<String, Any?> {
-    val snapshot = synchronized(lock) {
-      networkSearchConfigFacade.save(
-        SaveNetworkSearchConfigRequest(
-          slots = slots.map { slot ->
-            SaveNetworkSearchSlotRequest(
-              id = slot["id"]?.toString().orEmpty(),
-              providerId = slot["providerId"]?.toString().orEmpty(),
-              label = slot["label"]?.toString().orEmpty(),
-              baseUrl = slot["baseUrl"]?.toString().orEmpty(),
-              model = slot["model"]?.toString().orEmpty(),
-              apiKey = slot["apiKey"]?.toString().orEmpty(),
-              enabled = slot["enabled"] as? Boolean ?: true,
-            )
-          },
-        ),
-      )
-    }
-    emitSettingsOverview()
-    return snapshot.toMap()
-  }
+  ): Map<String, Any?> = settingsGateway.saveNetworkSearchConfig(slots)
 
   override fun loadMediaSpeechConfig(): Map<String, Any?> =
-    synchronized(lock) { mediaSpeechSettingsFacade.load() }.toMap()
+    settingsGateway.loadMediaSpeechConfig()
 
   override fun saveMediaSpeechConfig(
     payload: Map<String, Any?>,
-  ): Map<String, Any?> {
-    val imageGeneration = payload["imageGeneration"] as? Map<String, Any?> ?: emptyMap()
-    val videoGeneration = payload["videoGeneration"] as? Map<String, Any?> ?: emptyMap()
-    val voiceGeneration = payload["voiceGeneration"] as? Map<String, Any?> ?: emptyMap()
-    val externalStt = payload["externalStt"] as? Map<String, Any?> ?: emptyMap()
-    val onDeviceModel = payload["onDeviceModel"] as? Map<String, Any?> ?: emptyMap()
-    val snapshot = synchronized(lock) {
-      mediaSpeechSettingsFacade.save(
-        SaveMediaSpeechConfigRequest(
-          imageGeneration = SaveMediaProviderRequest(
-            provider = imageGeneration["provider"]?.toString().orEmpty(),
-            baseUrl = imageGeneration["baseUrl"]?.toString().orEmpty(),
-            endpoint = imageGeneration["endpoint"]?.toString().orEmpty(),
-            model = imageGeneration["model"]?.toString().orEmpty(),
-            authProtocol = imageGeneration["authProtocol"]?.toString().orEmpty(),
-            apiKey = imageGeneration["apiKey"]?.toString().orEmpty(),
-          ),
-          videoGeneration = SaveMediaProviderRequest(
-            provider = videoGeneration["provider"]?.toString().orEmpty(),
-            baseUrl = videoGeneration["baseUrl"]?.toString().orEmpty(),
-            endpoint = videoGeneration["endpoint"]?.toString().orEmpty(),
-            model = videoGeneration["model"]?.toString().orEmpty(),
-            authProtocol = videoGeneration["authProtocol"]?.toString().orEmpty(),
-            apiKey = videoGeneration["apiKey"]?.toString().orEmpty(),
-          ),
-          voiceGeneration = SaveVoiceProviderRequest(
-            provider = voiceGeneration["provider"]?.toString().orEmpty(),
-            baseUrl = voiceGeneration["baseUrl"]?.toString().orEmpty(),
-            endpoint = voiceGeneration["endpoint"]?.toString().orEmpty(),
-            model = voiceGeneration["model"]?.toString().orEmpty(),
-            voicePreset = voiceGeneration["voicePreset"]?.toString().orEmpty(),
-            authProtocol = voiceGeneration["authProtocol"]?.toString().orEmpty(),
-            apiKey = voiceGeneration["apiKey"]?.toString().orEmpty(),
-          ),
-          sttRouteId = payload["sttRouteId"]?.toString().orEmpty(),
-          externalStt = SaveMediaProviderRequest(
-            provider = externalStt["provider"]?.toString().orEmpty(),
-            baseUrl = externalStt["baseUrl"]?.toString().orEmpty(),
-            endpoint = externalStt["endpoint"]?.toString().orEmpty(),
-            model = externalStt["model"]?.toString().orEmpty(),
-            authProtocol = externalStt["authProtocol"]?.toString().orEmpty(),
-            apiKey = externalStt["apiKey"]?.toString().orEmpty(),
-          ),
-          onDeviceModel = SaveOnDeviceSttRequest(
-            modelPackage = onDeviceModel["modelPackage"]?.toString().orEmpty(),
-            downloadStatus = onDeviceModel["downloadStatus"]?.toString().orEmpty(),
-          ),
-        ),
-      )
-    }
-    emitSettingsOverview()
-    return snapshot.toMap()
-  }
+  ): Map<String, Any?> = settingsGateway.saveMediaSpeechConfig(payload)
 
   override fun loadSandboxSettings(): Map<String, Any?> =
-    synchronized(lock) {
-      resolvedSandboxSettingsRepository().load().toGatewayMap(strings.localeTag)
-    }
+    settingsGateway.loadSandboxSettings()
 
-  override fun saveSandboxSettings(payload: Map<String, Any?>): Map<String, Any?> {
-    val saved = synchronized(lock) {
-      val repository = resolvedSandboxSettingsRepository()
-      val current = repository.load()
-      val parsed = parseSandboxSettingsPayload(
-        payload = payload,
-        existingState = current.state,
-      )
-      repository.save(
-        state = parsed.state,
-        e2bApiKey = parsed.e2bApiKey,
-      )
-    }
-    emitSettingsOverview()
-    return saved.toGatewayMap(strings.localeTag)
-  }
+  override fun saveSandboxSettings(payload: Map<String, Any?>): Map<String, Any?> =
+    settingsGateway.saveSandboxSettings(payload)
 
-  override fun loadLlmConfig(): Map<String, Any?> =
-    synchronized(lock) { llmConfigFacade.load() }.toMap()
+  override fun loadLlmConfig(): Map<String, Any?> = settingsGateway.loadLlmConfig()
 
   override fun saveLlmConfig(
     enabled: Boolean,
@@ -1088,46 +908,39 @@ internal class OpenCrayHostRuntime private constructor(
     onDeviceThinkingEnabled: Boolean,
     onDeviceLiteModeEnabled: Boolean,
     contextWindowTokensOverride: Int?,
-  ): Map<String, Any?> {
-    val snapshot = synchronized(lock) {
-      llmConfigFacade.save(
-        SaveLlmConfigRequest(
-          enabled = enabled,
-          streamingEnabled = streamingEnabled,
-          providerMode = providerMode,
-          providerId = providerId,
-          selectedProviderOptionId = selectedProviderOptionId,
-          protocol = protocol,
-          providerName = providerName,
-          providerNotes = providerNotes,
-          baseUrl = baseUrl,
-          apiKey = apiKey,
-          model = model,
-          reasoningEffort = reasoningEffort,
-          systemPrompt = systemPrompt,
-          openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
-          openAiPromptCacheRetention = openAiPromptCacheRetention,
-          anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
-          anthropicPromptCacheTtl = anthropicPromptCacheTtl,
-          contextBudgetPreset = contextBudgetPreset,
-          contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
-          contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
-          contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
-          selectedOnDeviceModelId = selectedOnDeviceModelId,
-          onDeviceMaxContextWindow = onDeviceMaxContextWindow,
-          onDeviceMaxTokens = onDeviceMaxTokens,
-          onDeviceTopK = onDeviceTopK,
-          onDeviceTopP = onDeviceTopP,
-          onDeviceTemperature = onDeviceTemperature,
-          onDeviceAccelerator = onDeviceAccelerator,
-          onDeviceThinkingEnabled = onDeviceThinkingEnabled,
-          onDeviceLiteModeEnabled = onDeviceLiteModeEnabled,
-          contextWindowTokensOverride = contextWindowTokensOverride,
-        ),
-      )
-    }
-    return snapshot.toMap()
-  }
+  ): Map<String, Any?> = settingsGateway.saveLlmConfig(
+    enabled = enabled,
+    streamingEnabled = streamingEnabled,
+    providerMode = providerMode,
+    providerId = providerId,
+    selectedProviderOptionId = selectedProviderOptionId,
+    protocol = protocol,
+    providerName = providerName,
+    providerNotes = providerNotes,
+    baseUrl = baseUrl,
+    apiKey = apiKey,
+    model = model,
+    reasoningEffort = reasoningEffort,
+    systemPrompt = systemPrompt,
+    openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
+    openAiPromptCacheRetention = openAiPromptCacheRetention,
+    anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
+    anthropicPromptCacheTtl = anthropicPromptCacheTtl,
+    contextBudgetPreset = contextBudgetPreset,
+    contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
+    contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
+    contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
+    selectedOnDeviceModelId = selectedOnDeviceModelId,
+    onDeviceMaxContextWindow = onDeviceMaxContextWindow,
+    onDeviceMaxTokens = onDeviceMaxTokens,
+    onDeviceTopK = onDeviceTopK,
+    onDeviceTopP = onDeviceTopP,
+    onDeviceTemperature = onDeviceTemperature,
+    onDeviceAccelerator = onDeviceAccelerator,
+    onDeviceThinkingEnabled = onDeviceThinkingEnabled,
+    onDeviceLiteModeEnabled = onDeviceLiteModeEnabled,
+    contextWindowTokensOverride = contextWindowTokensOverride,
+  )
 
   override fun saveCustomLlmProvider(
     selectedProviderOptionId: String,
@@ -1149,38 +962,27 @@ internal class OpenCrayHostRuntime private constructor(
     contextBudgetSafetyMarginTokens: Int?,
     contextBudgetEffectiveInputPercent: Double?,
     contextWindowTokensOverride: Int?,
-  ): Map<String, Any?> {
-    val snapshot = synchronized(lock) {
-      llmConfigFacade.saveCustomProvider(
-        SaveCustomLlmProviderRequest(
-          selectedProviderOptionId = selectedProviderOptionId,
-          streamingEnabled = streamingEnabled,
-          protocol = protocol,
-          providerName = providerName,
-          providerNotes = providerNotes,
-          baseUrl = baseUrl,
-          apiKey = apiKey,
-          model = model,
-          reasoningEffort = reasoningEffort,
-          systemPrompt = systemPrompt,
-          openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy
-            ?: LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY,
-          openAiPromptCacheRetention = openAiPromptCacheRetention
-            ?: LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
-          anthropicPromptCachingEnabled = anthropicPromptCachingEnabled
-            ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
-          anthropicPromptCacheTtl = anthropicPromptCacheTtl
-            ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
-          contextBudgetPreset = contextBudgetPreset,
-          contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
-          contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
-          contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
-          contextWindowTokensOverride = contextWindowTokensOverride,
-        ),
-      )
-    }
-    return snapshot.toMap()
-  }
+  ): Map<String, Any?> = settingsGateway.saveCustomLlmProvider(
+    selectedProviderOptionId = selectedProviderOptionId,
+    streamingEnabled = streamingEnabled,
+    protocol = protocol,
+    providerName = providerName,
+    providerNotes = providerNotes,
+    baseUrl = baseUrl,
+    apiKey = apiKey,
+    model = model,
+    reasoningEffort = reasoningEffort,
+    systemPrompt = systemPrompt,
+    openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
+    openAiPromptCacheRetention = openAiPromptCacheRetention,
+    anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
+    anthropicPromptCacheTtl = anthropicPromptCacheTtl,
+    contextBudgetPreset = contextBudgetPreset,
+    contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
+    contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
+    contextBudgetEffectiveInputPercent = contextBudgetEffectiveInputPercent,
+    contextWindowTokensOverride = contextWindowTokensOverride,
+  )
 
   override fun validateLlmConfig(
     providerId: String,
@@ -1190,106 +992,63 @@ internal class OpenCrayHostRuntime private constructor(
     model: String,
     reasoningEffort: String,
     contextWindowTokensOverride: Int?,
-  ): Map<String, Any?> = llmConfigFacade.validate(
-    ValidateLlmConfigRequest(
-      providerId = providerId,
-      protocol = protocol,
-      baseUrl = baseUrl,
-      apiKey = apiKey,
-      model = model,
-      reasoningEffort = reasoningEffort,
-      contextWindowTokensOverride = contextWindowTokensOverride,
-    ),
-  ).toMap()
+  ): Map<String, Any?> = settingsGateway.validateLlmConfig(
+    providerId = providerId,
+    protocol = protocol,
+    baseUrl = baseUrl,
+    apiKey = apiKey,
+    model = model,
+    reasoningEffort = reasoningEffort,
+    contextWindowTokensOverride = contextWindowTokensOverride,
+  )
 
-  override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> {
-    val snapshot = synchronized(lock) {
-      llmConfigFacade.downloadOnDeviceModel(modelId)
-    }
-    emitSettingsOverview()
-    return snapshot.toMap()
-  }
+  override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+    settingsGateway.downloadOnDeviceLlmModel(modelId)
 
-  override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> {
-    val snapshot = synchronized(lock) {
-      llmConfigFacade.cancelOnDeviceModelDownload(modelId)
-    }
-    emitSettingsOverview()
-    return snapshot.toMap()
-  }
+  override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> =
+    settingsGateway.cancelOnDeviceLlmModelDownload(modelId)
 
-  override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> {
-    val snapshot = synchronized(lock) {
-      llmConfigFacade.deleteOnDeviceModel(modelId)
-    }
-    emitSettingsOverview()
-    return snapshot.toMap()
-  }
+  override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> =
+    settingsGateway.deleteOnDeviceLlmModel(modelId)
 
   override fun loadPersonalizationConfig(): Map<String, Any?> =
-    synchronized(lock) { personalizationFacade.load() }.toMap()
+    settingsGateway.loadPersonalizationConfig()
 
   override fun savePersonalizationConfig(
     presetId: String,
     customLabel: String,
     customGuidance: String,
-  ): Map<String, Any?> {
-    val snapshot = synchronized(lock) {
-      personalizationFacade.save(
-        SavePersonalizationConfigRequest(
-          presetId = presetId,
-          customLabel = customLabel,
-          customGuidance = customGuidance,
-        ),
-      )
-    }
-    emitSettingsOverview()
-    return snapshot.toMap()
-  }
+  ): Map<String, Any?> = settingsGateway.savePersonalizationConfig(
+    presetId = presetId,
+    customLabel = customLabel,
+    customGuidance = customGuidance,
+  )
 
-  override fun setAppLanguage(languageId: String): Map<String, Any?> {
-    val snapshot = synchronized(lock) {
-      val updated = personalizationFacade.setAppLanguage(languageId)
-      if (appContext == null) {
-        updated
-      } else {
-        refreshLocalizedResourcesLocked()
-        personalizationFacade.load()
-      }
-    }
-    emitShellSnapshot()
-    emitSettingsOverview()
-    emitSkillsSnapshot()
-    emitChatSnapshot()
-    return snapshot.toMap()
-  }
+  override fun setAppLanguage(languageId: String): Map<String, Any?> =
+    settingsGateway.setAppLanguage(languageId)
 
-  override fun runPersonalizationReset(scopeId: String): Map<String, Any?> {
-    val snapshot = synchronized(lock) {
-      personalizationFacade.reset(PersonalizationResetScope.fromWireValue(scopeId))
-    }
-    emitSettingsOverview()
-    return snapshot.toMap()
-  }
+  override fun runPersonalizationReset(scopeId: String): Map<String, Any?> =
+    settingsGateway.runPersonalizationReset(scopeId)
 
   override fun probeTwinImportSource(filePath: String): Map<String, Any?> =
     localHostGateway.probeTwinImportSource(filePath)
 
   override fun loadMcpSettings(): Map<String, Any?> =
-    synchronized(lock) { mcpSettingsFacade.load() }.toMap()
+    settingsGateway.loadMcpSettings()
 
   override fun setMcpMasterEnabled(enabled: Boolean): Map<String, Any?> =
-    synchronized(lock) { mcpSettingsFacade.setMasterEnabled(enabled) }.toMap()
+    settingsGateway.setMcpMasterEnabled(enabled)
 
   override fun setMcpServerEnabled(
     serverId: String,
     enabled: Boolean,
-  ): Map<String, Any?> = synchronized(lock) {
-    mcpSettingsFacade.setServerEnabled(serverId = serverId, enabled = enabled)
-  }.toMap()
+  ): Map<String, Any?> = settingsGateway.setMcpServerEnabled(
+    serverId = serverId,
+    enabled = enabled,
+  )
 
   override fun loadSafetySettings(): Map<String, Any?> =
-    synchronized(lock) { safetySettingsFacade.load() }.toMap()
+    settingsGateway.loadSafetySettings()
 
   override fun saveSafetySettings(
     automationModeId: String,
@@ -1312,36 +1071,28 @@ internal class OpenCrayHostRuntime private constructor(
     memoryToolsEnabled: Boolean,
     subAgentContextDefaultModeId: String?,
     subAgentContextProfileOverrides: Map<String, String>,
-  ): Map<String, Any?> {
-    val snapshot = synchronized(lock) {
-      safetySettingsFacade.save(
-        SaveSafetySettingsRequest(
-          automationModeId = automationModeId,
-          rollbackJournalEnabled = rollbackJournalEnabled,
-          maxFilesPerBatch = maxFilesPerBatch,
-          maxAgentTurns = maxAgentTurns,
-          maxToolCalls = maxToolCalls,
-          undoWindowHours = undoWindowHours,
-          fileChangesPolicyId = fileChangesPolicyId,
-          fileDeletesPolicyId = fileDeletesPolicyId,
-          shellCommandsPolicyId = shellCommandsPolicyId,
-          externalAccessModeId = externalAccessModeId,
-          photoLibraryEnabled = photoLibraryEnabled,
-          downloadsEnabled = downloadsEnabled,
-          documentsEnabled = documentsEnabled,
-          recordingsEnabled = recordingsEnabled,
-          workspaceAccessProfileId = workspaceAccessProfileId,
-          readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
-          liveContextModeId = liveContextModeId,
-          memoryToolsEnabled = memoryToolsEnabled,
-          subAgentContextDefaultModeId = subAgentContextDefaultModeId,
-          subAgentContextProfileOverrides = subAgentContextProfileOverrides,
-        ),
-      )
-    }
-    emitChatSnapshot()
-    return snapshot.toMap()
-  }
+  ): Map<String, Any?> = settingsGateway.saveSafetySettings(
+    automationModeId = automationModeId,
+    rollbackJournalEnabled = rollbackJournalEnabled,
+    maxFilesPerBatch = maxFilesPerBatch,
+    maxAgentTurns = maxAgentTurns,
+    maxToolCalls = maxToolCalls,
+    undoWindowHours = undoWindowHours,
+    fileChangesPolicyId = fileChangesPolicyId,
+    fileDeletesPolicyId = fileDeletesPolicyId,
+    shellCommandsPolicyId = shellCommandsPolicyId,
+    externalAccessModeId = externalAccessModeId,
+    photoLibraryEnabled = photoLibraryEnabled,
+    downloadsEnabled = downloadsEnabled,
+    documentsEnabled = documentsEnabled,
+    recordingsEnabled = recordingsEnabled,
+    workspaceAccessProfileId = workspaceAccessProfileId,
+    readOnlyOutsideWorkspace = readOnlyOutsideWorkspace,
+    liveContextModeId = liveContextModeId,
+    memoryToolsEnabled = memoryToolsEnabled,
+    subAgentContextDefaultModeId = subAgentContextDefaultModeId,
+    subAgentContextProfileOverrides = subAgentContextProfileOverrides,
+  )
 
   override fun loadSkillsSnapshot(
     query: String,
@@ -8647,7 +8398,7 @@ private data class RestoredTerminalMessage(
     approvedReadRoots = approvedReadRootsProvider(),
   )
 
-  private fun refreshLocalizedResourcesLocked() {
+  internal fun refreshLocalizedResourcesLocked() {
     val baseContext = appContext ?: return
     val localizedContext = OpenCrayLocaleManager.wrap(baseContext)
     settingsFacade = LocalSettingsFacade.fromContext(localizedContext)
@@ -8672,300 +8423,7 @@ private data class RestoredTerminalMessage(
     strings = localizedHostRuntimeStrings(localizedContext)
   }
 
-  private fun SettingsOverviewSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "eyebrow" to eyebrow,
-    "title" to title,
-    "subtitle" to subtitle,
-    "deviceTitle" to deviceTitle,
-    "deviceSummary" to deviceSummary,
-    "entries" to entries.map { entry ->
-      mapOf(
-        "routeId" to entry.routeId.wireValue,
-        "title" to entry.title,
-      )
-    },
-  )
-
-  private fun SettingsDetailSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "routeId" to routeId.wireValue,
-    "title" to title,
-    "subtitle" to subtitle,
-    "sections" to sections.map { section -> section.toMap() },
-  )
-
-  private fun NetworkSearchConfigSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "localeTag" to localeTag,
-    "title" to title,
-    "subtitle" to subtitle,
-    "slots" to slots.map { slot -> slot.toMap() },
-  )
-
-  private fun NetworkSearchSlotSnapshot.toMap(): Map<String, Any?> = mapOf(
-  "id" to id,
-  "providerId" to providerId,
-  "label" to label,
-  "baseUrl" to baseUrl,
-  "model" to model,
-  "apiKey" to apiKey,
-  "enabled" to enabled,
-)
-
-  private fun MediaSpeechConfigSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "localeTag" to localeTag,
-    "title" to title,
-    "subtitle" to subtitle,
-    "imageGeneration" to imageGeneration.toMap(),
-    "videoGeneration" to videoGeneration.toMap(),
-    "voiceGeneration" to voiceGeneration.toMap(),
-    "sttRouteId" to sttRouteId,
-    "externalStt" to externalStt.toMap(),
-    "onDeviceModel" to onDeviceModel.toMap(),
-  )
-
-  private fun MediaProviderSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "provider" to provider,
-    "baseUrl" to baseUrl,
-    "endpoint" to endpoint,
-    "model" to model,
-    "authProtocol" to authProtocol,
-    "apiKey" to apiKey,
-  )
-
-  private fun VoiceProviderSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "provider" to provider,
-    "baseUrl" to baseUrl,
-    "endpoint" to endpoint,
-    "model" to model,
-    "voicePreset" to voicePreset,
-    "authProtocol" to authProtocol,
-    "apiKey" to apiKey,
-  )
-
-  private fun OnDeviceSttSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "modelPackage" to modelPackage,
-    "downloadStatus" to downloadStatus,
-  )
-
-  private fun SettingsSectionSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "title" to title,
-    "helperText" to helperText,
-    "rows" to rows.map { row -> row.toMap() },
-    "segmentedOptions" to segmentedOptions,
-    "segmentedIndex" to segmentedIndex,
-    "inlinePanelText" to inlinePanelText,
-    "backgroundTone" to backgroundTone.wireValue,
-  )
-
-  private fun SettingsRowSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "title" to title,
-    "subtitle" to subtitle,
-    "trailingKind" to trailingKind.wireValue,
-    "toggleValue" to toggleValue,
-    "valueLabel" to valueLabel,
-  )
-
-  private fun LlmConfigSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "localeTag" to localeTag,
-    "enabled" to enabled,
-    "streamingEnabled" to streamingEnabled,
-    "providerMode" to providerMode,
-    "providerId" to providerId,
-    "selectedProviderOptionId" to selectedProviderOptionId,
-    "protocol" to protocol,
-    "providerOptions" to providerOptions.map { option -> option.toMap() },
-    "providerName" to providerName,
-    "providerNotes" to providerNotes,
-    "baseUrl" to baseUrl,
-    "apiKey" to apiKey,
-    "model" to model,
-    "reasoningEffort" to reasoningEffort,
-    "systemPrompt" to systemPrompt,
-    "openAiPromptCacheKeyStrategy" to openAiPromptCacheKeyStrategy,
-    "openAiPromptCacheRetention" to openAiPromptCacheRetention,
-    "anthropicPromptCachingEnabled" to anthropicPromptCachingEnabled,
-    "anthropicPromptCacheTtl" to anthropicPromptCacheTtl,
-    "contextBudgetPreset" to contextBudgetPreset,
-    "contextBudgetReservedOutputTokens" to contextBudgetReservedOutputTokens,
-    "contextBudgetSafetyMarginTokens" to contextBudgetSafetyMarginTokens,
-    "contextBudgetEffectiveInputPercent" to contextBudgetEffectiveInputPercent,
-    "onDeviceModels" to onDeviceModels.map { option -> option.toMap() },
-    "selectedOnDeviceModelId" to selectedOnDeviceModelId,
-    "onDeviceMaxContextWindow" to onDeviceMaxContextWindow,
-    "onDeviceMaxTokens" to onDeviceMaxTokens,
-    "onDeviceTopK" to onDeviceTopK,
-    "onDeviceTopP" to onDeviceTopP,
-    "onDeviceTemperature" to onDeviceTemperature,
-    "onDeviceAccelerator" to onDeviceAccelerator,
-    "onDeviceThinkingEnabled" to onDeviceThinkingEnabled,
-    "onDeviceLiteModeEnabled" to onDeviceLiteModeEnabled,
-    "helperText" to helperText,
-    "agentCapability" to agentCapability.toMap(),
-  )
-
-  private fun LlmProviderOptionSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "id" to id,
-    "providerId" to providerId,
-    "title" to title,
-    "subtitle" to subtitle,
-    "defaultBaseUrl" to defaultBaseUrl,
-    "defaultModel" to defaultModel,
-    "protocol" to protocol,
-    "apiKey" to apiKey,
-    "isCustom" to isCustom,
-  )
-
-  private fun OnDeviceLlmModelOptionSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "id" to id,
-    "title" to title,
-    "subtitle" to subtitle,
-    "sizeLabel" to sizeLabel,
-    "fileSizeBytes" to fileSizeBytes,
-    "installState" to installState,
-    "downloadState" to installState,
-    "downloadedBytes" to downloadedBytes,
-    "downloadBytesPerSecond" to downloadBytesPerSecond,
-    "sha256Verified" to sha256Verified,
-    "isSelected" to isSelected,
-    "lastError" to lastError,
-  )
-
-  private fun LlmValidationResult.toMap(): Map<String, Any?> = mapOf(
-    "isSuccess" to isSuccess,
-    "message" to message,
-    "agentCapability" to agentCapability?.toMap(),
-  )
-
-  private fun LlmAgentCapabilitySnapshot.toMap(): Map<String, Any?> = mapOf(
-    "routeFingerprint" to routeFingerprint,
-    "verifiedAtEpochMs" to verifiedAtEpochMs,
-    "wasVerified" to wasVerified,
-    "contextWindowTokens" to contextWindowTokens,
-    "visionInputSupported" to visionInputSupported,
-    "nativeToolCallingAvailable" to nativeToolCallingAvailable,
-    "toolChoiceSupported" to toolChoiceSupported,
-    "parallelToolCallsSupported" to parallelToolCallsSupported,
-    "strictToolSchemaSupported" to strictToolSchemaSupported,
-    "responsesContinuationSupported" to responsesContinuationSupported,
-    "builtinWebSearchSupported" to builtinWebSearchSupported,
-    "assistantPhaseSupported" to assistantPhaseSupported,
-    "citationIncludeSupported" to citationIncludeSupported,
-  )
-
-  private fun PersonalizationConfigSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "title" to title,
-    "subtitle" to subtitle,
-    "introTitle" to introTitle,
-    "introBody" to introBody,
-    "introHelper" to introHelper,
-    "presetsTitle" to presetsTitle,
-    "presetsHelper" to presetsHelper,
-    "presets" to presets.map { preset -> preset.toMap() },
-    "selectedPresetId" to selectedPresetId,
-    "customOverlayTitle" to customOverlayTitle,
-    "customOverlayHelper" to customOverlayHelper,
-    "customLabelHint" to customLabelHint,
-    "customLabelHelper" to customLabelHelper,
-    "customGuidanceHint" to customGuidanceHint,
-    "customGuidanceHelper" to customGuidanceHelper,
-    "customLabel" to customLabel,
-    "customGuidance" to customGuidance,
-    "behaviorDefaultsTitle" to behaviorDefaultsTitle,
-    "appLanguageTitle" to appLanguageTitle,
-    "appLanguageOptions" to appLanguageOptions.map { option -> option.toMap() },
-    "selectedAppLanguageId" to selectedAppLanguageId,
-    "livePreviewTitle" to livePreviewTitle,
-    "livePreviewName" to livePreviewName,
-    "livePreviewSummary" to livePreviewSummary,
-    "queueTitle" to queueTitle,
-    "queueBody" to queueBody,
-    "queueIsIdle" to queueIsIdle,
-    "lastResetTitle" to lastResetTitle,
-    "lastResetMessage" to lastResetMessage,
-    "resetActions" to resetActions.map { action -> action.toMap() },
-  )
-
-  private fun PersonalizationPresetSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "id" to id,
-    "title" to title,
-    "summary" to summary,
-    "voice" to voice,
-    "status" to status,
-    "isSelected" to isSelected,
-  )
-
-  private fun PersonalizationLanguageOptionSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "id" to id,
-    "title" to title,
-    "isSelected" to isSelected,
-  )
-
-  private fun PersonalizationResetActionSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "scopeId" to scope.wireValue,
-    "title" to title,
-    "scopeBody" to scopeBody,
-    "retainBody" to retainBody,
-    "confirmationToken" to confirmationToken,
-    "inputHint" to inputHint,
-    "disabledGuidance" to disabledGuidance,
-    "typeExactGuidance" to typeExactGuidance,
-    "armedGuidance" to armedGuidance,
-    "isInputEnabled" to isInputEnabled,
-  )
-
-  private fun McpSettingsSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "title" to title,
-    "subtitle" to subtitle,
-    "masterTitle" to masterTitle,
-    "masterSummary" to masterSummary,
-    "masterEnabled" to masterEnabled,
-    "summaryLine" to summaryLine,
-    "serversTitle" to serversTitle,
-    "serversHelper" to serversHelper,
-    "masterDisabledTitle" to masterDisabledTitle,
-    "masterDisabledBody" to masterDisabledBody,
-    "servers" to servers.map { server -> server.toMap() },
-  )
-
-  private fun McpServerSettingsSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "id" to id,
-    "title" to title,
-    "statusLabel" to statusLabel,
-    "statusTone" to statusTone,
-    "trustLine" to trustLine,
-    "authLine" to authLine,
-    "readinessLine" to readinessLine,
-    "transportLine" to transportLine,
-    "exposureLine" to exposureLine,
-    "guidance" to guidance,
-    "actionLabel" to actionLabel,
-    "actionTurnsOn" to actionTurnsOn,
-    "isActionEnabled" to isActionEnabled,
-  )
-
-  private fun SafetySettingsSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "automationModeId" to automationMode.wireValue,
-    "rollbackJournalEnabled" to rollbackJournalEnabled,
-    "maxFilesPerBatch" to maxFilesPerBatch,
-    "maxAgentTurns" to maxAgentTurns,
-    "maxToolCalls" to maxToolCalls,
-    "undoWindowHours" to undoWindowHours,
-    "fileChangesPolicyId" to fileChangesPolicy.wireValue,
-    "fileDeletesPolicyId" to fileDeletesPolicy.wireValue,
-    "shellCommandsPolicyId" to shellCommandsPolicy.wireValue,
-    "externalAccessModeId" to externalAccessMode.wireValue,
-    "locations" to locations.map { location -> location.toMap() },
-    "workspaceAccessProfileId" to workspaceAccessProfile.wireValue,
-    "readOnlyOutsideWorkspace" to readOnlyOutsideWorkspace,
-    "liveContextModeId" to liveContextMode.wireValue,
-    "memoryToolsEnabled" to memoryToolsEnabled,
-  )
-
-  private fun SafetySettingsLocationSnapshot.toMap(): Map<String, Any?> = mapOf(
-    "id" to id,
-    "enabled" to enabled,
-  )
-
-  private fun observeWithInitial(
+  internal fun observeWithInitial(
     listeners: LinkedHashSet<(Map<String, Any?>) -> Unit>,
     initialPayload: Map<String, Any?>,
     listener: (Map<String, Any?>) -> Unit,
@@ -8984,7 +8442,7 @@ private data class RestoredTerminalMessage(
     }
   }
 
-  private fun emitChatSnapshot() {
+  internal fun emitChatSnapshot() {
     emitSnapshotLazy(chatListeners, ::loadChatSnapshotForEmission)
   }
 
@@ -9010,17 +8468,17 @@ private data class RestoredTerminalMessage(
     emitSnapshot(runtimeEventDeltaListeners, payload)
   }
 
-  private fun emitShellSnapshot() {
+  internal fun emitShellSnapshot() {
     val payload = loadShellSnapshot()
     emitSnapshot(shellListeners, payload)
   }
 
-  private fun emitSettingsOverview() {
+  internal fun emitSettingsOverview() {
     val payload = loadSettingsOverview()
     emitSnapshot(settingsOverviewListeners, payload)
   }
 
-  private fun emitSkillsSnapshot() {
+  internal fun emitSkillsSnapshot() {
     val payload = loadSkillsSnapshot(query = "", suggestedLimit = 0)
     emitSnapshot(skillsListeners, payload)
   }
@@ -9281,7 +8739,7 @@ private data class RestoredTerminalMessage(
       )
     }
 
-    private fun inMemorySandboxSettingsRepository(): SandboxSettingsRepository {
+    internal fun inMemorySandboxSettingsRepository(): SandboxSettingsRepository {
       val secrets = linkedMapOf<CredentialRef, SecretValue>()
       return SandboxSettingsRepository(
         store = SandboxSettingsStore(
