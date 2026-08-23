@@ -30,9 +30,7 @@ import com.opencray.app.facade.safety.SafetySettingsFacade
 import com.opencray.app.facade.safety.SafetySettingsSnapshot
 import com.opencray.app.facade.skills.EmptySkillsFacade
 import com.opencray.app.facade.skills.LocalSkillsFacade
-import com.opencray.app.facade.skills.SkillInstructionsSnapshot
 import com.opencray.app.facade.skills.SkillsFacade
-import com.opencray.app.facade.skills.SkillsSnapshot
 import com.opencray.app.facade.settings.LocalSettingsFacade
 import com.opencray.app.facade.settings.SettingsFacade
 import com.opencray.app.shell.AppShellStateStore
@@ -110,12 +108,6 @@ import com.opencray.runtime.subagent.SubAgentHandleState
 import com.opencray.runtime.subagent.SubAgentExecutionState
 import com.opencray.runtime.subagent.SubAgentSessionLink
 import com.opencray.runtime.subagent.SubAgentLiveContextSnapshot
-import com.opencray.runtime.skills.SkillPackageCheckReport
-import com.opencray.runtime.skills.SkillPackageCheckResult
-import com.opencray.runtime.skills.SkillPackageCheckStatus
-import com.opencray.runtime.skills.SkillPackageUpdateReport
-import com.opencray.runtime.skills.SkillPackageUpdateResult
-import com.opencray.runtime.skills.SkillPackageUpdateStatus
 import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
 import com.opencray.runtime.soul.RuntimeSoulProfileSeedFactory
 import com.opencray.runtime.soul.SoulProfileResolver
@@ -163,7 +155,7 @@ internal class OpenCrayHostRuntime private constructor(
   private val workspaceSoulProfileStore: WorkspaceSoulProfileStore = WorkspaceSoulProfileStore(),
   internal var mcpSettingsFacade: McpSettingsFacade,
   internal var safetySettingsFacade: SafetySettingsFacade,
-  private var skillsFacade: SkillsFacade,
+  internal var skillsFacade: SkillsFacade,
   private val workspaceRootProvider: (() -> Path)?,
   private val workspaceEntryOpener: ((Path, String) -> Unit)? = null,
   private val externalUriOpener: ((String) -> Unit)? = null,
@@ -196,7 +188,7 @@ internal class OpenCrayHostRuntime private constructor(
   internal var strings: HostRuntimeStrings,
   internal val mainThreadPoster: MainThreadPoster,
   private val providedOnDeviceLlmWarmupController: OnDeviceLlmWarmupController? = null,
-  private val localHostGateway: OpenCrayLocalHostGateway = DefaultOpenCrayLocalHostGateway(
+  internal val localHostGateway: OpenCrayLocalHostGateway = DefaultOpenCrayLocalHostGateway(
     appContext = appContext,
     workspaceRootProvider = workspaceRootProvider,
     workspaceEntryOpener = workspaceEntryOpener,
@@ -226,6 +218,8 @@ internal class OpenCrayHostRuntime private constructor(
   private val liveAssistantDraftLock = Any()
   private val shellGateway = HostShellGatewayImpl(this)
   private val settingsGateway = HostSettingsGatewayImpl(this)
+  private val hostLocalHostGateway = HostLocalHostGatewayImpl(this)
+  private val skillsGateway = HostSkillsGatewayImpl(this)
   private val soulProfileResolver = SoulProfileResolver()
   private val runtimeSoulProfileSeedFactory = RuntimeSoulProfileSeedFactory()
   private val memoryBackedSoulProfileResolver = MemoryBackedSoulProfileResolver()
@@ -430,7 +424,7 @@ internal class OpenCrayHostRuntime private constructor(
   )
   internal val shellListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   internal val settingsOverviewListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
-  private val skillsListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  internal val skillsListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val liveAssistantDraftEventListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
@@ -1031,7 +1025,7 @@ internal class OpenCrayHostRuntime private constructor(
     settingsGateway.runPersonalizationReset(scopeId)
 
   override fun probeTwinImportSource(filePath: String): Map<String, Any?> =
-    localHostGateway.probeTwinImportSource(filePath)
+    hostLocalHostGateway.probeTwinImportSource(filePath)
 
   override fun loadMcpSettings(): Map<String, Any?> =
     settingsGateway.loadMcpSettings()
@@ -1097,422 +1091,138 @@ internal class OpenCrayHostRuntime private constructor(
   override fun loadSkillsSnapshot(
     query: String,
     suggestedLimit: Int,
-  ): Map<String, Any?> {
-    val normalizedQuery = query.trim()
-    val snapshot = if (normalizedQuery.isEmpty()) {
-      loadDefaultSkillsSnapshot()
-    } else {
-      loadQueriedSkillsSnapshot(
-        query = normalizedQuery,
-        suggestedLimit = suggestedLimit,
-      )
-    }
-    return snapshot.toGatewayMap()
-  }
+  ): Map<String, Any?> = skillsGateway.loadSkillsSnapshot(
+    query = query,
+    suggestedLimit = suggestedLimit,
+  )
 
   override fun observeSkills(listener: (Map<String, Any?>) -> Unit): () -> Unit =
-    observeWithInitial(
-      listeners = skillsListeners,
-      initialPayload = loadSkillsSnapshot(query = "", suggestedLimit = 0),
-      listener = listener,
-    )
+    skillsGateway.observeSkills(listener)
 
   override fun loadFilesSnapshot(): Map<String, Any?> =
-    localHostGateway.loadFilesSnapshot()
+    hostLocalHostGateway.loadFilesSnapshot()
 
   override fun loadWorkspaceImagePreview(relativePath: String): Map<String, Any?> =
-    localHostGateway.loadWorkspaceImagePreview(relativePath)
+    hostLocalHostGateway.loadWorkspaceImagePreview(relativePath)
 
   override fun loadWorkspaceTextPreview(relativePath: String): Map<String, Any?> =
-    localHostGateway.loadWorkspaceTextPreview(relativePath)
+    hostLocalHostGateway.loadWorkspaceTextPreview(relativePath)
 
   override fun loadWorkspaceVoicePlaybackSource(relativePath: String): Map<String, Any?> =
-    localHostGateway.loadWorkspaceVoicePlaybackSource(relativePath)
+    hostLocalHostGateway.loadWorkspaceVoicePlaybackSource(relativePath)
 
   override fun loadWorkspaceTextDocument(relativePath: String): Map<String, Any?> =
-    localHostGateway.loadWorkspaceTextDocument(relativePath)
+    hostLocalHostGateway.loadWorkspaceTextDocument(relativePath)
 
   override fun openWorkspaceEntry(relativePath: String) {
-    localHostGateway.openWorkspaceEntry(relativePath)
+    hostLocalHostGateway.openWorkspaceEntry(relativePath)
   }
 
   override fun openExternalUri(uri: String) {
-    localHostGateway.openExternalUri(uri)
+    hostLocalHostGateway.openExternalUri(uri)
   }
 
   override fun copyRichTextToClipboard(plainText: String, htmlText: String?) {
-    localHostGateway.copyRichTextToClipboard(plainText = plainText, htmlText = htmlText)
+    hostLocalHostGateway.copyRichTextToClipboard(plainText = plainText, htmlText = htmlText)
   }
 
   override fun createWorkspaceFolder(
     parentRelativePath: String,
     name: String,
-  ): Map<String, Any?> = localHostGateway.createWorkspaceFolder(parentRelativePath, name)
+  ): Map<String, Any?> = hostLocalHostGateway.createWorkspaceFolder(parentRelativePath, name)
 
   override fun createWorkspaceTextFile(
     parentRelativePath: String,
     name: String,
-  ): Map<String, Any?> = localHostGateway.createWorkspaceTextFile(parentRelativePath, name)
+  ): Map<String, Any?> = hostLocalHostGateway.createWorkspaceTextFile(parentRelativePath, name)
 
   override fun renameWorkspaceEntry(
     targetRelativePath: String,
     newName: String,
-  ): Map<String, Any?> = localHostGateway.renameWorkspaceEntry(targetRelativePath, newName)
+  ): Map<String, Any?> = hostLocalHostGateway.renameWorkspaceEntry(targetRelativePath, newName)
 
   override fun deleteWorkspaceEntries(relativePaths: List<String>): Map<String, Any?> =
-    localHostGateway.deleteWorkspaceEntries(relativePaths)
+    hostLocalHostGateway.deleteWorkspaceEntries(relativePaths)
 
   override fun saveWorkspaceTextDocument(
     targetRelativePath: String,
     content: String,
-  ): Map<String, Any?> = localHostGateway.saveWorkspaceTextDocument(targetRelativePath, content)
+  ): Map<String, Any?> = hostLocalHostGateway.saveWorkspaceTextDocument(targetRelativePath, content)
 
   override fun pasteWorkspaceEntries(
     sourceRelativePaths: List<String>,
     destinationRelativePath: String,
     move: Boolean,
-  ): Map<String, Any?> = localHostGateway.pasteWorkspaceEntries(
+  ): Map<String, Any?> = hostLocalHostGateway.pasteWorkspaceEntries(
     sourceRelativePaths = sourceRelativePaths,
     destinationRelativePath = destinationRelativePath,
     move = move,
   )
 
   override fun shareWorkspaceEntries(relativePaths: List<String>) {
-    localHostGateway.shareWorkspaceEntries(relativePaths)
+    hostLocalHostGateway.shareWorkspaceEntries(relativePaths)
   }
 
   override fun saveWorkspaceMediaAttachment(
     relativePath: String,
     kind: String,
-  ): Map<String, Any?> = localHostGateway.saveWorkspaceMediaAttachment(relativePath, kind)
+  ): Map<String, Any?> = hostLocalHostGateway.saveWorkspaceMediaAttachment(relativePath, kind)
 
   override fun showNativeToast(message: String) {
-    localHostGateway.showNativeToast(message)
+    hostLocalHostGateway.showNativeToast(message)
   }
 
   override fun setSkillEnabled(skillId: String, enabled: Boolean) {
-    synchronized(lock) {
-      require(skillsFacade.setSkillEnabled(skillId = skillId, enabled = enabled)) {
-        "Skill '$skillId' is not installed."
-      }
-    }
-    emitSkillsSnapshot()
+    skillsGateway.setSkillEnabled(skillId = skillId, enabled = enabled)
   }
 
-  override fun installSuggestedSkill(skillId: String): String {
-    return installSkillSource(sourceRef = skillId, selectedSkillName = "")
-  }
+  override fun installSuggestedSkill(skillId: String): String =
+    skillsGateway.installSuggestedSkill(skillId)
 
   override fun installSkillSource(
     sourceRef: String,
     selectedSkillName: String,
-  ): String {
-    val normalizedSourceRef = sourceRef.trim()
-    val normalizedSelectedSkillName = selectedSkillName.trim()
-    require(normalizedSourceRef.isNotEmpty()) {
-      "Skill source cannot be blank."
-    }
-    val result = synchronized(lock) {
-      skillsFacade.installSkillSource(
-        sourceRef = normalizedSourceRef,
-        selectedSkillName = normalizedSelectedSkillName,
-      )
-    }
-    require(result.succeeded) {
-      result.errorMessage?.trim()?.takeIf(String::isNotBlank)
-        ?: "Unable to install '$normalizedSourceRef'."
-    }
-    emitSkillsSnapshot()
-    return result.installedSkillId
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let(strings.skillInstalled)
-      ?: strings.skillInstalled(
-        normalizedSelectedSkillName.takeIf(String::isNotBlank) ?: normalizedSourceRef,
-      )
-  }
+  ): String = skillsGateway.installSkillSource(
+    sourceRef = sourceRef,
+    selectedSkillName = selectedSkillName,
+  )
 
   override fun installSkillSourceBatch(
     sourceRef: String,
     selectedSkillNames: List<String>,
-  ): String {
-    val normalizedSourceRef = sourceRef.trim()
-    val normalizedSelectedSkillNames = selectedSkillNames
-      .asSequence()
-      .map(String::trim)
-      .filter(String::isNotBlank)
-      .distinct()
-      .toList()
-    require(normalizedSourceRef.isNotEmpty()) {
-      "Skill source cannot be blank."
-    }
-    require(normalizedSelectedSkillNames.isNotEmpty()) {
-      "At least one skill must be selected."
-    }
-    val attempt = synchronized(lock) {
-      skillsFacade.installSkillSourceBatch(
-        sourceRef = normalizedSourceRef,
-        selectedSkillNames = normalizedSelectedSkillNames,
-      )
-    }
-    val result = requireNotNull(attempt.result) {
-      attempt.errorMessage?.trim()?.takeIf(String::isNotBlank)
-        ?: "Unable to install selected skills from '$normalizedSourceRef'."
-    }
-    if (result.failedCount > 0) {
-      throw IllegalStateException(
-        result.entries.firstNotNullOfOrNull { entry -> entry.errorMessage?.trim()?.takeIf(String::isNotBlank) }
-          ?: "Unable to install selected skills from '$normalizedSourceRef'.",
-      )
-    }
-    emitSkillsSnapshot()
-    return if (normalizedSelectedSkillNames.size == 1) {
-      strings.skillInstalled(normalizedSelectedSkillNames.single())
-    } else {
-      "Installed ${result.installedCount} skills."
-    }
-  }
+  ): String = skillsGateway.installSkillSourceBatch(
+    sourceRef = sourceRef,
+    selectedSkillNames = selectedSkillNames,
+  )
 
-  override fun inspectSkillSource(sourceRef: String): Map<String, Any?> {
-    val normalizedSourceRef = sourceRef.trim()
-    require(normalizedSourceRef.isNotEmpty()) {
-      "Skill source cannot be blank."
-    }
-    val attempt = synchronized(lock) {
-      skillsFacade.inspectSkillSource(normalizedSourceRef)
-    }
-    val result = requireNotNull(attempt.result) {
-      attempt.errorMessage?.trim()?.takeIf(String::isNotBlank)
-        ?: "Unable to inspect '$normalizedSourceRef'."
-    }
-    return result.toGatewayMap()
-  }
+  override fun inspectSkillSource(sourceRef: String): Map<String, Any?> =
+    skillsGateway.inspectSkillSource(sourceRef)
 
-  override fun deleteInstalledSkill(skillId: String): String {
-    val normalizedSkillId = skillId.trim()
-    require(normalizedSkillId.isNotEmpty()) {
-      "Skill id cannot be blank."
-    }
-    val removed = synchronized(lock) {
-      skillsFacade.deleteInstalledSkill(normalizedSkillId)
-    }
-    require(removed) {
-      "Unable to remove '$normalizedSkillId'."
-    }
-    emitSkillsSnapshot()
-    return strings.skillRemoved(normalizedSkillId)
-  }
+  override fun deleteInstalledSkill(skillId: String): String =
+    skillsGateway.deleteInstalledSkill(skillId)
 
-  override fun refreshSkills(): String {
-    synchronized(lock) {
-      skillsFacade.refresh()
-    }
-    emitSkillsSnapshot()
-    return strings.skillsReloaded
-  }
+  override fun refreshSkills(): String =
+    skillsGateway.refreshSkills()
 
-  override fun checkInstalledSkillUpdates(skillId: String): String {
-    val normalizedSkillId = skillId.trim()
-    val report = synchronized(lock) {
-      skillsFacade.checkInstalledSkillUpdates(normalizedSkillId)
-    }
-    return renderInstalledSkillUpdateCheckMessage(
-      requestedSkillId = normalizedSkillId.takeIf(String::isNotBlank),
-      report = report,
-    )
-  }
+  override fun checkInstalledSkillUpdates(skillId: String): String =
+    skillsGateway.checkInstalledSkillUpdates(skillId)
 
-  override fun updateInstalledSkill(skillId: String): String {
-    val normalizedSkillId = skillId.trim()
-    val report = synchronized(lock) {
-      skillsFacade.updateInstalledSkill(normalizedSkillId)
-    }
-    if (report.updatedCount == 0 && report.failedCount > 0 && report.skippedCount == 0) {
-      throw IllegalStateException(
-        report.results.firstNotNullOfOrNull { result -> result.errorMessage?.trim()?.takeIf(String::isNotBlank) }
-          ?: "SkillsUpdate failed.",
-      )
-    }
-    emitSkillsSnapshot()
-    return renderInstalledSkillUpdateMessage(
-      requestedSkillId = normalizedSkillId.takeIf(String::isNotBlank),
-      report = report,
-    )
-  }
+  override fun updateInstalledSkill(skillId: String): String =
+    skillsGateway.updateInstalledSkill(skillId)
 
-  private fun renderInstalledSkillUpdateCheckMessage(
-    requestedSkillId: String?,
-    report: SkillPackageCheckReport,
-  ): String {
-    val requestedResult = requestedSkillId?.let { skillId ->
-      report.results.firstOrNull { result -> result.skillId == skillId }
-    }
-    if (requestedResult != null) {
-      return renderInstalledSkillUpdateCheckResult(requestedResult)
-    }
-    if (requestedSkillId != null) {
-      return if (isChineseHostLocale()) {
-        "未找到已安装的技能 '$requestedSkillId'。"
-      } else {
-        "Installed skill '$requestedSkillId' was not found."
-      }
-    }
-    if (report.results.isEmpty()) {
-      return if (isChineseHostLocale()) {
-        "没有可检查更新的已安装技能。"
-      } else {
-        "No installed skills to check for updates."
-      }
-    }
-    return if (isChineseHostLocale()) {
-      "已检查 ${report.results.size} 个技能：可更新 ${report.updateAvailableCount} 个，已是最新 ${report.upToDateCount} 个，检查失败 ${report.sourceUnavailableCount + report.unsupportedCount} 个。"
-    } else {
-      "Checked ${report.results.size} skills: ${report.updateAvailableCount} update available, ${report.upToDateCount} up to date, ${report.sourceUnavailableCount + report.unsupportedCount} failed."
-    }
-  }
-
-  private fun renderInstalledSkillUpdateCheckResult(
-    result: SkillPackageCheckResult,
-  ): String {
-    val errorMessage = result.errorMessage?.trim()?.takeIf(String::isNotBlank)
-    return when (result.status) {
-      SkillPackageCheckStatus.UP_TO_DATE -> if (isChineseHostLocale()) {
-        "技能 '${result.skillId}' 已是最新版本。"
-      } else {
-        "Skill '${result.skillId}' is up to date."
-      }
-
-      SkillPackageCheckStatus.UPDATE_AVAILABLE -> if (isChineseHostLocale()) {
-        "技能 '${result.skillId}' 有可用更新。"
-      } else {
-        "Update available for '${result.skillId}'."
-      }
-
-      SkillPackageCheckStatus.SOURCE_UNAVAILABLE,
-      SkillPackageCheckStatus.UNSUPPORTED_SOURCE,
-      -> errorMessage ?: if (isChineseHostLocale()) {
-        "无法检查技能 '${result.skillId}' 的更新。"
-      } else {
-        "Unable to check '${result.skillId}' for updates."
-      }
-    }
-  }
-
-  private fun renderInstalledSkillUpdateMessage(
-    requestedSkillId: String?,
-    report: SkillPackageUpdateReport,
-  ): String {
-    val requestedResult = requestedSkillId?.let { skillId ->
-      report.results.firstOrNull { result -> result.skillId == skillId }
-    }
-    if (requestedResult != null) {
-      return renderInstalledSkillUpdateResult(requestedResult)
-    }
-    if (requestedSkillId != null) {
-      return if (isChineseHostLocale()) {
-        "未找到已安装的技能 '$requestedSkillId'。"
-      } else {
-        "Installed skill '$requestedSkillId' was not found."
-      }
-    }
-    if (report.results.isEmpty()) {
-      return if (isChineseHostLocale()) {
-        "没有可更新的已安装技能。"
-      } else {
-        "No installed skills to update."
-      }
-    }
-    if (report.updatedCount == 0 && report.failedCount == 0) {
-      return if (isChineseHostLocale()) {
-        "所有已安装技能都已是最新版本。"
-      } else {
-        "All installed skills are already up to date."
-      }
-    }
-    return if (isChineseHostLocale()) {
-      "技能更新完成：已更新 ${report.updatedCount} 个，跳过 ${report.skippedCount} 个，失败 ${report.failedCount} 个。"
-    } else {
-      "Skill update finished: ${report.updatedCount} updated, ${report.skippedCount} skipped, ${report.failedCount} failed."
-    }
-  }
-
-  private fun renderInstalledSkillUpdateResult(
-    result: SkillPackageUpdateResult,
-  ): String {
-    val errorMessage = result.errorMessage?.trim()?.takeIf(String::isNotBlank)
-    return when (result.status) {
-      SkillPackageUpdateStatus.UPDATED -> if (isChineseHostLocale()) {
-        "已更新技能 '${result.skillId}'。"
-      } else {
-        "Updated '${result.skillId}'."
-      }
-
-      SkillPackageUpdateStatus.SKIPPED -> if (result.checkStatus == SkillPackageCheckStatus.UP_TO_DATE) {
-        if (isChineseHostLocale()) {
-          "技能 '${result.skillId}' 已是最新版本。"
-        } else {
-          "Skill '${result.skillId}' is already up to date."
-        }
-      } else if (isChineseHostLocale()) {
-        "已跳过技能 '${result.skillId}'。"
-      } else {
-        "Skipped '${result.skillId}'."
-      }
-
-      SkillPackageUpdateStatus.FAILED -> errorMessage ?: if (isChineseHostLocale()) {
-        "无法更新技能 '${result.skillId}'。"
-      } else {
-        "Unable to update '${result.skillId}'."
-      }
-    }
-  }
-
-  override fun loadSkillInstructions(skillId: String): Map<String, Any?> {
-    val instructions = synchronized(lock) {
-      skillsFacade.loadInstructions(skillId)
-    }
-    requireNotNull(instructions) {
-      "Skill '$skillId' is unavailable."
-    }
-    return instructions.toGatewayMap()
-  }
+  override fun loadSkillInstructions(skillId: String): Map<String, Any?> =
+    skillsGateway.loadSkillInstructions(skillId)
 
   override fun loadSuggestedSkillInstructions(
     sourceRef: String,
     selectedSkillName: String,
-  ): Map<String, Any?> {
-    val normalizedSourceRef = sourceRef.trim()
-    require(normalizedSourceRef.isNotEmpty()) {
-      "Skill source cannot be blank."
-    }
-    val instructions = synchronized(lock) {
-      skillsFacade.loadSuggestedInstructions(
-        sourceRef = normalizedSourceRef,
-        selectedSkillName = selectedSkillName.trim(),
-      )
-    }
-    requireNotNull(instructions) {
-      "Skill source '$normalizedSourceRef' is unavailable."
-    }
-    return instructions.toGatewayMap()
-  }
+  ): Map<String, Any?> = skillsGateway.loadSuggestedSkillInstructions(
+    sourceRef = sourceRef,
+    selectedSkillName = selectedSkillName,
+  )
 
   override fun activateSkillsInstallSource(sourceId: String): String =
-    synchronized(lock) { skillsFacade.activateInstallSource(sourceId) }
-
-  private fun loadDefaultSkillsSnapshot(): SkillsSnapshot {
-    return synchronized(lock) { skillsFacade.loadSnapshot() }
-  }
-
-  private fun loadQueriedSkillsSnapshot(
-    query: String,
-    suggestedLimit: Int,
-  ): SkillsSnapshot = synchronized(lock) {
-    skillsFacade.loadSnapshot(
-      query = query,
-      suggestedLimit = suggestedLimit,
-    )
-  }
+    skillsGateway.activateSkillsInstallSource(sourceId)
 
   override fun loadChatSnapshot(): Map<String, Any?> =
     loadChatSnapshot(includeRuntimeActivity = true)
@@ -2063,7 +1773,7 @@ internal class OpenCrayHostRuntime private constructor(
   override fun importDraftChatAttachments(
     requestedKind: String,
     uriStrings: List<String>,
-  ): List<Map<String, Any?>> = localHostGateway.importDraftChatAttachments(
+  ): List<Map<String, Any?>> = hostLocalHostGateway.importDraftChatAttachments(
     requestedKind = requestedKind,
     uriStrings = uriStrings,
   )
@@ -4942,7 +4652,7 @@ internal class OpenCrayHostRuntime private constructor(
       .mapNotNull { section -> section?.trim()?.takeIf(String::isNotBlank) }
       .joinToString(separator = "\n\n")
 
-  private fun isChineseHostLocale(): Boolean =
+  internal fun isChineseHostLocale(): Boolean =
     strings.localeTag.trim().lowercase(Locale.US).startsWith("zh")
 
   private fun metadataValue(metadata: Map<String, String>, key: String): String? =
