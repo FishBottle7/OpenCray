@@ -106,9 +106,10 @@ internal class ServiceOwnedSettingsGateway(
 
   override fun loadStrongBackgroundSnapshot(): Map<String, Any?> = buildMap {
     putAll(strongBackgroundSettingsAccess.loadSnapshot())
-    runtimeServiceConnectionStateProvider()?.let { state ->
-      put("runtimeServiceConnectionState", state.snapshotMap())
-    }
+    put(
+      "runtimeServiceConnectionState",
+      runtimeServiceConnectionStateProvider()?.snapshotMap(),
+    )
   }
 
   override fun performStrongBackgroundAction(actionId: String): Map<String, Any?> =
@@ -158,7 +159,7 @@ internal class ServiceOwnedSettingsGateway(
     customGuidance: String,
   ): Map<String, Any?> {
     val snapshot = personalizationFacade.save(
-      com.opencray.app.facade.personalization.SavePersonalizationConfigRequest(
+      savePersonalizationConfigRequest(
         presetId = presetId,
         customLabel = customLabel,
         customGuidance = customGuidance,
@@ -317,7 +318,7 @@ internal class ServiceOwnedSettingsGateway(
     onDeviceLiteModeEnabled: Boolean,
     contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = llmConfigFacade.save(
-    com.opencray.app.facade.llm.SaveLlmConfigRequest(
+    saveLlmConfigRequest(
       enabled = enabled,
       streamingEnabled = streamingEnabled,
       providerMode = providerMode,
@@ -376,7 +377,7 @@ internal class ServiceOwnedSettingsGateway(
     contextBudgetEffectiveInputPercent: Double?,
     contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = llmConfigFacade.saveCustomProvider(
-    com.opencray.app.facade.llm.SaveCustomLlmProviderRequest(
+    saveCustomLlmProviderRequest(
       selectedProviderOptionId = selectedProviderOptionId,
       streamingEnabled = streamingEnabled,
       protocol = protocol,
@@ -387,14 +388,10 @@ internal class ServiceOwnedSettingsGateway(
       model = model,
       reasoningEffort = reasoningEffort,
       systemPrompt = systemPrompt,
-      openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy
-        ?: LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY,
-      openAiPromptCacheRetention = openAiPromptCacheRetention
-        ?: LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
-      anthropicPromptCachingEnabled = anthropicPromptCachingEnabled
-        ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
-      anthropicPromptCacheTtl = anthropicPromptCacheTtl
-        ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
+      openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
+      openAiPromptCacheRetention = openAiPromptCacheRetention,
+      anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
+      anthropicPromptCacheTtl = anthropicPromptCacheTtl,
       contextBudgetPreset = contextBudgetPreset,
       contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
       contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
@@ -412,7 +409,7 @@ internal class ServiceOwnedSettingsGateway(
     reasoningEffort: String,
     contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = llmConfigFacade.validate(
-    com.opencray.app.facade.llm.ValidateLlmConfigRequest(
+    validateLlmConfigRequest(
       providerId = providerId,
       protocol = protocol,
       baseUrl = baseUrl,

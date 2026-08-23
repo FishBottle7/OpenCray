@@ -1,12 +1,6 @@
 package com.opencray.app
 
 import com.opencray.app.facade.skills.SkillsSnapshot
-import com.opencray.runtime.skills.SkillPackageCheckReport
-import com.opencray.runtime.skills.SkillPackageCheckResult
-import com.opencray.runtime.skills.SkillPackageCheckStatus
-import com.opencray.runtime.skills.SkillPackageUpdateReport
-import com.opencray.runtime.skills.SkillPackageUpdateResult
-import com.opencray.runtime.skills.SkillPackageUpdateStatus
 
 internal class HostSkillsGatewayImpl(
   private val host: OpenCrayHostRuntime,
@@ -16,7 +10,7 @@ internal class HostSkillsGatewayImpl(
     suggestedLimit: Int,
   ): Map<String, Any?> {
     val normalizedQuery = query.trim()
-    val snapshot = if (normalizedQuery.isEmpty()) {
+    val snapshot = if (normalizedQuery.isEmpty() && suggestedLimit <= 0) {
       loadDefaultSkillsSnapshot()
     } else {
       loadQueriedSkillsSnapshot(
@@ -67,13 +61,12 @@ internal class HostSkillsGatewayImpl(
         ?: "Unable to install '$normalizedSourceRef'."
     }
     host.emitSkillsSnapshot()
-    return result.installedSkillId
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let(host.strings.skillInstalled)
-      ?: host.strings.skillInstalled(
-        normalizedSelectedSkillName.takeIf(String::isNotBlank) ?: normalizedSourceRef,
-      )
+    return renderInstalledSkillMessage(
+      installedSkillId = result.installedSkillId,
+      selectedSkillName = normalizedSelectedSkillName,
+      sourceRef = normalizedSourceRef,
+      skillInstalled = host.strings.skillInstalled,
+    )
   }
 
   override fun installSkillSourceBatch(
@@ -110,11 +103,11 @@ internal class HostSkillsGatewayImpl(
       )
     }
     host.emitSkillsSnapshot()
-    return if (normalizedSelectedSkillNames.size == 1) {
-      host.strings.skillInstalled(normalizedSelectedSkillNames.single())
-    } else {
-      "Installed ${result.installedCount} skills."
-    }
+    return renderInstalledSkillBatchMessage(
+      selectedSkillNames = normalizedSelectedSkillNames,
+      result = result,
+      skillInstalled = host.strings.skillInstalled,
+    )
   }
 
   override fun inspectSkillSource(sourceRef: String): Map<String, Any?> {
@@ -163,6 +156,7 @@ internal class HostSkillsGatewayImpl(
     return renderInstalledSkillUpdateCheckMessage(
       requestedSkillId = normalizedSkillId.takeIf(String::isNotBlank),
       report = report,
+      localeTag = host.strings.localeTag,
     )
   }
 
@@ -181,134 +175,8 @@ internal class HostSkillsGatewayImpl(
     return renderInstalledSkillUpdateMessage(
       requestedSkillId = normalizedSkillId.takeIf(String::isNotBlank),
       report = report,
+      localeTag = host.strings.localeTag,
     )
-  }
-
-  private fun renderInstalledSkillUpdateCheckMessage(
-    requestedSkillId: String?,
-    report: SkillPackageCheckReport,
-  ): String {
-    val requestedResult = requestedSkillId?.let { skillId ->
-      report.results.firstOrNull { result -> result.skillId == skillId }
-    }
-    if (requestedResult != null) {
-      return renderInstalledSkillUpdateCheckResult(requestedResult)
-    }
-    if (requestedSkillId != null) {
-      return if (host.isChineseHostLocale()) {
-        "未找到已安装的技能 '$requestedSkillId'。"
-      } else {
-        "Installed skill '$requestedSkillId' was not found."
-      }
-    }
-    if (report.results.isEmpty()) {
-      return if (host.isChineseHostLocale()) {
-        "没有可检查更新的已安装技能。"
-      } else {
-        "No installed skills to check for updates."
-      }
-    }
-    return if (host.isChineseHostLocale()) {
-      "已检查 ${report.results.size} 个技能：可更新 ${report.updateAvailableCount} 个，已是最新 ${report.upToDateCount} 个，检查失败 ${report.sourceUnavailableCount + report.unsupportedCount} 个。"
-    } else {
-      "Checked ${report.results.size} skills: ${report.updateAvailableCount} update available, ${report.upToDateCount} up to date, ${report.sourceUnavailableCount + report.unsupportedCount} failed."
-    }
-  }
-
-  private fun renderInstalledSkillUpdateCheckResult(
-    result: SkillPackageCheckResult,
-  ): String {
-    val errorMessage = result.errorMessage?.trim()?.takeIf(String::isNotBlank)
-    return when (result.status) {
-      SkillPackageCheckStatus.UP_TO_DATE -> if (host.isChineseHostLocale()) {
-        "技能 '${result.skillId}' 已是最新版本。"
-      } else {
-        "Skill '${result.skillId}' is up to date."
-      }
-
-      SkillPackageCheckStatus.UPDATE_AVAILABLE -> if (host.isChineseHostLocale()) {
-        "技能 '${result.skillId}' 有可用更新。"
-      } else {
-        "Update available for '${result.skillId}'."
-      }
-
-      SkillPackageCheckStatus.SOURCE_UNAVAILABLE,
-      SkillPackageCheckStatus.UNSUPPORTED_SOURCE,
-      -> errorMessage ?: if (host.isChineseHostLocale()) {
-        "无法检查技能 '${result.skillId}' 的更新。"
-      } else {
-        "Unable to check '${result.skillId}' for updates."
-      }
-    }
-  }
-
-  private fun renderInstalledSkillUpdateMessage(
-    requestedSkillId: String?,
-    report: SkillPackageUpdateReport,
-  ): String {
-    val requestedResult = requestedSkillId?.let { skillId ->
-      report.results.firstOrNull { result -> result.skillId == skillId }
-    }
-    if (requestedResult != null) {
-      return renderInstalledSkillUpdateResult(requestedResult)
-    }
-    if (requestedSkillId != null) {
-      return if (host.isChineseHostLocale()) {
-        "未找到已安装的技能 '$requestedSkillId'。"
-      } else {
-        "Installed skill '$requestedSkillId' was not found."
-      }
-    }
-    if (report.results.isEmpty()) {
-      return if (host.isChineseHostLocale()) {
-        "没有可更新的已安装技能。"
-      } else {
-        "No installed skills to update."
-      }
-    }
-    if (report.updatedCount == 0 && report.failedCount == 0) {
-      return if (host.isChineseHostLocale()) {
-        "所有已安装技能都已是最新版本。"
-      } else {
-        "All installed skills are already up to date."
-      }
-    }
-    return if (host.isChineseHostLocale()) {
-      "技能更新完成：已更新 ${report.updatedCount} 个，跳过 ${report.skippedCount} 个，失败 ${report.failedCount} 个。"
-    } else {
-      "Skill update finished: ${report.updatedCount} updated, ${report.skippedCount} skipped, ${report.failedCount} failed."
-    }
-  }
-
-  private fun renderInstalledSkillUpdateResult(
-    result: SkillPackageUpdateResult,
-  ): String {
-    val errorMessage = result.errorMessage?.trim()?.takeIf(String::isNotBlank)
-    return when (result.status) {
-      SkillPackageUpdateStatus.UPDATED -> if (host.isChineseHostLocale()) {
-        "已更新技能 '${result.skillId}'。"
-      } else {
-        "Updated '${result.skillId}'."
-      }
-
-      SkillPackageUpdateStatus.SKIPPED -> if (result.checkStatus == SkillPackageCheckStatus.UP_TO_DATE) {
-        if (host.isChineseHostLocale()) {
-          "技能 '${result.skillId}' 已是最新版本。"
-        } else {
-          "Skill '${result.skillId}' is already up to date."
-        }
-      } else if (host.isChineseHostLocale()) {
-        "已跳过技能 '${result.skillId}'。"
-      } else {
-        "Skipped '${result.skillId}'."
-      }
-
-      SkillPackageUpdateStatus.FAILED -> errorMessage ?: if (host.isChineseHostLocale()) {
-        "无法更新技能 '${result.skillId}'。"
-      } else {
-        "Unable to update '${result.skillId}'."
-      }
-    }
   }
 
   override fun loadSkillInstructions(skillId: String): Map<String, Any?> {

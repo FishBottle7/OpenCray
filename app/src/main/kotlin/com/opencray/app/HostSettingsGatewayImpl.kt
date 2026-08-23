@@ -1,17 +1,6 @@
 package com.opencray.app
 
-import com.opencray.app.facade.llm.SaveCustomLlmProviderRequest
-import com.opencray.app.facade.llm.SaveLlmConfigRequest
-import com.opencray.app.facade.llm.ValidateLlmConfigRequest
-import com.opencray.app.facade.media.SaveMediaProviderRequest
-import com.opencray.app.facade.media.SaveMediaSpeechConfigRequest
-import com.opencray.app.facade.media.SaveOnDeviceSttRequest
-import com.opencray.app.facade.media.SaveVoiceProviderRequest
 import com.opencray.app.facade.personalization.PersonalizationResetScope
-import com.opencray.app.facade.personalization.SavePersonalizationConfigRequest
-import com.opencray.app.facade.search.SaveNetworkSearchConfigRequest
-import com.opencray.app.facade.search.SaveNetworkSearchSlotRequest
-import com.opencray.app.facade.safety.SaveSafetySettingsRequest
 import com.opencray.app.facade.settings.SettingsRouteId
 
 internal class HostSettingsGatewayImpl(
@@ -26,7 +15,7 @@ internal class HostSettingsGatewayImpl(
   }
 
   override fun loadSettingsOverview(): Map<String, Any?> =
-    synchronized(host.lock) { host.settingsFacade.loadOverview() }.toMap()
+    synchronized(host.lock) { host.settingsFacade.loadOverview() }.toSettingsOverviewGatewayMap()
 
   override fun observeSettingsOverview(listener: (Map<String, Any?>) -> Unit): () -> Unit =
     host.observeWithInitial(
@@ -37,7 +26,7 @@ internal class HostSettingsGatewayImpl(
 
   override fun loadSettingsDetail(routeIdRaw: String): Map<String, Any?> {
     val routeId = SettingsRouteId.fromWireValue(routeIdRaw) ?: SettingsRouteId.WORKSPACE_ACCESS
-    return synchronized(host.lock) { host.settingsFacade.loadDetail(routeId) }.toMap()
+    return synchronized(host.lock) { host.settingsFacade.loadDetail(routeId) }.toSettingsDetailGatewayMap()
   }
 
   override fun loadNotificationSettings(): Map<String, Any?> =
@@ -90,89 +79,29 @@ internal class HostSettingsGatewayImpl(
     host.strongBackgroundSettingsAccess.performAction(actionId)
 
   override fun loadNetworkSearchConfig(): Map<String, Any?> =
-    synchronized(host.lock) { host.networkSearchConfigFacade.load() }.toMap()
+    synchronized(host.lock) { host.networkSearchConfigFacade.load() }.toGatewayMap()
 
   override fun saveNetworkSearchConfig(
     slots: List<Map<String, Any?>>,
   ): Map<String, Any?> {
     val snapshot = synchronized(host.lock) {
-      host.networkSearchConfigFacade.save(
-        SaveNetworkSearchConfigRequest(
-          slots = slots.map { slot ->
-            SaveNetworkSearchSlotRequest(
-              id = slot["id"]?.toString().orEmpty(),
-              providerId = slot["providerId"]?.toString().orEmpty(),
-              label = slot["label"]?.toString().orEmpty(),
-              baseUrl = slot["baseUrl"]?.toString().orEmpty(),
-              model = slot["model"]?.toString().orEmpty(),
-              apiKey = slot["apiKey"]?.toString().orEmpty(),
-              enabled = slot["enabled"] as? Boolean ?: true,
-            )
-          },
-        ),
-      )
+      host.networkSearchConfigFacade.save(slots.toSaveNetworkSearchConfigRequest())
     }
     host.emitSettingsOverview()
-    return snapshot.toMap()
+    return snapshot.toGatewayMap()
   }
 
   override fun loadMediaSpeechConfig(): Map<String, Any?> =
-    synchronized(host.lock) { host.mediaSpeechSettingsFacade.load() }.toMap()
+    synchronized(host.lock) { host.mediaSpeechSettingsFacade.load() }.toGatewayMap()
 
   override fun saveMediaSpeechConfig(
     payload: Map<String, Any?>,
   ): Map<String, Any?> {
-    val imageGeneration = payload["imageGeneration"] as? Map<String, Any?> ?: emptyMap()
-    val videoGeneration = payload["videoGeneration"] as? Map<String, Any?> ?: emptyMap()
-    val voiceGeneration = payload["voiceGeneration"] as? Map<String, Any?> ?: emptyMap()
-    val externalStt = payload["externalStt"] as? Map<String, Any?> ?: emptyMap()
-    val onDeviceModel = payload["onDeviceModel"] as? Map<String, Any?> ?: emptyMap()
     val snapshot = synchronized(host.lock) {
-      host.mediaSpeechSettingsFacade.save(
-        SaveMediaSpeechConfigRequest(
-          imageGeneration = SaveMediaProviderRequest(
-            provider = imageGeneration["provider"]?.toString().orEmpty(),
-            baseUrl = imageGeneration["baseUrl"]?.toString().orEmpty(),
-            endpoint = imageGeneration["endpoint"]?.toString().orEmpty(),
-            model = imageGeneration["model"]?.toString().orEmpty(),
-            authProtocol = imageGeneration["authProtocol"]?.toString().orEmpty(),
-            apiKey = imageGeneration["apiKey"]?.toString().orEmpty(),
-          ),
-          videoGeneration = SaveMediaProviderRequest(
-            provider = videoGeneration["provider"]?.toString().orEmpty(),
-            baseUrl = videoGeneration["baseUrl"]?.toString().orEmpty(),
-            endpoint = videoGeneration["endpoint"]?.toString().orEmpty(),
-            model = videoGeneration["model"]?.toString().orEmpty(),
-            authProtocol = videoGeneration["authProtocol"]?.toString().orEmpty(),
-            apiKey = videoGeneration["apiKey"]?.toString().orEmpty(),
-          ),
-          voiceGeneration = SaveVoiceProviderRequest(
-            provider = voiceGeneration["provider"]?.toString().orEmpty(),
-            baseUrl = voiceGeneration["baseUrl"]?.toString().orEmpty(),
-            endpoint = voiceGeneration["endpoint"]?.toString().orEmpty(),
-            model = voiceGeneration["model"]?.toString().orEmpty(),
-            voicePreset = voiceGeneration["voicePreset"]?.toString().orEmpty(),
-            authProtocol = voiceGeneration["authProtocol"]?.toString().orEmpty(),
-            apiKey = voiceGeneration["apiKey"]?.toString().orEmpty(),
-          ),
-          sttRouteId = payload["sttRouteId"]?.toString().orEmpty(),
-          externalStt = SaveMediaProviderRequest(
-            provider = externalStt["provider"]?.toString().orEmpty(),
-            baseUrl = externalStt["baseUrl"]?.toString().orEmpty(),
-            endpoint = externalStt["endpoint"]?.toString().orEmpty(),
-            model = externalStt["model"]?.toString().orEmpty(),
-            authProtocol = externalStt["authProtocol"]?.toString().orEmpty(),
-            apiKey = externalStt["apiKey"]?.toString().orEmpty(),
-          ),
-          onDeviceModel = SaveOnDeviceSttRequest(
-            modelPackage = onDeviceModel["modelPackage"]?.toString().orEmpty(),
-            downloadStatus = onDeviceModel["downloadStatus"]?.toString().orEmpty(),
-          ),
-        ),
-      )
+      host.mediaSpeechSettingsFacade.save(payload.toSaveMediaSpeechConfigRequest())
     }
     host.emitSettingsOverview()
-    return snapshot.toMap()
+    return snapshot.toGatewayMap()
   }
 
   override fun loadSandboxSettings(): Map<String, Any?> =
@@ -198,7 +127,7 @@ internal class HostSettingsGatewayImpl(
   }
 
   override fun loadLlmConfig(): Map<String, Any?> =
-    synchronized(host.lock) { host.llmConfigFacade.load() }.toMap()
+    synchronized(host.lock) { host.llmConfigFacade.load() }.toGatewayMap()
 
   override fun saveLlmConfig(
     enabled: Boolean,
@@ -235,7 +164,7 @@ internal class HostSettingsGatewayImpl(
   ): Map<String, Any?> {
     val snapshot = synchronized(host.lock) {
       host.llmConfigFacade.save(
-        SaveLlmConfigRequest(
+        saveLlmConfigRequest(
           enabled = enabled,
           streamingEnabled = streamingEnabled,
           providerMode = providerMode,
@@ -270,7 +199,7 @@ internal class HostSettingsGatewayImpl(
         ),
       )
     }
-    return snapshot.toMap()
+    return snapshot.toGatewayMap()
   }
 
   override fun saveCustomLlmProvider(
@@ -296,7 +225,7 @@ internal class HostSettingsGatewayImpl(
   ): Map<String, Any?> {
     val snapshot = synchronized(host.lock) {
       host.llmConfigFacade.saveCustomProvider(
-        SaveCustomLlmProviderRequest(
+        saveCustomLlmProviderRequest(
           selectedProviderOptionId = selectedProviderOptionId,
           streamingEnabled = streamingEnabled,
           protocol = protocol,
@@ -307,14 +236,10 @@ internal class HostSettingsGatewayImpl(
           model = model,
           reasoningEffort = reasoningEffort,
           systemPrompt = systemPrompt,
-          openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy
-            ?: LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_KEY_STRATEGY,
-          openAiPromptCacheRetention = openAiPromptCacheRetention
-            ?: LlmSettingsState.DEFAULT_OPENAI_PROMPT_CACHE_RETENTION,
-          anthropicPromptCachingEnabled = anthropicPromptCachingEnabled
-            ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHING_ENABLED,
-          anthropicPromptCacheTtl = anthropicPromptCacheTtl
-            ?: LlmSettingsState.DEFAULT_ANTHROPIC_PROMPT_CACHE_TTL,
+          openAiPromptCacheKeyStrategy = openAiPromptCacheKeyStrategy,
+          openAiPromptCacheRetention = openAiPromptCacheRetention,
+          anthropicPromptCachingEnabled = anthropicPromptCachingEnabled,
+          anthropicPromptCacheTtl = anthropicPromptCacheTtl,
           contextBudgetPreset = contextBudgetPreset,
           contextBudgetReservedOutputTokens = contextBudgetReservedOutputTokens,
           contextBudgetSafetyMarginTokens = contextBudgetSafetyMarginTokens,
@@ -323,7 +248,7 @@ internal class HostSettingsGatewayImpl(
         ),
       )
     }
-    return snapshot.toMap()
+    return snapshot.toGatewayMap()
   }
 
   override fun validateLlmConfig(
@@ -335,7 +260,7 @@ internal class HostSettingsGatewayImpl(
     reasoningEffort: String,
     contextWindowTokensOverride: Int?,
   ): Map<String, Any?> = host.llmConfigFacade.validate(
-    ValidateLlmConfigRequest(
+    validateLlmConfigRequest(
       providerId = providerId,
       protocol = protocol,
       baseUrl = baseUrl,
@@ -344,14 +269,14 @@ internal class HostSettingsGatewayImpl(
       reasoningEffort = reasoningEffort,
       contextWindowTokensOverride = contextWindowTokensOverride,
     ),
-  ).toMap()
+  ).toGatewayMap()
 
   override fun downloadOnDeviceLlmModel(modelId: String): Map<String, Any?> {
     val snapshot = synchronized(host.lock) {
       host.llmConfigFacade.downloadOnDeviceModel(modelId)
     }
     host.emitSettingsOverview()
-    return snapshot.toMap()
+    return snapshot.toGatewayMap()
   }
 
   override fun cancelOnDeviceLlmModelDownload(modelId: String): Map<String, Any?> {
@@ -359,7 +284,7 @@ internal class HostSettingsGatewayImpl(
       host.llmConfigFacade.cancelOnDeviceModelDownload(modelId)
     }
     host.emitSettingsOverview()
-    return snapshot.toMap()
+    return snapshot.toGatewayMap()
   }
 
   override fun deleteOnDeviceLlmModel(modelId: String): Map<String, Any?> {
@@ -367,11 +292,11 @@ internal class HostSettingsGatewayImpl(
       host.llmConfigFacade.deleteOnDeviceModel(modelId)
     }
     host.emitSettingsOverview()
-    return snapshot.toMap()
+    return snapshot.toGatewayMap()
   }
 
   override fun loadPersonalizationConfig(): Map<String, Any?> =
-    synchronized(host.lock) { host.personalizationFacade.load() }.toMap()
+    synchronized(host.lock) { host.personalizationFacade.load() }.toPersonalizationGatewayMap()
 
   override fun savePersonalizationConfig(
     presetId: String,
@@ -380,7 +305,7 @@ internal class HostSettingsGatewayImpl(
   ): Map<String, Any?> {
     val snapshot = synchronized(host.lock) {
       host.personalizationFacade.save(
-        SavePersonalizationConfigRequest(
+        savePersonalizationConfigRequest(
           presetId = presetId,
           customLabel = customLabel,
           customGuidance = customGuidance,
@@ -388,7 +313,7 @@ internal class HostSettingsGatewayImpl(
       )
     }
     host.emitSettingsOverview()
-    return snapshot.toMap()
+    return snapshot.toPersonalizationGatewayMap()
   }
 
   override fun setAppLanguage(languageId: String): Map<String, Any?> {
@@ -405,7 +330,7 @@ internal class HostSettingsGatewayImpl(
     host.emitSettingsOverview()
     host.emitSkillsSnapshot()
     host.emitChatSnapshot()
-    return snapshot.toMap()
+    return snapshot.toPersonalizationGatewayMap()
   }
 
   override fun runPersonalizationReset(scopeId: String): Map<String, Any?> {
@@ -413,24 +338,24 @@ internal class HostSettingsGatewayImpl(
       host.personalizationFacade.reset(PersonalizationResetScope.fromWireValue(scopeId))
     }
     host.emitSettingsOverview()
-    return snapshot.toMap()
+    return snapshot.toPersonalizationGatewayMap()
   }
 
   override fun loadMcpSettings(): Map<String, Any?> =
-    synchronized(host.lock) { host.mcpSettingsFacade.load() }.toMap()
+    synchronized(host.lock) { host.mcpSettingsFacade.load() }.toGatewayMap()
 
   override fun setMcpMasterEnabled(enabled: Boolean): Map<String, Any?> =
-    synchronized(host.lock) { host.mcpSettingsFacade.setMasterEnabled(enabled) }.toMap()
+    synchronized(host.lock) { host.mcpSettingsFacade.setMasterEnabled(enabled) }.toGatewayMap()
 
   override fun setMcpServerEnabled(
     serverId: String,
     enabled: Boolean,
   ): Map<String, Any?> = synchronized(host.lock) {
     host.mcpSettingsFacade.setServerEnabled(serverId = serverId, enabled = enabled)
-  }.toMap()
+  }.toGatewayMap()
 
   override fun loadSafetySettings(): Map<String, Any?> =
-    synchronized(host.lock) { host.safetySettingsFacade.load() }.toMap()
+    synchronized(host.lock) { host.safetySettingsFacade.load() }.toSafetyGatewayMap()
 
   override fun saveSafetySettings(
     automationModeId: String,
@@ -456,7 +381,7 @@ internal class HostSettingsGatewayImpl(
   ): Map<String, Any?> {
     val snapshot = synchronized(host.lock) {
       host.safetySettingsFacade.save(
-        SaveSafetySettingsRequest(
+        safetySaveRequest(
           automationModeId = automationModeId,
           rollbackJournalEnabled = rollbackJournalEnabled,
           maxFilesPerBatch = maxFilesPerBatch,
@@ -481,7 +406,7 @@ internal class HostSettingsGatewayImpl(
       )
     }
     host.emitChatSnapshot()
-    return snapshot.toMap()
+    return snapshot.toSafetyGatewayMap()
   }
 
   private fun resolvedSandboxSettingsRepository(): SandboxSettingsRepository =

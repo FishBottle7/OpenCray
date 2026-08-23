@@ -4,6 +4,17 @@ import com.opencray.app.facade.personalization.PersonalizationConfigSnapshot
 import com.opencray.app.facade.personalization.PersonalizationLanguageOptionSnapshot
 import com.opencray.app.facade.personalization.PersonalizationPresetSnapshot
 import com.opencray.app.facade.personalization.PersonalizationResetActionSnapshot
+import com.opencray.app.facade.personalization.SavePersonalizationConfigRequest
+
+internal fun savePersonalizationConfigRequest(
+  presetId: String,
+  customLabel: String,
+  customGuidance: String,
+): SavePersonalizationConfigRequest = SavePersonalizationConfigRequest(
+  presetId = presetId,
+  customLabel = customLabel,
+  customGuidance = customGuidance,
+)
 
 internal fun PersonalizationConfigSnapshot.toPersonalizationGatewayMap(): Map<String, Any?> = mapOf(
   "title" to title,
