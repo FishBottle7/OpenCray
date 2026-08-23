@@ -96,9 +96,7 @@ import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.RuntimeSoulProfile
 import com.opencray.policy.SafetyAutomationMode
 import com.opencray.policy.SafetySettingsMetadataKeys
-import com.opencray.runtime.memory.MemoryOperator
 import com.opencray.runtime.memory.MemoryOperatorAction
-import com.opencray.runtime.memory.MemoryOperatorRequest
 import com.opencray.runtime.memory.MemoryRecordExtensionKeys
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.subagent.SubAgentApprovalResume
@@ -142,7 +140,7 @@ private fun hostChatDebug(message: String) {
 internal class OpenCrayHostRuntime private constructor(
   internal val appContext: Context?,
   internal val stateStore: AppShellStateStore,
-  private val chatSessionStore: ChatSessionLocalStore,
+  internal val chatSessionStore: ChatSessionLocalStore,
   internal var settingsFacade: SettingsFacade,
   internal var notificationSettingsFacade: NotificationSettingsFacade,
   internal var networkSearchConfigFacade: NetworkSearchConfigFacade,
@@ -151,7 +149,7 @@ internal class OpenCrayHostRuntime private constructor(
     appContext?.let(SandboxSettingsRepository::fromContext),
   internal var llmConfigFacade: LlmConfigFacade,
   internal var personalizationFacade: PersonalizationFacade,
-  private val personalizationLocalStore: PersonalizationLocalStore? = null,
+  internal val personalizationLocalStore: PersonalizationLocalStore? = null,
   private val workspaceSoulProfileStore: WorkspaceSoulProfileStore = WorkspaceSoulProfileStore(),
   internal var mcpSettingsFacade: McpSettingsFacade,
   internal var safetySettingsFacade: SafetySettingsFacade,
@@ -205,7 +203,7 @@ internal class OpenCrayHostRuntime private constructor(
   private val resumeActiveSessionOnInit: Boolean = false,
   private val chatUnreadMessageState: ChatUnreadMessageState = ChatUnreadMessageState(),
   private val chatPendingApprovalState: ChatPendingApprovalState = ChatPendingApprovalState(),
-  private val chatRuntimeEventState: ChatRuntimeEventState = ChatRuntimeEventState(),
+  internal val chatRuntimeEventState: ChatRuntimeEventState = ChatRuntimeEventState(),
 ) : OpenCrayLocalHostGateway,
   OpenCrayShellGateway,
   OpenCrayChatRuntimeGateway,
@@ -220,12 +218,13 @@ internal class OpenCrayHostRuntime private constructor(
   private val settingsGateway = HostSettingsGatewayImpl(this)
   private val hostLocalHostGateway = HostLocalHostGatewayImpl(this)
   private val skillsGateway = HostSkillsGatewayImpl(this)
+  private val chatRuntimeGateway = HostChatRuntimeGatewayImpl(this)
   private val soulProfileResolver = SoulProfileResolver()
   private val runtimeSoulProfileSeedFactory = RuntimeSoulProfileSeedFactory()
   private val memoryBackedSoulProfileResolver = MemoryBackedSoulProfileResolver()
   private val liveAssistantDraftsBySession =
     linkedMapOf<String, LinkedHashMap<String, LiveAssistantDraftSnapshot>>()
-  private val chatDebugProjector = ProjectionOnlyChatDebugProjector(
+  internal val chatDebugProjector = ProjectionOnlyChatDebugProjector(
     personalizationLocalStore = personalizationLocalStore,
     workspaceRootProvider = workspaceRootProvider?.let { provider -> { provider() } },
     workspaceSoulProfileStore = workspaceSoulProfileStore,
@@ -234,7 +233,7 @@ internal class OpenCrayHostRuntime private constructor(
     memoryBackedSoulProfileResolver = memoryBackedSoulProfileResolver,
   )
   private val recoveryPlanner = RunRecoveryPlanner()
-  private val chatSessionMutationCoordinator = ChatSessionMutationCoordinator(
+  internal val chatSessionMutationCoordinator = ChatSessionMutationCoordinator(
     chatSessionStore = chatSessionStore,
     runtimeHostAccess = runtimeHostAccess,
     chatUnreadMessageState = chatUnreadMessageState,
@@ -243,7 +242,7 @@ internal class OpenCrayHostRuntime private constructor(
     terminalReplayRepairer = terminalReplayRepairer,
     mediaGc = ::sweepWorkspaceChatMedia,
   )
-  private val chatSubmissionCoordinator = ChatSubmissionCoordinator(
+  internal val chatSubmissionCoordinator = ChatSubmissionCoordinator(
     chatSessionStore = chatSessionStore,
     runtimeHostAccess = runtimeHostAccess,
     taskSafetyMetadataProvider = { safetyMetadataForTask(safetySettingsFacade.load()) },
@@ -257,7 +256,7 @@ internal class OpenCrayHostRuntime private constructor(
     voiceMetadataAnalyzer = voiceMetadataAnalyzer,
     agentThinkingTextProvider = { strings.agentThinking },
   )
-  private val chatRunControlCoordinator = ChatRunControlCoordinator(
+  internal val chatRunControlCoordinator = ChatRunControlCoordinator(
     runtimeHostAccess = runtimeHostAccess,
     findRunSnapshotForIdentifier = { runIdOrTaskId ->
       synchronized(lock) {
@@ -314,7 +313,7 @@ internal class OpenCrayHostRuntime private constructor(
       }
     },
   )
-  private val chatApprovalDecisionCoordinator = ChatApprovalDecisionCoordinator(
+  internal val chatApprovalDecisionCoordinator = ChatApprovalDecisionCoordinator(
     resolveApproval = ::findPendingApprovalMatchLocked,
     approvalSubject = { approvalMatch ->
       ApprovalDecisionSubject(
@@ -425,10 +424,10 @@ internal class OpenCrayHostRuntime private constructor(
   internal val shellListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   internal val settingsOverviewListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   internal val skillsListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
-  private val chatListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
-  private val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
-  private val liveAssistantDraftEventListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
-  private val runtimeEventDeltaListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  internal val chatListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  internal val chatRuntimeListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  internal val liveAssistantDraftEventListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
+  internal val runtimeEventDeltaListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val runtimeEventStreamInstanceId: String = lifecycleId(prefix = "runtime-stream")
   private val runtimeEventDeltaSequencesBySession = linkedMapOf<String, Long>()
   private val onDeviceLlmWarmupController: OnDeviceLlmWarmupController =
@@ -1225,12 +1224,12 @@ internal class OpenCrayHostRuntime private constructor(
     skillsGateway.activateSkillsInstallSource(sourceId)
 
   override fun loadChatSnapshot(): Map<String, Any?> =
-    loadChatSnapshot(includeRuntimeActivity = true)
+    chatRuntimeGateway.loadChatSnapshot()
 
-  private fun loadChatSnapshotForEmission(): Map<String, Any?> =
+  internal fun loadChatSnapshotForEmission(): Map<String, Any?> =
     loadChatSnapshot(includeRuntimeActivity = false)
 
-  private fun loadChatSnapshot(includeRuntimeActivity: Boolean): Map<String, Any?> {
+  internal fun loadChatSnapshot(includeRuntimeActivity: Boolean): Map<String, Any?> {
     val initialBuild = synchronized(lock) {
       buildChatSnapshotLocked(includeRuntimeActivity = includeRuntimeActivity)
     }
@@ -1434,61 +1433,30 @@ internal class OpenCrayHostRuntime private constructor(
   )
 
   override fun observeChat(listener: (Map<String, Any?>) -> Unit): () -> Unit =
-    observeWithInitial(
-      listeners = chatListeners,
-      initialPayload = loadChatSnapshotForEmission(),
-      listener = listener,
-    )
+    chatRuntimeGateway.observeChat(listener)
 
-  override fun loadChatRuntimeSnapshot(): Map<String, Any?> = synchronized(lock) {
-    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
-    runtimeActivitySnapshotLocked(activeSessionId)
-  }
+  override fun loadChatRuntimeSnapshot(): Map<String, Any?> =
+    chatRuntimeGateway.loadChatRuntimeSnapshot()
 
-  override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? = synchronized(lock) {
-    findRunSnapshotLocked(runId)
-      ?.takeIf(::isUserVisibleRun)
-      ?.let(::runSnapshotToMap)
-  }
+  override fun loadChatRunSnapshot(runId: String): Map<String, Any?>? =
+    chatRuntimeGateway.loadChatRunSnapshot(runId)
 
   override fun waitForChatRun(
     runId: String,
     timeoutMs: Long,
-  ): Map<String, Any?>? = waitForRunSnapshot(runId, timeoutMs)
-    ?.takeIf(::isUserVisibleRun)
-    ?.let(::runSnapshotToMap)
+  ): Map<String, Any?>? = chatRuntimeGateway.waitForChatRun(runId, timeoutMs)
 
   fun waitForChatRun(runId: String): Map<String, Any?>? =
-    waitForChatRun(runId = runId, timeoutMs = DEFAULT_RUN_WAIT_TIMEOUT_MS)
+    chatRuntimeGateway.waitForChatRun(runId)
 
   override fun observeChatRuntime(listener: (Map<String, Any?>) -> Unit): () -> Unit =
-    observeWithInitial(
-      listeners = chatRuntimeListeners,
-      initialPayload = loadChatRuntimeSnapshot(),
-      listener = listener,
-    )
+    chatRuntimeGateway.observeChatRuntime(listener)
 
-  override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit {
-    synchronized(lock) {
-      liveAssistantDraftEventListeners += listener
-    }
-    return {
-      synchronized(lock) {
-        liveAssistantDraftEventListeners -= listener
-      }
-    }
-  }
+  override fun observeLiveAssistantDraftEvents(listener: (Map<String, Any?>) -> Unit): () -> Unit =
+    chatRuntimeGateway.observeLiveAssistantDraftEvents(listener)
 
-  override fun observeRuntimeEventDeltas(listener: (Map<String, Any?>) -> Unit): () -> Unit {
-    synchronized(lock) {
-      runtimeEventDeltaListeners += listener
-    }
-    return {
-      synchronized(lock) {
-        runtimeEventDeltaListeners -= listener
-      }
-    }
-  }
+  override fun observeRuntimeEventDeltas(listener: (Map<String, Any?>) -> Unit): () -> Unit =
+    chatRuntimeGateway.observeRuntimeEventDeltas(listener)
 
   internal fun dispose() {
     val runtimeDisposer: (() -> Unit)?
@@ -1515,177 +1483,81 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   override fun refreshSandboxSessionInfo() {
-    synchronized(lock) {
-      val sessionId = chatSessionStore.loadState().activeSession.sessionId
-      submitSandboxSessionInfoRefreshTask(
-        sessionId = sessionId,
-        runtimeHostAccess = runtimeHostAccess,
-        taskSafetyMetadata = safetyMetadataForTask(safetySettingsFacade.load()),
-        lifecycleDescriptor = lifecycleDescriptor,
-      )
-    }
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    chatRuntimeGateway.refreshSandboxSessionInfo()
   }
 
-  override fun loadMemoryDebugSnapshot(): Map<String, Any?> = synchronized(lock) {
-    chatDebugProjector.loadMemoryDebugSnapshot(
-      sessionId = chatSessionStore.loadState().activeSession.sessionId,
-    )
-  }
+  override fun loadMemoryDebugSnapshot(): Map<String, Any?> =
+    chatRuntimeGateway.loadMemoryDebugSnapshot()
 
-  override fun loadSoulDebugSnapshot(): Map<String, Any?> = synchronized(lock) {
-    chatDebugProjector.loadSoulDebugSnapshot(
-      sessionId = chatSessionStore.loadState().activeSession.sessionId,
-    )
-  }
+  override fun loadSoulDebugSnapshot(): Map<String, Any?> =
+    chatRuntimeGateway.loadSoulDebugSnapshot()
 
   override fun searchMemoryDebug(
     query: String,
     maxResults: Int,
     minScore: Int,
-  ): Map<String, Any?> = synchronized(lock) {
-    chatDebugProjector.searchMemoryDebug(
-      sessionId = chatSessionStore.loadState().activeSession.sessionId,
-      query = query,
-      maxResults = maxResults,
-      minScore = minScore,
-    )
-  }
+  ): Map<String, Any?> = chatRuntimeGateway.searchMemoryDebug(
+    query = query,
+    maxResults = maxResults,
+    minScore = minScore,
+  )
 
   override fun getMemoryDebugSlice(
     path: String,
     fromLine: Int?,
     lines: Int,
-  ): Map<String, Any?> = synchronized(lock) {
-    chatDebugProjector.getMemoryDebugSlice(
-      sessionId = chatSessionStore.loadState().activeSession.sessionId,
-      path = path,
-      fromLine = fromLine,
-      lines = lines,
-    )
-  }
+  ): Map<String, Any?> = chatRuntimeGateway.getMemoryDebugSlice(
+    path = path,
+    fromLine = fromLine,
+    lines = lines,
+  )
 
   override fun applyMemoryDebugAction(
     recordId: String,
     actionId: String,
-  ): Map<String, Any?> {
-    return synchronized(lock) {
-      val store = personalizationLocalStore
-        ?: error("Memory debug actions require a personalization memory store.")
-      val sessionId = chatSessionStore.loadState().activeSession.sessionId
-      val action = MemoryOperatorAction.fromWireValue(actionId)
-        ?: throw IllegalArgumentException("Unsupported memory debug action '$actionId'.")
-      val result = MemoryOperator(
-        store = store.asMemoryStore(),
-      ).apply(
-        MemoryOperatorRequest(
-          recordId = recordId,
-          action = action,
-          actorSessionId = sessionId,
-        ),
-      )
-      if (result.applied) {
-        store.appendMemoryDebugActionAudit(
-          newMemoryDebugActionAuditEntry(
-            recordId = recordId,
-            action = action,
-            sessionId = sessionId,
-          ),
-        )
-      }
-      mapOf(
-        "recordId" to recordId,
-        "action" to action.wireValue,
-        "applied" to result.applied,
-      )
-    }
-  }
+  ): Map<String, Any?> = chatRuntimeGateway.applyMemoryDebugAction(
+    recordId = recordId,
+    actionId = actionId,
+  )
 
-  override fun loadMemoryDebugLinksSnapshot(): Map<String, Any?> = synchronized(lock) {
-    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
-    val allRuns = chatSessionStore.loadState().sessions
-      .mapTo(linkedSetOf()) { session -> session.sessionId }
-      .flatMap { sessionId ->
-        runtimeSession(sessionId).listRuns()
-      }
-    chatDebugProjector.loadMemoryDebugLinksSnapshot(
-      activeSessionId = activeSessionId,
-      allRuns = allRuns,
-      runtimeEventsBySession = chatRuntimeEventState.snapshotBySession(),
-    )
-  }
+  override fun loadMemoryDebugLinksSnapshot(): Map<String, Any?> =
+    chatRuntimeGateway.loadMemoryDebugLinksSnapshot()
 
   override fun createChatSession() {
-    val sessionId = synchronized(lock) {
-      chatSessionMutationCoordinator.createChatSession()
-    }
-    chatSessionMutationCoordinator.repairTerminalReplay(sessionId)
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    chatRuntimeGateway.createChatSession()
   }
 
   override fun selectChatSession(sessionId: String) {
-    val resolvedSessionId = synchronized(lock) {
-      chatSessionMutationCoordinator.selectChatSession(sessionId)
-    }
-    chatSessionMutationCoordinator.repairTerminalReplay(resolvedSessionId)
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    chatRuntimeGateway.selectChatSession(sessionId)
   }
 
   override fun copyChatSession(sessionId: String) {
-    val copiedSessionId = synchronized(lock) {
-      chatSessionMutationCoordinator.copyChatSession(sessionId)
-    }
-    chatSessionMutationCoordinator.repairTerminalReplay(copiedSessionId)
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    chatRuntimeGateway.copyChatSession(sessionId)
   }
 
   override fun branchChatSessionFromMessage(
     sessionId: String,
     messageId: String,
   ) {
-    val branchedSessionId = synchronized(lock) {
-      chatSessionMutationCoordinator.branchChatSessionFromMessage(sessionId, messageId)
-    } ?: return
-    chatSessionMutationCoordinator.repairTerminalReplay(branchedSessionId)
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    chatRuntimeGateway.branchChatSessionFromMessage(sessionId, messageId)
   }
 
   override fun deleteChatSession(sessionId: String) {
-    val resolvedSessionId = synchronized(lock) {
-      chatSessionMutationCoordinator.deleteChatSession(sessionId)
-    } ?: return
-    chatSessionMutationCoordinator.repairTerminalReplay(resolvedSessionId)
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    chatRuntimeGateway.deleteChatSession(sessionId)
   }
 
   override fun deleteChatMessage(
     sessionId: String,
     messageId: String,
   ) {
-    val resolvedSessionId = synchronized(lock) {
-      chatSessionMutationCoordinator.deleteChatMessage(sessionId, messageId)
-    } ?: return
-    chatSessionMutationCoordinator.repairTerminalReplay(resolvedSessionId)
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    chatRuntimeGateway.deleteChatMessage(sessionId, messageId)
   }
 
   override fun recallChatMessage(
     sessionId: String,
     messageId: String,
   ) {
-    val resolvedSessionId = synchronized(lock) {
-      chatSessionMutationCoordinator.recallChatMessage(sessionId, messageId)
-    } ?: return
-    chatSessionMutationCoordinator.repairTerminalReplay(resolvedSessionId)
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    chatRuntimeGateway.recallChatMessage(sessionId, messageId)
   }
 
   private fun sweepWorkspaceChatMedia() {
@@ -1697,78 +1569,41 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   override fun approveChatApproval(taskIdOrRunId: String) {
-    synchronized(lock) {
-      chatApprovalDecisionCoordinator.approve(taskIdOrRunId)
-    }
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    chatRuntimeGateway.approveChatApproval(taskIdOrRunId)
   }
 
   override fun approveChatApprovalForSession(taskIdOrRunId: String) {
-    synchronized(lock) {
-      chatApprovalDecisionCoordinator.approveForSession(taskIdOrRunId)
-    }
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    chatRuntimeGateway.approveChatApprovalForSession(taskIdOrRunId)
   }
 
   override fun rejectChatApproval(taskIdOrRunId: String) {
-    synchronized(lock) {
-      chatApprovalDecisionCoordinator.reject(taskIdOrRunId)
-    }
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    chatRuntimeGateway.rejectChatApproval(taskIdOrRunId)
   }
 
   override fun interruptChatRun(taskIdOrRunId: String) {
-    chatRunControlCoordinator.interruptChatRun(taskIdOrRunId)
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    chatRuntimeGateway.interruptChatRun(taskIdOrRunId)
   }
 
   override fun retryChatRun(taskIdOrRunId: String) {
-    chatRunControlCoordinator.retryChatRun(taskIdOrRunId)
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
+    chatRuntimeGateway.retryChatRun(taskIdOrRunId)
   }
 
   override fun submitChatMessage(
     text: String,
     attachments: List<OpenCrayFinalAttachment>,
-  ): Map<String, Any?>? {
-    val result = synchronized(lock) {
-      chatSubmissionCoordinator.submitChatMessage(
-        text = text,
-        attachments = attachments,
-      )
-    }
-    if (!result.didMutate) {
-      return null
-    }
-    emitChatSnapshot()
-    emitChatRuntimeSnapshot()
-    return result.submission?.let(::runSubmissionToMap)
-  }
+  ): Map<String, Any?>? = chatRuntimeGateway.submitChatMessage(
+    text = text,
+    attachments = attachments,
+  )
 
   fun submitChatMessage(text: String): Map<String, Any?>? =
-    submitChatMessage(
-      text = text,
-      attachments = emptyList(),
-    )
+    chatRuntimeGateway.submitChatMessage(text)
 
   fun getMemoryDebugSlice(path: String): Map<String, Any?> =
-    getMemoryDebugSlice(
-      path = path,
-      fromLine = null,
-      lines = 12,
-    )
+    chatRuntimeGateway.getMemoryDebugSlice(path)
 
   fun getMemoryDebugSlice(path: String, fromLine: Int?): Map<String, Any?> =
-    getMemoryDebugSlice(
-      path = path,
-      fromLine = fromLine,
-      lines = 12,
-    )
+    chatRuntimeGateway.getMemoryDebugSlice(path, fromLine)
 
   override fun importDraftChatAttachments(
     requestedKind: String,
@@ -1826,7 +1661,7 @@ internal class OpenCrayHostRuntime private constructor(
   private fun hasSessionLocked(sessionId: String): Boolean = chatSessionStore.loadState().sessions
     .any { session -> session.sessionId == sessionId }
 
-  private fun runtimeSession(sessionId: String): OpenCrayRuntimeSessionAccess =
+  internal fun runtimeSession(sessionId: String): OpenCrayRuntimeSessionAccess =
     runtimeHostAccess.session(sessionId)
 
   private fun clearApproval(sessionId: String, taskId: String) {
@@ -1893,7 +1728,7 @@ internal class OpenCrayHostRuntime private constructor(
     }
   }
 
-  private fun isUserVisibleRun(run: AgentRunSnapshot): Boolean =
+  internal fun isUserVisibleRun(run: AgentRunSnapshot): Boolean =
     !isInternalDetachedSubAgentRecoveryRun(run)
 
   private fun isInternalDetachedSubAgentRecoveryRun(run: AgentRunSnapshot): Boolean =
@@ -2607,7 +2442,7 @@ internal class OpenCrayHostRuntime private constructor(
     )
   }
 
-  private fun runtimeActivitySnapshotLocked(sessionId: String): Map<String, Any?> {
+  internal fun runtimeActivitySnapshotLocked(sessionId: String): Map<String, Any?> {
     val runs = runtimeSession(sessionId).listRuns()
     if (runs.isNotEmpty()) {
       runtimeSession(sessionId).retainKnownSubAgentParentRuns(
@@ -5163,7 +4998,7 @@ internal class OpenCrayHostRuntime private constructor(
       .takeIf(String::isNotBlank)
       ?: "replay-$sourceIndex"
 
-  private fun findRunSnapshotLocked(runId: String): AgentRunSnapshot? {
+  internal fun findRunSnapshotLocked(runId: String): AgentRunSnapshot? {
     val sessionIds = chatSessionStore.loadState().sessions
       .mapTo(linkedSetOf()) { session -> session.sessionId }
     return sessionIds.firstNotNullOfOrNull { sessionId ->
@@ -5183,7 +5018,7 @@ internal class OpenCrayHostRuntime private constructor(
     )
   }
 
-  private fun waitForRunSnapshot(runId: String, timeoutMs: Long): AgentRunSnapshot? {
+  internal fun waitForRunSnapshot(runId: String, timeoutMs: Long): AgentRunSnapshot? {
     val boundedTimeoutMs = timeoutMs.coerceAtLeast(0L)
     val existing = synchronized(lock) { findRunSnapshotLocked(runId) }
     if (existing != null) {
@@ -5205,7 +5040,7 @@ internal class OpenCrayHostRuntime private constructor(
     }
   }
 
-  private fun runSubmissionToMap(submission: AgentRunSubmission): Map<String, Any?> = mapOf(
+  internal fun runSubmissionToMap(submission: AgentRunSubmission): Map<String, Any?> = mapOf(
     "sessionId" to submission.sessionId,
     "runId" to submission.runId,
     "taskId" to submission.taskId,
@@ -5213,7 +5048,7 @@ internal class OpenCrayHostRuntime private constructor(
     "diagnostics" to submission.lifecycleDiagnostics.toMap(),
   )
 
-  private fun runSnapshotToMap(run: AgentRunSnapshot): Map<String, Any?> = mapOf(
+  internal fun runSnapshotToMap(run: AgentRunSnapshot): Map<String, Any?> = mapOf(
     "sessionId" to run.sessionId,
     "runId" to run.runId,
     "taskId" to run.taskId,
@@ -5929,7 +5764,7 @@ internal class OpenCrayHostRuntime private constructor(
     }
   }
 
-  private fun newMemoryDebugActionAuditEntry(
+  internal fun newMemoryDebugActionAuditEntry(
     recordId: String,
     action: MemoryOperatorAction,
     sessionId: String,
@@ -6505,11 +6340,7 @@ internal class OpenCrayHostRuntime private constructor(
   }
 
   fun searchMemoryDebug(query: String): Map<String, Any?> =
-    searchMemoryDebug(
-      query = query,
-      maxResults = 4,
-      minScore = 1,
-    )
+    chatRuntimeGateway.searchMemoryDebug(query)
 
   private fun successfulToolSummaryFallbackTextLocked(
     sessionId: String,
@@ -8101,7 +7932,7 @@ private data class RestoredTerminalMessage(
     SafetyAutomationMode.DEV -> strings.chatModeDeveloperLabel
   }
 
-  private fun safetyMetadataForTask(
+  internal fun safetyMetadataForTask(
     snapshot: SafetySettingsSnapshot,
   ): Map<String, String> = buildTaskSafetyMetadata(
     snapshot = snapshot,
@@ -8156,7 +7987,7 @@ private data class RestoredTerminalMessage(
     emitSnapshotLazy(chatListeners, ::loadChatSnapshotForEmission)
   }
 
-  private fun emitChatRuntimeSnapshot() {
+  internal fun emitChatRuntimeSnapshot() {
     val currentListeners = synchronized(lock) { chatRuntimeListeners.toList() }
     if (currentListeners.isEmpty()) {
       return
@@ -8299,7 +8130,7 @@ private data class RestoredTerminalMessage(
     private const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
     private const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
     private const val TOOL_GENERATED_SUPPLEMENT_ENTRY_ID_PREFIX: String = "tool-supplement-"
-    private const val DEFAULT_RUN_WAIT_TIMEOUT_MS: Long = 15_000L
+    internal const val DEFAULT_RUN_WAIT_TIMEOUT_MS: Long = 15_000L
     private const val RUN_LOOKUP_POLL_INTERVAL_MS: Long = 50L
     private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_CHECKPOINT: Int = 1
     private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_LINK: Int = 2
@@ -8649,7 +8480,7 @@ internal data class PendingApprovalSnapshot(
   val body: String,
 )
 
-private data class PendingApprovalMatch(
+internal data class PendingApprovalMatch(
   val sessionId: String,
   val approval: PendingApprovalSnapshot,
 )
