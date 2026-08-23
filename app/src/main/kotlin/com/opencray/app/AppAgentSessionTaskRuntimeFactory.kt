@@ -1206,6 +1206,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
       return
     }
     recordToolInteraction(
+      json = replayJson,
       transcriptStore = transcriptStoreForSession(sessionId),
       event = event,
     )
@@ -1287,12 +1288,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
     sessionId: String,
     event: OpenCraySubAgentEvent,
   ) {
-    appendIfMissing(
+    appendSubAgentReplayEvent(
+      json = replayJson,
       transcriptStore = transcriptStoreForSession(sessionId),
-      message = RuntimeConversationMessage(
-        role = RuntimeConversationRole.TOOL,
-        content = buildSubAgentReplayContent(event),
-      ),
+      event = event,
     )
   }
 
@@ -2652,53 +2651,13 @@ internal class AppAgentSessionTaskRuntimeFactory(
     sessionId: String,
     transcriptStore: SessionTranscriptStore,
     delegate: OpenCrayAgentRuntimeEventSink,
-  ): OpenCrayAgentRuntimeEventSink = object : OpenCrayAgentRuntimeEventSink {
-    override fun onRunEvent(task: AgentTask, event: OpenCrayAgentRunEvent) {
-      when (event) {
-        is OpenCraySupplementEvent -> recordSupplementReplayEvent(
-          transcriptStore = transcriptStore,
-          event = event,
-        )
-
-        is OpenCrayToolResultEvent -> recordToolInteraction(
-          transcriptStore = transcriptStore,
-          event = event,
-        )
-
-        is OpenCrayAssistantPhaseEvent -> recordAssistantReplayEvent(
-          transcriptStore = transcriptStore,
-          event = event.toAssistantEvent(),
-        )
-
-        is OpenCraySubAgentEvent -> recordSubAgentReplayEvent(sessionId = sessionId, event = event)
-
-        else -> Unit
-      }
-      delegate.onRunEvent(task, event)
-    }
-
-    override fun onAssistantDraftUpdated(
-      task: AgentTask,
-      text: String,
-      emittedAtEpochMs: Long,
-    ) {
-      delegate.onAssistantDraftUpdated(
-        task = task,
-        text = text,
-        emittedAtEpochMs = emittedAtEpochMs,
-      )
-    }
-
-    override fun onAssistantDraftCleared(
-      task: AgentTask,
-      emittedAtEpochMs: Long,
-    ) {
-      delegate.onAssistantDraftCleared(
-        task = task,
-        emittedAtEpochMs = emittedAtEpochMs,
-      )
-    }
-  }
+  ): OpenCrayAgentRuntimeEventSink =
+    appTranscriptEventSink(
+      replayJson = replayJson,
+      sessionId = sessionId,
+      transcriptStore = transcriptStore,
+      delegate = delegate,
+    )
 
   private fun recordFinalAssistantTurn(
     sessionId: String,
@@ -2800,113 +2759,6 @@ internal class AppAgentSessionTaskRuntimeFactory(
     workingStateStoreForSession(sessionId).replace(WorkingState())
   }
 
-  private fun recordSupplementReplayEvent(
-    transcriptStore: SessionTranscriptStore,
-    event: OpenCraySupplementEvent,
-  ) {
-    val replayContent = buildSupplementReplayContent(event)
-    if (transcriptStore.snapshot().any { message -> message.content == replayContent }) {
-      return
-    }
-    val attachments = OpenCrayPromptSupplementMetadata.decodeAttachments(
-      metadata = event.metadata,
-      json = replayJson,
-    )
-    if (event.text.isBlank() && attachments.isEmpty()) {
-      return
-    }
-    transcriptStore.appendIfDistinct(
-      RuntimeConversationMessage(
-        role = RuntimeConversationRole.USER,
-        content = event.text,
-        attachments = attachments,
-      ),
-    )
-    appendIfMissing(
-      transcriptStore = transcriptStore,
-      message = RuntimeConversationMessage(
-        role = RuntimeConversationRole.TOOL,
-        content = replayContent,
-      ),
-    )
-  }
-
-  private fun recordToolInteraction(
-    transcriptStore: SessionTranscriptStore,
-    event: OpenCrayToolResultEvent,
-  ) {
-    val callObservation = RuntimeConversationMessage(
-      role = RuntimeConversationRole.ASSISTANT,
-      content = buildToolCallReplayContent(event),
-      kind = RuntimeConversationMessageKind.TOOL_CALL,
-      toolCall = RuntimeConversationToolCall(
-        id = event.call.id,
-        toolName = event.call.toolName,
-        arguments = event.call.arguments,
-        reason = event.call.reason,
-      ),
-    )
-    val resultObservation = RuntimeConversationMessage(
-      role = RuntimeConversationRole.TOOL,
-      content = buildToolResultReplayContent(event),
-      kind = RuntimeConversationMessageKind.TOOL_RESULT,
-      toolResult = RuntimeConversationToolResult(
-        toolCallId = event.call.id,
-        toolName = event.result.toolName,
-        status = event.result.status.name.lowercase(),
-        isError = event.result.status != AgentToolResultStatus.SUCCESS,
-      ),
-    )
-    appendIfMissing(
-      transcriptStore = transcriptStore,
-      message = callObservation,
-    )
-    appendIfMissing(
-      transcriptStore = transcriptStore,
-      message = resultObservation,
-    )
-  }
-
-  private fun recordAssistantReplayEvent(
-    transcriptStore: SessionTranscriptStore,
-    event: OpenCrayAssistantEvent,
-  ) {
-    if (isPersistedDraftAssistantPhase(event)) {
-      return
-    }
-    if (event.isFinal) {
-      val finalText = event.text.trim()
-      if (finalText.isBlank()) {
-        return
-      }
-      appendTrailingFinalAssistantReplayTurn(
-        transcriptStore = transcriptStore,
-        message = RuntimeConversationMessage(
-          role = RuntimeConversationRole.ASSISTANT,
-          content = finalText,
-          assistantPhase = RuntimeConversationAssistantPhase.FINAL_ANSWER,
-        ),
-      )
-      return
-    }
-    appendIfMissing(
-      transcriptStore = transcriptStore,
-      message = RuntimeConversationMessage(
-        role = RuntimeConversationRole.ASSISTANT,
-        content = buildCommentaryReplayContent(event),
-        kind = RuntimeConversationMessageKind.COMMENTARY,
-        commentary = RuntimeConversationCommentary(
-          runId = event.runId,
-          taskId = event.taskId,
-          turn = event.turn,
-          text = event.text,
-          stage = event.stage,
-        ),
-        assistantPhase = RuntimeConversationAssistantPhase.COMMENTARY,
-      ),
-    )
-  }
-
   private fun upsertTrailingFinalAssistantTurn(
     transcriptStore: SessionTranscriptStore,
     message: RuntimeConversationMessage,
@@ -2929,32 +2781,6 @@ internal class AppAgentSessionTaskRuntimeFactory(
     val updatedMessages = existingMessages.toMutableList()
     updatedMessages[updatedMessages.lastIndex] = mergedMessage
     transcriptStore.replace(updatedMessages)
-  }
-
-  private fun appendTrailingFinalAssistantReplayTurn(
-    transcriptStore: SessionTranscriptStore,
-    message: RuntimeConversationMessage,
-  ) {
-    if (isFinalAssistantTranscriptTurn(transcriptStore.snapshot().lastOrNull())) {
-      return
-    }
-    transcriptStore.appendIfDistinct(message)
-  }
-
-  private fun isFinalAssistantTranscriptTurn(
-    message: RuntimeConversationMessage?,
-  ): Boolean = message?.role == RuntimeConversationRole.ASSISTANT &&
-    message.assistantPhase == RuntimeConversationAssistantPhase.FINAL_ANSWER
-
-  private fun appendIfMissing(
-    transcriptStore: SessionTranscriptStore,
-    message: RuntimeConversationMessage,
-  ) {
-    val existingContents = transcriptStore.snapshot().mapTo(linkedSetOf(), RuntimeConversationMessage::content)
-    if (message.content in existingContents) {
-      return
-    }
-    transcriptStore.appendIfDistinct(message)
   }
 
   private fun promptTranscriptInputMessage(
@@ -3388,12 +3214,6 @@ internal class AppAgentSessionTaskRuntimeFactory(
     }
   }
 
-  private fun isPersistedDraftAssistantPhase(
-    event: OpenCrayAssistantEvent,
-  ): Boolean = event.stage
-    ?.trim()
-    ?.equals(PERSISTED_DRAFT_ASSISTANT_STAGE, ignoreCase = true) == true
-
   private fun isLlmRetryPausedResult(
     result: ExecutionResult,
   ): Boolean = result.status == ExecutionStatus.FAILED &&
@@ -3413,110 +3233,6 @@ internal class AppAgentSessionTaskRuntimeFactory(
   }
 
   private fun transcriptAgentFailedText(detail: String): String = "Failed: $detail"
-
-  private fun buildToolCallReplayContent(event: OpenCrayToolResultEvent): String =
-    encodeReplayJsonObject {
-      put("run_id", event.runId)
-      put("task_id", event.taskId)
-      event.executionId?.let { executionId -> put("execution_id", executionId) }
-      event.executionOrdinal?.let { executionOrdinal -> put("execution_ordinal", executionOrdinal) }
-      event.executionKind?.let { executionKind -> put("execution_kind", executionKind) }
-      put("turn", event.turn)
-      event.call.id?.let { toolCallId -> put("tool_call_id", toolCallId) }
-      put("tool_name", event.call.toolName)
-      event.call.reason
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-        ?.let { reason ->
-          put("reason", collapseReplayWhitespace(reason))
-        }
-      put("arguments", event.call.arguments)
-    }
-
-  private fun buildToolResultReplayContent(event: OpenCrayToolResultEvent): String =
-    encodeReplayJsonObject {
-      put("run_id", event.runId)
-      put("task_id", event.taskId)
-      event.executionId?.let { executionId -> put("execution_id", executionId) }
-      event.executionOrdinal?.let { executionOrdinal -> put("execution_ordinal", executionOrdinal) }
-      event.executionKind?.let { executionKind -> put("execution_kind", executionKind) }
-      put("turn", event.turn)
-      event.call.id?.let { toolCallId -> put("tool_call_id", toolCallId) }
-      put("tool_name", event.result.toolName)
-      put("status", event.result.status.name.lowercase())
-      put("content", event.result.content)
-      event.result.exitCode?.let { exitCode -> put("exit_code", exitCode) }
-      if (event.result.stdout.isNotBlank()) {
-        put("stdout", event.result.stdout)
-      }
-      if (event.result.stderr.isNotBlank()) {
-        put("stderr", event.result.stderr)
-      }
-      event.result.errorCode?.let { errorCode -> put("error_code", errorCode) }
-      event.result.errorMessage?.let { errorMessage -> put("error_message", errorMessage) }
-      val replayMetadata = replayMetadataSnapshot(event.result.metadata)
-      if (replayMetadata.isNotEmpty()) {
-        put(
-          "metadata",
-          buildJsonObject {
-            replayMetadata.toSortedMap().forEach { (key, value) ->
-              put(key, value)
-            }
-          },
-        )
-      }
-    }
-
-  private fun buildCommentaryReplayContent(event: OpenCrayAssistantEvent): String =
-    encodeReplayJsonObject {
-      put("event_kind", "assistant_phase")
-      put("phase", event.phase.name.lowercase())
-      put("run_id", event.runId)
-      put("task_id", event.taskId)
-      event.executionId?.let { executionId -> put("execution_id", executionId) }
-      event.executionOrdinal?.let { executionOrdinal -> put("execution_ordinal", executionOrdinal) }
-      event.executionKind?.let { executionKind -> put("execution_kind", executionKind) }
-      put("turn", event.turn)
-      put("text", collapseReplayWhitespace(event.text))
-      event.responseFormat
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-        ?.let { responseFormat -> put("response_format", responseFormat) }
-      event.stage
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-        ?.let { stage -> put("stage", stage) }
-    }
-
-  private fun buildSupplementReplayContent(event: OpenCraySupplementEvent): String =
-    encodeReplayJsonObject {
-      put("event_kind", "supplement")
-      put("run_id", event.runId)
-      put("task_id", event.taskId)
-      event.executionId?.let { executionId -> put("execution_id", executionId) }
-      event.executionOrdinal?.let { executionOrdinal -> put("execution_ordinal", executionOrdinal) }
-      event.executionKind?.let { executionKind -> put("execution_kind", executionKind) }
-      put("turn", event.turn)
-      put("entry_id", event.entryId)
-      put("text", collapseReplayWhitespace(event.text))
-      put("checkpoint", event.checkpoint)
-      val replayMetadata = replayMetadataSnapshot(event.metadata)
-      if (replayMetadata.isNotEmpty()) {
-        put(
-          "metadata",
-          buildJsonObject {
-            replayMetadata.toSortedMap().forEach { (key, value) ->
-              put(key, value)
-            }
-          },
-        )
-      }
-    }
-
-  private fun replayMetadataSnapshot(metadata: Map<String, String>): Map<String, String> =
-    metadata.filterKeys { key ->
-      key != OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON
-    }
 
   private fun buildSubAgentReplayContent(event: OpenCraySubAgentEvent): String =
     encodeReplayJsonObject {
