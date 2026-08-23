@@ -3,7 +3,23 @@ package com.opencray.app
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import com.opencray.core.contracts.AgentTask
+import com.opencray.app.projection.LiveAssistantDraftSnapshot
+import com.opencray.app.projection.ProjectedRuntimeChatMessage
+import com.opencray.app.projection.SubAgentActivitySnapshot
+import com.opencray.app.projection.chatAttachmentSnapshotMap
+import com.opencray.app.projection.checkpointSubAgentHandles
+import com.opencray.app.projection.eventMatchesRunExecution
+import com.opencray.app.projection.executionScopedRunEvents
+import com.opencray.app.projection.liveAssistantDraftToMap
+import com.opencray.app.projection.liveAssistantDraftsForSnapshot
+import com.opencray.app.projection.managedProcessSnapshotToMap
+import com.opencray.app.projection.projectedRuntimeMessagesForChat
+import com.opencray.app.projection.retainedRunsForSnapshot
+import com.opencray.app.projection.runIdFor
+import com.opencray.app.projection.runtimeActivityUpdatedAtEpochMs
+import com.opencray.app.projection.subAgentActivitySnapshot
+import com.opencray.app.projection.subAgentSnapshotToMap
+import com.opencray.app.projection.toolResultDetailedContentSnapshot
 import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
@@ -13,17 +29,13 @@ import com.opencray.core.orchestrator.METADATA_EXECUTION_ORDINAL
 import com.opencray.core.orchestrator.METADATA_PENDING_EXECUTION_KIND
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
-import com.opencray.persistence.model.ChatAttachmentKind
 import com.opencray.persistence.model.ChatAttachmentEntry
 import com.opencray.persistence.model.ChatTranscriptMessageEntry
 import com.opencray.persistence.model.ChatTranscriptRole
-import com.opencray.runtime.AgentToolResult
-import com.opencray.runtime.AgentToolResultStatus
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayApprovalEvent
 import com.opencray.runtime.OpenCrayApprovalPhase
 import com.opencray.runtime.OpenCrayAssistantPhaseEvent
-import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayFinalAttachment
 import com.opencray.runtime.OpenCrayLifecycleEvent
@@ -31,12 +43,10 @@ import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCraySubAgentEvent
-import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
 import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
-import com.opencray.runtime.ProviderNativeWebSearchSupport
 import com.opencray.runtime.memory.MemoryOperator
 import com.opencray.runtime.memory.MemoryOperatorAction
 import com.opencray.runtime.memory.MemoryOperatorRequest
@@ -44,12 +54,8 @@ import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessRestoreMode
 import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
-import com.opencray.runtime.subagent.SubAgentContinuationKind
 import com.opencray.runtime.subagent.SubAgentExecutionState
-import com.opencray.runtime.subagent.SubAgentHandleState
-import com.opencray.runtime.subagent.SubAgentSessionLink
 import java.nio.file.Path
-import java.util.Locale
 import java.util.Timer
 import java.util.TimerTask
 import java.util.UUID
@@ -518,231 +524,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     return projected
   }
 
-  private fun projectedRuntimeMessagesForChat(
-    runs: List<AgentRunSnapshot>,
-    runtimeEvents: List<OpenCrayAgentRunEvent>,
-  ): List<ProjectedRuntimeChatMessage> {
-    if (runtimeEvents.isEmpty() && runs.none { run -> run.managedProcesses.isNotEmpty() }) {
-      return emptyList()
-    }
-    val pendingMessageIdByRunId = linkedMapOf<String, String>()
-    val pendingMessageIdByTaskId = linkedMapOf<String, String>()
-    val runsByRunId = linkedMapOf<String, AgentRunSnapshot>()
-    val runsByTaskId = linkedMapOf<String, AgentRunSnapshot>()
-    runs.forEach { run ->
-      val pendingMessageId = run.pendingMessageId
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-        ?: return@forEach
-      pendingMessageIdByRunId[run.runId] = pendingMessageId
-      pendingMessageIdByTaskId[run.taskId] = pendingMessageId
-      runsByRunId[run.runId] = run
-      runsByTaskId[run.taskId] = run
-    }
-    val orderedEvents = runtimeEvents
-      .withIndex()
-      .sortedWith(
-        compareBy<IndexedValue<OpenCrayAgentRunEvent>> { indexed ->
-          indexed.value.emittedAtEpochMs
-        }.thenBy(IndexedValue<OpenCrayAgentRunEvent>::index),
-      )
-      .map(IndexedValue<OpenCrayAgentRunEvent>::value)
-    val projectedRuntimeEvents = buildList<OrderedProjectedRuntimeChatMessage> {
-      for ((index, event) in orderedEvents.withIndex()) {
-        val run = runsByRunId[event.runId] ?: runsByTaskId[event.taskId] ?: continue
-        if (!eventMatchesRunExecution(run = run, event = event)) {
-          continue
-        }
-        val anchorMessageId = pendingMessageIdByRunId[event.runId]
-          ?: pendingMessageIdByTaskId[event.taskId]
-          ?: continue
-        val text = projectedRuntimeMessageText(event) ?: continue
-        if (text.isBlank()) {
-          continue
-        }
-        add(
-          OrderedProjectedRuntimeChatMessage(
-            sortEpochMs = event.emittedAtEpochMs,
-            sourceOrder = index,
-            message = ProjectedRuntimeChatMessage(
-              anchorMessageId = anchorMessageId,
-              sortEpochMs = event.emittedAtEpochMs,
-              sourceOrder = index,
-              snapshot = chatMessageSnapshotMap(
-                messageId = runtimeProjectedMessageId(event),
-                kind = projectedRuntimeMessageKind(event),
-                text = text,
-                createdAtEpochMs = event.emittedAtEpochMs.takeIf { emittedAt -> emittedAt > 0L },
-                isEphemeral = true,
-              ),
-            ),
-          ),
-        )
-      }
-    }
-    var nextSourceOrder = projectedRuntimeEvents.size
-    val projectedManagedProcesses = runs.flatMap { run ->
-      if (run.isTerminal) {
-        return@flatMap emptyList()
-      }
-      val anchorMessageId = pendingMessageIdByRunId[run.runId]
-        ?: pendingMessageIdByTaskId[run.taskId]
-        ?: return@flatMap emptyList()
-      run.managedProcesses
-        .sortedWith(
-          compareBy<ManagedProcessSnapshot> { process ->
-            process.startedAtEpochMs
-          }.thenBy(ManagedProcessSnapshot::updatedAtEpochMs)
-            .thenBy(ManagedProcessSnapshot::processId),
-        )
-        .map { process ->
-          val sortEpochMs = process.startedAtEpochMs.takeIf { startedAt -> startedAt > 0L }
-            ?: process.updatedAtEpochMs.takeIf { updatedAt -> updatedAt > 0L }
-            ?: 0L
-          val sourceOrder = nextSourceOrder++
-          OrderedProjectedRuntimeChatMessage(
-            sortEpochMs = sortEpochMs,
-            sourceOrder = sourceOrder,
-            message = ProjectedRuntimeChatMessage(
-              anchorMessageId = anchorMessageId,
-              sortEpochMs = sortEpochMs,
-              sourceOrder = sourceOrder,
-              snapshot = chatMessageSnapshotMap(
-                messageId = runtimeProjectedManagedProcessMessageId(
-                  run = run,
-                  process = process,
-                ),
-                kind = "inbound",
-                text = projectedManagedProcessMessageText(process),
-                createdAtEpochMs = process.startedAtEpochMs.takeIf { startedAt -> startedAt > 0L }
-                  ?: process.updatedAtEpochMs.takeIf { updatedAt -> updatedAt > 0L },
-                isEphemeral = true,
-              ),
-            ),
-          )
-        }
-    }
-    return (projectedRuntimeEvents + projectedManagedProcesses)
-      .sortedWith(
-        compareBy<OrderedProjectedRuntimeChatMessage>(OrderedProjectedRuntimeChatMessage::effectiveSortEpochMs)
-          .thenBy(OrderedProjectedRuntimeChatMessage::sourceOrder),
-      )
-      .map(OrderedProjectedRuntimeChatMessage::message)
-  }
-
-  private fun projectedRuntimeMessageText(
-    event: OpenCrayAgentRunEvent,
-  ): String? = when (event) {
-    is OpenCrayAssistantPhaseEvent -> if (event.isFinal || hideAssistantPhaseFromChatBubble(event)) {
-      null
-    } else {
-      chatProgressText(event)
-    }
-    is OpenCraySupplementEvent -> projectedRuntimeSupplementBubbleText(event)
-    is OpenCrayApprovalEvent -> null
-    is OpenCrayToolCallEvent -> null
-    is OpenCrayToolResultEvent -> null
-    is OpenCrayCancellationEvent -> null
-    else -> null
-  }
-
-  private fun projectedRuntimeMessageKind(event: OpenCrayAgentRunEvent): String = when (event) {
-    is OpenCraySupplementEvent -> "outbound"
-    else -> "inbound"
-  }
-
-  private fun isPersistedDraftAssistantPhase(
-    event: OpenCrayAssistantPhaseEvent,
-  ): Boolean = event.stage
-    ?.trim()
-    ?.equals(AppAgentSessionTaskRuntimeFactory.PERSISTED_DRAFT_ASSISTANT_STAGE, ignoreCase = true) == true
-
-  private fun hideAssistantPhaseFromChatBubble(event: OpenCrayAssistantPhaseEvent): Boolean =
-    event.stage
-      ?.trim()
-      ?.lowercase(Locale.US)
-      ?.let(HIDDEN_ASSISTANT_CHAT_STAGES::contains) == true
-
-  private fun projectedRuntimeSupplementBubbleText(
-    event: OpenCraySupplementEvent,
-  ): String? = if (hideSupplementFromChatBubble(event)) {
-    null
-  } else {
-    event.text.trim().takeIf(String::isNotBlank)
-  }
-
-  private fun hideSupplementFromChatBubble(event: OpenCraySupplementEvent): Boolean =
-    event.entryId.startsWith(TOOL_GENERATED_SUPPLEMENT_ENTRY_ID_PREFIX)
-
-  private fun chatProgressText(event: OpenCrayAssistantPhaseEvent): String {
-    val stage = event.stage?.trim().orEmpty()
-    val text = event.text.trim()
-    return when {
-      stage.isEmpty() -> text
-      text.isEmpty() -> stage
-      else -> "$stage\n\n$text"
-    }
-  }
-
-  private fun runtimeProjectedManagedProcessMessageId(
-    run: AgentRunSnapshot,
-    process: ManagedProcessSnapshot,
-  ): String {
-    val ownerKey = listOf(run.taskId, run.runId)
-      .map(String::trim)
-      .firstOrNull(String::isNotBlank)
-      ?: run.acceptedAtEpochMs.toString()
-    val processId = process.processId.trim()
-    if (processId.isNotEmpty()) {
-      return "runtime-process-$ownerKey-$processId"
-    }
-    val fingerprint = listOf(
-      process.command.trim(),
-      process.args.joinToString(separator = "\u0001"),
-      process.workingDirectory?.trim().orEmpty(),
-      process.startedAtEpochMs.toString(),
-    ).joinToString(separator = "\u0002")
-    return "runtime-process-$ownerKey-fp-${Integer.toUnsignedString(fingerprint.hashCode(), 16)}"
-  }
-
-  private fun projectedManagedProcessMessageText(
-    process: ManagedProcessSnapshot,
-  ): String {
-    val status = managedProcessStatusLabelForChat(process)
-    val command = (listOf(process.command) + process.args)
-      .map(String::trim)
-      .filter(String::isNotBlank)
-      .joinToString(separator = " ")
-    val output = managedProcessOutputPreview(process.stdout)
-      .trim()
-      .takeIf(String::isNotBlank)
-    return buildString {
-      append("Process ")
-      append(process.processId)
-      append("\n\n")
-      append(status)
-      append(": ")
-      append(command)
-      output?.let { stdoutPreview ->
-        append("\n\n")
-        append(stdoutPreview)
-      }
-    }
-  }
-
-  private fun managedProcessStatusLabelForChat(
-    process: ManagedProcessSnapshot,
-  ): String = when (process.status) {
-    ManagedProcessStatus.RUNNING -> "running"
-    ManagedProcessStatus.SUCCESS -> "finished"
-    ManagedProcessStatus.FAILED,
-    ManagedProcessStatus.SPAWN_ERROR,
-    -> "failed"
-    ManagedProcessStatus.CANCELLED -> "cancelled"
-    ManagedProcessStatus.TIMEOUT -> "timed out"
-    else -> process.status.name.lowercase()
-  }
-
   private fun projectedTerminalAssistantText(
     result: ExecutionResult,
   ): String? {
@@ -845,79 +626,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     }
   }
 
-  private fun liveAssistantDraftsForSnapshot(
-    displayedRuns: List<AgentRunSnapshot>,
-    recentEvents: List<OpenCrayAgentRunEvent>,
-  ): List<ProjectionLiveAssistantDraftSnapshot> {
-    val activeRuns = displayedRuns.filter(AgentRunSnapshot::isActive)
-    if (activeRuns.isEmpty()) {
-      return emptyList()
-    }
-    return activeRuns.mapNotNull { run ->
-      val pendingMessageId = run.pendingMessageId
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-        ?: return@mapNotNull null
-      persistedAssistantDraftForRun(
-        run = run,
-        pendingMessageId = pendingMessageId,
-        recentEvents = recentEvents,
-      )
-    }
-  }
-
-  private fun persistedAssistantDraftForRun(
-    run: AgentRunSnapshot,
-    pendingMessageId: String,
-    recentEvents: List<OpenCrayAgentRunEvent>,
-  ): ProjectionLiveAssistantDraftSnapshot? {
-    val runEvents = recentEvents.filter { event ->
-      (event.runId == run.runId || event.taskId == run.taskId) &&
-        eventMatchesRunExecution(run = run, event = event)
-    }
-    val latestDraftEvent = runEvents
-      .filterIsInstance<OpenCrayAssistantPhaseEvent>()
-      .lastOrNull(::isPersistedDraftAssistantPhase)
-      ?: return null
-    val newerVisibleEventExists = runEvents.any { event ->
-      event.emittedAtEpochMs > latestDraftEvent.emittedAtEpochMs &&
-        (event !is OpenCrayAssistantPhaseEvent || !isPersistedDraftAssistantPhase(event))
-    }
-    if (newerVisibleEventExists) {
-      return null
-    }
-    val text = latestDraftEvent.text.trim().takeIf(String::isNotBlank) ?: return null
-    return ProjectionLiveAssistantDraftSnapshot(
-      runId = run.runId,
-      taskId = run.taskId,
-      executionId = latestDraftEvent.executionId ?: run.executionId,
-      pendingMessageId = pendingMessageId,
-      text = text,
-      updatedAtEpochMs = latestDraftEvent.emittedAtEpochMs,
-    )
-  }
-
-  private fun runtimeActivityUpdatedAtEpochMs(
-    displayedRuns: List<AgentRunSnapshot>,
-    recentEvents: List<OpenCrayAgentRunEvent>,
-    subAgentSnapshots: List<SubAgentActivitySnapshot>,
-    liveAssistantDrafts: List<ProjectionLiveAssistantDraftSnapshot>,
-  ): Long {
-    val latestRunEpochMs = displayedRuns.maxOfOrNull(AgentRunSnapshot::updatedAtEpochMs) ?: 0L
-    val latestEventEpochMs = recentEvents.maxOfOrNull(OpenCrayAgentRunEvent::emittedAtEpochMs) ?: 0L
-    val latestSubAgentEpochMs =
-      subAgentSnapshots.maxOfOrNull(SubAgentActivitySnapshot::updatedAtEpochMs) ?: 0L
-    val latestDraftEpochMs =
-      liveAssistantDrafts.maxOfOrNull(ProjectionLiveAssistantDraftSnapshot::updatedAtEpochMs) ?: 0L
-    return maxOf(
-      hostLifecycleDescriptor.hostCreatedAtEpochMs,
-      latestRunEpochMs,
-      latestEventEpochMs,
-      latestSubAgentEpochMs,
-      latestDraftEpochMs,
-    )
-  }
-
   private fun runtimeProjectionForSession(sessionId: String): ProjectionRuntimeSnapshot {
     val runs = loadRunSnapshots(sessionId).map { run ->
       run.copy(lastEvent = displayedLastEvent(run, sessionId))
@@ -935,14 +643,17 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       recentEvents = recentEvents,
     )
     val liveAssistantDrafts = liveAssistantDraftsForSnapshot(
+      sessionId = sessionId,
       displayedRuns = visibleRuns,
       recentEvents = recentEvents,
+      sessionDraftsProvider = { emptyMap() },
     )
     val updatedAtEpochMs = runtimeActivityUpdatedAtEpochMs(
       displayedRuns = visibleRuns,
       recentEvents = recentEvents,
       subAgentSnapshots = subAgentSnapshots,
       liveAssistantDrafts = liveAssistantDrafts,
+      hostCreatedAtEpochMs = hostLifecycleDescriptor.hostCreatedAtEpochMs,
     )
     return ProjectionRuntimeSnapshot(
       runs = visibleRuns,
@@ -970,7 +681,11 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
           runtimeServiceConnectionState = connectionStateProvider(),
         )
         put("activeRuns", visibleRuns.filter(AgentRunSnapshot::isActive).map(::runSnapshotToMap))
-        put("retainedRuns", retainedRunsFor(visibleRuns).map(::runSnapshotToMap))
+        put("retainedRuns", retainedRunsForSnapshot(
+          runs = visibleRuns,
+          isAwaitingDirectionRun = ::isAwaitingDirectionRun,
+          isInterruptedOnRestoreRun = ::isInterruptedOnRestoreRun,
+        ).map(::runSnapshotToMap))
         put("subAgents", subAgentSnapshots.map(::subAgentSnapshotToMap))
         put("events", recentEvents.map(::runtimeEventToMap))
         put("liveAssistantDrafts", liveAssistantDrafts.map(::liveAssistantDraftToMap))
@@ -1142,7 +857,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   ): OpenCrayAgentRunEvent? {
     val runEvents = executionScopedRunEvents(
       run = run,
-      sessionId = sessionId,
+      recentEvents = sessionJournalRuntimeEvents(sessionId),
     ).filterNot(::isInternalPromptCheckpointEvent)
     val latest = runEvents.lastOrNull() ?: return run.lastEvent?.takeIf { event ->
       !isInternalPromptCheckpointEvent(event) &&
@@ -1160,49 +875,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     return latest
   }
 
-  private fun executionScopedRunEvents(
-    run: AgentRunSnapshot,
-    sessionId: String,
-  ): List<OpenCrayAgentRunEvent> {
-    val runEvents = sessionJournalRuntimeEvents(sessionId)
-      .filter { event -> event.runId == run.runId }
-    val currentExecutionId = run.executionId?.trim()?.takeIf(String::isNotBlank)
-    if (currentExecutionId == null) {
-      if (
-        run.pendingExecutionKind?.trim()?.takeIf(String::isNotBlank) != null &&
-        run.isActive
-      ) {
-        val untaggedEvents = runEvents.filter(::isUntaggedExecutionEvent)
-        if (untaggedEvents.isNotEmpty()) {
-          return untaggedEvents
-        }
-        return if (runEvents.any { event -> !isUntaggedExecutionEvent(event) }) {
-          emptyList()
-        } else {
-          runEvents
-        }
-      }
-      return runEvents
-    }
-    val matching = runEvents.filter { event -> event.executionId?.trim() == currentExecutionId }
-    if (matching.isNotEmpty()) {
-      return matching
-    }
-    val hasTaggedEvents = runEvents.any { event ->
-      !event.executionId?.trim().isNullOrEmpty() ||
-        event.executionOrdinal != null ||
-        !event.executionKind?.trim().isNullOrEmpty()
-    }
-    if (hasTaggedEvents || run.executionOrdinal > 0) {
-      return emptyList()
-    }
-    return runEvents.filter { event ->
-      event.executionId?.trim().isNullOrEmpty() &&
-        event.executionOrdinal == null &&
-        event.executionKind?.trim().isNullOrEmpty()
-    }
-  }
-
   private fun sessionJournalRuntimeEvents(sessionId: String): List<OpenCrayAgentRunEvent> =
     dedupeRuntimeEventsPreservingOrder(
       runEventJournalStoreFactory.forChatSession(sessionId).listRuntimeEvents(),
@@ -1216,32 +888,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       .listForRun(runId)
       .mapNotNull { entry -> entry.payload.toRuntimeEventOrNull() },
   )
-
-  private fun eventMatchesRunExecution(
-    run: AgentRunSnapshot,
-    event: OpenCrayAgentRunEvent,
-  ): Boolean {
-    if (event.runId != run.runId) {
-      return false
-    }
-    val currentExecutionId = run.executionId?.trim()?.takeIf(String::isNotBlank)
-    if (currentExecutionId == null) {
-      return if (
-        run.pendingExecutionKind?.trim()?.takeIf(String::isNotBlank) != null &&
-        run.isActive
-      ) {
-        isUntaggedExecutionEvent(event)
-      } else {
-        true
-      }
-    }
-    return event.executionId?.trim() == currentExecutionId
-  }
-
-  private fun isUntaggedExecutionEvent(event: OpenCrayAgentRunEvent): Boolean =
-    event.executionId?.trim().isNullOrEmpty() &&
-      event.executionOrdinal == null &&
-      event.executionKind?.trim().isNullOrEmpty()
 
   private fun userVisibleRuns(
     runs: List<AgentRunSnapshot>,
@@ -1432,6 +1078,8 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       mergeSnapshot(
         snapshot = subAgentActivitySnapshot(
           handle = entry.handle,
+          hasActiveExecution = entry.handle.snapshot.state == SubAgentExecutionState.RUNNING ||
+            entry.handle.snapshot.state == SubAgentExecutionState.BACKGROUND_RUNNING,
           closed = entry.closed,
         ),
         sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_HANDLE,
@@ -1453,6 +1101,8 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
           mergeSnapshot(
             snapshot = subAgentActivitySnapshot(
               handle = handle,
+              hasActiveExecution = handle.snapshot.state == SubAgentExecutionState.RUNNING ||
+                handle.snapshot.state == SubAgentExecutionState.BACKGROUND_RUNNING,
               closed = false,
             ),
             sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_CHECKPOINT,
@@ -1460,173 +1110,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
         }
       }
     return latestByKey.values.map(DurableSubAgentSnapshot::snapshot)
-  }
-
-  private fun checkpointSubAgentHandles(
-    checkpoint: PersistedPromptCheckpoint,
-  ): Sequence<SubAgentHandleState> = sequenceOf(
-    checkpoint.promptResumeState,
-    checkpoint.subAgentPromptResumeState,
-  ).filterNotNull().flatMap { state -> state.subAgentHandles.asSequence() }
-
-  private fun subAgentActivitySnapshot(
-    link: SubAgentSessionLink,
-  ): SubAgentActivitySnapshot {
-    val state = SubAgentExecutionState.fromWireValue(link.status) ?: SubAgentExecutionState.RUNNING
-    return SubAgentActivitySnapshot(
-      parentRunId = link.parentRunId,
-      parentTaskId = "",
-      agentId = link.agentId,
-      childSessionId = link.childSessionId,
-      childRunId = link.childRootRunId.orEmpty(),
-      childTaskId = link.childRootTaskId.orEmpty(),
-      label = link.label,
-      subagentType = link.subagentType,
-      contextMode = link.contextMode,
-      depth = link.depth,
-      phase = subAgentPhaseFor(state),
-      status = link.status,
-      executionState = link.status,
-      continuationKind = when (state) {
-        SubAgentExecutionState.BACKGROUND_RUNNING ->
-          SubAgentContinuationKind.BACKGROUND_RESUME.wireValue
-
-        else -> SubAgentContinuationKind.NONE.wireValue
-      },
-      resumable = false,
-      requiresUserAction = false,
-      isHighRisk = false,
-      closed = link.closed,
-      summary = null,
-      startedAtEpochMs = link.createdAtEpochMs,
-      updatedAtEpochMs = link.updatedAtEpochMs,
-      eventCount = 0,
-      hasActiveExecution = !link.closed && (
-        state == SubAgentExecutionState.RUNNING ||
-          state == SubAgentExecutionState.BACKGROUND_RUNNING
-        ),
-      mailboxMessageCount = 0,
-      mailboxPendingMessageCount = 0,
-      mailboxLastDeliveredMessageId = null,
-      hasPendingApprovalResume = false,
-      pendingApprovalToolName = null,
-      pendingApprovalIsHighRisk = false,
-      pendingApprovalChildRunId = null,
-      pendingApprovalChildTaskId = null,
-    )
-  }
-
-  private fun subAgentActivitySnapshot(
-    handle: SubAgentHandleState,
-    closed: Boolean,
-  ): SubAgentActivitySnapshot {
-    val mailbox = handle.normalizedMailbox()
-    val pendingApprovalResume = handle.pendingApprovalResume
-    return SubAgentActivitySnapshot(
-      parentRunId = handle.parentRunId,
-      parentTaskId = handle.parentTaskId,
-      agentId = handle.agentId,
-      childSessionId = handle.childSessionId,
-      childRunId = handle.childRunId,
-      childTaskId = handle.childTaskId,
-      label = handle.description,
-      subagentType = handle.subagentType,
-      contextMode = handle.contextMode,
-      contextModeSource = handle.contextModeSource,
-      depth = handle.depth,
-      phase = subAgentPhaseFor(handle.snapshot.state),
-      status = handle.snapshot.state.wireValue,
-      executionState = handle.snapshot.state.wireValue,
-      continuationKind = handle.snapshot.continuationKind.wireValue,
-      resumable = handle.snapshot.resumable,
-      requiresUserAction = handle.snapshot.requiresUserAction,
-      isHighRisk = handle.snapshot.isHighRisk,
-      closed = closed,
-      summary = handle.snapshot.headline,
-      startedAtEpochMs = handle.createdAtEpochMs,
-      updatedAtEpochMs = handle.updatedAtEpochMs,
-      eventCount = 0,
-      hasActiveExecution = handle.snapshot.state == SubAgentExecutionState.RUNNING ||
-        handle.snapshot.state == SubAgentExecutionState.BACKGROUND_RUNNING,
-      mailboxMessageCount = mailbox.messages.size,
-      mailboxPendingMessageCount = mailbox.pendingMessages().size,
-      mailboxLastDeliveredMessageId = mailbox.lastDeliveredMessageId,
-      hasPendingApprovalResume = pendingApprovalResume != null,
-      pendingApprovalToolName = pendingApprovalResume?.approvedToolName,
-      pendingApprovalIsHighRisk = pendingApprovalResume?.isHighRisk == true,
-      pendingApprovalChildRunId = pendingApprovalResume?.childRunId,
-      pendingApprovalChildTaskId = pendingApprovalResume?.childTaskId,
-      liveContext = handle.childLiveContext.toMap(),
-    )
-  }
-
-  private fun subAgentPhaseFor(
-    state: SubAgentExecutionState,
-  ): String = when (state) {
-    SubAgentExecutionState.RUNNING,
-    SubAgentExecutionState.BACKGROUND_QUEUED,
-    -> OpenCraySubAgentPhase.STARTED.name.lowercase(Locale.US)
-
-    SubAgentExecutionState.BACKGROUND_RUNNING ->
-      OpenCraySubAgentPhase.RESUMED.name.lowercase(Locale.US)
-
-    SubAgentExecutionState.WAITING_APPROVAL,
-    SubAgentExecutionState.WAITING_HIGH_RISK_APPROVAL,
-    SubAgentExecutionState.FAILED,
-    -> OpenCraySubAgentPhase.FAILED.name.lowercase(Locale.US)
-
-    SubAgentExecutionState.COMPLETED ->
-      OpenCraySubAgentPhase.COMPLETED.name.lowercase(Locale.US)
-
-    SubAgentExecutionState.CANCELLED ->
-      OpenCraySubAgentPhase.CANCELLED.name.lowercase(Locale.US)
-  }
-
-  private fun subAgentSnapshotToMap(snapshot: SubAgentActivitySnapshot): Map<String, Any?> = mapOf(
-    "parentRunId" to snapshot.parentRunId,
-    "parentTaskId" to snapshot.parentTaskId,
-    "agentId" to snapshot.agentId,
-    "childSessionId" to snapshot.childSessionId,
-    "childRunId" to snapshot.childRunId,
-    "childTaskId" to snapshot.childTaskId,
-    "label" to snapshot.label,
-    "subagentType" to snapshot.subagentType,
-    "contextMode" to snapshot.contextMode,
-    "contextModeSource" to snapshot.contextModeSource,
-    "depth" to snapshot.depth,
-    "phase" to snapshot.phase,
-    "status" to snapshot.status,
-    "executionState" to snapshot.executionState,
-    "continuationKind" to snapshot.continuationKind,
-    "resumable" to snapshot.resumable,
-    "requiresUserAction" to snapshot.requiresUserAction,
-    "isHighRisk" to snapshot.isHighRisk,
-    "closed" to snapshot.closed,
-    "summary" to snapshot.summary,
-    "startedAtEpochMs" to snapshot.startedAtEpochMs,
-    "updatedAtEpochMs" to snapshot.updatedAtEpochMs,
-    "eventCount" to snapshot.eventCount,
-    "hasActiveExecution" to snapshot.hasActiveExecution,
-    "mailboxMessageCount" to snapshot.mailboxMessageCount,
-    "mailboxPendingMessageCount" to snapshot.mailboxPendingMessageCount,
-    "mailboxLastDeliveredMessageId" to snapshot.mailboxLastDeliveredMessageId,
-    "hasPendingApprovalResume" to snapshot.hasPendingApprovalResume,
-    "pendingApprovalToolName" to snapshot.pendingApprovalToolName,
-    "pendingApprovalIsHighRisk" to snapshot.pendingApprovalIsHighRisk,
-    "pendingApprovalChildRunId" to snapshot.pendingApprovalChildRunId,
-    "pendingApprovalChildTaskId" to snapshot.pendingApprovalChildTaskId,
-    "liveContext" to snapshot.liveContext,
-  )
-
-  private fun retainedRunsFor(runs: List<AgentRunSnapshot>): List<AgentRunSnapshot> {
-    return runs.filter { run ->
-      !run.isActive &&
-        (
-          run.isTerminal ||
-            isAwaitingDirectionRun(run) ||
-            isInterruptedOnRestoreRun(run)
-          )
-    }
   }
 
   private fun latestRunFor(runs: List<AgentRunSnapshot>): AgentRunSnapshot? =
@@ -2009,24 +1492,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private fun ManagedProcessSnapshot.isProjectionTerminalAfterRestore(): Boolean =
     isProjectionTerminalAfterRestoreState()
 
-  private fun runIdFor(task: AgentTask): String =
-    task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
-      ?.takeIf(String::isNotBlank)
-      ?: task.id
-
-  private fun runtimeProjectedMessageId(event: OpenCrayAgentRunEvent): String = when (event) {
-    // Mirrors OpenCrayHostRuntime.runtimeProjectedMessageId: all consumers must
-    // derive one id per event regardless of eventId stamping state.
-    is OpenCrayAssistantPhaseEvent -> "runtime-assistant-event-${runtimeEventStableId(event)}"
-    is OpenCraySupplementEvent -> "runtime-supplement-${event.entryId}"
-    is OpenCrayApprovalEvent ->
-      "runtime-approval-${event.phase.name.lowercase(Locale.US)}-${event.runId}-${event.emittedAtEpochMs}"
-    is OpenCrayToolCallEvent -> "runtime-tool-call-${event.runId}-${event.turn}-${event.emittedAtEpochMs}"
-    is OpenCrayToolResultEvent -> "runtime-tool-result-${event.runId}-${event.turn}-${event.emittedAtEpochMs}"
-    is OpenCrayCancellationEvent -> "runtime-interrupted-${event.runId}-${event.emittedAtEpochMs}"
-    else -> "runtime-event-${event.runId}-${event.emittedAtEpochMs}"
-  }
-
   private fun runSnapshotToMap(run: AgentRunSnapshot): Map<String, Any?> = mapOf(
     "sessionId" to run.sessionId,
     "runId" to run.runId,
@@ -2066,38 +1531,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     "diagnostics" to run.lifecycleDiagnostics.toMap(),
     "recoveryPlan" to recoveryPlanForRun(run)?.toMap(),
   )
-
-  private fun managedProcessSnapshotToMap(
-    snapshot: ManagedProcessSnapshot,
-  ): Map<String, Any?> = buildMap {
-    val stdoutTruncated = snapshot.stdout.length > MAX_MANAGED_PROCESS_OUTPUT_PREVIEW_CHARS
-    val stderrTruncated = snapshot.stderr.length > MAX_MANAGED_PROCESS_OUTPUT_PREVIEW_CHARS
-    put("processId", snapshot.processId)
-    put("status", snapshot.status.name.lowercase())
-    put("command", snapshot.command)
-    put("args", snapshot.args)
-    put("workingDirectory", snapshot.workingDirectory)
-    put("processStarted", snapshot.processStarted)
-    put("timeoutMs", snapshot.timeoutMs)
-    put("startedAtEpochMs", snapshot.startedAtEpochMs)
-    put("updatedAtEpochMs", snapshot.updatedAtEpochMs)
-    put("finishedAtEpochMs", snapshot.finishedAtEpochMs)
-    put("exitCode", snapshot.exitCode)
-    put("errorCode", snapshot.errorCode)
-    put("errorMessage", snapshot.errorMessage)
-    put("timedOut", snapshot.timedOut)
-    put("cancelled", snapshot.cancelled)
-    put("outputLimitExceeded", snapshot.outputLimitExceeded)
-    put("stdout", snapshot.stdout)
-    put("stderr", snapshot.stderr)
-    put("stdoutPreview", managedProcessOutputPreview(snapshot.stdout))
-    put("stderrPreview", managedProcessOutputPreview(snapshot.stderr))
-    put("stdoutTruncated", stdoutTruncated)
-    put("stderrTruncated", stderrTruncated)
-  }
-
-  private fun managedProcessOutputPreview(text: String): String =
-    text.takeLast(MAX_MANAGED_PROCESS_OUTPUT_PREVIEW_CHARS)
 
   private fun recoveryPlanForRun(run: AgentRunSnapshot): RunRecoveryPlan? =
     loadStoredRunRecoveryPlan(
@@ -2343,28 +1776,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     }
   }
 
-  private fun chatMessageSnapshotMap(
-    messageId: String,
-    kind: String,
-    text: String,
-    meta: String = "",
-    createdAtEpochMs: Long? = null,
-    isEphemeral: Boolean = false,
-    attachments: List<Map<String, Any?>> = emptyList(),
-  ): Map<String, Any?> = buildMap {
-    put("messageId", messageId)
-    put("kind", kind)
-    put("text", text)
-    put("meta", meta)
-    createdAtEpochMs?.let { timestamp ->
-      put("createdAtEpochMs", timestamp)
-    }
-    put("isEphemeral", isEphemeral)
-    if (attachments.isNotEmpty()) {
-      put("attachments", attachments)
-    }
-  }
-
   private fun pendingUserInputToMap(entry: PendingUserInputEntry): Map<String, Any?> = buildMap {
     put("messageId", entry.queueId)
     put("kind", "outbound")
@@ -2403,34 +1814,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     attachment.contentSha256?.let { contentSha256 -> put("contentSha256", contentSha256) }
   }
 
-  private fun chatAttachmentSnapshotMap(
-    attachment: ChatAttachmentEntry,
-  ): Map<String, Any?> = buildMap {
-    put("attachmentId", attachment.attachmentId)
-    put(
-      "kind",
-      when (attachment.kind) {
-        ChatAttachmentKind.IMAGE -> "image"
-        ChatAttachmentKind.VOICE,
-        ChatAttachmentKind.AUDIO,
-        -> "voice"
-        ChatAttachmentKind.FILE -> "file"
-      },
-    )
-    put("displayName", attachment.displayName)
-    put("localPath", attachment.localPath)
-    attachment.mimeType?.let { mimeType -> put("mimeType", mimeType) }
-    attachment.sizeBytes?.let { sizeBytes -> put("sizeBytes", sizeBytes) }
-    attachment.widthPx?.let { widthPx -> put("widthPx", widthPx) }
-    attachment.heightPx?.let { heightPx -> put("heightPx", heightPx) }
-    attachment.durationMs?.let { durationMs -> put("durationMs", durationMs) }
-    if (attachment.waveformBars.isNotEmpty()) {
-      put("waveformBars", attachment.waveformBars)
-    }
-    attachment.transcriptText?.let { transcriptText -> put("transcriptText", transcriptText) }
-    attachment.contentSha256?.let { contentSha256 -> put("contentSha256", contentSha256) }
-  }
-
   private fun finalAttachmentsForRun(
     run: AgentRunSnapshot,
   ): List<ChatAttachmentEntry> {
@@ -2446,17 +1829,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       ?.attachments
       .orEmpty()
   }
-
-  private fun liveAssistantDraftToMap(
-    draft: ProjectionLiveAssistantDraftSnapshot,
-  ): Map<String, Any?> = mapOf(
-    "runId" to draft.runId,
-    "taskId" to draft.taskId,
-    "executionId" to draft.executionId,
-    "pendingMessageId" to draft.pendingMessageId,
-    "text" to draft.text,
-    "updatedAtEpochMs" to draft.updatedAtEpochMs,
-  )
 
   private fun toolResultMetadataSnapshot(metadata: Map<String, String>): Map<String, String> {
     val hiddenKeys = setOf(
@@ -2480,15 +1852,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     }.toMap(linkedMapOf())
   }
 
-  private fun toolResultDetailedContentSnapshot(result: AgentToolResult): String? {
-    val content = result.content.trim().takeIf(String::isNotBlank) ?: return null
-    return if (result.status == AgentToolResultStatus.SUCCESS) {
-      content
-    } else {
-      content.take(MAX_PROJECTION_RUNTIME_EVENT_FAILURE_CONTENT_CHARS)
-    }
-  }
-
   private fun isDebugOnlyRuntimeEvent(event: OpenCrayAgentRunEvent): Boolean =
     event is OpenCrayMemoryWriteEvent &&
       event.runId.startsWith(MEMORY_DEBUG_RUN_ID_PREFIX) &&
@@ -2498,38 +1861,10 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     event is OpenCraySupplementEvent &&
       event.checkpoint == INTERNAL_PROMPT_CHECKPOINT_MARKER
 
-  private data class ProjectedRuntimeChatMessage(
-    val anchorMessageId: String?,
-    val sortEpochMs: Long,
-    val sourceOrder: Int,
-    val snapshot: Map<String, Any?>,
-  ) {
-    fun effectiveSortEpochMs(): Long =
-      (snapshot["createdAtEpochMs"] as? Number)?.toLong()?.takeIf { createdAt -> createdAt > 0L }
-        ?: sortEpochMs
-  }
-
-  private data class OrderedProjectedRuntimeChatMessage(
-    val sortEpochMs: Long,
-    val sourceOrder: Int,
-    val message: ProjectedRuntimeChatMessage,
-  ) {
-    fun effectiveSortEpochMs(): Long = message.effectiveSortEpochMs()
-  }
-
-  private data class ProjectionLiveAssistantDraftSnapshot(
-    val runId: String,
-    val taskId: String,
-    val executionId: String?,
-    val pendingMessageId: String,
-    val text: String,
-    val updatedAtEpochMs: Long,
-  )
-
   private data class ProjectionRuntimeSnapshot(
     val runs: List<AgentRunSnapshot>,
     val recentEvents: List<OpenCrayAgentRunEvent>,
-    val liveAssistantDrafts: List<ProjectionLiveAssistantDraftSnapshot>,
+    val liveAssistantDrafts: List<LiveAssistantDraftSnapshot>,
     val updatedAtEpochMs: Long,
     val snapshot: Map<String, Any?>,
   )
@@ -2545,47 +1880,10 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val sourcePriority: Int,
   )
 
-  private data class SubAgentActivitySnapshot(
-    val parentRunId: String,
-    val parentTaskId: String,
-    val agentId: String?,
-    val childSessionId: String?,
-    val childRunId: String,
-    val childTaskId: String,
-    val label: String,
-    val subagentType: String,
-    val contextMode: String,
-    val contextModeSource: String? = null,
-    val depth: Int,
-    val phase: String,
-    val status: String?,
-    val executionState: String?,
-    val continuationKind: String?,
-    val resumable: Boolean,
-    val requiresUserAction: Boolean,
-    val isHighRisk: Boolean,
-    val closed: Boolean,
-    val summary: String?,
-    val startedAtEpochMs: Long,
-    val updatedAtEpochMs: Long,
-    val eventCount: Int,
-    val hasActiveExecution: Boolean,
-    val mailboxMessageCount: Int,
-    val mailboxPendingMessageCount: Int,
-    val mailboxLastDeliveredMessageId: String?,
-    val hasPendingApprovalResume: Boolean,
-    val pendingApprovalToolName: String?,
-    val pendingApprovalIsHighRisk: Boolean,
-    val pendingApprovalChildRunId: String?,
-    val pendingApprovalChildTaskId: String?,
-    val liveContext: Map<String, Any?>? = null,
-  )
-
   private companion object {
     private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_CHECKPOINT: Int = 1
     private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_LINK: Int = 2
     private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_HANDLE: Int = 3
-    private const val TOOL_GENERATED_SUPPLEMENT_ENTRY_ID_PREFIX: String = "tool-supplement-"
     private const val MEMORY_DEBUG_RUN_ID_PREFIX: String = "memory-debug-run"
     private const val MEMORY_DEBUG_TASK_ID_PREFIX: String = "memory-debug-task"
     private const val INTERNAL_PROMPT_CHECKPOINT_MARKER: String = "internal_prompt_checkpoint"
@@ -2593,15 +1891,8 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     private const val PROJECTION_HIGH_RISK_APPROVAL_REQUIRED_ERROR_CODE: String =
       "HIGH_RISK_APPROVAL_REQUIRED"
     private const val MAX_PROJECTION_RUNTIME_EVENT_PREVIEW_CHARS: Int = 240
-    private const val MAX_PROJECTION_RUNTIME_EVENT_FAILURE_CONTENT_CHARS: Int = 16_384
-    private const val MAX_MANAGED_PROCESS_OUTPUT_PREVIEW_CHARS: Int = 4_096
     private const val PROJECTION_RUN_WAIT_POLL_INTERVAL_MS: Long = 50L
     private const val DEFAULT_PROJECTION_POLL_INTERVAL_MS: Long = 350L
-    private val HIDDEN_ASSISTANT_CHAT_STAGES: Set<String> = setOf(
-      "draft",
-      "llm_retry",
-      "responses_recovery",
-    )
   }
 
   private fun unavailable(operation: String): IllegalStateException = IllegalStateException(
