@@ -26,6 +26,7 @@ import 'settings_models.dart';
 import 'strong_background_settings_models.dart';
 
 part 'agent_settings_pages.dart';
+part 'agent_settings_widgets.dart';
 part 'agent_gradient_data.dart';
 part 'settings_notification_pages.dart';
 part 'settings_scheduled_task_pages.dart';
