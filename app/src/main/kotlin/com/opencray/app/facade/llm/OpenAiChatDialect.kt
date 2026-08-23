@@ -1,17 +1,13 @@
 package com.opencray.app.facade.llm
 
-import com.opencray.app.EncodedImageAttachment
-import com.opencray.app.EncodedPdfAttachment
 import com.opencray.app.LlmPromptCacheKeyStrategies
 import com.opencray.app.LlmPromptCacheRetentionPolicies
 import com.opencray.app.LlmPromptCachingMetadataKeys
 import com.opencray.app.LlmProviderProtocols
 import com.opencray.app.LlmStructuredFinalMetadataKeys
 import com.opencray.app.llmRouteFingerprint
-import com.opencray.app.MultimodalMessageAssembly
 import com.opencray.app.OpenAiCompatibleLiteLlmProviderClient
 import com.opencray.app.OpenAiCompatibleLiteLlmProviderClient.Companion.STRUCTURED_FINAL_SCHEMA_NAME
-import com.opencray.app.OpenAiBuiltinWebSearchDialect
 import com.opencray.app.PromptCacheUsageSnapshot
 import com.opencray.app.StructuredToolCallParseResult
 import com.opencray.app.VisibleTextSnapshotCoalescer

@@ -1,8 +1,6 @@
 package com.opencray.app.facade.llm
 
 import com.opencray.app.AnthropicPromptCacheTtlPolicies
-import com.opencray.app.EncodedImageAttachment
-import com.opencray.app.EncodedPdfAttachment
 import com.opencray.app.LlmPromptCachingMetadataKeys
 import com.opencray.app.LlmProviderProtocols
 import com.opencray.app.LlmStructuredFinalMetadataKeys

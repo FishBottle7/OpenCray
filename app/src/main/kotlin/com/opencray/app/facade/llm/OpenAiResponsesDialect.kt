@@ -1,7 +1,6 @@
 package com.opencray.app.facade.llm
 
 import com.opencray.app.LlmProviderProtocols
-import com.opencray.app.MultimodalMessageAssembly
 import com.opencray.app.OpenAiCompatibleLiteLlmProviderClient
 import com.opencray.app.OpenAiCompatibleLiteLlmProviderClient.Companion.STRUCTURED_FINAL_SCHEMA_NAME
 import com.opencray.app.StructuredToolCallParseResult

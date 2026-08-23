@@ -1,29 +1,25 @@
 package com.opencray.app
 
 import android.util.Log
-import com.opencray.app.facade.llm.anthropicBuiltinWebSearchObservations
-import com.opencray.app.facade.llm.anthropicCitationCount
 import com.opencray.app.facade.llm.anthropicPromptCacheControl
 import com.opencray.app.facade.llm.anthropicPromptCacheRetention
 import com.opencray.app.facade.llm.anthropicPromptCacheUsage
-import com.opencray.app.facade.llm.anthropicResponseShape
 import com.opencray.app.facade.llm.anthropicStructuredCompletion
 import com.opencray.app.facade.llm.anthropicStructuredFinalToolSupported
 import com.opencray.app.facade.llm.buildAnthropicRequestBody
+import com.opencray.app.facade.llm.builtinWebSearchObservations
 import com.opencray.app.facade.llm.extractAnthropicMessageContent
-import com.opencray.app.facade.llm.isExecutableAnthropicToolUse
-import com.opencray.app.facade.llm.maybeAutoContinueAnthropicBuiltinWebSearch
+import com.opencray.app.facade.llm.maybeAutoContinueBuiltinWebSearch
+import com.opencray.app.facade.llm.nativeToolCallObserved
+import com.opencray.app.facade.llm.nonBlankString
 import com.opencray.app.facade.llm.readAnthropicStream
 import com.opencray.app.facade.llm.buildOpenAiRequestBody
 import com.opencray.app.facade.llm.extractOpenAiMessageContent
-import com.opencray.app.facade.llm.maybeAutoContinueOpenAiBuiltinWebSearch
 import com.opencray.app.facade.llm.openAiBuiltinWebSearchDialect
-import com.opencray.app.facade.llm.openAiBuiltinWebSearchObservations
 import com.opencray.app.facade.llm.openAiConversationMessages
 import com.opencray.app.facade.llm.openAiPromptCacheKey
 import com.opencray.app.facade.llm.openAiPromptCacheRetention
 import com.opencray.app.facade.llm.openAiPromptCacheUsage
-import com.opencray.app.facade.llm.openAiResponseShape
 import com.opencray.app.facade.llm.openAiStructuredCompletion
 import com.opencray.app.facade.llm.openAiStructuredFinalSchemaSupported
 import com.opencray.app.facade.llm.readOpenAiChatCompletionsStream
@@ -33,17 +29,15 @@ import com.opencray.app.facade.llm.buildResponsesCompactEndpointUrl
 import com.opencray.app.facade.llm.deepCopyJsonValue
 import com.opencray.app.facade.llm.extractResponsesMessageContent
 import com.opencray.app.facade.llm.readOpenAiResponsesStream
-import com.opencray.app.facade.llm.responsesBuiltinWebSearchObservations
-import com.opencray.app.facade.llm.responsesCitationCount
+import com.opencray.app.facade.llm.responseCitationCount
+import com.opencray.app.facade.llm.responseShape
 import com.opencray.app.facade.llm.responsesCompactionSummary
 import com.opencray.app.facade.llm.responsesMessageTextSegments
 import com.opencray.app.facade.llm.responsesRemoteCompactionSupported
-import com.opencray.app.facade.llm.responsesResponseShape
 import com.opencray.app.facade.llm.responsesStructuredCompletion
 import com.opencray.llm.LiteLlmProviderClient
 import com.opencray.llm.LiteLlmGatewayMessage
 import com.opencray.llm.LiteLlmGatewayMessageRole
-import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.LiteLlmGatewayToolResult
 import com.opencray.llm.LiteLlmBuiltinToolDefinition
 import com.opencray.llm.LiteLlmBuiltinWebSearchObservation
@@ -55,7 +49,6 @@ import com.opencray.llm.LiteLlmProviderCompactRequest
 import com.opencray.llm.LiteLlmProviderRequest
 import com.opencray.llm.LiteLlmProviderResult
 import com.opencray.llm.LiteLlmStructuredCompletion
-import com.opencray.llm.LiteLlmStructuredFinalAttachment
 import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.llm.LiteLlmToolChoice
 import com.opencray.llm.LiteLlmToolChoiceMode
@@ -68,35 +61,12 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
 import java.nio.charset.StandardCharsets
-import java.nio.file.Files
-import java.nio.file.Path
-import java.util.Base64
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
 import org.json.JSONArray
 import org.json.JSONObject
 
-
-internal data class EncodedImageAttachment(
-  val attachment: com.opencray.llm.LiteLlmGatewayAttachment,
-  val mimeType: String,
-  val base64Data: String,
-)
-
-internal data class EncodedPdfAttachment(
-  val attachment: com.opencray.llm.LiteLlmGatewayAttachment,
-  val displayName: String,
-  val mimeType: String,
-  val base64Data: String,
-)
-
-internal data class MultimodalMessageAssembly(
-  val text: String? = null,
-  val inlinePdfs: List<EncodedPdfAttachment> = emptyList(),
-  val inlineImages: List<EncodedImageAttachment> = emptyList(),
-)
 
 internal data class PromptCacheUsageSnapshot(
   val cacheUsed: Boolean,
@@ -118,20 +88,6 @@ internal data class StructuredToolCallParseResult(
   val errors: List<String> = emptyList(),
   val rawPreview: String? = null,
 )
-
-internal enum class OpenAiBuiltinWebSearchDialect(
-  val wireValue: String,
-) {
-  OPENAI_CHAT_WEB_SEARCH("openai_chat_web_search"),
-  KIMI_BUILTIN_FUNCTION_WEB_SEARCH("kimi_builtin_function_web_search");
-
-  companion object {
-    fun fromWireValue(rawValue: String?): OpenAiBuiltinWebSearchDialect? =
-      entries.firstOrNull { dialect ->
-        dialect.wireValue.equals(rawValue?.trim(), ignoreCase = true)
-      }
-  }
-}
 
 internal class OpenAiCompatibleLiteLlmProviderClient(
   private val userAgent: String = OpenCrayUserAgent.providerApi("0"),
@@ -595,82 +551,6 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
 
 
-  internal fun structuredFinalSchema(): JSONObject = JSONObject()
-    .put("type", "object")
-    .put("additionalProperties", false)
-    .put(
-      "required",
-      JSONArray()
-        .put("type")
-        .put("answer")
-        .put("attachments"),
-    )
-    .put(
-      "properties",
-      JSONObject()
-        .put(
-          "type",
-          JSONObject()
-            .put("type", "string")
-            .put("enum", JSONArray().put("final")),
-        )
-        .put(
-          "answer",
-          JSONObject()
-            .put("type", "string"),
-        )
-        .put(
-          "attachments",
-          JSONObject()
-            .put("type", "array")
-            .put("items", structuredFinalAttachmentSchema()),
-        ),
-    )
-
-  private fun structuredFinalAttachmentSchema(): JSONObject = JSONObject()
-    .put("type", "object")
-    .put("additionalProperties", false)
-    .put(
-      "required",
-      JSONArray()
-        .put("kind")
-        .put("artifact_id")
-        .put("relative_path")
-        .put("path")
-        .put("chat_attachment_id")
-        .put("display_name")
-        .put("mime_type")
-        .put("duration_ms")
-        .put("waveform_bars")
-        .put("transcript_text"),
-    )
-    .put(
-      "properties",
-      JSONObject()
-        .put("kind", nullableStringSchema())
-        .put("artifact_id", nullableStringSchema())
-        .put("relative_path", nullableStringSchema())
-        .put("path", nullableStringSchema())
-        .put("chat_attachment_id", nullableStringSchema())
-        .put("display_name", nullableStringSchema())
-        .put("mime_type", nullableStringSchema())
-        .put(
-          "duration_ms",
-          JSONObject()
-            .put("type", JSONArray().put("integer").put("null")),
-        )
-        .put(
-          "waveform_bars",
-          JSONObject()
-            .put("type", "array")
-            .put("items", JSONObject().put("type", "integer")),
-        )
-        .put("transcript_text", nullableStringSchema()),
-    )
-
-  private fun nullableStringSchema(): JSONObject = JSONObject()
-    .put("type", JSONArray().put("string").put("null"))
-
   private fun extractMessageContent(
     payload: JSONObject,
     protocol: String,
@@ -767,38 +647,6 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       type in setOf("tool_call", "tool", "final", "answer", "progress", "commentary", "status")
   }
 
-  private fun extractEmbeddedJsonObject(raw: String): String? {
-    val trimmed = raw.trim()
-    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
-      return trimmed
-    }
-    var depth = 0
-    var startIndex = -1
-    var inString = false
-    var escaped = false
-    for ((index, character) in raw.withIndex()) {
-      when {
-        inString && escaped -> escaped = false
-        inString && character == '\\' -> escaped = true
-        character == '"' -> inString = !inString
-        !inString && character == '{' -> {
-          if (depth == 0) {
-            startIndex = index
-          }
-          depth += 1
-        }
-
-        !inString && character == '}' -> {
-          depth -= 1
-          if (depth == 0 && startIndex >= 0) {
-            return raw.substring(startIndex, index + 1)
-          }
-        }
-      }
-    }
-    return null
-  }
-
   internal fun describeJsonValue(value: Any?): String = when (value) {
     null,
     JSONObject.NULL,
@@ -829,116 +677,6 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   }
 
 
-
-  internal fun buildStructuredCompletion(
-    toolCalls: List<LiteLlmStructuredToolCall>,
-    finalText: String? = null,
-    finalAttachments: List<LiteLlmStructuredFinalAttachment> = emptyList(),
-    commentaryText: String? = null,
-    commentaryTexts: List<String> = emptyList(),
-    reasoningText: String? = null,
-    rawText: String? = null,
-    toolCallErrors: List<String> = emptyList(),
-  ): LiteLlmStructuredCompletion? {
-    val normalizedFinalText = finalText?.trim()?.takeIf(String::isNotBlank)
-    val normalizedFinalAttachments = finalAttachments.map(::normalizeStructuredFinalAttachment)
-    val normalizedCommentaryTexts = commentaryTexts
-      .map(String::trim)
-      .filter(String::isNotBlank)
-      .ifEmpty {
-        commentaryText?.trim()?.takeIf(String::isNotBlank)?.let(::listOf) ?: emptyList()
-      }
-    val normalizedCommentaryText = normalizedCommentaryTexts
-      .joinToString(separator = "\n")
-      .trim()
-      .takeIf(String::isNotBlank)
-    val normalizedReasoningText = reasoningText?.trim()?.takeIf(String::isNotBlank)
-    val normalizedRawText = rawText?.trim()?.takeIf(String::isNotBlank)
-    val normalizedToolCallErrors = toolCallErrors.map(String::trim).filter(String::isNotBlank)
-    if (
-      toolCalls.isEmpty() &&
-      normalizedFinalText == null &&
-      normalizedFinalAttachments.isEmpty() &&
-      normalizedCommentaryTexts.isEmpty() &&
-      normalizedReasoningText == null &&
-      normalizedRawText == null &&
-      normalizedToolCallErrors.isEmpty()
-    ) {
-      return null
-    }
-    return LiteLlmStructuredCompletion(
-      toolCalls = toolCalls,
-      finalText = normalizedFinalText,
-      finalAttachments = normalizedFinalAttachments,
-      commentaryText = normalizedCommentaryText,
-      commentaryTexts = normalizedCommentaryTexts,
-      reasoningText = normalizedReasoningText,
-      rawText = normalizedRawText,
-      toolCallErrors = normalizedToolCallErrors,
-    )
-  }
-
-  internal fun jsonObjectFrom(payload: JSONObject): JsonObject = runCatching {
-    JSON_CODEC.parseToJsonElement(payload.toString()) as? JsonObject
-  }.getOrNull() ?: JsonObject(emptyMap())
-
-  internal fun String.toProtocolFinalPayloadOrNull(): JSONObject? {
-    val candidate = extractEmbeddedJsonObject(this) ?: return null
-    val parsed = runCatching { JSONObject(candidate) }.getOrNull() ?: return null
-    val type = parsed.optString("type").trim().lowercase()
-      .ifBlank { parsed.optString("decision").trim().lowercase() }
-    val hasFinalShape = type in setOf("final", "answer") ||
-      parsed.optString("answer").isNotBlank() ||
-      (parsed.optJSONArray("attachments")?.length() ?: 0) > 0
-    return parsed.takeIf { hasFinalShape }
-  }
-
-  internal fun JSONObject.structuredFinalAttachments(): List<LiteLlmStructuredFinalAttachment> {
-    val rawAttachments = optJSONArray("attachments") ?: return emptyList()
-    return buildList {
-      for (index in 0 until rawAttachments.length()) {
-        val attachment = rawAttachments.optJSONObject(index) ?: continue
-        add(
-          LiteLlmStructuredFinalAttachment(
-            kind = attachment.nonBlankString("kind"),
-            relativePath = attachment.nonBlankString("relative_path")
-              ?: attachment.nonBlankString("relativePath"),
-            path = attachment.nonBlankString("path"),
-            artifactId = attachment.nonBlankString("artifact_id")
-              ?: attachment.nonBlankString("artifactId"),
-            chatAttachmentId = attachment.nonBlankString("chat_attachment_id")
-              ?: attachment.nonBlankString("chatAttachmentId"),
-            displayName = attachment.nonBlankString("display_name")
-              ?: attachment.nonBlankString("displayName"),
-            mimeType = attachment.nonBlankString("mime_type")
-              ?: attachment.nonBlankString("mimeType"),
-            durationMs = attachment.optLongValue("duration_ms")
-              ?: attachment.optLongValue("durationMs"),
-            waveformBars = attachment.optIntArray("waveform_bars")
-              ?: attachment.optIntArray("waveformBars")
-              ?: emptyList(),
-            transcriptText = attachment.nonBlankString("transcript_text")
-              ?: attachment.nonBlankString("transcriptText"),
-          ),
-        )
-      }
-    }
-  }
-
-  private fun normalizeStructuredFinalAttachment(
-    attachment: LiteLlmStructuredFinalAttachment,
-  ): LiteLlmStructuredFinalAttachment = LiteLlmStructuredFinalAttachment(
-    kind = attachment.kind?.trim()?.takeIf(String::isNotBlank),
-    relativePath = attachment.relativePath?.trim()?.takeIf(String::isNotBlank),
-    path = attachment.path?.trim()?.takeIf(String::isNotBlank),
-    artifactId = attachment.artifactId?.trim()?.takeIf(String::isNotBlank),
-    chatAttachmentId = attachment.chatAttachmentId?.trim()?.takeIf(String::isNotBlank),
-    displayName = attachment.displayName?.trim()?.takeIf(String::isNotBlank),
-    mimeType = attachment.mimeType?.trim()?.takeIf(String::isNotBlank),
-    durationMs = attachment.durationMs,
-    waveformBars = attachment.waveformBars,
-    transcriptText = attachment.transcriptText?.trim()?.takeIf(String::isNotBlank),
-  )
 
   private fun finishReasonFor(
     payload: JSONObject,
@@ -1144,156 +882,6 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       ?.trim()
       ?.takeIf(String::isNotBlank)
 
-  internal fun JSONObject.optLongValue(
-    key: String,
-  ): Long? {
-    if (!has(key) || isNull(key)) {
-      return null
-    }
-    return when (val rawValue = opt(key)) {
-      is Number -> rawValue.toLong()
-      is String -> rawValue.trim().toLongOrNull()
-      else -> null
-    }
-  }
-
-  private fun JSONObject.optIntArray(
-    key: String,
-  ): List<Int>? {
-    val rawArray = optJSONArray(key) ?: return null
-    return buildList {
-      for (index in 0 until rawArray.length()) {
-        when (val rawValue = rawArray.opt(index)) {
-          is Number -> add(rawValue.toInt())
-          is String -> rawValue.trim().toIntOrNull()?.let(::add)
-        }
-      }
-    }
-  }
-
-  private fun maybeAutoContinueBuiltinWebSearch(
-    request: LiteLlmProviderRequest,
-    payload: JSONObject,
-    completion: LiteLlmStructuredCompletion?,
-    success: LiteLlmProviderResult.Success,
-  ): LiteLlmProviderResult? = when (resolvedProtocol(request)) {
-    LlmProviderProtocols.OPENAI -> maybeAutoContinueOpenAiBuiltinWebSearch(
-      request = request,
-      payload = payload,
-      completion = completion,
-      success = success,
-    )
-
-    LlmProviderProtocols.ANTHROPIC -> maybeAutoContinueAnthropicBuiltinWebSearch(
-      request = request,
-      payload = payload,
-      success = success,
-    )
-
-    else -> null
-  }
-
-  // Keep provider encoding message-first even when a legacy caller still sends only `prompt`.
-  internal fun projectedConversationMessages(
-    request: LiteLlmGatewayRequest,
-  ): List<LiteLlmGatewayMessage> = if (request.messages.isNotEmpty()) {
-    request.messages
-  } else {
-    listOf(
-      LiteLlmGatewayMessage(
-        role = LiteLlmGatewayMessageRole.USER,
-        content = request.prompt,
-      ),
-    )
-  }
-
-  internal fun builtinWebSearchFallbackQueries(
-    request: LiteLlmProviderRequest,
-  ): List<String> = request.request.messages
-    .asReversed()
-    .asSequence()
-    .filter { message -> message.role == LiteLlmGatewayMessageRole.USER }
-    .mapNotNull(::builtinWebSearchFallbackQueryText)
-    .firstOrNull()
-    ?.let(::listOf)
-    ?: listOf(request.request.prompt.trim()).filter(String::isNotBlank)
-
-  private fun builtinWebSearchFallbackQueryText(
-    message: LiteLlmGatewayMessage,
-  ): String? {
-    message.content?.trim()?.takeIf(String::isNotBlank)?.let { content ->
-      return content
-    }
-    return message.attachments
-      .asSequence()
-      .mapNotNull { attachment ->
-        attachment.transcriptText?.trim()?.takeIf(String::isNotBlank)
-          ?: attachment.displayName?.trim()?.takeIf(String::isNotBlank)
-      }
-      .firstOrNull()
-  }
-
-  internal fun mergeBuiltinWebSearchMetadata(
-    metadata: Map<String, String>,
-    observations: List<LiteLlmBuiltinWebSearchObservation>,
-  ): Map<String, String> {
-    if (observations.isEmpty() && metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED] == "true") {
-      return metadata
-    }
-    val mergedObservations = (
-      decodeBuiltinWebSearchObservations(metadata[LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON]) +
-        observations
-      )
-      .distinctBy { observation ->
-        listOf(
-          observation.actionType,
-          observation.status.orEmpty(),
-          observation.url.orEmpty(),
-          observation.findText.orEmpty(),
-          observation.queries.joinToString(separator = "|"),
-          observation.domains.joinToString(separator = "|"),
-        ).joinToString(separator = "::")
-      }
-    return metadata.toMutableMap().apply {
-      put(LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_USED, "true")
-      if (mergedObservations.isNotEmpty()) {
-        put(
-          LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_OBSERVATIONS_JSON,
-          JSON_CODEC.encodeToString(
-            ListSerializer(LiteLlmBuiltinWebSearchObservation.serializer()),
-            mergedObservations,
-          ),
-        )
-      }
-    }
-  }
-
-  internal fun mergeBuiltinWebSearchMetadata(
-    metadata: Map<String, String>,
-    dialect: OpenAiBuiltinWebSearchDialect,
-    observations: List<LiteLlmBuiltinWebSearchObservation>,
-  ): Map<String, String> = mergeBuiltinWebSearchMetadata(
-    metadata = metadata,
-    observations = observations,
-  ).toMutableMap().apply {
-      put(LiteLlmMetadataKeys.BUILTIN_WEB_SEARCH_DIALECT, dialect.wireValue)
-    }
-
-  private fun decodeBuiltinWebSearchObservations(
-    rawValue: String?,
-  ): List<LiteLlmBuiltinWebSearchObservation> {
-    val encoded = rawValue?.trim()?.takeIf(String::isNotBlank) ?: return emptyList()
-    return runCatching {
-      JSON_CODEC.decodeFromString(
-        ListSerializer(LiteLlmBuiltinWebSearchObservation.serializer()),
-        encoded,
-      )
-    }.getOrDefault(emptyList())
-  }
-
-
-
-
   private fun resolvedProtocol(request: LiteLlmProviderCompactRequest): String =
     LlmProviderProtocols.normalize(request.route.metadata["protocol"])
 
@@ -1327,214 +915,6 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
 
 
-  internal fun multimodalAssemblyFor(
-    request: LiteLlmProviderRequest,
-    message: LiteLlmGatewayMessage,
-    allowInlineImages: Boolean,
-  ): MultimodalMessageAssembly {
-    val inlinePdfs = if (pdfInputSupported(request)) {
-      message.attachments.mapNotNull(::encodeInlinePdfAttachment)
-    } else {
-      emptyList()
-    }
-    val inlineImages = if (allowInlineImages && visionInputSupported(request)) {
-      message.attachments.mapNotNull(::encodeInlineImageAttachment)
-    } else {
-      emptyList()
-    }
-    val consumedAttachments = (inlinePdfs.map { encoded -> encoded.attachment } +
-      inlineImages.map { encoded -> encoded.attachment })
-      .toSet()
-    val residualAttachments = message.attachments.filterNot { attachment -> attachment in consumedAttachments }
-    return MultimodalMessageAssembly(
-      text = contentWithAttachmentFallback(
-        content = message.content,
-        attachments = residualAttachments,
-      ),
-      inlinePdfs = inlinePdfs,
-      inlineImages = inlineImages,
-    )
-  }
-
-  private fun visionInputSupported(request: LiteLlmProviderRequest): Boolean =
-    request.route.metadata["visionInputSupported"]
-      ?.trim()
-      ?.lowercase() == "true"
-
-  private fun pdfInputSupported(request: LiteLlmProviderRequest): Boolean =
-    request.route.metadata["pdfInputSupported"]
-      ?.trim()
-      ?.lowercase() == "true"
-
-  private fun contentWithAttachmentFallback(
-    content: String?,
-    attachments: List<com.opencray.llm.LiteLlmGatewayAttachment>,
-  ): String? {
-    val blocks = mutableListOf<String>()
-    content?.trim()?.takeIf(String::isNotBlank)?.let(blocks::add)
-    if (attachments.isNotEmpty()) {
-      blocks += attachmentFallbackText(attachments)
-    }
-    return blocks.joinToString(separator = "\n\n").takeIf(String::isNotBlank)
-  }
-
-  private fun attachmentFallbackText(
-    attachments: List<com.opencray.llm.LiteLlmGatewayAttachment>,
-  ): String = buildString {
-    appendLine("Attachments:")
-    attachments.forEach { attachment ->
-      append("- ")
-      append(
-        attachment.displayName
-          ?.trim()
-          ?.takeIf(String::isNotBlank)
-          ?: attachment.attachmentId
-          ?: "attachment",
-      )
-      append(" [kind=")
-      append(attachment.kind.name.lowercase())
-      attachment.attachmentId?.trim()?.takeIf(String::isNotBlank)?.let { attachmentId ->
-        append(", attachment_id=")
-        append(attachmentId)
-      }
-      attachment.mimeType?.trim()?.takeIf(String::isNotBlank)?.let { mimeType ->
-        append(", mime_type=")
-        append(mimeType)
-      }
-      append(']')
-      appendLine()
-    }
-  }.trim()
-
-
-  internal fun inlineImageDataUrl(image: EncodedImageAttachment): String =
-    "data:${image.mimeType};base64,${image.base64Data}"
-
-  internal fun inlinePdfDataUrl(pdf: EncodedPdfAttachment): String =
-    "data:${pdf.mimeType};base64,${pdf.base64Data}"
-
-  private fun encodeInlinePdfAttachment(
-    attachment: com.opencray.llm.LiteLlmGatewayAttachment,
-  ): EncodedPdfAttachment? {
-    if (attachment.kind != com.opencray.llm.LiteLlmGatewayAttachmentKind.FILE) {
-      return null
-    }
-    val filePath = attachment.filePath?.trim()?.takeIf(String::isNotBlank) ?: return null
-    val path = runCatching { Path.of(filePath).toAbsolutePath().normalize() }.getOrNull() ?: return null
-    if (!Files.exists(path) || !Files.isRegularFile(path)) {
-      return null
-    }
-    val sizeBytes = runCatching { Files.size(path) }.getOrNull() ?: return null
-    if (sizeBytes <= 0L || sizeBytes > MAX_INLINE_PDF_BYTES) {
-      return null
-    }
-    val mimeType = normalizedPdfMimeType(
-      preferredMimeType = attachment.mimeType,
-      path = path,
-    ) ?: return null
-    val bytes = runCatching { Files.readAllBytes(path) }.getOrNull() ?: return null
-    return EncodedPdfAttachment(
-      attachment = attachment,
-      displayName = attachment.displayName
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-        ?: path.fileName.toString(),
-      mimeType = mimeType,
-      base64Data = Base64.getEncoder().encodeToString(bytes),
-    )
-  }
-
-  private fun encodeInlineImageAttachment(
-    attachment: com.opencray.llm.LiteLlmGatewayAttachment,
-  ): EncodedImageAttachment? {
-    if (attachment.kind != com.opencray.llm.LiteLlmGatewayAttachmentKind.IMAGE) {
-      return null
-    }
-    val filePath = attachment.filePath?.trim()?.takeIf(String::isNotBlank) ?: return null
-    val path = runCatching { Path.of(filePath).toAbsolutePath().normalize() }.getOrNull() ?: return null
-    if (!Files.exists(path) || !Files.isRegularFile(path)) {
-      return null
-    }
-    val sizeBytes = runCatching { Files.size(path) }.getOrNull() ?: return null
-    if (sizeBytes <= 0L || sizeBytes > MAX_INLINE_IMAGE_BYTES) {
-      return null
-    }
-    val mimeType = normalizedImageMimeType(
-      preferredMimeType = attachment.mimeType,
-      path = path,
-    ) ?: return null
-    val bytes = runCatching { Files.readAllBytes(path) }.getOrNull() ?: return null
-    return EncodedImageAttachment(
-      attachment = attachment,
-      mimeType = mimeType,
-      base64Data = Base64.getEncoder().encodeToString(bytes),
-    )
-  }
-
-  private fun normalizedImageMimeType(
-    preferredMimeType: String?,
-    path: Path,
-  ): String? {
-    val normalizedPreferred = preferredMimeType
-      ?.substringBefore(';')
-      ?.trim()
-      ?.lowercase()
-      ?.takeIf(String::isNotBlank)
-    if (normalizedPreferred?.startsWith("image/") == true) {
-      return normalizedPreferred
-    }
-    val probedMimeType = runCatching { Files.probeContentType(path) }
-      .getOrNull()
-      ?.substringBefore(';')
-      ?.trim()
-      ?.lowercase()
-      ?.takeIf(String::isNotBlank)
-    if (probedMimeType?.startsWith("image/") == true) {
-      return probedMimeType
-    }
-    return when (path.fileName.toString().substringAfterLast('.', "").lowercase()) {
-      "png" -> "image/png"
-      "jpg",
-      "jpeg",
-      -> "image/jpeg"
-      "webp" -> "image/webp"
-      "gif" -> "image/gif"
-      "bmp" -> "image/bmp"
-      "heic" -> "image/heic"
-      "heif" -> "image/heif"
-      else -> null
-    }
-  }
-
-  private fun normalizedPdfMimeType(
-    preferredMimeType: String?,
-    path: Path,
-  ): String? {
-    val normalizedPreferred = preferredMimeType
-      ?.substringBefore(';')
-      ?.trim()
-      ?.lowercase()
-      ?.takeIf(String::isNotBlank)
-    if (normalizedPreferred == "application/pdf") {
-      return normalizedPreferred
-    }
-    val probedMimeType = runCatching { Files.probeContentType(path) }
-      .getOrNull()
-      ?.substringBefore(';')
-      ?.trim()
-      ?.lowercase()
-      ?.takeIf(String::isNotBlank)
-    if (probedMimeType == "application/pdf") {
-      return probedMimeType
-    }
-    return path.fileName.toString()
-      .substringAfterLast('.', "")
-      .lowercase()
-      .takeIf { extension -> extension == "pdf" }
-      ?.let { "application/pdf" }
-  }
-
-
   internal fun serializedToolResultContent(result: LiteLlmGatewayToolResult): String {
     if (!hasRichToolResultPayload(result)) {
       return result.content
@@ -1565,129 +945,6 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       !result.errorCode.isNullOrBlank() ||
       !result.errorMessage.isNullOrBlank() ||
       result.metadata.isNotEmpty()
-
-  private fun responseShape(
-    request: LiteLlmProviderRequest,
-    payload: JSONObject,
-    protocol: String,
-  ): String = when (protocol) {
-    LlmProviderProtocols.ANTHROPIC -> anthropicResponseShape(
-      request = request,
-      payload = payload,
-    )
-    LlmProviderProtocols.OPENAI_RESPONSES -> responsesResponseShape(
-      request = request,
-      payload = payload,
-    )
-    else -> openAiResponseShape(
-      request = request,
-      payload = payload,
-    )
-  }
-
-  internal fun nativeToolCallObserved(
-    payload: JSONObject,
-    protocol: String,
-  ): Boolean {
-    return when (protocol) {
-      LlmProviderProtocols.ANTHROPIC -> {
-        val content = payload.optJSONArray("content")
-        if (content == null) {
-          false
-        } else {
-          for (index in 0 until content.length()) {
-            val block = content.optJSONObject(index) ?: continue
-            if (isExecutableAnthropicToolUse(block)) {
-              return true
-            }
-          }
-          false
-        }
-      }
-
-      LlmProviderProtocols.OPENAI_RESPONSES -> {
-        val output = payload.optJSONArray("output")
-        if (output == null) {
-          false
-        } else {
-          for (index in 0 until output.length()) {
-            val item = output.optJSONObject(index) ?: continue
-            if (item.optString("type") == "function_call") {
-              return true
-            }
-          }
-          false
-        }
-      }
-
-      else -> {
-        val message = payload.optJSONArray("choices")
-          ?.optJSONObject(0)
-          ?.optJSONObject("message")
-        if (message == null) {
-          false
-        } else {
-          val toolCalls = message.optJSONArray("tool_calls")
-          toolCalls != null && toolCalls.length() > 0
-        }
-      }
-    }
-  }
-
-  internal fun builtinWebSearchObserved(
-    request: LiteLlmProviderRequest,
-    payload: JSONObject,
-    protocol: String,
-  ): Boolean = builtinWebSearchObservations(
-    request = request,
-    payload = payload,
-    protocol = protocol,
-  ).isNotEmpty()
-
-  private fun builtinWebSearchObservations(
-    request: LiteLlmProviderRequest,
-    payload: JSONObject,
-    protocol: String,
-  ): List<LiteLlmBuiltinWebSearchObservation> = when (protocol) {
-    LlmProviderProtocols.ANTHROPIC -> anthropicBuiltinWebSearchObservations(
-      request = request,
-      payload = payload,
-    )
-    LlmProviderProtocols.OPENAI -> openAiBuiltinWebSearchObservations(
-      request = request,
-      payload = payload,
-    )
-    LlmProviderProtocols.OPENAI_RESPONSES -> responsesBuiltinWebSearchObservations(payload)
-    else -> emptyList()
-  }
-
-
-
-
-  internal fun nonBlankJsonArrayStrings(array: JSONArray?): List<String> {
-    if (array == null || array.length() == 0) {
-      return emptyList()
-    }
-    return buildList {
-      for (index in 0 until array.length()) {
-        val value = array.optString(index).trim()
-        if (value.isNotBlank()) {
-          add(value)
-        }
-      }
-    }
-  }
-
-  private fun responseCitationCount(
-    payload: JSONObject,
-    protocol: String,
-  ): Int = when (protocol) {
-    LlmProviderProtocols.ANTHROPIC -> anthropicCitationCount(payload)
-    LlmProviderProtocols.OPENAI_RESPONSES -> responsesCitationCount(payload)
-    else -> 0
-  }
-
-
 
   private fun extractErrorMessage(responseText: String): String = runCatching {
     val errorObject = JSONObject(responseText).optJSONObject("error")
@@ -1886,9 +1143,6 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   internal fun resolvedProtocol(request: LiteLlmProviderRequest): String =
     LlmProviderProtocols.normalize(request.route.metadata["protocol"])
-
-  internal fun JSONObject.nonBlankString(key: String): String? =
-    (opt(key) as? String)?.trim()?.takeIf(String::isNotBlank)
 
   private fun invalidToolMessageContract(messages: List<LiteLlmGatewayMessage>): String? {
     val seenAssistantToolCallIds = linkedSetOf<String>()
@@ -2285,13 +1539,13 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
   companion object {
     private const val DEFAULT_STREAM_UPDATE_MIN_INTERVAL_MS: Long = 24L
     private const val STREAM_SNIFF_LIMIT_BYTES: Int = 2_048
-    private const val MAX_INLINE_IMAGE_BYTES: Long = 20L * 1024L * 1024L
-    private const val MAX_INLINE_PDF_BYTES: Long = 32L * 1024L * 1024L
+    internal const val MAX_INLINE_IMAGE_BYTES: Long = 20L * 1024L * 1024L
+    internal const val MAX_INLINE_PDF_BYTES: Long = 32L * 1024L * 1024L
     internal const val STRUCTURED_FINAL_SCHEMA_NAME: String = "opencray_final_response"
     private const val KIMI_BUILTIN_WEB_SEARCH_FUNCTION_NAME: String = "\$web_search"
     private const val KIMI_BUILTIN_WEB_SEARCH_LOOP_DEPTH_KEY: String = "_host.kimiBuiltinWebSearchLoopDepth"
     private const val MAX_KIMI_BUILTIN_WEB_SEARCH_AUTO_TURNS: Int = 4
-    private val JSON_CODEC: Json = Json { ignoreUnknownKeys = true }
+    internal val JSON_CODEC: Json = Json { ignoreUnknownKeys = true }
 
     internal fun providerUserAgent(versionName: String): String =
       OpenCrayUserAgent.providerApi(versionName)
@@ -2301,6 +1555,38 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     runCatching { Log.d(STREAM_DEBUG_TAG, message) }
   }
 }
+
+internal fun extractEmbeddedJsonObject(raw: String): String? {
+    val trimmed = raw.trim()
+    if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+      return trimmed
+    }
+    var depth = 0
+    var startIndex = -1
+    var inString = false
+    var escaped = false
+    for ((index, character) in raw.withIndex()) {
+      when {
+        inString && escaped -> escaped = false
+        inString && character == '\\' -> escaped = true
+        character == '"' -> inString = !inString
+        !inString && character == '{' -> {
+          if (depth == 0) {
+            startIndex = index
+          }
+          depth += 1
+        }
+
+        !inString && character == '}' -> {
+          depth -= 1
+          if (depth == 0 && startIndex >= 0) {
+            return raw.substring(startIndex, index + 1)
+          }
+        }
+      }
+    }
+    return null
+  }
 
 internal class VisibleTextSnapshotCoalescer(
   private val observer: LiteLlmVisibleTextObserver,
