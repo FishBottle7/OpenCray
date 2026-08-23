@@ -119,7 +119,7 @@ internal data class AgentRunSnapshot(
 
 private const val RUN_ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
 private const val RUN_ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
-private const val METADATA_ACKNOWLEDGED_INTERRUPTED_PROCESS_IDS: String =
+internal const val METADATA_ACKNOWLEDGED_INTERRUPTED_PROCESS_IDS: String =
   "_runtime.acknowledgedInterruptedProcessIds"
 private const val ACKNOWLEDGED_PROCESS_ID_SEPARATOR: String = "\u001f"
 const val ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE: String = "PROCESS_INTERRUPTED_ON_RESTORE"
@@ -349,12 +349,12 @@ internal class RuntimeSessionOwnershipException(
     "not '${requestedTarget.wireValue}'.",
 )
 
-private class ManagedAgentSessionHandle(
+internal class ManagedAgentSessionHandle(
   override val sessionId: String,
   private val agentId: String,
-  private val runtimeFactory: AgentSessionTaskRuntimeFactory,
+  internal val runtimeFactory: AgentSessionTaskRuntimeFactory,
   snapshotStoreFactory: AgentQueueSnapshotStoreFactory,
-  private val runRecordStore: AgentRunRecordStore,
+  internal val runRecordStore: AgentRunRecordStore,
   private val runEventJournalStore: RunEventJournalStore,
   private val promptCheckpointStore: PromptCheckpointStore,
   private val executor: ExecutorService,
@@ -363,7 +363,7 @@ private class ManagedAgentSessionHandle(
   private val listenerProvider: () -> List<AgentSessionRuntimeListener>,
 ) : AgentSessionHandle {
   private val runLock = Any()
-  private val runRecordsById = linkedMapOf<String, ManagedRunRecord>()
+  internal val runRecordsById = linkedMapOf<String, ManagedRunRecord>()
   private val processingLock = Any()
   private var processing: Boolean = false
   private var processingThread: Thread? = null
@@ -623,7 +623,7 @@ private class ManagedAgentSessionHandle(
     sessionId = sessionId,
     eventSink = runtimeEventSink,
   )
-  private val loop = OpenCrayAgentEngine(
+  internal val loop = OpenCrayAgentEngine(
     runtime = SessionTaskRuntime { task, hooks ->
       runtimeFlowDebug(
         "runtime.taskStarted session=$sessionId task=${task.id} run=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID] ?: "-"} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} type=${task.type}",
@@ -1494,132 +1494,6 @@ private class ManagedAgentSessionHandle(
     }.sortedByDescending { snapshot -> snapshot.acceptedAtEpochMs }
   }
 
-  private fun repairRestoredInterruptedRunsLocked(
-    queueSnapshot: SessionQueueSnapshot,
-    managedProcesses: List<ManagedProcessSnapshot>,
-  ): Boolean {
-    var repairedAny = false
-    val managedProcessesById = managedProcesses.associateBy(ManagedProcessSnapshot::processId)
-    val taskSnapshotsByRunId = queueSnapshot.tasks.associateBy { taskSnapshot ->
-      runIdFor(taskSnapshot.task)
-    }
-    runRecordsById.entries.toList().forEach { (runId, record) ->
-      val taskSnapshot = taskSnapshotsByRunId[runId]
-      val taskId = taskSnapshot?.task?.id ?: record.submission.taskId
-      val associatedProcesses = associatedManagedProcesses(
-        taskId = taskId,
-        existingIds = record.managedProcessIds,
-        managedProcessesById = managedProcessesById,
-        managedProcessReader = { processId -> runtimeFactory.readManagedProcess(sessionId, processId) },
-      )
-      val acknowledgedProcessIds = taskSnapshot
-        ?.task
-        ?.metadata
-        ?.get(METADATA_ACKNOWLEDGED_INTERRUPTED_PROCESS_IDS)
-        ?.let(::decodeAcknowledgedInterruptedProcessIds)
-        .orEmpty()
-      val repairCandidates = associatedProcesses.filterNot { process ->
-        process.processId in acknowledgedProcessIds
-      }
-      if (!shouldRepairRestoredInterruptedRun(taskSnapshot, record, repairCandidates)) {
-        return@forEach
-      }
-      val repairedResult = record.lastResult
-        ?.takeIf(::isInterruptedOnRestoreResult)
-        ?: repairedInterruptedRestoreResult(
-          record = record,
-          associatedProcesses = repairCandidates,
-        )
-      if (
-        !loop.reconcileFailure(
-          taskId = taskId,
-          errorCode = repairedResult.errorCode
-            ?: ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE,
-          errorMessage = repairedResult.errorMessage
-            ?: "Managed process execution was interrupted during restore.",
-        )
-      ) {
-        return@forEach
-      }
-      repairedAny = true
-      val updated = record.copy(
-        managedProcessIds = (
-          record.managedProcessIds +
-            associatedProcesses.map(ManagedProcessSnapshot::processId)
-          ).distinct(),
-        lastResult = repairedResult,
-      )
-      if (updated != record) {
-        runRecordsById[runId] = updated
-        persistRunRecordLocked(updated)
-      }
-    }
-    return repairedAny
-  }
-
-  private fun restorePersistedRunRecordsLocked() {
-    runRecordStore.list().forEach { persisted ->
-      runRecordsById[persisted.runId] = ManagedRunRecord(
-        submission = AgentRunSubmission(
-          sessionId = sessionId,
-          runId = persisted.runId,
-          taskId = persisted.taskId,
-          acceptedAtEpochMs = persisted.acceptedAtEpochMs,
-        ),
-        pendingMessageId = persisted.pendingMessageId,
-        managedProcessIds = persisted.managedProcessIds,
-        detachedTask = persisted.detachedTask,
-        lastEvent = persisted.lastEvent?.toRuntimeEventOrNull(),
-        lastResult = persisted.lastResult,
-      )
-    }
-  }
-
-  private fun seedMissingRunRecordsLocked(queueSnapshot: SessionQueueSnapshot) {
-    queueSnapshot.tasks.forEach { taskSnapshot ->
-      val runId = runIdFor(taskSnapshot.task)
-      val existing = runRecordsById[runId]
-      if (existing == null) {
-        val seeded = ManagedRunRecord(
-          submission = AgentRunSubmission(
-            sessionId = sessionId,
-            runId = runId,
-            taskId = taskSnapshot.task.id,
-            acceptedAtEpochMs = taskSnapshot.task.createdAtEpochMs,
-          ),
-          pendingMessageId = taskSnapshot.task.metadata[
-            AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID
-          ],
-        )
-        runRecordsById[runId] = seeded
-        persistRunRecordLocked(seeded)
-      } else if (existing.pendingMessageId == null) {
-        val updated = existing.copy(
-          pendingMessageId = taskSnapshot.task.metadata[
-            AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID
-          ],
-        )
-        runRecordsById[runId] = updated
-        persistRunRecordLocked(updated)
-      }
-    }
-  }
-
-  private fun persistRunRecordLocked(record: ManagedRunRecord) {
-    runRecordStore.upsert(
-      PersistedAgentRunRecord(
-        runId = record.submission.runId,
-        taskId = record.submission.taskId,
-        acceptedAtEpochMs = record.submission.acceptedAtEpochMs,
-        pendingMessageId = record.pendingMessageId,
-        managedProcessIds = record.managedProcessIds,
-        detachedTask = record.detachedTask,
-        lastResult = record.lastResult,
-        lastEvent = record.lastEvent?.toPersistedRecord(),
-      ),
-    )
-  }
-
   private fun detachedRunTaskSnapshots(): List<SessionQueueTaskSnapshot> = (
     subAgentScheduler.listVisibleTasks() +
       subAgentActorTaskDriver.listTasks()
@@ -1759,105 +1633,6 @@ private class ManagedAgentSessionHandle(
     )
   }
 
-  private fun shouldRepairRestoredInterruptedRun(
-    taskSnapshot: com.opencray.core.orchestrator.SessionQueueTaskSnapshot?,
-    record: ManagedRunRecord,
-    associatedProcesses: List<ManagedProcessSnapshot>,
-  ): Boolean {
-    if (record.lastResult != null && !isInterruptedOnRestoreResult(record.lastResult)) {
-      return false
-    }
-    if (taskSnapshot == null || isTerminalLifecycle(taskSnapshot.lifecycleState)) {
-      return false
-    }
-    if (associatedProcesses.isEmpty()) {
-      return false
-    }
-    if (associatedProcesses.any { snapshot -> snapshot.status == ManagedProcessStatus.RUNNING }) {
-      return false
-    }
-    return associatedProcesses.all { snapshot -> snapshot.isTerminalAfterRestore() } &&
-      associatedProcesses.any { snapshot -> snapshot.isInterruptedOnRestore() }
-  }
-
-  private fun repairedInterruptedRestoreResult(
-    record: ManagedRunRecord,
-    associatedProcesses: List<ManagedProcessSnapshot>,
-  ): ExecutionResult {
-    val orderedProcessIds = associatedProcesses
-      .map(ManagedProcessSnapshot::processId)
-      .distinct()
-      .sorted()
-    val latestUpdateEpochMs = associatedProcesses.maxOf { snapshot ->
-      snapshot.finishedAtEpochMs ?: snapshot.updatedAtEpochMs
-    }
-    val startedAtEpochMs = record.submission.acceptedAtEpochMs
-    val finishedAtEpochMs = maxOf(startedAtEpochMs, latestUpdateEpochMs)
-    val restoreMetadata = associatedManagedProcessRestoreMetadata(associatedProcesses)
-    return ExecutionResult(
-      taskId = record.submission.taskId,
-      status = ExecutionStatus.FAILED,
-      errorCode = ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE,
-      errorMessage = buildString {
-        append("Managed process state was restored in an interrupted terminal state")
-        if (orderedProcessIds.isNotEmpty()) {
-          append(" for ")
-          append(orderedProcessIds.joinToString(", "))
-        }
-        append("; marking the run interrupted until the user decides how to continue.")
-      },
-      startedAtEpochMs = startedAtEpochMs,
-      finishedAtEpochMs = finishedAtEpochMs,
-      metadata = mapOf(
-        METADATA_RESTORED_TERMINAL_STATE to RESTORED_TERMINAL_STATE_INTERRUPTED,
-        METADATA_RESTORED_FROM_DURABLE_STORE to "true",
-        METADATA_RUN_REPAIR_SOURCE to RUN_REPAIR_SOURCE_MANAGED_PROCESS_RESTORE,
-        "managedProcessIds" to orderedProcessIds.joinToString(","),
-      ) + restoreMetadata,
-    )
-  }
-
-  private fun associatedManagedProcessRestoreMetadata(
-    associatedProcesses: List<ManagedProcessSnapshot>,
-  ): Map<String, String> {
-    val restoreMetadata = associatedProcesses
-      .asSequence()
-      .map(ManagedProcessSnapshot::metadata)
-      .firstOrNull { metadata ->
-        metadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY]
-          ?.trim()
-          ?.takeIf(String::isNotBlank) != null
-      }
-      ?: return emptyMap()
-    return buildMap {
-      restoreMetadata[MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY]
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-        ?.let { scope -> put(MANAGED_PROCESS_RESTORE_SCOPE_METADATA_KEY, scope) }
-      restoreMetadata[MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY]
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-        ?.let { processStartId ->
-          put(MANAGED_PROCESS_RESTORE_CURRENT_PROCESS_START_ID_METADATA_KEY, processStartId)
-        }
-      restoreMetadata[MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY]
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-        ?.let { runtimeControllerId ->
-          put(MANAGED_PROCESS_RESTORE_CURRENT_RUNTIME_CONTROLLER_ID_METADATA_KEY, runtimeControllerId)
-        }
-      restoreMetadata[MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY]
-        ?.trim()
-        ?.takeIf(String::isNotBlank)
-        ?.let { durableRuntimeControllerId ->
-          put(
-            MANAGED_PROCESS_RESTORE_CURRENT_DURABLE_RUNTIME_CONTROLLER_ID_METADATA_KEY,
-            durableRuntimeControllerId,
-          )
-        }
-    }
-  }
-
   private fun associatedManagedProcessIds(
     taskId: String,
     existingIds: List<String>,
@@ -1871,7 +1646,7 @@ private class ManagedAgentSessionHandle(
         .toList()
     ).distinct()
 
-  private fun associatedManagedProcesses(
+  internal fun associatedManagedProcesses(
     taskId: String,
     existingIds: List<String>,
     managedProcessesById: Map<String, ManagedProcessSnapshot>,
@@ -1912,11 +1687,11 @@ private class ManagedAgentSessionHandle(
     terminalTaskState(result)
   }
 
-  private fun isInterruptedOnRestoreResult(result: ExecutionResult?): Boolean =
+  internal fun isInterruptedOnRestoreResult(result: ExecutionResult?): Boolean =
     result?.errorCode == ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE &&
       result.metadata[METADATA_RESTORED_TERMINAL_STATE] == RESTORED_TERMINAL_STATE_INTERRUPTED
 
-  private fun isTerminalLifecycle(state: QueueTaskLifecycleState): Boolean = when (state) {
+  internal fun isTerminalLifecycle(state: QueueTaskLifecycleState): Boolean = when (state) {
     QueueTaskLifecycleState.COMPLETED,
     QueueTaskLifecycleState.FAILED,
     QueueTaskLifecycleState.CANCELLED,
@@ -2025,26 +1800,17 @@ private class ManagedAgentSessionHandle(
       else -> false
     }
 
-  private fun ManagedProcessSnapshot.isInterruptedOnRestore(): Boolean =
+  internal fun ManagedProcessSnapshot.isInterruptedOnRestore(): Boolean =
     errorCode == ERROR_MANAGED_PROCESS_INTERRUPTED_ON_RESTORE ||
       errorCode == ERROR_RESTART_REQUIRES_EXPLICIT_RETRY ||
       metadata[METADATA_RESTORED_TERMINAL_STATE] == RESTORED_TERMINAL_STATE_INTERRUPTED
 
-  private fun ManagedProcessSnapshot.isTerminalAfterRestore(): Boolean = status.isTerminal
+  internal fun ManagedProcessSnapshot.isTerminalAfterRestore(): Boolean = status.isTerminal
 
-  private fun runIdFor(task: AgentTask): String =
+  internal fun runIdFor(task: AgentTask): String =
     task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
       ?.takeIf(String::isNotBlank)
       ?: task.id
-
-  private data class ManagedRunRecord(
-    val submission: AgentRunSubmission,
-    val pendingMessageId: String? = null,
-    val managedProcessIds: List<String> = emptyList(),
-    val detachedTask: AgentTask? = null,
-    val lastEvent: OpenCrayAgentRunEvent? = null,
-    val lastResult: ExecutionResult? = null,
-  )
 
   private data class VisibleRecoveryTaskContext(
     val agentId: String,
@@ -2086,7 +1852,7 @@ private fun encodeAcknowledgedInterruptedProcessIds(processIds: Set<String>): St
     .sorted()
     .joinToString(ACKNOWLEDGED_PROCESS_ID_SEPARATOR)
 
-private fun decodeAcknowledgedInterruptedProcessIds(encoded: String): Set<String> =
+internal fun decodeAcknowledgedInterruptedProcessIds(encoded: String): Set<String> =
   encoded
     .split(ACKNOWLEDGED_PROCESS_ID_SEPARATOR)
     .map(String::trim)
