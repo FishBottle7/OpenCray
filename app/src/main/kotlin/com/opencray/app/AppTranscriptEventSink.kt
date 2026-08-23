@@ -324,7 +324,7 @@ private fun buildCommentaryReplayContent(
       ?.let { stage -> put("stage", stage) }
   }
 
-private fun buildSupplementReplayContent(
+internal fun buildSupplementReplayContent(
   json: Json,
   event: OpenCraySupplementEvent,
 ): String =

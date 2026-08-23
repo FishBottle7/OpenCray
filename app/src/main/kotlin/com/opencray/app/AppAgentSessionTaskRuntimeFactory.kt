@@ -1198,6 +1198,12 @@ internal class AppAgentSessionTaskRuntimeFactory(
         )
     }
 
+  private fun buildSupplementReplayContent(event: OpenCraySupplementEvent): String =
+    buildSupplementReplayContent(
+      json = replayJson,
+      event = event,
+    )
+
   internal fun recordSuccessfulToolInteraction(
     sessionId: String,
     event: OpenCrayToolResultEvent,
