@@ -2,6 +2,7 @@ package com.opencray.app
 
 import android.content.Context
 import android.content.pm.ApplicationInfo
+import com.opencray.app.e2b.E2BResponse
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import java.io.File

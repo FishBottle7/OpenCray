@@ -2,7 +2,6 @@ package com.opencray.app.e2b
 
 import com.opencray.app.E2BEnvdCommandTransport
 import com.opencray.app.E2BEnvdCommandTransportRequest
-import com.opencray.app.E2BSandboxActivityTracker
 import com.opencray.app.E2BSandboxCommandExecutionBackendFactory
 import com.opencray.app.E2BSandboxSessionSnapshot
 import com.opencray.app.E2BSandboxSessionStore

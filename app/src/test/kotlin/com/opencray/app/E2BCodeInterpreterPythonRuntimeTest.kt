@@ -1,5 +1,15 @@
 package com.opencray.app
 
+import com.opencray.app.e2b.E2BBinaryResponse
+import com.opencray.app.e2b.E2BCodeInterpreterPythonRuntime
+import com.opencray.app.e2b.E2BDownloadArchiveRetentionPolicy
+import com.opencray.app.e2b.E2BDownloadRequest
+import com.opencray.app.e2b.E2BRequest
+import com.opencray.app.e2b.E2BResponse
+import com.opencray.app.e2b.E2BUploadRequest
+import com.opencray.app.e2b.RemoteWorkspaceDiffManifest
+import com.opencray.app.e2b.SharedE2BSandboxActivityTracker
+import com.opencray.app.e2b.WORKSPACE_SYNC_MANIFEST_PREFIX
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.runtime.OpenCrayAttachmentArtifactMetadataKeys
