@@ -21,7 +21,7 @@ internal fun OpenCrayHostRuntime.recordRuntimeEventLocked(
   chatRuntimeEventState.append(
     sessionId = sessionId,
     event = event,
-    maxHistory = MAX_RUNTIME_EVENT_HISTORY,
+    maxHistory = OpenCrayHostRuntime.MAX_RUNTIME_EVENT_HISTORY,
   )
   if (persistToJournal) {
     runEventJournalStoreForSession(sessionId).append(event)
