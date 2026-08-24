@@ -371,7 +371,9 @@ internal class OpenCrayHostRuntime internal constructor(
         subject.decisionRecord.replayExecutionContext(),
       )
     },
-    recordApprovalResultEvent = ::recordRuntimeEventLocked,
+    recordApprovalResultEvent = { sessionId, event ->
+      recordRuntimeEventLocked(sessionId, event)
+    },
     recordSubAgentEvent = { sessionId, event ->
       subAgentReplayRecorder(sessionId, event)
       recordRuntimeEventLocked(sessionId, event)
@@ -432,7 +434,7 @@ internal class OpenCrayHostRuntime internal constructor(
   internal val liveAssistantDraftEventListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   internal val runtimeEventDeltaListeners = linkedSetOf<(Map<String, Any?>) -> Unit>()
   private val runtimeEventStreamInstanceId: String = lifecycleId(prefix = "runtime-stream")
-  private val runtimeEventDeltaSequencesBySession = linkedMapOf<String, Long>()
+  internal val runtimeEventDeltaSequencesBySession = linkedMapOf<String, Long>()
   private val onDeviceLlmWarmupController: OnDeviceLlmWarmupController =
     providedOnDeviceLlmWarmupController ?: defaultOnDeviceLlmWarmupController()
   internal val voiceMetadataBackfillInFlight = ConcurrentHashMap.newKeySet<String>()
@@ -2004,48 +2006,7 @@ internal class OpenCrayHostRuntime internal constructor(
     activeSessionId = activeSessionId,
   )
 
-  private fun recordRuntimeEventLocked(sessionId: String, event: OpenCrayAgentRunEvent) {
-    recordRuntimeEventLocked(
-      sessionId = sessionId,
-      event = event,
-      persistToJournal = true,
-    )
-  }
-
-  private fun recordRuntimeEventLocked(
-    sessionId: String,
-    event: OpenCrayAgentRunEvent,
-    persistToJournal: Boolean,
-  ) {
-    chatRuntimeEventState.append(
-      sessionId = sessionId,
-      event = event,
-      maxHistory = MAX_RUNTIME_EVENT_HISTORY,
-    )
-    if (persistToJournal) {
-      runEventJournalStoreForSession(sessionId).append(event)
-    }
-    maybeClearPromptCheckpointAfterRuntimeEventLocked(sessionId = sessionId, event = event)
-  }
-
-  private fun shouldEmitRuntimeEventDelta(event: OpenCrayAgentRunEvent): Boolean =
-    !isDebugOnlyRuntimeEvent(event) && !isInternalPromptCheckpointEvent(event)
-
-  private fun nextRuntimeEventDeltaSequenceLocked(sessionId: String): Long {
-    val next = (runtimeEventDeltaSequencesBySession[sessionId] ?: 0L) + 1L
-    runtimeEventDeltaSequencesBySession[sessionId] = next
-    return next
-  }
-
-  private fun currentRuntimeEventSequenceLocked(sessionId: String): Long =
-    runtimeEventDeltaSequencesBySession[sessionId] ?: 0L
-
-  private fun assignRuntimeEventDeltaSequence(
-    sessionId: String,
-    payload: Map<String, Any?>,
-  ): Map<String, Any?> = assignRuntimeRealtimeEnvelope(sessionId = sessionId, payload = payload)
-
-  private fun assignRuntimeRealtimeEnvelope(
+  internal fun assignRuntimeRealtimeEnvelope(
     sessionId: String,
     payload: Map<String, Any?>,
   ): Map<String, Any?> =
@@ -2055,44 +2016,6 @@ internal class OpenCrayHostRuntime internal constructor(
       streamInstanceId = runtimeEventStreamInstanceId,
       nextSequence = { synchronized(lock) { nextRuntimeEventDeltaSequenceLocked(sessionId) } },
     )
-
-  private fun buildRuntimeTaskDeltaPayload(
-    sessionId: String,
-    task: AgentTask,
-    sequence: Long,
-    event: OpenCrayAgentRunEvent? = null,
-  ): Map<String, Any?>? {
-    val visibleEvent = event?.takeIf(::shouldEmitRuntimeEventDelta)
-    val run = runtimeSession(sessionId).findRun(runIdFor(task))
-    val visibleRun = run?.takeIf(::isUserVisibleRun)
-    val displayedRuns = visibleRun?.let(::listOf).orEmpty()
-    val activeRuns = displayedRuns.filter(AgentRunSnapshot::isActive).map(::runSnapshotToMap)
-    val retainedRuns = retainedRunsForSnapshot(
-      displayedRuns,
-      isAwaitingDirectionRun = ::isAwaitingDirectionRun,
-      isInterruptedOnRestoreRun = ::isInterruptedOnRestoreRun,
-    ).map(::runSnapshotToMap)
-    val updatedAtEpochMs = maxOf(
-      visibleEvent?.emittedAtEpochMs ?: 0L,
-      visibleRun?.updatedAtEpochMs ?: 0L,
-      visibleRun?.lastEvent?.emittedAtEpochMs ?: 0L,
-    )
-    if (activeRuns.isEmpty() && retainedRuns.isEmpty() && visibleEvent == null) {
-      return null
-    }
-    return buildMap {
-      put("sessionId", sessionId)
-      put("sequence", sequence)
-      put("executionId", visibleEvent?.executionId ?: visibleRun?.executionId)
-      put("updatedAtEpochMs", updatedAtEpochMs)
-      put("runPatchMode", "merge")
-      put("events", visibleEvent?.let(::runtimeEventToMap)?.let(::listOf) ?: emptyList<Map<String, Any?>>())
-      if (visibleRun != null) {
-        put("activeRuns", activeRuns)
-        put("retainedRuns", retainedRuns)
-      }
-    }
-  }
 
   private fun successfulToolObservationsLocked(sessionId: String, task: AgentTask): List<String> {
     val runId = runIdFor(task)
@@ -2370,7 +2293,7 @@ internal class OpenCrayHostRuntime internal constructor(
   private fun isRejectedAwaitingDirectionRun(run: AgentRunSnapshot): Boolean =
     (run.lastEvent as? OpenCrayApprovalEvent)?.phase == OpenCrayApprovalPhase.REJECTED
 
-  private fun isAwaitingDirectionRun(run: AgentRunSnapshot): Boolean =
+  internal fun isAwaitingDirectionRun(run: AgentRunSnapshot): Boolean =
     isRejectedAwaitingDirectionRun(run) ||
       isUserInterruptedAwaitingDirectionRun(run) ||
       isLlmRetryPausedAwaitingResumeRun(run)
@@ -2412,7 +2335,7 @@ internal class OpenCrayHostRuntime internal constructor(
   private fun isLlmRetryPausedAwaitingResumeRun(run: AgentRunSnapshot): Boolean =
     chatRunIsLlmRetryPausedAwaitingResume(run)
 
-  private fun isInterruptedOnRestoreRun(run: AgentRunSnapshot): Boolean =
+  internal fun isInterruptedOnRestoreRun(run: AgentRunSnapshot): Boolean =
     chatRunIsInterruptedOnRestore(run)
 
   private fun requiresExplicitRetryAfterRestoreLocked(sessionId: String): Boolean =
@@ -2428,7 +2351,7 @@ internal class OpenCrayHostRuntime internal constructor(
       event.runId.startsWith(MEMORY_DEBUG_RUN_ID_PREFIX) &&
       event.taskId.startsWith(MEMORY_DEBUG_TASK_ID_PREFIX)
 
-  private fun isInternalPromptCheckpointEvent(event: OpenCrayAgentRunEvent): Boolean =
+  internal fun isInternalPromptCheckpointEvent(event: OpenCrayAgentRunEvent): Boolean =
     event is OpenCraySupplementEvent &&
       event.checkpoint == INTERNAL_PROMPT_CHECKPOINT_MARKER
 
@@ -2511,7 +2434,7 @@ internal class OpenCrayHostRuntime internal constructor(
     )
   }
 
-  private fun runtimeEventToMap(event: OpenCrayAgentRunEvent): Map<String, Any?> =
+  internal fun runtimeEventToMap(event: OpenCrayAgentRunEvent): Map<String, Any?> =
     runtimeEventToMap(
       event = event,
       hasPromptResumeCheckpointMetadata = ::hasPromptResumeCheckpointMetadata,
