@@ -67,7 +67,6 @@ import com.opencray.runtime.OpenCrayAttachmentArtifact
 import com.opencray.runtime.OpenCrayAttachmentArtifactMetadataKeys
 import com.opencray.runtime.NoOpOpenCrayAgentRuntimeEventSink
 import com.opencray.runtime.OpenCrayAssistantPhaseEvent
-import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayExecutionMetadataKeys
 import com.opencray.runtime.OpenCrayFinalAttachment
@@ -201,7 +200,7 @@ internal class OpenCrayHostRuntime internal constructor(
   private var disposed: Boolean = false
   private var runtimeObservationDisposer: (() -> Unit)? = null
   private var runtimeDiagnosticsObservationDisposer: (() -> Unit)? = null
-  private val liveAssistantDraftLock = Any()
+  internal val liveAssistantDraftLock = Any()
   private val shellGateway = HostShellGatewayImpl(this)
   private val settingsGateway = HostSettingsGatewayImpl(this)
   private val hostLocalHostGateway = HostLocalHostGatewayImpl(this)
@@ -210,7 +209,7 @@ internal class OpenCrayHostRuntime internal constructor(
   private val soulProfileResolver = SoulProfileResolver()
   private val runtimeSoulProfileSeedFactory = RuntimeSoulProfileSeedFactory()
   private val memoryBackedSoulProfileResolver = MemoryBackedSoulProfileResolver()
-  private val liveAssistantDraftsBySession =
+  internal val liveAssistantDraftsBySession =
     linkedMapOf<String, LinkedHashMap<String, LiveAssistantDraftSnapshot>>()
   internal val chatDebugProjector = ProjectionOnlyChatDebugProjector(
     personalizationLocalStore = personalizationLocalStore,
@@ -2085,63 +2084,6 @@ internal class OpenCrayHostRuntime internal constructor(
     )
   }
 
-  private fun updateAssistantDraft(
-    sessionId: String,
-    task: AgentTask,
-    text: String,
-    emittedAtEpochMs: Long,
-  ): LiveAssistantDraftSnapshot? {
-    val pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?: return null
-    val normalizedText = text.trim().takeIf(String::isNotBlank) ?: return null
-    val updatedDraft = LiveAssistantDraftSnapshot(
-      runId = runIdFor(task),
-      taskId = task.id,
-      executionId = executionIdFromMetadata(task.metadata),
-      pendingMessageId = pendingMessageId,
-      text = normalizedText,
-      updatedAtEpochMs = emittedAtEpochMs,
-    )
-    return synchronized(liveAssistantDraftLock) {
-      val sessionDrafts = liveAssistantDraftsBySession.getOrPut(sessionId) { linkedMapOf() }
-      val existing = sessionDrafts[pendingMessageId]
-      if (existing == updatedDraft) {
-        null
-      } else {
-        sessionDrafts[pendingMessageId] = updatedDraft
-        updatedDraft
-      }
-    }
-  }
-
-  internal fun clearAssistantDraftLocked(
-    sessionId: String,
-    pendingMessageId: String?,
-  ): Boolean = clearAssistantDraft(
-    sessionId = sessionId,
-    pendingMessageId = pendingMessageId,
-  )
-
-  private fun clearAssistantDraft(
-    sessionId: String,
-    pendingMessageId: String?,
-  ): Boolean {
-    val normalizedPendingMessageId = pendingMessageId
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?: return false
-    return synchronized(liveAssistantDraftLock) {
-      val sessionDrafts = liveAssistantDraftsBySession[sessionId] ?: return@synchronized false
-      val removed = sessionDrafts.remove(normalizedPendingMessageId) != null
-      if (sessionDrafts.isEmpty()) {
-        liveAssistantDraftsBySession.remove(sessionId)
-      }
-      removed
-    }
-  }
-
   internal fun runtimeActivitySnapshotLocked(sessionId: String): Map<String, Any?> {
     val runs = runtimeSession(sessionId).listRuns()
     if (runs.isNotEmpty()) {
@@ -3576,54 +3518,6 @@ internal data class AttachmentMarkdownCompatibility(
     }
     return "session=${payload["sessionId"] ?: "-"} activeRuns=${activeRuns.size} retainedRuns=${(payload["retainedRuns"] as? List<*>)?.size ?: 0} events=${(payload["events"] as? List<*>)?.size ?: 0} runs=[$runSummary]"
   }
-
-  private fun liveAssistantDraftEventPayload(
-    sessionId: String,
-    runId: String,
-    taskId: String,
-    executionId: String?,
-    pendingMessageId: String,
-    text: String,
-    updatedAtEpochMs: Long,
-    cleared: Boolean,
-  ): Map<String, Any?> = mapOf(
-    "sessionId" to sessionId,
-    "runId" to runId,
-    "taskId" to taskId,
-    "executionId" to executionId,
-    "pendingMessageId" to pendingMessageId,
-    "text" to text,
-    "updatedAtEpochMs" to updatedAtEpochMs,
-    "cleared" to cleared,
-  )
-
-  private fun assistantDraftRuntimeEvent(
-    task: AgentTask,
-    text: String,
-    emittedAtEpochMs: Long,
-  ): OpenCrayAssistantEvent = OpenCrayAssistantEvent(
-    runId = runIdFor(task),
-    taskId = task.id,
-    turn = -1,
-    text = text.trim(),
-    isFinal = false,
-    stage = AppAgentSessionTaskRuntimeFactory.PERSISTED_DRAFT_ASSISTANT_STAGE,
-    emittedAtEpochMs = emittedAtEpochMs,
-  )
-
-  private fun LiveAssistantDraftSnapshot.toLiveAssistantDraftEventPayload(
-    sessionId: String,
-    cleared: Boolean,
-  ): Map<String, Any?> = liveAssistantDraftEventPayload(
-    sessionId = sessionId,
-    runId = runId,
-    taskId = taskId,
-    executionId = executionId,
-    pendingMessageId = pendingMessageId,
-    text = text,
-    updatedAtEpochMs = updatedAtEpochMs,
-    cleared = cleared,
-  )
 
   private fun ChatAttachmentKind.toWireKind(): String = when (this) {
     ChatAttachmentKind.IMAGE -> "image"
