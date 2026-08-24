@@ -5,11 +5,8 @@ import android.os.Handler
 import android.os.Looper
 import com.opencray.app.projection.LiveAssistantDraftSnapshot
 import com.opencray.app.projection.ProjectedRuntimeChatMessage
-import com.opencray.app.projection.SubAgentActivitySnapshot
 import com.opencray.app.projection.assignRuntimeRealtimeEnvelope
-import com.opencray.app.projection.checkpointSubAgentHandles
-import com.opencray.app.projection.eventMatchesRunExecution
-import com.opencray.app.projection.executionScopedRunEvents
+import com.opencray.app.projection.displayedLastEvent
 import com.opencray.app.projection.liveAssistantDraftToMap
 import com.opencray.app.projection.liveAssistantDraftsForSnapshot
 import com.opencray.app.projection.projectedRuntimeMessagesForChat
@@ -17,7 +14,8 @@ import com.opencray.app.projection.retainedRunsForSnapshot
 import com.opencray.app.projection.runIdFor
 import com.opencray.app.projection.runtimeActivityUpdatedAtEpochMs
 import com.opencray.app.projection.runtimeEventToMap
-import com.opencray.app.projection.subAgentActivitySnapshot
+import com.opencray.app.projection.subAgentSnapshotsForActivityWithRegistry
+import com.opencray.app.projection.subAgentSnapshotsFromDurableSources
 import com.opencray.app.projection.subAgentSnapshotToMap
 import com.opencray.core.contracts.AgentTaskState
 import com.opencray.core.contracts.ExecutionResult
@@ -38,7 +36,6 @@ import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayFinalAttachment
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
-import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME
 import com.opencray.runtime.memory.MemoryOperator
@@ -48,7 +45,6 @@ import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessRestoreMode
 import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
-import com.opencray.runtime.subagent.SubAgentExecutionState
 import java.nio.file.Path
 import java.util.Timer
 import java.util.TimerTask
@@ -621,20 +617,33 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   }
 
   private fun runtimeProjectionForSession(sessionId: String): ProjectionRuntimeSnapshot {
+    val sessionJournalEvents = sessionJournalRuntimeEvents(sessionId)
     val runs = loadRunSnapshots(sessionId).map { run ->
-      run.copy(lastEvent = displayedLastEvent(run, sessionId))
+      run.copy(
+        lastEvent = displayedLastEvent(
+          run = run,
+          recentEvents = sessionJournalEvents.filterNot(::isInternalPromptCheckpointEvent),
+          isInternalCheckpointEvent = ::isInternalPromptCheckpointEvent,
+        ),
+      )
     }
     val visibleRuns = userVisibleRuns(runs)
     val recentEvents = userVisibleRuntimeEvents(
       runs = runs,
-      events = sessionJournalRuntimeEvents(sessionId),
+      events = sessionJournalEvents,
     )
       .filterNot(::isInternalPromptCheckpointEvent)
       .filterNot(::isDebugOnlyRuntimeEvent)
-    val subAgentSnapshots = subAgentSnapshotsForActivity(
+    val subAgentSnapshots = subAgentSnapshotsForActivityWithRegistry(
       sessionId = sessionId,
       displayedRuns = visibleRuns,
       recentEvents = recentEvents,
+      registrySnapshots = subAgentSnapshotsFromDurableSources(
+        sessionId = sessionId,
+        subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+        subAgentLinkStoreFactory = subAgentSessionLinkStoreFactory,
+        promptCheckpointStoreFor = promptCheckpointStoreFactory::forChatSession,
+      ),
     )
     val liveAssistantDrafts = liveAssistantDraftsForSnapshot(
       sessionId = sessionId,
@@ -845,30 +854,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     return null
   }
 
-  private fun displayedLastEvent(
-    run: AgentRunSnapshot,
-    sessionId: String,
-  ): OpenCrayAgentRunEvent? {
-    val runEvents = executionScopedRunEvents(
-      run = run,
-      recentEvents = sessionJournalRuntimeEvents(sessionId),
-    ).filterNot(::isInternalPromptCheckpointEvent)
-    val latest = runEvents.lastOrNull() ?: return run.lastEvent?.takeIf { event ->
-      !isInternalPromptCheckpointEvent(event) &&
-        eventMatchesRunExecution(run = run, event = event)
-    }
-    if (latest is OpenCrayApprovalEvent && latest.phase != OpenCrayApprovalPhase.REQUIRED) {
-      val previousMeaningful = runEvents
-        .dropLast(1)
-        .asReversed()
-        .firstOrNull { event ->
-          event !is OpenCrayApprovalEvent || event.phase == OpenCrayApprovalPhase.REQUIRED
-        }
-      return previousMeaningful ?: latest
-    }
-    return latest
-  }
-
   private fun sessionJournalRuntimeEvents(sessionId: String): List<OpenCrayAgentRunEvent> =
     dedupeRuntimeEventsPreservingOrder(
       runEventJournalStoreFactory.forChatSession(sessionId).listRuntimeEvents(),
@@ -907,204 +892,6 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
 
   private fun isUserVisibleRun(run: AgentRunSnapshot): Boolean =
     run.lifecycleDiagnostics.submissionSource != RunSubmissionSources.RUNTIME_SERVICE_SUBAGENT_RECOVERY
-
-  private fun subAgentSnapshotsForActivity(
-    sessionId: String,
-    displayedRuns: List<AgentRunSnapshot>,
-    recentEvents: List<OpenCrayAgentRunEvent>,
-  ): List<SubAgentActivitySnapshot> {
-    val registrySnapshots = subAgentSnapshotsFromDurableSources(sessionId)
-    val visibleRunIds = displayedRuns
-      .mapTo(linkedSetOf(), AgentRunSnapshot::runId)
-      .ifEmpty {
-        recentEvents.mapNotNullTo(linkedSetOf()) { event ->
-          event.runId.trim().takeIf(String::isNotBlank)
-        }
-      }
-      .ifEmpty {
-        registrySnapshots.mapNotNullTo(linkedSetOf()) { snapshot ->
-          snapshot.parentRunId.trim().takeIf(String::isNotBlank)
-        }
-      }
-    if (visibleRunIds.isEmpty()) {
-      return emptyList()
-    }
-    val eventSnapshotsByKey = linkedMapOf<String, SubAgentActivitySnapshot>()
-    val grouped = linkedMapOf<String, SubAgentActivityAccumulator>()
-    recentEvents.forEach { event ->
-      val subAgentEvent = event as? OpenCraySubAgentEvent ?: return@forEach
-      if (subAgentEvent.runId !in visibleRunIds) {
-        return@forEach
-      }
-      val key = subAgentRegistryKey(subAgentEvent)
-      val existing = grouped[key]
-      grouped[key] = if (existing == null) {
-        SubAgentActivityAccumulator(
-          firstEvent = subAgentEvent,
-          latestEvent = subAgentEvent,
-          eventCount = 1,
-        )
-      } else {
-        existing.copy(
-          latestEvent = subAgentEvent,
-          eventCount = existing.eventCount + 1,
-        )
-      }
-    }
-    grouped.values.forEach { accumulator ->
-      val firstEvent = accumulator.firstEvent
-      val latestEvent = accumulator.latestEvent
-      val snapshot = SubAgentActivitySnapshot(
-        parentRunId = latestEvent.runId,
-        parentTaskId = latestEvent.taskId,
-        agentId = latestEvent.agentId,
-        childSessionId = null,
-        childRunId = latestEvent.childRunId,
-        childTaskId = latestEvent.childTaskId,
-        label = latestEvent.label,
-        subagentType = latestEvent.subagentType,
-        contextMode = latestEvent.contextMode,
-        depth = latestEvent.depth,
-        phase = latestEvent.phase.name.lowercase(),
-        status = latestEvent.executionState?.wireValue,
-        executionState = latestEvent.executionState?.wireValue,
-        continuationKind = latestEvent.continuationKind?.wireValue,
-        resumable = latestEvent.resumable,
-        requiresUserAction = latestEvent.requiresUserAction,
-        isHighRisk = latestEvent.isHighRisk,
-        closed = latestEvent.closed,
-        summary = latestEvent.summary,
-        startedAtEpochMs = firstEvent.emittedAtEpochMs,
-        updatedAtEpochMs = latestEvent.emittedAtEpochMs,
-        eventCount = accumulator.eventCount,
-        hasActiveExecution = false,
-        mailboxMessageCount = 0,
-        mailboxPendingMessageCount = 0,
-        mailboxLastDeliveredMessageId = null,
-        hasPendingApprovalResume = false,
-        pendingApprovalToolName = null,
-        pendingApprovalIsHighRisk = false,
-        pendingApprovalChildRunId = null,
-        pendingApprovalChildTaskId = null,
-        liveContext = latestEvent.liveContext?.toMap(),
-      )
-      eventSnapshotsByKey[subAgentRegistryKey(snapshot)] = snapshot
-    }
-    registrySnapshots
-      .filter { snapshot -> snapshot.parentRunId in visibleRunIds }
-      .forEach { snapshot ->
-        val key = subAgentRegistryKey(snapshot)
-        val existing = eventSnapshotsByKey[key]
-        eventSnapshotsByKey[key] = if (existing == null) {
-          snapshot
-        } else {
-          snapshot.copy(
-            startedAtEpochMs = minOf(existing.startedAtEpochMs, snapshot.startedAtEpochMs),
-            updatedAtEpochMs = maxOf(existing.updatedAtEpochMs, snapshot.updatedAtEpochMs),
-            eventCount = maxOf(existing.eventCount, snapshot.eventCount),
-            closed = existing.closed || snapshot.closed,
-            hasActiveExecution = snapshot.hasActiveExecution,
-            mailboxMessageCount = snapshot.mailboxMessageCount,
-            mailboxPendingMessageCount = snapshot.mailboxPendingMessageCount,
-            mailboxLastDeliveredMessageId = snapshot.mailboxLastDeliveredMessageId,
-            hasPendingApprovalResume = snapshot.hasPendingApprovalResume,
-            pendingApprovalToolName = snapshot.pendingApprovalToolName,
-            pendingApprovalIsHighRisk = snapshot.pendingApprovalIsHighRisk,
-            pendingApprovalChildRunId = snapshot.pendingApprovalChildRunId,
-            pendingApprovalChildTaskId = snapshot.pendingApprovalChildTaskId,
-            liveContext = snapshot.liveContext ?: existing.liveContext,
-            contextModeSource = snapshot.contextModeSource ?: existing.contextModeSource,
-          )
-        }
-      }
-    return eventSnapshotsByKey.values.toList()
-  }
-
-  private fun subAgentRegistryKey(
-    event: OpenCraySubAgentEvent,
-  ): String = listOf(
-    event.runId,
-    event.agentId?.trim()?.takeIf(String::isNotBlank)
-      ?: event.childRunId.trim().takeIf(String::isNotBlank)
-      ?: event.childTaskId.trim().takeIf(String::isNotBlank)
-      ?: event.label.trim(),
-  ).joinToString(separator = "|")
-
-  private fun subAgentRegistryKey(
-    snapshot: SubAgentActivitySnapshot,
-  ): String = listOf(
-    snapshot.parentRunId,
-    snapshot.agentId?.trim()?.takeIf(String::isNotBlank)
-      ?: snapshot.childRunId.trim().takeIf(String::isNotBlank)
-      ?: snapshot.childTaskId.trim().takeIf(String::isNotBlank)
-      ?: snapshot.label.trim(),
-  ).joinToString(separator = "|")
-
-  private fun subAgentSnapshotsFromDurableSources(
-    sessionId: String,
-  ): List<SubAgentActivitySnapshot> {
-    val latestByKey = linkedMapOf<String, DurableSubAgentSnapshot>()
-    fun mergeSnapshot(
-      snapshot: SubAgentActivitySnapshot,
-      sourcePriority: Int,
-    ) {
-      val key = subAgentRegistryKey(snapshot)
-      val existing = latestByKey[key]
-      if (
-        existing == null ||
-        snapshot.updatedAtEpochMs > existing.snapshot.updatedAtEpochMs ||
-        (
-          snapshot.updatedAtEpochMs == existing.snapshot.updatedAtEpochMs &&
-            sourcePriority > existing.sourcePriority
-          )
-      ) {
-        latestByKey[key] = DurableSubAgentSnapshot(
-          snapshot = snapshot,
-          sourcePriority = sourcePriority,
-        )
-      }
-    }
-    val handleStore = subAgentHandleStoreFactory.forChatSession(sessionId)
-    mergeSubAgentHandlesByLatestState(
-      liveHandles = handleStore.list(),
-      closedHandles = handleStore.listClosed(),
-    ).forEach { entry ->
-      mergeSnapshot(
-        snapshot = subAgentActivitySnapshot(
-          handle = entry.handle,
-          hasActiveExecution = entry.handle.snapshot.state == SubAgentExecutionState.RUNNING ||
-            entry.handle.snapshot.state == SubAgentExecutionState.BACKGROUND_RUNNING,
-          closed = entry.closed,
-        ),
-        sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_HANDLE,
-      )
-    }
-    subAgentSessionLinkStoreFactory.forChatSession(sessionId)
-      .list()
-      .forEach { link ->
-        mergeSnapshot(
-          snapshot = subAgentActivitySnapshot(link),
-          sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_LINK,
-        )
-      }
-    promptCheckpointStoreFactory.forChatSession(sessionId)
-      .list()
-      .asReversed()
-      .forEach { checkpoint ->
-        checkpointSubAgentHandles(checkpoint).forEach { handle ->
-          mergeSnapshot(
-            snapshot = subAgentActivitySnapshot(
-              handle = handle,
-              hasActiveExecution = handle.snapshot.state == SubAgentExecutionState.RUNNING ||
-                handle.snapshot.state == SubAgentExecutionState.BACKGROUND_RUNNING,
-              closed = false,
-            ),
-            sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_CHECKPOINT,
-          )
-        }
-      }
-    return latestByKey.values.map(DurableSubAgentSnapshot::snapshot)
-  }
 
   private fun latestRunFor(runs: List<AgentRunSnapshot>): AgentRunSnapshot? =
     runs.maxWithOrNull(
@@ -1652,21 +1439,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
     val snapshot: Map<String, Any?>,
   )
 
-  private data class SubAgentActivityAccumulator(
-    val firstEvent: OpenCraySubAgentEvent,
-    val latestEvent: OpenCraySubAgentEvent,
-    val eventCount: Int,
-  )
-
-  private data class DurableSubAgentSnapshot(
-    val snapshot: SubAgentActivitySnapshot,
-    val sourcePriority: Int,
-  )
-
   private companion object {
-    private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_CHECKPOINT: Int = 1
-    private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_LINK: Int = 2
-    private const val DURABLE_SUBAGENT_SOURCE_PRIORITY_HANDLE: Int = 3
     private const val MEMORY_DEBUG_RUN_ID_PREFIX: String = "memory-debug-run"
     private const val MEMORY_DEBUG_TASK_ID_PREFIX: String = "memory-debug-task"
     private const val INTERNAL_PROMPT_CHECKPOINT_MARKER: String = "internal_prompt_checkpoint"

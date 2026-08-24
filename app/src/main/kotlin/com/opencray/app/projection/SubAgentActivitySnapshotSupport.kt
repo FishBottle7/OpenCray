@@ -4,7 +4,9 @@ import com.opencray.app.AgentRunSnapshot
 import com.opencray.app.OpenCrayRuntimeSessionAccess
 import com.opencray.app.PersistedPromptCheckpoint
 import com.opencray.app.PromptCheckpointStore
+import com.opencray.app.SubAgentHandleStoreFactory
 import com.opencray.app.SubAgentSessionLinkStoreFactory
+import com.opencray.app.mergeSubAgentHandlesByLatestState
 import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCraySubAgentEvent
 import com.opencray.runtime.OpenCraySubAgentPhase
@@ -72,13 +74,24 @@ internal fun subAgentSnapshotsForActivity(
   sessionAccessor: (String) -> OpenCrayRuntimeSessionAccess,
   subAgentLinkStoreFactory: SubAgentSessionLinkStoreFactory,
   promptCheckpointStoreFor: (String) -> PromptCheckpointStore,
-): List<SubAgentActivitySnapshot> {
-  val registrySnapshots = subAgentSnapshotsFromDurableSources(
+): List<SubAgentActivitySnapshot> = subAgentSnapshotsForActivityWithRegistry(
+  sessionId = sessionId,
+  displayedRuns = displayedRuns,
+  recentEvents = recentEvents,
+  registrySnapshots = subAgentSnapshotsFromDurableSources(
     sessionId = sessionId,
     sessionAccessor = sessionAccessor,
     subAgentLinkStoreFactory = subAgentLinkStoreFactory,
     promptCheckpointStoreFor = promptCheckpointStoreFor,
-  )
+  ),
+)
+
+internal fun subAgentSnapshotsForActivityWithRegistry(
+  sessionId: String,
+  displayedRuns: List<AgentRunSnapshot>,
+  recentEvents: List<OpenCrayAgentRunEvent>,
+  registrySnapshots: List<SubAgentActivitySnapshot>,
+): List<SubAgentActivitySnapshot> {
   val visibleRunIds = displayedRuns
     .mapTo(linkedSetOf(), AgentRunSnapshot::runId)
     .ifEmpty {
@@ -235,62 +248,87 @@ internal fun <T> Map<String, T>.aliasSubAgentRegistryKey(
   keys: List<String>,
 ): String? = keys.firstOrNull(::containsKey)
 
+private data class DurableSubAgentContribution(
+  val snapshot: SubAgentActivitySnapshot,
+  val sourcePriority: Int,
+)
+
 internal fun subAgentSnapshotsFromDurableSources(
   sessionId: String,
   sessionAccessor: (String) -> OpenCrayRuntimeSessionAccess,
   subAgentLinkStoreFactory: SubAgentSessionLinkStoreFactory,
   promptCheckpointStoreFor: (String) -> PromptCheckpointStore,
 ): List<SubAgentActivitySnapshot> {
-  val latestByKey = linkedMapOf<String, DurableSubAgentSnapshot>()
-  fun mergeSnapshot(
-    snapshot: SubAgentActivitySnapshot,
-    sourcePriority: Int,
-  ) {
-    val keys = subAgentRegistryKeys(snapshot)
-    val key = latestByKey.aliasSubAgentRegistryKey(keys)
-      ?: keys.firstOrNull()
-      ?: return
-    val existing = latestByKey[key]
-    if (
-      existing == null ||
-      snapshot.updatedAtEpochMs > existing.snapshot.updatedAtEpochMs ||
-      (
-        snapshot.updatedAtEpochMs == existing.snapshot.updatedAtEpochMs &&
-          sourcePriority > existing.sourcePriority
-        )
-    ) {
-      latestByKey[key] = DurableSubAgentSnapshot(
-        snapshot = snapshot,
-        sourcePriority = sourcePriority,
-      )
-    }
-  }
   val session = sessionAccessor(sessionId)
   val closedHandleKeys = session.listClosedSubAgentHandles()
     .asSequence()
     .map { handle -> handle.parentRunId to handle.agentId }
     .toSet()
-  session
-    .listSubAgentHandles()
-    .forEach { handle ->
-      mergeSnapshot(
-        snapshot = subAgentActivitySnapshot(
-          handle = handle,
-          hasActiveExecution = session.hasActiveSubAgentExecution(
-            agentId = handle.agentId,
-            parentRunId = handle.parentRunId,
+  return mergeDurableSubAgentSnapshots(
+    contributions = session
+      .listSubAgentHandles()
+      .map { handle ->
+        DurableSubAgentContribution(
+          snapshot = subAgentActivitySnapshot(
+            handle = handle,
+            hasActiveExecution = session.hasActiveSubAgentExecution(
+              agentId = handle.agentId,
+              parentRunId = handle.parentRunId,
+            ),
+            closed = (handle.parentRunId to handle.agentId) in closedHandleKeys,
           ),
-          closed = (handle.parentRunId to handle.agentId) in closedHandleKeys,
+          sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_HANDLE,
+        )
+      } + durableSubAgentLinkAndCheckpointContributions(
+        sessionId = sessionId,
+        subAgentLinkStoreFactory = subAgentLinkStoreFactory,
+        promptCheckpointStoreFor = promptCheckpointStoreFor,
+      ),
+  )
+}
+
+internal fun subAgentSnapshotsFromDurableSources(
+  sessionId: String,
+  subAgentHandleStoreFactory: SubAgentHandleStoreFactory,
+  subAgentLinkStoreFactory: SubAgentSessionLinkStoreFactory,
+  promptCheckpointStoreFor: (String) -> PromptCheckpointStore,
+): List<SubAgentActivitySnapshot> {
+  val handleStore = subAgentHandleStoreFactory.forChatSession(sessionId)
+  return mergeDurableSubAgentSnapshots(
+    contributions = mergeSubAgentHandlesByLatestState(
+      liveHandles = handleStore.list(),
+      closedHandles = handleStore.listClosed(),
+    ).map { entry ->
+      DurableSubAgentContribution(
+        snapshot = subAgentActivitySnapshot(
+          handle = entry.handle,
+          hasActiveExecution = entry.handle.snapshot.state == SubAgentExecutionState.RUNNING ||
+            entry.handle.snapshot.state == SubAgentExecutionState.BACKGROUND_RUNNING,
+          closed = entry.closed,
         ),
-        sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_HANDLE,
-      )
-    }
+          sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_HANDLE,
+        )
+      } + durableSubAgentLinkAndCheckpointContributions(
+        sessionId = sessionId,
+        subAgentLinkStoreFactory = subAgentLinkStoreFactory,
+        promptCheckpointStoreFor = promptCheckpointStoreFor,
+      ),
+  )
+}
+
+private fun durableSubAgentLinkAndCheckpointContributions(
+  sessionId: String,
+  subAgentLinkStoreFactory: SubAgentSessionLinkStoreFactory,
+  promptCheckpointStoreFor: (String) -> PromptCheckpointStore,
+): List<DurableSubAgentContribution> = buildList {
   subAgentLinkStoreFactory.forChatSession(sessionId)
     .list()
     .forEach { link ->
-      mergeSnapshot(
-        snapshot = subAgentActivitySnapshot(link),
-        sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_LINK,
+      add(
+        DurableSubAgentContribution(
+          snapshot = subAgentActivitySnapshot(link),
+          sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_LINK,
+        ),
       )
     }
   promptCheckpointStoreFor(sessionId)
@@ -298,16 +336,44 @@ internal fun subAgentSnapshotsFromDurableSources(
     .asReversed()
     .forEach { checkpoint ->
       checkpointSubAgentHandles(checkpoint).forEach { handle ->
-        mergeSnapshot(
-          snapshot = subAgentActivitySnapshot(
-            handle = handle,
-            hasActiveExecution = false,
-            closed = false,
+        add(
+          DurableSubAgentContribution(
+            snapshot = subAgentActivitySnapshot(
+              handle = handle,
+              hasActiveExecution = false,
+              closed = false,
+            ),
+            sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_CHECKPOINT,
           ),
-          sourcePriority = DURABLE_SUBAGENT_SOURCE_PRIORITY_CHECKPOINT,
         )
       }
     }
+}
+
+private fun mergeDurableSubAgentSnapshots(
+  contributions: List<DurableSubAgentContribution>,
+): List<SubAgentActivitySnapshot> {
+  val latestByKey = linkedMapOf<String, DurableSubAgentSnapshot>()
+  contributions.forEach { contribution ->
+    val keys = subAgentRegistryKeys(contribution.snapshot)
+    val key = latestByKey.aliasSubAgentRegistryKey(keys)
+      ?: keys.firstOrNull()
+      ?: return@forEach
+    val existing = latestByKey[key]
+    if (
+      existing == null ||
+      contribution.snapshot.updatedAtEpochMs > existing.snapshot.updatedAtEpochMs ||
+      (
+        contribution.snapshot.updatedAtEpochMs == existing.snapshot.updatedAtEpochMs &&
+          contribution.sourcePriority > existing.sourcePriority
+        )
+    ) {
+      latestByKey[key] = DurableSubAgentSnapshot(
+        snapshot = contribution.snapshot,
+        sourcePriority = contribution.sourcePriority,
+      )
+    }
+  }
   return latestByKey.values.map(DurableSubAgentSnapshot::snapshot)
 }
 
