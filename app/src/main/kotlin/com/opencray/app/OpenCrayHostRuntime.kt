@@ -109,7 +109,6 @@ import com.opencray.runtime.soul.MemoryBackedSoulProfileResolver
 import com.opencray.runtime.soul.RuntimeSoulProfileSeedFactory
 import com.opencray.runtime.soul.SoulProfileResolver
 import java.io.File
-import java.nio.file.Files
 import java.nio.file.Path
 import java.util.ArrayDeque
 import java.util.Locale
@@ -154,7 +153,7 @@ internal class OpenCrayHostRuntime internal constructor(
   internal var mcpSettingsFacade: McpSettingsFacade,
   internal var safetySettingsFacade: SafetySettingsFacade,
   internal var skillsFacade: SkillsFacade,
-  private val workspaceRootProvider: (() -> Path)?,
+  internal val workspaceRootProvider: (() -> Path)?,
   private val workspaceEntryOpener: ((Path, String) -> Unit)? = null,
   private val externalUriOpener: ((String) -> Unit)? = null,
   private val approvedReadRootsProvider: () -> ApprovedReadRootsSnapshot = {
@@ -166,9 +165,9 @@ internal class OpenCrayHostRuntime internal constructor(
   private val workspaceSnapshotProvider: () -> Map<String, Any?>,
   internal val strongBackgroundSettingsAccess: StrongBackgroundSettingsAccess =
     NoOpStrongBackgroundSettingsAccess,
-  private val voiceMetadataAnalyzer: AppAgentWorkspaceVoiceMetadataAnalyzer,
-  private val voiceMetadataBackfillExecutor: Executor,
-  private val voiceMetadataCacheStore: AppAgentWorkspaceVoiceMetadataCacheStore? = null,
+  internal val voiceMetadataAnalyzer: AppAgentWorkspaceVoiceMetadataAnalyzer,
+  internal val voiceMetadataBackfillExecutor: Executor,
+  internal val voiceMetadataCacheStore: AppAgentWorkspaceVoiceMetadataCacheStore? = null,
   internal val runtimeHostAccess: OpenCrayRuntimeHostAccess,
   private val subAgentSessionLinkStoreFactory: SubAgentSessionLinkStoreFactory =
     inMemorySubAgentSessionLinkStoreFactory(),
@@ -447,7 +446,7 @@ internal class OpenCrayHostRuntime internal constructor(
   private val runtimeEventDeltaSequencesBySession = linkedMapOf<String, Long>()
   private val onDeviceLlmWarmupController: OnDeviceLlmWarmupController =
     providedOnDeviceLlmWarmupController ?: defaultOnDeviceLlmWarmupController()
-  private val voiceMetadataBackfillInFlight = ConcurrentHashMap.newKeySet<String>()
+  internal val voiceMetadataBackfillInFlight = ConcurrentHashMap.newKeySet<String>()
 
   init {
     runtimeObservationDisposer = runtimeHostAccess.observe(
@@ -3878,71 +3877,6 @@ internal class OpenCrayHostRuntime internal constructor(
     }
   }
 
-  private fun scheduleVoiceMetadataBackfill(
-    attachments: List<ChatAttachmentEntry>,
-  ): Boolean {
-    val voiceAttachments = attachments.filter { attachment ->
-      attachment.kind == ChatAttachmentKind.VOICE
-    }
-    if (voiceAttachments.isEmpty()) {
-      return false
-    }
-    primeVoiceMetadataCache(voiceAttachments)
-    var mergedSynchronously = false
-    val cacheStore = voiceMetadataCacheStore
-    if (cacheStore != null) {
-      val missingMetadataContentHashes = voiceAttachments
-        .filter(::hasMissingVoiceMetadata)
-        .mapNotNull { attachment -> normalizedContentSha256(attachment.contentSha256) }
-        .distinct()
-      missingMetadataContentHashes.forEach { contentSha256 ->
-        val cachedMetadata = cacheStore.get(contentSha256) ?: return@forEach
-        if (chatSessionStore.mergeVoiceAttachmentMetadata(contentSha256, cachedMetadata)) {
-          mergedSynchronously = true
-        }
-      }
-      if (mergedSynchronously) {
-        emitChatSnapshot()
-      }
-    }
-    voiceAttachments
-      .filter(::requiresVoiceMetadataAnalysis)
-      .mapNotNull(::voiceMetadataBackfillCandidateFor)
-      .distinctBy(VoiceMetadataBackfillCandidate::contentSha256)
-      .forEach { candidate ->
-        if (cacheStore?.get(candidate.contentSha256)?.let(::hasAnalyzedVoiceMetadata) == true) {
-          return@forEach
-        }
-        if (!voiceMetadataBackfillInFlight.add(candidate.contentSha256)) {
-          return@forEach
-        }
-        voiceMetadataBackfillExecutor.execute {
-          try {
-            resolveVoiceMetadataBackfill(candidate)
-          } finally {
-            voiceMetadataBackfillInFlight.remove(candidate.contentSha256)
-          }
-        }
-      }
-    return mergedSynchronously
-  }
-
-  private fun primeVoiceMetadataCache(attachments: List<ChatAttachmentEntry>) {
-    val cacheStore = voiceMetadataCacheStore ?: return
-    attachments.forEach { attachment ->
-      val contentSha256 = normalizedContentSha256(attachment.contentSha256) ?: return@forEach
-      val metadata = AppAgentWorkspaceVoiceMetadata(
-        durationMs = attachment.durationMs,
-        waveformBars = attachment.waveformBars,
-        transcriptText = attachment.transcriptText,
-      ).normalized()
-      if (!metadata.isMeaningful()) {
-        return@forEach
-      }
-      cacheStore.put(contentSha256, metadata)
-    }
-  }
-
   private fun chatDraftAttachmentMap(
     attachment: ImportedChatAttachmentDraft,
   ): Map<String, Any?> = buildMap {
@@ -3952,74 +3886,6 @@ internal class OpenCrayHostRuntime internal constructor(
     attachment.mimeType?.let { mimeType -> put("mimeType", mimeType) }
     attachment.sizeBytes?.let { sizeBytes -> put("sizeBytes", sizeBytes) }
   }
-
-  private fun hasMissingVoiceMetadata(attachment: ChatAttachmentEntry): Boolean =
-    attachment.kind == ChatAttachmentKind.VOICE &&
-      (
-        attachment.durationMs == null ||
-          attachment.waveformBars.isEmpty() ||
-          attachment.transcriptText.isNullOrBlank()
-        )
-
-  private fun requiresVoiceMetadataAnalysis(attachment: ChatAttachmentEntry): Boolean =
-    attachment.kind == ChatAttachmentKind.VOICE &&
-      (
-        attachment.durationMs == null ||
-          attachment.waveformBars.isEmpty()
-        )
-
-  private fun voiceMetadataBackfillCandidateFor(
-    attachment: ChatAttachmentEntry,
-  ): VoiceMetadataBackfillCandidate? {
-    val contentSha256 = normalizedContentSha256(attachment.contentSha256) ?: return null
-    val localPath = attachment.localPath.trim().takeIf(String::isNotBlank) ?: return null
-    return VoiceMetadataBackfillCandidate(
-      contentSha256 = contentSha256,
-      localPath = localPath,
-      mimeType = attachment.mimeType?.trim()?.takeIf(String::isNotBlank),
-    )
-  }
-
-  private fun resolveVoiceMetadataBackfill(candidate: VoiceMetadataBackfillCandidate) {
-    val workspaceRoot = workspaceRootProvider?.invoke() ?: return
-    val normalizedWorkspaceRoot = workspaceRoot.toAbsolutePath().normalize()
-    val resolvedPath = normalizedWorkspaceRoot
-      .resolve(candidate.localPath)
-      .normalize()
-    if (!resolvedPath.startsWith(normalizedWorkspaceRoot) || !Files.isRegularFile(resolvedPath)) {
-      return
-    }
-    val metadata = voiceMetadataAnalyzer.analyze(
-      path = resolvedPath,
-      mimeType = candidate.mimeType,
-    )?.normalized() ?: return
-    if (!metadata.isMeaningful()) {
-      return
-    }
-    voiceMetadataCacheStore?.put(candidate.contentSha256, metadata)
-    if (chatSessionStore.mergeVoiceAttachmentMetadata(candidate.contentSha256, metadata)) {
-      emitChatSnapshot()
-    }
-  }
-
-  private fun normalizedContentSha256(value: String?): String? =
-    value
-      ?.trim()
-      ?.lowercase(Locale.US)
-      ?.takeIf(String::isNotBlank)
-
-  private fun AppAgentWorkspaceVoiceMetadata.normalized(): AppAgentWorkspaceVoiceMetadata =
-    AppAgentWorkspaceVoiceMetadata(
-      durationMs = durationMs?.takeIf { value -> value >= 0L },
-      waveformBars = waveformBars.map { value -> value.coerceIn(0, 100) },
-      transcriptText = transcriptText?.trim()?.takeIf(String::isNotBlank),
-    )
-
-  private fun AppAgentWorkspaceVoiceMetadata.isMeaningful(): Boolean =
-    durationMs != null || waveformBars.isNotEmpty() || !transcriptText.isNullOrBlank()
-
-  private fun hasAnalyzedVoiceMetadata(metadata: AppAgentWorkspaceVoiceMetadata): Boolean =
-    metadata.durationMs != null && metadata.waveformBars.isNotEmpty()
 
   private fun resolveFinalAttachmentArtifactsLocked(
     sessionId: String,
@@ -4911,12 +4777,6 @@ private data class CompletedTurnForMemoryIngestion(
   val assistantOutput: String,
   val attachments: List<ChatAttachmentEntry>,
   val toolObservations: List<String>,
-)
-
-private data class VoiceMetadataBackfillCandidate(
-  val contentSha256: String,
-  val localPath: String,
-  val mimeType: String?,
 )
 
 internal data class RuntimePendingApprovalNotificationTarget(
