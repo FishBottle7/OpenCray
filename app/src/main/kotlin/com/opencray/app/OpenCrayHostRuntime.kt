@@ -71,14 +71,11 @@ import com.opencray.runtime.OpenCrayAssistantEvent
 import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayExecutionMetadataKeys
 import com.opencray.runtime.OpenCrayFinalAttachment
-import com.opencray.runtime.OpenCrayLifecycleEvent
 import com.opencray.runtime.OpenCrayMemoryRetrievalEvent
 import com.opencray.runtime.OpenCrayMemoryWriteEvent
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import com.opencray.runtime.OpenCrayPromptResumeState
-import com.opencray.runtime.OpenCrayRunLifecyclePhase
 import com.opencray.runtime.OpenCraySubAgentEvent
-import com.opencray.runtime.OpenCraySubAgentPhase
 import com.opencray.runtime.OpenCraySupplementEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.OpenCrayToolResultEvent
@@ -1749,7 +1746,7 @@ internal class OpenCrayHostRuntime internal constructor(
   internal fun runEventJournalStoreForSession(sessionId: String): RunEventJournalStore =
     runtimeHostAccess.runEventJournalStore(sessionId)
 
-  private fun promptCheckpointStoreForSession(sessionId: String): PromptCheckpointStore =
+  internal fun promptCheckpointStoreForSession(sessionId: String): PromptCheckpointStore =
     runtimeHostAccess.promptCheckpointStore(sessionId)
 
   private fun supplementTargetRunLocked(sessionId: String): AgentRunSnapshot? =
@@ -1979,119 +1976,6 @@ internal class OpenCrayHostRuntime internal constructor(
     return approval
   }
 
-  private fun maybePersistGeneralResumeCheckpointLocked(
-    sessionId: String,
-    task: AgentTask,
-    event: OpenCrayAgentRunEvent,
-  ) {
-    val eventRunId: String
-    val eventTaskId: String
-    val eventToolName: String?
-    val eventMetadata: Map<String, String>
-    val emittedAtEpochMs: Long
-    val checkpointKind: PromptCheckpointKind
-    when (event) {
-      is OpenCrayToolResultEvent -> {
-        eventRunId = event.runId
-        eventTaskId = event.taskId
-        eventToolName = event.result.toolName
-        eventMetadata = event.result.metadata
-        emittedAtEpochMs = event.emittedAtEpochMs
-        checkpointKind = promptCheckpointKindForRuntimeEvent(
-          event = event,
-          metadata = eventMetadata,
-        ) ?: return
-      }
-
-      is OpenCraySupplementEvent -> {
-        eventRunId = event.runId
-        eventTaskId = event.taskId
-        eventToolName = null
-        eventMetadata = event.metadata
-        emittedAtEpochMs = event.emittedAtEpochMs
-        checkpointKind = promptCheckpointKindForRuntimeEvent(
-          event = event,
-          metadata = eventMetadata,
-        ) ?: return
-      }
-
-      is OpenCrayAssistantPhaseEvent -> {
-        eventRunId = event.runId
-        eventTaskId = event.taskId
-        eventToolName = null
-        eventMetadata = event.metadata
-        emittedAtEpochMs = event.emittedAtEpochMs
-        checkpointKind = promptCheckpointKindForRuntimeEvent(
-          event = event,
-          metadata = eventMetadata,
-        ) ?: return
-      }
-
-      else -> return
-    }
-    val promptResumeState = OpenCrayPromptResumeMetadata.decodeFromMetadata(
-      metadata = eventMetadata,
-      json = replayJson,
-    ) ?: return
-    val promptCheckpointBoundary = OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(eventMetadata)
-    persistPromptCheckpointLocked(
-      sessionId = sessionId,
-      checkpoint = PersistedPromptCheckpoint(
-        sessionId = sessionId,
-        runId = eventRunId,
-        taskId = eventTaskId,
-        checkpointId = "checkpoint-$emittedAtEpochMs-${UUID.randomUUID().toString().take(8)}",
-        checkpointKind = checkpointKind,
-        createdAtEpochMs = emittedAtEpochMs,
-        updatedAtEpochMs = emittedAtEpochMs,
-        toolName = eventToolName,
-        pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
-          ?.takeIf(String::isNotBlank),
-        promptCheckpointBoundary = promptCheckpointBoundary,
-        promptResumeState = promptResumeState,
-      ),
-    )
-  }
-
-  private fun persistGeneralResumeCheckpointFromResultLocked(
-    sessionId: String,
-    task: AgentTask,
-    result: ExecutionResult,
-  ) {
-    val promptResumeState = OpenCrayPromptResumeMetadata.decodeFromMetadata(
-      metadata = result.metadata,
-      json = replayJson,
-    ) ?: return
-    val promptCheckpointBoundary = OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(result.metadata)
-    persistPromptCheckpointLocked(
-      sessionId = sessionId,
-      checkpoint = PersistedPromptCheckpoint(
-        sessionId = sessionId,
-        runId = runIdFor(task),
-        taskId = task.id,
-        checkpointId = "checkpoint-${result.finishedAtEpochMs}-${UUID.randomUUID().toString().take(8)}",
-        checkpointKind = PromptCheckpointKind.GENERAL_RESUME,
-        createdAtEpochMs = result.finishedAtEpochMs,
-        updatedAtEpochMs = result.finishedAtEpochMs,
-        pendingMessageId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID]
-          ?.takeIf(String::isNotBlank),
-        promptCheckpointBoundary = promptCheckpointBoundary,
-        promptResumeState = promptResumeState,
-      ),
-    )
-  }
-
-  private fun persistPromptCheckpointLocked(
-    sessionId: String,
-    checkpoint: PersistedPromptCheckpoint,
-  ) {
-    promptCheckpointStoreForSession(sessionId).upsert(checkpoint)
-  }
-
-  private fun clearPromptCheckpointLocked(sessionId: String, taskId: String) {
-    promptCheckpointStoreForSession(sessionId).remove(taskId)
-  }
-
   private fun clearPendingApprovalLocked(sessionId: String, taskId: String) {
     chatPendingApprovalState.remove(sessionId, taskId)
   }
@@ -2206,65 +2090,6 @@ internal class OpenCrayHostRuntime internal constructor(
       if (visibleRun != null) {
         put("activeRuns", activeRuns)
         put("retainedRuns", retainedRuns)
-      }
-    }
-  }
-
-  private fun maybeClearPromptCheckpointAfterRuntimeEventLocked(
-    sessionId: String,
-    event: OpenCrayAgentRunEvent,
-  ) {
-    val checkpoint = promptCheckpointStoreForSession(sessionId).get(event.taskId) ?: return
-    if (
-      checkpoint.checkpointKind != PromptCheckpointKind.APPROVED_PENDING_RESUME &&
-      checkpoint.checkpointKind != PromptCheckpointKind.REJECTED_PENDING_RESUME
-    ) {
-      return
-    }
-    when (event) {
-      is OpenCrayApprovalEvent -> return
-      is OpenCraySubAgentEvent -> if (event.phase == OpenCraySubAgentPhase.RESUMED) {
-        return
-      }
-      is OpenCrayLifecycleEvent -> if (event.phase == OpenCrayRunLifecyclePhase.START) {
-        return
-      }
-      else -> Unit
-    }
-    clearPromptCheckpointLocked(sessionId = sessionId, taskId = event.taskId)
-  }
-
-  private fun promptCheckpointKindForRuntimeEvent(
-    event: OpenCrayAgentRunEvent,
-    metadata: Map<String, String>,
-  ): PromptCheckpointKind? {
-    val runtimeBoundary = OpenCrayPromptResumeMetadata.decodeCheckpointBoundary(metadata)
-    return when (runtimeBoundary) {
-      com.opencray.runtime.OpenCrayPromptCheckpointBoundary.PRE_MODEL_REQUEST ->
-        PromptCheckpointKind.PRE_MODEL_REQUEST
-
-      com.opencray.runtime.OpenCrayPromptCheckpointBoundary.ACTION_BATCH_PARSED ->
-        PromptCheckpointKind.ACTION_BATCH_PARSED
-
-      com.opencray.runtime.OpenCrayPromptCheckpointBoundary.COMMENTARY_EMITTED ->
-        PromptCheckpointKind.COMMENTARY_EMITTED
-
-      com.opencray.runtime.OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED ->
-        PromptCheckpointKind.TOOL_RESULT_COMMITTED
-
-      com.opencray.runtime.OpenCrayPromptCheckpointBoundary.SUPPLEMENT_INGESTED ->
-        PromptCheckpointKind.SUPPLEMENT_INGESTED
-
-      com.opencray.runtime.OpenCrayPromptCheckpointBoundary.FINALIZATION_COMPLETE ->
-        PromptCheckpointKind.FINALIZATION_COMPLETE
-
-      null -> when (event) {
-        is OpenCrayToolResultEvent,
-        is OpenCraySupplementEvent,
-        -> PromptCheckpointKind.GENERAL_RESUME
-
-        is OpenCrayAssistantPhaseEvent -> null
-        else -> null
       }
     }
   }
