@@ -62,7 +62,7 @@ internal fun OpenCrayHostRuntime.clearAssistantDraft(
   }
 }
 
-internal fun OpenCrayHostRuntime.liveAssistantDraftEventPayload(
+internal fun liveAssistantDraftEventPayload(
   sessionId: String,
   runId: String,
   taskId: String,
