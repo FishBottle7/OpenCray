@@ -14,7 +14,7 @@ import com.opencray.runtime.OpenCrayExecutionMetadataKeys
 import com.opencray.runtime.OpenCrayPromptCheckpointBoundary
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 
-private data class RestoredTerminalMessage(
+internal data class RestoredTerminalMessage(
   val text: String,
   val attachments: List<ChatAttachmentEntry>,
 )
