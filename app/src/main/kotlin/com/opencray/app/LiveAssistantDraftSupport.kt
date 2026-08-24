@@ -96,7 +96,7 @@ internal fun OpenCrayHostRuntime.assistantDraftRuntimeEvent(
   emittedAtEpochMs = emittedAtEpochMs,
 )
 
-internal fun OpenCrayHostRuntime.LiveAssistantDraftSnapshot.toLiveAssistantDraftEventPayload(
+internal fun LiveAssistantDraftSnapshot.toLiveAssistantDraftEventPayload(
   sessionId: String,
   cleared: Boolean,
 ): Map<String, Any?> = liveAssistantDraftEventPayload(
