@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import com.opencray.app.facade.llm.processAnthropicStreamEvent
 import com.opencray.llm.LiteLlmGatewayRequest
 import com.opencray.llm.LiteLlmGatewayMessage
 import com.opencray.llm.LiteLlmGatewayMessageRole
@@ -24,6 +25,43 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiteLlmClientAnthropicDialectTest : LiteLlmClientTestBase() {
+  @Test
+  fun processAnthropicStreamEventMergesMessageDeltaUsageIntoMessageStartUsage() {
+    val client = OpenAiCompatibleLiteLlmProviderClient()
+    val payload = JSONObject()
+    val coalescer = VisibleTextSnapshotCoalescer(
+      observer = object : LiteLlmVisibleTextObserver {
+        override fun onVisibleTextSnapshot(text: String) {
+        }
+      },
+      minIntervalMs = 0L,
+    )
+
+    client.processAnthropicStreamEvent(
+      eventName = "message_start",
+      data = """{"type":"message_start","message":{"id":"msg_usage_merge","usage":{"input_tokens":512,"output_tokens":1,"cache_creation_input_tokens":4096,"cache_read_input_tokens":2048}}}""",
+      payload = payload,
+      contentBlocks = mutableMapOf(),
+      toolInputBuffers = mutableMapOf(),
+      visibleTextCoalescer = coalescer,
+    )
+    client.processAnthropicStreamEvent(
+      eventName = "message_delta",
+      data = """{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}""",
+      payload = payload,
+      contentBlocks = mutableMapOf(),
+      toolInputBuffers = mutableMapOf(),
+      visibleTextCoalescer = coalescer,
+    )
+
+    val usage = payload.getJSONObject("usage")
+    assertEquals(512, usage.getLong("input_tokens"))
+    assertEquals(2048, usage.getLong("cache_read_input_tokens"))
+    assertEquals(4096, usage.getLong("cache_creation_input_tokens"))
+    assertEquals(42, usage.getLong("output_tokens"))
+    assertEquals("end_turn", payload.getString("stop_reason"))
+  }
+
   @Test
   fun executeAutoStreamsAnthropicKimiRequestsForThirdPartyRoutes() {
     val requestBody = AtomicReference<String>()
@@ -420,6 +458,87 @@ class LiteLlmClientAnthropicDialectTest : LiteLlmClientTestBase() {
       assertEquals(1, success.completion?.toolCalls?.size)
       assertEquals("EchoProbe", success.completion?.toolCalls?.single()?.toolName)
       assertEquals("\"hello\"", success.completion?.toolCalls?.single()?.arguments?.get("echo")?.toString())
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsAnthropicPromptCacheUsageAcrossMessageStartAndDelta() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: message_start
+              data: {"type":"message_start","message":{"id":"msg_stream_usage","type":"message","role":"assistant","content":[],"model":"claude-3-5-sonnet","stop_reason":null,"usage":{"input_tokens":512,"output_tokens":1,"cache_creation_input_tokens":4096,"cache_read_input_tokens":2048}}}
+              
+              event: content_block_start
+              data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+              
+              event: content_block_delta
+              data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}
+              
+              event: content_block_stop
+              data: {"type":"content_block_stop","index":0}
+              
+              event: message_delta
+              data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}
+              
+              event: message_stop
+              data: {"type":"message_stop"}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-anthropic-stream-usage",
+            providerId = "anthropic",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "claude-3-5-sonnet",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.ANTHROPIC,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-anthropic-stream-usage",
+            providerId = "anthropic",
+            model = "claude-3-5-sonnet",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      assertEquals(true, JSONObject(requestBody.get()).getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("OK", success.outputText)
+      assertEquals("true", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_USED])
+      assertEquals("2048", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_READ_TOKENS])
+      assertEquals("4096", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_WRITE_TOKENS])
     } finally {
       runCatching { server.close() }
       serverThread.join(5_000L)

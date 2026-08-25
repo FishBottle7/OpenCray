@@ -1031,7 +1031,15 @@ internal fun OpenAiCompatibleLiteLlmProviderClient.processAnthropicStreamEvent(
         eventPayload.optJSONObject("delta")
           ?.nonBlankString("stop_reason")
           ?.let { payload.put("stop_reason", it) }
-        eventPayload.optJSONObject("usage")?.let { payload.put("usage", JSONObject(it.toString())) }
+        eventPayload.optJSONObject("usage")?.let { usage ->
+          val mergedUsage = payload.optJSONObject("usage") ?: JSONObject()
+          val keys = usage.keys()
+          while (keys.hasNext()) {
+            val key = keys.next()
+            mergedUsage.put(key, usage.opt(key))
+          }
+          payload.put("usage", mergedUsage)
+        }
       }
 
       "error" -> {

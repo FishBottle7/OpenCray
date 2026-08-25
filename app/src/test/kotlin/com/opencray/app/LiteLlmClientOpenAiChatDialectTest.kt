@@ -381,11 +381,83 @@ class LiteLlmClientOpenAiChatDialectTest : LiteLlmClientTestBase() {
       assertTrue(responseSent.await(5, TimeUnit.SECONDS))
       val payload = JSONObject(requestBody.get())
       assertEquals(true, payload.getBoolean("stream"))
+      assertEquals(
+        true,
+        payload.getJSONObject("stream_options").getBoolean("include_usage"),
+      )
       val success = result as LiteLlmProviderResult.Success
       assertEquals("tool_calls", success.finishReason)
       assertEquals("EchoProbe", success.completion?.toolCalls?.single()?.toolName)
       assertEquals("\"hello\"", success.completion?.toolCalls?.single()?.arguments?.get("echo")?.toString())
       assertTrue(success.outputText.contains("\"tool_name\":\"EchoProbe\""))
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsOpenAiChatCompletionUsageIntoPromptCacheMetadata() {
+    val requestBody = AtomicReference<String>()
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference(), requestBody)
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              data: {"id":"chatcmpl_stream_usage","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"OK"},"finish_reason":null}]}
+              
+              data: {"id":"chatcmpl_stream_usage","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":128,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":96}}}
+              
+              data: [DONE]
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-chat-stream-usage",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-4o-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Reply with OK.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-chat-stream-usage",
+            providerId = "openai",
+            model = "gpt-4o-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      assertEquals(true, JSONObject(requestBody.get()).getBoolean("stream"))
+      val success = result as LiteLlmProviderResult.Success
+      assertEquals("OK", success.outputText)
+      assertEquals("true", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_USED])
+      assertEquals("96", success.metadata[LiteLlmMetadataKeys.PROVIDER_PROMPT_CACHE_READ_TOKENS])
     } finally {
       runCatching { server.close() }
       serverThread.join(5_000L)
@@ -866,6 +938,7 @@ class LiteLlmClientOpenAiChatDialectTest : LiteLlmClientTestBase() {
       assertTrue(responseSent.await(5, TimeUnit.SECONDS))
       assertEquals("POST /v1/chat/completions HTTP/1.1", requestLine.get())
       val payload = JSONObject(requestBody.get())
+      assertFalse(payload.has("stream_options"))
       val tool = payload.getJSONArray("tools").getJSONObject(0)
       val function = tool.getJSONObject("function")
       assertEquals("function", tool.getString("type"))

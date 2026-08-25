@@ -76,6 +76,10 @@ internal fun OpenAiCompatibleLiteLlmProviderClient.buildOpenAiRequestBody(
     }
     if (streamResponses) {
       payload.put("stream", true)
+      payload.put(
+        "stream_options",
+        JSONObject().put("include_usage", true),
+      )
     }
     return payload.toString()
   }
