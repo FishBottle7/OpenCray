@@ -141,11 +141,19 @@ internal fun applyTextEdits(
     current = if (edit.replaceAll) {
       current.replace(edit.oldString, edit.newString)
     } else {
-      current.replaceFirst(edit.oldString, edit.newString)
+      replaceFirstOccurrence(current, edit.oldString, edit.newString)
     }
     replacementCount += if (edit.replaceAll) matchCount else 1
   }
   return TextEditOutcome(content = current, replacementCount = replacementCount)
+}
+
+internal fun replaceFirstOccurrence(text: String, target: String, replacement: String): String {
+  val index = text.indexOf(target)
+  if (index < 0) {
+    return text
+  }
+  return text.substring(0, index) + replacement + text.substring(index + target.length)
 }
 
 internal fun countOccurrences(text: String, target: String): Int {
