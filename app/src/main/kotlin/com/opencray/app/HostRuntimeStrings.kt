@@ -31,7 +31,7 @@ internal data class HostRuntimeStrings(
   val agentCancelled: String,
   val agentMissingLlm: String,
   val agentEmptyAnswer: String,
-  val agentFailed: (String) -> String,
+  val agentFailed: (errorCode: String?, detail: String) -> String,
   val agentAttachmentSaveFailed: (String) -> String = { detail -> "Attachment could not be saved: $detail" },
   val agentInternalPayloadHidden: String = "The agent produced an internal tool payload instead of a user-facing reply.",
   val chatSummaryApprovalRequired: String = "Approval required before the agent can continue.",

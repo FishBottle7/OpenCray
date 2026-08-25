@@ -5,6 +5,7 @@ import com.opencray.app.builtinToolsForWarmup as builtinToolsForWarmupFromFile
 import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
+import com.opencray.core.error.UserFacingErrorCodes
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.core.orchestrator.SessionTaskRuntime
@@ -2404,7 +2405,10 @@ internal class AppAgentSessionTaskRuntimeFactory(
       text = result.errorMessage
         ?.trim()
         ?.takeIf(String::isNotBlank)
-        ?: transcriptAgentFailedText(result.errorCode ?: result.status.name),
+        ?: transcriptAgentFailedText(
+          errorCode = result.errorCode,
+          detail = result.errorCode ?: result.status.name,
+        ),
       fallback = transcriptFinalTextFallback(result),
     )
 
@@ -2412,13 +2416,19 @@ internal class AppAgentSessionTaskRuntimeFactory(
       text = if (result.errorCode == ERROR_CODE_MISSING_LLM_CONFIG) {
         TRANSCRIPT_AGENT_MISSING_LLM
       } else {
-        transcriptAgentFailedText(result.errorMessage ?: result.errorCode ?: result.status.name)
+        transcriptAgentFailedText(
+          errorCode = result.errorCode,
+          detail = result.errorMessage ?: result.errorCode ?: result.status.name,
+        )
       },
       fallback = transcriptFinalTextFallback(result),
     )
 
     else -> approvalSupportSanitizePotentialInternalAgentText(
-      text = transcriptAgentFailedText(result.errorMessage ?: result.errorCode ?: result.status.name),
+      text = transcriptAgentFailedText(
+        errorCode = result.errorCode,
+        detail = result.errorMessage ?: result.errorCode ?: result.status.name,
+      ),
       fallback = transcriptFinalTextFallback(result),
     )
   }
@@ -2916,7 +2926,14 @@ internal class AppAgentSessionTaskRuntimeFactory(
     TRANSCRIPT_APPROVAL_REQUIRED_BODY
   }
 
-  private fun transcriptAgentFailedText(detail: String): String = "Failed: $detail"
+  private fun transcriptAgentFailedText(errorCode: String?, detail: String): String {
+    val shortCode = UserFacingErrorCodes.shortCodeOf(errorCode)
+    return if (shortCode == null) {
+      "Failed: $detail"
+    } else {
+      "Failed [$shortCode]: $detail"
+    }
+  }
 
   private fun buildSubAgentReplayContent(event: OpenCraySubAgentEvent): String =
     encodeReplayJsonObject {

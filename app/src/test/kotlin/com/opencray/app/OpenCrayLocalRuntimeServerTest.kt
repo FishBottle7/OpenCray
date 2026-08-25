@@ -3061,7 +3061,7 @@ class OpenCrayLocalRuntimeServerTest {
           agentCancelled = "Cancelled",
           agentMissingLlm = "Missing LLM",
           agentEmptyAnswer = "The model returned an empty answer.",
-          agentFailed = { detail -> "Failed: $detail" },
+          agentFailed = { _, detail -> "Failed: $detail" },
         ),
       )
     }
@@ -3263,7 +3263,7 @@ class OpenCrayLocalRuntimeServerTest {
     agentCancelled = "Cancelled",
     agentMissingLlm = "Missing LLM",
     agentEmptyAnswer = "The model returned an empty answer.",
-    agentFailed = { detail -> "Failed: $detail" },
+    agentFailed = { _, detail -> "Failed: $detail" },
   )
 
   private class RecordingChatRuntimeGateway : OpenCrayChatRuntimeGateway {

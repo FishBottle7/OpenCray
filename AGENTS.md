@@ -36,5 +36,12 @@ If a tool returns bounded output, emit the shared result-limit metadata from the
 If a tool is session-state only, such as `TodoWrite`, still emit shared common/result metadata through the pipeline helpers instead of returning a bare metadata map.
 Do not hand-roll approval or deny results, or duplicate policy metadata assembly, inside individual tool handlers.
 
+## Error Code Registry
+Cross-boundary error codes stay as UPPER_SNAKE_CASE strings on `ExecutionResult`/`AgentToolResult.errorCode`; the short user-facing code (E + 4 digits, for example `E1001`) is a presentation-layer mapping derived from that string.
+Every error code string that can reach a user-visible failure must be registered in `core/src/main/kotlin/com/opencray/core/error/UserFacingErrorCodes.kt` with a unique short code in the matching segment: E0 policy/approval, E1 command/process execution, E2 LLM/provider, E3 session orchestration, E4 filesystem, E5 skills, E6 MCP (reserved), E7 terminal environment, E8 subagent, E9 unknown.
+When adding or renaming an error code, register it and update `docs/error-codes.md` in the same change; keep the uniqueness and format guarantees covered by `UserFacingErrorCodesTest`.
+User-visible failure copy must be rendered through the shared formatters (`HostRuntimeStrings.agentFailed` or `AppAgentSessionTaskRuntimeFactory.transcriptAgentFailedText`). Never hand-roll short-code prefixes or failure copy inside individual tool handlers.
+Unregistered codes intentionally fall back to plain failure copy without a bracketed short code; do not knowingly ship new user-visible codes without registering them.
+
 ## UI Prototype Implementation Rules
 When implementing the mobile UI from the Pencil prototype, treat the Pencil design as the source of truth and refactor the app UI to match it as closely as practical. If the existing app contains a UI element, state, interaction, or visual treatment that is not present in the approved Pencil prototype, stop and ask the user before keeping, changing, or removing it. If any product, interaction, copy, navigation, or state detail is uncertain during implementation, ask the user instead of deciding independently. Do not fill in missing UI behavior or visuals based on assumption when the prototype or prior user direction does not make the requirement explicit.

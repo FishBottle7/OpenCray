@@ -39,7 +39,8 @@ import com.opencray.core.contracts.AgentTaskType
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
-import com.opencray.core.contracts.PolicyDecisionOutcome
+  import com.opencray.core.contracts.PolicyDecisionOutcome
+  import com.opencray.core.error.UserFacingErrorCodes
 import com.opencray.core.orchestrator.ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
 import com.opencray.core.orchestrator.EXECUTION_KIND_CHECKPOINT_RESUME
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
@@ -2534,6 +2535,7 @@ internal class OpenCrayHostRuntime internal constructor(
       }
       ExecutionStatus.CANCELLED -> strings.agentCancelled
       ExecutionStatus.DENIED -> result.errorMessage ?: strings.agentFailed(
+        result.errorCode,
         result.errorCode ?: result.status.name,
       )
       ExecutionStatus.FAILED -> toolSummaryFallback ?: if (
@@ -2541,10 +2543,14 @@ internal class OpenCrayHostRuntime internal constructor(
       ) {
         strings.agentMissingLlm
       } else {
-        strings.agentFailed(result.errorMessage ?: result.errorCode ?: result.status.name)
+        strings.agentFailed(
+          result.errorCode,
+          result.errorMessage ?: result.errorCode ?: result.status.name,
+        )
       }
 
       else -> toolSummaryFallback ?: strings.agentFailed(
+        result.errorCode,
         result.errorMessage ?: result.errorCode ?: result.status.name,
       )
     }
@@ -3607,7 +3613,7 @@ internal data class AttachmentMarkdownCompatibility(
         agentCancelled = "Interrupted",
         agentMissingLlm = "Missing LLM",
         agentEmptyAnswer = "The model returned an empty answer.",
-        agentFailed = { detail -> "Failed: $detail" },
+        agentFailed = { _, detail -> "Failed: $detail" },
         chatApprovalApproveForSessionLabel = "Allow session",
         chatApprovalApprovedForSession = "Approval granted for this session. The agent is resuming.",
       ),
@@ -3742,8 +3748,10 @@ internal data class AttachmentMarkdownCompatibility(
         R.string.chat_agent_failed,
         "The model returned an empty answer.",
       ),
-      agentFailed = { detail ->
-        context.getString(R.string.chat_agent_failed, detail)
+      agentFailed = { errorCode, detail ->
+        UserFacingErrorCodes.shortCodeOf(errorCode)?.let { shortCode ->
+          context.getString(R.string.chat_agent_failed_with_code, shortCode, detail)
+        } ?: context.getString(R.string.chat_agent_failed, detail)
       },
       agentAttachmentSaveFailed = { detail ->
         context.getString(R.string.chat_agent_attachment_save_failed, detail)

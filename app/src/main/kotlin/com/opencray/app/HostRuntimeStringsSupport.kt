@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.Context
+import com.opencray.core.error.UserFacingErrorCodes
 import org.opencray.app.R
 
 internal fun localizedHostRuntimeStrings(context: Context): HostRuntimeStrings = HostRuntimeStrings(
@@ -51,8 +52,10 @@ internal fun localizedHostRuntimeStrings(context: Context): HostRuntimeStrings =
     R.string.chat_agent_failed,
     "The model returned an empty answer.",
   ),
-  agentFailed = { detail ->
-    context.getString(R.string.chat_agent_failed, detail)
+  agentFailed = { errorCode, detail ->
+    UserFacingErrorCodes.shortCodeOf(errorCode)?.let { shortCode ->
+      context.getString(R.string.chat_agent_failed_with_code, shortCode, detail)
+    } ?: context.getString(R.string.chat_agent_failed, detail)
   },
   agentAttachmentSaveFailed = { detail ->
     context.getString(R.string.chat_agent_attachment_save_failed, detail)

@@ -119,7 +119,7 @@ internal fun OpenCrayHostRuntime.Companion.createForTest(
     agentCancelled = "Interrupted",
     agentMissingLlm = "Missing LLM",
     agentEmptyAnswer = "The model returned an empty answer.",
-    agentFailed = { detail -> "Failed: $detail" },
+    agentFailed = { _, detail -> "Failed: $detail" },
     chatApprovalApproveForSessionLabel = "Allow session",
     chatApprovalApprovedForSession = "Approval granted for this session. The agent is resuming.",
   ),

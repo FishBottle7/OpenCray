@@ -80,7 +80,9 @@ internal data class ProjectionOnlyChatStrings(
   val agentEmptyAnswer: String = "The model returned an empty answer.",
   val agentInternalPayloadHidden: String =
     "The agent returned internal tool payload that was hidden.",
-  val agentFailed: (String) -> String = { detail -> "Failed: $detail" },
+  val agentFailed: (errorCode: String?, detail: String) -> String = { _, detail ->
+    "Failed: $detail"
+  },
 )
 
 internal data class ProjectionOnlyChatRuntimeDiagnosticsSource(
@@ -524,6 +526,7 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
 
       ExecutionStatus.CANCELLED -> resolvedStrings.agentCancelled
       ExecutionStatus.DENIED -> result.errorMessage ?: resolvedStrings.agentFailed(
+        result.errorCode,
         result.errorCode ?: result.status.name,
       )
       ExecutionStatus.FAILED -> if (
@@ -531,10 +534,14 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
       ) {
         resolvedStrings.agentMissingLlm
       } else {
-        resolvedStrings.agentFailed(result.errorMessage ?: result.errorCode ?: result.status.name)
+        resolvedStrings.agentFailed(
+          result.errorCode,
+          result.errorMessage ?: result.errorCode ?: result.status.name,
+        )
       }
 
       else -> resolvedStrings.agentFailed(
+        result.errorCode,
         result.errorMessage ?: result.errorCode ?: result.status.name,
       )
     }

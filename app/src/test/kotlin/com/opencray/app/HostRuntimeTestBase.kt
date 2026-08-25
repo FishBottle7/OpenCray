@@ -269,7 +269,7 @@ abstract class HostRuntimeTestBase {
       agentCancelled = "Cancelled",
       agentMissingLlm = "Missing LLM",
       agentEmptyAnswer = "The model returned an empty answer.",
-      agentFailed = { detail -> "Failed: $detail" },
+      agentFailed = { _, detail -> "Failed: $detail" },
     ),
   )
 

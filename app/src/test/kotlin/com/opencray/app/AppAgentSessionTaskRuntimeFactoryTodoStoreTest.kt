@@ -812,7 +812,7 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
           startedAtEpochMs = 1_000L,
           finishedAtEpochMs = 1_001L,
         ),
-        "Failed: APPROVAL_REQUIRED",
+        "Failed [E0002]: APPROVAL_REQUIRED",
       ),
       Triple(
         "session-missing-llm",
