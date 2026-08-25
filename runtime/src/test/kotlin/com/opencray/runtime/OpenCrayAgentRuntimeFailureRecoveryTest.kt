@@ -12,6 +12,7 @@ import com.opencray.llm.LiteLlmMetadataKeys
 import com.opencray.llm.LiteLlmGatewayStatus
 import com.opencray.llm.LiteLlmRouteSelectionMetadata
 import com.opencray.llm.LiteLlmStructuredCompletion
+import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
@@ -22,6 +23,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 class OpenCrayAgentRuntimeFailureRecoveryTest : OpenCrayAgentRuntimeTestBase() {
   @Test
@@ -536,5 +539,127 @@ class OpenCrayAgentRuntimeFailureRecoveryTest : OpenCrayAgentRuntimeTestBase() {
     assertEquals("recovered after malformed tool call", result.stdout)
     assertTrue(gateway.requests[1].prompt.contains("tool_calls[0].function.arguments"))
     assertTrue(gateway.requests[1].prompt.contains("Parser error"))
+  }
+
+  @Test
+  fun runPromptTaskRecoversFromReasoningOnlySuccessResponse() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-reasoning-only-empty-recovery")
+    val gateway = ScriptedGateway(
+      results = listOf(
+        gatewaySuccessResult(
+          outputText = "",
+          completion = LiteLlmStructuredCompletion(
+            reasoningText = "I should call Read next.",
+          ),
+        ),
+        gatewaySuccessResult("""{"type":"final","answer":"recovered after reasoning-only response"}"""),
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 2),
+      clock = IncrementingClock(start = 13_000L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Recover when the model only streams hidden reasoning."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("recovered after reasoning-only response", result.stdout)
+    assertEquals("1", result.metadata["emptyResponseRecoveryCount"])
+    assertEquals("true", result.metadata[LiteLlmMetadataKeys.PROVIDER_REASONING_OBSERVED])
+    assertEquals(2, gateway.requests.size)
+    assertTrue(gateway.requests[1].prompt.contains("Do not emit hidden reasoning by itself."))
+    assertTrue(gateway.requests[1].prompt.contains("Provider reasoning preview:"))
+    assertTrue(gateway.requests[1].prompt.contains("I should call Read next."))
+  }
+
+  @Test
+  fun runPromptTaskRecoversFromFullyEmptySuccessResponse() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-fully-empty-success-recovery")
+    val gateway = ScriptedGateway(
+      results = listOf(
+        gatewaySuccessResult(outputText = ""),
+        gatewaySuccessResult("""{"type":"final","answer":"recovered after fully empty response"}"""),
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 2),
+      clock = IncrementingClock(start = 13_500L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Recover when the model returns nothing at all."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("recovered after fully empty response", result.stdout)
+    assertEquals("1", result.metadata["emptyResponseRecoveryCount"])
+    assertEquals(2, gateway.requests.size)
+    assertTrue(
+      gateway.requests[1].prompt.contains("no usable tool call, commentary update, or final answer"),
+    )
+    assertFalse(gateway.requests[1].prompt.contains("Provider reasoning preview:"))
+  }
+
+  @Test
+  fun runPromptTaskDoesNotEnterEmptyResponseRecoveryForStructuredActions() {
+    val workspaceRoot = temporaryFolder.newFolder("agent-structured-actions-no-empty-recovery")
+    Files.write(
+      workspaceRoot.toPath().resolve("README.md"),
+      "structured action target".toByteArray(StandardCharsets.UTF_8),
+    )
+    val gateway = ScriptedGateway(
+      results = listOf(
+        gatewaySuccessResult(
+          outputText = "",
+          completion = LiteLlmStructuredCompletion(
+            toolCalls = listOf(
+              LiteLlmStructuredToolCall(
+                id = "call_1",
+                toolName = "workspace_read_file",
+                arguments = JsonObject(mapOf("path" to JsonPrimitive("README.md"))),
+              ),
+            ),
+            reasoningText = "Reading the file before answering.",
+          ),
+        ),
+        gatewaySuccessResult("""{"type":"final","answer":"answer after structured actions"}"""),
+      ),
+    )
+    val runtime = OpenCrayAgentRuntime(
+      gateway = gateway,
+      toolDispatcher = OpenCrayToolDispatcher(
+        OpenCrayToolDispatcherConfig(
+          workspaceRoots = setOf(workspaceRoot.toPath()),
+        ),
+      ),
+      config = OpenCrayAgentRuntimeConfig(maxTurns = 4, maxToolCalls = 2),
+      clock = IncrementingClock(start = 14_000L)::next,
+    )
+
+    val result = runtime.execute(
+      task = promptTask(input = "Read the README and answer."),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(ExecutionStatus.SUCCESS, result.status)
+    assertEquals("answer after structured actions", result.stdout)
+    assertEquals("0", result.metadata["emptyResponseRecoveryCount"])
+    assertEquals("true", result.metadata[LiteLlmMetadataKeys.PARSED_TOOL_CALL_OBSERVED])
   }
 }

@@ -933,7 +933,6 @@ class OpenCrayAgentRuntime(
       if (parsedGatewayResult == null) {
         invalidateResponsesLineage(cursor)
         invalidateLocalContinuation(cursor)
-        val successfulEmptyResponse = isSuccessfulEmptyResponse(gatewayResult)
         val recoveryObservation = recoverableSuccessfulEmptyResponseObservation(
           gatewayResult = gatewayResult,
           nativeToolCallingEnabled = nativeToolCallingEnabled,
@@ -949,19 +948,16 @@ class OpenCrayAgentRuntime(
           cursor.turn += 1
           continue
         }
-        if (successfulEmptyResponse) {
-          clearAssistantDraft(task)
-          return emptyResponseRecoveryExhaustedResult(
-            task = task,
-            startedAt = startedAt,
-            gatewayResult = gatewayResult,
-            turn = cursor.turn,
-            toolCallCount = cursor.toolCallCount,
-            contextReport = lastContextReport,
-            diagnostics = diagnostics,
-          )
-        }
-        error("Parsed gateway result is null despite visible output.")
+        clearAssistantDraft(task)
+        return emptyResponseRecoveryExhaustedResult(
+          task = task,
+          startedAt = startedAt,
+          gatewayResult = gatewayResult,
+          turn = cursor.turn,
+          toolCallCount = cursor.toolCallCount,
+          contextReport = lastContextReport,
+          diagnostics = diagnostics,
+        )
       }
       if (nativeToolCallingEnabled && parsedGatewayResult.usedLegacyJsonFallback) {
         cursor.legacyJsonFallbackEnabled = true
