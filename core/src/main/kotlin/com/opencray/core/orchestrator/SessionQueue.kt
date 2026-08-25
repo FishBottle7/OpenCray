@@ -568,7 +568,8 @@ class SessionQueue(
         retryRequest != null &&
           normalizedResult.status != ExecutionStatus.SUCCESS &&
           normalizedResult.status != ExecutionStatus.CANCELLED &&
-          latest.attempt < config.maxAttempts
+          latest.attempt < config.maxAttempts &&
+          latest.lifecycleState != QueueTaskLifecycleState.CANCEL_REQUESTED
 
       if (suspensionRequest != null &&
         latest.lifecycleState != QueueTaskLifecycleState.CANCEL_REQUESTED &&
@@ -650,6 +651,8 @@ class SessionQueue(
         startedAtEpochMs = minOf(startedAt, finishedAt),
         finishedAtEpochMs = maxOf(startedAt, finishedAt),
       )
+    } catch (fatal: VirtualMachineError) {
+      throw fatal
     } catch (throwable: Throwable) {
       val startedAt = clock.nowEpochMs()
       val finishedAt = clock.nowEpochMs()

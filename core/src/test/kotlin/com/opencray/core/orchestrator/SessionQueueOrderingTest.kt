@@ -14,6 +14,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 
 class SessionQueueOrderingTest {
@@ -679,6 +680,185 @@ class SessionQueueOrderingTest {
     assertEquals(
       "live_managed_process_detected",
       restoredTask.task.metadata[METADATA_RECOVERY_REASON],
+    )
+  }
+
+  @Test
+  fun retryHookWhileCancellationRequestedEndsCancelledAndNeverRequeues() {
+    val store = RecordingSnapshotStore()
+    val attempts = linkedMapOf<String, Int>()
+    lateinit var queue: SessionQueue
+
+    val runtime = SessionTaskRuntime { task, hooks ->
+      attempts[task.id] = (attempts[task.id] ?: 0) + 1
+      queue.requestCancel(task.id)
+      hooks.requestRetry(
+        RetryRequest(
+          reasonCode = "TRANSIENT_RUNTIME_FAILURE",
+          detail = "retry requested while cancellation was pending",
+        ),
+      )
+      ExecutionResult(
+        taskId = task.id,
+        status = ExecutionStatus.FAILED,
+        errorCode = "TRANSIENT_RUNTIME_FAILURE",
+        errorMessage = "attempt failed before observing cancellation",
+        startedAtEpochMs = 140_000L,
+        finishedAtEpochMs = 140_001L,
+      )
+    }
+
+    queue = SessionQueue(
+      sessionId = "session-cancel-beats-retry-1",
+      agentId = "agent-cancel-beats-retry-1",
+      runtime = runtime,
+      snapshotStore = store,
+      clock = IncrementingClock(start = 140_500L),
+      config = SessionQueueConfig(maxAttempts = 3),
+    )
+    queue.enqueue(task(id = "task-cancel-beats-retry", createdAt = 8_000L))
+
+    val results = queue.drain()
+
+    assertEquals(listOf("task-cancel-beats-retry"), results.map { it.taskId })
+    assertEquals(1, attempts["task-cancel-beats-retry"])
+
+    val cancelledSnapshot = queue.snapshot().tasks.single()
+    assertEquals(QueueTaskLifecycleState.CANCELLED, cancelledSnapshot.lifecycleState)
+    assertEquals(1, cancelledSnapshot.attempt)
+
+    val lifecycleHistory = store.history
+      .mapNotNull { snapshot ->
+        snapshot.tasks.singleOrNull { it.task.id == "task-cancel-beats-retry" }?.lifecycleState
+      }
+    assertTrue(lifecycleHistory.contains(QueueTaskLifecycleState.CANCEL_REQUESTED))
+    assertFalse(lifecycleHistory.contains(QueueTaskLifecycleState.RETRY_PENDING))
+
+    assertTrue(queue.drain().isEmpty())
+    assertEquals(1, attempts["task-cancel-beats-retry"])
+  }
+
+  @Test
+  fun runtimeRetryWithoutCancellationStillRequeuesAndCompletes() {
+    val store = RecordingSnapshotStore()
+    val attempts = linkedMapOf<String, Int>()
+
+    var runtimeNow = 141_000L
+    val runtime = SessionTaskRuntime { task, hooks ->
+      val attempt = (attempts[task.id] ?: 0) + 1
+      attempts[task.id] = attempt
+      val started = runtimeNow++
+      val finished = runtimeNow++
+
+      if (attempt == 1) {
+        hooks.requestRetry(
+          RetryRequest(
+            reasonCode = "TRANSIENT_RUNTIME_FAILURE",
+            detail = "first attempt failed; retry requested",
+          ),
+        )
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.FAILED,
+          errorCode = "TRANSIENT_RUNTIME_FAILURE",
+          startedAtEpochMs = started,
+          finishedAtEpochMs = finished,
+        )
+      } else {
+        ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.SUCCESS,
+          startedAtEpochMs = started,
+          finishedAtEpochMs = finished,
+        )
+      }
+    }
+
+    val queue = SessionQueue(
+      sessionId = "session-runtime-retry-regression",
+      agentId = "agent-runtime-retry-regression",
+      runtime = runtime,
+      snapshotStore = store,
+      clock = IncrementingClock(start = 141_500L),
+      config = SessionQueueConfig(maxAttempts = 3),
+    )
+    queue.enqueue(task(id = "task-runtime-retry", createdAt = 8_100L))
+
+    val results = queue.drain()
+
+    assertEquals(listOf(ExecutionStatus.FAILED, ExecutionStatus.SUCCESS), results.map { it.status })
+    assertEquals(2, attempts["task-runtime-retry"])
+
+    val completedSnapshot = queue.snapshot().tasks.single()
+    assertEquals(QueueTaskLifecycleState.COMPLETED, completedSnapshot.lifecycleState)
+    assertEquals(2, completedSnapshot.attempt)
+    assertEquals(EXECUTION_KIND_RETRY, completedSnapshot.executionKind)
+
+    val lifecycleHistory = store.history
+      .mapNotNull { snapshot ->
+        snapshot.tasks.singleOrNull { it.task.id == "task-runtime-retry" }?.lifecycleState
+      }
+    assertTrue(lifecycleHistory.contains(QueueTaskLifecycleState.RETRY_PENDING))
+    assertTrue(lifecycleHistory.lastIndexOf(QueueTaskLifecycleState.COMPLETED) >
+      lifecycleHistory.lastIndexOf(QueueTaskLifecycleState.RETRY_PENDING))
+  }
+
+  @Test
+  fun virtualMachineErrorPropagatesFromDrainInsteadOfBecomingFailedResult() {
+    val store = RecordingSnapshotStore()
+    val queue = SessionQueue(
+      sessionId = "session-fatal-error-propagation",
+      agentId = "agent-fatal-error-propagation",
+      runtime = SessionTaskRuntime { _, _ ->
+        throw OutOfMemoryError("simulated heap exhaustion")
+      },
+      snapshotStore = store,
+      clock = IncrementingClock(start = 142_000L),
+    )
+    queue.enqueue(task(id = "task-fatal-error", createdAt = 9_000L))
+    queue.enqueue(task(id = "task-after-fatal-error", createdAt = 9_001L))
+
+    try {
+      queue.drain()
+      fail("Expected OutOfMemoryError to propagate out of drain.")
+    } catch (expected: OutOfMemoryError) {
+      assertEquals("simulated heap exhaustion", expected.message)
+    }
+
+    assertEquals(
+      QueueTaskLifecycleState.RUNNING,
+      queue.snapshot().tasks.first().lifecycleState,
+    )
+
+    val followUpResults = queue.drain()
+
+    assertEquals(listOf("task-after-fatal-error"), followUpResults.map { it.taskId })
+  }
+
+  @Test
+  fun runtimeExceptionStillProducesFailedExecutionResult() {
+    val store = RecordingSnapshotStore()
+    val queue = SessionQueue(
+      sessionId = "session-runtime-exception-failed",
+      agentId = "agent-runtime-exception-failed",
+      runtime = SessionTaskRuntime { _, _ ->
+        throw IllegalStateException("runtime blew up")
+      },
+      snapshotStore = store,
+      clock = IncrementingClock(start = 143_000L),
+    )
+    queue.enqueue(task(id = "task-runtime-exception", createdAt = 9_100L))
+
+    val results = queue.drain()
+
+    val result = results.single()
+    assertEquals("task-runtime-exception", result.taskId)
+    assertEquals(ExecutionStatus.FAILED, result.status)
+    assertEquals("RUNTIME_EXCEPTION", result.errorCode)
+    assertEquals("runtime blew up", result.errorMessage)
+    assertEquals(
+      QueueTaskLifecycleState.FAILED,
+      queue.snapshot().tasks.single().lifecycleState,
     )
   }
 
