@@ -1,10 +1,10 @@
 package com.opencray.app
 
 import android.content.Context
+import com.opencray.persistence.store.file.ProcessFileLockChannel
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
-import java.io.RandomAccessFile
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -172,7 +172,7 @@ internal class RuntimeServiceLoopbackDescriptorStore(
   private fun descriptorFile(target: RuntimeServiceTarget): File =
     File(directory, "runtime-service-${target.wireValue}.json")
 
-  private inline fun <T> withTargetLock(
+  private fun <T> withTargetLock(
     target: RuntimeServiceTarget,
     action: () -> T,
   ): T {
@@ -188,12 +188,12 @@ internal class RuntimeServiceLoopbackDescriptorStore(
     }
     val lockFile = File(normalizedDirectory, "runtime-service-${target.wireValue}.lock")
     val processLock = PROCESS_LOCKS.computeIfAbsent(lockFile.absolutePath) { Any() }
+    if (Thread.holdsLock(processLock)) {
+      // The JVM monitor is reentrant, but reacquiring its OS sidecar lock is not.
+      return action()
+    }
     return synchronized(processLock) {
-      RandomAccessFile(lockFile, "rw").channel.use { channel ->
-        channel.lock().use {
-          action()
-        }
-      }
+      ProcessFileLockChannel.withLock(lockFile, action)
     }
   }
 

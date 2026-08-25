@@ -4,7 +4,6 @@ import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.DurableTextUpdate
 import java.io.File
 import java.io.IOException
-import java.io.RandomAccessFile
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -130,13 +129,7 @@ class DirectoryDurableTextStorage(
       "DurableTextStorage file must have a parent directory: ${file.path}"
     }
     val lockFile = File(parent, "${file.name}.lock")
-    RandomAccessFile(lockFile, "rw").use { randomAccessFile ->
-      randomAccessFile.channel.use { channel ->
-        channel.lock().use {
-          return block()
-        }
-      }
-    }
+    return ProcessFileLockChannel.withLock(lockFile, block)
   }
 
   private fun <T> withProcessFileLock(

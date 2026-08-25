@@ -3,11 +3,11 @@ package com.opencray.app
 import android.content.Context
 import com.opencray.persistence.PersistenceJson
 import com.opencray.persistence.PersistenceSchemaVersion
+import com.opencray.persistence.store.file.ProcessFileLockChannel
 import com.opencray.runtime.OpenCrayPromptCheckpointEmission
 import com.opencray.runtime.OpenCrayPromptResumeMetadata
 import java.io.File
 import java.io.IOException
-import java.io.RandomAccessFile
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -506,14 +506,14 @@ private object RunEventJournalStoreFileLock {
     val normalizedDirectory = sessionDirectory.absoluteFile.normalize()
     val directoryKey = normalizedDirectory.path
     val processLocalLock = locksByDirectory.computeIfAbsent(directoryKey) { Any() }
-    synchronized(processLocalLock) {
+    if (Thread.holdsLock(processLocalLock)) {
+      // The JVM monitor is reentrant, but reacquiring its OS sidecar lock is not.
+      return block()
+    }
+    return synchronized(processLocalLock) {
       ensureDirectory(normalizedDirectory)
       val lockFile = File(normalizedDirectory, LOCK_FILE_NAME)
-      RandomAccessFile(lockFile, "rw").channel.use { channel ->
-        channel.lock().use {
-          return block()
-        }
-      }
+      ProcessFileLockChannel.withLock(lockFile, block)
     }
   }
 

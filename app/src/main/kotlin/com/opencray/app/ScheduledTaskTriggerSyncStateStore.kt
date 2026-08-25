@@ -6,8 +6,8 @@ import com.opencray.persistence.PersistenceSchemaVersion
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.DurableTextUpdate
 import com.opencray.persistence.store.file.DirectoryDurableTextStorage
+import com.opencray.persistence.store.file.ProcessFileLockChannel
 import java.io.File
-import java.io.RandomAccessFile
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
 
@@ -170,14 +170,14 @@ private object ScheduledTaskTriggerResyncLock {
     val normalizedDirectory = runtimeRootDirectory.absoluteFile.normalize()
     val directoryKey = normalizedDirectory.path
     val processLocalLock = locksByDirectory.computeIfAbsent(directoryKey) { Any() }
-    synchronized(processLocalLock) {
+    if (Thread.holdsLock(processLocalLock)) {
+      // The JVM monitor is reentrant, but reacquiring its OS sidecar lock is not.
+      return block()
+    }
+    return synchronized(processLocalLock) {
       ensureDirectory(normalizedDirectory)
       val lockFile = File(normalizedDirectory, TRIGGER_SYNC_RESYNC_LOCK_FILE_NAME)
-      RandomAccessFile(lockFile, "rw").channel.use { channel ->
-        channel.lock().use {
-          return block()
-        }
-      }
+      ProcessFileLockChannel.withLock(lockFile, block)
     }
   }
 
