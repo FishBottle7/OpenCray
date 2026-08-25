@@ -10,6 +10,8 @@ interface DurableTextStorage {
   fun writeText(name: String, text: String)
   fun delete(name: String): Boolean
 
+  fun backupCorrupt(name: String): Boolean = true
+
   fun <T> updateText(
     name: String,
     update: (String?) -> DurableTextUpdate<T>,

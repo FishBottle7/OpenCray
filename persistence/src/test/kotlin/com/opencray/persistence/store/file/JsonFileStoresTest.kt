@@ -4,11 +4,20 @@ import com.opencray.persistence.model.SessionRecord
 import com.opencray.persistence.migration.NoOpJsonMigration
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.DurableTextUpdate
+import com.opencray.persistence.store.SessionStoreUpdate
+import java.io.File
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 class JsonFileStoresTest {
+  @get:Rule
+  val temporaryFolder: TemporaryFolder = TemporaryFolder()
+
   @Test
   fun writeRecordUsesDurableUpdatePrimitive() {
     val storage = UpdateOnlyDurableTextStorage()
@@ -73,6 +82,69 @@ class JsonFileStoresTest {
     )
   }
 
+  @Test
+  fun updateRecordBacksUpUndecodableSessionFileBeforeResetting() {
+    val directory = temporaryFolder.newFolder("session-corrupt")
+    val corruptContent = "{\"sessionId\":123}"
+    File(directory, "session.json").writeText(corruptContent, Charsets.UTF_8)
+    val store = JsonFileSessionStore(directory)
+    val record = SessionRecord(
+      sessionId = "session-new",
+      agentId = "agent-1",
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+    )
+
+    val result = store.update { current ->
+      assertNull(current)
+      SessionStoreUpdate(
+        record = record,
+        result = "reset",
+      )
+    }
+
+    assertEquals("reset", result)
+    assertEquals(record, store.load())
+    val backups = directory.listFiles { file -> file.name.startsWith("session.json.corrupt-") }
+      .orEmpty()
+      .sortedBy { it.name }
+    assertEquals(1, backups.size)
+    assertArrayEquals(
+      corruptContent.toByteArray(Charsets.UTF_8),
+      backups.single().readBytes(),
+    )
+  }
+
+  @Test
+  fun updateRecordKeepsCorruptFileWhenBackupFails() {
+    val directory = temporaryFolder.newFolder("session-backup-failure")
+    val corruptContent = "{\"sessionId\":123}"
+    val corruptFile = File(directory, "session.json")
+    corruptFile.writeText(corruptContent, Charsets.UTF_8)
+    val storage = NoBackupDurableTextStorage(directory)
+
+    val result = storage.updateRecord(
+      name = "session.json",
+      serializer = SessionRecord.serializer(),
+      migration = NoOpJsonMigration,
+    ) { current ->
+      assertNull(current)
+      RecordStorageUpdate(
+        value = SessionRecord(
+          sessionId = "session-should-not-persist",
+          agentId = "agent-1",
+          createdAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_100L,
+        ),
+        result = "kept-corrupt",
+      )
+    }
+
+    assertEquals("kept-corrupt", result)
+    assertTrue(corruptFile.exists())
+    assertEquals(corruptContent, corruptFile.readText(Charsets.UTF_8))
+  }
+
   private class UpdateOnlyDurableTextStorage : DurableTextStorage {
     private var text: String? = null
     var updateTextCallCount: Int = 0
@@ -103,5 +175,19 @@ class JsonFileStoresTest {
       }
       return updated.result
     }
+  }
+
+  private class NoBackupDurableTextStorage(directory: File) : DurableTextStorage {
+    private val delegate = DirectoryDurableTextStorage(directory)
+
+    override fun readText(name: String): String? = delegate.readText(name)
+
+    override fun writeText(name: String, text: String) {
+      delegate.writeText(name, text)
+    }
+
+    override fun delete(name: String): Boolean = delegate.delete(name)
+
+    override fun backupCorrupt(name: String): Boolean = false
   }
 }

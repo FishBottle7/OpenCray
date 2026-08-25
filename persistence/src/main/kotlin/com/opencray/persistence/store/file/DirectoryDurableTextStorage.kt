@@ -5,8 +5,11 @@ import com.opencray.persistence.store.DurableTextUpdate
 import java.io.File
 import java.io.IOException
 import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
 
 class DirectoryDurableTextStorage(
@@ -41,6 +44,14 @@ class DirectoryDurableTextStorage(
     if (!directory.exists()) return false
     return withProcessFileLock(file) {
       deleteLocked(file)
+    }
+  }
+
+  override fun backupCorrupt(name: String): Boolean {
+    val file = fileFor(name)
+    if (!directory.exists()) return true
+    return withProcessFileLock(file) {
+      backupCorruptLocked(file)
     }
   }
 
@@ -120,6 +131,23 @@ class DirectoryDurableTextStorage(
   private fun deleteLocked(file: File): Boolean =
     file.exists() && file.delete()
 
+  private fun backupCorruptLocked(file: File): Boolean {
+    if (!file.isFile) return true
+    val stamp = SimpleDateFormat("yyyyMMdd-HHmmss").format(Date())
+    for (attempt in 0 until MAX_CORRUPT_BACKUP_ATTEMPTS) {
+      val suffix = if (attempt == 0) "" else "-${attempt + 1}"
+      val target = File(directory, "${file.name}.corrupt-$stamp$suffix")
+      try {
+        Files.copy(file.toPath(), target.toPath())
+        return true
+      } catch (_: FileAlreadyExistsException) {
+      } catch (_: IOException) {
+        return false
+      }
+    }
+    return false
+  }
+
   private fun <T> withFileLock(
     file: File,
     block: () -> T,
@@ -152,5 +180,6 @@ class DirectoryDurableTextStorage(
   private companion object {
     private val VALID_NAME = Regex("^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
     private val FILE_LOCKS = ConcurrentHashMap<String, Any>()
+    private const val MAX_CORRUPT_BACKUP_ATTEMPTS = 32
   }
 }

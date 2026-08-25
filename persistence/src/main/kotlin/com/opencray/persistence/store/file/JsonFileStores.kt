@@ -222,21 +222,24 @@ fun <T : Any, R> DurableTextStorage.updateRecord(
   migration: JsonMigration = NoOpJsonMigration,
   update: (T?) -> RecordStorageUpdate<T, R>,
 ): R = updateText(name) { current ->
-  val record = decodeRecordOrNull(
+  val decoded = decodeRecordOrNull(
     name = name,
     text = current,
     serializer = serializer,
     migration = migration,
   )
-  val updated = update(record)
+  val corrupted = decoded == null && !current.isNullOrBlank()
+  val preserved = !corrupted || backupCorrupt(name)
+  val updated = update(if (corrupted) null else decoded)
+  val write = updated.write && preserved
   DurableTextUpdate(
-    text = if (updated.write) {
+    text = if (write) {
       updated.value?.let { value -> PersistenceJson.instance.encodeToString(serializer, value) }
     } else {
       current
     },
     result = updated.result,
-    write = updated.write,
+    write = write,
   )
 }
 
