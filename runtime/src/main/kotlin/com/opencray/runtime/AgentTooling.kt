@@ -1,8 +1,6 @@
 package com.opencray.runtime
 
 import com.opencray.core.contracts.AgentTask
-import com.opencray.core.contracts.PolicyDecision
-import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.filesystem.FileMutationOperation
 import com.opencray.filesystem.FileOpsService
 import com.opencray.llm.LiteLlmToolDefinition
@@ -90,6 +88,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.CancellationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
@@ -363,6 +362,13 @@ class OpenCrayToolDispatcher(
       }
       registerMediaArtifactsFromResult(task = task, result = result)
       toolCallNormalizer.decorateResult(result = result, invocation = invocation)
+    } catch (cancellation: CancellationException) {
+      throw cancellation
+    } catch (interrupted: InterruptedException) {
+      Thread.currentThread().interrupt()
+      throw interrupted
+    } catch (vmError: VirtualMachineError) {
+      throw vmError
     } catch (error: Throwable) {
       toolCallNormalizer.decorateResult(
         result = AgentToolResult(
@@ -599,8 +605,8 @@ class OpenCrayToolDispatcher(
   private fun webSearchPolicyPlan(
     task: AgentTask,
     query: String,
-  ): ToolPolicyPlan {
-    val basePlan = toolPolicyPipeline.plan(
+  ): ToolPolicyPlan =
+    toolPolicyPipeline.plan(
       task = task,
       toolName = "WebSearch",
       metadataRequest = ToolMetadataContextRequest(
@@ -609,13 +615,6 @@ class OpenCrayToolDispatcher(
         targetSummary = inlinePreview(query, maxChars = 256),
       ),
     )
-    return basePlan.copy(
-      policyDecision = PolicyDecision(
-        outcome = PolicyDecisionOutcome.ALLOW,
-        reasonCode = "WEB_SEARCH_DEFAULT_ALLOW",
-      ),
-    )
-  }
 
   private fun webSearchDisabledResult(
     query: String,

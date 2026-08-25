@@ -107,7 +107,10 @@ internal class ToolPolicyEvaluator(
     if (executionMode != ExecutionMode.AUTO) {
       return policyDecision
     }
-    if (!toolName.equals("WebFetch", ignoreCase = true)) {
+    if (
+      !toolName.equals("WebFetch", ignoreCase = true) &&
+      !toolName.equals("WebSearch", ignoreCase = true)
+    ) {
       return policyDecision
     }
     if (
@@ -119,7 +122,7 @@ internal class ToolPolicyEvaluator(
     return PolicyDecision(
       outcome = PolicyDecisionOutcome.ALLOW,
       reasonCode = PolicyReasonCode.ALLOW_AUTO_STANDARD,
-      detail = "AUTO mode allows WebFetch without approval.",
+      detail = "AUTO mode allows $toolName without approval.",
     )
   }
 

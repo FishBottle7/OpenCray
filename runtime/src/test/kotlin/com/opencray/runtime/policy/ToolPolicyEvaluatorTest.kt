@@ -33,6 +33,49 @@ class ToolPolicyEvaluatorTest {
   }
 
   @Test
+  fun autoModeWebSearchIsAllowedWithoutApproval() {
+    val evaluator = ToolPolicyEvaluator(modePolicy = ModePolicy())
+
+    val decision = evaluator.evaluate(
+      ToolPolicyEvaluationRequest(
+        task = task(
+          metadata = mapOf("chatMode" to "AUTO"),
+        ),
+        toolName = "WebSearch",
+        toolClass = PolicyToolClass.NETWORK_ACCESS,
+        workspaceRoot = workspaceRoot,
+      ),
+    )
+
+    assertEquals(PolicyDecisionOutcome.ALLOW, decision.outcome)
+    assertEquals("ALLOW_AUTO_STANDARD", decision.reasonCode)
+  }
+
+  @Test
+  fun hostDenyStillOverridesAutoModeWebSearchAllowance() {
+    val evaluator = ToolPolicyEvaluator(modePolicy = ModePolicy())
+
+    val decision = evaluator.evaluate(
+      ToolPolicyEvaluationRequest(
+        task = task(
+          metadata = mapOf("chatMode" to "AUTO"),
+          policyDecision = PolicyDecision(
+            outcome = PolicyDecisionOutcome.DENY,
+            reasonCode = "HOST_DENY",
+            detail = "Host denied network access.",
+          ),
+        ),
+        toolName = "WebSearch",
+        toolClass = PolicyToolClass.NETWORK_ACCESS,
+        workspaceRoot = workspaceRoot,
+      ),
+    )
+
+    assertEquals(PolicyDecisionOutcome.DENY, decision.outcome)
+    assertEquals("HOST_DENY", decision.reasonCode)
+  }
+
+  @Test
   fun settingsOverrideCanRequireApprovalForDeveloperWrite() {
     val evaluator = ToolPolicyEvaluator(modePolicy = ModePolicy())
 

@@ -9,6 +9,10 @@ import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.runtime.web.WebContentFetcher
 import com.opencray.runtime.web.WebFetchRequest
 import com.opencray.runtime.web.WebFetchResult
+import com.opencray.runtime.web.WebSearchHit
+import com.opencray.runtime.web.WebSearchProvider
+import com.opencray.runtime.web.WebSearchRequest
+import com.opencray.runtime.web.WebSearchResult
 import java.io.File
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -684,6 +688,158 @@ class AgentToolPolicyGateTest {
   }
 
   @Test
+  fun autoModeWebSearchExecutesWithoutApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-websearch").toPath()
+    val provider = RecordingWebSearchProvider()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        webSearchProvider = provider,
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "AUTO"),
+      ),
+      call = AgentToolCall(
+        toolName = "WebSearch",
+        arguments = JsonObject(
+          mapOf("query" to JsonPrimitive("opencray policy")),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("ALLOW_AUTO_STANDARD", result.metadata["policyReasonCode"])
+    assertEquals("network_access", result.metadata["capabilityKind"])
+    assertEquals("network", result.metadata["targetKind"])
+    assertEquals("none", result.metadata["workspaceRelation"])
+    assertEquals(1, provider.requestCount)
+  }
+
+  @Test
+  fun coarseTaskDenyStillBlocksWebSearchInAutoMode() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-websearch-host-deny").toPath()
+    val provider = RecordingWebSearchProvider()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        webSearchProvider = provider,
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        policyDecision = PolicyDecision(
+          outcome = PolicyDecisionOutcome.DENY,
+          reasonCode = "HOST_DENY",
+          detail = "Host denied network access.",
+        ),
+        metadata = mapOf("chatMode" to "AUTO"),
+      ),
+      call = AgentToolCall(
+        toolName = "WebSearch",
+        arguments = JsonObject(
+          mapOf("query" to JsonPrimitive("opencray policy")),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("DENY_POLICY", result.errorCode)
+    assertEquals("HOST_DENY", result.metadata["policyReasonCode"])
+    assertEquals(0, provider.requestCount)
+  }
+
+  @Test
+  fun safeModeWebSearchRequiresHighRiskApprovalBeforeNetworkAccess() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-safe-websearch").toPath()
+    val provider = RecordingWebSearchProvider()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        webSearchProvider = provider,
+      ),
+    )
+
+    val result = dispatcher.dispatch(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "SAFE"),
+      ),
+      call = AgentToolCall(
+        toolName = "WebSearch",
+        arguments = JsonObject(
+          mapOf("query" to JsonPrimitive("opencray policy")),
+        ),
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("HIGH_RISK_APPROVAL_REQUIRED", result.errorCode)
+    assertEquals("ASK_SAFE_NETWORK_HIGH_RISK", result.metadata["policyReasonCode"])
+    assertEquals("HIGH_RISK", result.metadata["approvalRisk"])
+    assertEquals(0, provider.requestCount)
+  }
+
+  @Test
+  fun autoModeWebSearchPreflightAllowsParallelExecutionWithoutApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-websearch-preflight-auto").toPath()
+    val provider = RecordingWebSearchProvider()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        webSearchProvider = provider,
+      ),
+    )
+
+    val canExecuteInParallel = dispatcher.canExecuteInParallel(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "AUTO"),
+      ),
+      call = AgentToolCall(
+        toolName = "WebSearch",
+        arguments = JsonObject(
+          mapOf("query" to JsonPrimitive("opencray policy")),
+        ),
+      ),
+    )
+
+    assertTrue(canExecuteInParallel)
+    assertEquals(0, provider.requestCount)
+  }
+
+  @Test
+  fun safeModeWebSearchPreflightBlocksParallelExecutionUntilApproval() {
+    val workspaceRoot = temporaryFolder.newFolder("tool-policy-websearch-preflight-safe").toPath()
+    val provider = RecordingWebSearchProvider()
+    val dispatcher = OpenCrayToolDispatcher(
+      OpenCrayToolDispatcherConfig(
+        workspaceRoots = setOf(workspaceRoot),
+        webSearchProvider = provider,
+      ),
+    )
+
+    val canExecuteInParallel = dispatcher.canExecuteInParallel(
+      task = agentTask(
+        metadata = mapOf("chatMode" to "SAFE"),
+      ),
+      call = AgentToolCall(
+        toolName = "WebSearch",
+        arguments = JsonObject(
+          mapOf("query" to JsonPrimitive("opencray policy")),
+        ),
+      ),
+    )
+
+    assertFalse(canExecuteInParallel)
+    assertEquals(0, provider.requestCount)
+  }
+
+  @Test
   fun autoModePythonRequiresApprovalBeforeRuntimeExec() {
     val workspaceRoot = temporaryFolder.newFolder("tool-policy-python").toPath()
     val dispatcher = OpenCrayToolDispatcher(
@@ -1052,6 +1208,26 @@ class AgentToolPolicyGateTest {
         statusCode = 200,
         contentType = "text/plain",
         content = "ok",
+      )
+    }
+  }
+
+  private class RecordingWebSearchProvider : WebSearchProvider {
+    var requestCount: Int = 0
+      private set
+
+    override val providerName: String = "fake-search"
+
+    override fun search(request: WebSearchRequest): WebSearchResult {
+      requestCount += 1
+      return WebSearchResult(
+        providerName = providerName,
+        results = listOf(
+          WebSearchHit(
+            title = "OpenCray Policy Notes",
+            url = "https://example.com/policy",
+          ),
+        ),
       )
     }
   }
