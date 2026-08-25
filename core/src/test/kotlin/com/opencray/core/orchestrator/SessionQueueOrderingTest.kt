@@ -809,8 +809,16 @@ class SessionQueueOrderingTest {
     val queue = SessionQueue(
       sessionId = "session-fatal-error-propagation",
       agentId = "agent-fatal-error-propagation",
-      runtime = SessionTaskRuntime { _, _ ->
-        throw OutOfMemoryError("simulated heap exhaustion")
+      runtime = SessionTaskRuntime { currentTask, _ ->
+        if (currentTask.id == "task-fatal-error") {
+          throw OutOfMemoryError("simulated heap exhaustion")
+        }
+        ExecutionResult(
+          taskId = currentTask.id,
+          status = ExecutionStatus.SUCCESS,
+          startedAtEpochMs = 142_001L,
+          finishedAtEpochMs = 142_002L,
+        )
       },
       snapshotStore = store,
       clock = IncrementingClock(start = 142_000L),

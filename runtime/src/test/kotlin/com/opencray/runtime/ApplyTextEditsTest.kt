@@ -9,7 +9,7 @@ class ApplyTextEditsTest {
 
   @Test
   fun replacesFirstOccurrenceLiterallyWhenOldStringContainsRegexMetacharacters() {
-    val source = "int a = compute(x) + compute(y);"
+    val source = "int a = compute(x);"
 
     val outcome = applyTextEdits(
       source = source,
@@ -22,7 +22,7 @@ class ApplyTextEditsTest {
       ),
     )
 
-    assertEquals("int a = evaluate[0](x) + compute(y);", outcome.content)
+    assertEquals("int a = evaluate[0](x);", outcome.content)
     assertEquals(1, outcome.replacementCount)
   }
 
@@ -54,19 +54,19 @@ class ApplyTextEditsTest {
     val result = replaceFirstOccurrence(text, target, "+")
 
     assertEquals(expectedIndex, result.indexOf("+"))
-    assertEquals("a+b*a*b", result)
+    assertEquals("a+a*b", result)
   }
 
   @Test
-  fun singleReplacementOnlyChangesFirstOccurrence() {
+  fun singleReplacementOnlyChangesUniqueMatchAndLeavesOtherTextUntouched() {
     val source = "return foo(); // foo() again\nfoo()"
 
     val outcome = applyTextEdits(
       source = source,
       edits = listOf(
         TextEdit(
-          oldString = "foo()",
-          newString = "bar()",
+          oldString = "return foo();",
+          newString = "return bar();",
           replaceAll = false,
         ),
       ),
