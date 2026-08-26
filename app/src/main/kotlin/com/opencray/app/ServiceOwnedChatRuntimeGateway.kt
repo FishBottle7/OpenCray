@@ -129,13 +129,15 @@ internal class ServiceOwnedChatRuntimeGateway(
           val hasRuntimeEventDeltaListeners = synchronized(lock) {
             runtimeEventDeltaListeners.isNotEmpty()
           }
-          if (hasRuntimeEventDeltaListeners) {
-            if (!emitServiceOwnedRuntimeEventDelta(realtimeEnvelope = draftEventPayload)) {
-              emitChatRuntimeSnapshot()
-            }
+          val emittedRuntimeDelta = if (hasRuntimeEventDeltaListeners) {
+            emitServiceOwnedRuntimeEventDelta(realtimeEnvelope = draftEventPayload)
           } else {
-            emitLiveAssistantDraftEvent(draftEventPayload)
+            false
           }
+          if (!hasRuntimeEventDeltaListeners && !emittedRuntimeDelta) {
+            emitChatRuntimeSnapshot()
+          }
+          emitLiveAssistantDraftEvent(draftEventPayload)
         }
       }
 
@@ -178,13 +180,15 @@ internal class ServiceOwnedChatRuntimeGateway(
           val hasRuntimeEventDeltaListeners = synchronized(lock) {
             runtimeEventDeltaListeners.isNotEmpty()
           }
-          if (hasRuntimeEventDeltaListeners) {
-            if (!emitServiceOwnedRuntimeEventDelta(realtimeEnvelope = draftEventPayload)) {
-              emitChatRuntimeSnapshot()
-            }
+          val emittedRuntimeDelta = if (hasRuntimeEventDeltaListeners) {
+            emitServiceOwnedRuntimeEventDelta(realtimeEnvelope = draftEventPayload)
           } else {
-            emitLiveAssistantDraftEvent(draftEventPayload)
+            false
           }
+          if (!hasRuntimeEventDeltaListeners && !emittedRuntimeDelta) {
+            emitChatRuntimeSnapshot()
+          }
+          emitLiveAssistantDraftEvent(draftEventPayload)
         }
       }
 
