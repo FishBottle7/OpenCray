@@ -1,15 +1,18 @@
 package com.opencray.persistence.store.file
 
+import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.model.SessionRecord
 import com.opencray.persistence.migration.NoOpJsonMigration
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.DurableTextUpdate
+import com.opencray.persistence.store.SessionStoreQueueSnapshotStore
 import com.opencray.persistence.store.SessionStoreUpdate
 import java.io.File
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -144,6 +147,101 @@ class JsonFileStoresTest {
     assertTrue(corruptFile.exists())
     assertEquals(corruptContent, corruptFile.readText(Charsets.UTF_8))
   }
+
+  @Test
+  fun sessionLoadBacksUpCorruptContentAndReturnsNull() {
+    val directory = temporaryFolder.newFolder("session-load-corrupt")
+    val corruptContent = "{\"sessionId\":\"session-1\",\"state\":{\"queue_state\":"
+    File(directory, "session.json").writeText(corruptContent, Charsets.UTF_8)
+    val store = JsonFileSessionStore(directory)
+
+    assertNull(store.load())
+
+    assertEquals(1, corruptBackupCount(directory, "session.json"))
+    assertArrayEquals(
+      corruptContent.toByteArray(Charsets.UTF_8),
+      corruptBackups(directory, "session.json").single().readBytes(),
+    )
+    assertTrue(File(directory, "session.json").exists())
+
+    val recovered = SessionRecord(
+      sessionId = "session-recovered",
+      agentId = "agent-1",
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+    )
+    store.save(recovered)
+    assertEquals(recovered, store.load())
+  }
+
+  @Test
+  fun memoryListBacksUpCorruptContentAndReturnsEmptyList() {
+    val directory = temporaryFolder.newFolder("memory-list-corrupt")
+    val corruptContent = "{\"records\":[{\"id\":\"mem-1\"}"
+    File(directory, "memory.json").writeText(corruptContent, Charsets.UTF_8)
+    val store = JsonFileMemoryStore(directory)
+
+    assertTrue(store.list().isEmpty())
+
+    assertEquals(1, corruptBackupCount(directory, "memory.json"))
+    assertArrayEquals(
+      corruptContent.toByteArray(Charsets.UTF_8),
+      corruptBackups(directory, "memory.json").single().readBytes(),
+    )
+
+    val record = MemoryRecord(
+      id = "mem-recovered",
+      content = "recovered memory",
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+    )
+    store.upsert(record)
+    assertEquals(listOf(record), store.list())
+  }
+
+  @Test
+  fun queueSnapshotLoadBacksUpCorruptSessionAndReturnsNull() {
+    val directory = temporaryFolder.newFolder("queue-snapshot-load-corrupt")
+    val corruptContent = "{\"sessionId\":\"broken\"}trailing-garbage"
+    File(directory, "session.json").writeText(corruptContent, Charsets.UTF_8)
+    val store = SessionStoreQueueSnapshotStore(JsonFileSessionStore(directory))
+
+    assertNull(store.load())
+
+    assertEquals(1, corruptBackupCount(directory, "session.json"))
+    assertArrayEquals(
+      corruptContent.toByteArray(Charsets.UTF_8),
+      corruptBackups(directory, "session.json").single().readBytes(),
+    )
+  }
+
+  @Test
+  fun readRecordKeepsFailingClosedWhenCorruptBackupFails() {
+    val directory = temporaryFolder.newFolder("read-backup-failure")
+    val corruptContent = "{\"sessionId\":123}"
+    val corruptFile = File(directory, "session.json")
+    corruptFile.writeText(corruptContent, Charsets.UTF_8)
+
+    try {
+      readRecord(
+        storage = NoBackupDurableTextStorage(directory),
+        name = "session.json",
+        serializer = SessionRecord.serializer(),
+        migration = NoOpJsonMigration,
+      )
+      fail("Expected readRecord to throw when the corrupt backup fails.")
+    } catch (_: IllegalStateException) {
+    }
+    assertEquals(corruptContent, corruptFile.readText(Charsets.UTF_8))
+  }
+
+  private fun corruptBackups(directory: File, name: String): List<File> =
+    directory.listFiles { file -> file.name.startsWith("$name.corrupt-") }
+      .orEmpty()
+      .sortedBy { it.name }
+
+  private fun corruptBackupCount(directory: File, name: String): Int =
+    corruptBackups(directory, name).size
 
   private class UpdateOnlyDurableTextStorage : DurableTextStorage {
     private var text: String? = null

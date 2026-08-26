@@ -15,7 +15,6 @@ import com.opencray.persistence.store.SessionStore
 import com.opencray.persistence.store.SessionStoreUpdate
 import com.opencray.persistence.store.SoulStore
 import kotlinx.serialization.KSerializer
-import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.intOrNull
@@ -181,17 +180,19 @@ internal fun <T : Any> readRecord(
   val text = storage.readText(name) ?: return null
   if (text.isBlank()) return null
 
-  val schemaVersion = extractSchemaVersion(text)
-  val migrated = if (schemaVersion == PersistenceSchemaVersion.CURRENT) {
-    text
-  } else {
-    migration.migrate(schemaVersion, text)
-  }
-
   return try {
+    val schemaVersion = extractSchemaVersion(text)
+    val migrated = if (schemaVersion == PersistenceSchemaVersion.CURRENT) {
+      text
+    } else {
+      migration.migrate(schemaVersion, text)
+    }
     PersistenceJson.instance.decodeFromString(serializer, migrated)
-  } catch (e: SerializationException) {
-    throw IllegalStateException("Failed to decode persisted record: $name", e)
+  } catch (e: Exception) {
+    if (!storage.backupCorrupt(name)) {
+      throw IllegalStateException("Failed to decode persisted record: $name", e)
+    }
+    null
   }
 }
 
