@@ -8,8 +8,12 @@ import com.opencray.runtime.context.RuntimeConversationToolResult
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Test
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 
 class OpenCrayPromptResumeStateTest {
   @Test
@@ -99,12 +103,85 @@ class OpenCrayPromptResumeStateTest {
     )
   }
 
+  @Test
+  fun checkpointEncodeSkipsNonPrimitiveLegacyToolResultMetadataKeys() {
+    val state = OpenCrayPromptResumeState(
+      turnIndex = 3,
+      toolCallCount = 2,
+      transcript = listOf(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.TOOL,
+          kind = RuntimeConversationMessageKind.TOOL_RESULT,
+          content = foreignToolResultPayload(),
+          toolResult = RuntimeConversationToolResult(
+            toolName = "WebFetch",
+            status = "success",
+            isError = false,
+          ),
+        ),
+      ),
+    )
+
+    val metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(
+      state = state,
+      json = Json,
+      checkpointBoundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
+    )
+    val restored = OpenCrayPromptResumeMetadata.decodeFromMetadata(metadata, Json)
+
+    assertEquals(
+      "tool_result_committed",
+      metadata[OpenCrayPromptResumeMetadata.KEY_PROMPT_CHECKPOINT_BOUNDARY],
+    )
+    assertNotNull(restored)
+    val restoredPayload = Json.parseToJsonElement(restored!!.transcript.single().content).jsonObject
+    assertEquals(
+      JsonObject(mapOf("sourceUrls" to JsonPrimitive("https://example.com"))),
+      restoredPayload.getValue("metadata").jsonObject,
+    )
+  }
+
+  @Test
+  fun checkpointEncodeNormalizesBlankToolResultContentIntoPlaceholder() {
+    val state = OpenCrayPromptResumeState(
+      turnIndex = 1,
+      toolCallCount = 1,
+      responsesPendingMessages = listOf(
+        OpenCraySerializableGatewayMessage(
+          role = "TOOL",
+          toolResult = OpenCraySerializableGatewayToolResult(
+            toolCallId = "call-blank",
+            toolName = "WebSearch",
+            content = "   ",
+          ),
+        ),
+      ),
+    )
+
+    val metadata = OpenCrayPromptResumeMetadata.encodeToMetadata(state = state, json = Json)
+    val restored = OpenCrayPromptResumeMetadata.decodeFromMetadata(metadata, Json)
+
+    assertEquals(
+      "[empty tool result]",
+      state.responsesPendingMessages.single().toolResult!!.toGatewayToolResult().content,
+    )
+    assertNotNull(restored)
+    assertEquals(
+      "[empty tool result]",
+      restored!!.responsesPendingMessages.single().toolResult?.content,
+    )
+  }
+
   private fun legacyToolResultMetadata(): Map<String, String> = mapOf(
     "sourceUrls" to "https://example.com",
     OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON to
       """{"turnIndex":1,"toolCallCount":1}""",
     OpenCrayPromptResumeMetadata.KEY_PROMPT_CHECKPOINT_BOUNDARY to "tool_result_committed",
   )
+
+  private fun foreignToolResultPayload(): String = """
+    {"run_id":"run-2","task_id":"task-2","turn":3,"tool_name":"WebFetch","status":"success","content":"done","metadata":{"sourceUrls":"https://example.com","nestedConfig":{"depth":2},"scores":[1,2],"${OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON}":"{\"turnIndex\":9}"}}
+  """.trimIndent()
 
   private fun legacyToolResultPayload(): String = """
     {"run_id":"run-1","task_id":"task-1","turn":1,"tool_name":"WebSearch","status":"success","content":"done","metadata":{"sourceUrls":"https://example.com","${OpenCrayPromptResumeMetadata.KEY_PROMPT_RESUME_JSON}":"{\"turnIndex\":1,\"toolCallCount\":1}","${OpenCrayPromptResumeMetadata.KEY_PROMPT_CHECKPOINT_BOUNDARY}":"tool_result_committed"}}

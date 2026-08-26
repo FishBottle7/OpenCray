@@ -343,20 +343,50 @@ internal fun partialJsonStringFieldValue(
     while (index < rawText.length) {
       val character = rawText[index]
       if (escaped) {
-        builder.append(
-          when (character) {
-            'n' -> '\n'
-            'r' -> '\r'
-            't' -> '\t'
-            '\\',
-            '"',
-            '/',
-            -> character
-            else -> character
-          },
-        )
         escaped = false
-        index += 1
+        when (character) {
+          'n' -> {
+            builder.append('\n')
+            index += 1
+          }
+          'r' -> {
+            builder.append('\r')
+            index += 1
+          }
+          't' -> {
+            builder.append('\t')
+            index += 1
+          }
+          '\\',
+          '"',
+          '/',
+          -> {
+            builder.append(character)
+            index += 1
+          }
+          'u' -> {
+            val hexStart = index + 1
+            val hexEnd = hexStart + 4
+            if (hexEnd <= rawText.length) {
+              val code = rawText.substring(hexStart, hexEnd).toIntOrNull(16)
+              if (code != null) {
+                builder.append(code.toChar())
+              } else {
+                builder.append('\\').append('u')
+                builder.append(rawText, hexStart, hexEnd)
+              }
+              index = hexEnd
+            } else {
+              builder.append('\\').append('u')
+              builder.append(rawText, hexStart, rawText.length)
+              index = rawText.length
+            }
+          }
+          else -> {
+            builder.append('\\').append(character)
+            index += 1
+          }
+        }
         continue
       }
       when (character) {

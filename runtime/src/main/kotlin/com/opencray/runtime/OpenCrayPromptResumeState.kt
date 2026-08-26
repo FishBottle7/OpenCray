@@ -21,7 +21,6 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.jsonPrimitive
 
 @Serializable
 enum class OpenCrayPromptCheckpointBoundary(
@@ -91,7 +90,6 @@ data class OpenCraySerializableGatewayToolResult(
   val metadata: Map<String, String> = emptyMap(),
 ) {
   init {
-    require(content.isNotBlank()) { "OpenCraySerializableGatewayToolResult content must not be blank." }
     require(toolCallId == null || toolCallId.isNotBlank()) {
       "OpenCraySerializableGatewayToolResult toolCallId must not be blank."
     }
@@ -103,7 +101,7 @@ data class OpenCraySerializableGatewayToolResult(
   fun toGatewayToolResult(): LiteLlmGatewayToolResult = LiteLlmGatewayToolResult(
     toolCallId = toolCallId,
     toolName = toolName,
-    content = content,
+    content = normalizedToolResultContent(content),
     structuredContent = structuredContent,
     isError = isError,
     exitCode = exitCode,
@@ -659,17 +657,23 @@ private fun normalizeGatewayMessages(
 private fun normalizeGatewayToolResult(
   result: OpenCraySerializableGatewayToolResult,
 ): OpenCraySerializableGatewayToolResult {
+  val normalizedContent = normalizedToolResultContent(result.content)
   val normalizedMetadata = OpenCrayPromptResumeMetadata.sanitizeToolResultMetadata(result.metadata)
-  return if (normalizedMetadata == result.metadata) {
+  return if (normalizedContent == result.content && normalizedMetadata == result.metadata) {
     result
   } else {
-    result.copy(metadata = normalizedMetadata)
+    result.copy(content = normalizedContent, metadata = normalizedMetadata)
   }
 }
 
-private fun JsonObject.toStringMap(): Map<String, String> = entries.associate { (key, value) ->
-  key to value.jsonPrimitive.content
-}
+private const val EMPTY_TOOL_RESULT_CONTENT_PLACEHOLDER: String = "[empty tool result]"
+
+private fun normalizedToolResultContent(content: String): String =
+  content.ifBlank { EMPTY_TOOL_RESULT_CONTENT_PLACEHOLDER }
+
+private fun JsonObject.toStringMap(): Map<String, String> = entries.mapNotNull { (key, value) ->
+  (value as? JsonPrimitive)?.content?.let { content -> key to content }
+}.toMap()
 
 private fun Map<String, String>.toJsonObject(): JsonObject = JsonObject(
   entries.associate { (key, value) -> key to JsonPrimitive(value) },
