@@ -7,11 +7,9 @@ import android.net.Uri
 import androidx.core.content.FileProvider
 import java.net.URLConnection
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.util.Locale
-import kotlin.io.path.exists
-import kotlin.io.path.isRegularFile
 import kotlin.io.path.name
 import org.opencray.app.R
 
@@ -21,26 +19,32 @@ internal object AppAgentWorkspaceOpener {
     workspaceRoot: Path,
     relativePath: String,
   ) {
-    val source = resolvePath(
-      workspaceRoot = workspaceRoot,
+    val guard = AppAgentWorkspaceExportGuard.create(workspaceRoot)
+    val outsideWorkspaceMessage = appContext.getString(
+      R.string.files_open_error_outside_workspace,
+    )
+    val source = guard.resolveEntry(
       relativePath = relativePath,
-      outsideWorkspaceMessage = appContext.getString(
-        R.string.files_open_error_outside_workspace,
+      outsideWorkspaceMessage = outsideWorkspaceMessage,
+      symbolicLinkMessage = appContext.getString(
+        R.string.files_open_error_symbolic_link,
       ),
     )
-    require(source.exists()) {
+    require(Files.exists(source, LinkOption.NOFOLLOW_LINKS)) {
       appContext.getString(R.string.files_open_error_missing_entry)
     }
-    require(source.isRegularFile()) {
+    require(Files.isRegularFile(source, LinkOption.NOFOLLOW_LINKS)) {
       appContext.getString(R.string.files_open_error_not_file)
     }
 
     val stagedFile = runCatching {
       stageFileCopy(
+        guard = guard,
         source = source,
         destinationDirectory = appContext.cacheDir.toPath()
           .resolve(OPEN_CACHE_DIRECTORY_NAME)
           .normalize(),
+        outsideWorkspaceMessage = outsideWorkspaceMessage,
       )
     }.getOrElse { throwable ->
       throw IllegalStateException(
@@ -97,19 +101,20 @@ internal object AppAgentWorkspaceOpener {
   }
 
   private fun stageFileCopy(
+    guard: AppAgentWorkspaceExportGuard,
     source: Path,
     destinationDirectory: Path,
+    outsideWorkspaceMessage: String,
   ): Path {
     Files.createDirectories(destinationDirectory)
     val destination = uniqueDestination(
       destinationDirectory = destinationDirectory,
       desiredName = source.fileName.toString(),
     )
-    Files.copy(
-      source,
-      destination,
-      StandardCopyOption.REPLACE_EXISTING,
-      StandardCopyOption.COPY_ATTRIBUTES,
+    guard.copyFileIntoStaging(
+      source = source,
+      destination = destination,
+      outsideWorkspaceMessage = outsideWorkspaceMessage,
     )
     return destination
   }
@@ -126,7 +131,7 @@ internal object AppAgentWorkspaceOpener {
     }
     var candidate = destinationDirectory.resolve(desiredName)
     var suffix = 2
-    while (candidate.exists()) {
+    while (Files.exists(candidate)) {
       val suffixName = if (extension.isEmpty()) {
         "$baseName ($suffix)"
       } else {
@@ -136,23 +141,6 @@ internal object AppAgentWorkspaceOpener {
       suffix += 1
     }
     return candidate
-  }
-
-  private fun resolvePath(
-    workspaceRoot: Path,
-    relativePath: String,
-    outsideWorkspaceMessage: String,
-  ): Path {
-    val normalizedRoot = workspaceRoot.toAbsolutePath().normalize()
-    val trimmed = relativePath.trim().replace('\\', '/').removePrefix("/")
-    require(trimmed.isNotEmpty()) {
-      outsideWorkspaceMessage
-    }
-    val resolved = normalizedRoot.resolve(trimmed).normalize()
-    require(resolved.startsWith(normalizedRoot)) {
-      outsideWorkspaceMessage
-    }
-    return resolved
   }
 
   private fun resolveMimeType(fileName: String): String {

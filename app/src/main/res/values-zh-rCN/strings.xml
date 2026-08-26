@@ -335,12 +335,14 @@
     <string name="files_share_error_missing_entry">所选项目里有内容已经不存在了。</string>
     <string name="files_share_error_no_target">这台设备上没有可用的分享应用。</string>
     <string name="files_share_error_outside_workspace">只能分享当前工作区里的内容。</string>
+    <string name="files_share_error_symbolic_link">无法分享快捷方式或符号链接项目。</string>
     <string name="files_share_error_prepare_failed">准备分享内容时失败了。</string>
     <string name="files_share_error_launch_failed">无法打开系统分享面板。</string>
     <string name="files_open_error_missing_entry">所选文件已经不存在了。</string>
     <string name="files_open_error_not_file">这里只能打开文件，不能打开文件夹。</string>
     <string name="files_open_error_no_target">这台设备上没有可用的打开方式。</string>
     <string name="files_open_error_outside_workspace">只能打开当前工作区里的内容。</string>
+    <string name="files_open_error_symbolic_link">无法打开快捷方式或符号链接项目。</string>
     <string name="files_open_error_prepare_failed">准备打开所选文件时失败了。</string>
     <string name="files_open_error_launch_failed">无法打开所选文件。</string>
     <string name="media_save_error_missing_entry">所选媒体文件已经不存在了。</string>

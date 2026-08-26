@@ -7,15 +7,12 @@ import android.net.Uri
 import androidx.core.content.FileProvider
 import java.net.URLConnection
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.util.Locale
-import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlin.io.path.deleteIfExists
 import kotlin.io.path.exists
-import kotlin.io.path.inputStream
-import kotlin.io.path.isDirectory
 import kotlin.io.path.name
 import kotlin.io.path.outputStream
 import org.opencray.app.R
@@ -26,26 +23,38 @@ internal object AppAgentWorkspaceSharer {
     workspaceRoot: Path,
     relativePaths: List<String>,
   ) {
+    val guard = AppAgentWorkspaceExportGuard.create(workspaceRoot)
+    val outsideWorkspaceMessage = appContext.getString(
+      R.string.files_share_error_outside_workspace,
+    )
+    val symbolicLinkMessage = appContext.getString(
+      R.string.files_share_error_symbolic_link,
+    )
     val sourcePaths = relativePaths
       .map(String::trim)
       .filter(String::isNotBlank)
       .distinct()
       .map { relativePath ->
-        resolvePath(
-          workspaceRoot = workspaceRoot,
+        guard.resolveEntry(
           relativePath = relativePath,
-          allowRoot = false,
-          outsideWorkspaceMessage = appContext.getString(
-            R.string.files_share_error_outside_workspace,
-          ),
+          outsideWorkspaceMessage = outsideWorkspaceMessage,
+          symbolicLinkMessage = symbolicLinkMessage,
         )
       }
     require(sourcePaths.isNotEmpty()) {
       appContext.getString(R.string.files_share_error_no_selection)
     }
     sourcePaths.forEach { source ->
-      require(source.exists()) {
+      require(Files.exists(source, LinkOption.NOFOLLOW_LINKS)) {
         appContext.getString(R.string.files_share_error_missing_entry)
+      }
+    }
+    sourcePaths.forEach { source ->
+      if (Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS)) {
+        guard.ensureTreeHasNoSymbolicLinks(
+          directory = source,
+          symbolicLinkMessage = symbolicLinkMessage,
+        )
       }
     }
 
@@ -58,17 +67,29 @@ internal object AppAgentWorkspaceSharer {
       if (sourcePaths.size > 1) {
         listOf(
           stageSelectionArchive(
+            guard = guard,
             sourcePaths = sourcePaths,
             destinationDirectory = shareCacheDirectory,
+            outsideWorkspaceMessage = outsideWorkspaceMessage,
           ),
         )
       } else {
         val source = sourcePaths.single()
         listOf(
-          if (source.isDirectory()) {
-            stageDirectoryArchive(source = source, destinationDirectory = shareCacheDirectory)
+          if (Files.isDirectory(source, LinkOption.NOFOLLOW_LINKS)) {
+            stageDirectoryArchive(
+              guard = guard,
+              source = source,
+              destinationDirectory = shareCacheDirectory,
+              outsideWorkspaceMessage = outsideWorkspaceMessage,
+            )
           } else {
-            stageFileCopy(source = source, destinationDirectory = shareCacheDirectory)
+            stageFileCopy(
+              guard = guard,
+              source = source,
+              destinationDirectory = shareCacheDirectory,
+              outsideWorkspaceMessage = outsideWorkspaceMessage,
+            )
           },
         )
       }
@@ -160,25 +181,28 @@ internal object AppAgentWorkspaceSharer {
   }
 
   private fun stageFileCopy(
+    guard: AppAgentWorkspaceExportGuard,
     source: Path,
     destinationDirectory: Path,
+    outsideWorkspaceMessage: String,
   ): Path {
     val destination = uniqueDestination(
       destinationDirectory = destinationDirectory,
       desiredName = source.fileName.toString(),
     )
-    Files.copy(
-      source,
-      destination,
-      StandardCopyOption.REPLACE_EXISTING,
-      StandardCopyOption.COPY_ATTRIBUTES,
+    guard.copyFileIntoStaging(
+      source = source,
+      destination = destination,
+      outsideWorkspaceMessage = outsideWorkspaceMessage,
     )
     return destination
   }
 
   private fun stageSelectionArchive(
+    guard: AppAgentWorkspaceExportGuard,
     sourcePaths: List<Path>,
     destinationDirectory: Path,
+    outsideWorkspaceMessage: String,
   ): Path {
     val destination = uniqueDestination(
       destinationDirectory = destinationDirectory,
@@ -186,52 +210,36 @@ internal object AppAgentWorkspaceSharer {
     )
     ZipOutputStream(destination.outputStream().buffered()).use { output ->
       sourcePaths.forEach { source ->
-        writeSourceToZip(output = output, source = source, rootName = source.name)
+        guard.writeSourceToZip(
+          output = output,
+          source = source,
+          rootName = source.name,
+          outsideWorkspaceMessage = outsideWorkspaceMessage,
+        )
       }
     }
     return destination
   }
 
   private fun stageDirectoryArchive(
+    guard: AppAgentWorkspaceExportGuard,
     source: Path,
     destinationDirectory: Path,
+    outsideWorkspaceMessage: String,
   ): Path {
     val destination = uniqueDestination(
       destinationDirectory = destinationDirectory,
       desiredName = "${source.name}.zip",
     )
     ZipOutputStream(destination.outputStream().buffered()).use { output ->
-      writeSourceToZip(output = output, source = source, rootName = source.name)
+      guard.writeSourceToZip(
+        output = output,
+        source = source,
+        rootName = source.name,
+        outsideWorkspaceMessage = outsideWorkspaceMessage,
+      )
     }
     return destination
-  }
-
-  private fun writeSourceToZip(
-    output: ZipOutputStream,
-    source: Path,
-    rootName: String,
-  ) {
-    Files.walk(source).use { stream ->
-      stream.forEach { current ->
-        val relative = source.relativize(current).toString().replace('\\', '/')
-        val entryName = when {
-          relative.isEmpty() && Files.isDirectory(current) -> "$rootName/"
-          relative.isEmpty() -> rootName
-          Files.isDirectory(current) -> "$rootName/$relative/"
-          else -> "$rootName/$relative"
-        }
-        val entry = ZipEntry(entryName).apply {
-          time = Files.getLastModifiedTime(current).toMillis()
-        }
-        output.putNextEntry(entry)
-        if (!Files.isDirectory(current)) {
-          current.inputStream().buffered().use { input ->
-            input.copyTo(output)
-          }
-        }
-        output.closeEntry()
-      }
-    }
   }
 
   private fun uniqueDestination(
@@ -260,34 +268,28 @@ internal object AppAgentWorkspaceSharer {
 
   private fun resetDirectory(directory: Path) {
     if (directory.exists()) {
-      Files.walk(directory).use { stream ->
-        stream
-          .sorted(Comparator.reverseOrder())
-          .forEach { path ->
-            path.deleteIfExists()
+      val deletionOrder = mutableListOf<Path>()
+      Files.walkFileTree(
+        directory,
+        emptySet(),
+        Int.MAX_VALUE,
+        object : java.nio.file.SimpleFileVisitor<Path>() {
+          override fun visitFile(file: Path, attrs: java.nio.file.attribute.BasicFileAttributes): java.nio.file.FileVisitResult {
+            deletionOrder.add(file)
+            return java.nio.file.FileVisitResult.CONTINUE
           }
+
+          override fun postVisitDirectory(dir: Path, exc: java.io.IOException?): java.nio.file.FileVisitResult {
+            deletionOrder.add(dir)
+            return java.nio.file.FileVisitResult.CONTINUE
+          }
+        },
+      )
+      deletionOrder.forEach { path ->
+        path.deleteIfExists()
       }
     }
     Files.createDirectories(directory)
-  }
-
-  private fun resolvePath(
-    workspaceRoot: Path,
-    relativePath: String,
-    allowRoot: Boolean,
-    outsideWorkspaceMessage: String,
-  ): Path {
-    val normalizedRoot = workspaceRoot.toAbsolutePath().normalize()
-    val trimmed = relativePath.trim().replace('\\', '/').removePrefix("/")
-    if (trimmed.isEmpty()) {
-      require(allowRoot) { "Workspace root cannot be targeted here." }
-      return normalizedRoot
-    }
-    val resolved = normalizedRoot.resolve(trimmed).normalize()
-    require(resolved.startsWith(normalizedRoot)) {
-      outsideWorkspaceMessage
-    }
-    return resolved
   }
 
   private const val MULTI_SELECTION_ARCHIVE_NAME: String = "OpenCray Share.zip"

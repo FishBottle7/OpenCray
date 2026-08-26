@@ -335,12 +335,14 @@
     <string name="files_share_error_missing_entry">One or more selected items are no longer available.</string>
     <string name="files_share_error_no_target">No app is available to share this item.</string>
     <string name="files_share_error_outside_workspace">Only items inside the current workspace can be shared.</string>
+    <string name="files_share_error_symbolic_link">Shortcut or symbolic link items cannot be shared.</string>
     <string name="files_share_error_prepare_failed">Could not prepare the selected items for sharing.</string>
     <string name="files_share_error_launch_failed">Could not open the system share sheet.</string>
     <string name="files_open_error_missing_entry">The selected item is no longer available.</string>
     <string name="files_open_error_not_file">Only files can be opened here.</string>
     <string name="files_open_error_no_target">No app is available to open this item.</string>
     <string name="files_open_error_outside_workspace">Only items inside the current workspace can be opened.</string>
+    <string name="files_open_error_symbolic_link">Shortcut or symbolic link items cannot be opened.</string>
     <string name="files_open_error_prepare_failed">Could not prepare the selected item for opening.</string>
     <string name="files_open_error_launch_failed">Could not open the selected item.</string>
     <string name="media_save_error_missing_entry">The selected media file is no longer available.</string>
