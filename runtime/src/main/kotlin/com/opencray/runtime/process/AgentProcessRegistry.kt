@@ -374,13 +374,15 @@ class InMemoryAgentProcessRegistry(
     linkedMapOf<String, ManagedProcessDeliveredObservationState>()
 
   override fun start(request: ManagedProcessStartRequest): ManagedProcessSnapshot {
-    val controller = controllerFactory.start(request)
-    synchronized(lock) {
+    val controller = synchronized(lock) {
       require(request.processId !in controllersByProcessId) {
         "Managed process '${request.processId}' already exists."
       }
-      controllersByProcessId[request.processId] = controller
+      requireNewProcessTrackingCapacityLocked()
+      val started = controllerFactory.start(request)
+      controllersByProcessId[request.processId] = started
       trimTrackedProcessesLocked()
+      started
     }
     return snapshotWithPersistedDeliveredObservationState(controller.snapshot())
   }
@@ -421,12 +423,23 @@ class InMemoryAgentProcessRegistry(
     }
   }
 
+  private fun requireNewProcessTrackingCapacityLocked() {
+    if (controllersByProcessId.size < config.maxTrackedProcesses) {
+      return
+    }
+    val evictableTerminalExists = controllersByProcessId.values.any { controller ->
+      controller.snapshot().status.isTerminal
+    }
+    require(evictableTerminalExists) {
+      "Managed process registry is full (${controllersByProcessId.size}/${config.maxTrackedProcesses} tracked) and every tracked process is still active; refusing to start a new managed process."
+    }
+  }
+
   private fun trimTrackedProcessesLocked() {
     while (controllersByProcessId.size > config.maxTrackedProcesses) {
       val removableProcessId = controllersByProcessId.entries
         .firstOrNull { (_, controller) -> controller.snapshot().status.isTerminal }
         ?.key
-        ?: controllersByProcessId.keys.firstOrNull()
         ?: return
       controllersByProcessId.remove(removableProcessId)
       deliveredObservationStatesByProcessId.remove(removableProcessId)
@@ -471,20 +484,46 @@ class FileBackedAgentProcessRegistry(
   }
 
   override fun start(request: ManagedProcessStartRequest): ManagedProcessSnapshot {
+    validateNoConflictingSnapshotLocked(request.processId)
     val controller = controllerFactory.start(request)
     val snapshot = controller.snapshot()
-    return synchronizedStoreLocked {
+    return try {
+      synchronizedStoreLocked {
+        val existing = loadNormalizedRecordLocked()
+        require(existing.snapshots.none { persisted -> persisted.processId == request.processId }) {
+          "Managed process '${request.processId}' already exists."
+        }
+        registerControllerLocked(
+          processId = request.processId,
+          controller = controller,
+        )
+        persistSnapshotsLocked(existing.snapshots + snapshot).first { persisted ->
+          persisted.processId == request.processId
+        }
+      }
+    } catch (error: Throwable) {
+      runCatching { controller.terminate() }
+      throw error
+    }
+  }
+
+  private fun validateNoConflictingSnapshotLocked(processId: String) {
+    synchronizedStoreLocked {
       val existing = loadNormalizedRecordLocked()
-      require(existing.snapshots.none { persisted -> persisted.processId == request.processId }) {
-        "Managed process '${request.processId}' already exists."
+      require(existing.snapshots.none { persisted -> persisted.processId == processId }) {
+        "Managed process '$processId' already exists."
       }
-      registerControllerLocked(
-        processId = request.processId,
-        controller = controller,
-      )
-      persistSnapshotsLocked(existing.snapshots + snapshot).first { persisted ->
-        persisted.processId == request.processId
-      }
+      requireCapacityForNewSnapshotLocked(existing.snapshots)
+    }
+  }
+
+  private fun requireCapacityForNewSnapshotLocked(snapshots: List<ManagedProcessSnapshot>) {
+    if (snapshots.size < config.maxTrackedProcesses) {
+      return
+    }
+    val evictableTerminalExists = snapshots.any { snapshot -> snapshot.status.isTerminal }
+    require(evictableTerminalExists) {
+      "Managed process registry is full (${snapshots.size}/${config.maxTrackedProcesses} tracked) and every tracked process is still active; refusing to start a new managed process."
     }
   }
 
@@ -707,7 +746,7 @@ class FileBackedAgentProcessRegistry(
     while (retained.size > config.maxTrackedProcesses) {
       val removableIndex = retained.indexOfLast { snapshot -> snapshot.status.isTerminal }
         .takeIf { index -> index >= 0 }
-        ?: retained.lastIndex
+        ?: break
       retained.removeAt(removableIndex)
     }
     return retained
