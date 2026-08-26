@@ -46,8 +46,6 @@ import com.opencray.runtime.process.ManagedProcessRestoreMode
 import com.opencray.runtime.process.ManagedProcessStatus
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
 import java.nio.file.Path
-import java.util.Timer
-import java.util.TimerTask
 import java.util.UUID
 import org.opencray.app.R
 
@@ -1087,55 +1085,14 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   private fun observeProjectionWithPolling(
     payloadProvider: () -> Map<String, Any?>,
     listener: (Map<String, Any?>) -> Unit,
-  ): () -> Unit {
-    val lock = Any()
-    var disposed = false
-    var latestPayload: Map<String, Any?>? = runCatching(payloadProvider).getOrNull()
-    latestPayload?.let { initialPayload ->
-      mainThreadPoster.post {
-        synchronized(lock) {
-          if (disposed) {
-            return@post
-          }
-        }
-        listener(initialPayload)
-      }
-    }
-    val timer = Timer("projection-chat-gateway-observer", true)
-    timer.scheduleAtFixedRate(
-      object : TimerTask() {
-        override fun run() {
-          val nextPayload = runCatching(payloadProvider).getOrNull() ?: return
-          val shouldEmit = synchronized(lock) {
-            if (disposed || nextPayload == latestPayload) {
-              false
-            } else {
-              latestPayload = nextPayload
-              true
-            }
-          }
-          if (shouldEmit) {
-            mainThreadPoster.post {
-              synchronized(lock) {
-                if (disposed) {
-                  return@post
-                }
-              }
-              listener(nextPayload)
-            }
-          }
-        }
-      },
-      0L,
-      pollIntervalMs.coerceAtLeast(1L),
+  ): () -> Unit =
+    observeProjectionWithPollingSnapshot(
+      mainThreadPoster = mainThreadPoster,
+      payloadProvider = payloadProvider,
+      listener = listener,
+      pollIntervalMs = pollIntervalMs,
+      streamKey = "chat_projection",
     )
-    return {
-      synchronized(lock) {
-        disposed = true
-      }
-      timer.cancel()
-    }
-  }
 
   private fun associatedManagedProcesses(
     taskId: String,

@@ -76,6 +76,78 @@ void main() {
   });
 
   test(
+    'local runtime bridge watch recovers after transient read failures',
+    () async {
+      var requests = 0;
+      requestHandler = (request) async {
+        expect(request.method, 'GET');
+        expect(request.uri.path, '/v1/shell_snapshot');
+        requests += 1;
+        if (requests <= 2) {
+          request.response.statusCode = HttpStatus.serviceUnavailable;
+          await request.response.close();
+          return;
+        }
+        await writeJson(request, <String, Object?>{
+          'initialTab': 'chat',
+          'hostLabel': 'LOCAL RUNTIME',
+          'hostSummary': 'Loopback runtime is attached.',
+          'isHostConnected': true,
+        });
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(
+        baseUrl: baseUrl(),
+        pollInterval: const Duration(milliseconds: 5),
+        watchFailureThreshold: 3,
+        watchBackoffInitialDelay: const Duration(milliseconds: 5),
+        watchBackoffMaxDelay: const Duration(milliseconds: 10),
+      );
+      final snapshot = await bridge
+          .watchShellSnapshot()
+          .first
+          .timeout(const Duration(seconds: 5));
+
+      expect(snapshot.hostLabel, 'LOCAL RUNTIME');
+      expect(snapshot.hostSummary, 'Loopback runtime is attached.');
+      expect(requests, greaterThanOrEqualTo(3));
+    },
+  );
+
+  test(
+    'local runtime bridge watch emits one error and stops at failure threshold',
+    () async {
+      var requests = 0;
+      requestHandler = (request) async {
+        requests += 1;
+        request.response.statusCode = HttpStatus.serviceUnavailable;
+        await request.response.close();
+      };
+
+      final bridge = OpenCrayLocalRuntimeBridge(
+        baseUrl: baseUrl(),
+        pollInterval: const Duration(milliseconds: 5),
+        watchFailureThreshold: 3,
+        watchBackoffInitialDelay: const Duration(milliseconds: 5),
+        watchBackoffMaxDelay: const Duration(milliseconds: 10),
+      );
+
+      await expectLater(
+        bridge.watchShellSnapshot(),
+        emitsInOrder(<Matcher>[
+          emitsError(isA<HttpException>()),
+          emitsDone,
+        ]),
+      );
+
+      final settledRequests = requests;
+      expect(settledRequests, greaterThanOrEqualTo(3));
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      expect(requests, settledRequests);
+    },
+  );
+
+  test(
     'local runtime bridge injects flutter and bridge lifecycle ids into shell snapshots',
     () async {
       requestHandler = (request) async {

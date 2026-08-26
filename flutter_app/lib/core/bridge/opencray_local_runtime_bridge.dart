@@ -52,6 +52,30 @@ class _LocalRuntimeRealtimeEnvelope {
   final Map<Object?, Object?> payload;
 }
 
+const int _watchFailureThreshold = 8;
+const Duration _watchBackoffInitialDelay = Duration(milliseconds: 250);
+const Duration _watchBackoffMaxDelay = Duration(seconds: 5);
+
+Duration _watchBackoffDelay(
+  int failureCount,
+  Duration initialDelay,
+  Duration maxDelay,
+) {
+  var shift = failureCount - 1;
+  if (shift < 0) {
+    shift = 0;
+  }
+  if (shift > 16) {
+    shift = 16;
+  }
+  return Duration(
+    milliseconds: (initialDelay.inMilliseconds << shift).clamp(
+      1,
+      maxDelay.inMilliseconds,
+    ),
+  );
+}
+
 class OpenCrayLocalRuntimeBridge extends _LocalRuntimeBridgeDeps
     with
         _LocalRuntimeBridgeShellDomain,
@@ -68,6 +92,9 @@ class OpenCrayLocalRuntimeBridge extends _LocalRuntimeBridgeDeps
     required String baseUrl,
     this.requestTimeout = const Duration(milliseconds: 800),
     this.pollInterval = const Duration(seconds: 2),
+    this.watchFailureThreshold = _watchFailureThreshold,
+    this.watchBackoffInitialDelay = _watchBackoffInitialDelay,
+    this.watchBackoffMaxDelay = _watchBackoffMaxDelay,
   }) : _baseUri = _normalizeBaseUri(baseUrl) {
     _runtimeRealtimeController =
         StreamController<_LocalRuntimeRealtimeEnvelope>.broadcast(
@@ -82,6 +109,12 @@ class OpenCrayLocalRuntimeBridge extends _LocalRuntimeBridgeDeps
   final Duration requestTimeout;
   @override
   final Duration pollInterval;
+  @override
+  final int watchFailureThreshold;
+  @override
+  final Duration watchBackoffInitialDelay;
+  @override
+  final Duration watchBackoffMaxDelay;
   @override
   final String _bridgeInstanceId = openCrayLifecycleId('local-runtime-bridge');
   @override
@@ -210,6 +243,12 @@ abstract class _LocalRuntimeBridgeDeps implements OpenCrayHostBridge {
 
   Duration get pollInterval;
 
+  int get watchFailureThreshold;
+
+  Duration get watchBackoffInitialDelay;
+
+  Duration get watchBackoffMaxDelay;
+
   String get _bridgeInstanceId;
 
   StreamController<_LocalRuntimeRealtimeEnvelope> get _runtimeRealtimeController;
@@ -230,14 +269,31 @@ abstract class _LocalRuntimeBridgeDeps implements OpenCrayHostBridge {
     T Function(Map<Object?, Object?> payload) parser,
   ) async* {
     String? previousSignature;
+    var consecutiveFailures = 0;
     while (true) {
-      final payload = await loader();
-      final signature = jsonEncode(_normalizeJson(payload));
-      if (signature != previousSignature) {
-        previousSignature = signature;
-        yield parser(payload);
+      try {
+        final payload = await loader();
+        final signature = jsonEncode(_normalizeJson(payload));
+        if (signature != previousSignature) {
+          final parsed = parser(payload);
+          previousSignature = signature;
+          yield parsed;
+        }
+        consecutiveFailures = 0;
+        await Future<void>.delayed(pollInterval);
+      } catch (error, stackTrace) {
+        consecutiveFailures += 1;
+        if (consecutiveFailures >= watchFailureThreshold) {
+          Error.throwWithStackTrace(error, stackTrace);
+        }
+        await Future<void>.delayed(
+          _watchBackoffDelay(
+            consecutiveFailures,
+            watchBackoffInitialDelay,
+            watchBackoffMaxDelay,
+          ),
+        );
       }
-      await Future<void>.delayed(pollInterval);
     }
   }
 

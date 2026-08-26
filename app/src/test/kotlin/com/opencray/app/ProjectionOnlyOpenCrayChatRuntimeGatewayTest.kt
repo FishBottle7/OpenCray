@@ -27,6 +27,7 @@ import com.opencray.runtime.process.AgentProcessRegistry
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStartRequest
 import com.opencray.runtime.process.ManagedProcessStatus
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -898,6 +899,140 @@ class ProjectionOnlyOpenCrayChatRuntimeGatewayTest {
       assertEquals("", observedDraftEvents[1]["text"])
       assertEquals(true, observedDraftEvents[1]["cleared"])
       assertEquals("pending-message-clear", observedDraftEvents[1]["pendingMessageId"])
+    } finally {
+      draftDisposer()
+    }
+  }
+
+  @Test
+  fun projectionPollBackoffGrowsExponentiallyAndCaps() {
+    assertEquals(250L, projectionPollBackoffDelayMs(1, 250L, 5_000L))
+    assertEquals(500L, projectionPollBackoffDelayMs(2, 250L, 5_000L))
+    assertEquals(1_000L, projectionPollBackoffDelayMs(3, 250L, 5_000L))
+    assertEquals(2_000L, projectionPollBackoffDelayMs(4, 250L, 5_000L))
+    assertEquals(4_000L, projectionPollBackoffDelayMs(5, 250L, 5_000L))
+    assertEquals(5_000L, projectionPollBackoffDelayMs(6, 250L, 5_000L))
+    assertEquals(5_000L, projectionPollBackoffDelayMs(7, 250L, 5_000L))
+    assertEquals(5_000L, projectionPollBackoffDelayMs(16, 250L, 5_000L))
+  }
+
+  @Test
+  fun projectionShellObserverRecoversAfterTransientReadFailures() {
+    val attempts = AtomicInteger(0)
+    val payload = mapOf(
+      "sessionId" to "session-shell-retry",
+      "value" to "first",
+    )
+    val observedPayloads = mutableListOf<Map<String, Any?>>()
+    val observedErrors = mutableListOf<Throwable>()
+    val disposer = observeProjectionWithPollingSnapshot(
+      mainThreadPoster = ImmediateMainThreadPoster,
+      payloadProvider = {
+        if (attempts.incrementAndGet() <= 1) {
+          throw IllegalStateException("projection read temporarily unavailable")
+        }
+        payload
+      },
+      listener = { value -> observedPayloads += value },
+      pollIntervalMs = 10L,
+      streamKey = "shell_test",
+      onError = { throwable -> observedErrors += throwable },
+      backoffInitialMs = 10L,
+      backoffMaxMs = 20L,
+    )
+
+    try {
+      waitForCondition {
+        observedPayloads.size == 1
+      }
+
+      Thread.sleep(60L)
+
+      assertEquals(listOf<Map<String, Any?>>(payload), observedPayloads)
+      assertTrue(observedErrors.isEmpty())
+      assertTrue(attempts.get() >= 2)
+    } finally {
+      disposer()
+    }
+  }
+
+  @Test
+  fun projectionDraftObserverRecoversAfterTransientReadFailures() {
+    val attempts = AtomicInteger(0)
+    val runtimePayload = mapOf(
+      "sessionId" to "session-draft-retry",
+      "liveAssistantDrafts" to listOf(
+        mapOf(
+          "runId" to "run-draft-retry",
+          "taskId" to "task-draft-retry",
+          "pendingMessageId" to "pending-message-retry",
+          "text" to "Streaming answer",
+          "updatedAtEpochMs" to 1_230L,
+        ),
+      ),
+    )
+    val observedDraftEvents = mutableListOf<Map<String, Any?>>()
+    val observedErrors = mutableListOf<Throwable>()
+    val draftDisposer = observeLiveAssistantDraftsWithPollingSnapshot(
+      mainThreadPoster = ImmediateMainThreadPoster,
+      runtimePayloadProvider = {
+        if (attempts.incrementAndGet() <= 2) {
+          throw IllegalStateException("projection read temporarily unavailable")
+        }
+        runtimePayload
+      },
+      listener = { payload -> observedDraftEvents += payload },
+      pollIntervalMs = 10L,
+      onError = { throwable -> observedErrors += throwable },
+      backoffInitialMs = 10L,
+      backoffMaxMs = 20L,
+    )
+
+    try {
+      waitForCondition {
+        observedDraftEvents.isNotEmpty()
+      }
+
+      assertEquals("Streaming answer", observedDraftEvents.single()["text"])
+      assertTrue(observedErrors.isEmpty())
+      assertTrue(attempts.get() >= 3)
+    } finally {
+      draftDisposer()
+    }
+  }
+
+  @Test
+  fun projectionDraftObserverEmitsErrorOnceAndStopsPollingAtFailureThreshold() {
+    val attempts = AtomicInteger(0)
+    val failure = IllegalStateException("projection read failed")
+    val observedErrors = mutableListOf<Throwable>()
+    val draftDisposer = observeLiveAssistantDraftsWithPollingSnapshot(
+      mainThreadPoster = ImmediateMainThreadPoster,
+      runtimePayloadProvider = {
+        attempts.incrementAndGet()
+        throw failure
+      },
+      listener = { },
+      pollIntervalMs = 5L,
+      onError = { throwable -> observedErrors += throwable },
+      failureThreshold = 3,
+      backoffInitialMs = 5L,
+      backoffMaxMs = 10L,
+    )
+
+    try {
+      waitForCondition(timeoutMs = 2_000L) {
+        observedErrors.isNotEmpty()
+      }
+      assertEquals(1, observedErrors.size)
+      assertEquals(failure, observedErrors.single())
+      assertTrue(attempts.get() >= 4)
+
+      val settledAttempts = attempts.get()
+      Thread.sleep(150L)
+
+      assertEquals(settledAttempts, attempts.get())
+      assertEquals(1, observedErrors.size)
     } finally {
       draftDisposer()
     }

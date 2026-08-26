@@ -3,6 +3,7 @@ package com.opencray.app
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import com.opencray.app.facade.llm.LlmConfigFacade
 import com.opencray.app.facade.llm.LocalLlmConfigFacade
 import com.opencray.app.facade.mcp.LocalMcpSettingsFacade
@@ -465,54 +466,141 @@ internal fun observeProjectionWithInitial(
   return { }
 }
 
-internal fun observeProjectionWithPollingSnapshot(
-  mainThreadPoster: MainThreadPoster,
-  payloadProvider: () -> Map<String, Any?>,
-  listener: (Map<String, Any?>) -> Unit,
+internal const val PROJECTION_POLL_FAILURE_THRESHOLD = 8
+internal const val PROJECTION_POLL_BACKOFF_INITIAL_MS = 250L
+internal const val PROJECTION_POLL_BACKOFF_MAX_MS = 5_000L
+private const val PROJECTION_POLL_LOG_TAG = "OpenCrayProjectionPoll"
+
+internal fun projectionPollBackoffDelayMs(
+  failureCount: Int,
+  backoffInitialMs: Long,
+  backoffMaxMs: Long,
+): Long {
+  val shift = (failureCount - 1).coerceIn(0, 16)
+  return (backoffInitialMs shl shift).coerceIn(1L, backoffMaxMs)
+}
+
+internal fun <S> startProjectionPollingObserver(
+  timerName: String,
+  streamKey: String,
   pollIntervalMs: Long,
+  mainThreadPoster: MainThreadPoster,
+  initialState: S,
+  readPayload: () -> Map<String, Any?>,
+  advance: (previous: S, payload: Map<String, Any?>) -> Pair<S, List<Map<String, Any?>>>,
+  deliver: (List<Map<String, Any?>>) -> Unit,
+  onError: (Throwable) -> Unit = {},
+  initialDelivery: (() -> Unit)? = null,
+  failureThreshold: Int = PROJECTION_POLL_FAILURE_THRESHOLD,
+  backoffInitialMs: Long = PROJECTION_POLL_BACKOFF_INITIAL_MS,
+  backoffMaxMs: Long = PROJECTION_POLL_BACKOFF_MAX_MS,
 ): () -> Unit {
   val lock = Any()
   var disposed = false
-  var latestPayload: Map<String, Any?>? = runCatching(payloadProvider).getOrNull()
-  latestPayload?.let { initialPayload ->
+  var state = initialState
+  var consecutiveFailures = 0
+  var lastSessionId = ""
+  val effectiveFailureThreshold = failureThreshold.coerceAtLeast(1)
+  val timer = Timer(timerName, true)
+
+  fun logReadFailure(throwable: Throwable, failureCount: Int) {
+    runCatching {
+      val sessionPart = if (lastSessionId.isBlank()) "" else " sessionId=$lastSessionId"
+      Log.w(
+        PROJECTION_POLL_LOG_TAG,
+        "projection poll read failed stream=$streamKey$sessionPart consecutiveFailures=$failureCount",
+        throwable,
+      )
+    }
+  }
+
+  fun attemptOutcome(): Long {
+    val result = runCatching(readPayload)
+    synchronized(lock) {
+      if (disposed) {
+        return -1L
+      }
+      result.fold(
+        onSuccess = { payload ->
+          consecutiveFailures = 0
+          lastSessionId = (payload["sessionId"] as? String)
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            .orEmpty()
+          val (nextState, events) = advance(state, payload)
+          state = nextState
+          if (events.isNotEmpty()) {
+            mainThreadPoster.post {
+              synchronized(lock) {
+                if (disposed) {
+                  return@post
+                }
+              }
+              deliver(events)
+            }
+          }
+        },
+        onFailure = { throwable ->
+          consecutiveFailures += 1
+          logReadFailure(throwable, consecutiveFailures)
+          if (consecutiveFailures < effectiveFailureThreshold) {
+            return projectionPollBackoffDelayMs(
+              failureCount = consecutiveFailures,
+              backoffInitialMs = backoffInitialMs,
+              backoffMaxMs = backoffMaxMs,
+            )
+          }
+          mainThreadPoster.post {
+            synchronized(lock) {
+              if (disposed) {
+                return@post
+              }
+            }
+            onError(throwable)
+          }
+          return -1L
+        },
+      )
+      return pollIntervalMs.coerceAtLeast(1L)
+    }
+  }
+
+  fun scheduleNext(delayMs: Long) {
+    runCatching {
+      timer.schedule(
+        object : TimerTask() {
+          override fun run() {
+            val nextDelay = runCatching { attemptOutcome() }.getOrElse { throwable ->
+              runCatching {
+                Log.e(
+                  PROJECTION_POLL_LOG_TAG,
+                  "projection poll dispatch failed stream=$streamKey",
+                  throwable,
+                )
+              }
+              -1L
+            }
+            if (nextDelay >= 0L) {
+              scheduleNext(nextDelay)
+            }
+          }
+        },
+        delayMs,
+      )
+    }
+  }
+
+  initialDelivery?.let { block ->
     mainThreadPoster.post {
       synchronized(lock) {
         if (disposed) {
           return@post
         }
       }
-      listener(initialPayload)
+      block()
     }
   }
-  val timer = Timer("projection-shell-gateway-observer", true)
-  timer.scheduleAtFixedRate(
-    object : TimerTask() {
-      override fun run() {
-        val nextPayload = runCatching(payloadProvider).getOrNull() ?: return
-        val shouldEmit = synchronized(lock) {
-          if (disposed || nextPayload == latestPayload) {
-            false
-          } else {
-            latestPayload = nextPayload
-            true
-          }
-        }
-        if (!shouldEmit) {
-          return
-        }
-        mainThreadPoster.post {
-          synchronized(lock) {
-            if (disposed) {
-              return@post
-            }
-          }
-          listener(nextPayload)
-        }
-      }
-    },
-    0L,
-    pollIntervalMs.coerceAtLeast(1L),
-  )
+  scheduleNext(0L)
   return {
     synchronized(lock) {
       disposed = true
@@ -521,56 +609,71 @@ internal fun observeProjectionWithPollingSnapshot(
   }
 }
 
+internal fun observeProjectionWithPollingSnapshot(
+  mainThreadPoster: MainThreadPoster,
+  payloadProvider: () -> Map<String, Any?>,
+  listener: (Map<String, Any?>) -> Unit,
+  pollIntervalMs: Long,
+  streamKey: String = "projection",
+  onError: (Throwable) -> Unit = {},
+  failureThreshold: Int = PROJECTION_POLL_FAILURE_THRESHOLD,
+  backoffInitialMs: Long = PROJECTION_POLL_BACKOFF_INITIAL_MS,
+  backoffMaxMs: Long = PROJECTION_POLL_BACKOFF_MAX_MS,
+): () -> Unit {
+  var latestPayload: Map<String, Any?>? = runCatching(payloadProvider).getOrNull()
+  return startProjectionPollingObserver(
+    timerName = "projection-shell-gateway-observer",
+    streamKey = streamKey,
+    pollIntervalMs = pollIntervalMs,
+    mainThreadPoster = mainThreadPoster,
+    initialState = latestPayload,
+    readPayload = payloadProvider,
+    advance = { previous, payload ->
+      if (payload == previous) {
+        previous to emptyList()
+      } else {
+        payload to listOf(payload)
+      }
+    },
+    deliver = { events -> listener(events.single()) },
+    onError = onError,
+    initialDelivery = latestPayload?.let { payload -> { listener(payload) } },
+    failureThreshold = failureThreshold,
+    backoffInitialMs = backoffInitialMs,
+    backoffMaxMs = backoffMaxMs,
+  )
+}
+
 internal fun observeLiveAssistantDraftsWithPollingSnapshot(
   mainThreadPoster: MainThreadPoster,
   runtimePayloadProvider: () -> Map<String, Any?>,
   listener: (Map<String, Any?>) -> Unit,
   pollIntervalMs: Long,
-): () -> Unit {
-  val lock = Any()
-  var disposed = false
-  var latestDrafts = polledLiveAssistantDrafts(runtimePayloadProvider())
-  val timer = Timer("projection-draft-gateway-observer", true)
-  timer.scheduleAtFixedRate(
-    object : TimerTask() {
-      override fun run() {
-        val nextPayload = runCatching(runtimePayloadProvider).getOrNull() ?: return
-        val nextDrafts = polledLiveAssistantDrafts(nextPayload)
-        val events = synchronized(lock) {
-          if (disposed) {
-            emptyList()
-          } else {
-            diffPolledLiveAssistantDrafts(
-              previous = latestDrafts,
-              current = nextDrafts,
-            ).also {
-              latestDrafts = nextDrafts
-            }
-          }
-        }
-        if (events.isEmpty()) {
-          return
-        }
-        mainThreadPoster.post {
-          synchronized(lock) {
-            if (disposed) {
-              return@post
-            }
-          }
-          events.forEach(listener)
-        }
-      }
+  streamKey: String = "live_assistant_draft",
+  onError: (Throwable) -> Unit = {},
+  failureThreshold: Int = PROJECTION_POLL_FAILURE_THRESHOLD,
+  backoffInitialMs: Long = PROJECTION_POLL_BACKOFF_INITIAL_MS,
+  backoffMaxMs: Long = PROJECTION_POLL_BACKOFF_MAX_MS,
+): () -> Unit =
+  startProjectionPollingObserver(
+    timerName = "projection-draft-gateway-observer",
+    streamKey = streamKey,
+    pollIntervalMs = pollIntervalMs,
+    mainThreadPoster = mainThreadPoster,
+    initialState = runCatching {
+      polledLiveAssistantDrafts(runtimePayloadProvider())
+    }.getOrDefault(emptyMap()),
+    readPayload = runtimePayloadProvider,
+    advance = { previous, payload ->
+      val nextDrafts = polledLiveAssistantDrafts(payload)
+      nextDrafts to diffPolledLiveAssistantDrafts(previous, nextDrafts)
     },
-    0L,
-    pollIntervalMs.coerceAtLeast(1L),
+    deliver = { events -> events.forEach(listener) },
+    onError = onError,
+    failureThreshold = failureThreshold,
+    backoffInitialMs = backoffInitialMs,
+    backoffMaxMs = backoffMaxMs,
   )
-  return {
-    synchronized(lock) {
-      disposed = true
-    }
-    timer.cancel()
-  }
-}
 
 private data class PolledLiveAssistantDraft(
   val sessionId: String,
