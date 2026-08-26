@@ -128,6 +128,33 @@ class DirectoryDurableTextStorageTest {
     assertTrue(File(directory, "runtime-runs.json.lock").exists())
   }
 
+  @Test
+  fun writeTextPersistsExactContentThroughSyncedAtomicReplacement() {
+    val directory = temporaryFolder.newFolder("durable-text-storage-sync")
+    val storage = DirectoryDurableTextStorage(directory)
+    val payload = buildString {
+      repeat(2_000) { index -> append("line-$index-汉字-emoji-\uD83D\uDE00\n") }
+    }
+
+    storage.writeText("runtime-runs.json", payload)
+    val updateResult = storage.updateText("runtime-runs.json") { current ->
+      DurableTextUpdate(
+        text = current.orEmpty().plus("tail"),
+        result = Unit,
+      )
+    }
+    val residue = directory
+      .listFiles { file -> file.name.endsWith(".tmp") }
+      .orEmpty()
+      .toList()
+
+    assertEquals(Unit, updateResult)
+    assertEquals(payload.plus("tail"), storage.readText("runtime-runs.json"))
+    assertEquals(payload.plus("tail"), File(directory, "runtime-runs.json").readText(Charsets.UTF_8))
+    assertTrue(residue.isEmpty())
+    assertTrue(File(directory, "runtime-runs.json").isFile)
+  }
+
   private class ConcurrentlyCreatedDirectory(path: String) : File(path) {
     var mkdirsCallCount: Int = 0
       private set

@@ -10,6 +10,7 @@ import com.opencray.runtime.context.ReplayPressureTranscriptMaintenanceSelector
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.TranscriptWindowBuilder
 import com.opencray.runtime.session.SessionTranscriptStore
+import java.security.MessageDigest
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -21,6 +22,7 @@ data class DurableCompactionEntry(
   val omittedToolMessageCount: Int = 0,
   val omittedSystemMessageCount: Int = 0,
   val compactedAtEpochMs: Long = 0L,
+  val coverageFingerprint: String = "",
 ) {
   init {
     require(text.isNotBlank()) { "DurableCompactionEntry text must not be blank." }
@@ -37,7 +39,11 @@ data class DurableCompactionEntry(
   )
 
   companion object {
-    fun from(summary: CompactionSummary, compactedAtEpochMs: Long): DurableCompactionEntry = DurableCompactionEntry(
+    fun from(
+      summary: CompactionSummary,
+      compactedAtEpochMs: Long,
+      coverageFingerprint: String = "",
+    ): DurableCompactionEntry = DurableCompactionEntry(
       text = summary.text,
       compactedMessageCount = summary.compactedMessageCount,
       omittedUserMessageCount = summary.omittedUserMessageCount,
@@ -45,8 +51,23 @@ data class DurableCompactionEntry(
       omittedToolMessageCount = summary.omittedToolMessageCount,
       omittedSystemMessageCount = summary.omittedSystemMessageCount,
       compactedAtEpochMs = compactedAtEpochMs,
+      coverageFingerprint = coverageFingerprint,
     )
   }
+}
+
+internal fun coverageFingerprintOf(messages: List<RuntimeConversationMessage>): String {
+  if (messages.isEmpty()) {
+    return ""
+  }
+  val digest = MessageDigest.getInstance("SHA-256")
+  messages.forEach { message ->
+    digest.update(message.role.name.toByteArray(Charsets.UTF_8))
+    digest.update(byteArrayOf(0))
+    digest.update(message.content.toByteArray(Charsets.UTF_8))
+    digest.update(byteArrayOf(0))
+  }
+  return digest.digest().joinToString(separator = "") { byte -> "%02x".format(byte.toInt() and 0xFF) }
 }
 
 @Serializable
@@ -221,9 +242,11 @@ data class DurableCompactionPolicy(
     existing: DurableCompactionState,
     summary: CompactionSummary,
     compactedAtEpochMs: Long,
+    coverageFingerprint: String = "",
   ): DurableCompactionState = DurableCompactionState(
-    entries = (existing.entries + DurableCompactionEntry.from(summary, compactedAtEpochMs))
-      .takeLast(maxStoredEntries),
+    entries = (
+      existing.entries + DurableCompactionEntry.from(summary, compactedAtEpochMs, coverageFingerprint)
+      ).takeLast(maxStoredEntries),
   )
 }
 
@@ -405,6 +428,22 @@ class DurableCompactionCoordinator(
         triggerStage = triggerStage,
       )
     }
+    val fingerprint = coverageFingerprintOf(selection.omittedMessages)
+    if (currentState.entries.any { entry -> entry.coverageFingerprint == fingerprint }) {
+      val truncatedCount = truncateReplayWorkingCopyPreservingAppendedTail(
+        transcriptStore = transcriptStore,
+        windowMessages = selection.window.messages,
+        previousSourceCount = conversation.size,
+      )
+      return toContext(
+        rendered = renderer.render(currentState),
+        compactedThisRun = false,
+        sourceTranscriptMessageCount = conversation.size,
+        retainedTranscriptMessageCount = truncatedCount,
+        replayPressure = replayPressure,
+        triggerStage = triggerStage,
+      )
+    }
     val remoteResult = remoteCompactionProvider.compact(
       RemoteCompactionRequest(
         triggerStage = triggerStage,
@@ -432,25 +471,52 @@ class DurableCompactionCoordinator(
         remoteCompactionMetadata = remoteCompactionMetadata,
       )
     val compactedAtEpochMs = clock()
+    var appendedSummary = false
     val updatedState = compactionStore.update { latestState ->
-      durableCompactionPolicy.append(
-        existing = latestState,
-        summary = summary,
-        compactedAtEpochMs = compactedAtEpochMs,
-      )
+      if (latestState.entries.any { entry -> entry.coverageFingerprint == fingerprint }) {
+        latestState
+      } else {
+        appendedSummary = true
+        durableCompactionPolicy.append(
+          existing = latestState,
+          summary = summary,
+          compactedAtEpochMs = compactedAtEpochMs,
+          coverageFingerprint = fingerprint,
+        )
+      }
     }
-    transcriptStore.replaceReplayWorkingCopy(selection.window.messages)
+    val renderedState = renderer.render(updatedState)
+    val truncatedCount = truncateReplayWorkingCopyPreservingAppendedTail(
+      transcriptStore = transcriptStore,
+      windowMessages = selection.window.messages,
+      previousSourceCount = conversation.size,
+    )
     return toContext(
-      rendered = renderer.render(updatedState),
-      compactedThisRun = true,
+      rendered = renderedState,
+      compactedThisRun = appendedSummary,
       sourceTranscriptMessageCount = conversation.size,
-      retainedTranscriptMessageCount = selection.window.messages.size,
-      latestCompactedMessageCount = summary.compactedMessageCount,
-      latestCompactedAtEpochMs = compactedAtEpochMs,
+      retainedTranscriptMessageCount = truncatedCount,
+      latestCompactedMessageCount = if (appendedSummary) summary.compactedMessageCount else 0,
+      latestCompactedAtEpochMs = if (appendedSummary) {
+        compactedAtEpochMs
+      } else {
+        renderedState.latestCompactedAtEpochMs
+      },
       replayPressure = replayPressure,
       triggerStage = triggerStage,
       remoteCompactionMetadata = remoteCompactionMetadata,
     )
+  }
+
+  private fun truncateReplayWorkingCopyPreservingAppendedTail(
+    transcriptStore: SessionTranscriptStore,
+    windowMessages: List<RuntimeConversationMessage>,
+    previousSourceCount: Int,
+  ): Int {
+    val appendedTail = transcriptStore.snapshot().drop(previousSourceCount)
+    val truncated = windowMessages + appendedTail
+    transcriptStore.replaceReplayWorkingCopy(truncated)
+    return truncated.size
   }
 
   fun currentContext(compactionStore: SessionCompactionStore): DurableCompactionContext =

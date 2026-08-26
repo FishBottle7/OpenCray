@@ -60,7 +60,15 @@ class FileBackedSessionCompactionStore(
         deserializer = SessionCompactionRecord.serializer(),
         string = encoded,
       )
-    }.getOrDefault(SessionCompactionRecord())
+    }.getOrElse { failure ->
+      if (!storage.backupCorrupt(FILE_NAME)) {
+        throw IllegalStateException(
+          "Session compaction record is corrupt and a corrupt backup could not be created.",
+          failure,
+        )
+      }
+      SessionCompactionRecord()
+    }
   }
 
   private fun encodeRecord(record: SessionCompactionRecord): String =

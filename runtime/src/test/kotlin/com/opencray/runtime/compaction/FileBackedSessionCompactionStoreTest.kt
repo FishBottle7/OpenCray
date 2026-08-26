@@ -2,6 +2,8 @@ package com.opencray.runtime.compaction
 
 import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.DurableTextUpdate
+import com.opencray.runtime.context.RuntimeConversationMessage
+import com.opencray.runtime.context.RuntimeConversationRole
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -44,7 +46,8 @@ class FileBackedSessionCompactionStoreTest {
   fun corruptSnapshotLoadsAsEmptyAndNextUpdateRecoversFile() {
     val directory = temporaryFolder.newFolder("runtime-compaction-store-corrupt")
     val compactionFile = File(directory, "runtime-compaction.json")
-    compactionFile.writeText("{ not-json")
+    val corruptedBytes = "{ not-json"
+    compactionFile.writeText(corruptedBytes)
     val store = FileBackedSessionCompactionStore(
       directory = directory,
       clock = { 2_000L },
@@ -58,11 +61,73 @@ class FileBackedSessionCompactionStoreTest {
       )
     }
     val recoveredText = compactionFile.readText()
+    val corruptBackups = directory
+      .listFiles { file -> file.name.startsWith("runtime-compaction.json.corrupt-") }
+      .orEmpty()
+      .toList()
 
     assertEquals(listOf("recovered"), updated.entries.map { item -> item.text })
     assertTrue(recoveredText.contains("recovered"))
     assertTrue(!recoveredText.contains("not-json"))
+    assertTrue(corruptBackups.isNotEmpty())
+    corruptBackups.forEach { backup ->
+      assertEquals(corruptedBytes, backup.readText())
+    }
   }
+
+  @Test
+  fun corruptRecordBackupFailureRejectsLoadAndWriteWithoutDestroyingOriginalBytes() {
+    val directory = temporaryFolder.newFolder("runtime-compaction-store-backup-failure")
+    val storage = UpdateOnlyCompactionTextStorage(backupCorruptResult = false)
+    storage.seed("runtime-compaction.json", "{ not-json")
+    val store = FileBackedSessionCompactionStore(
+      directory = directory,
+      storage = storage,
+      clock = { 2_000L },
+    )
+
+    val loadFailure = runCatching { store.load() }
+    val updateFailure = runCatching { store.update { current -> current } }
+
+    assertTrue(loadFailure.exceptionOrNull() is IllegalStateException)
+    assertTrue(updateFailure.exceptionOrNull() is IllegalStateException)
+    assertEquals("{ not-json", storage.storedText("runtime-compaction.json"))
+    assertEquals(0, storage.writeTextCallCount)
+  }
+
+  @Test
+  fun savedCoverageFingerprintSurvivesRestartRoundTrip() {
+    val directory = temporaryFolder.newFolder("runtime-compaction-store-fingerprint")
+    val fingerprint = coverageFingerprintOf(listOf(userMessage("User request 1")))
+    val store = FileBackedSessionCompactionStore(
+      directory = directory,
+      clock = { 3_000L },
+    )
+    store.save(
+      DurableCompactionState(
+        entries = listOf(
+          DurableCompactionEntry(
+            text = "first",
+            compactedMessageCount = 4,
+            compactedAtEpochMs = 100L,
+            coverageFingerprint = fingerprint,
+          ),
+        ),
+      ),
+    )
+    val reopened = FileBackedSessionCompactionStore(
+      directory = directory,
+      clock = { 4_000L },
+    )
+
+    assertEquals(fingerprint, reopened.load().entries.single().coverageFingerprint)
+  }
+
+  private fun userMessage(content: String): RuntimeConversationMessage =
+    RuntimeConversationMessage(
+      role = RuntimeConversationRole.USER,
+      content = content,
+    )
 
   private fun entry(
     text: String,
@@ -74,7 +139,9 @@ class FileBackedSessionCompactionStoreTest {
   )
 }
 
-private class UpdateOnlyCompactionTextStorage : DurableTextStorage {
+private class UpdateOnlyCompactionTextStorage(
+  private val backupCorruptResult: Boolean = true,
+) : DurableTextStorage {
   var updateTextCallCount: Int = 0
     private set
   var writeTextCallCount: Int = 0
@@ -82,6 +149,12 @@ private class UpdateOnlyCompactionTextStorage : DurableTextStorage {
   val deletedNames = mutableListOf<String>()
 
   private var textByName = linkedMapOf<String, String>()
+
+  fun seed(name: String, text: String) {
+    textByName[name] = text
+  }
+
+  fun storedText(name: String): String? = textByName[name]
 
   override fun readText(name: String): String? = textByName[name]
 
@@ -94,6 +167,8 @@ private class UpdateOnlyCompactionTextStorage : DurableTextStorage {
     deletedNames += name
     return textByName.remove(name) != null
   }
+
+  override fun backupCorrupt(name: String): Boolean = backupCorruptResult
 
   override fun <T> updateText(
     name: String,

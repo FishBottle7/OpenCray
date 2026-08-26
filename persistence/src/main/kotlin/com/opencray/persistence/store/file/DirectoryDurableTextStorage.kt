@@ -4,10 +4,13 @@ import com.opencray.persistence.store.DurableTextStorage
 import com.opencray.persistence.store.DurableTextUpdate
 import java.io.File
 import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.nio.file.StandardOpenOption
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.concurrent.ConcurrentHashMap
@@ -119,7 +122,14 @@ class DirectoryDurableTextStorage(
     }
     val tmp = Files.createTempFile(parent.toPath(), "${file.name}.", ".tmp").toFile()
     try {
-      tmp.writeText(text, Charsets.UTF_8)
+      FileChannel.open(
+        tmp.toPath(),
+        StandardOpenOption.WRITE,
+        StandardOpenOption.TRUNCATE_EXISTING,
+      ).use { channel ->
+        channel.write(ByteBuffer.wrap(text.toByteArray(Charsets.UTF_8)))
+        channel.force(true)
+      }
       replaceAtomically(tmp = tmp, destination = file)
     } finally {
       if (tmp.exists()) {

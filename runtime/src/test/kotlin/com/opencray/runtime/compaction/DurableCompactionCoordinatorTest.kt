@@ -6,6 +6,7 @@ import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.context.TranscriptWindowBuilder
 import com.opencray.runtime.context.TranscriptWindowConfig
 import com.opencray.runtime.session.InMemorySessionTranscriptStore
+import com.opencray.runtime.session.SessionTranscriptStore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -193,6 +194,8 @@ class DurableCompactionCoordinatorTest {
     val context = coordinator.compactIfNeeded(
       transcriptStore = transcriptStore,
       compactionStore = compactionStore,
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+      remoteCompactionProvider = AppendDuringRemoteCompactionProvider(transcriptStore),
     )
 
     assertEquals(3, transcriptStore.snapshot().size)
@@ -410,6 +413,128 @@ class DurableCompactionCoordinatorTest {
     )
   }
 
+  @Test
+  fun interruptedCompactionResumesIdempotentlyWithoutDoubleCounting() {
+    val delegateTranscriptStore = InMemorySessionTranscriptStore()
+    val transcriptStore = CrashOnFirstReplacementTranscriptStore(delegateTranscriptStore)
+    transcriptStore.seedIfEmpty(
+      listOf(
+        user("User request 1"),
+        assistant("Assistant reply 1"),
+        user("User request 2"),
+        assistant("Assistant reply 2"),
+        user("User request 3"),
+        assistant("Assistant reply 3"),
+        user("User request 4"),
+        assistant("Assistant reply 4"),
+      ),
+    )
+    val compactionStore = InMemorySessionCompactionStore()
+    val coordinator = DurableCompactionCoordinator(
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 4,
+          maxCharsPerMessage = 200,
+        ),
+      ),
+      clock = { 5_000L },
+    )
+
+    val interruptedRun = runCatching {
+      coordinator.compactIfNeeded(
+        transcriptStore = transcriptStore,
+        compactionStore = compactionStore,
+        llmMetadata = mapOf("context_window_tokens" to "64"),
+      )
+    }
+
+    assertTrue(interruptedRun.isFailure)
+    assertEquals(1, compactionStore.load().entries.size)
+    assertEquals(4, compactionStore.load().entries.single().compactedMessageCount)
+    assertEquals(8, transcriptStore.snapshot().size)
+    val resumeProvider = CountingUnavailableRemoteCompactionProvider()
+
+    val resumedContext = coordinator.compactIfNeeded(
+      transcriptStore = transcriptStore,
+      compactionStore = compactionStore,
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+      remoteCompactionProvider = resumeProvider,
+    )
+
+    assertEquals(0, resumeProvider.callCount)
+    assertEquals(1, compactionStore.load().entries.size)
+    assertEquals(4, compactionStore.load().entries.single().compactedMessageCount)
+    assertEquals(
+      4,
+      compactionStore.load().entries.sumOf { entry -> entry.compactedMessageCount },
+    )
+    assertEquals(4, transcriptStore.snapshot().size)
+    assertFalse(resumedContext.trace.compactedThisRun)
+    assertEquals(8, resumedContext.trace.sourceTranscriptMessageCount)
+    assertEquals(4, resumedContext.trace.retainedTranscriptMessageCount)
+    assertEquals(4, resumedContext.trace.totalCompactedMessageCount)
+  }
+
+  @Test
+  fun compactionPreservesMessagesAppendedDuringRemoteCompaction() {
+    val transcriptStore = InMemorySessionTranscriptStore()
+    transcriptStore.seedIfEmpty(
+      listOf(
+        user("User request 1"),
+        assistant("Assistant reply 1"),
+        user("User request 2"),
+        assistant("Assistant reply 2"),
+        user("User request 3"),
+        assistant("Assistant reply 3"),
+        user("User request 4"),
+        assistant("Assistant reply 4"),
+      ),
+    )
+    val compactionStore = InMemorySessionCompactionStore()
+    val coordinator = DurableCompactionCoordinator(
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 4,
+          maxCharsPerMessage = 200,
+        ),
+      ),
+      clock = { 5_000L },
+    )
+
+    val context = coordinator.compactIfNeeded(
+      transcriptStore = transcriptStore,
+      compactionStore = compactionStore,
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+      remoteCompactionProvider = AppendDuringRemoteCompactionProvider(transcriptStore),
+    )
+
+    assertTrue(context.trace.compactedThisRun)
+    assertEquals(5, transcriptStore.snapshot().size)
+    assertEquals("User request 5", transcriptStore.snapshot().last().content)
+    assertEquals(5, context.trace.retainedTranscriptMessageCount)
+    assertEquals(4, compactionStore.load().entries.single().compactedMessageCount)
+  }
+
+  @Test
+  fun coverageFingerprintIsStableAndContentSensitive() {
+    val first = listOf(
+      user("User request 1"),
+      assistant("Assistant reply 1"),
+    )
+    val second = listOf(
+      user("User request 1"),
+      assistant("Assistant reply 1"),
+    )
+    val changed = listOf(
+      user("User request 1"),
+      assistant("Assistant reply 1 edited"),
+    )
+
+    assertEquals(coverageFingerprintOf(first), coverageFingerprintOf(second))
+    assertTrue(coverageFingerprintOf(first) != coverageFingerprintOf(changed))
+    assertEquals("", coverageFingerprintOf(emptyList()))
+  }
+
   private fun user(content: String): RuntimeConversationMessage =
     RuntimeConversationMessage(
       role = RuntimeConversationRole.USER,
@@ -451,5 +576,57 @@ class DurableCompactionCoordinatorTest {
     }
 
     fun current(): DurableCompactionState = state
+  }
+
+  private class CrashOnFirstReplacementTranscriptStore(
+    private val delegate: InMemorySessionTranscriptStore,
+  ) : SessionTranscriptStore {
+    private var replacementsRemaining: Int = 1
+
+    override fun snapshot(): List<RuntimeConversationMessage> = delegate.snapshot()
+
+    override fun seedIfEmpty(messages: List<RuntimeConversationMessage>) {
+      delegate.seedIfEmpty(messages)
+    }
+
+    override fun appendIfDistinct(message: RuntimeConversationMessage) {
+      delegate.appendIfDistinct(message)
+    }
+
+    override fun replaceReplayWorkingCopy(messages: List<RuntimeConversationMessage>) {
+      if (replacementsRemaining > 0) {
+        replacementsRemaining -= 1
+        throw IllegalStateException("Simulated crash between summary append and transcript truncation.")
+      }
+      delegate.replaceReplayWorkingCopy(messages)
+    }
+
+    override fun clear() {
+      delegate.clear()
+    }
+  }
+
+  private class CountingUnavailableRemoteCompactionProvider : RemoteCompactionProvider {
+    var callCount: Int = 0
+      private set
+
+    override fun compact(request: RemoteCompactionRequest): RemoteCompactionResult {
+      callCount += 1
+      return RemoteCompactionResult.Unavailable("unavailable_for_test")
+    }
+  }
+
+  private class AppendDuringRemoteCompactionProvider(
+    private val transcriptStore: InMemorySessionTranscriptStore,
+  ) : RemoteCompactionProvider {
+    override fun compact(request: RemoteCompactionRequest): RemoteCompactionResult {
+      transcriptStore.appendIfDistinct(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.USER,
+          content = "User request 5",
+        ),
+      )
+      return RemoteCompactionResult.Unavailable("unavailable_for_test")
+    }
   }
 }
