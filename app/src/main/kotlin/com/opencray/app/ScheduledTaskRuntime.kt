@@ -13,8 +13,10 @@ import com.opencray.core.contracts.AgentTaskType
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
-import com.opencray.persistence.model.ChatTranscriptRole
-import java.util.UUID
+import com.opencray.persistence.store.file.ProcessFileLockChannel
+import java.io.File
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 
 internal object ScheduledTaskMetadataKeys {
   const val SCHEDULE_ID: String = "_host.scheduleId"
@@ -42,6 +44,10 @@ internal object ScheduledTaskRepairReasons {
   const val INTERRUPTED_RUN_RETRY: String = "interrupted_run_retry"
   const val MANAGED_PROCESS_RECONNECT: String = "managed_process_reconnect"
   const val OWNER_LEASE_EXPIRED: String = "owner_lease_expired"
+}
+
+internal object ScheduledTaskRunRecoverySources {
+  const val RESUME_SUBMIT_LEASE: String = "resume_submit_lease"
 }
 
 internal const val SCHEDULED_TASK_NOTIFICATION_SNOOZE_DELAY_MS: Long = 15L * 60L * 1_000L
@@ -241,6 +247,49 @@ internal class AlarmManagerScheduledAlarmScheduler(
   }
 }
 
+internal class ScheduledTaskDispatchLocks(
+  private val localizedContext: Context,
+) {
+  fun <T> withDispatchLock(
+    scheduleRunId: String,
+    block: () -> T,
+  ): T = synchronized(lockFor(scheduleRunId)) {
+    withProcessFileLock(scheduleRunId, block)
+  }
+
+  private fun lockFor(scheduleRunId: String): Any =
+    JVM_LOCKS.computeIfAbsent(dispatchShard(scheduleRunId)) { Any() }
+
+  private fun <T> withProcessFileLock(
+    scheduleRunId: String,
+    block: () -> T,
+  ): T {
+    val lockFile = dispatchLockFile(scheduleRunId) ?: return block()
+    return ProcessFileLockChannel.withLock(lockFile, block)
+  }
+
+  private fun dispatchLockFile(scheduleRunId: String): File? = runCatching {
+    val lockDirectory = File(
+      localizedContext.applicationContext.filesDir,
+      LOCK_DIRECTORY_NAME,
+    )
+    if (!lockDirectory.exists()) {
+      lockDirectory.mkdirs()
+    }
+    File(lockDirectory, "$LOCK_FILE_PREFIX${dispatchShard(scheduleRunId)}.lock")
+  }.getOrNull()
+
+  private companion object {
+    private val JVM_LOCKS = ConcurrentHashMap<Int, Any>()
+    private const val LOCK_DIRECTORY_NAME: String = "scheduled-task-dispatch-locks"
+    private const val LOCK_FILE_PREFIX: String = "scheduled-task-dispatch-shard-"
+    private const val SHARD_COUNT: Int = 64
+
+    private fun dispatchShard(scheduleRunId: String): Int =
+      Math.floorMod(scheduleRunId.hashCode(), SHARD_COUNT)
+  }
+}
+
 internal class ScheduledTaskDispatcher(
   private val hostAccess: RuntimeSessionDirectoryAccess,
   private val chatSessionStore: ChatSessionLocalStore,
@@ -256,19 +305,32 @@ internal class ScheduledTaskDispatcher(
   private val triggerRegistrar: ScheduledTriggerRegistrar,
   private val clock: () -> Long = System::currentTimeMillis,
 ) {
-  fun dispatch(command: ScheduledTaskWakeCommand): ScheduledTaskDispatchOutcome {
+  private val dispatchLocks = ScheduledTaskDispatchLocks(localizedContext)
+
+  fun dispatch(command: ScheduledTaskWakeCommand): ScheduledTaskDispatchOutcome =
+    executeDispatch(command, recoveryMode = false)
+
+  fun dispatchForRepair(command: ScheduledTaskWakeCommand): ScheduledTaskDispatchOutcome =
+    executeDispatch(command, recoveryMode = true)
+
+  private fun executeDispatch(
+    command: ScheduledTaskWakeCommand,
+    recoveryMode: Boolean,
+  ): ScheduledTaskDispatchOutcome = dispatchLocks.withDispatchLock(command.scheduleRunId) {
+    executeDispatchLocked(command, recoveryMode)
+  }
+
+  private fun executeDispatchLocked(
+    command: ScheduledTaskWakeCommand,
+    recoveryMode: Boolean,
+  ): ScheduledTaskDispatchOutcome {
     val existing = runRecordStore.get(command.scheduleRunId)
     if (existing != null &&
-      existing.result != ScheduledTaskRunResult.TRIGGERED
+      !(recoveryMode && existing.result == ScheduledTaskRunResult.TRIGGERED)
     ) {
-      return ScheduledTaskDispatchOutcome(
-        result = ScheduledTaskRunResult.SKIPPED_DUPLICATE,
-        scheduleId = command.scheduleId,
-        scheduleRunId = command.scheduleRunId,
-        sessionId = existing.sessionId,
-        createdRunId = existing.createdRunId,
-        createdTaskId = existing.createdTaskId,
-        failureReason = existing.failureReason,
+      return skippedDuplicateOutcome(
+        command = command,
+        record = existing,
       )
     }
 
@@ -312,17 +374,21 @@ internal class ScheduledTaskDispatcher(
     val snoozedUntilEpochMs = spec.snoozedUntilEpochMs
     if (snoozedUntilEpochMs != null && snoozedUntilEpochMs > nowForDispatchEpochMs) {
       triggerRegistrar.syncSpec(spec)
-      val record = ScheduledTaskRunRecord(
+      runRecordStore.claimRun(
         scheduleRunId = command.scheduleRunId,
-        scheduleId = spec.scheduleId,
-        sessionId = spec.sessionId,
-        triggerReason = command.triggerReason,
-        triggeredAtEpochMs = command.triggeredAtEpochMs,
-        result = ScheduledTaskRunResult.SKIPPED_SNOOZED,
-        failureReason = "schedule_snoozed",
-        updatedAtEpochMs = clock(),
-      )
-      runRecordStore.upsert(record)
+        expectedResult = null,
+      ) { current ->
+        current ?: ScheduledTaskRunRecord(
+          scheduleRunId = command.scheduleRunId,
+          scheduleId = spec.scheduleId,
+          sessionId = spec.sessionId,
+          triggerReason = command.triggerReason,
+          triggeredAtEpochMs = command.triggeredAtEpochMs,
+          result = ScheduledTaskRunResult.SKIPPED_SNOOZED,
+          failureReason = "schedule_snoozed",
+          updatedAtEpochMs = clock(),
+        )
+      }
       return ScheduledTaskDispatchOutcome(
         result = ScheduledTaskRunResult.SKIPPED_SNOOZED,
         scheduleId = spec.scheduleId,
@@ -371,17 +437,21 @@ internal class ScheduledTaskDispatcher(
       sessionIsBusy(session, spec.sessionId)
     ) {
       triggerRegistrar.syncSpec(spec)
-      val record = ScheduledTaskRunRecord(
+      runRecordStore.claimRun(
         scheduleRunId = command.scheduleRunId,
-        scheduleId = spec.scheduleId,
-        sessionId = spec.sessionId,
-        triggerReason = command.triggerReason,
-        triggeredAtEpochMs = command.triggeredAtEpochMs,
-        result = ScheduledTaskRunResult.SKIPPED_SESSION_BUSY,
-        failureReason = "session_busy",
-        updatedAtEpochMs = clock(),
-      )
-      runRecordStore.upsert(record)
+        expectedResult = null,
+      ) { current ->
+        current ?: ScheduledTaskRunRecord(
+          scheduleRunId = command.scheduleRunId,
+          scheduleId = spec.scheduleId,
+          sessionId = spec.sessionId,
+          triggerReason = command.triggerReason,
+          triggeredAtEpochMs = command.triggeredAtEpochMs,
+          result = ScheduledTaskRunResult.SKIPPED_SESSION_BUSY,
+          failureReason = "session_busy",
+          updatedAtEpochMs = clock(),
+        )
+      }
       return ScheduledTaskDispatchOutcome(
         result = ScheduledTaskRunResult.SKIPPED_SESSION_BUSY,
         scheduleId = spec.scheduleId,
@@ -394,8 +464,105 @@ internal class ScheduledTaskDispatcher(
       cancelOlderWaitingScheduledRuns(session, spec.scheduleId)
     }
 
-    runRecordStore.upsert(
-      ScheduledTaskRunRecord(
+    val identifiers = scheduledTaskRunIdentifiers(
+      sessionId = spec.sessionId,
+      scheduleRunId = command.scheduleRunId,
+    )
+    val resumingInterruptedRun = recoveryMode && existing != null
+    if (resumingInterruptedRun) {
+      val reconciled = reconcileInterruptedRun(
+        command = command,
+        spec = spec,
+        session = session,
+        identifiers = identifiers,
+      )
+      if (reconciled != null) {
+        return reconciled
+      }
+      val resumedClaim = runRecordStore.claimRun(
+        scheduleRunId = command.scheduleRunId,
+        expectedResult = ScheduledTaskRunResult.TRIGGERED,
+      ) { current ->
+        (current ?: ScheduledTaskRunRecord(
+          scheduleRunId = command.scheduleRunId,
+          scheduleId = spec.scheduleId,
+          sessionId = spec.sessionId,
+          triggerReason = command.triggerReason,
+          triggeredAtEpochMs = command.triggeredAtEpochMs,
+          result = ScheduledTaskRunResult.TRIGGERED,
+          updatedAtEpochMs = clock(),
+        )).copy(
+          recoverySource = ScheduledTaskRunRecoverySources.RESUME_SUBMIT_LEASE,
+          updatedAtEpochMs = clock(),
+        )
+      }
+      if (!resumedClaim) {
+        return skippedDuplicateOutcome(
+          command = command,
+          record = runRecordStore.get(command.scheduleRunId),
+        )
+      }
+    } else {
+      val claimed = runRecordStore.claimRun(
+        scheduleRunId = command.scheduleRunId,
+        expectedResult = null,
+      ) { current ->
+        current ?: ScheduledTaskRunRecord(
+          scheduleRunId = command.scheduleRunId,
+          scheduleId = spec.scheduleId,
+          sessionId = spec.sessionId,
+          triggerReason = command.triggerReason,
+          triggeredAtEpochMs = command.triggeredAtEpochMs,
+          result = ScheduledTaskRunResult.TRIGGERED,
+          updatedAtEpochMs = clock(),
+        )
+      }
+      if (!claimed) {
+        return skippedDuplicateOutcome(
+          command = command,
+          record = runRecordStore.get(command.scheduleRunId),
+        )
+      }
+    }
+
+    return submitClaimedRun(
+      command = command,
+      spec = spec,
+      session = session,
+      identifiers = identifiers,
+    )
+  }
+
+  private fun reconcileInterruptedRun(
+    command: ScheduledTaskWakeCommand,
+    spec: ScheduledTaskSpec,
+    session: OpenCrayRuntimeSessionAccess,
+    identifiers: ScheduledTaskRunIdentifiers,
+  ): ScheduledTaskDispatchOutcome? {
+    val queuedSnapshot = session.snapshot().tasks.firstOrNull { snapshot ->
+      snapshot.task.id == identifiers.taskId
+    }
+    val knownRun = if (queuedSnapshot != null) {
+      null
+    } else {
+      session.findRun(identifiers.runId)
+    }
+    if (queuedSnapshot == null && knownRun == null) {
+      return null
+    }
+    val acceptedAtEpochMs = clock()
+    val createdRunId = queuedSnapshot
+      ?.let { snapshot ->
+        snapshot.task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
+          ?.trim()
+          ?.takeIf(String::isNotBlank)
+      }
+      ?: identifiers.runId
+    val finalized = runRecordStore.claimRun(
+      scheduleRunId = command.scheduleRunId,
+      expectedResult = ScheduledTaskRunResult.TRIGGERED,
+    ) { current ->
+      (current ?: ScheduledTaskRunRecord(
         scheduleRunId = command.scheduleRunId,
         scheduleId = spec.scheduleId,
         sessionId = spec.sessionId,
@@ -403,13 +570,42 @@ internal class ScheduledTaskDispatcher(
         triggeredAtEpochMs = command.triggeredAtEpochMs,
         result = ScheduledTaskRunResult.TRIGGERED,
         updatedAtEpochMs = clock(),
-      ),
-    )
+      )).copy(
+        acceptedAtEpochMs = maxOf(acceptedAtEpochMs, command.triggeredAtEpochMs),
+        createdRunId = createdRunId,
+        createdTaskId = identifiers.taskId,
+        result = ScheduledTaskRunResult.ACCEPTED,
+        updatedAtEpochMs = maxOf(acceptedAtEpochMs, command.triggeredAtEpochMs),
+      )
+    }
+    triggerRegistrar.syncSpec(spec)
+    return if (finalized) {
+      ScheduledTaskDispatchOutcome(
+        result = ScheduledTaskRunResult.ACCEPTED,
+        scheduleId = spec.scheduleId,
+        scheduleRunId = command.scheduleRunId,
+        sessionId = spec.sessionId,
+        createdRunId = createdRunId,
+        createdTaskId = identifiers.taskId,
+      )
+    } else {
+      skippedDuplicateOutcome(
+        command = command,
+        record = runRecordStore.get(command.scheduleRunId),
+      )
+    }
+  }
 
-    val pendingMessageId = chatSessionStore.reserveMessageId(ChatTranscriptRole.ASSISTANT)
+  private fun submitClaimedRun(
+    command: ScheduledTaskWakeCommand,
+    spec: ScheduledTaskSpec,
+    session: OpenCrayRuntimeSessionAccess,
+    identifiers: ScheduledTaskRunIdentifiers,
+  ): ScheduledTaskDispatchOutcome {
+    val pendingMessageId = identifiers.pendingMessageId
     val now = maxOf(clock(), command.triggeredAtEpochMs)
     val task = AgentTask(
-      id = "scheduled-${spec.sessionId}-${UUID.randomUUID().toString().take(8)}",
+      id = identifiers.taskId,
       type = AgentTaskType.PROMPT,
       input = spec.payload.prompt.trim(),
       policyDecision = PolicyDecision(
@@ -421,6 +617,7 @@ internal class ScheduledTaskDispatcher(
         spec = spec,
         command = command,
         pendingMessageId = pendingMessageId,
+        runId = identifiers.runId,
       ),
     )
 
@@ -439,20 +636,26 @@ internal class ScheduledTaskDispatcher(
       }
       session.ensureProcessing()
       triggerRegistrar.syncSpec(spec)
-      runRecordStore.upsert(
-        ScheduledTaskRunRecord(
+      runRecordStore.claimRun(
+        scheduleRunId = command.scheduleRunId,
+        expectedResult = ScheduledTaskRunResult.TRIGGERED,
+      ) { current ->
+        (current ?: ScheduledTaskRunRecord(
           scheduleRunId = command.scheduleRunId,
           scheduleId = spec.scheduleId,
           sessionId = spec.sessionId,
           triggerReason = command.triggerReason,
           triggeredAtEpochMs = command.triggeredAtEpochMs,
+          result = ScheduledTaskRunResult.TRIGGERED,
+          updatedAtEpochMs = clock(),
+        )).copy(
           acceptedAtEpochMs = submission.acceptedAtEpochMs,
           createdRunId = submission.runId,
           createdTaskId = submission.taskId,
           result = ScheduledTaskRunResult.ACCEPTED,
           updatedAtEpochMs = submission.acceptedAtEpochMs,
-        ),
-      )
+        )
+      }
       ScheduledTaskDispatchOutcome(
         result = ScheduledTaskRunResult.ACCEPTED,
         scheduleId = spec.scheduleId,
@@ -464,18 +667,24 @@ internal class ScheduledTaskDispatcher(
     } catch (throwable: Throwable) {
       triggerRegistrar.syncSpec(spec)
       val failureReason = throwable.message?.trim()?.takeIf(String::isNotBlank) ?: "dispatch_failed"
-      runRecordStore.upsert(
-        ScheduledTaskRunRecord(
+      runRecordStore.claimRun(
+        scheduleRunId = command.scheduleRunId,
+        expectedResult = ScheduledTaskRunResult.TRIGGERED,
+      ) { current ->
+        (current ?: ScheduledTaskRunRecord(
           scheduleRunId = command.scheduleRunId,
           scheduleId = spec.scheduleId,
           sessionId = spec.sessionId,
           triggerReason = command.triggerReason,
           triggeredAtEpochMs = command.triggeredAtEpochMs,
+          result = ScheduledTaskRunResult.TRIGGERED,
+          updatedAtEpochMs = clock(),
+        )).copy(
           result = ScheduledTaskRunResult.FAILED_DISPATCH,
           failureReason = failureReason,
           updatedAtEpochMs = clock(),
-        ),
-      )
+        )
+      }
       ScheduledTaskDispatchOutcome(
         result = ScheduledTaskRunResult.FAILED_DISPATCH,
         scheduleId = spec.scheduleId,
@@ -485,6 +694,19 @@ internal class ScheduledTaskDispatcher(
       )
     }
   }
+
+  private fun skippedDuplicateOutcome(
+    command: ScheduledTaskWakeCommand,
+    record: ScheduledTaskRunRecord?,
+  ): ScheduledTaskDispatchOutcome = ScheduledTaskDispatchOutcome(
+    result = ScheduledTaskRunResult.SKIPPED_DUPLICATE,
+    scheduleId = command.scheduleId,
+    scheduleRunId = command.scheduleRunId,
+    sessionId = record?.sessionId,
+    createdRunId = record?.createdRunId,
+    createdTaskId = record?.createdTaskId,
+    failureReason = record?.failureReason,
+  )
 
   private fun sessionIsBusy(
     session: OpenCrayRuntimeSessionAccess,
@@ -514,8 +736,11 @@ internal class ScheduledTaskDispatcher(
     result: ScheduledTaskRunResult,
     failureReason: String,
   ) {
-    runRecordStore.upsert(
-      ScheduledTaskRunRecord(
+    runRecordStore.claimRun(
+      scheduleRunId = command.scheduleRunId,
+      expectedResult = null,
+    ) { current ->
+      current ?: ScheduledTaskRunRecord(
         scheduleRunId = command.scheduleRunId,
         scheduleId = command.scheduleId,
         sessionId = sessionId,
@@ -524,8 +749,8 @@ internal class ScheduledTaskDispatcher(
         result = result,
         failureReason = failureReason,
         updatedAtEpochMs = clock(),
-      ),
-    )
+      )
+    }
   }
 
   private fun clearSnoozeForDispatchIfNeeded(
@@ -559,6 +784,7 @@ internal class ScheduledTaskDispatcher(
     spec: ScheduledTaskSpec,
     command: ScheduledTaskWakeCommand,
     pendingMessageId: String,
+    runId: String,
   ): Map<String, String> = buildTaskSafetyMetadata(
     snapshot = safetySettingsFacade.load(),
     approvedReadRoots = approvedReadRootsProvider(),
@@ -566,10 +792,7 @@ internal class ScheduledTaskDispatcher(
     lifecycleDescriptor.taskMetadata(
       submissionSource = RunSubmissionSources.SCHEDULED_TRIGGER,
     ) + buildMap {
-      put(
-        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID,
-        "run-${spec.sessionId}-${UUID.randomUUID().toString().take(8)}",
-      )
+      put(AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID, runId)
       put(AppAgentSessionTaskRuntimeFactory.METADATA_HOST_SESSION_ID, spec.sessionId)
       put(AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID, pendingMessageId)
       put(AppAgentSessionTaskRuntimeFactory.METADATA_VISIBLE_THROUGH_MESSAGE_ID, pendingMessageId)
@@ -638,7 +861,7 @@ internal fun ScheduledTaskRepairDependencies.repairScheduledTasks(
     enabledSpecs = enabledSpecs,
     nowEpochMs = nowEpochMs,
     repairReason = repairReason,
-  ).map(dispatcher::dispatch)
+  ).map(dispatcher::dispatchForRepair)
   resyncEnabledScheduledTasks(
     specStore = specStore,
     triggerRegistrar = triggerRegistrar,
@@ -1008,6 +1231,30 @@ internal fun scheduledTaskRunId(
   scheduleId: String,
   scheduledForEpochMs: Long,
 ): String = "schedule-run-${FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId(scheduleId)}-$scheduledForEpochMs"
+
+internal data class ScheduledTaskRunIdentifiers(
+  val taskId: String,
+  val runId: String,
+  val pendingMessageId: String,
+)
+
+internal fun scheduledTaskDeterministicToken(seed: String): String =
+  MessageDigest.getInstance("SHA-256")
+    .digest(seed.toByteArray(Charsets.UTF_8))
+    .joinToString(separator = "") { byte -> "%02x".format(byte) }
+    .take(16)
+
+internal fun scheduledTaskRunIdentifiers(
+  sessionId: String,
+  scheduleRunId: String,
+): ScheduledTaskRunIdentifiers {
+  val token = scheduledTaskDeterministicToken(scheduleRunId)
+  return ScheduledTaskRunIdentifiers(
+    taskId = "scheduled-$sessionId-$token",
+    runId = "run-$sessionId-$token",
+    pendingMessageId = "assistant-scheduled-$token",
+  )
+}
 
 private fun scheduledTaskAlarmRequestCode(scheduleId: String): Int =
   scheduleId.hashCode()

@@ -3,7 +3,10 @@ package com.opencray.app
 import android.content.ContextWrapper
 import com.opencray.app.facade.safety.EmptySafetySettingsFacade
 import com.opencray.core.contracts.AgentTask
+import com.opencray.core.contracts.AgentTaskType
 import com.opencray.core.contracts.PolicyDecision
+import com.opencray.core.contracts.PolicyDecisionOutcome
+import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
@@ -519,6 +522,471 @@ class ScheduledTaskRuntimeTest {
     assertEquals(baselineMessageCount + 2, messages.size)
     assertEquals(spec.payload.prompt, messages[messages.lastIndex - 1].text)
     assertEquals("Thinking…", messages.last().text)
+  }
+
+  @Test
+  fun concurrentDispatchClaimsScheduleRunExactlyOnceAcrossStoreInstances() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-dispatch-concurrent-claim")
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val specStore = FileBackedScheduledTaskSpecStoreFactory(runtimeRoot).create()
+    val spec = scheduledTaskSpec(
+      sessionId = sessionId,
+      scheduleId = "schedule-race",
+    )
+    specStore.upsert(spec)
+    val command = ScheduledTaskWakeCommand(
+      scheduleId = spec.scheduleId,
+      scheduleRunId = scheduledTaskRunId(spec.scheduleId, 4_000L),
+      triggeredAtEpochMs = 4_000L,
+      triggerReason = ScheduledTaskTriggerReasons.ALARM,
+    )
+    val firstSession = RecordingScheduledTaskSessionAccess(sessionId = sessionId)
+    val secondSession = RecordingScheduledTaskSessionAccess(sessionId = sessionId)
+
+    fun buildDispatcher(session: RecordingScheduledTaskSessionAccess): ScheduledTaskDispatcher =
+      ScheduledTaskDispatcher(
+        hostAccess = RecordingScheduledRuntimeHostAccess(session),
+        chatSessionStore = chatStore,
+        safetySettingsFacade = EmptySafetySettingsFacade,
+        approvedReadRootsProvider = {
+          ApprovedReadRootsSnapshot(
+            roots = emptySet(),
+            summary = "workspace=/workspace",
+          )
+        },
+        lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+        localizedContext = ContextWrapper(null),
+        assistantPlaceholderTextProvider = { "Thinking…" },
+        specStore = specStore,
+        runRecordStore = FileBackedScheduledTaskRunRecordStoreFactory(runtimeRoot).create(),
+        triggerRegistrar = RecordingScheduledTriggerRegistrar(),
+        clock = { 5_000L },
+      )
+
+    val ready = CountDownLatch(2)
+    val start = CountDownLatch(1)
+    val executor = Executors.newFixedThreadPool(2)
+    val outcomes: List<ScheduledTaskDispatchOutcome> = try {
+      val futures = listOf(firstSession, secondSession).map { session ->
+        executor.submit<ScheduledTaskDispatchOutcome> {
+          ready.countDown()
+          start.await()
+          buildDispatcher(session).dispatch(command)
+        }
+      }
+      assertTrue(ready.await(10L, TimeUnit.SECONDS))
+      start.countDown()
+      futures.map { future -> future.get(60L, TimeUnit.SECONDS) }
+    } finally {
+      executor.shutdownNow()
+    }
+
+    assertEquals(
+      setOf(ScheduledTaskRunResult.ACCEPTED, ScheduledTaskRunResult.SKIPPED_DUPLICATE),
+      outcomes.map(ScheduledTaskDispatchOutcome::result).toSet(),
+    )
+    assertEquals(1, firstSession.submittedTasks.size + secondSession.submittedTasks.size)
+    assertEquals(1, firstSession.ensureProcessingCount + secondSession.ensureProcessingCount)
+    assertEquals(
+      ScheduledTaskRunResult.ACCEPTED,
+      FileBackedScheduledTaskRunRecordStoreFactory(runtimeRoot).create()
+        .get(command.scheduleRunId)?.result,
+    )
+  }
+
+  @Test
+  fun dispatchSkipsReentryWhileRunRecordIsTriggeredWithoutResuming() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-dispatch-triggered-reentry")
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val runRecordStore = InMemoryScheduledTaskRunRecordStoreFactory().create()
+    val session = RecordingScheduledTaskSessionAccess(sessionId = sessionId)
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val spec = scheduledTaskSpec(sessionId = sessionId, scheduleId = "schedule-reentry")
+    specStore.upsert(spec)
+    runRecordStore.upsert(
+      ScheduledTaskRunRecord(
+        scheduleRunId = "schedule-run-reentry",
+        scheduleId = spec.scheduleId,
+        sessionId = sessionId,
+        triggerReason = ScheduledTaskTriggerReasons.ALARM,
+        triggeredAtEpochMs = 4_000L,
+        result = ScheduledTaskRunResult.TRIGGERED,
+        updatedAtEpochMs = 4_000L,
+      ),
+    )
+    val baselineMessageCount = checkNotNull(chatStore.loadSession(sessionId)).messages.size
+    val dispatcher = ScheduledTaskDispatcher(
+      hostAccess = RecordingScheduledRuntimeHostAccess(session),
+      chatSessionStore = chatStore,
+      safetySettingsFacade = EmptySafetySettingsFacade,
+      approvedReadRootsProvider = {
+        ApprovedReadRootsSnapshot(
+          roots = emptySet(),
+          summary = "workspace=/workspace",
+        )
+      },
+      lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      localizedContext = ContextWrapper(null),
+      assistantPlaceholderTextProvider = { "Thinking…" },
+      specStore = specStore,
+      runRecordStore = runRecordStore,
+      triggerRegistrar = registrar,
+      clock = { 5_000L },
+    )
+
+    val outcome = dispatcher.dispatch(
+      ScheduledTaskWakeCommand(
+        scheduleId = spec.scheduleId,
+        scheduleRunId = "schedule-run-reentry",
+        triggeredAtEpochMs = 4_500L,
+        triggerReason = ScheduledTaskTriggerReasons.WORK_MANAGER,
+      ),
+    )
+
+    assertEquals(ScheduledTaskRunResult.SKIPPED_DUPLICATE, outcome.result)
+    assertEquals(sessionId, outcome.sessionId)
+    assertTrue(session.submittedTasks.isEmpty())
+    assertEquals(0, session.ensureProcessingCount)
+    assertEquals(
+      ScheduledTaskRunResult.TRIGGERED,
+      runRecordStore.get("schedule-run-reentry")?.result,
+    )
+    assertEquals(
+      baselineMessageCount,
+      checkNotNull(chatStore.loadSession(sessionId)).messages.size,
+    )
+  }
+
+  @Test
+  fun dispatchForRepairFinalizesAcceptedOutboxWhenDerivedTaskAlreadyQueued() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-dispatch-repair-finalize")
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val runRecordStore = InMemoryScheduledTaskRunRecordStoreFactory().create()
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val spec = scheduledTaskSpec(sessionId = sessionId, scheduleId = "schedule-outbox")
+    specStore.upsert(spec)
+    val command = ScheduledTaskWakeCommand(
+      scheduleId = spec.scheduleId,
+      scheduleRunId = scheduledTaskRunId(spec.scheduleId, 4_000L),
+      triggeredAtEpochMs = 4_500L,
+      triggerReason = ScheduledTaskTriggerReasons.REPAIR,
+    )
+    val identifiers = scheduledTaskRunIdentifiers(
+      sessionId = sessionId,
+      scheduleRunId = command.scheduleRunId,
+    )
+    val queuedSnapshot = SessionQueueTaskSnapshot(
+      enqueueOrder = 1L,
+      task = AgentTask(
+        id = identifiers.taskId,
+        type = AgentTaskType.PROMPT,
+        input = spec.payload.prompt,
+        policyDecision = PolicyDecision(
+          outcome = PolicyDecisionOutcome.ALLOW,
+          reasonCode = "SCHEDULED_TASK_ALLOW",
+        ),
+        createdAtEpochMs = 4_500L,
+        metadata = mapOf(
+          AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to identifiers.runId,
+        ),
+      ),
+      lifecycleState = QueueTaskLifecycleState.RUNNING,
+    )
+    val session = RecordingScheduledTaskSessionAccess(
+      sessionId = sessionId,
+      queueSnapshots = listOf(queuedSnapshot),
+    )
+    runRecordStore.upsert(
+      ScheduledTaskRunRecord(
+        scheduleRunId = command.scheduleRunId,
+        scheduleId = spec.scheduleId,
+        sessionId = sessionId,
+        triggerReason = ScheduledTaskTriggerReasons.ALARM,
+        triggeredAtEpochMs = 4_000L,
+        result = ScheduledTaskRunResult.TRIGGERED,
+        updatedAtEpochMs = 4_000L,
+      ),
+    )
+    val baselineMessageCount = checkNotNull(chatStore.loadSession(sessionId)).messages.size
+    val dispatcher = ScheduledTaskDispatcher(
+      hostAccess = RecordingScheduledRuntimeHostAccess(session),
+      chatSessionStore = chatStore,
+      safetySettingsFacade = EmptySafetySettingsFacade,
+      approvedReadRootsProvider = {
+        ApprovedReadRootsSnapshot(
+          roots = emptySet(),
+          summary = "workspace=/workspace",
+        )
+      },
+      lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      localizedContext = ContextWrapper(null),
+      assistantPlaceholderTextProvider = { "Thinking…" },
+      specStore = specStore,
+      runRecordStore = runRecordStore,
+      triggerRegistrar = registrar,
+      clock = { 5_000L },
+    )
+
+    val outcome = dispatcher.dispatchForRepair(command)
+
+    assertEquals(ScheduledTaskRunResult.ACCEPTED, outcome.result)
+    assertEquals(identifiers.taskId, outcome.createdTaskId)
+    assertEquals(identifiers.runId, outcome.createdRunId)
+    assertTrue(session.submittedTasks.isEmpty())
+    assertEquals(0, session.ensureProcessingCount)
+    val record = requireNotNull(runRecordStore.get(command.scheduleRunId))
+    assertEquals(ScheduledTaskRunResult.ACCEPTED, record.result)
+    assertEquals(identifiers.taskId, record.createdTaskId)
+    assertEquals(identifiers.runId, record.createdRunId)
+    assertEquals(
+      baselineMessageCount,
+      checkNotNull(chatStore.loadSession(sessionId)).messages.size,
+    )
+  }
+
+  @Test
+  fun dispatchForRepairResumesInterruptedRunWithDeterministicIdsExactlyOnce() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-dispatch-repair-resume")
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val runRecordStore = InMemoryScheduledTaskRunRecordStoreFactory().create()
+    val session = RecordingScheduledTaskSessionAccess(sessionId = sessionId)
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val spec = scheduledTaskSpec(sessionId = sessionId, scheduleId = "schedule-resume")
+    specStore.upsert(spec)
+    val command = ScheduledTaskWakeCommand(
+      scheduleId = spec.scheduleId,
+      scheduleRunId = scheduledTaskRunId(spec.scheduleId, 4_000L),
+      triggeredAtEpochMs = 4_500L,
+      triggerReason = ScheduledTaskTriggerReasons.REPAIR,
+    )
+    val identifiers = scheduledTaskRunIdentifiers(
+      sessionId = sessionId,
+      scheduleRunId = command.scheduleRunId,
+    )
+    runRecordStore.upsert(
+      ScheduledTaskRunRecord(
+        scheduleRunId = command.scheduleRunId,
+        scheduleId = spec.scheduleId,
+        sessionId = sessionId,
+        triggerReason = ScheduledTaskTriggerReasons.ALARM,
+        triggeredAtEpochMs = 4_000L,
+        result = ScheduledTaskRunResult.TRIGGERED,
+        updatedAtEpochMs = 4_000L,
+      ),
+    )
+    val dispatcher = ScheduledTaskDispatcher(
+      hostAccess = RecordingScheduledRuntimeHostAccess(session),
+      chatSessionStore = chatStore,
+      safetySettingsFacade = EmptySafetySettingsFacade,
+      approvedReadRootsProvider = {
+        ApprovedReadRootsSnapshot(
+          roots = emptySet(),
+          summary = "workspace=/workspace",
+        )
+      },
+      lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      localizedContext = ContextWrapper(null),
+      assistantPlaceholderTextProvider = { "Thinking…" },
+      specStore = specStore,
+      runRecordStore = runRecordStore,
+      triggerRegistrar = registrar,
+      clock = { 5_000L },
+    )
+
+    val resumed = dispatcher.dispatchForRepair(command)
+
+    assertEquals(ScheduledTaskRunResult.ACCEPTED, resumed.result)
+    assertEquals(1, session.submittedTasks.size)
+    val submitted = session.submittedTasks.single()
+    assertEquals(identifiers.taskId, submitted.id)
+    assertEquals(
+      identifiers.runId,
+      submitted.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID],
+    )
+    assertEquals(identifiers.runId, resumed.createdRunId)
+    assertEquals(identifiers.taskId, resumed.createdTaskId)
+    val messages = checkNotNull(chatStore.loadSession(sessionId)).messages
+    assertEquals(identifiers.pendingMessageId, messages.last().messageId)
+    val accepted = requireNotNull(runRecordStore.get(command.scheduleRunId))
+    assertEquals(ScheduledTaskRunResult.ACCEPTED, accepted.result)
+    assertEquals(identifiers.taskId, accepted.createdTaskId)
+    assertEquals(identifiers.runId, accepted.createdRunId)
+
+    val replayed = dispatcher.dispatchForRepair(command)
+
+    assertEquals(ScheduledTaskRunResult.SKIPPED_DUPLICATE, replayed.result)
+    assertEquals(1, session.submittedTasks.size)
+  }
+
+  @Test
+  fun concurrentRepairDispatchResumesInterruptedRunExactlyOnce() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-repair-concurrent-resume")
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val specStore = FileBackedScheduledTaskSpecStoreFactory(runtimeRoot).create()
+    val spec = scheduledTaskSpec(
+      sessionId = sessionId,
+      scheduleId = "schedule-repair-race",
+    )
+    specStore.upsert(spec)
+    val command = ScheduledTaskWakeCommand(
+      scheduleId = spec.scheduleId,
+      scheduleRunId = scheduledTaskRunId(spec.scheduleId, 4_000L),
+      triggeredAtEpochMs = 4_500L,
+      triggerReason = ScheduledTaskTriggerReasons.REPAIR,
+    )
+    val identifiers = scheduledTaskRunIdentifiers(
+      sessionId = sessionId,
+      scheduleRunId = command.scheduleRunId,
+    )
+    FileBackedScheduledTaskRunRecordStoreFactory(runtimeRoot).create().upsert(
+      ScheduledTaskRunRecord(
+        scheduleRunId = command.scheduleRunId,
+        scheduleId = spec.scheduleId,
+        sessionId = sessionId,
+        triggerReason = ScheduledTaskTriggerReasons.ALARM,
+        triggeredAtEpochMs = 4_000L,
+        result = ScheduledTaskRunResult.TRIGGERED,
+        updatedAtEpochMs = 4_000L,
+      ),
+    )
+    val firstSession = RecordingScheduledTaskSessionAccess(sessionId = sessionId)
+    val secondSession = RecordingScheduledTaskSessionAccess(sessionId = sessionId)
+
+    fun buildDispatcher(session: RecordingScheduledTaskSessionAccess): ScheduledTaskDispatcher =
+      ScheduledTaskDispatcher(
+        hostAccess = RecordingScheduledRuntimeHostAccess(session),
+        chatSessionStore = chatStore,
+        safetySettingsFacade = EmptySafetySettingsFacade,
+        approvedReadRootsProvider = {
+          ApprovedReadRootsSnapshot(
+            roots = emptySet(),
+            summary = "workspace=/workspace",
+          )
+        },
+        lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+        localizedContext = ContextWrapper(null),
+        assistantPlaceholderTextProvider = { "Thinking…" },
+        specStore = specStore,
+        runRecordStore = FileBackedScheduledTaskRunRecordStoreFactory(runtimeRoot).create(),
+        triggerRegistrar = RecordingScheduledTriggerRegistrar(),
+        clock = { 5_000L },
+      )
+
+    val ready = CountDownLatch(2)
+    val start = CountDownLatch(1)
+    val executor = Executors.newFixedThreadPool(2)
+    val outcomes: List<ScheduledTaskDispatchOutcome> = try {
+      val futures = listOf(firstSession, secondSession).map { session ->
+        executor.submit<ScheduledTaskDispatchOutcome> {
+          ready.countDown()
+          start.await()
+          buildDispatcher(session).dispatchForRepair(command)
+        }
+      }
+      assertTrue(ready.await(10L, TimeUnit.SECONDS))
+      start.countDown()
+      futures.map { future -> future.get(60L, TimeUnit.SECONDS) }
+    } finally {
+      executor.shutdownNow()
+    }
+
+    assertEquals(
+      setOf(ScheduledTaskRunResult.ACCEPTED, ScheduledTaskRunResult.SKIPPED_DUPLICATE),
+      outcomes.map(ScheduledTaskDispatchOutcome::result).toSet(),
+    )
+    assertEquals(1, firstSession.submittedTasks.size + secondSession.submittedTasks.size)
+    assertEquals(
+      identifiers.taskId,
+      firstSession.submittedTasks.singleOrNull()?.id
+        ?: secondSession.submittedTasks.single().id,
+    )
+    assertEquals(1, firstSession.ensureProcessingCount + secondSession.ensureProcessingCount)
+    val record = requireNotNull(
+      FileBackedScheduledTaskRunRecordStoreFactory(runtimeRoot).create()
+        .get(command.scheduleRunId),
+    )
+    assertEquals(ScheduledTaskRunResult.ACCEPTED, record.result)
+    assertEquals(identifiers.taskId, record.createdTaskId)
+  }
+
+  @Test
+  fun repairRecoveryAfterCrashBetweenSubmitAndAcceptDoesNotResubmit() {
+    val runtimeRoot = temporaryFolder.newFolder("scheduled-dispatch-crash-before-accept")
+    val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat"))
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val specStore = InMemoryScheduledTaskSpecStoreFactory().create()
+    val runRecordDelegate = InMemoryScheduledTaskRunRecordStoreFactory().create()
+    val runRecordStore = CrashInjectingScheduledTaskRunRecordStore(runRecordDelegate)
+    val session = RecordingScheduledTaskSessionAccess(sessionId = sessionId)
+    val registrar = RecordingScheduledTriggerRegistrar()
+    val spec = scheduledTaskSpec(sessionId = sessionId, scheduleId = "schedule-crash")
+    specStore.upsert(spec)
+    val command = ScheduledTaskWakeCommand(
+      scheduleId = spec.scheduleId,
+      scheduleRunId = scheduledTaskRunId(spec.scheduleId, 4_000L),
+      triggeredAtEpochMs = 4_500L,
+      triggerReason = ScheduledTaskTriggerReasons.ALARM,
+    )
+    val identifiers = scheduledTaskRunIdentifiers(
+      sessionId = sessionId,
+      scheduleRunId = command.scheduleRunId,
+    )
+    val baselineMessageCount = checkNotNull(chatStore.loadSession(sessionId)).messages.size
+    val dispatcher = ScheduledTaskDispatcher(
+      hostAccess = RecordingScheduledRuntimeHostAccess(session),
+      chatSessionStore = chatStore,
+      safetySettingsFacade = EmptySafetySettingsFacade,
+      approvedReadRootsProvider = {
+        ApprovedReadRootsSnapshot(
+          roots = emptySet(),
+          summary = "workspace=/workspace",
+        )
+      },
+      lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      localizedContext = ContextWrapper(null),
+      assistantPlaceholderTextProvider = { "Thinking…" },
+      specStore = specStore,
+      runRecordStore = runRecordStore,
+      triggerRegistrar = registrar,
+      clock = { 5_000L },
+    )
+
+    val crashed = runCatching { dispatcher.dispatch(command) }.exceptionOrNull()
+
+    assertNotNull(crashed)
+    assertEquals(1, session.submittedTasks.size)
+    assertEquals(identifiers.taskId, session.submittedTasks.single().id)
+    assertEquals(
+      ScheduledTaskRunResult.TRIGGERED,
+      runRecordDelegate.get(command.scheduleRunId)?.result,
+    )
+    var messages = checkNotNull(chatStore.loadSession(sessionId)).messages
+    assertEquals(baselineMessageCount + 2, messages.size)
+    assertEquals(identifiers.pendingMessageId, messages.last().messageId)
+
+    runRecordStore.crashOnTerminalWrites = false
+    val repaired = dispatcher.dispatchForRepair(command)
+
+    assertEquals(ScheduledTaskRunResult.ACCEPTED, repaired.result)
+    assertEquals(identifiers.taskId, repaired.createdTaskId)
+    assertEquals(identifiers.runId, repaired.createdRunId)
+    assertEquals(1, session.submittedTasks.size)
+    assertEquals(1, session.ensureProcessingCount)
+    val record = requireNotNull(runRecordDelegate.get(command.scheduleRunId))
+    assertEquals(ScheduledTaskRunResult.ACCEPTED, record.result)
+    assertEquals(identifiers.taskId, record.createdTaskId)
+    assertEquals(identifiers.runId, record.createdRunId)
+    messages = checkNotNull(chatStore.loadSession(sessionId)).messages
+    assertEquals(baselineMessageCount + 2, messages.size)
+    assertEquals(identifiers.pendingMessageId, messages.last().messageId)
   }
 
   @Test
@@ -1561,6 +2029,53 @@ class ScheduledTaskRuntimeTest {
     override fun isApprovalRejected(sessionId: String, taskId: String): Boolean = false
   }
 
+  private class CrashInjectingScheduledTaskRunRecordStore(
+    private val delegate: ScheduledTaskRunRecordStore,
+  ) : ScheduledTaskRunRecordStore {
+    var crashOnTerminalWrites: Boolean = true
+
+    override fun list(): List<ScheduledTaskRunRecord> = delegate.list()
+
+    override fun listForSchedule(scheduleId: String): List<ScheduledTaskRunRecord> =
+      delegate.listForSchedule(scheduleId)
+
+    override fun get(scheduleRunId: String): ScheduledTaskRunRecord? = delegate.get(scheduleRunId)
+
+    override fun upsert(record: ScheduledTaskRunRecord) {
+      failIfCrashing(record)
+      delegate.upsert(record)
+    }
+
+    override fun claimRun(
+      scheduleRunId: String,
+      expectedResult: ScheduledTaskRunResult?,
+      next: (current: ScheduledTaskRunRecord?) -> ScheduledTaskRunRecord,
+    ): Boolean = delegate.claimRun(scheduleRunId, expectedResult) { current ->
+      val updated = next(current)
+      failIfCrashing(updated)
+      updated
+    }
+
+    override fun removeForSchedule(scheduleId: String) {
+      delegate.removeForSchedule(scheduleId)
+    }
+
+    override fun clear() {
+      delegate.clear()
+    }
+
+    private fun failIfCrashing(record: ScheduledTaskRunRecord) {
+      if (crashOnTerminalWrites &&
+        (
+          record.result == ScheduledTaskRunResult.ACCEPTED ||
+            record.result == ScheduledTaskRunResult.FAILED_DISPATCH
+          )
+      ) {
+        throw IllegalStateException("Simulated crash before durable acceptance.")
+      }
+    }
+  }
+
   private class RecordingScheduledTaskSessionAccess(
     override val sessionId: String,
     private val hasPendingWork: Boolean = false,
@@ -1613,7 +2128,13 @@ class ScheduledTaskRuntimeTest {
     override fun snapshot(): SessionQueueSnapshot = SessionQueueSnapshot(
       sessionId = sessionId,
       agentId = "scheduled-test-agent",
-      tasks = queueSnapshots,
+      tasks = queueSnapshots + submittedTasks.mapIndexed { index, task ->
+        SessionQueueTaskSnapshot(
+          enqueueOrder = index + 1L,
+          task = task,
+          lifecycleState = QueueTaskLifecycleState.RUNNING,
+        )
+      },
       updatedAtEpochMs = 1_000L,
     )
 

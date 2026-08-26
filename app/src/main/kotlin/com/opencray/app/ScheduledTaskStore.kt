@@ -46,9 +46,24 @@ internal interface ScheduledTaskRunRecordStore {
 
   fun upsert(record: ScheduledTaskRunRecord)
 
+  fun claimRun(
+    scheduleRunId: String,
+    expectedResult: ScheduledTaskRunResult?,
+    next: (current: ScheduledTaskRunRecord?) -> ScheduledTaskRunRecord,
+  ): Boolean
+
   fun removeForSchedule(scheduleId: String)
 
   fun clear()
+}
+
+internal fun scheduledTaskRunRecordClaimMatches(
+  current: ScheduledTaskRunRecord?,
+  expectedResult: ScheduledTaskRunResult?,
+): Boolean = if (expectedResult == null) {
+  current == null
+} else {
+  current?.result == expectedResult
 }
 
 internal fun inMemoryScheduledTaskSpecStoreFactory(): ScheduledTaskSpecStoreFactory =
@@ -393,6 +408,19 @@ private class InMemoryScheduledTaskRunRecordStore : ScheduledTaskRunRecordStore 
     }
   }
 
+  override fun claimRun(
+    scheduleRunId: String,
+    expectedResult: ScheduledTaskRunResult?,
+    next: (current: ScheduledTaskRunRecord?) -> ScheduledTaskRunRecord,
+  ): Boolean = synchronized(lock) {
+    val current = recordsById[scheduleRunId]
+    if (!scheduledTaskRunRecordClaimMatches(current, expectedResult)) {
+      return@synchronized false
+    }
+    recordsById[scheduleRunId] = next(current)
+    true
+  }
+
   override fun removeForSchedule(scheduleId: String) {
     synchronized(lock) {
       val retainedIds = recordsById.values
@@ -597,6 +625,41 @@ private class FileBackedScheduledTaskRunRecordStore(
           result = Unit,
         )
       }
+    }
+  }
+
+  override fun claimRun(
+    scheduleRunId: String,
+    expectedResult: ScheduledTaskRunResult?,
+    next: (current: ScheduledTaskRunRecord?) -> ScheduledTaskRunRecord,
+  ): Boolean {
+    synchronized(lock) {
+      var claimed = false
+      updateRecord { existing ->
+        val current = existing.records.firstOrNull { record ->
+          record.scheduleRunId == scheduleRunId
+        }
+        if (!scheduledTaskRunRecordClaimMatches(current, expectedResult)) {
+          return@updateRecord RecordStorageUpdate(
+            value = existing,
+            result = false,
+            write = false,
+          )
+        }
+        claimed = true
+        RecordStorageUpdate(
+          value = existing.copy(
+            recordVersion = existing.recordVersion + 1L,
+            updatedAtEpochMs = clock(),
+            records = normalizeRunRecords(
+              existing.records.filterNot { record -> record.scheduleRunId == scheduleRunId } +
+                next(current),
+            ),
+          ),
+          result = true,
+        )
+      }
+      return claimed
     }
   }
 
