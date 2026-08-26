@@ -150,6 +150,8 @@ interface SubAgentExecutionCoordinator {
   }
 }
 
+internal const val MAX_RETAINED_CLOSED_SUB_AGENT_HANDLES = 32
+
 class InMemorySubAgentExecutionCoordinator : SubAgentExecutionCoordinator {
   private val lock = Any()
   private val handlesByKey = linkedMapOf<SubAgentExecutionKey, SubAgentHandleState>()
@@ -188,7 +190,12 @@ class InMemorySubAgentExecutionCoordinator : SubAgentExecutionCoordinator {
   }
 
   override fun noteClosedHandle(handle: SubAgentHandleState): SubAgentHandleState = synchronized(lock) {
-    closedHandlesByKey[SubAgentExecutionKey.from(handle)] = handle
+    val key = SubAgentExecutionKey.from(handle)
+    closedHandlesByKey.remove(key)
+    closedHandlesByKey[key] = handle
+    while (closedHandlesByKey.size > MAX_RETAINED_CLOSED_SUB_AGENT_HANDLES) {
+      closedHandlesByKey.remove(closedHandlesByKey.keys.first())
+    }
     handle
   }
 

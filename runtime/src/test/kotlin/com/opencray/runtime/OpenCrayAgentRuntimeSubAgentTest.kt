@@ -24,6 +24,7 @@ import com.opencray.runtime.context.AgentRuntimeSessionContext
 import com.opencray.runtime.context.RuntimeConversationMessage
 import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.subagent.InMemorySubAgentExecutionCoordinator
+import com.opencray.runtime.subagent.MAX_RETAINED_CLOSED_SUB_AGENT_HANDLES
 import com.opencray.runtime.subagent.SubAgentActiveExecution
 import com.opencray.runtime.subagent.SubAgentApprovalResume
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
@@ -39,6 +40,7 @@ import com.opencray.runtime.subagent.SubAgentContextModeResolutionSource
 import com.opencray.runtime.subagent.SubAgentContextPolicy
 import com.opencray.runtime.subagent.SubAgentMetadataKeys
 import com.opencray.runtime.subagent.SubAgentResultMetadataKeys
+import com.opencray.runtime.subagent.synchronizedSubAgentHandles
 import com.opencray.runtime.skills.SkillCatalog
 import com.opencray.runtime.skills.SkillCatalogEntry
 import com.opencray.skills.SkillExecutionContext
@@ -62,6 +64,7 @@ import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -3837,6 +3840,170 @@ class OpenCrayAgentRuntimeSubAgentTest {
     } finally {
       activeExecutor.shutdownNow()
     }
+  }
+
+  @Test
+  fun synchronizedSubAgentHandlesKeepsFinalizedCursorHandleOverStaleCoordinatorView() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-sync-handles-race").toPath()
+    val delegate = InMemorySubAgentExecutionCoordinator()
+    val parentQueriedCoordinator = CountDownLatch(1)
+    val childCommittedCursorWrite = CountDownLatch(1)
+    val parentReadCoordinatorView = CountDownLatch(1)
+    val gatingCoordinator =
+      object : com.opencray.runtime.subagent.SubAgentExecutionCoordinator by delegate {
+        override fun currentHandle(key: SubAgentExecutionKey): SubAgentHandleState? {
+          parentQueriedCoordinator.countDown()
+          assertTrue(childCommittedCursorWrite.await(10, TimeUnit.SECONDS))
+          val view = delegate.currentHandle(key)
+          parentReadCoordinatorView.countDown()
+          return view
+        }
+      }
+    val runningHandle = SubAgentHandleState(
+      agentId = "child-race",
+      childRunId = "child-run-race",
+      childTaskId = "child-task-race",
+      description = "inspect docs",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "prompt-task",
+      parentTaskId = "parent-task-race",
+      parentTurn = 0,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Delegated child run is still running in the background.",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+    )
+    delegate.upsertHandle(runningHandle)
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = RecordingGateway(outputs = emptyList()),
+      subAgentExecutionCoordinator = gatingCoordinator,
+    )
+    val cursor = OpenCrayAgentRuntime.PromptTurnCursor(
+      transcript = mutableListOf(),
+      sessionContext = AgentRuntimeSessionContext(),
+      turn = 0,
+      toolCallCount = 0,
+      todoWriteUsed = false,
+      activeSkillName = null,
+      activeSkillActivationSource = null,
+      activeSkillPinned = false,
+      nextSyntheticToolCallSequence = 0,
+      legacyJsonFallbackEnabled = true,
+      responsesPreviousResponseId = null,
+      responsesProviderLineageId = null,
+      responsesLineageTrusted = false,
+      responsesFullReplayRequired = false,
+      responsesContinuationShape = null,
+      responsesPendingMessages = mutableListOf(),
+      replayToolResultProjections = linkedMapOf(),
+      localContinuationEnvelope = null,
+      subAgentHandles = linkedMapOf(),
+      subAgentExecutionLock = Any(),
+    )
+    synchronized(cursor.subAgentExecutionLock) {
+      cursor.subAgentHandles["child-race"] = runningHandle
+    }
+    val syncExecutor = Executors.newSingleThreadExecutor()
+    try {
+      val syncedFuture = syncExecutor.submit<List<SubAgentHandleState>> {
+        runtime.synchronizedSubAgentHandles(cursor)
+      }
+      assertTrue(parentQueriedCoordinator.await(10, TimeUnit.SECONDS))
+      val finalizedHandle = runningHandle.copy(
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.COMPLETED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Delegated child run completed.",
+        ),
+        updatedAtEpochMs = 2_000L,
+      )
+      synchronized(cursor.subAgentExecutionLock) {
+        cursor.subAgentHandles["child-race"] = finalizedHandle
+      }
+      childCommittedCursorWrite.countDown()
+      assertTrue(parentReadCoordinatorView.await(10, TimeUnit.SECONDS))
+      delegate.upsertHandle(finalizedHandle)
+      val syncedHandles = syncedFuture.get(10, TimeUnit.SECONDS)
+      assertEquals(listOf(finalizedHandle), syncedHandles)
+      synchronized(cursor.subAgentExecutionLock) {
+        assertSame(finalizedHandle, cursor.subAgentHandles["child-race"])
+        assertEquals(SubAgentExecutionState.COMPLETED, cursor.subAgentHandles.getValue("child-race").snapshot.state)
+      }
+    } finally {
+      syncExecutor.shutdownNow()
+    }
+  }
+
+  @Test
+  fun closedSubAgentHandlesBeyondCapacityEvictOldestAndKeepLiveHandles() {
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val liveHandle = SubAgentHandleState(
+      agentId = "child-live",
+      childRunId = "child-run-live",
+      childTaskId = "child-task-live",
+      description = "inspect docs live",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "prompt-task",
+      parentTaskId = "parent-task-live",
+      parentTurn = 0,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Delegated child run is still running in the background.",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_050L,
+    )
+    coordinator.upsertHandle(liveHandle)
+    val totalCloses = MAX_RETAINED_CLOSED_SUB_AGENT_HANDLES + 2
+    val closedHandles = (0 until totalCloses).map { index ->
+      SubAgentHandleState.queued(
+        agentId = "child-closed-$index",
+        childRunId = "child-run-closed-$index",
+        childTaskId = "child-task-closed-$index",
+        description = "inspect docs $index",
+        prompt = "Read README.md and summarize it.",
+        subagentType = "researcher",
+        contextMode = "minimal",
+        parentRunId = "prompt-task",
+        parentTaskId = "parent-task-closed-$index",
+        parentTurn = 0,
+        depth = 1,
+        activeSkillName = null,
+        activeSkillActivationSource = null,
+        createdAtEpochMs = 1_100L + index,
+      ).copy(
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.CANCELLED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Delegated child run 'inspect docs $index' was closed.",
+        ),
+        childExecutionStatus = ExecutionStatus.CANCELLED.name,
+        updatedAtEpochMs = 1_200L + index,
+      )
+    }
+    closedHandles.forEach(coordinator::noteClosedHandle)
+    assertEquals(MAX_RETAINED_CLOSED_SUB_AGENT_HANDLES, coordinator.allClosedHandles().size)
+    assertNull(coordinator.closedHandle(SubAgentExecutionKey("prompt-task", "child-closed-0")))
+    assertNull(coordinator.closedHandle(SubAgentExecutionKey("prompt-task", "child-closed-1")))
+    assertEquals(
+      closedHandles.last(),
+      coordinator.closedHandle(SubAgentExecutionKey("prompt-task", "child-closed-${totalCloses - 1}")),
+    )
+    assertEquals(liveHandle, coordinator.currentHandle(SubAgentExecutionKey.from(liveHandle)))
+    assertEquals(listOf(liveHandle), coordinator.allHandles())
   }
 
   private fun runtime(

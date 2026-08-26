@@ -1007,12 +1007,15 @@ import kotlinx.serialization.json.put
     if (localHandles.isEmpty()) {
       return emptyList()
     }
+    val localHandlesByAgentId = localHandles.associateBy(SubAgentHandleState::agentId)
     val synchronizedHandles = localHandles.map { handle ->
       (coordinatedSubAgentHandle(handle) ?: handle).withNormalizedMailbox()
     }
     synchronized(cursor.subAgentExecutionLock) {
       synchronizedHandles.forEach { handle ->
-        cursor.subAgentHandles[handle.agentId] = handle
+        if (cursor.subAgentHandles[handle.agentId] === localHandlesByAgentId[handle.agentId]) {
+          cursor.subAgentHandles[handle.agentId] = handle
+        }
       }
       return cursor.subAgentHandles.values.toList()
     }
