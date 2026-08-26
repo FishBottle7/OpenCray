@@ -560,6 +560,7 @@ import java.util.UUID
     val storedResult = storedSubAgentHandleResult(
       call = call,
       handle = handle,
+      unharvestedRunningStatus = AgentToolResultStatus.SUCCESS,
     )
     return storedResult.copy(
       metadata = toolDispatcher.taskDelegationResultMetadata(

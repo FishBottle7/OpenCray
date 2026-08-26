@@ -93,7 +93,11 @@ import com.opencray.runtime.workingstate.WorkingStateStore
 import java.net.URI
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
@@ -108,6 +112,7 @@ const val ERROR_LLM_RETRY_EXHAUSTED_AWAITING_RESUME: String =
 const val ERROR_EMPTY_RESPONSE_RECOVERY_EXHAUSTED: String =
   "EMPTY_RESPONSE_RECOVERY_EXHAUSTED"
 internal const val SUBAGENT_WAIT_PROGRESS_POLL_INTERVAL_MS: Long = 100L
+private const val PARALLEL_TOOL_DISPATCH_POLL_INTERVAL_MS: Long = 250L
 
 data class OpenCrayAgentRuntimeConfig(
   val maxTurns: Int = DEFAULT_MAX_TURNS,
@@ -486,6 +491,7 @@ class OpenCrayAgentRuntime(
     var skipTurnStartSupplements = false
     var cancelOpenSubAgentsOnExit = false
     var cancelOpenSubAgentsReason = "Parent run was cancelled."
+    var cancelOpenSubAgentsOwnerRunId: String? = null
     try {
       config.promptResumeState?.let { resumeState ->
         val resumedActions = resumeState.resumableActions()
@@ -1144,6 +1150,11 @@ class OpenCrayAgentRuntime(
           diagnostics = diagnostics,
         ),
       )
+    } catch (unexpected: Throwable) {
+      cancelOpenSubAgentsOnExit = true
+      cancelOpenSubAgentsReason = "Parent run failed unexpectedly."
+      cancelOpenSubAgentsOwnerRunId = parentRunId
+      throw unexpected
     } finally {
       if (cancelOpenSubAgentsOnExit) {
         cancelActiveSubAgentExecutions(
@@ -1152,7 +1163,8 @@ class OpenCrayAgentRuntime(
           cursor = cursor,
           reason = cancelOpenSubAgentsReason,
           removeHandles = false,
-          includeInactiveHandles = true,
+          includeInactiveHandles = cancelOpenSubAgentsOwnerRunId == null,
+          owningParentRunId = cancelOpenSubAgentsOwnerRunId,
         )
       }
     }
@@ -3311,7 +3323,7 @@ class OpenCrayAgentRuntime(
     )
   }
 
-  private fun dispatchPromptToolCallsInParallel(
+  internal fun dispatchPromptToolCallsInParallel(
     task: AgentTask,
     turn: Int,
     calls: List<ParallelToolActionStep>,
@@ -3347,7 +3359,36 @@ class OpenCrayAgentRuntime(
           )
         }
       }
-      return futures.map { future -> future.get() }
+      val collectedResults = arrayOfNulls<ParallelToolDispatch>(futures.size)
+      val pendingFutures = LinkedHashMap<Int, Future<ParallelToolDispatch>>()
+      futures.forEachIndexed { index, future -> pendingFutures[index] = future }
+      dispatchLoop@ while (pendingFutures.isNotEmpty()) {
+        if (hooks.isCancellationRequested()) {
+          pendingFutures.values.forEach { future -> future.cancel(true) }
+          break@dispatchLoop
+        }
+        val roundIterator = pendingFutures.entries.iterator()
+        while (roundIterator.hasNext()) {
+          val entry = roundIterator.next()
+          if (hooks.isCancellationRequested()) {
+            pendingFutures.values.forEach { future -> future.cancel(true) }
+            break@dispatchLoop
+          }
+          val polledDispatch = try {
+            entry.value.get(PARALLEL_TOOL_DISPATCH_POLL_INTERVAL_MS, TimeUnit.MILLISECONDS)
+          } catch (_: TimeoutException) {
+            null
+          } catch (_: CancellationException) {
+            roundIterator.remove()
+            null
+          }
+          if (polledDispatch != null) {
+            collectedResults[entry.key] = polledDispatch
+            roundIterator.remove()
+          }
+        }
+      }
+      return collectedResults.filterNotNull()
     } finally {
       executor.shutdownNow()
     }
@@ -4978,9 +5019,15 @@ class OpenCrayAgentRuntime(
   internal fun storedSubAgentHandleResult(
     call: AgentToolCall,
     handle: SubAgentHandleState,
+    unharvestedRunningStatus: AgentToolResultStatus = AgentToolResultStatus.FAILED,
   ): AgentToolResult {
     val status = when (handle.snapshot.state) {
       SubAgentExecutionState.COMPLETED -> AgentToolResultStatus.SUCCESS
+      SubAgentExecutionState.BACKGROUND_QUEUED -> AgentToolResultStatus.SUCCESS
+      SubAgentExecutionState.RUNNING,
+      SubAgentExecutionState.BACKGROUND_RUNNING,
+      -> unharvestedRunningStatus
+
       SubAgentExecutionState.CANCELLED -> AgentToolResultStatus.CANCELLED
       SubAgentExecutionState.FAILED -> when (handle.childExecutionStatus) {
         ExecutionStatus.TIMEOUT.name -> AgentToolResultStatus.TIMEOUT
@@ -4990,8 +5037,6 @@ class OpenCrayAgentRuntime(
       SubAgentExecutionState.WAITING_APPROVAL,
       SubAgentExecutionState.WAITING_HIGH_RISK_APPROVAL,
       -> AgentToolResultStatus.DENIED
-
-      else -> AgentToolResultStatus.SUCCESS
     }
     val errorCode = when (handle.snapshot.state) {
       SubAgentExecutionState.CANCELLED -> "SUBAGENT_CANCELLED"
@@ -5007,7 +5052,17 @@ class OpenCrayAgentRuntime(
       SubAgentExecutionState.WAITING_APPROVAL,
       -> "Delegated child run needs approval before it can continue."
 
-      else -> null
+      SubAgentExecutionState.RUNNING,
+      SubAgentExecutionState.BACKGROUND_RUNNING,
+      -> if (status == AgentToolResultStatus.SUCCESS) {
+        null
+      } else {
+        "Delegated child run is still running and was not harvested."
+      }
+
+      SubAgentExecutionState.COMPLETED,
+      SubAgentExecutionState.BACKGROUND_QUEUED,
+      -> null
     }
     return AgentToolResult(
       toolName = call.toolName,
@@ -5494,12 +5549,12 @@ class OpenCrayAgentRuntime(
     ) : PromptBatchExecutionOutcome
   }
 
-  private data class ParallelToolActionStep(
+  internal data class ParallelToolActionStep(
     val index: Int,
     val call: AgentToolCall,
   )
 
-  private data class ParallelToolDispatch(
+  internal data class ParallelToolDispatch(
     val step: ParallelToolActionStep,
     val result: AgentToolResult,
   )

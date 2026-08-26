@@ -610,9 +610,9 @@ import kotlinx.serialization.json.put
           onProgress?.invoke(latestHandle)
         }
         continue
-      } catch (_: InterruptedException) {
+      } catch (interrupted: InterruptedException) {
         Thread.currentThread().interrupt()
-        return
+        throw interrupted
       } catch (_: java.util.concurrent.CancellationException) {
         Unit
       } catch (_: java.util.concurrent.ExecutionException) {
@@ -1456,14 +1456,19 @@ import kotlinx.serialization.json.put
     reason: String,
     removeHandles: Boolean,
     includeInactiveHandles: Boolean = false,
+    owningParentRunId: String? = null,
   ) {
     val cancelledEvents = mutableListOf<Pair<SubAgentHandleState, SubAgentExecutionSnapshot>>()
     synchronizedSubAgentHandles(cursor).forEach { handle ->
       if (handle.snapshot.state.isTerminal()) {
         return@forEach
       }
+      val executionKey = subAgentExecutionKey(handle)
+      if (owningParentRunId != null && executionKey.parentRunId != owningParentRunId) {
+        return@forEach
+      }
       val cancelledActiveExecution = config.subAgentExecutionCoordinator.cancelActiveExecution(
-        subAgentExecutionKey(handle),
+        executionKey,
         markClosed = true,
       )
       if (cancelledActiveExecution == null && !includeInactiveHandles) {
@@ -1482,7 +1487,7 @@ import kotlinx.serialization.json.put
         }
       }
       if (removeHandles) {
-        config.subAgentExecutionCoordinator.removeHandle(subAgentExecutionKey(handle))
+        config.subAgentExecutionCoordinator.removeHandle(executionKey)
       } else {
         config.subAgentExecutionCoordinator.upsertHandle(cancelledHandle)
       }

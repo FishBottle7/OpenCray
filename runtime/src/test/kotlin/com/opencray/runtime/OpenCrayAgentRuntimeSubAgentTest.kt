@@ -48,18 +48,23 @@ import com.opencray.skills.SkillPermissionRule
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.FutureTask
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotSame
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -2553,6 +2558,410 @@ class OpenCrayAgentRuntimeSubAgentTest {
   }
 
   @Test
+  fun unexpectedParentFailureCancelsOwnedRunningChildAndLeavesDetachedExecutionRunning() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-parent-exception-cascade").toPath()
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val ownedChildStarted = CountDownLatch(1)
+    val cancelRequested = AtomicBoolean(false)
+    var parentTurn = 0
+    val gateway = ScriptedGateway { request ->
+      when {
+        requestHasTool(request, "Read") && !requestHasTool(request, "spawn_agent") -> {
+          ownedChildStarted.countDown()
+          while (!cancelRequested.get()) {
+            Thread.sleep(10)
+          }
+          """{"type":"final","answer":"README says hello."}"""
+        }
+
+        requestHasTool(request, "spawn_agent") -> when (parentTurn++) {
+          0 -> """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-orphaned","description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}"""
+          else -> """{"type":"final","answer":"Leaving the child running."}"""
+        }
+
+        else -> error("Unexpected prompt for ${request.requestId}.")
+      }
+    }
+    val detachedHandle = SubAgentHandleState(
+      agentId = "child-detached-survivor",
+      childRunId = "child-run-detached-survivor",
+      childTaskId = "child-task-detached-survivor",
+      description = "Detached survivor run",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "parent-run-detached-survivor",
+      parentTaskId = "parent-task-detached-survivor",
+      parentTurn = 0,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundQueued(
+        headline = "Delegated child run queued from an earlier parent run.",
+      ),
+      createdAtEpochMs = 900L,
+      updatedAtEpochMs = 950L,
+    )
+    val detachedExecutor = Executors.newSingleThreadExecutor()
+    val detachedMayFinish = CountDownLatch(1)
+    val detachedCancelRequested = AtomicBoolean(false)
+    val detachedClosed = AtomicBoolean(false)
+    val detachedFuture = FutureTask<Unit> {
+      detachedMayFinish.await(30, TimeUnit.SECONDS)
+    }
+    val detachedExecution = SubAgentActiveExecution(
+      executor = detachedExecutor,
+      future = detachedFuture,
+      cancelRequested = detachedCancelRequested,
+      closed = detachedClosed,
+    )
+    val supplementCallCount = AtomicInteger(0)
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      seededSubAgentHandles = listOf(detachedHandle),
+      subAgentExecutionCoordinator = coordinator,
+      supplementInputProvider = { _, _ ->
+        if (supplementCallCount.incrementAndGet() >= 2) {
+          assertTrue(ownedChildStarted.await(10, TimeUnit.SECONDS))
+          throw IllegalStateException("Simulated unexpected parent failure.")
+        }
+        emptyList()
+      },
+    )
+    assertTrue(coordinator.beginExecution(detachedHandle, detachedExecution).started)
+    detachedExecutor.execute(detachedFuture)
+    val executionExecutor = Executors.newSingleThreadExecutor()
+    try {
+      val runTask = FutureTask {
+        runtime.execute(
+          task = promptTask("Launch a child then fail unexpectedly."),
+          hooks = runtimeHooks(),
+        )
+      }
+      executionExecutor.execute(runTask)
+
+      assertTrue(ownedChildStarted.await(10, TimeUnit.SECONDS))
+      try {
+        runTask.get(15, TimeUnit.SECONDS)
+        fail("Expected the parent run to fail unexpectedly.")
+      } catch (executionError: ExecutionException) {
+        assertTrue(executionError.cause is IllegalStateException)
+      }
+
+      val ownedKey = SubAgentExecutionKey(
+        parentRunId = "prompt-task",
+        agentId = "child-orphaned",
+      )
+      val cleanupDeadline = System.currentTimeMillis() + 5_000L
+      while (coordinator.activeExecution(ownedKey) != null &&
+        System.currentTimeMillis() < cleanupDeadline
+      ) {
+        Thread.sleep(25)
+      }
+      assertEquals(null, coordinator.activeExecution(ownedKey))
+      val cancelledOwnedHandle = coordinator.allHandles().first { handle ->
+        handle.agentId == "child-orphaned"
+      }
+      assertEquals(SubAgentExecutionState.CANCELLED, cancelledOwnedHandle.snapshot.state)
+      assertEquals(
+        ExecutionStatus.CANCELLED.name,
+        cancelledOwnedHandle.childExecutionStatus,
+      )
+      assertTrue(
+        cancelledOwnedHandle.snapshot.detailLines.contains("Parent run failed unexpectedly."),
+      )
+
+      assertSame(
+        detachedExecution,
+        coordinator.activeExecution(SubAgentExecutionKey.from(detachedHandle)),
+      )
+      assertFalse(detachedCancelRequested.get())
+      assertEquals(
+        SubAgentExecutionState.BACKGROUND_QUEUED,
+        coordinator.currentHandle(SubAgentExecutionKey.from(detachedHandle))?.snapshot?.state,
+      )
+    } finally {
+      cancelRequested.set(true)
+      detachedMayFinish.countDown()
+      executionExecutor.shutdownNow()
+      detachedExecutor.shutdownNow()
+    }
+  }
+
+  @Test
+  fun waitAgentInterruptionPropagatesInsteadOfReportingRunningChildAsSuccess() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-wait-interrupt").toPath()
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val childStarted = CountDownLatch(1)
+    val cancelRequested = AtomicBoolean(false)
+    val waitingThreadRef = java.util.concurrent.atomic.AtomicReference<Thread>()
+    var parentTurn = 0
+    val gateway = ScriptedGateway { request ->
+      when {
+        requestHasTool(request, "Read") && !requestHasTool(request, "spawn_agent") -> {
+          childStarted.countDown()
+          while (!cancelRequested.get()) {
+            Thread.sleep(10)
+          }
+          """{"type":"final","answer":"README says hello."}"""
+        }
+
+        requestHasTool(request, "spawn_agent") -> when (parentTurn++) {
+          0 -> """{"type":"tool_call","tool_name":"spawn_agent","arguments":{"agent_id":"child-interrupted","description":"inspect readme","prompt":"Read README.md and summarize it.","subagent_type":"researcher"}}"""
+          else -> {
+            waitingThreadRef.set(Thread.currentThread())
+            """{"type":"tool_call","tool_name":"wait_agent","arguments":{"agent_id":"child-interrupted"}}"""
+          }
+        }
+
+        else -> error("Unexpected prompt for ${request.requestId}.")
+      }
+    }
+    val eventSink = RecordingEventSink()
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = gateway,
+      eventSink = eventSink,
+      subAgentExecutionCoordinator = coordinator,
+    )
+    val executionExecutor = Executors.newSingleThreadExecutor()
+    try {
+      val runTask = FutureTask {
+        runtime.execute(
+          task = promptTask("Launch a child and wait for it."),
+          hooks = runtimeHooks(),
+        )
+      }
+      executionExecutor.execute(runTask)
+
+      assertTrue(childStarted.await(10, TimeUnit.SECONDS))
+      val waitDeadline = System.currentTimeMillis() + 5_000L
+      while (waitingThreadRef.get() == null && System.currentTimeMillis() < waitDeadline) {
+        Thread.sleep(10)
+      }
+      val waitingThread = requireNotNull(waitingThreadRef.get())
+      Thread.sleep(200L)
+      waitingThread.interrupt()
+
+      try {
+        runTask.get(5, TimeUnit.SECONDS)
+        fail("Expected the interrupted parent run to propagate the interruption.")
+      } catch (executionError: ExecutionException) {
+        assertTrue(executionError.cause is InterruptedException)
+      }
+      assertTrue(
+        eventSink.events.filterIsInstance<OpenCrayToolResultEvent>().none { event ->
+          event.call.toolName == "wait_agent"
+        },
+      )
+
+      val ownedKey = SubAgentExecutionKey(
+        parentRunId = "prompt-task",
+        agentId = "child-interrupted",
+      )
+      val cleanupDeadline = System.currentTimeMillis() + 5_000L
+      while (coordinator.activeExecution(ownedKey) != null &&
+        System.currentTimeMillis() < cleanupDeadline
+      ) {
+        Thread.sleep(25)
+      }
+      assertEquals(null, coordinator.activeExecution(ownedKey))
+      val cancelledHandle = coordinator.allHandles().first { handle ->
+        handle.agentId == "child-interrupted"
+      }
+      assertEquals(SubAgentExecutionState.CANCELLED, cancelledHandle.snapshot.state)
+      assertEquals(null, coordinator.activeExecution(SubAgentExecutionKey.from(cancelledHandle)))
+    } finally {
+      cancelRequested.set(true)
+      executionExecutor.shutdownNow()
+    }
+  }
+
+  @Test
+  fun storedWaitResultMapsUnharvestedRunningHandleToFailedInsteadOfSuccess() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-wait-running-mapping").toPath()
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = RecordingGateway(outputs = emptyList()),
+    )
+    val runningHandle = SubAgentHandleState(
+      agentId = "child-still-running",
+      childRunId = "child-run-still-running",
+      childTaskId = "child-task-still-running",
+      description = "inspect docs",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "parent-run-still-running",
+      parentTaskId = "parent-task-still-running",
+      parentTurn = 1,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Delegated child run is still running in the background.",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+    )
+    val waitCall = AgentToolCall(
+      toolName = "wait_agent",
+      arguments = kotlinx.serialization.json.JsonObject(emptyMap()),
+    )
+
+    val runningResult = runtime.storedSubAgentHandleResult(
+      call = waitCall,
+      handle = runningHandle,
+    )
+    assertEquals(AgentToolResultStatus.FAILED, runningResult.status)
+    assertEquals(
+      "Delegated child run is still running and was not harvested.",
+      runningResult.errorMessage,
+    )
+    assertEquals(
+      "background_running",
+      runningResult.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE],
+    )
+
+    val queuedResult = runtime.storedSubAgentHandleResult(
+      call = waitCall,
+      handle = runningHandle.copy(
+        snapshot = SubAgentExecutionSnapshot.backgroundQueued(
+          headline = "Delegated child run queued to resume.",
+        ),
+      ),
+    )
+    assertEquals(AgentToolResultStatus.SUCCESS, queuedResult.status)
+    assertEquals(
+      "background_queued",
+      queuedResult.metadata[SubAgentResultMetadataKeys.EXECUTION_STATE],
+    )
+  }
+
+  @Test
+  fun parallelToolDispatchCancellationReturnsPromptlyAndLeavesBackgroundChildExecutionAlive() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-parallel-cancel").toPath()
+    Files.write(
+      workspaceRoot.resolve("README.md"),
+      "hello".toByteArray(StandardCharsets.UTF_8),
+    )
+    val coordinator = InMemorySubAgentExecutionCoordinator()
+    val blockedRelease = CountDownLatch(1)
+    val blockedCancelRequested = AtomicBoolean(false)
+    val blockedClosed = AtomicBoolean(false)
+    val blockedExecutor = Executors.newSingleThreadExecutor()
+    val blockedFuture = FutureTask<Unit> {
+      blockedRelease.await(30, TimeUnit.SECONDS)
+    }
+    val blockedExecution = SubAgentActiveExecution(
+      executor = blockedExecutor,
+      future = blockedFuture,
+      cancelRequested = blockedCancelRequested,
+      closed = blockedClosed,
+    )
+    val blockingHandle = SubAgentHandleState(
+      agentId = "blocked-child",
+      childRunId = "child-run-blocked",
+      childTaskId = "child-task-blocked",
+      description = "Blocked delegated child",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "prompt-task",
+      parentTaskId = "parent-task-blocked",
+      parentTurn = 0,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Delegated child run is still running in the background.",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+    )
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = RecordingGateway(outputs = emptyList()),
+      subAgentExecutionCoordinator = coordinator,
+    )
+    assertTrue(coordinator.beginExecution(blockingHandle, blockedExecution).started)
+    blockedExecutor.execute(blockedFuture)
+    val cursor = OpenCrayAgentRuntime.PromptTurnCursor(
+      transcript = mutableListOf(),
+      sessionContext = AgentRuntimeSessionContext(),
+      turn = 0,
+      toolCallCount = 0,
+      todoWriteUsed = false,
+      activeSkillName = null,
+      activeSkillActivationSource = null,
+      activeSkillPinned = false,
+      nextSyntheticToolCallSequence = 0,
+      legacyJsonFallbackEnabled = true,
+      responsesPreviousResponseId = null,
+      responsesProviderLineageId = null,
+      responsesLineageTrusted = false,
+      responsesFullReplayRequired = false,
+      responsesContinuationShape = null,
+      responsesPendingMessages = mutableListOf(),
+      replayToolResultProjections = linkedMapOf(),
+      localContinuationEnvelope = null,
+      subAgentHandles = linkedMapOf(),
+      subAgentExecutionLock = Any(),
+    )
+    synchronized(cursor.subAgentExecutionLock) {
+      cursor.subAgentHandles["blocked-child"] = blockingHandle
+    }
+    val steps = listOf(
+      OpenCrayAgentRuntime.ParallelToolActionStep(
+        index = 0,
+        call = AgentToolCall(
+          toolName = "wait_agent",
+          arguments = buildJsonObject {
+            put("agent_id", "blocked-child")
+          },
+        ),
+      ),
+      OpenCrayAgentRuntime.ParallelToolActionStep(
+        index = 1,
+        call = AgentToolCall(
+          toolName = "Read",
+          arguments = buildJsonObject {
+            put("file_path", "README.md")
+          },
+        ),
+      ),
+    )
+    val cancelRequested = AtomicBoolean(false)
+    val dispatchExecutor = Executors.newSingleThreadExecutor()
+    try {
+      val dispatchFuture = dispatchExecutor.submit<List<OpenCrayAgentRuntime.ParallelToolDispatch>> {
+        runtime.dispatchPromptToolCallsInParallel(
+          task = promptTask("Wait and read in parallel."),
+          turn = 0,
+          calls = steps,
+          transcript = emptyList(),
+          cursor = cursor,
+          hooks = runtimeHooks(isCancellationRequested = cancelRequested::get),
+          activeSkillCapsule = null,
+        )
+      }
+
+      Thread.sleep(600L)
+      assertFalse(dispatchFuture.isDone)
+      cancelRequested.set(true)
+
+      val dispatches = dispatchFuture.get(5, TimeUnit.SECONDS)
+      assertEquals(1, dispatches.size)
+      assertEquals("Read", dispatches.single().result.toolName)
+      assertEquals(AgentToolResultStatus.SUCCESS, dispatches.single().result.status)
+      assertSame(
+        blockedExecution,
+        coordinator.activeExecution(SubAgentExecutionKey.from(blockingHandle)),
+      )
+      assertFalse(blockedCancelRequested.get())
+    } finally {
+      blockedRelease.countDown()
+      dispatchExecutor.shutdownNow()
+      blockedExecutor.shutdownNow()
+    }
+  }
+
+  @Test
   fun spawnedChildContinuesAfterParentFinalAndCanBeHarvestedInLaterRun() {
     val workspaceRoot = temporaryFolder.newFolder("subagent-detached-between-runs").toPath()
     Files.write(
@@ -3444,6 +3853,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
     subAgentExecutionCoordinator: com.opencray.runtime.subagent.SubAgentExecutionCoordinator =
       InMemorySubAgentExecutionCoordinator(),
     subAgentContextPolicy: SubAgentContextPolicy = SubAgentContextPolicy(),
+    supplementInputProvider: (String, String) -> List<OpenCraySupplementInput> = { _, _ -> emptyList() },
   ): OpenCrayAgentRuntime = OpenCrayAgentRuntime(
     gateway = gateway,
     toolDispatcher = OpenCrayToolDispatcher(
@@ -3464,6 +3874,7 @@ class OpenCrayAgentRuntimeSubAgentTest {
         seededDetachedSubAgentHandlesRequireCoordinatorOwnership,
       subAgentExecutionCoordinator = subAgentExecutionCoordinator,
       subAgentContextPolicy = subAgentContextPolicy,
+      supplementInputProvider = supplementInputProvider,
       json = TEST_JSON,
     ),
     eventSink = eventSink,
