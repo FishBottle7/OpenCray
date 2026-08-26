@@ -228,3 +228,32 @@
 ## 附：范围说明
 
 llm/src/main/kotlin 仅 4 个文件（LiteLlmGateway、ProviderRouting、LiteLlmMetadataKeys、LiteLlmBuiltinWebSearchObservation）；真正的 HTTP/SSE provider client 在 app 模块（OpenAiCompatibleLiteLlmProviderClient.kt + OpenAiChatDialect / OpenAiResponsesDialect / AnthropicDialect），已一并纳入 G 系列。
+
+---
+
+## 修复对照表（2026-08-26 更新）
+
+全部 45 项已修复，另加 1 项存量失败（ServiceOwnedChatRuntimeGatewayTest）。commit 映射：
+
+| 区域 | 条目 → commit |
+|------|--------------|
+| P0 | P0-1→449561c · P0-2→4f7cc4e · P0-3→2c7a9a9 |
+| T 系列 | T-01/02/03→e4ace23 · T-04/05/06/10→51fa62d · T-07/08/11→402218d · T-09/12→8b853ed |
+| Q 系列 | Q-01/05→e6e4c21 · Q-04/06/07/08→1c9cbf8 · Q-02/03→af694a0 |
+| W 系列 | W-01/04→1064a25 · W-02/03→e852027 · W-06/07→e3d6e56 · W-08/09→011029b+9d05fff · W-05→910083f |
+| G 系列 | G-01/07→65aac0e · G-02/04→c8c7d2e · G-03/05/06→b27b151 · G-09/10→f8b9d3c · G-08→ffc43b1 |
+| D 系列 | D-01/06→e9c203f · D-02/04/05→bc55f2e · D-03→e5e5a71 |
+| 存量 | ServiceOwnedChatRuntimeGatewayTest→8aaf0aa |
+
+### 遗留跟进项（非审计编号）
+
+1. 单 handle 版 synchronizedSubAgentHandle 与复数版同构竞态未修（超当时范围）。
+2. 	runcateToReadBudget 死代码待清理；Read 工具大文件 	otalLineCount 语义变为窗口内行数，待产品确认。
+3. SessionQueue 每实例一个常驻持久化线程；自定义 store 回调队列公共方法会自锁死（现无此模式）。
+4. 进程注册表满载 fail-closed：极端长任务下 Bash 会收到明确失败（原为静默挤掉 RUNNING）。
+5. W-05 内容绑定休眠中：生产端尚无 commandApprovalToken 签发方，app 层接入审批签发时激活。
+6. PROVIDER_REQUEST_CANCELLED 未注册 UserFacingErrorCodes（当前路径不产生用户可见文案，如未来直连网关渲染失败需补注册）。
+
+### 验证状态
+
+runtime / core / persistence / llm 全量绿；app 全量在 HEAD 验证绿。工作区中用户进行中的 feature（workspace 导出分享、通知、凭证脱敏、媒体任务令牌等）存在 15 个相关测试失败（ScheduledTaskWorkManagerTest、OpenCrayRuntimeServiceInteractiveRepairTest、AgentBootstrapExecutionControllerTest、ChatSessionDeleteReliabilityTest、ServiceOwnedChatRuntimeGatewayTest 各部分），经 HEAD worktree 对照确认为该 WIP 引入，随其开发收敛。
