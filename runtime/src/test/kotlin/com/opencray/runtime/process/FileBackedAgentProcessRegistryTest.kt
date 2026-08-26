@@ -1206,6 +1206,117 @@ class FileBackedAgentProcessRegistryTest {
     )
   }
 
+  // [W-08] RUNNING 持久快照一律豁免淘汰；全活跃满载时拒绝新注册（fail-closed）
+  @Test
+  fun fileBackedStartRejectsNewProcessWhenAllTrackedSnapshotsAreRunningAtCapacity() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-running-capacity")
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        FakeManagedProcessController(
+          snapshot = runningSnapshot(processId = request.processId, taskId = request.taskId),
+          awaitSnapshot = successSnapshot(processId = request.processId, taskId = request.taskId),
+        )
+      },
+      config = AgentProcessRegistryConfig(maxTrackedProcesses = 2),
+    )
+
+    registry.start(startRequestFor(processId = "proc-0"))
+    registry.start(startRequestFor(processId = "proc-1"))
+    val rejection = runCatching { registry.start(startRequestFor(processId = "proc-2")) }
+      .exceptionOrNull()
+
+    assertTrue(rejection is IllegalArgumentException)
+    val rejectionMessage = requireNotNull(rejection!!.message)
+    assertTrue(rejectionMessage.contains("(2/2 tracked)"))
+    assertTrue(rejectionMessage.contains("still active"))
+    assertNull(registry.read("proc-2"))
+    val tracked = registry.list()
+    assertEquals(setOf("proc-0", "proc-1"), tracked.map { it.processId }.toSet())
+    assertTrue(tracked.all { it.status == ManagedProcessStatus.RUNNING })
+
+    registry.wait("proc-0", 250L)
+    registry.start(startRequestFor(processId = "proc-2"))
+
+    assertEquals(
+      setOf("proc-1", "proc-2"),
+      registry.list().map { it.processId }.toSet(),
+    )
+    assertNull(registry.read("proc-0"))
+  }
+
+  // [W-09] 先查重后创建：ID 碰撞时第二次 start 不触发 factory，首个进程不受影响
+  @Test
+  fun fileBackedDuplicateProcessIdIsRejectedBeforeSecondControllerCreation() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-duplicate-id")
+    val createdProcessIds = mutableListOf<String>()
+    val firstController = FakeManagedProcessController(
+      snapshot = runningSnapshot(processId = "proc-dup", taskId = "task-dup"),
+    )
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        createdProcessIds += request.processId
+        firstController
+      },
+    )
+
+    registry.start(startRequestFor(processId = "proc-dup"))
+    val rejection = runCatching { registry.start(startRequestFor(processId = "proc-dup")) }
+      .exceptionOrNull()
+
+    assertTrue(rejection is IllegalArgumentException)
+    assertTrue(requireNotNull(rejection!!.message).contains("'proc-dup' already exists"))
+    assertEquals(listOf("proc-dup"), createdProcessIds)
+    assertEquals(0, firstController.terminateCalls)
+    assertEquals(
+      ManagedProcessStatus.RUNNING,
+      registry.read("proc-dup")?.status,
+    )
+  }
+
+  // [W-09] 创建后持久化失败时，已启动进程必须被 terminate，不留孤儿
+  @Test
+  fun fileBackedStartTerminatesCreatedProcessWhenPersistenceFailsAfterCreation() {
+    val directory = temporaryFolder.newFolder("durable-process-registry-persist-failure")
+    val storage = FailableUpdateTextStorage()
+    var victimController: FakeManagedProcessController? = null
+    val registry = FileBackedAgentProcessRegistry(
+      directory = directory,
+      storage = storage,
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        FakeManagedProcessController(
+          snapshot = runningSnapshot(processId = request.processId, taskId = request.taskId),
+        ).also { controller ->
+          if (request.processId == "proc-victim") {
+            victimController = controller
+          }
+        }
+      },
+    )
+
+    registry.start(startRequestFor(processId = "proc-stable"))
+    storage.failUpdates = true
+    val failure = runCatching { registry.start(startRequestFor(processId = "proc-victim")) }
+      .exceptionOrNull()
+
+    assertNotNull(failure)
+    assertEquals(1, victimController?.terminateCalls)
+    assertNull(registry.read("proc-victim"))
+    assertEquals(
+      ManagedProcessStatus.RUNNING,
+      registry.read("proc-stable")?.status,
+    )
+  }
+
+  private fun startRequestFor(processId: String): ManagedProcessStartRequest = ManagedProcessStartRequest(
+    processId = processId,
+    taskId = "task-$processId",
+    command = "echo",
+    timeoutMs = 30_000L,
+    requestedAtEpochMs = 1_000L,
+  )
+
   private fun runningSnapshot(
     processId: String,
     taskId: String,
@@ -1250,6 +1361,8 @@ class FileBackedAgentProcessRegistryTest {
     private val awaitSnapshot: ManagedProcessSnapshot = snapshot,
   ) : ManagedProcessController {
     private var currentSnapshot: ManagedProcessSnapshot = snapshot
+    var terminateCalls: Int = 0
+      private set
 
     override fun snapshot(): ManagedProcessSnapshot = currentSnapshot
 
@@ -1258,7 +1371,40 @@ class FileBackedAgentProcessRegistryTest {
       return currentSnapshot
     }
 
-    override fun terminate(): ManagedProcessSnapshot = currentSnapshot
+    override fun terminate(): ManagedProcessSnapshot {
+      terminateCalls += 1
+      return currentSnapshot
+    }
+  }
+
+  private class FailableUpdateTextStorage : DurableTextStorage {
+    private var text: String? = null
+    var failUpdates: Boolean = false
+
+    override fun readText(name: String): String? = text
+
+    override fun writeText(name: String, text: String) {
+      error("Managed process registry mutations should use updateText.")
+    }
+
+    override fun delete(name: String): Boolean {
+      text = null
+      return true
+    }
+
+    override fun <T> updateText(
+      name: String,
+      update: (String?) -> DurableTextUpdate<T>,
+    ): T {
+      if (failUpdates) {
+        error("Simulated durable storage failure.")
+      }
+      val updated = update(text)
+      if (updated.write) {
+        text = updated.text
+      }
+      return updated.result
+    }
   }
 
   private class UpdateOnlyDurableTextStorage : DurableTextStorage {

@@ -121,6 +121,69 @@ class InMemoryAgentProcessRegistryTest {
     assertTrue(registry.read("proc-running") != null)
   }
 
+  // [W-08] RUNNING 一律豁免淘汰；全活跃满载时拒绝新注册（fail-closed）
+  @Test
+  fun runningProcessesAreExemptFromTrimAndFullActiveRegistryRejectsNewStart() {
+    val registry = InMemoryAgentProcessRegistry(
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        FakeManagedProcessController(
+          snapshot = snapshotFor(processId = request.processId, status = ManagedProcessStatus.RUNNING),
+          awaitSnapshot = snapshotFor(processId = request.processId, status = ManagedProcessStatus.SUCCESS),
+        )
+      },
+      config = AgentProcessRegistryConfig(maxTrackedProcesses = 2),
+    )
+
+    registry.start(startRequestFor(processId = "proc-a"))
+    registry.start(startRequestFor(processId = "proc-b"))
+    val rejection = runCatching { registry.start(startRequestFor(processId = "proc-c")) }
+      .exceptionOrNull()
+
+    assertTrue(rejection is IllegalArgumentException)
+    val rejectionMessage = requireNotNull(rejection!!.message)
+    assertTrue(rejectionMessage.contains("(2/2 tracked)"))
+    assertTrue(rejectionMessage.contains("still active"))
+    assertEquals(setOf("proc-a", "proc-b"), registry.list().map { it.processId }.toSet())
+    assertNull(registry.read("proc-c"))
+
+    registry.wait("proc-a", 0L)
+    registry.start(startRequestFor(processId = "proc-c"))
+
+    assertEquals(
+      setOf("proc-b", "proc-c"),
+      registry.list().map { it.processId }.toSet(),
+    )
+    assertNull(registry.read("proc-a"))
+  }
+
+  // [W-09] 先查重后创建：ID 碰撞时第二次 start 不触发 factory，首个进程不受影响
+  @Test
+  fun duplicateProcessIdIsRejectedBeforeSecondControllerCreation() {
+    val requestedProcessIds = mutableListOf<String>()
+    val firstController = FakeManagedProcessController(
+      snapshot = snapshotFor(processId = "proc-dup", status = ManagedProcessStatus.RUNNING),
+    )
+    val registry = InMemoryAgentProcessRegistry(
+      controllerFactory = ManagedProcessControllerFactory { request ->
+        requestedProcessIds += request.processId
+        firstController
+      },
+    )
+
+    registry.start(startRequestFor(processId = "proc-dup"))
+    val rejection = runCatching { registry.start(startRequestFor(processId = "proc-dup")) }
+      .exceptionOrNull()
+
+    assertTrue(rejection is IllegalArgumentException)
+    assertTrue(requireNotNull(rejection!!.message).contains("'proc-dup' already exists"))
+    assertEquals(listOf("proc-dup"), requestedProcessIds)
+    assertEquals(0, firstController.terminateCalls)
+    assertEquals(
+      ManagedProcessStatus.RUNNING,
+      registry.read("proc-dup")?.status,
+    )
+  }
+
   private fun startRequestFor(processId: String): ManagedProcessStartRequest = ManagedProcessStartRequest(
     processId = processId,
     taskId = "task-$processId",
