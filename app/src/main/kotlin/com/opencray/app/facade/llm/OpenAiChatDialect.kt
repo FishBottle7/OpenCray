@@ -1053,7 +1053,9 @@ internal fun OpenAiCompatibleLiteLlmProviderClient.mergeOpenAiStreamToolCalls(
         val function = toolCall.optJSONObject("function")
           ?: JSONObject().also { toolCall.put("function", it) }
         functionDelta.nonBlankString("name")?.let { name ->
-          appendJsonStringField(function, "name", name)
+          if (function.optString("name") != name) {
+            function.put("name", name)
+          }
         }
         if (functionDelta.has("arguments")) {
           appendJsonStringField(

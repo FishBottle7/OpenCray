@@ -260,33 +260,39 @@ class OpenCrayAgentRuntimeFailureRecoveryTest : OpenCrayAgentRuntimeTestBase() {
         gatewaySuccessResult("""{"type":"final","answer":"answer after llm retry"}"""),
       ),
     )
-    val runtime = OpenCrayAgentRuntime(
-      gateway = gateway,
-      toolDispatcher = OpenCrayToolDispatcher(
-        OpenCrayToolDispatcherConfig(
-          workspaceRoots = setOf(workspaceRoot.toPath()),
+    val previousJitterDraw = transientGatewayRetryBackoffJitterDraw
+    transientGatewayRetryBackoffJitterDraw = { 0.5 }
+    try {
+      val runtime = OpenCrayAgentRuntime(
+        gateway = gateway,
+        toolDispatcher = OpenCrayToolDispatcher(
+          OpenCrayToolDispatcherConfig(
+            workspaceRoots = setOf(workspaceRoot.toPath()),
+          ),
         ),
-      ),
-      config = OpenCrayAgentRuntimeConfig(
-        maxTurns = 4,
-        maxToolCalls = 2,
-        maxRecoverableLlmRetries = 5,
-        recoverableLlmRetryDelayMs = 10L,
-        sleep = { durationMs -> sleepDurations += durationMs },
-      ),
-      clock = IncrementingClock(start = 10_000L)::next,
-    )
+        config = OpenCrayAgentRuntimeConfig(
+          maxTurns = 4,
+          maxToolCalls = 2,
+          maxRecoverableLlmRetries = 5,
+          recoverableLlmRetryDelayMs = 10L,
+          sleep = { durationMs -> sleepDurations += durationMs },
+        ),
+        clock = IncrementingClock(start = 10_000L)::next,
+      )
 
-    val result = runtime.execute(
-      task = promptTask(input = "Answer after the transient LLM failures recover."),
-      hooks = runtimeHooks(),
-    )
+      val result = runtime.execute(
+        task = promptTask(input = "Answer after the transient LLM failures recover."),
+        hooks = runtimeHooks(),
+      )
 
-    assertEquals(ExecutionStatus.SUCCESS, result.status)
-    assertEquals("answer after llm retry", result.stdout)
-    assertEquals(3, gateway.requests.size)
-    assertEquals(listOf(10L, 10L), sleepDurations)
-    assertEquals("2", result.metadata["llmRetryCount"])
+      assertEquals(ExecutionStatus.SUCCESS, result.status)
+      assertEquals("answer after llm retry", result.stdout)
+      assertEquals(3, gateway.requests.size)
+      assertEquals(listOf(10L, 20L), sleepDurations)
+      assertEquals("2", result.metadata["llmRetryCount"])
+    } finally {
+      transientGatewayRetryBackoffJitterDraw = previousJitterDraw
+    }
   }
 
   @Test

@@ -62,6 +62,9 @@ import java.net.HttpURLConnection
 import java.net.URI
 import java.net.URL
 import java.nio.charset.StandardCharsets
+import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -970,9 +973,20 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     errorObject?.optString("message")?.takeIf { it.isNotBlank() } ?: responseText
   }.getOrDefault(responseText)
 
-  private fun parseRetryAfterMillis(rawValue: String?): Long? {
-    val seconds = rawValue?.trim()?.toLongOrNull() ?: return null
-    return seconds * 1_000L
+  internal fun parseRetryAfterMillis(
+    rawValue: String?,
+    clockEpochMs: Long = System.currentTimeMillis(),
+  ): Long? {
+    val trimmed = rawValue?.trim()?.takeIf(String::isNotEmpty) ?: return null
+    trimmed.toLongOrNull()?.let { seconds -> return seconds.coerceAtLeast(0L) * 1_000L }
+    return retryAfterHttpDateMillis(trimmed, clockEpochMs)
+  }
+
+  private fun retryAfterHttpDateMillis(httpDate: String, clockEpochMs: Long): Long? {
+    val expiresAtEpochMs = runCatching {
+      ZonedDateTime.parse(httpDate, RETRY_AFTER_HTTP_DATE_FORMATTER).toInstant().toEpochMilli()
+    }.getOrNull() ?: return null
+    return (expiresAtEpochMs - clockEpochMs).coerceAtLeast(0L)
   }
 
   private fun readSuccessResponse(
@@ -1557,6 +1571,8 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
 
   companion object {
     private const val DEFAULT_STREAM_UPDATE_MIN_INTERVAL_MS: Long = 24L
+    private val RETRY_AFTER_HTTP_DATE_FORMATTER =
+      DateTimeFormatter.RFC_1123_DATE_TIME.withLocale(Locale.US)
     private const val STREAM_SNIFF_LIMIT_BYTES: Int = 2_048
     internal const val MAX_INLINE_IMAGE_BYTES: Long = 20L * 1024L * 1024L
     internal const val MAX_INLINE_PDF_BYTES: Long = 32L * 1024L * 1024L

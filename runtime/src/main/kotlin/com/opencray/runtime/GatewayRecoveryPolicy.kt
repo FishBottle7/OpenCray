@@ -6,25 +6,51 @@ import com.opencray.llm.LiteLlmGatewayResult
 import com.opencray.llm.LiteLlmGatewayStatus
 import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.runtime.OpenCrayAgentRuntime.PromptRunDiagnostics
+import kotlin.math.pow
+import kotlin.random.Random
 
 private const val MAX_STRUCTURED_TOOL_CALL_ERROR_COUNT: Int = 3
 private const val RECOVERABLE_LLM_RETRY_SLEEP_CHUNK_MS: Long = 250L
+private const val TRANSIENT_GATEWAY_RETRY_BACKOFF_JITTER_FRACTION: Double = 0.2
 private val TERMINAL_PROVIDER_TIMEOUT_STATUS_CODES: Set<String> = setOf("449", "499")
 
-internal fun OpenCrayAgentRuntime.recoverableGatewayRetryDelayMs(gatewayResult: LiteLlmGatewayResult): Long? = when {
+internal const val MAX_TRANSIENT_GATEWAY_RETRY_BACKOFF_MS: Long = 30_000L
+
+internal var transientGatewayRetryBackoffJitterDraw: () -> Double = { Random.nextDouble() }
+
+internal fun transientGatewayRetryBackoffDelayMs(
+  baseDelayMs: Long,
+  retryAttempt: Int,
+  jitterDraw: Double = transientGatewayRetryBackoffJitterDraw(),
+): Long {
+  val exponent = (retryAttempt - 1).coerceAtLeast(0)
+  val exponentialMs = (
+    baseDelayMs.coerceAtLeast(0L).toDouble() *
+      2.0.pow(exponent.coerceAtMost(24).toDouble())
+    ).toLong()
+  val cappedMs = exponentialMs.coerceAtMost(MAX_TRANSIENT_GATEWAY_RETRY_BACKOFF_MS)
+  val jitterFactor =
+    1.0 + (2.0 * jitterDraw.coerceIn(0.0, 1.0) - 1.0) * TRANSIENT_GATEWAY_RETRY_BACKOFF_JITTER_FRACTION
+  return (cappedMs * jitterFactor).toLong().coerceAtLeast(0L)
+}
+
+internal fun OpenCrayAgentRuntime.recoverableGatewayRetryDelayMs(
+  gatewayResult: LiteLlmGatewayResult,
+  retryAttempt: Int = 1,
+): Long? = when {
   gatewayResult.status == LiteLlmGatewayStatus.TIMEOUT &&
     !isTerminalProviderTimeout(gatewayResult) ->
-    config.recoverableLlmRetryDelayMs
+    transientGatewayRetryBackoffDelayMs(config.recoverableLlmRetryDelayMs, retryAttempt)
 
   gatewayResult.status == LiteLlmGatewayStatus.RATE_LIMITED ->
     maxOf(
-      config.recoverableLlmRetryDelayMs,
+      transientGatewayRetryBackoffDelayMs(config.recoverableLlmRetryDelayMs, retryAttempt),
       gatewayResult.metadata["retryAfterMs"]?.toLongOrNull() ?: 0L,
     )
 
   gatewayResult.status == LiteLlmGatewayStatus.FAILED &&
     gatewayResult.errorCode.isTransientGatewayFailureCode() ->
-    config.recoverableLlmRetryDelayMs
+    transientGatewayRetryBackoffDelayMs(config.recoverableLlmRetryDelayMs, retryAttempt)
 
   else -> null
 }
