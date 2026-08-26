@@ -34,6 +34,7 @@ data class LiteLlmGatewayRequest(
   val metadata: Map<String, String> = emptyMap(),
   val authHeaders: Map<String, String> = emptyMap(),
   val streamObserver: LiteLlmVisibleTextObserver = NoOpLiteLlmVisibleTextObserver,
+  val isCancelled: (() -> Boolean)? = null,
 ) {
   init {
     prompt = prompt.trim().takeIf(String::isNotBlank)

@@ -1385,6 +1385,7 @@ class OpenCrayAgentRuntime(
         primary = request.streamObserver,
         secondary = assistantDraftObserver(task),
       ),
+      isCancelled = hooks.isCancellationRequested,
     )
     var retryCount = 0
     while (true) {

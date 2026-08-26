@@ -65,6 +65,9 @@ import java.nio.charset.StandardCharsets
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -117,6 +120,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       "provider.executeStart ${request.debugSummary(protocol = protocol, streamResponses = streamResponses)}",
     )
     val requestDiagnostics = requestDiagnosticsMetadata(request)
+    if (request.cancelRequested()) {
+      return cancelledProviderResult(requestDiagnostics)
+    }
     invalidToolMessageContract(request.request.messages)?.let { validationError ->
       return LiteLlmProviderResult.Failure(
         errorCode = "PROVIDER_REQUEST_INVALID_TOOL_CALL_ID",
@@ -149,7 +155,81 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       setRequestProperty("User-Agent", userAgent)
     }
 
+    val cancellationProbe = request.request.isCancelled
+    if (cancellationProbe == null) {
+      return executeProviderExchange(
+        request = request,
+        connection = connection,
+        protocol = protocol,
+        streamResponses = streamResponses,
+        startedAtEpochMs = startedAtEpochMs,
+        requestDiagnostics = requestDiagnostics,
+      )
+    }
+    val exchangeExecutor = Executors.newSingleThreadExecutor { runnable ->
+      Thread(runnable).apply {
+        isDaemon = true
+        name = "opencray-provider-exchange"
+      }
+    }
+    try {
+      val exchangeFuture = exchangeExecutor.submit(
+        java.util.concurrent.Callable {
+          executeProviderExchange(
+            request = request,
+            connection = connection,
+            protocol = protocol,
+            streamResponses = streamResponses,
+            startedAtEpochMs = startedAtEpochMs,
+            requestDiagnostics = requestDiagnostics,
+          )
+        },
+      )
+      while (!exchangeFuture.isDone) {
+        if (cancellationProbe.invoke()) {
+          Thread {
+            runCatching { connection.disconnect() }
+          }.apply {
+            isDaemon = true
+            name = "opencray-provider-cancel-disconnect"
+            start()
+          }
+          return cancelledProviderResult(requestDiagnostics)
+        }
+        Thread.sleep(CANCELLATION_WATCHDOG_POLL_INTERVAL_MS)
+      }
+      return try {
+        exchangeFuture.get()
+      } catch (failure: ExecutionException) {
+        throw failure.cause ?: failure
+      }
+    } finally {
+      exchangeExecutor.shutdownNow()
+      Thread {
+        runCatching { connection.disconnect() }
+      }.apply {
+        isDaemon = true
+        name = "opencray-provider-cancel-disconnect"
+        start()
+      }
+    }
+  }
+
+  private fun executeProviderExchange(
+    request: LiteLlmProviderRequest,
+    connection: HttpURLConnection,
+    protocol: String,
+    streamResponses: Boolean,
+    startedAtEpochMs: Long,
+    requestDiagnostics: Map<String, String>,
+  ): LiteLlmProviderResult {
+    var cancellationWatchdog: RequestCancellationWatchdog? = null
     return try {
+      cancellationWatchdog = RequestCancellationWatchdog(
+        connection = connection,
+        cancelRequested = { request.cancelRequested() },
+      )
+      cancellationWatchdog.start()
       val body = buildRequestBody(request, streamResponses = streamResponses)
       connection.outputStream.use { output ->
         output.write(body.toByteArray(StandardCharsets.UTF_8))
@@ -248,6 +328,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       )
       providerResult
     } catch (timeout: java.net.SocketTimeoutException) {
+      if (request.cancelRequested()) {
+        return cancelledProviderResult(requestDiagnostics)
+      }
       streamDebug("provider.timeout protocol=$protocol message=${timeout.message ?: "-"}")
       val providerResult = LiteLlmProviderResult.Timeout(
         errorMessage = timeout.message ?: "Provider request timed out.",
@@ -258,6 +341,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       )
       providerResult
     } catch (streamError: ProviderStreamErrorException) {
+      if (request.cancelRequested()) {
+        return cancelledProviderResult(requestDiagnostics)
+      }
       streamDebug(
         "provider.streamError protocol=$protocol type=${streamError.providerErrorCode ?: "-"} message=${streamError.message ?: "-"}",
       )
@@ -276,6 +362,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       )
       providerResult
     } catch (exception: Exception) {
+      if (request.cancelRequested()) {
+        return cancelledProviderResult(requestDiagnostics)
+      }
       streamDebug(
         "provider.exception protocol=$protocol type=${exception::class.java.name} message=${exception.message ?: "-"}",
       )
@@ -289,6 +378,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       )
       providerResult
     } finally {
+      cancellationWatchdog?.stop()
       connection.disconnect()
     }
   }
@@ -502,6 +592,17 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       append(errorMessage)
     }
   }
+
+  private fun LiteLlmProviderRequest.cancelRequested(): Boolean =
+    request.isCancelled?.invoke() == true
+
+  private fun cancelledProviderResult(
+    diagnostics: Map<String, String>,
+  ): LiteLlmProviderResult.Failure = LiteLlmProviderResult.Failure(
+    errorCode = PROVIDER_REQUEST_CANCELLED_ERROR_CODE,
+    errorMessage = "Provider request was cancelled by the user.",
+    metadata = diagnostics,
+  )
 
   private fun buildEndpointUrl(
     baseUrl: String,
@@ -1668,6 +1769,41 @@ internal class VisibleTextSnapshotCoalescer(
 }
 
 private const val STREAM_DEBUG_TAG: String = "OpenCrayStream"
+
+internal const val PROVIDER_REQUEST_CANCELLED_ERROR_CODE: String = "PROVIDER_REQUEST_CANCELLED"
+
+private const val CANCELLATION_WATCHDOG_POLL_INTERVAL_MS: Long = 250L
+
+internal class RequestCancellationWatchdog(
+  private val connection: HttpURLConnection,
+  private val cancelRequested: () -> Boolean,
+  private val pollIntervalMs: Long = CANCELLATION_WATCHDOG_POLL_INTERVAL_MS,
+) {
+  private val stopped = AtomicBoolean(false)
+  private val thread = Thread {
+    try {
+      while (!stopped.get()) {
+        if (cancelRequested()) {
+          runCatching { connection.disconnect() }
+          return@Thread
+        }
+        Thread.sleep(pollIntervalMs)
+      }
+    } catch (_: InterruptedException) {
+    }
+  }
+
+  fun start() {
+    thread.isDaemon = true
+    thread.name = "OpenCrayLlmCancelWatchdog"
+    thread.start()
+  }
+
+  fun stop() {
+    stopped.set(true)
+    thread.interrupt()
+  }
+}
 
 private const val PROVIDER_FLOW_DEBUG_TAG: String = "OpenCrayDiag"
 

@@ -16,6 +16,13 @@ class GatewayRecoveryPolicyTransientClassificationTest {
   }
 
   @Test
+  fun userCancellationIsClassifiedAsNonTransientAndNeverRetried() {
+    assertFalse("PROVIDER_REQUEST_CANCELLED".isTransientGatewayFailureCode())
+    assertFalse("provider_request_cancelled".isTransientGatewayFailureCode())
+    assertFalse(" PROVIDER_REQUEST_CANCELLED ".isTransientGatewayFailureCode())
+  }
+
+  @Test
   fun transportAndServerSideFailuresStayTransient() {
     assertTrue("PROVIDER_TRANSPORT_ERROR".isTransientGatewayFailureCode())
     assertTrue("PROVIDER_CLIENT_EXCEPTION".isTransientGatewayFailureCode())

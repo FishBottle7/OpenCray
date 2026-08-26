@@ -1,5 +1,6 @@
 package com.opencray.app
 
+import com.opencray.app.facade.llm.mergeOpenAiStreamToolCalls
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
