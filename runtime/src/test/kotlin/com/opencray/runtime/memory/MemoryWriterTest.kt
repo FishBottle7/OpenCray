@@ -157,12 +157,157 @@ class MemoryWriterTest {
     assertEquals("direct", active.extensions[MemorySoulExtensionKeys.USER_RELATIONSHIP_STYLE])
   }
 
+  @Test
+  fun writeKeepsNewActivePreferenceWhenSupersedeResolutionIsInterrupted() {
+    val store = SupersedeFailingMemoryStore()
+    val clock = IncrementingClock(start = 10_000L)
+    val writer = MemoryWriter(
+      store = store,
+      clock = clock::next,
+    )
+    val warmCandidate = MemoryCandidate(
+      kind = MemoryKind.USER_PREFERENCE,
+      scope = MemoryScope.USER,
+      status = MemoryStatus.ACTIVE,
+      content = "Agent style profile should be warm",
+      source = MemoryEvidenceSource.USER_INPUT,
+      sourceSessionId = "session-a",
+      extensions = styleProfilePreferenceExtensions(
+        styleProfile = "warm",
+        scope = MemoryScope.USER,
+      ),
+    )
+    val seriousCandidate = warmCandidate.copy(
+      content = "Agent style profile should be serious",
+      sourceSessionId = "session-b",
+      extensions = styleProfilePreferenceExtensions(
+        styleProfile = "serious",
+        scope = MemoryScope.USER,
+      ),
+    )
+
+    writer.write(listOf(warmCandidate))
+    try {
+      writer.write(listOf(seriousCandidate))
+    } catch (_: IllegalStateException) {
+    }
+
+    val preferenceRecords = store.list().filter { record ->
+      record.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.AGENT_STYLE_PROFILE
+    }
+    assertEquals(2, preferenceRecords.size)
+    assertTrue(preferenceRecords.all { record ->
+      record.extensions[MemoryRecordExtensionKeys.STATUS] == "active"
+    })
+    assertTrue(
+      preferenceRecords.any { record ->
+        record.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE] == "serious"
+      },
+    )
+    assertTrue(
+      store.list().none { record ->
+        val supersededBy = record.extensions[MemoryRecordExtensionKeys.SUPERSEDED_BY]
+        !supersededBy.isNullOrBlank() && store.list().none { existing -> existing.id == supersededBy }
+      },
+    )
+  }
+
+  @Test
+  fun writeResolvesPreExistingDuplicateActivePreferencesTowardLatestValue() {
+    val store = SupersedeFailingMemoryStore()
+    val interruptedClock = IncrementingClock(start = 10_000L)
+    val interruptedWriter = MemoryWriter(
+      store = store,
+      clock = interruptedClock::next,
+    )
+    val warmCandidate = MemoryCandidate(
+      kind = MemoryKind.USER_PREFERENCE,
+      scope = MemoryScope.USER,
+      status = MemoryStatus.ACTIVE,
+      content = "Agent style profile should be warm",
+      source = MemoryEvidenceSource.USER_INPUT,
+      sourceSessionId = "session-a",
+      extensions = styleProfilePreferenceExtensions(
+        styleProfile = "warm",
+        scope = MemoryScope.USER,
+      ),
+    )
+    val seriousCandidate = warmCandidate.copy(
+      content = "Agent style profile should be serious",
+      sourceSessionId = "session-b",
+      extensions = styleProfilePreferenceExtensions(
+        styleProfile = "serious",
+        scope = MemoryScope.USER,
+      ),
+    )
+
+    interruptedWriter.write(listOf(warmCandidate))
+    try {
+      interruptedWriter.write(listOf(seriousCandidate))
+    } catch (_: IllegalStateException) {
+    }
+
+    val healthyWriter = MemoryWriter(store = store)
+    val playfulCandidate = warmCandidate.copy(
+      content = "Agent style profile should be playful",
+      sourceSessionId = "session-c",
+      extensions = styleProfilePreferenceExtensions(
+        styleProfile = "playful",
+        scope = MemoryScope.USER,
+      ),
+    )
+
+    healthyWriter.write(listOf(playfulCandidate))
+
+    val activeRecords = store.list().filter { record ->
+      record.extensions[MemoryRecordExtensionKeys.PREFERENCE_KEY] == MemoryPreferenceKeys.AGENT_STYLE_PROFILE &&
+        record.extensions[MemoryRecordExtensionKeys.STATUS] == "active"
+    }
+    assertEquals(1, activeRecords.size)
+    val active = activeRecords.single()
+    assertEquals("playful", active.extensions[MemoryRecordExtensionKeys.PREFERENCE_VALUE])
+    store.list()
+      .filter { record -> record.id != active.id }
+      .forEach { record ->
+        assertEquals("resolved", record.extensions[MemoryRecordExtensionKeys.STATUS])
+        assertEquals("superseded", record.extensions[MemoryRecordExtensionKeys.RESOLUTION_REASON])
+        assertEquals(active.id, record.extensions[MemoryRecordExtensionKeys.SUPERSEDED_BY])
+      }
+  }
+
   private class InMemoryMemoryStore : MemoryStore {
     private val records = linkedMapOf<String, MemoryRecord>()
 
     override fun list(): List<MemoryRecord> = records.values.toList()
 
     override fun upsert(record: MemoryRecord) {
+      records[record.id] = record
+    }
+
+    override fun delete(id: String): Boolean = records.remove(id) != null
+
+    override fun clear(): Boolean {
+      val hadRecords = records.isNotEmpty()
+      records.clear()
+      return hadRecords
+    }
+  }
+
+  private class SupersedeFailingMemoryStore : MemoryStore {
+    private val records = linkedMapOf<String, MemoryRecord>()
+    private var interruptedOnce = false
+
+    override fun list(): List<MemoryRecord> = records.values.toList()
+
+    override fun upsert(record: MemoryRecord) {
+      if (
+        !interruptedOnce &&
+        record.extensions[MemoryRecordExtensionKeys.STATUS] == "resolved" &&
+        record.extensions[MemoryRecordExtensionKeys.RESOLUTION_REASON] == "superseded"
+      ) {
+        interruptedOnce = true
+        throw IllegalStateException("Simulated crash between supersede steps.")
+      }
       records[record.id] = record
     }
 

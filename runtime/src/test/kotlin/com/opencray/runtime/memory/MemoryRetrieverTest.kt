@@ -288,6 +288,39 @@ class MemoryRetrieverTest {
     assertEquals(1, result.trace.filteredCounts[MemoryRecallFilterReason.INTERNAL_SOUL_OBJECT])
   }
 
+  @Test
+  fun retrieveToleratesDuplicateActivePreferenceRecordsAfterInterruptedSupersede() {
+    val retriever = MemoryRetriever(clock = { NOW_EPOCH_MS })
+
+    val result = retriever.retrieve(
+      records = listOf(
+        memoryRecord(
+          id = "pref-warm",
+          content = "Agent style profile should be warm.",
+          kind = MemoryKind.USER_PREFERENCE,
+          scope = MemoryScope.USER,
+          preferenceKey = "agent_style_profile",
+          preferenceValue = "warm",
+        ),
+        memoryRecord(
+          id = "pref-serious",
+          content = "Agent style profile should be serious.",
+          kind = MemoryKind.USER_PREFERENCE,
+          scope = MemoryScope.USER,
+          preferenceKey = "agent_style_profile",
+          preferenceValue = "serious",
+        ),
+      ),
+      request = MemoryRecallRequest(
+        sessionId = "session-main",
+        userInput = "Please keep using Chinese.",
+      ),
+    )
+
+    assertTrue(result.memories.isEmpty())
+    assertEquals(2, result.trace.filteredCounts[MemoryRecallFilterReason.SOUL_PREFERENCE])
+  }
+
   private fun memoryRecord(
     id: String,
     content: String,

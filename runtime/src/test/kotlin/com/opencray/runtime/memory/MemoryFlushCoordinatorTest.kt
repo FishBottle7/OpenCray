@@ -397,6 +397,174 @@ class MemoryFlushCoordinatorTest {
     )
   }
 
+  @Test
+  fun flushShortCircuitsResurrectingCommitmentAfterTtlDeletion() {
+    val store = InMemoryMemoryStore()
+    val coordinator = MemoryFlushCoordinator(
+      contextPruner = ContextPruner(),
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 1,
+          maxCharsPerMessage = 240,
+        ),
+      ),
+      policy = MemoryFlushPolicy(
+        minOmittedMessages = 1,
+        minOmittedChars = 120,
+      ),
+      writer = MemoryWriter(store = store),
+      existingRecordIdsProvider = { store.list().mapTo(linkedSetOf(), MemoryRecord::id) },
+    )
+    store.upsert(unrelatedLiveRecord())
+    val conversation = listOf(
+      RuntimeConversationMessage(
+        RuntimeConversationRole.USER,
+        "Please remember the follow-up work for the runtime verification pass we discussed earlier today.",
+      ),
+      RuntimeConversationMessage(
+        RuntimeConversationRole.ASSISTANT,
+        "I will run the targeted runtime tests tomorrow morning and share the consolidated verification summary with everyone.",
+      ),
+      RuntimeConversationMessage(RuntimeConversationRole.USER, "Latest live turn."),
+    )
+
+    val firstSummary = coordinator.flushMidTurn(
+      sessionId = "session-ttl",
+      workspaceId = "workspace-main",
+      conversation = conversation,
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+      taskId = "task-ttl",
+    )
+    assertTrue(firstSummary.wasWritten)
+    assertEquals(MemoryFlushOutcome.WRITTEN, firstSummary.trace.outcome)
+    assertEquals(1, firstSummary.writtenRecords.size)
+    assertEquals("task_commitment", firstSummary.writtenRecords.single().extensions[MemoryRecordExtensionKeys.KIND])
+    val expiredRecordId = firstSummary.writtenRecords.single().id
+
+    assertTrue(store.delete(expiredRecordId))
+
+    val secondSummary = coordinator.flushMidTurn(
+      sessionId = "session-ttl",
+      workspaceId = "workspace-main",
+      conversation = conversation,
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+      taskId = "task-ttl",
+    )
+    assertFalse(secondSummary.wasWritten)
+    assertEquals(MemoryFlushOutcome.ALREADY_FLUSHED, secondSummary.trace.outcome)
+    assertEquals(1, store.list().size)
+  }
+
+  @Test
+  fun flushStillWritesNewEvidenceAfterTombstonedCommitmentDeletion() {
+    val store = InMemoryMemoryStore()
+    val coordinator = MemoryFlushCoordinator(
+      contextPruner = ContextPruner(),
+      transcriptWindowBuilder = TranscriptWindowBuilder(
+        TranscriptWindowConfig(
+          maxMessages = 1,
+          maxCharsPerMessage = 240,
+        ),
+      ),
+      policy = MemoryFlushPolicy(
+        minOmittedMessages = 1,
+        minOmittedChars = 120,
+      ),
+      writer = MemoryWriter(store = store),
+      existingRecordIdsProvider = { store.list().mapTo(linkedSetOf(), MemoryRecord::id) },
+    )
+    store.upsert(unrelatedLiveRecord())
+    val initialConversation = listOf(
+      RuntimeConversationMessage(
+        RuntimeConversationRole.USER,
+        "Please remember the follow-up work for the runtime verification pass we discussed earlier today.",
+      ),
+      RuntimeConversationMessage(
+        RuntimeConversationRole.ASSISTANT,
+        "I will run the targeted runtime tests tomorrow morning and share the consolidated verification summary with everyone.",
+      ),
+      RuntimeConversationMessage(RuntimeConversationRole.USER, "Latest live turn."),
+    )
+
+    val firstSummary = coordinator.flushMidTurn(
+      sessionId = "session-tombstone",
+      workspaceId = "workspace-main",
+      conversation = initialConversation,
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+      taskId = "task-tombstone",
+    )
+    assertTrue(firstSummary.wasWritten)
+    assertTrue(store.delete(firstSummary.writtenRecords.single().id))
+
+    val secondSummary = coordinator.flushMidTurn(
+      sessionId = "session-tombstone",
+      workspaceId = "workspace-main",
+      conversation = initialConversation,
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+      taskId = "task-tombstone",
+    )
+    assertEquals(MemoryFlushOutcome.ALREADY_FLUSHED, secondSummary.trace.outcome)
+
+    val followUpConversation = initialConversation +
+      listOf(
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.ASSISTANT,
+          content = """{"run_id":"run-2","task_id":"task-tombstone","turn":1,"tool_call_id":"call-2","tool_name":"Read","arguments":{"file_path":"README.md"}}""",
+          kind = RuntimeConversationMessageKind.TOOL_CALL,
+          toolCall = RuntimeConversationToolCall(
+            id = "call-2",
+            toolName = "Read",
+          ),
+        ),
+        RuntimeConversationMessage(
+          role = RuntimeConversationRole.TOOL,
+          content = """{"run_id":"run-2","task_id":"task-tombstone","turn":1,"tool_call_id":"call-2","tool_name":"Read","status":"success","content":"Project uses a fresh tombstone regression evidence trail","metadata":{"filePath":"README.md"}}""",
+          kind = RuntimeConversationMessageKind.TOOL_RESULT,
+          toolResult = RuntimeConversationToolResult(
+            toolCallId = "call-2",
+            toolName = "Read",
+            status = "success",
+            isError = false,
+          ),
+        ),
+        RuntimeConversationMessage(RuntimeConversationRole.USER, "Newest live turn after the follow-up."),
+      )
+
+    val thirdSummary = coordinator.flushMidTurn(
+      sessionId = "session-tombstone",
+      workspaceId = "workspace-main",
+      conversation = followUpConversation,
+      llmMetadata = mapOf("context_window_tokens" to "64"),
+      taskId = "task-tombstone",
+    )
+    assertTrue(thirdSummary.wasWritten)
+    assertEquals(1, thirdSummary.writtenRecords.size)
+    assertEquals(
+      "Project uses a fresh tombstone regression evidence trail",
+      thirdSummary.writtenRecords.single().content,
+    )
+    assertTrue(
+      store.list().none { record ->
+        record.extensions[MemoryRecordExtensionKeys.KIND] == "task_commitment"
+      },
+    )
+    assertEquals(2, store.list().size)
+  }
+
+  private fun unrelatedLiveRecord(): MemoryRecord = MemoryRecord(
+    id = "record-unrelated-live",
+    content = "Unrelated durable user preference kept alongside flushed commitments.",
+    createdAtEpochMs = 1L,
+    updatedAtEpochMs = 1L,
+    tags = listOf("kind:preference", "scope:session", "status:active"),
+    extensions = mapOf(
+      MemoryRecordExtensionKeys.KIND to "preference",
+      MemoryRecordExtensionKeys.SCOPE to "session",
+      MemoryRecordExtensionKeys.STATUS to "active",
+      MemoryRecordExtensionKeys.SOURCE_SESSION_ID to "session-unrelated",
+    ),
+  )
+
   private class InMemoryMemoryStore : MemoryStore {
     private val records = linkedMapOf<String, MemoryRecord>()
 

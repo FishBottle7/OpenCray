@@ -82,6 +82,11 @@ class MemoryFlushCoordinator(
   private val lastFlushedSignatureBySession: ConcurrentMap<String, String> = ConcurrentHashMap(),
   private val flushedCandidateRecordIdsBySession: ConcurrentMap<String, MutableSet<String>> = ConcurrentHashMap(),
 ) {
+  private val deletedFlushedCandidateRecordIdsBySession: ConcurrentMap<String, MutableSet<String>> =
+    ConcurrentHashMap()
+  private val lastKnownAliveFlushedRecordIdsBySession: ConcurrentMap<String, MutableSet<String>> =
+    ConcurrentHashMap()
+
   fun flushBeforeCompaction(
     sessionId: String,
     workspaceId: String?,
@@ -156,10 +161,25 @@ class MemoryFlushCoordinator(
 
     val signature = policy.signatureFor(omittedMessages)
     val flushedCandidateRecordIds = flushedCandidateRecordIdsBySession.computeIfAbsent(sessionId) {
-      ConcurrentHashMap.newKeySet<String>()
+      ConcurrentHashMap.newKeySet()
     }
-    syncFlushedCandidateRecordIds(flushedCandidateRecordIds)
-    if (lastFlushedSignatureBySession[sessionId] == signature && flushedCandidateRecordIds.isNotEmpty()) {
+    val deletedFlushedCandidateRecordIds =
+      deletedFlushedCandidateRecordIdsBySession.computeIfAbsent(sessionId) {
+        ConcurrentHashMap.newKeySet()
+      }
+    val lastKnownAliveFlushedRecordIds =
+      lastKnownAliveFlushedRecordIdsBySession.computeIfAbsent(sessionId) {
+        ConcurrentHashMap.newKeySet()
+      }
+    syncFlushedCandidateRecordIds(
+      flushedCandidateRecordIds = flushedCandidateRecordIds,
+      deletedFlushedCandidateRecordIds = deletedFlushedCandidateRecordIds,
+      lastKnownAliveRecordIds = lastKnownAliveFlushedRecordIds,
+    )
+    if (
+      lastFlushedSignatureBySession[sessionId] == signature &&
+      (flushedCandidateRecordIds.isNotEmpty() || deletedFlushedCandidateRecordIds.isNotEmpty())
+    ) {
       return MemoryFlushSummary(
         trace = memoryFlushTrace(
           triggerStage = triggerStage,
@@ -212,7 +232,7 @@ class MemoryFlushCoordinator(
       .map { candidate -> stableMemoryRecordId(candidate) to candidate }
       .distinctBy { (recordId, _) -> recordId }
     val pendingCandidateEntries = candidateEntries.filter { (recordId, _) ->
-      recordId !in flushedCandidateRecordIds
+      recordId !in flushedCandidateRecordIds && recordId !in deletedFlushedCandidateRecordIds
     }
     if (pendingCandidateEntries.isEmpty()) {
       lastFlushedSignatureBySession[sessionId] = signature
@@ -232,6 +252,9 @@ class MemoryFlushCoordinator(
 
     val writeSummary = writer.write(pendingCandidateEntries.map { (_, candidate) -> candidate })
     flushedCandidateRecordIds += pendingCandidateEntries.map { (recordId, _) -> recordId }
+    lastKnownAliveFlushedRecordIdsBySession.computeIfAbsent(sessionId) {
+      ConcurrentHashMap.newKeySet()
+    }.addAll(pendingCandidateEntries.map { (recordId, _) -> recordId })
     lastFlushedSignatureBySession[sessionId] = signature
     return MemoryFlushSummary(
       writtenRecords = writeSummary.writtenRecords,
@@ -253,9 +276,32 @@ class MemoryFlushCoordinator(
     )
   }
 
-  private fun syncFlushedCandidateRecordIds(flushedCandidateRecordIds: MutableSet<String>) {
+  private fun syncFlushedCandidateRecordIds(
+    flushedCandidateRecordIds: MutableSet<String>,
+    deletedFlushedCandidateRecordIds: MutableSet<String>,
+    lastKnownAliveRecordIds: MutableSet<String>,
+  ) {
     val existingRecordIds = existingRecordIdsProvider?.invoke() ?: return
-    flushedCandidateRecordIds.retainAll(existingRecordIds)
+    if (existingRecordIds.isEmpty()) {
+      if (flushedCandidateRecordIds.isNotEmpty() && lastKnownAliveRecordIds.isNotEmpty()) {
+        flushedCandidateRecordIds.clear()
+        deletedFlushedCandidateRecordIds.clear()
+        lastKnownAliveRecordIds.clear()
+      }
+      return
+    }
+    val currentlyAlive = flushedCandidateRecordIds.filter { recordId -> recordId in existingRecordIds }
+    lastKnownAliveRecordIds.addAll(currentlyAlive)
+    val vanishedRecordIds = flushedCandidateRecordIds.filterNot { recordId -> recordId in existingRecordIds }
+    if (vanishedRecordIds.isEmpty()) {
+      return
+    }
+    flushedCandidateRecordIds.removeAll(vanishedRecordIds.toSet())
+    val confirmedDeleted = vanishedRecordIds.filter { recordId -> recordId in lastKnownAliveRecordIds }
+    if (confirmedDeleted.isNotEmpty()) {
+      deletedFlushedCandidateRecordIds.addAll(confirmedDeleted)
+      lastKnownAliveRecordIds.removeAll(confirmedDeleted.toSet())
+    }
   }
 }
 

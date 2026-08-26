@@ -18,21 +18,11 @@ class MemoryWriter(
       return MemoryWriteSummary(writtenRecords = emptyList())
     }
 
-    val existingById = store.list().associateBy(MemoryRecord::id).toMutableMap()
     val written = mutableListOf<MemoryRecord>()
     candidates.forEach { candidate ->
       val recordId = stableMemoryRecordId(candidate)
       val now = clock()
-      resolveSupersededPreferenceRecords(
-        existingRecords = existingById.values.toList(),
-        candidate = candidate,
-        incomingRecordId = recordId,
-        nowEpochMs = now,
-      ).forEach { supersededRecord ->
-        store.upsert(supersededRecord)
-        existingById[supersededRecord.id] = supersededRecord
-      }
-      val existing = existingById[recordId]
+      val existing = store.list().associateBy(MemoryRecord::id)[recordId]
       val record = MemoryRecord(
         id = recordId,
         content = candidate.content,
@@ -48,8 +38,15 @@ class MemoryWriter(
         ),
       )
       store.upsert(record)
-      existingById[recordId] = record
       written += record
+      resolveSupersededPreferenceRecords(
+        existingRecords = store.list(),
+        candidate = candidate,
+        incomingRecordId = recordId,
+        nowEpochMs = now,
+      ).forEach { supersededRecord ->
+        store.upsert(supersededRecord)
+      }
     }
     return MemoryWriteSummary(writtenRecords = written)
   }
