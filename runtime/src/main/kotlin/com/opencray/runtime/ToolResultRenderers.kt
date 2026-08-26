@@ -7,8 +7,10 @@ import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.util.Locale
+import java.util.stream.Stream
 
 internal const val MAX_EXECUTION_ATTACHMENT_ARTIFACT_PREVIEW_COUNT: Int = 12
 internal val WINDOWS_ABSOLUTE_PATH_REGEX: Regex = Regex("^[A-Za-z]:[\\\\/].+")
@@ -49,38 +51,50 @@ internal fun splitLines(text: String): List<String> {
     .split('\n')
 }
 
-internal fun collectSearchCandidates(root: Path): List<Path> {
+internal inline fun <R> useWorkspaceSearchCandidates(
+  root: Path,
+  fileOnly: Boolean,
+  block: (Sequence<Path>) -> R,
+): R {
   if (!Files.isDirectory(root)) {
-    return listOf(root)
+    val fallback = if (!fileOnly || Files.isRegularFile(root)) listOf(root) else emptyList()
+    return block(fallback.asSequence())
   }
-  return Files.walk(root).use { stream ->
-    val collected = mutableListOf<Path>()
-    val iterator = stream.sorted().iterator()
-    while (iterator.hasNext()) {
-      val candidate = iterator.next()
-      if (candidate != root) {
-        collected.add(candidate)
+  val openLevels = ArrayDeque<Pair<Stream<Path>, Iterator<Path>>>()
+  try {
+    return block(sequence {
+      openLevel(root, openLevels)
+      while (openLevels.isNotEmpty()) {
+        val level = openLevels.last()
+        if (!level.second.hasNext()) {
+          runCatching { level.first.close() }
+          openLevels.removeLast()
+          continue
+        }
+        val candidate = level.second.next()
+        val isRealDirectory = Files.isDirectory(candidate, LinkOption.NOFOLLOW_LINKS)
+        if (fileOnly && !Files.isRegularFile(candidate)) {
+          if (isRealDirectory) {
+            openLevel(candidate, openLevels)
+          }
+          continue
+        }
+        yield(candidate)
+        if (isRealDirectory) {
+          openLevel(candidate, openLevels)
+        }
       }
+    })
+  } finally {
+    while (openLevels.isNotEmpty()) {
+      runCatching { openLevels.removeLast().first.close() }
     }
-    collected
   }
 }
 
-internal fun collectRegularFiles(root: Path): List<Path> {
-  if (!Files.isDirectory(root)) {
-    return if (Files.isRegularFile(root)) listOf(root) else emptyList()
-  }
-  return Files.walk(root).use { stream ->
-    val collected = mutableListOf<Path>()
-    val iterator = stream.sorted().iterator()
-    while (iterator.hasNext()) {
-      val candidate = iterator.next()
-      if (Files.isRegularFile(candidate)) {
-        collected.add(candidate)
-      }
-    }
-    collected
-  }
+private fun openLevel(directory: Path, openLevels: ArrayDeque<Pair<Stream<Path>, Iterator<Path>>>) {
+  val stream = Files.list(directory)
+  openLevels.addLast(stream to stream.sorted().iterator())
 }
 
 internal fun compileGlobMatcher(pattern: String): Regex =

@@ -82,6 +82,9 @@ import com.opencray.runtime.web.WebSearchRequest
 import com.opencray.skills.SkillLoadReport
 import com.opencray.skills.SkillLoader
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -788,6 +791,61 @@ class OpenCrayToolDispatcher(
     )
   }
 
+  private val maxReadBudgetBytesPerChar: Long = 4
+
+  internal data class WorkspaceReadHead(
+    val text: String,
+    val truncated: Boolean,
+    val byteCount: Long,
+  )
+
+  internal fun readFileHeadWithinCharBudget(
+    file: Path,
+    maxChars: Int,
+    sizeProbe: (Path) -> Long = { target -> Files.size(target) },
+  ): WorkspaceReadHead {
+    val totalBytes = sizeProbe(file).coerceAtLeast(0)
+    val headByteLimit = maxChars * maxReadBudgetBytesPerChar + maxReadBudgetBytesPerChar
+    val requestedBytes = minOf(totalBytes, headByteLimit).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+    val buffer = ByteArray(requestedBytes)
+    var filled = 0
+    Files.newInputStream(file).use { input ->
+      while (filled < requestedBytes) {
+        val read = input.read(buffer, filled, requestedBytes - filled)
+        if (read <= 0) {
+          break
+        }
+        filled += read
+      }
+    }
+    val decoder = StandardCharsets.UTF_8.newDecoder()
+      .onMalformedInput(CodingErrorAction.REPORT)
+      .onUnmappableCharacter(CodingErrorAction.REPORT)
+    var usableBytes = filled
+    var decodedText = ""
+    while (true) {
+      try {
+        decodedText = decoder.decode(ByteBuffer.wrap(buffer, 0, usableBytes)).toString()
+        break
+      } catch (_: CharacterCodingException) {
+        usableBytes -= 1
+        if (usableBytes <= 0) {
+          decodedText = ""
+          break
+        }
+      }
+    }
+    val exceededCharBudget = decodedText.length > maxChars
+    return WorkspaceReadHead(
+      text = if (exceededCharBudget) decodedText.substring(0, maxChars) else decodedText,
+      truncated = exceededCharBudget || usableBytes < totalBytes,
+      byteCount = totalBytes,
+    )
+  }
+
+  internal fun editableFileSizeLimitBytes(): Long =
+    config.maxReadBytes * maxReadBudgetBytesPerChar
+
   private fun readWorkspaceFile(task: AgentTask, arguments: JsonObject): AgentToolResult {
     val file = toolTargetResolver.ensureReadableFile(arguments.requiredString("path"), label = "workspace read")
     val plan = toolPolicyPipeline.plan(
@@ -803,11 +861,9 @@ class OpenCrayToolDispatcher(
       plan = plan,
       affectedPaths = mapOf("path" to toolTargetResolver.displayModelPath(file)),
     )?.let { return it }
-    val bytes = Files.readAllBytes(file)
-    val truncated = bytes.size > config.maxReadBytes
-    val body = bytes.toString(StandardCharsets.UTF_8)
-      .take(config.maxReadBytes)
-      .ifBlank { "<empty file>" }
+    val head = readFileHeadWithinCharBudget(file, config.maxReadBytes)
+    val truncated = head.truncated
+    val body = head.text.ifBlank { "<empty file>" }
     return AgentToolResult(
       toolName = "workspace_read_file",
       status = AgentToolResultStatus.SUCCESS,
@@ -816,7 +872,7 @@ class OpenCrayToolDispatcher(
         plan = plan,
         metadata = mapOf(
           "path" to toolTargetResolver.displayModelPath(file),
-          "byteCount" to bytes.size.toString(),
+          "byteCount" to head.byteCount.toString(),
           "truncated" to truncated.toString(),
         ),
         resultEnvelope = ToolResultEnvelope(
@@ -923,8 +979,8 @@ class OpenCrayToolDispatcher(
       affectedPaths = mapOf("filePath" to toolTargetResolver.displayModelPath(file)),
     )?.let { return it }
 
-    val bytes = Files.readAllBytes(file)
-    val fullBody = bytes.toString(StandardCharsets.UTF_8)
+    val head = readFileHeadWithinCharBudget(file, config.maxReadBytes)
+    val fullBody = head.text
     val lines = splitLines(fullBody)
     val startIndex = (offset - 1).coerceAtMost(lines.size)
     val selectedLines = if (limit == null) {
@@ -937,7 +993,8 @@ class OpenCrayToolDispatcher(
       selectedLines.isEmpty() -> "Requested line range is empty."
       else -> selectedLines.joinToString(separator = "\n")
     }
-    val (body, truncated) = truncateToReadBudget(config, rawContent)
+    val body = rawContent
+    val truncated = head.truncated
     val returnedLineCount = if (fullBody.isEmpty()) 0 else selectedLines.size
     return AgentToolResult(
       toolName = "Read",
@@ -947,7 +1004,7 @@ class OpenCrayToolDispatcher(
         plan = plan,
         metadata = mapOf(
           "filePath" to toolTargetResolver.displayModelPath(file),
-          "byteCount" to bytes.size.toString(),
+          "byteCount" to head.byteCount.toString(),
           "totalLineCount" to lines.size.toString(),
           "offset" to offset.toString(),
           "returnedLineCount" to returnedLineCount.toString(),
@@ -1651,31 +1708,33 @@ class OpenCrayToolDispatcher(
     val matches = mutableListOf<String>()
     var truncated = false
 
-    for (file in collectRegularFiles(searchRoot)) {
-      if (globMatcher != null && !globMatcher.matches(toolTargetResolver.displayModelPath(file))) {
-        continue
-      }
-      val fileMatches: List<String> = runCatching {
-        Files.newBufferedReader(file, StandardCharsets.UTF_8).use { reader ->
-          val collected = mutableListOf<String>()
-          var lineNumber = 0
-          while (true) {
-            val line = reader.readLine() ?: break
-            lineNumber += 1
-            if (regex.containsMatchIn(line)) {
-              collected.add("${toolTargetResolver.displayModelPath(file)}:$lineNumber:$line")
-              if (collected.size >= maxResults - matches.size) {
-                break
+    useWorkspaceSearchCandidates(root = searchRoot, fileOnly = true) { candidates ->
+      for (file in candidates) {
+        if (globMatcher != null && !globMatcher.matches(toolTargetResolver.displayModelPath(file))) {
+          continue
+        }
+        val fileMatches: List<String> = runCatching {
+          Files.newBufferedReader(file, StandardCharsets.UTF_8).use { reader ->
+            val collected = mutableListOf<String>()
+            var lineNumber = 0
+            while (true) {
+              val line = reader.readLine() ?: break
+              lineNumber += 1
+              if (regex.containsMatchIn(line)) {
+                collected.add("${toolTargetResolver.displayModelPath(file)}:$lineNumber:$line")
+                if (collected.size >= maxResults - matches.size) {
+                  break
+                }
               }
             }
+            collected
           }
-          collected
+        }.getOrElse { emptyList() }
+        matches.addAll(fileMatches)
+        if (matches.size >= maxResults) {
+          truncated = true
+          break
         }
-      }.getOrElse { emptyList() }
-      matches.addAll(fileMatches)
-      if (matches.size >= maxResults) {
-        truncated = true
-        break
       }
     }
 
@@ -1725,13 +1784,15 @@ class OpenCrayToolDispatcher(
     val matches = mutableListOf<String>()
     var truncated = false
 
-    for (candidate in collectSearchCandidates(searchRoot)) {
-      if (matcher.matches(toolTargetResolver.displayModelPath(candidate))) {
-        matches.add(toolTargetResolver.displayModelPath(candidate))
-      }
-      if (matches.size >= maxResults) {
-        truncated = true
-        break
+    useWorkspaceSearchCandidates(root = searchRoot, fileOnly = false) { candidates ->
+      for (candidate in candidates) {
+        if (matcher.matches(toolTargetResolver.displayModelPath(candidate))) {
+          matches.add(toolTargetResolver.displayModelPath(candidate))
+        }
+        if (matches.size >= maxResults) {
+          truncated = true
+          break
+        }
       }
     }
 
@@ -1971,6 +2032,11 @@ class OpenCrayToolDispatcher(
     )
     return fileOpsService.withMutationLock {
       require(Files.isRegularFile(file)) { "Edit path is not a file: $file" }
+      val fileSizeBytes = Files.size(file)
+      val editableLimitBytes = editableFileSizeLimitBytes()
+      require(fileSizeBytes <= editableLimitBytes) {
+        "Edit rejected: ${toolTargetResolver.displayModelPath(file)} is $fileSizeBytes bytes, exceeding the editable file limit of $editableLimitBytes bytes."
+      }
       val source = Files.readAllBytes(file).toString(StandardCharsets.UTF_8)
       val outcome = applyTextEdits(source, listOf(edit))
       writeTextFile(
@@ -2002,6 +2068,11 @@ class OpenCrayToolDispatcher(
     }
     return fileOpsService.withMutationLock {
       require(Files.isRegularFile(file)) { "MultiEdit path is not a file: $file" }
+      val fileSizeBytes = Files.size(file)
+      val editableLimitBytes = editableFileSizeLimitBytes()
+      require(fileSizeBytes <= editableLimitBytes) {
+        "MultiEdit rejected: ${toolTargetResolver.displayModelPath(file)} is $fileSizeBytes bytes, exceeding the editable file limit of $editableLimitBytes bytes."
+      }
       val source = Files.readAllBytes(file).toString(StandardCharsets.UTF_8)
       val outcome = applyTextEdits(source, edits)
       writeTextFile(
