@@ -862,7 +862,14 @@ internal fun OpenAiCompatibleLiteLlmProviderClient.processOpenAiResponsesStreamE
         val message = errorObject?.nonBlankString("message")
           ?: eventPayload.nonBlankString("message")
           ?: "OpenAI responses streaming request failed."
-        throw IllegalStateException(message)
+        throw ProviderStreamErrorException(
+          providerErrorCode = firstNonBlankString(
+            errorObject?.nonBlankString("code"),
+            errorObject?.nonBlankString("type"),
+            eventPayload.nonBlankString("code"),
+          ),
+          message = message,
+        )
       }
 
       "response.created" -> {
@@ -1043,11 +1050,17 @@ internal fun OpenAiCompatibleLiteLlmProviderClient.processOpenAiResponsesStreamE
       }
 
       "response.failed" -> {
-        val errorObject = eventPayload.optJSONObject("response")
+        val responseError = eventPayload.optJSONObject("response")
           ?.optJSONObject("error")
-        val message = errorObject?.nonBlankString("message")
+        val message = responseError?.nonBlankString("message")
           ?: "OpenAI responses streaming request failed."
-        throw IllegalStateException(message)
+        throw ProviderStreamErrorException(
+          providerErrorCode = firstNonBlankString(
+            responseError?.nonBlankString("code"),
+            responseError?.nonBlankString("type"),
+          ),
+          message = message,
+        )
       }
     }
     streamDebug(

@@ -812,14 +812,50 @@ class DefaultLiteLlmGateway(
 
         is LiteLlmProviderResult.Failure -> {
           val providerMetadata = providerResult.metadata.toMap()
+          val failureTrigger = providerResult.errorCode.failureFallbackTrigger()
+          val nextFailureRoute = failureTrigger?.let { trigger ->
+            activeProfile.nextRoute(selection.routeId, trigger)
+          }
+          val resolvedFailureAction = failureTrigger?.let { trigger ->
+            if (nextFailureRoute != null) {
+              FallbackAction.TRY_NEXT_ROUTE
+            } else {
+              FallbackAction.TERMINAL_FAILURE
+            }
+          }
           attempts += LiteLlmAttemptRecord(
             route = selection,
             outcome = LiteLlmAttemptOutcome.FAILED,
+            fallbackAction = resolvedFailureAction,
             errorCode = providerResult.errorCode,
             startedAtEpochMs = attemptStartedAtEpochMs,
             finishedAtEpochMs = attemptFinishedAtEpochMs,
             metadataKeys = providerMetadata.safeMetadataKeys(),
           )
+          if (failureTrigger != null) {
+            val nextSelection = nextFailureRoute?.let {
+              activeProfile.safeSelectionMetadata(
+                routeId = it.id,
+                attemptIndex = routeIndex + 1,
+                fallbackTrigger = failureTrigger,
+              )
+            }
+            fallbackEventLog.record(
+              LiteLlmFallbackEvent(
+                requestId = request.requestId,
+                route = selection,
+                trigger = failureTrigger,
+                action = resolvedFailureAction ?: FallbackAction.TERMINAL_FAILURE,
+                nextRoute = nextSelection,
+                occurredAtEpochMs = attemptFinishedAtEpochMs,
+              ),
+            )
+            if (nextFailureRoute != null) {
+              routeIndex += 1
+              fallbackTrigger = failureTrigger
+              continue
+            }
+          }
           return LiteLlmGatewayResult(
             requestId = request.requestId,
             status = LiteLlmGatewayStatus.FAILED,
@@ -1022,6 +1058,9 @@ private fun LiteLlmProviderResult.Success.outputTextChars(): Int =
 private fun FallbackTrigger.toGatewayStatus(): LiteLlmGatewayStatus = when (this) {
   FallbackTrigger.TIMEOUT -> LiteLlmGatewayStatus.TIMEOUT
   FallbackTrigger.RATE_LIMIT_429 -> LiteLlmGatewayStatus.RATE_LIMITED
+  FallbackTrigger.HTTP_5XX,
+  FallbackTrigger.TRANSPORT_ERROR,
+  -> LiteLlmGatewayStatus.FAILED
 }
 
 private fun FallbackTrigger.toTerminalErrorCode(
@@ -1031,12 +1070,26 @@ private fun FallbackTrigger.toTerminalErrorCode(
   val prefix = when (this) {
     FallbackTrigger.TIMEOUT -> "PROVIDER_TIMEOUT"
     FallbackTrigger.RATE_LIMIT_429 -> "PROVIDER_RATE_LIMIT_429"
+    FallbackTrigger.HTTP_5XX -> "PROVIDER_HTTP_5XX"
+    FallbackTrigger.TRANSPORT_ERROR -> "PROVIDER_TRANSPORT_ERROR"
   }
   return when {
     nextRoute != null -> "${prefix}_FALLBACK_APPLIED"
     action == FallbackAction.TERMINAL_FAILURE -> "${prefix}_TERMINAL_POLICY"
     else -> "${prefix}_FALLBACK_EXHAUSTED"
   }
+}
+
+private fun String?.failureFallbackTrigger(): FallbackTrigger? {
+  val normalized = this?.trim()?.uppercase() ?: return null
+  if (normalized == "PROVIDER_TRANSPORT_ERROR" || normalized == "PROVIDER_CLIENT_EXCEPTION") {
+    return FallbackTrigger.TRANSPORT_ERROR
+  }
+  if (!normalized.startsWith("HTTP_")) {
+    return null
+  }
+  val statusCode = normalized.removePrefix("HTTP_").toIntOrNull() ?: return null
+  return if (statusCode in 500..599) FallbackTrigger.HTTP_5XX else null
 }
 
 private fun Map<String, String>.safeMetadataKeys(): List<String> = keys

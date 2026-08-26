@@ -300,6 +300,369 @@ class LiteLlmGatewayTest {
     )
   }
 
+  @Test
+  fun runServer5xxPrimaryFailureFallsBackToHealthyRoute() {
+    val primaryRoute = route(
+      id = "route-primary-5xx",
+      providerId = "openai",
+      model = "gpt-4o-mini",
+      baseUrl = "https://openai.example",
+    )
+    val fallbackRoute = route(
+      id = "route-fallback-healthy",
+      providerId = "anthropic",
+      model = "claude-3-5-sonnet",
+      baseUrl = "https://anthropic.example",
+    )
+    val routingStore = InMemoryLiteLlmRoutingSettingsStore(
+      ProviderRouting(
+        activeProfileId = "profile-resilient-5xx",
+        profiles = listOf(
+          profile(
+            id = "profile-resilient-5xx",
+            displayName = "Resilient 5xx Profile",
+            primaryRoute = primaryRoute,
+            fallbackRoutes = listOf(fallbackRoute),
+          ),
+        ),
+      ),
+    )
+    val providerClient = RecordingProviderClient(
+      resultsByRouteId = mapOf(
+        primaryRoute.id to listOf(
+          LiteLlmProviderResult.Failure(
+            errorCode = "HTTP_503",
+            errorMessage = "Provider returned HTTP 503.",
+          ),
+        ),
+        fallbackRoute.id to listOf(
+          LiteLlmProviderResult.Success(
+            outputText = "fallback answer",
+            finishReason = "stop",
+          ),
+        ),
+      ),
+    )
+    val fallbackEventLog = InMemoryLiteLlmFallbackEventLog()
+    val gateway = DefaultLiteLlmGateway(
+      routingStore = routingStore,
+      providerClient = providerClient,
+      fallbackEventLog = fallbackEventLog,
+      clock = IncrementingClock(start = 30_000L)::next,
+    )
+
+    val result = gateway.execute(
+      LiteLlmGatewayRequest(
+        requestId = "request-server-error",
+        prompt = "Handle a server error from the primary provider.",
+      ),
+    )
+
+    assertEquals(listOf(primaryRoute.id, fallbackRoute.id), providerClient.requests.map { it.route.id })
+    assertEquals(FallbackTrigger.HTTP_5XX, providerClient.requests[1].selection.fallbackTrigger)
+    assertEquals(1, providerClient.requests[1].selection.attemptIndex)
+    assertTrue(providerClient.requests[1].selection.isFallbackAttempt)
+
+    assertEquals(LiteLlmGatewayStatus.SUCCESS, result.status)
+    assertEquals(LiteLlmCompletionMode.FALLBACK, result.completionMode)
+    assertEquals("fallback answer", result.outputText)
+    assertEquals(fallbackRoute.id, result.selectedRoute?.routeId)
+    assertEquals(2, result.attempts.size)
+
+    val primaryAttempt = result.attempts[0]
+    assertEquals(primaryRoute.id, primaryAttempt.route.routeId)
+    assertEquals(LiteLlmAttemptOutcome.FAILED, primaryAttempt.outcome)
+    assertEquals(FallbackAction.TRY_NEXT_ROUTE, primaryAttempt.fallbackAction)
+    assertEquals("HTTP_503", primaryAttempt.errorCode)
+
+    val fallbackAttempt = result.attempts[1]
+    assertEquals(LiteLlmAttemptOutcome.SUCCESS, fallbackAttempt.outcome)
+
+    val fallbackEvent = fallbackEventLog.snapshot().single()
+    assertEquals(FallbackTrigger.HTTP_5XX, fallbackEvent.trigger)
+    assertEquals(FallbackAction.TRY_NEXT_ROUTE, fallbackEvent.action)
+    assertEquals(fallbackRoute.id, fallbackEvent.nextRoute?.routeId)
+  }
+
+  @Test
+  fun runServer5xxExhaustionKeepsProviderErrorCodeAndTerminalStatus() {
+    val primaryRoute = route(
+      id = "route-primary-exhausted",
+      providerId = "openai",
+      model = "gpt-4o-mini",
+      baseUrl = "https://openai.example",
+    )
+    val fallbackRoute = route(
+      id = "route-fallback-exhausted",
+      providerId = "anthropic",
+      model = "claude-3-5-sonnet",
+      baseUrl = "https://anthropic.example",
+    )
+    val routingStore = InMemoryLiteLlmRoutingSettingsStore(
+      ProviderRouting(
+        activeProfileId = "profile-exhausted",
+        profiles = listOf(
+          profile(
+            id = "profile-exhausted",
+            displayName = "Exhausted Profile",
+            primaryRoute = primaryRoute,
+            fallbackRoutes = listOf(fallbackRoute),
+          ),
+        ),
+      ),
+    )
+    val providerClient = RecordingProviderClient(
+      resultsByRouteId = mapOf(
+        primaryRoute.id to listOf(
+          LiteLlmProviderResult.Failure(
+            errorCode = "HTTP_500",
+            errorMessage = "Primary returned HTTP 500.",
+          ),
+        ),
+        fallbackRoute.id to listOf(
+          LiteLlmProviderResult.Failure(
+            errorCode = "HTTP_502",
+            errorMessage = "Fallback returned HTTP 502.",
+          ),
+        ),
+      ),
+    )
+    val fallbackEventLog = InMemoryLiteLlmFallbackEventLog()
+    val gateway = DefaultLiteLlmGateway(
+      routingStore = routingStore,
+      providerClient = providerClient,
+      fallbackEventLog = fallbackEventLog,
+      clock = IncrementingClock(start = 40_000L)::next,
+    )
+
+    val result = gateway.execute(
+      LiteLlmGatewayRequest(
+        requestId = "request-server-exhaustion",
+        prompt = "Every route is failing.",
+      ),
+    )
+
+    assertEquals(2, providerClient.requests.size)
+    assertEquals(LiteLlmGatewayStatus.FAILED, result.status)
+    assertEquals(LiteLlmCompletionMode.TERMINAL, result.completionMode)
+    assertEquals("HTTP_502", result.errorCode)
+    assertEquals("Fallback returned HTTP 502.", result.errorMessage)
+    assertEquals(2, result.attempts.size)
+    assertEquals(FallbackAction.TRY_NEXT_ROUTE, result.attempts[0].fallbackAction)
+    assertEquals(FallbackAction.TERMINAL_FAILURE, result.attempts[1].fallbackAction)
+
+    val events = fallbackEventLog.snapshot()
+    assertEquals(2, events.size)
+    assertEquals(FallbackTrigger.HTTP_5XX, events[0].trigger)
+    assertEquals(FallbackAction.TRY_NEXT_ROUTE, events[0].action)
+    assertEquals(FallbackTrigger.HTTP_5XX, events[1].trigger)
+    assertEquals(FallbackAction.TERMINAL_FAILURE, events[1].action)
+  }
+
+  @Test
+  fun runDeterministic4xxFailureDoesNotSwitchRoutes() {
+    val primaryRoute = route(
+      id = "route-primary-4xx",
+      providerId = "openai",
+      model = "gpt-4o-mini",
+      baseUrl = "https://openai.example",
+    )
+    val fallbackRoute = route(
+      id = "route-fallback-4xx",
+      providerId = "anthropic",
+      model = "claude-3-5-sonnet",
+      baseUrl = "https://anthropic.example",
+    )
+    val routingStore = InMemoryLiteLlmRoutingSettingsStore(
+      ProviderRouting(
+        activeProfileId = "profile-4xx",
+        profiles = listOf(
+          profile(
+            id = "profile-4xx",
+            displayName = "Deterministic Profile",
+            primaryRoute = primaryRoute,
+            fallbackRoutes = listOf(fallbackRoute),
+          ),
+        ),
+      ),
+    )
+    val providerClient = RecordingProviderClient(
+      resultsByRouteId = mapOf(
+        primaryRoute.id to listOf(
+          LiteLlmProviderResult.Failure(
+            errorCode = "HTTP_400",
+            errorMessage = "Provider returned HTTP 400.",
+          ),
+        ),
+        fallbackRoute.id to listOf(
+          LiteLlmProviderResult.Success(outputText = "should not be reached"),
+        ),
+      ),
+    )
+    val fallbackEventLog = InMemoryLiteLlmFallbackEventLog()
+    val gateway = DefaultLiteLlmGateway(
+      routingStore = routingStore,
+      providerClient = providerClient,
+      fallbackEventLog = fallbackEventLog,
+      clock = IncrementingClock(start = 50_000L)::next,
+    )
+
+    val result = gateway.execute(
+      LiteLlmGatewayRequest(
+        requestId = "request-deterministic-failure",
+        prompt = "The request itself is invalid.",
+      ),
+    )
+
+    assertEquals(listOf(primaryRoute.id), providerClient.requests.map { it.route.id })
+    assertEquals(LiteLlmGatewayStatus.FAILED, result.status)
+    assertEquals(LiteLlmCompletionMode.TERMINAL, result.completionMode)
+    assertEquals("HTTP_400", result.errorCode)
+    assertEquals(1, result.attempts.size)
+    assertNull(result.attempts.single().fallbackAction)
+    assertTrue(fallbackEventLog.snapshot().isEmpty())
+  }
+
+  @Test
+  fun runTransportErrorPrimaryFailureFallsBackToHealthyRoute() {
+    val primaryRoute = route(
+      id = "route-primary-transport",
+      providerId = "openai",
+      model = "gpt-4o-mini",
+      baseUrl = "https://openai.example",
+    )
+    val fallbackRoute = route(
+      id = "route-fallback-transport",
+      providerId = "anthropic",
+      model = "claude-3-5-sonnet",
+      baseUrl = "https://anthropic.example",
+    )
+    val routingStore = InMemoryLiteLlmRoutingSettingsStore(
+      ProviderRouting(
+        activeProfileId = "profile-transport",
+        profiles = listOf(
+          profile(
+            id = "profile-transport",
+            displayName = "Transport Profile",
+            primaryRoute = primaryRoute,
+            fallbackRoutes = listOf(fallbackRoute),
+          ),
+        ),
+      ),
+    )
+    val providerClient = RecordingProviderClient(
+      resultsByRouteId = mapOf(
+        primaryRoute.id to listOf(
+          LiteLlmProviderResult.Failure(
+            errorCode = "PROVIDER_TRANSPORT_ERROR",
+            errorMessage = "Connection reset by peer.",
+          ),
+        ),
+        fallbackRoute.id to listOf(
+          LiteLlmProviderResult.Success(
+            outputText = "transport fallback answer",
+            finishReason = "stop",
+          ),
+        ),
+      ),
+    )
+    val fallbackEventLog = InMemoryLiteLlmFallbackEventLog()
+    val gateway = DefaultLiteLlmGateway(
+      routingStore = routingStore,
+      providerClient = providerClient,
+      fallbackEventLog = fallbackEventLog,
+      clock = IncrementingClock(start = 60_000L)::next,
+    )
+
+    val result = gateway.execute(
+      LiteLlmGatewayRequest(
+        requestId = "request-transport-failure",
+        prompt = "The transport dropped.",
+      ),
+    )
+
+    assertEquals(listOf(primaryRoute.id, fallbackRoute.id), providerClient.requests.map { it.route.id })
+    assertEquals(FallbackTrigger.TRANSPORT_ERROR, providerClient.requests[1].selection.fallbackTrigger)
+    assertEquals(LiteLlmGatewayStatus.SUCCESS, result.status)
+    assertEquals(LiteLlmCompletionMode.FALLBACK, result.completionMode)
+    assertEquals("transport fallback answer", result.outputText)
+
+    val fallbackEvent = fallbackEventLog.snapshot().single()
+    assertEquals(FallbackTrigger.TRANSPORT_ERROR, fallbackEvent.trigger)
+    assertEquals(FallbackAction.TRY_NEXT_ROUTE, fallbackEvent.action)
+    assertEquals(fallbackRoute.id, fallbackEvent.nextRoute?.routeId)
+  }
+
+  @Test
+  fun runServer5xxHonorsTerminalFallbackPolicyWithoutSwitchingRoutes() {
+    val primaryRoute = route(
+      id = "route-primary-policy-terminal",
+      providerId = "openai",
+      model = "gpt-4o-mini",
+      baseUrl = "https://openai.example",
+    )
+    val fallbackRoute = route(
+      id = "route-fallback-policy-terminal",
+      providerId = "anthropic",
+      model = "claude-3-5-sonnet",
+      baseUrl = "https://anthropic.example",
+    )
+    val routingStore = InMemoryLiteLlmRoutingSettingsStore(
+      ProviderRouting(
+        activeProfileId = "profile-policy-terminal",
+        profiles = listOf(
+          profile(
+            id = "profile-policy-terminal",
+            displayName = "Terminal Policy Profile",
+            primaryRoute = primaryRoute,
+            fallbackRoutes = listOf(fallbackRoute),
+            fallbackPolicy = FallbackTriggerPolicy(
+              onHttp5xx = FallbackAction.TERMINAL_FAILURE,
+            ),
+          ),
+        ),
+      ),
+    )
+    val providerClient = RecordingProviderClient(
+      resultsByRouteId = mapOf(
+        primaryRoute.id to listOf(
+          LiteLlmProviderResult.Failure(
+            errorCode = "HTTP_503",
+            errorMessage = "Provider returned HTTP 503.",
+          ),
+        ),
+        fallbackRoute.id to listOf(
+          LiteLlmProviderResult.Success(outputText = "should not be reached"),
+        ),
+      ),
+    )
+    val fallbackEventLog = InMemoryLiteLlmFallbackEventLog()
+    val gateway = DefaultLiteLlmGateway(
+      routingStore = routingStore,
+      providerClient = providerClient,
+      fallbackEventLog = fallbackEventLog,
+      clock = IncrementingClock(start = 70_000L)::next,
+    )
+
+    val result = gateway.execute(
+      LiteLlmGatewayRequest(
+        requestId = "request-policy-terminal",
+        prompt = "Policy disallows falling back on 5xx.",
+      ),
+    )
+
+    assertEquals(listOf(primaryRoute.id), providerClient.requests.map { it.route.id })
+    assertEquals(LiteLlmGatewayStatus.FAILED, result.status)
+    assertEquals(LiteLlmCompletionMode.TERMINAL, result.completionMode)
+    assertEquals("HTTP_503", result.errorCode)
+    assertEquals(1, result.attempts.size)
+    assertEquals(FallbackAction.TERMINAL_FAILURE, result.attempts.single().fallbackAction)
+
+    val fallbackEvent = fallbackEventLog.snapshot().single()
+    assertEquals(FallbackAction.TERMINAL_FAILURE, fallbackEvent.action)
+    assertNull(fallbackEvent.nextRoute)
+  }
+
   private fun route(
     id: String,
     providerId: String,

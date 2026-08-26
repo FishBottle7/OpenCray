@@ -147,6 +147,14 @@ internal fun OpenAiCompatibleLiteLlmProviderClient.anthropicStructuredCompletion
             JSONObject.NULL,
             -> JSONObject()
             is JSONObject -> input
+            is String -> {
+              toolCallErrors += parseToolCallArguments(
+                rawArguments = input,
+                location = "$location.input",
+              ).error
+                ?: "$location.input must be a JSON object; received string."
+              continue@anthropicBlocks
+            }
             else -> {
               toolCallErrors += "$location.input must be a JSON object; received ${describeJsonValue(input)}."
               continue@anthropicBlocks
@@ -1021,8 +1029,8 @@ internal fun OpenAiCompatibleLiteLlmProviderClient.processAnthropicStreamEvent(
         val block = contentBlocks[index] ?: return
         val bufferedInput = toolInputBuffers.remove(index)?.toString()?.trim().orEmpty()
         if (bufferedInput.isNotBlank()) {
-          val parsedInput = runCatching { JSONObject(bufferedInput) }.getOrDefault(JSONObject())
-          block.put("input", parsedInput)
+          val parsedInput = runCatching { JSONObject(bufferedInput) }.getOrNull()
+          block.put("input", parsedInput ?: bufferedInput)
         }
         visibleTextMayHaveChanged = block.optString("type") == "text"
       }
@@ -1047,7 +1055,13 @@ internal fun OpenAiCompatibleLiteLlmProviderClient.processAnthropicStreamEvent(
         val message = errorObject?.nonBlankString("message")
           ?: eventPayload.nonBlankString("message")
           ?: "Anthropic streaming request failed."
-        throw IllegalStateException(message)
+        throw ProviderStreamErrorException(
+          providerErrorCode = firstNonBlankString(
+            errorObject?.nonBlankString("type"),
+            errorObject?.nonBlankString("code"),
+          ),
+          message = message,
+        )
       }
     }
     if (visibleTextMayHaveChanged) {

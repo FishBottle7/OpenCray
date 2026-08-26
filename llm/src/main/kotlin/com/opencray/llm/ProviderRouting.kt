@@ -13,6 +13,8 @@ private const val DEFAULT_ROUTE_TIMEOUT_MS: Long = 30_000L
 enum class FallbackTrigger {
   @SerialName("timeout") TIMEOUT,
   @SerialName("rate_limit_429") RATE_LIMIT_429,
+  @SerialName("http_5xx") HTTP_5XX,
+  @SerialName("transport_error") TRANSPORT_ERROR,
 }
 
 @Serializable
@@ -25,10 +27,14 @@ enum class FallbackAction {
 data class FallbackTriggerPolicy(
   val onTimeout: FallbackAction = FallbackAction.TRY_NEXT_ROUTE,
   val onRateLimit429: FallbackAction = FallbackAction.TRY_NEXT_ROUTE,
+  val onHttp5xx: FallbackAction = FallbackAction.TRY_NEXT_ROUTE,
+  val onTransportError: FallbackAction = FallbackAction.TRY_NEXT_ROUTE,
 ) {
   fun actionFor(trigger: FallbackTrigger): FallbackAction = when (trigger) {
     FallbackTrigger.TIMEOUT -> onTimeout
     FallbackTrigger.RATE_LIMIT_429 -> onRateLimit429
+    FallbackTrigger.HTTP_5XX -> onHttp5xx
+    FallbackTrigger.TRANSPORT_ERROR -> onTransportError
   }
 
   fun shouldFallback(trigger: FallbackTrigger): Boolean = actionFor(trigger) == FallbackAction.TRY_NEXT_ROUTE

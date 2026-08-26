@@ -465,6 +465,166 @@ class LiteLlmClientAnthropicDialectTest : LiteLlmClientTestBase() {
   }
 
   @Test
+  fun executeStreamsAnthropicErrorEventAsNonTransientProviderFailure() {
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference())
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: message_start
+              data: {"type":"message_start","message":{"id":"msg_kimi_stream_error","type":"message","role":"assistant","content":[],"model":"kimi-k2.5","stop_reason":null}}
+              
+              event: content_block_start
+              data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}
+              
+              event: content_block_delta
+              data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Partial ans"}}
+              
+              event: error
+              data: {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-kimi-anthropic-stream-error",
+            providerId = "custom",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "kimi-k2.5",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.ANTHROPIC,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Say hello.",
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-kimi-anthropic-stream-error",
+            providerId = "custom",
+            model = "kimi-k2.5",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val failure = result as LiteLlmProviderResult.Failure
+      assertEquals("PROVIDER_FAILURE", failure.errorCode)
+      assertFalse(failure.errorCode == "PROVIDER_TRANSPORT_ERROR")
+      assertEquals("invalid x-api-key", failure.errorMessage)
+      assertEquals("true", failure.metadata[LiteLlmMetadataKeys.PROVIDER_STREAM_ERROR_EVENT])
+      assertEquals("authentication_error", failure.metadata[LiteLlmMetadataKeys.PROVIDER_STREAM_ERROR_TYPE])
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeRecordsCorruptedAnthropicToolInputJsonAsRecoverableToolCallError() {
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference())
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: message_start
+              data: {"type":"message_start","message":{"id":"msg_kimi_tool_broken","type":"message","role":"assistant","content":[],"model":"kimi-k2.5","stop_reason":null}}
+              
+              event: content_block_start
+              data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_kimi_broken","name":"EchoProbe"}}
+              
+              event: content_block_delta
+              data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"echo\":"}}
+              
+              event: content_block_delta
+              data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"\"hello unterminated"}}
+              
+              event: content_block_stop
+              data: {"type":"content_block_stop","index":0}
+              
+              event: message_delta
+              data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}
+              
+              event: message_stop
+              data: {"type":"message_stop"}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-kimi-anthropic-tool-broken-stream",
+            providerId = "custom",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "kimi-k2.5",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.ANTHROPIC,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Call EchoProbe.",
+            tools = listOf(sampleToolDefinition()),
+            authHeaders = mapOf("x-api-key" to "test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-kimi-anthropic-tool-broken-stream",
+            providerId = "custom",
+            model = "kimi-k2.5",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val success = result as LiteLlmProviderResult.Success
+      val completion = requireNotNull(success.completion)
+      assertTrue(completion.toolCalls.isEmpty())
+      assertFalse(completion.hasStructuredActions)
+      assertEquals(1, completion.toolCallErrors.size)
+      assertTrue(completion.toolCallErrors.single().contains("content[0].input"))
+      assertTrue(completion.toolCallErrors.single().contains("Parser error"))
+      assertTrue(completion.toolCallErrors.single().contains("Received"))
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
   fun executeStreamsAnthropicPromptCacheUsageAcrossMessageStartAndDelta() {
     val requestBody = AtomicReference<String>()
     val responseSent = CountDownLatch(1)

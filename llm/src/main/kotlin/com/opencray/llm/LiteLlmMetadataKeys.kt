@@ -20,6 +20,8 @@ object LiteLlmMetadataKeys {
   const val BUILTIN_WEB_SEARCH_DIALECT: String = "builtinWebSearchDialect"
   const val PROVIDER_CITATION_COUNT: String = "providerCitationCount"
   const val PROVIDER_RESPONSE_SHAPE: String = "providerResponseShape"
+  const val PROVIDER_STREAM_ERROR_EVENT: String = "providerStreamErrorEvent"
+  const val PROVIDER_STREAM_ERROR_TYPE: String = "providerStreamErrorType"
   const val NATIVE_TOOL_CALL_OBSERVED: String = "nativeToolCallObserved"
   const val PARSED_TOOL_CALL_OBSERVED: String = "parsedToolCallObserved"
   const val FALLBACK_PARSER_ATTEMPTED: String = "fallbackParserAttempted"

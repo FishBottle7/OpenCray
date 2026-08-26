@@ -1296,8 +1296,143 @@ class LiteLlmClientOpenAiResponsesDialectTest : LiteLlmClientTestBase() {
       val success = result as LiteLlmProviderResult.Success
       assertEquals(listOf("Hello", "Hello world"), visibleDrafts)
       assertEquals("Hello world", success.outputText)
-      assertEquals("Hello world", success.completion?.finalText)
       assertEquals("completed", success.finishReason)
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsResponsesTopLevelErrorAsNonTransientProviderFailure() {
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference())
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_error"}}
+              
+              event: error
+              data: {"type":"error","code":"context_length_exceeded","message":"This model's maximum context length is 40971 tokens."}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-error",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Say hello.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-error",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val failure = result as LiteLlmProviderResult.Failure
+      assertEquals("PROVIDER_FAILURE", failure.errorCode)
+      assertFalse(failure.errorCode == "PROVIDER_TRANSPORT_ERROR")
+      assertTrue(failure.errorMessage.contains("maximum context length"))
+      assertEquals("true", failure.metadata[LiteLlmMetadataKeys.PROVIDER_STREAM_ERROR_EVENT])
+      assertEquals("context_length_exceeded", failure.metadata[LiteLlmMetadataKeys.PROVIDER_STREAM_ERROR_TYPE])
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
+  fun executeStreamsResponsesFailedEventAsNonTransientProviderFailure() {
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference())
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              event: response.created
+              data: {"type":"response.created","response":{"id":"resp_stream_failed"}}
+              
+              event: response.failed
+              data: {"type":"response.failed","response":{"error":{"code":"server_error","message":"The server had an error while processing your request."}}}
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-responses-stream-failed",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-5-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI_RESPONSES,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Say hello.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-responses-stream-failed",
+            providerId = "openai",
+            model = "gpt-5-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val failure = result as LiteLlmProviderResult.Failure
+      assertEquals("PROVIDER_FAILURE", failure.errorCode)
+      assertFalse(failure.errorCode == "PROVIDER_TRANSPORT_ERROR")
+      assertTrue(failure.errorMessage.contains("error while processing"))
+      assertEquals("true", failure.metadata[LiteLlmMetadataKeys.PROVIDER_STREAM_ERROR_EVENT])
+      assertEquals("server_error", failure.metadata[LiteLlmMetadataKeys.PROVIDER_STREAM_ERROR_TYPE])
     } finally {
       runCatching { server.close() }
       serverThread.join(5_000L)

@@ -22,6 +22,7 @@ import com.opencray.app.facade.llm.openAiPromptCacheRetention
 import com.opencray.app.facade.llm.openAiPromptCacheUsage
 import com.opencray.app.facade.llm.openAiStructuredCompletion
 import com.opencray.app.facade.llm.openAiStructuredFinalSchemaSupported
+import com.opencray.app.facade.llm.ProviderStreamErrorException
 import com.opencray.app.facade.llm.readOpenAiChatCompletionsStream
 import com.opencray.app.facade.llm.buildOpenAiResponsesCompactRequestBody
 import com.opencray.app.facade.llm.buildOpenAiResponsesRequestBody
@@ -248,6 +249,24 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       val providerResult = LiteLlmProviderResult.Timeout(
         errorMessage = timeout.message ?: "Provider request timed out.",
         metadata = requestDiagnostics,
+      )
+      providerFlowDebug(
+        "provider.executeEnd ${request.debugSummary(protocol = protocol, streamResponses = streamResponses)} http=- durationMs=${System.currentTimeMillis() - startedAtEpochMs} outcome=${providerResult.debugOutcome()}",
+      )
+      providerResult
+    } catch (streamError: ProviderStreamErrorException) {
+      streamDebug(
+        "provider.streamError protocol=$protocol type=${streamError.providerErrorCode ?: "-"} message=${streamError.message ?: "-"}",
+      )
+      val providerResult = LiteLlmProviderResult.Failure(
+        errorCode = "PROVIDER_FAILURE",
+        errorMessage = streamError.message ?: "Provider returned an error inside the response stream.",
+        metadata = requestDiagnostics + buildMap {
+          put(LiteLlmMetadataKeys.PROVIDER_STREAM_ERROR_EVENT, "true")
+          streamError.providerErrorCode?.let { providerCode ->
+            put(LiteLlmMetadataKeys.PROVIDER_STREAM_ERROR_TYPE, providerCode)
+          }
+        },
       )
       providerFlowDebug(
         "provider.executeEnd ${request.debugSummary(protocol = protocol, streamResponses = streamResponses)} http=- durationMs=${System.currentTimeMillis() - startedAtEpochMs} outcome=${providerResult.debugOutcome()}",

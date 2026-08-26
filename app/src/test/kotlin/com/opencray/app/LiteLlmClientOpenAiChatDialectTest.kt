@@ -397,6 +397,74 @@ class LiteLlmClientOpenAiChatDialectTest : LiteLlmClientTestBase() {
   }
 
   @Test
+  fun executeStreamsOpenAiInStreamErrorAsNonTransientProviderFailure() {
+    val responseSent = CountDownLatch(1)
+    val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val serverThread = Thread {
+      server.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readHttpRequest(client, AtomicReference(), AtomicReference())
+          writeHttpEventStreamResponse(
+            client = client,
+            body = """
+              data: {"id":"chatcmpl_stream_error","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Partial ans"},"finish_reason":null}]}
+              
+              data: {"error":{"code":"context_length_exceeded","type":"invalid_request_error","message":"This model's maximum context length is 40971 tokens. However, your messages resulted in 50012 tokens."}}
+              
+              data: [DONE]
+            """.trimIndent(),
+          )
+          responseSent.countDown()
+        }
+      }
+    }
+    serverThread.start()
+
+    try {
+      val client = OpenAiCompatibleLiteLlmProviderClient(
+        userAgent = OpenAiCompatibleLiteLlmProviderClient.providerUserAgent("1.0.0-test"),
+      )
+      val result = client.execute(
+        LiteLlmProviderRequest(
+          route = ProviderRoute(
+            id = "route-openai-chat-stream-error",
+            providerId = "openai",
+            baseUrl = "http://127.0.0.1:${server.localPort}/v1",
+            model = "gpt-4o-mini",
+            timeoutMs = 5_000L,
+            metadata = mapOf(
+              "protocol" to LlmProviderProtocols.OPENAI,
+              "stream" to "true",
+            ),
+          ),
+          request = LiteLlmGatewayRequest(
+            prompt = "Say hello.",
+            authHeaders = mapOf("Authorization" to "Bearer test-key"),
+          ),
+          selection = LiteLlmRouteSelectionMetadata(
+            profileId = "profile-test",
+            routeId = "route-openai-chat-stream-error",
+            providerId = "openai",
+            model = "gpt-4o-mini",
+            attemptIndex = 0,
+          ),
+        ),
+      )
+
+      assertTrue(responseSent.await(5, TimeUnit.SECONDS))
+      val failure = result as LiteLlmProviderResult.Failure
+      assertEquals("PROVIDER_FAILURE", failure.errorCode)
+      assertFalse(failure.errorCode == "PROVIDER_TRANSPORT_ERROR")
+      assertTrue(failure.errorMessage.contains("maximum context length"))
+      assertEquals("true", failure.metadata[LiteLlmMetadataKeys.PROVIDER_STREAM_ERROR_EVENT])
+      assertEquals("context_length_exceeded", failure.metadata[LiteLlmMetadataKeys.PROVIDER_STREAM_ERROR_TYPE])
+    } finally {
+      runCatching { server.close() }
+      serverThread.join(5_000L)
+    }
+  }
+
+  @Test
   fun executeStreamsOpenAiChatCompletionUsageIntoPromptCacheMetadata() {
     val requestBody = AtomicReference<String>()
     val responseSent = CountDownLatch(1)

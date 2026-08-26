@@ -955,14 +955,20 @@ internal fun OpenAiCompatibleLiteLlmProviderClient.processOpenAiChatCompletionsS
       throw IllegalStateException("Failed to parse OpenAI chat completions streaming event.", error)
     }
     val eventType = eventPayload.optString("type").ifBlank { eventName }
-    when (eventType) {
-      "error" -> {
-        val errorObject = eventPayload.optJSONObject("error")
-        val message = errorObject?.nonBlankString("message")
-          ?: eventPayload.nonBlankString("message")
-          ?: "OpenAI chat completions streaming request failed."
-        throw IllegalStateException(message)
-      }
+    val inlineErrorObject = eventPayload.optJSONObject("error")
+    if (eventType == "error" || inlineErrorObject != null) {
+      val errorObject = inlineErrorObject
+      val message = errorObject?.nonBlankString("message")
+        ?: eventPayload.nonBlankString("message")
+        ?: "OpenAI chat completions streaming request failed."
+      throw ProviderStreamErrorException(
+        providerErrorCode = firstNonBlankString(
+          errorObject?.nonBlankString("code"),
+          errorObject?.nonBlankString("type"),
+          eventPayload.nonBlankString("code"),
+        ),
+        message = message,
+      )
     }
     copyJsonFieldIfPresent(eventPayload, payload, "id")
     copyJsonFieldIfPresent(eventPayload, payload, "model")
