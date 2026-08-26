@@ -1227,7 +1227,9 @@ class OpenCrayAgentRuntime(
       hooks = hooks,
       activeSkillCapsule = activeSkillCapsule,
       cursor = null,
-    ) ?: toolDispatcher.dispatch(task = task, call = toolCall, hooks = hooks)
+    ) ?: DispatchTaskScope.withCurrentTask(task) {
+      toolDispatcher.dispatch(task = task, call = toolCall, hooks = hooks)
+    }
     eventSink.onRunEvent(
       task = task,
       event = OpenCrayToolResultEvent(
@@ -1393,7 +1395,7 @@ class OpenCrayAgentRuntime(
       if (hooks.isCancellationRequested()) {
         return GatewayTurnExecution.Cancelled
       }
-      val retryDelayMs = recoverableGatewayRetryDelayMs(gatewayResult)
+      val retryDelayMs = recoverableGatewayRetryDelayMs(gatewayResult, retryAttempt = retryCount + 1)
       if (retryDelayMs == null) {
         return GatewayTurnExecution.Completed(result = gatewayResult)
       }
@@ -2042,7 +2044,7 @@ class OpenCrayAgentRuntime(
       }
     }
     gatewayResult?.metadata?.forEach { (key, value) ->
-      if (key.isNotBlank() && value.isNotBlank()) {
+      if (key.isNotBlank() && value.isNotBlank() && !containsKey(key)) {
         put(key, value)
       }
     }
@@ -2080,6 +2082,10 @@ class OpenCrayAgentRuntime(
         ?.takeIf(String::isNotBlank)
         ?.let { reason -> put(LiteLlmMetadataKeys.CONTEXT_CACHE_BREAK_REASON, reason) }
       putAll(promptDiagnostics.contextCacheShapeMetadata)
+      promptDiagnostics.midTurnMaintenanceError
+        ?.trim()
+        ?.takeIf(String::isNotBlank)
+        ?.let { reason -> put("midTurnMaintenanceError", reason) }
       promptDiagnostics.lastSuccessfulToolName
         ?.trim()
         ?.takeIf(String::isNotBlank)
@@ -3108,6 +3114,7 @@ class OpenCrayAgentRuntime(
       applyMidTurnMaintenance(
         task = task,
         cursor = cursor,
+        diagnostics = diagnostics,
       )
     }
     cursor.turn += 1
@@ -3117,6 +3124,7 @@ class OpenCrayAgentRuntime(
   private fun applyMidTurnMaintenance(
     task: AgentTask,
     cursor: PromptTurnCursor,
+    diagnostics: PromptRunDiagnostics,
   ) {
     val beforeSessionContext = cursor.sessionContext
     val beforeConversation = cursor.transcript.toList()
@@ -3131,7 +3139,13 @@ class OpenCrayAgentRuntime(
           llmMetadata = config.llmMetadata,
         ),
       )
-    }.getOrElse {
+    }.getOrElse { error ->
+      recordMidTurnMaintenanceError(
+        task = task,
+        turn = cursor.turn,
+        diagnostics = diagnostics,
+        error = error,
+      )
       return
     }
     val requestedSessionContext = result.sessionContext ?: beforeSessionContext
@@ -3153,6 +3167,30 @@ class OpenCrayAgentRuntime(
       invalidateResponsesLineage(cursor)
       invalidateLocalContinuation(cursor)
     }
+  }
+
+  private fun recordMidTurnMaintenanceError(
+    task: AgentTask,
+    turn: Int,
+    diagnostics: PromptRunDiagnostics,
+    error: Throwable,
+  ) {
+    val reason = error.message?.trim()?.takeIf(String::isNotBlank)
+      ?: error.javaClass.simpleName
+    diagnostics.midTurnMaintenanceError = reason
+    eventSink.onRunEvent(
+      task = task,
+      event = OpenCraySupplementEvent(
+        runId = runIdFor(task),
+        taskId = task.id,
+        turn = turn,
+        entryId = "mid-turn-maintenance-error",
+        text = "",
+        checkpoint = "mid_turn_maintenance_error",
+        metadata = mapOf("midTurnMaintenanceError" to reason),
+        emittedAtEpochMs = clock(),
+      ),
+    )
   }
 
   private fun stickyMemoryRecallChanged(
@@ -3770,7 +3808,9 @@ class OpenCrayAgentRuntime(
     )
   } else {
     null
-  } ?: toolDispatcher.dispatch(task = task, call = call, hooks = hooks)
+  } ?: DispatchTaskScope.withCurrentTask(task) {
+    toolDispatcher.dispatch(task = task, call = call, hooks = hooks)
+  }
 
   private fun maybeExecuteSkillCall(
     task: AgentTask,
@@ -4212,7 +4252,7 @@ class OpenCrayAgentRuntime(
           state = OpenCrayPromptResumeState(
             transcript = transcript,
             turnIndex = turn,
-            toolCallCount = toolCallCount + 1,
+            toolCallCount = toolCallCount,
             pendingActions = pendingActions.map { action -> action.toSerializableModelAction() },
             nextActionIndex = nextActionIndex,
             requiresSingleActionReminder = requiresSingleActionReminder,
@@ -4986,6 +5026,7 @@ class OpenCrayAgentRuntime(
         maxTurns = profile.maxTurns,
         maxToolCalls = 0,
         sessionContext = childContext.sessionContext,
+        workingStateStore = InMemoryWorkingStateStore(childContext.sessionContext.workingState),
         promptResumeState = promptResumeStateOverride,
         approvedSubAgentResume = null,
         rejectedSubAgentResume = null,
@@ -5391,6 +5432,7 @@ class OpenCrayAgentRuntime(
     var responsesPendingContextUpdateHash: String? = null,
     var contextCacheBreakReason: String? = null,
     var contextCacheShapeMetadata: Map<String, String> = emptyMap(),
+    var midTurnMaintenanceError: String? = null,
   )
 
   internal data class GatewayMessagePlan(

@@ -364,7 +364,7 @@ class OpenCrayAgentRuntimeBudgetApprovalTest : OpenCrayAgentRuntimeTestBase() {
     assertEquals("APPROVAL_REQUIRED", firstResult.errorCode)
     assertEquals(1, initialGateway.requests.size)
     assertEquals(0, resumeState.turnIndex)
-    assertEquals(1, resumeState.toolCallCount)
+    assertEquals(0, resumeState.toolCallCount)
     assertEquals(0, resumeState.nextActionIndex)
     assertEquals(1, resumeState.pendingActions.size)
     val resumedPendingCall = (resumeState.pendingActions.single() as OpenCraySerializableModelAction.ToolCall).call
@@ -586,8 +586,8 @@ class OpenCrayAgentRuntimeBudgetApprovalTest : OpenCrayAgentRuntimeTestBase() {
       initialEventSink.events.filterIsInstance<OpenCrayToolResultEvent>().map { "${it.call.toolName}:${it.result.status.name}" },
     )
     assertEquals(0, resumeState.turnIndex)
-    assertEquals(2, resumeState.toolCallCount)
     assertEquals(2, resumeState.nextActionIndex)
+    assertEquals(1, resumeState.toolCallCount)
     assertEquals(5, resumeState.pendingActions.size)
 
     val resumedGateway = RecordingGateway(
