@@ -409,6 +409,10 @@ internal fun OpenCrayAgentRuntime.buildNonResponsesGatewayMessagePlan(
   } else {
     emptyList()
   }
+  val syntheticToolCallSequenceFloor = maxOf(
+    nextSyntheticToolCallSequence(transcript),
+    nextSyntheticToolCallSequenceFromGatewayMessages(envelope.gatewayMessages),
+  )
   if (envelope.frontContextZones.dynamicContextPrompt != normalizedFrontContextZones.dynamicContextPrompt) {
     val patchedGatewayMessages = patchDynamicFrontContextGatewayMessages(
       gatewayMessages = envelope.gatewayMessages,
@@ -421,6 +425,7 @@ internal fun OpenCrayAgentRuntime.buildNonResponsesGatewayMessagePlan(
           transcriptDelta = transcriptDelta,
           promptOnlyDelta = promptOnlyDelta,
           replayToolResultProjections = cursor.replayToolResultProjections,
+          syntheticToolCallSequenceFloor = syntheticToolCallSequenceFloor,
         ),
         mode = LocalContinuationMode.LOCAL_FRONT_PATCH,
         reason = "dynamic_context_changed",
@@ -439,6 +444,7 @@ internal fun OpenCrayAgentRuntime.buildNonResponsesGatewayMessagePlan(
       transcriptDelta = transcriptDelta,
       promptOnlyDelta = promptOnlyDelta,
       replayToolResultProjections = cursor.replayToolResultProjections,
+      syntheticToolCallSequenceFloor = syntheticToolCallSequenceFloor,
     ),
     mode = LocalContinuationMode.LOCAL_DELTA,
     reason = if (transcriptDelta.isEmpty()) "steady_turn" else "transcript_delta",
@@ -464,11 +470,29 @@ internal fun OpenCrayAgentRuntime.buildLocalContinuationDeltaMessages(
   transcriptDelta: List<RuntimeConversationMessage>,
   promptOnlyDelta: List<RuntimeConversationMessage>,
   replayToolResultProjections: MutableMap<String, FrozenToolResultReplayProjection>?,
+  syntheticToolCallSequenceFloor: Int = 1,
 ): List<LiteLlmGatewayMessage> = buildGatewayMessages(
   frontContextPrompts = emptyList(),
   transcript = transcriptDelta + promptOnlyDelta,
   replayToolResultProjections = replayToolResultProjections,
+  syntheticToolCallSequenceFloor = syntheticToolCallSequenceFloor,
 )
+
+internal fun nextSyntheticToolCallSequenceFromGatewayMessages(
+  messages: List<LiteLlmGatewayMessage>,
+): Int = messages
+  .asSequence()
+  .flatMap { message -> message.toolCalls.asSequence() }
+  .mapNotNull { toolCall ->
+    toolCall.id
+      ?.takeIf(String::isNotBlank)
+      ?.takeIf { id -> id.startsWith("oc-call-") }
+      ?.removePrefix("oc-call-")
+      ?.toIntOrNull()
+  }
+  .maxOrNull()
+  ?.plus(1)
+  ?: 1
 
 internal fun patchDynamicFrontContextGatewayMessages(
   gatewayMessages: List<LiteLlmGatewayMessage>,
@@ -650,6 +674,7 @@ internal fun OpenCrayAgentRuntime.buildGatewayMessages(
   frontContextPrompts: List<String>,
   transcript: List<RuntimeConversationMessage>,
   replayToolResultProjections: MutableMap<String, FrozenToolResultReplayProjection>? = null,
+  syntheticToolCallSequenceFloor: Int = 1,
 ): List<LiteLlmGatewayMessage> {
   val messages = mutableListOf<LiteLlmGatewayMessage>()
   frontContextPrompts
@@ -661,7 +686,10 @@ internal fun OpenCrayAgentRuntime.buildGatewayMessages(
         content = prompt,
       )
     }
-  var syntheticToolCallIndex = nextSyntheticToolCallSequence(transcript) - 1
+  var syntheticToolCallIndex = maxOf(
+    nextSyntheticToolCallSequence(transcript),
+    syntheticToolCallSequenceFloor,
+  ) - 1
   var pendingToolCallId: String? = null
   transcript.forEach { entry ->
     when (entry.role) {

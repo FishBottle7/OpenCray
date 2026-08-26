@@ -18,9 +18,27 @@ internal fun deriveContextCacheBreakReason(
     "transcript_mismatch" -> "replay_projection_changed"
     "responses_restored_replay_required" -> "continuation_lineage_untrusted"
     "responses_shape_unavailable" -> "continuation_lineage_untrusted"
+    "responses_no_pending_messages",
+    "responses_pending_tool_result_duplicate_call_id",
+    "responses_pending_user_message",
+    "responses_pending_system_message",
+    "responses_pending_assistant_message",
+    "responses_pending_tool_result_missing_payload",
+    "responses_pending_tool_result_missing_call_id",
+    "responses_pending_tool_result_missing_name",
+    "responses_pending_tool_result_blank_content",
+    "responses_pending_tool_result_attachment_artifact",
+    "responses_pending_tool_result_invalid",
+    -> "continuation_lineage_untrusted"
+    "responses_continuation_disabled",
     "responses_lineage_unavailable",
     "responses_legacy_json_fallback_enabled"
     -> if (hasHistoricalResponsesContinuation) "continuation_lineage_untrusted" else null
+    "no_envelope",
+    "steady_turn",
+    "transcript_delta",
+    "responses_previous_response_id"
+    -> null
     else -> null
   }
 }
