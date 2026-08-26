@@ -7,6 +7,7 @@ import java.nio.charset.StandardCharsets
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 data class ManagedProcessExecutionConfig(
@@ -20,12 +21,15 @@ data class ManagedProcessExecutionConfig(
 class LocalManagedProcessControllerFactory(
   private val config: ManagedProcessExecutionConfig = ManagedProcessExecutionConfig(),
   private val clock: () -> Long = { System.currentTimeMillis() },
+  private val cancellationCheckFor: ((taskId: String) -> ManagedProcessCancellationCheck?)? =
+    { taskId -> ManagedProcessCancellationRegistry.checkFor(taskId) },
 ) : ManagedProcessControllerFactory {
   override fun start(request: ManagedProcessStartRequest): ManagedProcessController =
     LocalManagedProcessController(
       request = request,
       config = config,
       clock = clock,
+      cancellationCheckFor = cancellationCheckFor,
     )
 }
 
@@ -33,11 +37,13 @@ private class LocalManagedProcessController(
   private val request: ManagedProcessStartRequest,
   private val config: ManagedProcessExecutionConfig,
   private val clock: () -> Long,
+  private val cancellationCheckFor: ((String) -> ManagedProcessCancellationCheck?)?,
 ) : ManagedProcessController {
   private val lock = Any()
   private val completion = CountDownLatch(1)
   private val stopReason = AtomicReference<StopReason?>(null)
   private val destroyRequested = AtomicBoolean(false)
+  private val escalationDeadlineEpochMs = AtomicLong(Long.MAX_VALUE)
   private val stdoutBuffer = ByteArrayOutputStream()
   private val stderrBuffer = ByteArrayOutputStream()
 
@@ -54,6 +60,7 @@ private class LocalManagedProcessController(
   private var cancelled: Boolean = false
   private var outputLimitExceeded: Boolean = false
   private var totalOutputBytes: Int = 0
+  private var resultMetadata: Map<String, String> = emptyMap()
 
   init {
     startProcess()
@@ -72,7 +79,7 @@ private class LocalManagedProcessController(
     val shouldTerminate = synchronized(lock) { !status.isTerminal }
     if (shouldTerminate) {
       requestStop(StopReason.CANCELLED)
-      completion.await(500L, TimeUnit.MILLISECONDS)
+      completion.await(TERMINATE_COMPLETION_TIMEOUT_MS, TimeUnit.MILLISECONDS)
     }
     return snapshot()
   }
@@ -180,9 +187,20 @@ private class LocalManagedProcessController(
     stderrThread: Thread,
   ) {
     val deadlineEpochMs = startedAtEpochMs + request.timeoutMs
+    var escalated = false
     while (process.isAlive) {
-      if (System.currentTimeMillis() >= deadlineEpochMs) {
+      if (cancellationRequested()) {
+        requestStop(StopReason.CANCELLED)
+      } else if (clock() >= deadlineEpochMs) {
         requestStop(StopReason.TIMEOUT)
+      }
+      if (
+        !escalated &&
+        destroyRequested.get() &&
+        clock() >= escalationDeadlineEpochMs.get()
+      ) {
+        escalated = true
+        LocalProcessTermination.escalateToForcedTermination(process)
       }
       if (!process.waitFor(25L, TimeUnit.MILLISECONDS)) {
         continue
@@ -190,12 +208,20 @@ private class LocalManagedProcessController(
     }
 
     if (destroyRequested.get()) {
-      process.waitFor(250L, TimeUnit.MILLISECONDS)
+      LocalProcessTermination.closeInputStreamsAfterCollectorsExit(
+        process = process,
+        stdoutCollector = stdoutThread,
+        stderrCollector = stderrThread,
+        joinTimeoutMs = LocalProcessTermination.COLLECTOR_JOIN_TIMEOUT_MS,
+      )
+    } else {
+      stdoutThread.join(LocalProcessTermination.COLLECTOR_JOIN_TIMEOUT_MS)
+      stderrThread.join(LocalProcessTermination.COLLECTOR_JOIN_TIMEOUT_MS)
     }
-    stdoutThread.join(500L)
-    stderrThread.join(500L)
 
     val resolvedFinishedAt = clock()
+    val orphanSuspected = stdoutThread.isAlive || stderrThread.isAlive
+    val terminationUnconfirmed = process.isAlive
     synchronized(lock) {
       exitCode = runCatching { process.exitValue() }.getOrNull()
       updatedAtEpochMs = resolvedFinishedAt
@@ -230,8 +256,22 @@ private class LocalManagedProcessController(
           errorMessage = "Process exited with code ${exitCode ?: -1}."
         }
       }
+      resultMetadata = buildMap {
+        if (orphanSuspected) {
+          put(METADATA_SUSPECTED_ORPHAN_DESCENDANTS, "true")
+        }
+        if (terminationUnconfirmed) {
+          put(METADATA_TERMINATION_UNCONFIRMED, "true")
+        }
+      }
     }
     completion.countDown()
+  }
+
+  private fun cancellationRequested(): Boolean {
+    val resolver = cancellationCheckFor ?: return false
+    val check = resolver(request.taskId) ?: return false
+    return runCatching { check.isCancellationRequested() }.getOrDefault(false)
   }
 
   private fun requestStop(reason: StopReason) {
@@ -240,7 +280,8 @@ private class LocalManagedProcessController(
     }
     val runningProcess = synchronized(lock) { process } ?: return
     if (destroyRequested.compareAndSet(false, true)) {
-      runningProcess.destroyForcibly()
+      escalationDeadlineEpochMs.set(clock() + LocalProcessTermination.GRACE_DESTROY_WINDOW_MS)
+      LocalProcessTermination.beginGracefulTermination(runningProcess)
     }
   }
 
@@ -265,7 +306,7 @@ private class LocalManagedProcessController(
     cancelled = cancelled,
     outputLimitExceeded = outputLimitExceeded,
     ownerIdentity = request.ownerIdentity,
-    metadata = request.metadata,
+    metadata = request.metadata + resultMetadata,
   )
 
   private enum class StopReason {
@@ -275,6 +316,9 @@ private class LocalManagedProcessController(
   }
 
   private companion object {
+    const val TERMINATE_COMPLETION_TIMEOUT_MS: Long = 5_000L
+    const val METADATA_SUSPECTED_ORPHAN_DESCENDANTS: String = "suspectedOrphanDescendants"
+    const val METADATA_TERMINATION_UNCONFIRMED: String = "terminationUnconfirmed"
     const val ERROR_TIMEOUT: String = "TIMEOUT"
     const val ERROR_CANCELLED: String = "CANCELLED"
     const val ERROR_OUTPUT_LIMIT_EXCEEDED: String = "OUTPUT_LIMIT_EXCEEDED"

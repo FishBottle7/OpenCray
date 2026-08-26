@@ -5,6 +5,7 @@ import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyApprovalRisk
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
+import com.opencray.runtime.process.LocalProcessTermination
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
@@ -13,6 +14,7 @@ import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 data class CommandExecutionAuditRecord(
@@ -129,13 +131,17 @@ class LocalCommandProcessRunner : CommandProcessRunner {
     val totalBytes = AtomicInteger(0)
     val stopReason = AtomicReference<StopReason?>(null)
     val destroyRequested = AtomicBoolean(false)
+    val escalationDeadlineEpochMs = AtomicLong(Long.MAX_VALUE)
 
     fun requestStop(reason: StopReason) {
       if (!stopReason.compareAndSet(null, reason)) {
         return
       }
       if (destroyRequested.compareAndSet(false, true)) {
-        process.destroyForcibly()
+        escalationDeadlineEpochMs.set(
+          System.currentTimeMillis() + LocalProcessTermination.GRACE_DESTROY_WINDOW_MS,
+        )
+        LocalProcessTermination.beginGracefulTermination(process)
       }
     }
 
@@ -157,11 +163,21 @@ class LocalCommandProcessRunner : CommandProcessRunner {
     )
 
     val deadlineEpochMs = System.currentTimeMillis() + config.timeoutMs
+    var escalated = false
     while (process.isAlive) {
       if (hooks.isCancellationRequested()) {
         requestStop(StopReason.CANCELLED)
       } else if (System.currentTimeMillis() >= deadlineEpochMs) {
         requestStop(StopReason.TIMEOUT)
+      }
+
+      if (
+        !escalated &&
+        destroyRequested.get() &&
+        System.currentTimeMillis() >= escalationDeadlineEpochMs.get()
+      ) {
+        escalated = true
+        LocalProcessTermination.escalateToForcedTermination(process)
       }
 
       if (!process.waitFor(25, TimeUnit.MILLISECONDS)) {
@@ -170,14 +186,30 @@ class LocalCommandProcessRunner : CommandProcessRunner {
     }
 
     if (destroyRequested.get()) {
-      process.waitFor(250, TimeUnit.MILLISECONDS)
+      LocalProcessTermination.closeInputStreamsAfterCollectorsExit(
+        process = process,
+        stdoutCollector = stdoutThread,
+        stderrCollector = stderrThread,
+        joinTimeoutMs = LocalProcessTermination.COLLECTOR_JOIN_TIMEOUT_MS,
+      )
+    } else {
+      stdoutThread.join(LocalProcessTermination.COLLECTOR_JOIN_TIMEOUT_MS)
+      stderrThread.join(LocalProcessTermination.COLLECTOR_JOIN_TIMEOUT_MS)
     }
-    stdoutThread.join(500)
-    stderrThread.join(500)
+    val orphanSuspected = stdoutThread.isAlive || stderrThread.isAlive
+    val terminationUnconfirmed = process.isAlive
 
     val stdout = stdoutBuffer.toString(StandardCharsets.UTF_8.name())
     val stderr = stderrBuffer.toString(StandardCharsets.UTF_8.name())
     val exitCode = runCatching { process.exitValue() }.getOrNull()
+    val runtimeMetadata = buildMap {
+      if (orphanSuspected) {
+        put("suspectedOrphanDescendants", "true")
+      }
+      if (terminationUnconfirmed) {
+        put("terminationUnconfirmed", "true")
+      }
+    }
 
     return when (stopReason.get()) {
       StopReason.TIMEOUT -> CommandSpawnResult(
@@ -186,6 +218,7 @@ class LocalCommandProcessRunner : CommandProcessRunner {
         stderr = stderr,
         processStarted = true,
         timedOut = true,
+        metadata = runtimeMetadata,
       )
 
       StopReason.CANCELLED -> CommandSpawnResult(
@@ -194,6 +227,7 @@ class LocalCommandProcessRunner : CommandProcessRunner {
         stderr = stderr,
         processStarted = true,
         cancelled = true,
+        metadata = runtimeMetadata,
       )
 
       StopReason.OUTPUT_LIMIT_EXCEEDED -> CommandSpawnResult(
@@ -202,6 +236,7 @@ class LocalCommandProcessRunner : CommandProcessRunner {
         stderr = stderr,
         processStarted = true,
         outputLimitExceeded = true,
+        metadata = runtimeMetadata,
       )
 
       null -> CommandSpawnResult(
@@ -209,6 +244,7 @@ class LocalCommandProcessRunner : CommandProcessRunner {
         stdout = stdout,
         stderr = stderr,
         processStarted = true,
+        metadata = runtimeMetadata,
       )
     }
   }
@@ -224,7 +260,7 @@ class LocalCommandProcessRunner : CommandProcessRunner {
     return Thread {
       val chunk = ByteArray(DEFAULT_BUFFER_SIZE)
       while (true) {
-        val read = input.read(chunk)
+        val read = runCatching { input.read(chunk) }.getOrDefault(-1)
         if (read <= 0) {
           break
         }
