@@ -40,6 +40,7 @@ import com.opencray.runtime.subagent.SubAgentContextModeResolutionSource
 import com.opencray.runtime.subagent.SubAgentContextPolicy
 import com.opencray.runtime.subagent.SubAgentMetadataKeys
 import com.opencray.runtime.subagent.SubAgentResultMetadataKeys
+import com.opencray.runtime.subagent.synchronizedSubAgentHandle
 import com.opencray.runtime.subagent.synchronizedSubAgentHandles
 import com.opencray.runtime.skills.SkillCatalog
 import com.opencray.runtime.skills.SkillCatalogEntry
@@ -3933,6 +3934,106 @@ class OpenCrayAgentRuntimeSubAgentTest {
       delegate.upsertHandle(finalizedHandle)
       val syncedHandles = syncedFuture.get(10, TimeUnit.SECONDS)
       assertEquals(listOf(finalizedHandle), syncedHandles)
+      synchronized(cursor.subAgentExecutionLock) {
+        assertSame(finalizedHandle, cursor.subAgentHandles["child-race"])
+        assertEquals(SubAgentExecutionState.COMPLETED, cursor.subAgentHandles.getValue("child-race").snapshot.state)
+      }
+    } finally {
+      syncExecutor.shutdownNow()
+    }
+  }
+
+  @Test
+  fun synchronizedSubAgentHandleKeepsFinalizedCursorHandleOverStaleCoordinatorView() {
+    val workspaceRoot = temporaryFolder.newFolder("subagent-sync-handle-race").toPath()
+    val delegate = InMemorySubAgentExecutionCoordinator()
+    val parentQueriedCoordinator = CountDownLatch(1)
+    val childCommittedCursorWrite = CountDownLatch(1)
+    val parentReadCoordinatorView = CountDownLatch(1)
+    val gatingCoordinator =
+      object : com.opencray.runtime.subagent.SubAgentExecutionCoordinator by delegate {
+        override fun currentHandle(key: SubAgentExecutionKey): SubAgentHandleState? {
+          parentQueriedCoordinator.countDown()
+          assertTrue(childCommittedCursorWrite.await(10, TimeUnit.SECONDS))
+          val view = delegate.currentHandle(key)
+          parentReadCoordinatorView.countDown()
+          return view
+        }
+      }
+    val runningHandle = SubAgentHandleState(
+      agentId = "child-race",
+      childRunId = "child-run-race",
+      childTaskId = "child-task-race",
+      description = "inspect docs",
+      prompt = "Read README.md and summarize it.",
+      subagentType = "researcher",
+      contextMode = "minimal",
+      parentRunId = "prompt-task",
+      parentTaskId = "parent-task-race",
+      parentTurn = 0,
+      depth = 1,
+      snapshot = SubAgentExecutionSnapshot.backgroundRunning(
+        headline = "Delegated child run is still running in the background.",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_100L,
+    )
+    delegate.upsertHandle(runningHandle)
+    val runtime = runtime(
+      workspaceRoot = workspaceRoot,
+      gateway = RecordingGateway(outputs = emptyList()),
+      subAgentExecutionCoordinator = gatingCoordinator,
+    )
+    val cursor = OpenCrayAgentRuntime.PromptTurnCursor(
+      transcript = mutableListOf(),
+      sessionContext = AgentRuntimeSessionContext(),
+      turn = 0,
+      toolCallCount = 0,
+      todoWriteUsed = false,
+      activeSkillName = null,
+      activeSkillActivationSource = null,
+      activeSkillPinned = false,
+      nextSyntheticToolCallSequence = 0,
+      legacyJsonFallbackEnabled = true,
+      responsesPreviousResponseId = null,
+      responsesProviderLineageId = null,
+      responsesLineageTrusted = false,
+      responsesFullReplayRequired = false,
+      responsesContinuationShape = null,
+      responsesPendingMessages = mutableListOf(),
+      replayToolResultProjections = linkedMapOf(),
+      localContinuationEnvelope = null,
+      subAgentHandles = linkedMapOf(),
+      subAgentExecutionLock = Any(),
+    )
+    synchronized(cursor.subAgentExecutionLock) {
+      cursor.subAgentHandles["child-race"] = runningHandle
+    }
+    val syncExecutor = Executors.newSingleThreadExecutor()
+    try {
+      val syncedFuture = syncExecutor.submit<SubAgentHandleState?> {
+        runtime.synchronizedSubAgentHandle(cursor, "child-race")
+      }
+      assertTrue(parentQueriedCoordinator.await(10, TimeUnit.SECONDS))
+      val finalizedHandle = runningHandle.copy(
+        snapshot = SubAgentExecutionSnapshot(
+          state = SubAgentExecutionState.COMPLETED,
+          continuationKind = SubAgentContinuationKind.NONE,
+          resumable = false,
+          requiresUserAction = false,
+          isHighRisk = false,
+          headline = "Delegated child run completed.",
+        ),
+        updatedAtEpochMs = 2_000L,
+      )
+      synchronized(cursor.subAgentExecutionLock) {
+        cursor.subAgentHandles["child-race"] = finalizedHandle
+      }
+      childCommittedCursorWrite.countDown()
+      assertTrue(parentReadCoordinatorView.await(10, TimeUnit.SECONDS))
+      delegate.upsertHandle(finalizedHandle)
+      val syncedHandle = syncedFuture.get(10, TimeUnit.SECONDS)
+      assertEquals(finalizedHandle, syncedHandle)
       synchronized(cursor.subAgentExecutionLock) {
         assertSame(finalizedHandle, cursor.subAgentHandles["child-race"])
         assertEquals(SubAgentExecutionState.COMPLETED, cursor.subAgentHandles.getValue("child-race").snapshot.state)
