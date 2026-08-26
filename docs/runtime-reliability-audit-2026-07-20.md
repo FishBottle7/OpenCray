@@ -1,6 +1,7 @@
 # OpenCray 主线运行可靠性审查
 
 日期：2026-07-20  
+复核：2026-08-26 —— 代码拆分搬迁后逐条对照现行代码复核（含工作区未提交修改）：全部条目中已修复/处置确认 18 项、部分修复 15 项、仍存在 13 项。各条目标题下附「复核」注记与当前证据路径，失效的旧路径已在证据行就地更正；正文叙述保留为审计当时的历史描述。主要修复集中在基线提交 a0ab8c0（2026-07-26）与 8aaf0aa、e6e4c21、4f7cc4e。  
 状态：实施中  
 决策：采用协议优先的根治方案，不再继续叠加基于时间戳、内容权重或监听器数量的合并启发式。
 
@@ -36,11 +37,15 @@
 
 ### P0：恢复状态分裂导致 restart 必然失败
 
+> **复核（2026-08-26）：已修复** —— 恢复修复改为经队列所有者真实迁移：`ManagedInterruptedRunRepair.kt:50` 先 `loop.reconcileFailure(...)` 成功才投影 run record；restore transformer 在队列构造期内直接改写为 FAILED + `ERROR_RESTART_REQUIRES_EXPLICIT_RETRY`（`RecoveryAwareQueueSnapshotStore.kt:441`），`requestRetry` 对该错误码显式放行（core/.../SessionQueue.kt:308）。
+
 managed process 恢复修复会把 run record 投影为 `FAILED / PROCESS_INTERRUPTED_ON_RESTORE`，但 SessionQueue 中的 task 仍可能是 `QUEUED`、`SUSPENDED` 或其他非终态。UI 因此显示“运行已中断 / 重新启动”，而 `SessionQueue.requestRetry()` 只接受真实 `FAILED`，请求必然返回 false。
 
 修复原则：恢复修复必须通过队列所有者执行真实状态迁移，再生成 run projection；不得只改 run record 的展示结果。
 
 ### P0：interrupt 存在 TOCTOU、假成功和未 settled 语义
+
+> **复核（2026-08-26）：已修复** —— `ServiceOwnedChatRunControlAccess.kt:84-126` 实现 requested/settling/settled 区分与幂等早退：cancel 返回 false 后等待 settle（5s 超时），任务自然完成不再抛 "Unable to cancel"；仅资源终止且无重复取消记录后才记 `user_interrupted` 并清 checkpoint。底层 InterruptedException 映射 CANCELLED 并保留中断标志（SessionQueue.kt:642）；retry 不覆盖 CANCEL_REQUESTED 由 e6e4c21 补强（SessionQueue.kt:567）。
 
 interrupt 先查 run，再请求取消。任务若在两步之间自然完成，取消返回 false，当前实现直接抛出 `Unable to cancel`。对运行中任务，队列只进入 `CANCEL_REQUESTED`，调用方却立即记录 `user_interrupted` 并清理 checkpoint，实际执行和子资源可能仍在运行。
 
@@ -48,11 +53,15 @@ interrupt 先查 run，再请求取消。任务若在两步之间自然完成，
 
 ### P0：重复进度气泡来自消息身份协议不一致
 
+> **复核（2026-08-26）：已修复** —— 服务端单一权威 ID 已落地：assistant phase messageId 统一为 `runtime-assistant-event-${runtimeEventStableId(event)}`（app/projection/ChatMessageProjectionSupport.kt:460），优先复用 journal 落盘盖章的持久 eventId、语义兜底不含文本与时间戳（RuntimeEventDedupSupport.kt:27）；Flutter 端 legacy hash 别名仅作合并兼容且有「只渲染一个气泡」回归测试（flutter_app/test/chat_merge_test.dart:402）。
+
 Kotlin 持久化的 assistant phase message ID 包含文本 hash；Flutter 为同一 runtime event 生成的 alias 不包含该 hash。transcript 和 runtime event 同时可见时，客户端无法判定它们是同一气泡，稳定生成两条相同内容。
 
 修复原则：消息和事件身份由服务端生成并持久化；客户端不得重新推导。一个逻辑消息只能有一个权威 `messageId`。
 
 ### P0：同一 turn 的多个 commentary action 仍会共享身份并互相覆盖
+
+> **复核（2026-08-26）：已修复** —— action 解析边界分配含 actionIndex 的持久事件 ID：解析出 batch 即调 `withAssistantActionEventId(...)`（runtime/OpenCrayAgentRuntime.kt:1010），按 `runId|taskId|batchRequestId|turn|actionIndex|phase` 派生确定性 `assistant-item-*` ID（:3978）；无 provider ID 时兜底随机 UUID，禁止文本/stage 猜测（:4403）。残留小点：RuntimeEventDedupSupport.kt:51 的语义兜底键不含 actionIndex，但对新事件不可达。
 
 即使客户端 alias 完全一致，服务端当前 assistant phase 的 fallback identity 仍只包含 run/task/execution/turn/phase/stage 等字段，不包含 action index 或 assistant item。一个模型 batch 可以连续产生多个相同 stage 的 Commentary，第二条会复用第一条的 `eventId`/projected message key，表现为“下一个气泡覆盖上一个”。这不是 UI 去重策略可以修复的丢失，而是源头把两个事实压成了一个键。
 
@@ -60,11 +69,15 @@ Kotlin 持久化的 assistant phase message ID 包含文本 hash；Flutter 为�
 
 ### P0：draft 与 runtime delta 以同一 sequence 双发，先到者会吞掉另一条事实
 
+> **复核（2026-08-26）：已修复** —— 8aaf0aa 改为双通道冗余广播同一 canonical envelope：有 delta listener 时先发 delta（内嵌 `liveAssistantDrafts` patch），随后无条件再发 draft 镜像（ServiceOwnedChatRuntimeGateway.kt:129-141、:180-192），两路共用同一 sequence/eventId；Flutter 两 reducer 共享水位按 sequence/eventId 去重（chat_realtime_ingestion.dart:213）。残留：同文件 `onTaskFinished` 分支（:233-243）仍是旧单通道 if/else，未对齐双通道。
+
 service-owned gateway 在 draft 更新时先广播 draft，再用同一个 realtime envelope 的 sequence/eventId 生成 delta。Flutter 两个 reducer 只允许一个 sequence/eventId，因此到达顺序决定丢 draft 还是丢 Inspector delta；local long-poll server 的 `offer` 也只保留先到的一条。
 
 修复原则：实时协议只能有一个 canonical envelope。推荐 delta envelope 同时承载 `liveAssistantDrafts` patch；只有不存在 delta listener 的 legacy 消费者才得到不占新序号的镜像 draft。客户端不得根据相同 eventId 猜两条互补 payload。
 
 ### P0：完整快照、delta 和 draft 没有统一 revision
+
+> **复核（2026-08-26）：大部分已修复** —— envelope 五字段齐全（streamInstanceId/sequence/lastSequence/eventId/executionId，app/projection/RuntimeEventPayloadCodec.kt:231），full snapshot 携带 lastSequence（OpenCrayHostRuntime.kt:2147）；Flutter 收 full 不再清水位而是设为 lastSequence 并拒绝落后包，所有实时 envelope 进统一有界队列按序回放（chat_realtime_ingestion.dart:42-145、438-536）。残留：`totalLength` 仍未参与任何断档判断；实时 envelope 的 per-session 计数与 journal per-run seq 仍是两套序号。
 
 四条独立流没有跨通道顺序保证。完整快照不携带 delta watermark，Flutter 收到完整快照后还会清除本地 sequence；旧 delta 随后可被当成首包重新接受。重同步期间客户端只缓存最后一条 delta，中间 thinking、tool call、tool result 会永久丢失。
 
@@ -72,11 +85,15 @@ service-owned gateway 在 draft 更新时先广播 draft，再用同一个 realt
 
 ### P0：local runtime 模式没有真正的实时流
 
+> **复核（2026-08-26）：部分修复** —— 「不可能逐 chunk 更新」已解除：local bridge 改为单一长轮询循环消费 `/v1/chat_runtime_events`（服务端 waitLock 挂起等待、默认 15s/上限 25s，OpenCrayLocalRuntimeServer.kt:924-989），draft/delta 即时推送且断线自愈重试（opencray_local_runtime_bridge.dart:111-197）。尚未实现审计要求的可重连 SSE 事件流（loopback 全仓无 SSE 实现）；chat/runtime full snapshot 仍默认 2 秒轮询补位。
+
 local HTTP bridge 的 draft 和 runtime delta watcher 返回空流，chat/runtime snapshot 默认每两秒轮询一次。因此该模式最多是低频快照刷新，不可能逐 chunk 更新，也无法为 Inspector 提供实时工具事件。
 
 修复原则：loopback transport 提供可重连的事件流；短轮询只能作为兼容降级，不能冒充 streaming。
 
 ### P1：draft 只按 pendingMessageId 合并
+
+> **复核（2026-08-26）：部分修复** —— 客户端已按 `pendingMessageId + executionId` 校验并携带 streamInstanceId/sequence/bridgeEpoch（chat_runtime_ingestion.dart:667、chat_realtime_ingestion.dart:724），跨 identity override 在 reconcile 清除、同刻乱序有 cleared-clock 防复活；但服务端网关内存 draft map 与投影仍只按 pendingMessageId 单键（ServiceOwnedChatRuntimeGateway.kt:258-309、app/projection/ChatMessageProjectionSupport.kt:612），宿主写入边界未闭环。
 
 retry/resume 会复用 pending assistant message。旧 execution 的晚到 update/clear 可能覆盖或清除新 execution 的 draft；相同毫秒的乱序事件也没有可靠 tie-breaker。
 
@@ -84,11 +101,15 @@ retry/resume 会复用 pending assistant message。旧 execution 的晚到 updat
 
 ### P1：事件身份和 Inspector 排序依赖墙钟时间
 
+> **复核（2026-08-26）：部分修复** —— 事件首写即获稳定 eventId 与 per-run 单调 seq（RunEventJournalStoreFactory.kt:134），语义兜底键不含 emittedAt；客户端 upsert 键 eventId 优先。未修：journal 比较器与 Flutter 排序仍以时间戳第一优先、内容权重做平局裁决（RunEventJournalStoreFactory.kt:582、chat_runtime_merge.dart:784），`totalLength` 未参与断档判断。
+
 同一事件经 live、journal、projection 多路到达时可能拥有不同时间戳；同毫秒内的多个事件又可能碰撞。当前 `totalLength` 没有参与断档判断，现有测试甚至明确允许不一致。
 
 修复原则：事件首次写 journal 时生成稳定 `eventId` 和单调序号；时间戳仅用于展示，不再承担身份或顺序职责。
 
 ### P1：bridge 更换和 stream 错误不会自动恢复
+
+> **复核（2026-08-26）：已修复** —— `didUpdateWidget` 检测 bridge 变更即重绑（chat_feature_screen.dart:398），四条订阅均带 onError 触发整桥取消旧订阅→重建订阅→重新 hydrate（:449-539、:585-600）。小残留：`onDone`（无错误完成）不触发重连；恢复为固定 250ms 而非有界退避。
 
 Flutter widget 更新时没有处理 bridge 实例变化，旧订阅不会取消，新订阅不会建立。EventChannel、local polling stream 和页面订阅缺少完整的 onError/onDone 重连策略；一次异常可导致后续永久停更。
 
@@ -96,11 +117,15 @@ Flutter widget 更新时没有处理 bridge 实例变化，旧订阅不会取消
 
 ### P1：resync 期间 draft/delta 分队列会人为制造 gap
 
+> **复核（2026-08-26）：已修复** —— delta/draft 进入同一 `_QueuedRealtimeEnvelope` 有界队列（上限 512，chat_feature_screen.dart:232、chat_realtime_queue.dart），排水按 sequence 升序、同序 delta 先于 draft，不再人为重排（chat_realtime_ingestion.dart:485-536）。偏差：overflow 为静默丢弃最旧而非审计要求的「丢弃缓存并触发一次 full resync」。
+
 当前 Flutter resync 缓存把 delta 和 draft 放在两个队列，恢复时先排空全部 delta，再按到达顺序排空 draft。真实序列 `[draft@6, delta@7]` 会被重排成 `[delta@7, draft@6]`，从而触发二次 gap 或覆盖；队列没有统一上限，持续断线时还会无界增长。
 
 修复原则：所有实时 envelope 进入同一个按 `(sessionId, streamInstanceId, bridgeEpoch, sequence)` 排序的有界队列，应用后再在内存 fan-out。overflow 直接丢弃缓存并触发一次 full resync，不允许静默跳水位。
 
 ### P1：runtime 重启后 draft 时钟沿用旧 stream，新的 draft 永远被丢弃
+
+> **复核（2026-08-26）：已修复** —— `_resetRealtimeSessionIdentity` 在 streamInstanceId 或 bridgeEpoch 任一变化时于同一 reducer 事务清除 delta 水位、seen ids、draft 三本时钟与 overrides，并丢弃队列内旧 identity 包（chat_realtime_ingestion.dart:458-483）；bridge 整体更换时同样全清（chat_feature_screen.dart:556）。
 
 stream/bridge identity 切换时客户端清了 runtime delta watermark 和 seen event IDs，却没有清 draft sequence、epoch、cleared clocks 与 overrides。旧 stream 的 draft seq=100 会让新 stream seq=1 看起来过期，导致重启后消息不再逐 chunk 更新。
 
@@ -108,11 +133,15 @@ stream/bridge identity 切换时客户端清了 runtime delta watermark 和 seen
 
 ### P1：hydrate 的旧 full snapshot 可以回滚已收到的实时状态
 
+> **复核（2026-08-26）：已修复** —— hydrate 提交前校验 mounted/bridgeBindingEpoch/bridge 实例三重一致（chat_feature_screen.dart:1287），authoritative full 落后当前水位时拒绝回滚（:1292 与 chat_realtime_ingestion.dart:88 的水位比较）；采用「先订阅后 hydrate + watermark 比较」，防护与审计建议等效。
+
 `_hydrateFromHost` 并发加载 chat/runtime full snapshot；commit 没有比较 generation/version。若 watcher 在加载期间收到新 delta，旧 full 仍会无条件覆盖消息、run 和 Inspector，之后相同签名事件不会再次发送，界面就永久停在旧状态。
 
 修复原则：hydrate commit 必须携带 bridge generation，并只接受不落后的 stream/sequence；更简单的实现是先完成 full hydrate，再建立 live subscriptions。旧 bridge 的异步结果不得写入新 generation。
 
 ### P1：bridge 重绑的异步 cancel 可拆掉新订阅
+
+> **复核（2026-08-26）：已修复** —— 绑定走 generation/barrier 状态机：旧订阅收集置空后经 barrier 串接，`await Future.wait(cancel)` 全部完成才创建新 listen，再以 epoch/mounted/bridge 三重校验防串代（chat_feature_screen.dart:453-497）；dispose 同样推进 epoch。
 
 旧 bridge 的四个 subscription 通过 `unawaited(cancel())` 启动后立即建立新监听。native `onCancel` 若晚于新 `listen` 到达，可能清掉新 observer，正是“切页面/重连后完全不流式”的间歇性症状。
 
@@ -120,11 +149,15 @@ stream/bridge identity 切换时客户端清了 runtime delta watermark 和 seen
 
 ### P1：provider 非 SSE 响应时静默退化
 
-当前 route 组装已在 `AppAgentSessionTaskRuntimeFactory.effectiveLlmRouteMetadata()` 的各 provider 分支显式写入 `metadata["stream"] = settings.streamingEnabled`，因此“所有 route 漏传 stream”不是现状根因。真正的缺口在 `OpenAiCompatibleLiteLlmProviderClient.readSuccessResponse()`：请求要求 streaming 但 provider 返回普通 body 时会成功走 `plain_body`，只写 debug log，结果 metadata 没有记录请求是否流式、实际 transport mode 或降级原因。Inspector 因而无法区分 provider 不支持、代理剥离 SSE、响应头错误和客户端解析失败。
+> **复核（2026-08-26）：仍存在** —— `readSuccessResponse()` 的 plain_body 分支仍只有 debug 日志（OpenAiCompatibleLiteLlmProviderClient.kt:978-1025），成功响应 metadata 无 `streamRequested`/`streamTransportMode`/降级原因（全仓检索零命中）；Inspector 无法区分降级原因的现状未变。route 组装处已随拆分迁至 `LlmModelCapabilityRegistry.effectiveLlmRouteMetadata()`（LlmModelCapabilityRegistry.kt:1062-1146）。
+
+当前 route 组装已在 `LlmModelCapabilityRegistry.effectiveLlmRouteMetadata()` 的各 provider 分支显式写入 `metadata["stream"] = settings.streamingEnabled`，因此“所有 route 漏传 stream”不是现状根因。真正的缺口在 `OpenAiCompatibleLiteLlmProviderClient.readSuccessResponse()`：请求要求 streaming 但 provider 返回普通 body 时会成功走 `plain_body`，只写 debug log，结果 metadata 没有记录请求是否流式、实际 transport mode 或降级原因。Inspector 因而无法区分 provider 不支持、代理剥离 SSE、响应头错误和客户端解析失败。
 
 修复原则：保留显式 route streaming 偏好；每次响应写入 `streamRequested`、`streamTransportMode` 和结构化 `streamDowngradeReason=provider_returned_non_event_stream`（或具体原因），并让 Inspector/诊断流可见，而不是静默切换。
 
 ### P1：retry 可能保留旧恢复错误
+
+> **复核（2026-08-26）：已修复** —— `requestRetry` 迁移 RETRY_PENDING 时显式清空 errorCode/errorMessage（core/.../SessionQueue.kt:315-320），RETRY 类 pending 同时移除 checkpointResumeAttemptCount（:752）；仅 `ERROR_RESTART_REQUIRES_EXPLICIT_RETRY` 的显式重试有意绕过 maxAttempts。e6e4c21 进一步防止 retry 与取消互相覆盖。
 
 队列 retry 状态迁移没有显式清除旧 `lastErrorCode/lastErrorMessage`。恢复错误可能污染后续执行，并错误绕过普通最大重试次数判断。
 
@@ -132,11 +165,15 @@ stream/bridge identity 切换时客户端清了 runtime delta watermark 和 seen
 
 ### Critical：runtime owner 心跳异常后可能永久停摆
 
+> **复核（2026-08-26）：已修复** —— `onOwnerLeaseHeartbeat()` 以 try/catch/finally 保证重排：持久化/续租失败仅进 diagnostics，`scheduleOwnerLeaseHeartbeat()` 在 finally 中执行（RuntimeServiceProjectionCoordinator.kt:361-381）；回归测试注入 save 失败断言后续心跳照常排程（RuntimeServiceProjectionCoordinatorTest.kt:101）。
+
 `RuntimeServiceProjectionCoordinator` 在持久化投影和 owner lease 失败时，可能跳过下一次心跳排程。租约在一个周期后失效，另一进程可以取得 owner，原进程仍保留执行句柄，最终表现为控制命令间歇性失效或双主。
 
 修复原则：心跳排程必须放在 `finally`；持久化失败要单独暴露诊断，不得改变下一次尝试的计划。
 
 ### Critical：所有权持久化失败时静默 fail-open
+
+> **复核（2026-08-26）：部分修复** —— owner/session lease 存储生产装配已直连文件实现、构造失败 fail-closed（RuntimeServiceProjectionCoordinator.kt:74，内存实现仅剩测试用途）；但 `projectionStore` 默认值仍为 `runCatching{...}.getOrElse { 内存实现 }` 且降级状态无显式可见诊断（:68-73）。
 
 投影库或 owner lease 库构造失败会降级到进程内存实现。跨进程随后各自认为自己是 owner，且恢复数据随进程消失。这是跨进程 interrupt/restart 失灵的直接放大器。
 
@@ -144,13 +181,17 @@ stream/bridge identity 切换时客户端清了 runtime delta watermark 和 seen
 
 ### Critical：损坏的 owner lease 会被当成“无人持有”
 
+> **复核（2026-08-26）：仍存在** —— 两处 `decodeLeaseOrNull()` 仍为 `runCatching{...}.getOrNull()`，损坏文件被当空租约覆盖：RuntimeServiceOwnerLease.kt:216-298（updateLease 归一 null 后 save 直接写入）、RuntimeSessionOwnerLease.kt:132-192。存储层已有 `backupCorrupt` 原语（persistence/.../DirectoryDurableTextStorage.kt:53）但租约路径未接入；两个 lease store 测试均无损坏文件用例。审计后无针对性改动。
+
 `FileBackedRuntimeServiceOwnerLeaseStore.decodeLeaseOrNull()` 和 session lease 的对应实现会把反序列化失败转换为 null。下一次 `save/acquire` 随即把损坏文件视为空租约并覆盖，绕过原 owner 排他约束。只要发生半写入、迁移不兼容或字段损坏，就可能产生第二 owner。
 
-证据路径：`RuntimeServiceOwnerLease.kt`、`RuntimeSessionOwnerLease.kt`。
+证据路径：`app/RuntimeServiceOwnerLease.kt`、`app/RuntimeSessionOwnerLease.kt`（decodeLeaseOrNull/updateLease/save/acquire）。
 
 修复原则：租约解码失败必须 fail-closed 并隔离坏文件；在人工修复或有证据的过期恢复完成前，不得自动取得 owner。
 
 ### Critical：runtime listener 异常可反向终止执行和流式事件
+
+> **复核（2026-08-26）：部分修复** —— 已新增 `notifyRuntimeListenersSafely()` 对全部回调点逐 listener try/catch 隔离并有回归测试（AgentSessionRuntimeManager.kt:137-154，覆盖 onRunEvent/draft/task wrapper/subagent 恢复各点），投影协调器异常现被吸收进 diagnostics。残留缺口：journal append/transcript 写盘/run record 持久化仍在观测链同步路径且 engine 侧调用点无保护（AgentSessionRuntimeManager.kt:382-390、AppTranscriptEventSink.kt:34），无 durability-degraded 状态；分发仍为同步直调，「journal 先行」顺序已成立但未改隔离 dispatcher 异步通知。
 
 `AgentSessionRuntimeManager` 对 `onTaskStarted`、`onRunEvent`、draft update/clear 和 `onTaskFinished` 逐个同步调用 listener，没有逐 listener 故障隔离。`DefaultRuntimeServiceProjectionCoordinator` 正是其中一个 listener，其回调会同步续租、汇总 active work 并写磁盘。任一 I/O 或投影异常都可能从观测链反向传播到 runtime，导致任务未执行、流式回调停止、工具事件中断或终态未发布。
 
@@ -159,6 +200,8 @@ stream/bridge identity 切换时客户端清了 runtime delta watermark 和 seen
 修复原则：执行事实先写入权威 journal/queue，再通过隔离 dispatcher 通知观测者；单个 listener 失败只进入 diagnostics，不得阻断其他 listener 或核心执行。关键 journal 失败应进入明确的 durability-degraded 状态，而不是伪装成模型/工具失败。
 
 ### Critical Security：固定端口 loopback 控制面完全无认证
+
+> **复核（2026-08-26）：已修复（方案 A 落地）** —— 生产 server 改绑临时端口（RuntimeServiceLoopbackBootstrapFactory.kt:31 requestedPort=0）；全请求强制 epoch + 时间戳(±60s) + nonce 防重放 + 常量时间 HMAC 校验并在 dispatch 前 401（RuntimeServiceLoopbackSecurity.kt:246-336、OpenCrayLocalRuntimeServer.kt:229-244），响应亦签名验签；descriptor 仅发布到应用私有 noBackupFilesDir 并按 epoch 轮换 revoke（:79-236）。42617/42618 仅存于诊断描述符与 deprecated 测试客户端常量。
 
 `OpenCrayLocalRuntimeServer` 固定监听 `127.0.0.1:42617/42618`，解析请求时丢弃所有 header，也没有 capability token、调用方身份或重放保护。Android loopback 不是应用私有命名空间，同设备其他应用可直接访问这些端口。当前路由不仅可读取 chat、memory、settings 和 workspace 内容，还可删除文件、修改安全/模型设置、安装技能、提交 agent 任务以及 interrupt/retry。
 
@@ -170,21 +213,27 @@ stream/bridge identity 切换时客户端清了 runtime delta watermark 和 seen
 
 ### Critical Security：未认证配置接口直接返回全部 provider 明文密钥
 
+> **复核（2026-08-26）：仍存在** —— 输出脱敏完全未做：snapshot mapper 随拆分迁至 `OpenCrayLlmGatewaySupport.toGatewayMap()`（主 apiKey 与 option apiKey 均明文）、`OpenCrayNetworkSearchGatewaySupport.toGatewayMap()`、`OpenCrayMediaSpeechGatewaySupport.toGatewayMap()`（media/voice 明文 apiKey），经 `/v1/llm_config` 等 GET 路由原样输出（HostSettingsGatewayImpl.kt:81-130）；全仓无 hasCredential/掩码/handle 实现。目前仅靠上一条的 HMAC 认证挡住匿名读取，认证通过方仍可拿到可复用明文密钥。
+
 loopback 的配置读取路由会把内部 settings snapshot 原样序列化。`LlmConfigSnapshot.toMap()` 返回主 LLM `apiKey` 和每个 provider option 的 `apiKey`；network search、image、video、voice 与 external STT 的 snapshot mapper 也返回各自明文 `apiKey`。结合固定端口无认证问题，同设备任意应用只需访问配置 GET 路由，就能提取用户配置的全部上游凭据，而不必先获得文件系统权限。
 
-证据路径：`OpenCrayHostRuntime.kt` 的 `NetworkSearchSlotSnapshot.toMap()`、`MediaProviderSnapshot.toMap()`、`VoiceProviderSnapshot.toMap()`、`LlmConfigSnapshot.toMap()` 与 `LlmProviderOptionSnapshot.toMap()`；`OpenCrayLocalRuntimeServer.kt` 的 settings/config GET 路由。
+证据路径（2026-08-26 现行）：`OpenCrayLlmGatewaySupport.toGatewayMap()`、`OpenCrayNetworkSearchGatewaySupport.toGatewayMap()`、`OpenCrayMediaSpeechGatewaySupport.toGatewayMap()`（原 OpenCrayHostRuntime 内各 snapshot toMap 已随拆分外迁至 *GatewaySupport）；`OpenCrayLocalRuntimeServer.kt` 的 llm/network_search/media_speech config GET 路由。
 
 修复原则：读模型必须与写模型分离；所有返回 UI/bridge 的 snapshot 只暴露 `hasCredential`、掩码尾部或 credential handle，绝不回传 secret。保存接口以“缺省表示保留、显式 clear 表示删除”的 patch 语义更新安全存储。loopback capability 是必要的纵深防御，但不能替代输出脱敏；即使认证通过，也不应把可复用密钥发回 transport。
 
 ### Critical Security：媒体任务轮询/取消绕过 policy，且可伪造 jobId 注入请求 URL
 
+> **复核（2026-08-26）：仍存在** —— 三处子问题均未动：(a) dispatch 仍不传 AgentTask，`MediaTooling.pollMediaJob()/cancelMediaJob()` 只补 resultMetadata 从不 plan/gate（runtime/AgentTooling.kt:319、runtime/media/MediaTooling.kt:307/:376）；(b) jobId 仍是无签名 URL-safe Base64 JSON（MediaTooling.kt:1245-1310）；(c) poll/cancel endpoint 优先采信 payload 注入 URL（OpenCrayConfigurableMediaProviderClient.kt:1104-1124），既有缓解仅为凭据同源匹配（:1215-1230）——向任意 origin 的 SSRF 与审批边界绕过仍成立。工作区未提交的 ToolPolicyEvaluator 改动是 USER_APPROVED_RETRY 指纹绑定，与本问题无关。
+
 `AgentToolDispatcher.dispatch()` 对 `PollMediaJob` 和 `CancelMediaJob` 调用不传 `AgentTask`，两个 handler 也没有构造 `ToolPolicyPlan` 或调用 shared pipeline gate；它们只在结果阶段补 common/result metadata。provider job id 则是无签名的 URL-safe Base64 JSON，解码后信任其中的 `toolName`、`providerJobId`、`providerPollUrl` 和 `providerCancelUrl`。攻击者或受提示注入影响的模型可以自行构造 job id，令 media provider client 携带已配置 provider 凭据向注入的 poll/cancel URL 发起 GET/POST；这同时绕过工具审批边界，并形成 SSRF 与 credential forwarding 风险。
 
-证据路径：`AgentTooling.kt` 的 dispatch 分支、`pollMediaJob()`、`cancelMediaJob()`、`encodeProviderMediaJobId()` 与 `decodeProviderMediaJobId()`；`OpenCrayConfigurableMediaProviderClient.kt` 的 `poll()`、`cancel()`、poll/cancel endpoint 解析及 `executeRequest()`。
+证据路径（2026-08-26 现行）：`runtime/AgentTooling.kt` 的 dispatch 分支；`runtime/media/MediaTooling.kt` 的 `pollMediaJob()`、`cancelMediaJob()`、`encodeProviderMediaJobId()` 与 `decodeProviderMediaJobId()`（已随拆分迁入 media 子包）；`OpenCrayConfigurableMediaProviderClient.kt` 的 `poll()`、`cancel()`、poll/cancel endpoint 解析及 `executeRequest()`。
 
 修复原则：provider job 状态必须由 runtime 持久化并只向模型暴露不可伪造的随机 opaque handle；poll/cancel 先按 task/session/execution 解析 handle，再通过 `ToolPolicyPipeline` 使用明确的 network/process-lifecycle intent 做 gate。所有 provider 返回或恢复的 URL 均要解析、规范化，并约束到初始获批 provider origin（或显式 allowlist），重定向后再次校验 origin，认证 header 只允许发送给原获批 origin。若必须支持跨域 job URL，需单独审批且不得自动转发原 provider credential。
 
 ### High：owner 心跳在主线程同步做磁盘与工作汇总
+
+> **复核（2026-08-26）：已修复** —— 默认心跳 scheduler 改为专属单守护线程 `OwnerLeaseHeartbeatDelayScheduler`（RuntimeServiceProjectionCoordinator.kt:430-441），文件锁/续租/投影写入/activeWorkSummary 全部离开主 Looper。（相邻缺口：visibility 心跳仍走主 Looper Handler 且 publish 内做磁盘写，见下文 visibility 条。）
 
 主 Looper 同步执行文件锁、投影写入和 `activeWorkSummary()`，平台线程卡顿即可令租约误过期，并阻塞 Binder/notification 生命周期。
 
@@ -192,11 +241,15 @@ loopback 的配置读取路由会把内部 settings snapshot 原样序列化。`
 
 ### High：loopback 读与 bridge 请求可能阻塞界面或回调旧 engine
 
+> **复核（2026-08-26）：部分修复** —— Kotlin 读 fallback bundle 在 main 源码已无调用点（UI 读走 Dart bridge，800ms/17s 超时）；「旧结果回写新界面」已被 bridgeEpoch/bridgeInstanceId 打标过滤缓解（payload 注入 epoch，Dart 侧丢弃旧代事件）。残留：loopback client 默认 readTimeout 60s 仍在（RuntimeServiceCommandFallbackTransport.kt:157-160），host bridge 每调用裸建线程（OpenCrayFlutterHostBridge.kt:48-50），detach 只清 handler 不取消在途请求，request generation 机制不存在。
+
 fallback HTTP 读的超时可达 60 秒，host bridge 又为每次调用裸建线程；detach 只清订阅，不取消在途请求。服务断链、engine 重建或快速切换期间，旧结果可能回写新界面，interrupt/restart 也会被表象上的阻塞掩盖。
 
 修复原则：读写请求使用有界 executor 和 request generation；detach/dispose 取消在途工作并丢弃旧 generation 的回调。
 
 ### High：loopback HTTP 解析和并发完全无界
+
+> **复核（2026-08-26）：大部分已修复** —— cachedThreadPool 已换固定 13 线程 + 有界队列(32)，过载直接断连（OpenCrayLocalRuntimeServer.kt:33-44、:190-195）；request line/header 行 ≤8KB、header 总量 32KB/64 条、body ≤4MB→413、拒绝 Transfer-Encoding（:799-887）；认证前 2s 绝对 deadline 防慢滴（:199-207）。缺：明确 429 状态码（过载为静默断连）与 SSE 专项限额背压（当前亦无 SSE）。
 
 服务端使用 `Executors.newCachedThreadPool()` 为每个连接分配工作，`Content-Length` 可直接控制 `ByteArray(length)`，请求行和 header 行也没有长度上限。恶意或异常客户端可通过并发慢连接、超大长度或无限长 header 造成线程、堆内存和文件描述符耗尽；这会表现为 UI 卡住、interrupt 超时和 runtime service 被系统杀死。
 
@@ -204,11 +257,15 @@ fallback HTTP 读的超时可达 60 秒，host bridge 又为每次调用裸建�
 
 ### High：transport 的 start/dispose 竞态可在销毁后复活 server
 
+> **复核（2026-08-26）：已修复** —— 外层 disposed 检查 + startCompletion latch，内层把 disposed 复查/server 创建/descriptor publish 收进同一 serverLock 临界区，dispose 同锁取出并 close/revoke（runtime-service transport bootstrap 工厂 :68-138、RuntimeServiceLoopbackBootstrapFactory.kt:54-121）；start/dispose 交错有回归测试覆盖。
+
 `DefaultOpenCrayRuntimeServiceTransportBootstrapFactory.ensureStarted()` 在外层标记 `starting` 后才进入 loopback 创建；若 dispose 在创建前完成，它会关闭“当前为空”的 server，但在途 ensure 随后仍可创建并监听端口。外层检测到 disposed 后只返回 false，没有关闭刚创建的 server，留下引用不可达但仍运行的控制面和 executor。
 
 修复原则：server 创建与 disposed generation 必须在同一生命周期状态机内提交；创建完成发现 generation 失效时立即 close，且测试 start/dispose 交错时端口不再监听。
 
 ### High：ProjectionCoordinator 的 replace/dispose 不是异常安全的
+
+> **复核（2026-08-26）：仍存在** —— `replaceRuntimeOwner()` 仍先装新 observer 后在锁外依次 release→replaceHostAccess→旧 disposer，任一抛错即跳过后续清理造成双 observer；`dispose()` 中 lease release 与 released projection 写入同样不在 finally 内，抛错跳过通知/observer 清理（RuntimeServiceProjectionCoordinator.kt:153-237）。仅有小幅改善：disposer 在锁内提前摘除引用。无异常注入测试。
 
 `replaceRuntimeOwner()` 先安装新 observer，再同步 release 旧 lease；release 抛错会跳过旧 observer disposer、notification host 替换和新投影持久化，造成双 observer。`dispose()` 中 lease release 或 released projection 写入抛错会跳过 notification/observer 清理，销毁后的回调仍可能继续触发。
 
@@ -216,11 +273,15 @@ fallback HTTP 读的超时可达 60 秒，host bridge 又为每次调用裸建�
 
 ### High Privacy：生产日志无条件记录模型输出片段
 
+> **复核（2026-08-26）：部分修复** —— 内容泄露已实际消除：draft/provider 日志只记长度与截断标识（AgentSessionRuntimeManager.kt:416-435 记 len=、ServiceOwnedChatRuntimeGateway payload 摘要只输出计数与 takeLast(12) ID、OpenAiCompatibleLiteLlmProviderClient debugSummary/debugOutcome 记 outputChars= 长度）。但全部调试日志点仍是无条件 `Log.d`，`BuildConfig.DEBUG` 全仓 Kotlin 零命中，「生产默认关闭内容日志」的门禁边界未建立。
+
 Kotlin 的 `runtimeFlowDebug`、`serviceChatDebug` 和 provider stream debug 未受 `BuildConfig.DEBUG` 或用户诊断开关保护，会把 assistant draft 前 80 个字符以及 session/task 标识写入 logcat。Flutter 侧已有 `kDebugMode` 保护，但 Kotlin 侧没有同等边界。
 
 修复原则：生产默认关闭内容日志；诊断仅记录长度、eventId、sequence 和脱敏错误码。临时内容采样必须由显式用户授权、限时开启并在导出前再次脱敏。
 
 ### High：默认心跳 scheduler 初始化失败会静默永久禁用
+
+> **复核（2026-08-26）：已修复** —— 默认 scheduler 改直接构造专属实现，executor 创建失败经装配链 fail-fast（RuntimeServiceProjectionCoordinator.kt:430），运行期排程异常除已停止态外一律 rethrow（:335-347）；no-op 兜底已不存在于心跳路径。
 
 默认 scheduler 构造失败时返回一个永不执行 action 的 no-op task。协调器仍认为 heartbeat 已排程，系统不会重试，也没有 diagnostics；owner 会在 30 秒后过期。
 
@@ -228,19 +289,25 @@ Kotlin 的 `runtimeFlowDebug`、`serviceChatDebug` 和 provider stream debug 未
 
 ### High：删除/撤回只 request cancel，旧执行可在删除后继续回写
 
-`ChatSessionMutationCoordinator.discardSession()` 对非终态 run 只调用 `requestCancel()`，随后立即终止已登记进程、清 journal/checkpoint/supplement、释放 runtime session 并删除 transcript。`deleteChatMessage()` 和 `recallChatMessage()` 同样只按 pendingMessageId 发取消请求便马上修改消息。执行线程可能尚未 settled，`AppAgentSessionTaskRuntimeFactory.releaseSession()` 也只是移除缓存，并不 join 或停止正在运行的 task。晚到的 event、draft clear、tool result 或 final assistant message 因而可以在删除之后重新创建数据或污染新状态。
+> **复核（2026-08-26）：仍存在（仅 UI 层缓解）** —— `discardSession()` 仍只 requestCancel 即终止进程、清 approval/journal/checkpoint、releaseSession，全程无 settle 等待与 tombstone/generation 封锁（app/ServiceOwnedChatSessionMutationAccess.kt:166-181）；消息级 delete/recall 同样只取消请求便立即改消息（:88-115）；releaseSession/release 只清内存缓存不 join（AgentSessionRuntimeManager.kt:272、AppAgentSessionTaskRuntimeFactory.kt:354）。缓解仅限 UI transcript：OpenCrayHostRuntime.kt:445-484 有 hasSessionLocked 守卫，但 journal/run record/queue snapshot 的晚到写入不经守卫。
 
-证据路径：`ServiceOwnedChatSessionMutationAccess.kt`、`AgentSessionRuntimeManager.kt`、`AppAgentSessionTaskRuntimeFactory.kt`。
+`ServiceOwnedChatSessionMutationAccess.discardSession()` 对非终态 run 只调用 `requestCancel()`，随后立即终止已登记进程、清 journal/checkpoint/supplement、释放 runtime session 并删除 transcript。`deleteChatMessage()` 和 `recallChatMessage()` 同样只按 pendingMessageId 发取消请求便马上修改消息。执行线程可能尚未 settled，`AppAgentSessionTaskRuntimeFactory.releaseSession()` 也只是移除缓存，并不 join 或停止正在运行的 task。晚到的 event、draft clear、tool result 或 final assistant message 因而可以在删除之后重新创建数据或污染新状态。
+
+证据路径（2026-08-26 现行）：`ServiceOwnedChatSessionMutationAccess.kt`（discard/delete/recall/cancelPendingMessageIds）、`AgentSessionRuntimeManager.release()` 与 runtimeEventSink、`AppAgentSessionTaskRuntimeFactory.releaseSession()`；晚到回写通道见 `AgentSessionRuntimeManager.runtimeEventSink` 的 journal append 与 `SessionQueue.persistSnapshotLocked`。
 
 修复原则：删除/撤回采用 tombstone + execution generation：先阻止该 generation 的任何新写入，再请求取消并等待 settled，最后清理 transcript/journal/checkpoint/media；UI 可以立即隐藏，但 durable 删除完成前必须保留可恢复清理记录。
 
 ### High：visibility heartbeat 与多处 listener 仍有同类“异常即永久停止”模式
+
+> **复核（2026-08-26）：部分修复** —— `AppVisibilityMonitor` 已加安全化发布 + finally 无条件重排 + 逐 listener try/catch 隔离（AppVisibilityMonitor.kt:105-159）。仍存在：visibility 心跳本身走主 Looper Handler 且 publish 内做磁盘写（AppVisibilityBridge.kt:161-170）；`RuntimeServiceWorkStateTracker.notifyListeners`、`RuntimeServiceKeepAliveController.notifyListeners` 及 host/service 各 gateway 广播仍裸 forEach（RuntimeServiceState.kt:208、RuntimeServiceKeepAliveController.kt:325、OpenCrayHostRuntime.kt:3455 一带、各 ServiceOwned* gateway、OpenCrayRuntimeServiceBridge.kt:889）。
 
 `AppVisibilityMonitor` 在 `publisher.publish(true)` 后才安排下一次 heartbeat，发布异常会永久停止。`RuntimeServiceWorkStateTracker`、`RuntimeServiceKeepAliveController`、host/service gateway 的 listener 广播也普遍直接 `forEach`，单个 listener 可阻断后续 listener。说明该问题不是 owner heartbeat 单点缺陷，而是事件分发基础设施缺少统一故障隔离。
 
 修复原则：定时任务统一在 finally 重排；广播统一使用逐 listener 隔离、结构化错误汇总和限流 diagnostics，禁止在持锁区调用外部 listener。
 
 ### High：polling 失败被永久吞掉，界面无限保留陈旧成功态
+
+> **复核（2026-08-26）：仍存在** —— Kotlin `runCatching(...).getOrNull() ?: return` 原样（ProjectionOnlyOpenCrayGateways.kt:476/:491/:537、ProjectionOnlyOpenCrayChatRuntimeGateway.kt:1108；ServiceOwnedChatRuntimeGateway 在 delegate 缺失时复用同一轮询且永不报错）；Dart `_watchMap` 的 while(true) 循环无 try/catch，一次 loader 异常终结流（opencray_local_runtime_bridge.dart:228-242）。间接缓解：屏幕层 onError 触发 250ms 整桥重绑重订。connected/degraded/stale 信号机制仍不存在。
 
 Kotlin projection polling 使用 `runCatching(...).getOrNull() ?: return`，Dart local bridge 的 async generator 则在一次 loader 异常后直接终止 stream。前者永不告诉 UI 数据已经失联，后者没有重连；两者都无法区分“没有变化”和“读取失败”。
 
@@ -250,17 +317,23 @@ Kotlin projection polling 使用 `runCatching(...).getOrNull() ?: return`，Dart
 
 ### High：draft 与 runtime delta 双消费者竞争同一 long-poll 游标
 
+> **复核（2026-08-26）：已修复** —— bridge 改单 cursor 单 feed：唯一 broadcast 控制器 + 唯一底层轮询订阅，`watchLiveAssistantDraftEvents`/`watchRuntimeEventDeltas` 只是 kind 过滤（opencray_local_runtime_bridge.dart:72-109、:111-197，原 `_watchRuntimeRealtimePayloads()` 已不存在）；回归测试断言共享 cursor 下两类事件均可达且每游标只请求一次（test/opencray_local_runtime_bridge_test.dart:2003）。8aaf0aa 在服务端补齐了 draft 事件被 delta 通道吞掉的半边。残留：`ServiceOwnedChatRuntimeGateway.onTaskFinished`（:233-243）仍是旧单通道结构。
+
 local bridge 曾为 `watchLiveAssistantDraftEvents()` 和 `watchRuntimeEventDeltas()` 分别启动 `_watchRuntimeRealtimePayloads()`。两条 watcher 消费同一个 `/v1/chat_runtime_events` 序列，却各自维护 `afterSequence`；任一 watcher 收到另一 kind 后先推进水位再过滤，另一 watcher 稍晚请求时便无法补回该事件。结果取决于请求交错：可能只流 draft、只更新 Inspector，或两边随机缺包。
 
 修复原则：一个 bridge instance 只能有一个底层 realtime cursor；统一 feed 完整接收并按 sequence 校验，再在进程内 broadcast/fan-out 给 draft、runtime delta 和后续消费者。消费者过滤不得推进独立 transport 水位，订阅增减也不得重置共享 cursor。
 
 ### High：local bridge 会话切换沿用旧会话高水位
 
+> **复核（2026-08-26）：已修复** —— 长轮询循环内响应 sessionId 变化即归零 cursor、streamInstance 变化同样归零，随后以新会话 snapshot 的 lastSequence 重建水位（opencray_local_runtime_bridge.dart:146-161），正是审计修复原则的完整实现；回归测试恰好覆盖 A@8→B@2→B delta@3 场景（test/opencray_local_runtime_bridge_test.dart:2024）。UI 侧另有按 sessionId 分区水位与 identity 重置兜底。
+
 事件序号按 `sessionId` 分区，但 local bridge 的 long-poll cursor 曾只在 `streamInstanceId` 变化时归零。会话 A 已消费到 8 后切到同一 runtime 中只到 2 的会话 B，bridge 仍请求 `afterSequence=8`；B 的序号在达到 9 前全部被服务端过滤，表现为切会话后流式和 Inspector 永久停更。
 
 修复原则：收到不同 `sessionId` 的 full/heartbeat 响应时，先清除该 transport cursor，再以新会话 snapshot 的 `lastSequence` 建立水位；session、stream instance、bridge epoch 三者任一变化都必须触发对应分区的 reducer 重置。已加入会话 A@8 → B@2 → B delta@3 的回归测试。
 
 ### High Security：审批通知没有绑定 execution，旧操作可作用于新重试
+
+> **复核（2026-08-26）：仍存在** —— 四个缺陷点逐一复核均原样：requestCode 仍为 `action:sessionId:taskId` 的 30000 桶稳定哈希、不含 runId/executionId（RuntimeNotificationCoordinator.kt:1042、:1155），配合 FLAG_UPDATE_CURRENT（OpenCrayRuntimeServiceAccess.kt:213）；dispatcher 忽略 sessionId 只交 `runId ?: taskId` 全局查找（RuntimeServiceWakeCommandDispatcherFactory.kt:112-124）；approve/reject 返回 void、dispatcher 无条件视为成功（RuntimeServiceApprovalDecisionAccess.kt:34-44）。
 
 审批 PendingIntent 携带 sessionId、taskId、runId，但 requestCode 只使用 `action + sessionId + taskId` 的 30,000 桶稳定哈希，未包含 runId/executionId。通知 dispatcher 随后忽略 sessionId，只把 `runId ?: taskId` 交给全局审批查找。retry 复用 run/task 标识时，旧通知点击可能批准或拒绝新的 execution；哈希碰撞配合 `FLAG_UPDATE_CURRENT` 还可能覆盖另一 PendingIntent 的 extras。审批不存在时 `approve/reject` 返回 Unit，dispatcher 仍无条件视为成功。
 
@@ -270,11 +343,15 @@ local bridge 曾为 `watchLiveAssistantDraftEvents()` 和 `watchRuntimeEventDelt
 
 ### High：损坏持久化被当成空文件覆盖
 
+> **复核（2026-08-26）：部分修复** —— 4f7cc4e 在通用 `updateRecord` 扩展点实现「解码失败且原文非空 → 先备份 `.corrupt-*` 再决定是否重建，备份失败则抑制写入」（persistence/.../JsonFileStores.kt:219-244），覆盖约 23 个经 updateRecord 的 store（settings/run record/chat workspace/memory/scheduled spec 等）；`readRecord` 解析失败自 c87bcd3 起抛异常不再当空。缺口：lease（updateText 直写）仍静默重置、journal 单条 decodeJournalEntry 失败静默跳过不备份（RunEventJournalStoreFactory.kt:401）、约 15 个 updateText 直写 store（projection store、agent config/registry、MCP registry 等）损坏仍从默认值重建。另 DirectoryDurableTextStorage 工作区未提交改动为 writeText 增加 FileChannel.force(true) fsync 加固。
+
 通用 JSON store 吞掉解析/迁移异常，下一次 update 可能从空记录重建并覆盖原工作区、session 或 memory。该行为会破坏恢复链，不能作为正常降级。
 
 修复原则：坏文件隔离并保留原件/备份，读取失败进入显式错误状态；只有用户确认或迁移工具才能重建。
 
 ### Critical Release Security：调试版 Python AAR 污染 release 最终清单
+
+> **复核（2026-08-26）：部分修复（处置属实，供应链剩余工作未动）** —— 主清单 override 属实（AndroidManifest.xml:19 debuggable=false + :27 tools:replace、:108 Python service exported=false）；`verifyReleaseManifestSecurity` 门禁真实存在并挂接 assemble/bundleRelease（app/build.gradle.kts:205-260 与 flutter_app/android/app/build.gradle.kts:121-176）。剩余供应链原样：tools/android_python_runtime_p4a/dist 仍只有唯一 `*-debug.aar` 且解包实测内部 debuggable=true/exported=true；两端依赖仍以 fileTree("*.aar") 通配引入该 AAR 作为 release 输入；生成脚本 build-p4a-service-library.sh 无任何 manifest 修补。
 
 release 合并产物曾包含 `android:debuggable="true"`，来源不是 app build type，而是 `opencray-python-runtime-debug-0.1.0.aar`。同一个 AAR 还注入了无 permission 的 `org.opencray.app.ServiceOpencraypython exported=true`；该 service 接收 Python runtime 启动参数，在 OpenCray UID 下执行，因此外部显式启动不是普通组件暴露，而是进程执行边界暴露。
 
@@ -284,6 +361,8 @@ release 合并产物曾包含 `android:debuggable="true"`，来源不是 app bui
 
 ### Critical Privacy：明文凭据和运行数据默认进入 Auto Backup
 
+> **复核（2026-08-26）：部分修复（处置属实，vault 迁移基本未做）** —— allowBackup=false + fullBackupContent/dataExtractionRules 双段全量排除属实并被 release 门禁强制（AndroidManifest.xml:17-21、res/xml/opencray_backup_rules.xml、opencray_data_extraction_rules.xml）。剩余：Keystore vault 目前仅 SandboxSettingsRepository（E2B token）一处接入（SandboxSettingsRepository.kt:62-67）；LLM/WebSearch/MediaSpeech/per-agent 配置仍明文写 filesDir JSON（LlmSettingsStore.kt:1111 一带等），legacy SharedPreferences 未原子清理，「无法解密的 credential ref」重新录入状态也未实现。
+
 LLM、Web Search、Media/Speech、per-agent LLM 与 E2B token 分散明文写入 `filesDir`；chat、workspace、queue、journal、checkpoint、lease 和 scheduled specs 也位于默认备份域。原清单只有 `allowBackup=true`，没有 Android 12 前后的排除规则。恢复到新设备后不仅会泄露凭据，`OpenCrayApplication` 的 APP_START repair 还可能重新排程旧自动化。已有 Keystore vault 的密文同样不能备份，因为 Android Keystore key 不迁移，恢复后会形成“引用存在但永远解不开”的悬空配置。
 
 证据路径：`LlmSettingsStore.kt`、`WebSearchSettingsStore.kt`、`MediaSpeechSettingsStore.kt`、`AgentConfigStore.kt`、`SandboxSettingsStore.kt`、`AndroidKeystoreSharedPreferencesSecretVault.kt`、`OpenCrayApplication.kt`。
@@ -291,6 +370,8 @@ LLM、Web Search、Media/Speech、per-agent LLM 与 E2B token 分散明文写入
 本轮处置：`allowBackup=false`，并同时配置 `fullBackupContent` 与 `dataExtractionRules`，对 cloud backup 和 device transfer 的全部私有域做显式排除；release merged-manifest 门禁强制保留这些属性。后续仍需把全部 provider key 迁入 Keystore vault，以原子迁移清理 legacy SharedPreferences，并在检测到无法解密的 credential ref 时呈现明确的重新录入状态。
 
 ### High：scheduled automation 缺少原子 claim 和 durable outbox
+
+> **复核（2026-08-26）：仍存在** —— 双路并发触发无 per-run 锁（Alarm 与 WorkManager 派生同一 scheduleRunId 但 dispatch 无互斥）；「读 run」(ScheduledTaskRuntime.kt:260-273) 与写 TRIGGERED(:397-407) 非 CAS，TRIGGERED 记录再次进入仍完整重提(:261)；task/run id 含随机 UUID（:412、:571），崩溃重放必产生新 task；run record store 锁为实例级 synchronized 且 create() 新建实例跨进程无保护（ScheduledTaskStore.kt:572）。CAS claim/outbox/确定性派生均未实施，无相关修复提交。
 
 同一 schedule run 可被 Alarm 与 WorkManager 双路并发触发。当前“读取 run”与写入 `TRIGGERED` 不是 CAS，且已是 `TRIGGERED` 的记录仍允许继续，两个 worker 都可能调用 `session.submitTask()`。即使没有并发，`TRIGGERED` 落盘后会先随机生成 task/run 并提交，最后才写 `ACCEPTED`；提交后、确认前崩溃，repair 会再次提交同一外部副作用。
 
@@ -300,13 +381,17 @@ LLM、Web Search、Media/Speech、per-agent LLM 与 E2B token 分散明文写入
 
 ### High Data Integrity：删除会话后旧写入可污染当前会话并被恢复复活
 
+> **复核（2026-08-26）：仍存在** —— `workspaceAndSessionForAppend()` 目标缺失仍回退 active session（app/ChatWorkspaceRecordSupport.kt:60-79），晚到 submit/审批 TOOL 消息可把已删 A 的内容追加进当前 B（调用点 ChatSessionLocalStore.kt:688/:1261，含 ChatApprovalDecisionCoordinator 晚到审批回写）；discard 不清理 queue snapshot/run record/process registry 目录；bootstrap `recoveryCandidateSessionIds()` 无条件合并六类 store 的 knownSessionIds()，已删会话目录残留即可经 resume 复活（RuntimeServiceBootstrapAssembly.kt:759-777）；scheduled specs 不级联删除。审计后无修复提交。
+
 目标 session 不存在时，`workspaceAndSessionForAppend()` 会回退到 active session。删除 A 与迟到 submit/final 回写竞态时，A 的消息可能直接写入当前 B，而不只是“重新创建 A”。同时 `deleteChatSession()` 没有统一清除 queue、run、process、checkpoint 等持久目录；恢复候选又无条件合并这些目录，因此已删除会话可在重启后复活。关联 scheduled specs 也未级联处理，会继续唤醒并制造 `FAILED_MISSING_SESSION`。
 
-证据路径：`ChatSessionLocalStore.kt`、`ChatSessionMutationCoordinator.kt`、`AgentSessionRuntimeManager.kt`、各 runtime store factory 的 `knownSessionIds()`。
+证据路径（2026-08-26 现行）：`ChatWorkspaceRecordSupport.kt`（active session 回退）、`ChatSessionLocalStore.kt`（appendSubmittedTurn/appendMessage）、`ServiceOwnedChatSessionMutationAccess.discardSession()`、`RuntimeServiceBootstrapAssembly.kt`（恢复候选合并）、各 runtime store factory 的 `knownSessionIds()`。
 
 修复原则：显式 session 写入在目标缺失时 fail closed，禁止回退 active session；删除使用持久 tombstone 与 generation，先封锁该 generation 的新写入，再等待执行 settled，最后用统一 teardown 清理所有 store 与关联 schedule。恢复只接受 chat 仍存在且 generation 匹配的候选。
 
 ### High Security：workspace 符号链接可借分享/打开流程导出 app 私有文件
+
+> **复核（2026-08-26）：仍存在** —— 全仓无 toRealPath/isSymbolicLink/NOFOLLOW 使用；opener/sharer 仍词法 normalize+startsWith 且 Files.copy/inputStream 跟随符号链接（AppAgentWorkspaceOpener.kt:108-156、AppAgentWorkspaceSharer.kt:170-235）；FileProvider paths 仍覆盖整个 cache root（res/xml/opencray_file_provider_paths.xml:3-5）。无相关修复提交。
 
 workspace opener/sharer 只做词法 `startsWith` 检查，随后 `Files.copy` 或 `inputStream` 默认跟随符号链接。workspace 内若存在指向 `agent-runtime/llm-settings.json` 等私有文件的链接，打开或分享会把目标复制到 cache，再由 FileProvider 向外部应用授予读取 URI。FileProvider 本身虽为 non-exported，但当前 paths 又覆盖整个 cache root，放大了 staging 失误的影响。
 
@@ -316,17 +401,23 @@ workspace opener/sharer 只做词法 `startsWith` 检查，随后 `Files.copy` �
 
 ### High Reliability：实际 Flutter APK 曾缺少 loopback cleartext 例外
 
+> **复核（2026-08-26）：处置确认有效** —— `opencray_network_security_config.xml` 已在 main 资源：base cleartext=false，domain 仅 127.0.0.1/localhost（includeSubdomains=false）；main 与 debug 清单一致引用。
+
 交付脚本通过 `flutter build apk` 构建，Flutter Android app 只把 root `app/src/main` 接入 source set，没有接入 `app/src/debug`。因此 root debug 清单中的 network security config 并未进入实际 Flutter APK；targetSdk 33 默认拒绝 `http://127.0.0.1`，Binder 一旦降级，snapshot、long-poll、interrupt/retry fallback 都会停止。这是“有时完全不流式”和 Inspector 停更的独立交付层原因。
 
 本轮处置：loopback-only network security policy 已移入 main 资源，基础 cleartext 仍为 false，只允许 `127.0.0.1` 与 `localhost`；它必须与本轮 epoch/HMAC/nonce/响应验签协议一起上线，不能恢复成无认证固定端口。
 
 ### High Release Security：release 默认使用 debug signing key
 
+> **复核（2026-08-26）：仍存在** —— flutter_app/android/app/build.gradle.kts:79-83 release build type 仍显式 `signingConfig = signingConfigs.getByName("debug")`；build-apk.ps1 默认 Variant=release。无 signer 校验门禁，与审计时完全一致。
+
 `flutter_app/android/app/build.gradle.kts` 的 release build type 显式引用 debug signing config，而 `build-apk.ps1` 默认构建 release。产物名称看似 release，实际身份仍是公开调试密钥，无法建立可信升级链，也可能被其他持有同一 debug key 的 APK 替换。
 
 修复原则：正式 release signing 从 CI/本机受保护配置注入，缺失时 fail closed；开发安装使用明确的 debug variant。交付门禁对最终 APK 运行 signer 校验并拒绝 Android debug certificate，不能只检查 Gradle DSL。
 
 ### High Reliability：通知 ID 的小哈希桶会覆盖无关运行
+
+> **复核（2026-08-26）：仍存在** —— 四类通知 ID 仍是固定基址+哈希取模小桶：approval 52_100+hash%5000（RuntimeNotificationCoordinator.kt:1176）、terminal 52_300/52_700+%4000（:1226）、schedule 53_100+%4000（:1193）、service recovered 53_800+%1000（:1157）；notify/cancel 全部纯 ID 形式无 tag（各调用点 :275-588、ID cancel :1173-1209）。未迁移到 stableTag 方案。
 
 approval、terminal、schedule 和 service recovery 通知分别被压进 1,000 到 5,000 个 ID 桶。两个活动任务碰撞时，后一次 `notify(id, ...)` 会覆盖前一条，任一任务终结后的 `cancel(id)` 又会删除仍有效的另一条。这与 PendingIntent 的 execution 绑定缺陷独立存在。
 
@@ -336,32 +427,34 @@ approval、terminal、schedule 和 service recovery 通知分别被压进 1,000 
 
 ### Medium Hardening：repair receiver 和内部 Activity 的导出面过宽
 
+> **复核（2026-08-26）：部分修复** —— `ScheduledTaskRepairReceiver` 已改 non-exported 并纳入 release 门禁强制（AndroidManifest.xml:122-130、app/build.gradle.kts 门禁检查项）。仍存在：五个无 intent-filter 的 legacy wrapper Activity（AppShell/SkillsManagement/MainInteraction/WorkspaceSettings/SafetyAndLimits）仍 exported="true"（:34-63）；主 launcher `OpenCrayFlutterActivity` 仍信任外部 extras（AppShellActivity.kt:19-43 读 EXTRA_START_TAB 等、OpenCrayFlutterActivity.kt:203/:256 读通知 extras），launcher trampoline 迁移未实施。
+
 `ScheduledTaskRepairReceiver` 曾为 exported，但只接受 `BOOT_COMPLETED` 与 `MY_PACKAGE_REPLACED`，两者是系统 protected broadcast，因此不能把它表述为普通第三方应用可直接伪造的 Critical。将其改为 non-exported 仍是正确的最小权限硬化，且不影响系统广播。另有五个无 intent-filter 的 legacy wrapper Activity 为兼容性保持 exported；主 launcher 还会信任 route/session/task/run extras，需要单独迁移到丢弃外部 extras 的 launcher trampoline，内部 Flutter Activity 与 wrappers 再改为 non-exported。
 
 证据路径：`AndroidManifest.xml`、`ScheduledTaskWorkManager.kt`、`ShellWrapperRoutingTest.kt`、`OpenCrayFlutterActivity.kt`。
 
 ## 未由用户点名但已主动审查的领域
 
-| 领域 | 当前结论 | 状态 |
+| 领域 | 当前结论 | 状态（2026-08-26 复核） |
 | --- | --- | --- |
-| 跨进程 owner/session lease | 已确认 fail-open、心跳与墙钟风险 | 深入审查中 |
-| 持久化损坏与 crash durability | 已确认坏 JSON 覆盖、缺少明确 fsync | 深入审查中 |
-| loopback 安全边界 | 已确认无认证固定端口、端点劫持和无界资源 | 本轮按已批准方案 A 实施 epoch/HMAC 协议 |
-| credential 输出与存储边界 | 已确认多个配置读取模型返回明文 API key | Critical，待脱敏 DTO 与安全存储专项 |
-| media job / tool policy | 已确认无签名 jobId、policy bypass、SSRF 与凭据转发风险 | Critical，待 opaque handle 与 origin policy 专项 |
-| 资源与背压 | 已确认无界线程、请求体、header 和连接 | 已形成修复原则 |
-| observer 故障隔离 | 已确认投影异常可打断 runtime | 纳入本轮可靠性修复 |
-| transport 启停生命周期 | 已确认 dispose 后复活竞态 | 待失败测试 |
-| 诊断与隐私 | 已确认 release 日志包含 draft 内容 | 待收口 |
-| Android 发布与组件暴露 | 已修 release debuggable、Python service 与 repair receiver；wrapper/launcher 待迁移 | 持续门禁 |
-| executor/订阅回收 | 已确认部分旧 generation 和清理异常路径 | 深入审查中 |
-| 会话/消息删除一致性 | 已确认未 settled 即删除导致晚到回写 | 纳入后续修复 |
-| 审批/通知幂等与跨代隔离 | 已确认旧 PendingIntent 可命中新 execution | 安全敏感，待专项 |
-| tool policy/approval 边界 | 已发现 media poll/cancel 绕过；其余 handler 继续全量对照 | 专项进行中 |
-| Auto Backup / D2D restore | 已确认凭据、运行数据与旧 schedule 恢复风险 | 本轮已 fail-closed，vault 迁移待专项 |
-| scheduled exactly-once | 已确认并发双提交与 crash 重放窗口 | 待 durable outbox/CAS 专项 |
-| 文件打开与分享 | 已确认 symlink staging 可导出 app 私有文件 | High，待 real-path/TOCTOU 专项 |
-| release 签名 | 已确认实际 release 使用 debug certificate | High，待签名门禁 |
+| 跨进程 owner/session lease | 心跳 finally 重排/独立线程/fail-fast 已修，lease 存储构造已 fail-closed | 部分修复；投影库静默降级内存不可见、损坏租约当空仍未修 |
+| 持久化损坏与 crash durability | updateRecord 类 store 已先备份再重建（4f7cc4e）；DirectoryDurableTextStorage fsync 加固在工作区推进 | 部分修复；lease/journal 单条/约 15 个 updateText 直写 store 仍静默重建 |
+| loopback 安全边界 | ephemeral port + epoch/HMAC/nonce + 响应验签 + descriptor 轮换已上线并验证 | 已完成（方案 A 落地） |
+| credential 输出与存储边界 | 配置 GET 仍返回明文 apiKey，仅靠认证外围防护 | 仍存在，Critical 待脱敏 DTO 与安全存储专项 |
+| media job / tool policy | pipeline gate、签名 jobId、origin 约束三处均未动（仅剩凭据同源匹配旧缓解） | 仍存在，Critical 待 opaque handle 与 origin policy 专项 |
+| 资源与背压 | 有界池/各级长度上限/认证前绝对时限/413 已落地 | 大部分修复；缺明确 429 与 SSE 专项限额 |
+| observer 故障隔离 | 逐 listener 隔离已落地（AgentSessionRuntimeManager/AppVisibilityMonitor）并有测试 | 部分修复；各 gateway 广播裸 forEach、journal/transcript 同步写仍可反向传播 |
+| transport 启停生命周期 | disposed 状态机+latch+同锁提交，交错回归测试已有 | 已修复 |
+| 诊断与隐私 | 内容泄露已消除（日志只记长度与截断标识） | 部分修复；BuildConfig.DEBUG 生产门禁仍缺 |
+| Android 发布与组件暴露 | debuggable/Python service/repair receiver 已修并入 release 门禁 | 部分修复；5 个 wrapper Activity 仍 exported、launcher 外部 extras 未迁移 |
+| executor/订阅回收 | bridgeEpoch 打标过滤旧代回调已生效 | 部分缓解；裸建线程与在途请求取消仍缺 |
+| 会话/消息删除一致性 | 晚到回写、active-session 回退、恢复复活链路均在 | 仍存在（仅 UI transcript 有 hasSessionLocked 守卫缓解） |
+| 审批/通知幂等与跨代隔离 | requestCode 小模哈希、dispatcher 忽略 sessionId、Unit 返回均原样 | 仍存在，安全敏感待专项 |
+| tool policy/approval 边界 | 其余 handler 正常走 pipeline；media poll/cancel 两工具仍未接入 | 仍存在（收窄为 media 两工具专项） |
+| Auto Backup / D2D restore | allowBackup=false 与双段排除规则已验证并由门禁强制 | 部分修复；vault 仅 E2B 接入，LLM/WebSearch/Media/per-agent 仍明文 filesDir |
+| scheduled exactly-once | 无 CAS claim/outbox/确定性 ID 派生，TRIGGERED 记录可续跑 | 仍存在，待 durable outbox/CAS 专项 |
+| 文件打开与分享 | 无 real-path 校验，FileProvider paths 仍覆盖整个 cache root | 仍存在，High 待 real-path/TOCTOU 专项 |
+| release 签名 | release 仍显式引用 debug signingConfig，无 signer 门禁 | 仍存在，High 待签名门禁 |
 
 ## 统一协议方向
 
