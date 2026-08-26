@@ -9,6 +9,7 @@ import com.opencray.app.OnDeviceSttSettings
 import com.opencray.app.OpenCrayLocaleManager
 import com.opencray.app.ProviderAuthProtocols
 import com.opencray.app.VoiceProviderSettings
+import com.opencray.app.resolvePatchedCredential
 import org.opencray.app.R
 
 data class MediaProviderSnapshot(
@@ -58,7 +59,7 @@ data class SaveMediaProviderRequest(
   val endpoint: String,
   val model: String,
   val authProtocol: String = ProviderAuthProtocols.BEARER,
-  val apiKey: String = "",
+  val apiKey: String? = null,
 )
 
 data class SaveVoiceProviderRequest(
@@ -68,7 +69,7 @@ data class SaveVoiceProviderRequest(
   val model: String = VoiceProviderSettings.DEFAULT_MODEL,
   val voicePreset: String,
   val authProtocol: String = ProviderAuthProtocols.BEARER,
-  val apiKey: String = "",
+  val apiKey: String? = null,
 )
 
 data class SaveOnDeviceSttRequest(
@@ -103,6 +104,7 @@ internal class LocalMediaSpeechSettingsFacade private constructor(
   override fun load(): MediaSpeechConfigSnapshot = snapshotFor(store.load())
 
   override fun save(request: SaveMediaSpeechConfigRequest): MediaSpeechConfigSnapshot {
+    val persisted = store.load()
     store.save(
       MediaSpeechSettingsState(
         imageGeneration = MediaProviderSettings(
@@ -111,7 +113,10 @@ internal class LocalMediaSpeechSettingsFacade private constructor(
           endpoint = request.imageGeneration.endpoint,
           model = request.imageGeneration.model,
           authProtocol = request.imageGeneration.authProtocol,
-          apiKey = request.imageGeneration.apiKey,
+          apiKey = resolvePatchedCredential(
+            requestedApiKey = request.imageGeneration.apiKey,
+            persistedApiKey = persisted.imageGeneration.apiKey,
+          ),
         ),
         videoGeneration = MediaProviderSettings(
           provider = request.videoGeneration.provider,
@@ -119,7 +124,10 @@ internal class LocalMediaSpeechSettingsFacade private constructor(
           endpoint = request.videoGeneration.endpoint,
           model = request.videoGeneration.model,
           authProtocol = request.videoGeneration.authProtocol,
-          apiKey = request.videoGeneration.apiKey,
+          apiKey = resolvePatchedCredential(
+            requestedApiKey = request.videoGeneration.apiKey,
+            persistedApiKey = persisted.videoGeneration.apiKey,
+          ),
         ),
         voiceGeneration = VoiceProviderSettings(
           provider = request.voiceGeneration.provider,
@@ -128,7 +136,10 @@ internal class LocalMediaSpeechSettingsFacade private constructor(
           model = request.voiceGeneration.model,
           voicePreset = request.voiceGeneration.voicePreset,
           authProtocol = request.voiceGeneration.authProtocol,
-          apiKey = request.voiceGeneration.apiKey,
+          apiKey = resolvePatchedCredential(
+            requestedApiKey = request.voiceGeneration.apiKey,
+            persistedApiKey = persisted.voiceGeneration.apiKey,
+          ),
         ),
         sttRouteId = request.sttRouteId,
         externalStt = MediaProviderSettings(
@@ -137,7 +148,10 @@ internal class LocalMediaSpeechSettingsFacade private constructor(
           endpoint = request.externalStt.endpoint,
           model = request.externalStt.model,
           authProtocol = request.externalStt.authProtocol,
-          apiKey = request.externalStt.apiKey,
+          apiKey = resolvePatchedCredential(
+            requestedApiKey = request.externalStt.apiKey,
+            persistedApiKey = persisted.externalStt.apiKey,
+          ),
         ),
         onDeviceModel = OnDeviceSttSettings(
           modelPackage = request.onDeviceModel.modelPackage,

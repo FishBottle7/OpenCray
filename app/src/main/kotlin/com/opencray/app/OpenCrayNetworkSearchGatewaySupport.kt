@@ -21,7 +21,7 @@ internal fun List<Map<String, Any?>>.toSaveNetworkSearchConfigRequest(): SaveNet
         label = slot["label"]?.toString().orEmpty(),
         baseUrl = slot["baseUrl"]?.toString().orEmpty(),
         model = slot["model"]?.toString().orEmpty(),
-        apiKey = slot["apiKey"]?.toString().orEmpty(),
+        apiKey = slot["apiKey"]?.toString(),
         enabled = slot["enabled"] as? Boolean ?: true,
       )
     },
@@ -33,6 +33,8 @@ private fun NetworkSearchSlotSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "label" to label,
   "baseUrl" to baseUrl,
   "model" to model,
-  "apiKey" to apiKey,
+  "apiKey" to maskCredential(apiKey),
+  "hasCredential" to credentialHasValue(apiKey),
+  "credentialHint" to credentialHint(apiKey),
   "enabled" to enabled,
 )

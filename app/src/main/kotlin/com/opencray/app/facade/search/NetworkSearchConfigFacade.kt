@@ -6,6 +6,7 @@ import com.opencray.app.OpenCrayLocaleManager
 import com.opencray.app.WebSearchProviderId
 import com.opencray.app.WebSearchSettingsStore
 import com.opencray.app.WebSearchSlotConfig
+import com.opencray.app.resolvePatchedCredential
 import org.opencray.app.R
 
 data class NetworkSearchSlotSnapshot(
@@ -31,7 +32,7 @@ data class SaveNetworkSearchSlotRequest(
   val label: String,
   val baseUrl: String,
   val model: String,
-  val apiKey: String,
+  val apiKey: String?,
   val enabled: Boolean,
 )
 
@@ -52,6 +53,7 @@ internal class LocalNetworkSearchConfigFacade private constructor(
   override fun load(): NetworkSearchConfigSnapshot = snapshotFor(settingsStore.load())
 
   override fun save(request: SaveNetworkSearchConfigRequest): NetworkSearchConfigSnapshot {
+    val persistedById = settingsStore.load().associateBy { slot -> slot.id }
     settingsStore.save(
       request.slots.map { slot ->
         WebSearchSlotConfig.create(
@@ -60,7 +62,10 @@ internal class LocalNetworkSearchConfigFacade private constructor(
           label = slot.label,
           baseUrl = slot.baseUrl,
           model = slot.model,
-          apiKey = slot.apiKey,
+          apiKey = resolvePatchedCredential(
+            requestedApiKey = slot.apiKey,
+            persistedApiKey = persistedById[slot.id]?.apiKey.orEmpty(),
+          ),
           enabled = slot.enabled,
         )
       },

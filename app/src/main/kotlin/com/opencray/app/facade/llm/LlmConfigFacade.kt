@@ -23,6 +23,7 @@ import com.opencray.app.effectiveLlmRouteMetadata
 import com.opencray.app.isOperationallyConfigured
 import com.opencray.app.llmEndpointAllowsBlankApiKey
 import com.opencray.app.recommendedValidationProviderRouteTimeoutMs
+import com.opencray.app.resolvePatchedCredential
 import com.opencray.llm.DefaultLiteLlmGateway
 import com.opencray.llm.InMemoryLiteLlmRoutingSettingsStore
 import com.opencray.llm.LiteLlmGatewayMessage
@@ -258,7 +259,10 @@ internal class LocalLlmConfigFacade private constructor(
       ),
       providerNotes = request.providerNotes.trim(),
       baseUrl = request.baseUrl.trim(),
-      apiKey = request.apiKey.trim(),
+      apiKey = resolvePatchedCredential(
+        requestedApiKey = request.apiKey,
+        persistedApiKey = existingProvider?.apiKey.orEmpty(),
+      ),
       model = request.model.trim(),
     )
     llmSettingsStore.saveSavedCustomProviders(
@@ -306,6 +310,12 @@ internal class LocalLlmConfigFacade private constructor(
   }
 
   override fun validate(request: ValidateLlmConfigRequest): LlmValidationResult {
+    val request = request.copy(
+      apiKey = resolvePatchedCredential(
+        requestedApiKey = request.apiKey,
+        persistedApiKey = llmSettingsStore.load().apiKey,
+      ),
+    )
     val providerPreset = LlmProviderCatalog.presetById(request.providerId)
       ?: throw IllegalArgumentException("Unsupported provider '${request.providerId}'.")
     val protocol = resolvedProtocol(
@@ -826,7 +836,10 @@ internal class LocalLlmConfigFacade private constructor(
       },
       providerNotes = request.providerNotes.trim(),
       baseUrl = baseUrl,
-      apiKey = request.apiKey.trim(),
+      apiKey = resolvePatchedCredential(
+        requestedApiKey = request.apiKey,
+        persistedApiKey = persisted.apiKey,
+      ),
       model = model,
       reasoningEffort = request.reasoningEffort.trim().ifBlank {
         LlmSettingsState.DEFAULT_REASONING_EFFORT

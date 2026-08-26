@@ -43,7 +43,9 @@ private fun MediaProviderSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "endpoint" to endpoint,
   "model" to model,
   "authProtocol" to authProtocol,
-  "apiKey" to apiKey,
+  "apiKey" to maskCredential(apiKey),
+  "hasCredential" to credentialHasValue(apiKey),
+  "credentialHint" to credentialHint(apiKey),
 )
 
 private fun VoiceProviderSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
@@ -53,7 +55,9 @@ private fun VoiceProviderSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "model" to model,
   "voicePreset" to voicePreset,
   "authProtocol" to authProtocol,
-  "apiKey" to apiKey,
+  "apiKey" to maskCredential(apiKey),
+  "hasCredential" to credentialHasValue(apiKey),
+  "credentialHint" to credentialHint(apiKey),
 )
 
 private fun OnDeviceSttSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
@@ -68,7 +72,7 @@ private fun Map<String, Any?>.toSaveMediaProviderRequest(): SaveMediaProviderReq
     endpoint = this["endpoint"]?.toString().orEmpty(),
     model = this["model"]?.toString().orEmpty(),
     authProtocol = this["authProtocol"]?.toString().orEmpty(),
-    apiKey = this["apiKey"]?.toString().orEmpty(),
+    apiKey = this["apiKey"]?.toString(),
   )
 
 private fun Map<String, Any?>.toSaveVoiceProviderRequest(): SaveVoiceProviderRequest =
@@ -79,7 +83,7 @@ private fun Map<String, Any?>.toSaveVoiceProviderRequest(): SaveVoiceProviderReq
     model = this["model"]?.toString().orEmpty(),
     voicePreset = this["voicePreset"]?.toString().orEmpty(),
     authProtocol = this["authProtocol"]?.toString().orEmpty(),
-    apiKey = this["apiKey"]?.toString().orEmpty(),
+    apiKey = this["apiKey"]?.toString(),
   )
 
 private fun Map<String, Any?>.toSaveOnDeviceSttRequest(): SaveOnDeviceSttRequest =

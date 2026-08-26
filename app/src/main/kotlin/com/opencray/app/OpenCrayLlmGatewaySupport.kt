@@ -150,7 +150,9 @@ internal fun LlmConfigSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "providerName" to providerName,
   "providerNotes" to providerNotes,
   "baseUrl" to baseUrl,
-  "apiKey" to apiKey,
+  "apiKey" to maskCredential(apiKey),
+  "hasCredential" to credentialHasValue(apiKey),
+  "credentialHint" to credentialHint(apiKey),
   "model" to model,
   "reasoningEffort" to reasoningEffort,
   "systemPrompt" to systemPrompt,
@@ -192,7 +194,9 @@ private fun LlmProviderOptionSnapshot.toGatewayMap(): Map<String, Any?> = mapOf(
   "defaultBaseUrl" to defaultBaseUrl,
   "defaultModel" to defaultModel,
   "protocol" to protocol,
-  "apiKey" to apiKey,
+  "apiKey" to maskCredential(apiKey),
+  "hasCredential" to credentialHasValue(apiKey),
+  "credentialHint" to credentialHint(apiKey),
   "isCustom" to isCustom,
 )
 

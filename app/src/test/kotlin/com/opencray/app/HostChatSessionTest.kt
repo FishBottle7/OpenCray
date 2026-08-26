@@ -187,7 +187,9 @@ class HostChatSessionTest : HostRuntimeTestBase() {
     val savedVoice = saved["voiceGeneration"] as Map<*, *>
     assertEquals("Videos", savedVideo["provider"])
     assertEquals(ProviderAuthProtocols.ANTHROPIC, savedVideo["authProtocol"])
-    assertEquals("video-key", savedVideo["apiKey"])
+    assertEquals("••••-key", savedVideo["apiKey"])
+    assertEquals(true, savedVideo["hasCredential"])
+    assertEquals("-key", savedVideo["credentialHint"])
     assertEquals("tts-omni", savedVoice["model"])
     assertEquals(ProviderAuthProtocols.NONE, savedVoice["authProtocol"])
   }
