@@ -156,6 +156,8 @@ const val METADATA_EXECUTION_ID: String = "_host.executionId"
 const val METADATA_EXECUTION_KIND: String = "_host.executionKind"
 const val METADATA_EXECUTION_ORDINAL: String = "_host.executionOrdinal"
 const val METADATA_PENDING_EXECUTION_KIND: String = "_host.pendingExecutionKind"
+const val METADATA_SUPERSEDED_BY_LIFECYCLE_STATE: String =
+  "_queue.supersededByLifecycleState"
 const val METADATA_CHECKPOINT_RESUME_ATTEMPT_COUNT: String =
   "_host.checkpointResumeAttemptCount"
 const val EXECUTION_KIND_INITIAL: String = "initial"
@@ -600,29 +602,42 @@ class SessionQueue(
       taskEntries[index]
     }
 
-    var retryRequest: RetryRequest? = null
-    var suspensionRequest: SuspensionRequest? = null
+    val retryRequest = AtomicReference<RetryRequest?>()
+    val suspensionRequest = AtomicReference<SuspensionRequest?>()
     val hooks = RuntimeExecutionHooks(
       isCancellationRequested = {
         synchronized(lock) {
           taskEntries.getOrNull(index)?.lifecycleState == QueueTaskLifecycleState.CANCEL_REQUESTED
         }
       },
-      requestRetry = { request -> retryRequest = request },
-      requestSuspend = { request -> suspensionRequest = request },
+      requestRetry = { request -> retryRequest.set(request) },
+      requestSuspend = { request -> suspensionRequest.set(request) },
     )
 
     val normalizedResult = executeRuntimeSafely(runningSnapshot.task, hooks)
     synchronized(lock) {
       val latest = taskEntries[index]
+      val pendingRetry = retryRequest.get()
+      val pendingSuspension = suspensionRequest.get()
+      if (
+        latest.lifecycleState != QueueTaskLifecycleState.RUNNING &&
+        latest.lifecycleState != QueueTaskLifecycleState.CANCEL_REQUESTED
+      ) {
+        return normalizedResult.copy(
+          metadata = normalizedResult.metadata + mapOf(
+            METADATA_SUPERSEDED_BY_LIFECYCLE_STATE to latest.lifecycleState.name,
+          ),
+        )
+      }
+
       val shouldRetry =
-        retryRequest != null &&
+        pendingRetry != null &&
           normalizedResult.status != ExecutionStatus.SUCCESS &&
           normalizedResult.status != ExecutionStatus.CANCELLED &&
           latest.attempt < config.maxAttempts &&
           latest.lifecycleState != QueueTaskLifecycleState.CANCEL_REQUESTED
 
-      if (suspensionRequest != null &&
+      if (pendingSuspension != null &&
         latest.lifecycleState != QueueTaskLifecycleState.CANCEL_REQUESTED &&
         normalizedResult.status != ExecutionStatus.SUCCESS &&
         normalizedResult.status != ExecutionStatus.CANCELLED
@@ -630,14 +645,14 @@ class SessionQueue(
         transitionTaskLocked(
           index = index,
           to = QueueTaskLifecycleState.SUSPENDED,
-          errorCode = normalizedResult.errorCode ?: suspensionRequest?.reasonCode,
-          errorMessage = normalizedResult.errorMessage ?: suspensionRequest?.detail,
+          errorCode = normalizedResult.errorCode ?: pendingSuspension.reasonCode,
+          errorMessage = normalizedResult.errorMessage ?: pendingSuspension.detail,
         )
         return normalizedResult
       }
 
       if (shouldRetry) {
-        val request = retryRequest!!
+        val request = pendingRetry!!
         markPendingExecutionKindLocked(index, EXECUTION_KIND_RETRY)
         transitionTaskLocked(
           index = index,
