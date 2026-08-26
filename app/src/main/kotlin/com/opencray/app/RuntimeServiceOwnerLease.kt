@@ -197,6 +197,17 @@ private fun RuntimeServiceOwnerLease.withAcquireFailure(
   ),
 )
 
+internal class RuntimeLeaseStoreCorruptedException(
+  val fileName: String,
+  val contentLength: Int,
+  val quarantined: Boolean,
+  cause: Throwable? = null,
+) : IllegalStateException(
+  "Runtime owner lease store content is corrupt; failing closed without takeover " +
+    "(file=$fileName, contentLength=$contentLength, quarantined=$quarantined).",
+  cause,
+)
+
 internal interface RuntimeServiceOwnerLeaseStore {
   fun load(target: RuntimeServiceTarget): RuntimeServiceOwnerLease?
 
@@ -213,12 +224,14 @@ internal fun inMemoryRuntimeServiceOwnerLeaseStore(): RuntimeServiceOwnerLeaseSt
 internal class FileBackedRuntimeServiceOwnerLeaseStore(
   private val storage: DurableTextStorage,
 ) : RuntimeServiceOwnerLeaseStore {
-  override fun load(target: RuntimeServiceTarget): RuntimeServiceOwnerLease? =
-    storage.readText(fileNameForTarget(target))
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let(::decodeLeaseOrNull)
-      ?.takeIf { lease -> lease.target == target }
+  override fun load(target: RuntimeServiceTarget): RuntimeServiceOwnerLease? {
+    val fileName = fileNameForTarget(target)
+    return decodedCurrentLease(
+      fileName = fileName,
+      target = target,
+      encodedText = storage.readText(fileName),
+    )
+  }
 
   override fun save(lease: RuntimeServiceOwnerLease): RuntimeServiceOwnerLease =
     updateLease(lease.target) { current, currentText ->
@@ -269,13 +282,16 @@ internal class FileBackedRuntimeServiceOwnerLeaseStore(
       RuntimeServiceOwnerLease?,
       String?,
     ) -> DurableTextUpdate<RuntimeServiceOwnerLease>,
-  ): RuntimeServiceOwnerLease = storage.updateText(fileNameForTarget(target)) { currentText ->
-    val current = currentText
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let(::decodeLeaseOrNull)
-      ?.takeIf { lease -> lease.target == target }
-    update(current, currentText)
+  ): RuntimeServiceOwnerLease {
+    val fileName = fileNameForTarget(target)
+    return storage.updateText(fileName) { currentText ->
+      val current = decodedCurrentLease(
+        fileName = fileName,
+        target = target,
+        encodedText = currentText,
+      )
+      update(current, currentText)
+    }
   }
 
   private fun RuntimeServiceOwnerLease.canBeReplacedBy(
@@ -290,12 +306,29 @@ internal class FileBackedRuntimeServiceOwnerLeaseStore(
             )
         )
 
-  private fun decodeLeaseOrNull(encoded: String): RuntimeServiceOwnerLease? = runCatching {
-    PersistenceJson.instance.decodeFromString(
-      deserializer = PersistedRuntimeServiceOwnerLeaseRecord.serializer(),
-      string = encoded,
-    ).toLease()
-  }.getOrNull()
+  private fun decodedCurrentLease(
+    fileName: String,
+    target: RuntimeServiceTarget,
+    encodedText: String?,
+  ): RuntimeServiceOwnerLease? {
+    val trimmed = encodedText?.trim()?.takeIf(String::isNotBlank) ?: return null
+    val decoded = runCatching {
+      PersistenceJson.instance.decodeFromString(
+        deserializer = PersistedRuntimeServiceOwnerLeaseRecord.serializer(),
+        string = trimmed,
+      ).toLease()
+    }.getOrNull()
+      ?.takeIf { lease -> lease.target == target }
+    if (decoded != null) {
+      return decoded
+    }
+    val quarantined = storage.backupCorrupt(fileName)
+    throw RuntimeLeaseStoreCorruptedException(
+      fileName = fileName,
+      contentLength = trimmed.length,
+      quarantined = quarantined,
+    )
+  }
 
   private fun encodeLease(lease: RuntimeServiceOwnerLease): String =
     PersistenceJson.instance.encodeToString(

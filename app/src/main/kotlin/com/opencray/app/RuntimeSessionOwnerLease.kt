@@ -116,12 +116,14 @@ internal class FileBackedRuntimeSessionOwnerLeaseStore(
   private val storage: DurableTextStorage,
   private val runtimeServiceOwnerLeaseStore: RuntimeServiceOwnerLeaseStore,
 ) : RuntimeSessionOwnerLeaseStore {
-  override fun load(sessionId: String): RuntimeSessionOwnerLease? =
-    storage.readText(fileNameForSession(sessionId))
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let(::decodeLeaseOrNull)
-      ?.takeIf { lease -> lease.sessionId == sessionId.trim() }
+  override fun load(sessionId: String): RuntimeSessionOwnerLease? {
+    val fileName = fileNameForSession(sessionId)
+    return decodedCurrentLease(
+      fileName = fileName,
+      sessionId = sessionId.trim(),
+      encodedText = storage.readText(fileName),
+    )
+  }
 
   override fun loadLiveOwner(
     sessionId: String,
@@ -160,13 +162,16 @@ internal class FileBackedRuntimeSessionOwnerLeaseStore(
   private fun updateLease(
     sessionId: String,
     update: (RuntimeSessionOwnerLease?, String?) -> DurableTextUpdate<RuntimeSessionOwnerLease>,
-  ): RuntimeSessionOwnerLease = storage.updateText(fileNameForSession(sessionId)) { currentText ->
-    val current = currentText
-      ?.trim()
-      ?.takeIf(String::isNotBlank)
-      ?.let(::decodeLeaseOrNull)
-      ?.takeIf { lease -> lease.sessionId == sessionId.trim() }
-    update(current, currentText)
+  ): RuntimeSessionOwnerLease {
+    val fileName = fileNameForSession(sessionId)
+    return storage.updateText(fileName) { currentText ->
+      val current = decodedCurrentLease(
+        fileName = fileName,
+        sessionId = sessionId.trim(),
+        encodedText = currentText,
+      )
+      update(current, currentText)
+    }
   }
 
   private fun RuntimeSessionOwnerLease.isLiveAt(nowEpochMs: Long): Boolean {
@@ -184,12 +189,29 @@ internal class FileBackedRuntimeSessionOwnerLeaseStore(
       serviceLease.durableControllerId == durableRuntimeControllerId
   }
 
-  private fun decodeLeaseOrNull(encoded: String): RuntimeSessionOwnerLease? = runCatching {
-    PersistenceJson.instance.decodeFromString(
-      deserializer = PersistedRuntimeSessionOwnerLeaseRecord.serializer(),
-      string = encoded,
-    ).toLease()
-  }.getOrNull()
+  private fun decodedCurrentLease(
+    fileName: String,
+    sessionId: String,
+    encodedText: String?,
+  ): RuntimeSessionOwnerLease? {
+    val trimmed = encodedText?.trim()?.takeIf(String::isNotBlank) ?: return null
+    val decoded = runCatching {
+      PersistenceJson.instance.decodeFromString(
+        deserializer = PersistedRuntimeSessionOwnerLeaseRecord.serializer(),
+        string = trimmed,
+      ).toLease()
+    }.getOrNull()
+      ?.takeIf { lease -> lease.sessionId == sessionId }
+    if (decoded != null) {
+      return decoded
+    }
+    val quarantined = storage.backupCorrupt(fileName)
+    throw RuntimeLeaseStoreCorruptedException(
+      fileName = fileName,
+      contentLength = trimmed.length,
+      quarantined = quarantined,
+    )
+  }
 
   private fun encodeLease(lease: RuntimeSessionOwnerLease): String =
     PersistenceJson.instance.encodeToString(

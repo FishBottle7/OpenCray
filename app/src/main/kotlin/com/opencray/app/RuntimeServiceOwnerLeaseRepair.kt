@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.Context
+import android.util.Log
 
 internal fun scheduleRuntimeOwnerLeaseExpiryRepair(
   context: Context,
@@ -23,7 +24,7 @@ internal fun scheduleRuntimeOwnerLeaseExpiryRepair(
   workScheduler: ScheduledWorkScheduler,
 ): Boolean {
   val delayMs = runtimeOwnerLeaseExpiryRepairDelayMs(
-    lease = ownerLeaseStore.load(target),
+    lease = loadOwnerLeaseForRepairOrNull(ownerLeaseStore, target),
     nowEpochMs = nowEpochMs,
   ) ?: return false
   workScheduler.enqueueRepair(
@@ -58,7 +59,7 @@ internal fun nextRuntimeOwnerLeaseExpiryRepairDelayMs(
 ): Long? = targets
   .mapNotNull { target ->
     runtimeOwnerLeaseFutureExpiryRepairDelayMs(
-      lease = ownerLeaseStore.load(target),
+      lease = loadOwnerLeaseForRepairOrNull(ownerLeaseStore, target),
       nowEpochMs = nowEpochMs,
     )
   }
@@ -70,11 +71,31 @@ internal fun dueRuntimeOwnerLeaseExpiryRepairTargets(
   nowEpochMs: Long,
 ): Set<RuntimeServiceTarget> = targets
   .filter { target ->
-    val lease = ownerLeaseStore.load(target)
+    val lease = loadOwnerLeaseForRepairOrNull(ownerLeaseStore, target)
       ?.takeIf { candidate -> candidate.phase == RuntimeServiceOwnerLease.PHASE_HELD }
     lease != null && lease.isExpiredAt(nowEpochMs)
   }
   .toCollection(linkedSetOf())
+
+private fun loadOwnerLeaseForRepairOrNull(
+  ownerLeaseStore: RuntimeServiceOwnerLeaseStore,
+  target: RuntimeServiceTarget,
+): RuntimeServiceOwnerLease? =
+  try {
+    ownerLeaseStore.load(target)
+  } catch (failure: RuntimeLeaseStoreCorruptedException) {
+    runCatching {
+      Log.e(
+        OWNER_LEASE_REPAIR_LOG_TAG,
+        "runtime.ownerLeaseStoreCorrupted errorCode=OWNER_LEASE_STORE_CORRUPTED " +
+          "target=${target.wireValue} file=${failure.fileName} " +
+          "quarantined=${failure.quarantined}",
+      )
+    }
+    null
+  }
+
+private const val OWNER_LEASE_REPAIR_LOG_TAG: String = "OpenCrayRuntimeLease"
 
 internal fun runtimeOwnerLeaseExpiryRepairDelayMs(
   lease: RuntimeServiceOwnerLease?,

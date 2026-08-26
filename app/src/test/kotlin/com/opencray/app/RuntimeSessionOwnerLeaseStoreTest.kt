@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import java.io.File
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -100,6 +102,51 @@ class RuntimeSessionOwnerLeaseStoreTest {
     store.release(interactive.released(1_050L))
 
     assertEquals(detached, store.acquire(detached))
+  }
+
+  @Test
+  fun corruptSessionLeaseFileFailsClosedIsQuarantinedAndIsNeverOverwritten() {
+    val root = temporaryFolder.newFolder("runtime-session-owner-lease-corrupt")
+    val store = FileBackedRuntimeSessionOwnerLeaseStore.fromRootDirectory(root)
+    val fileName =
+      "runtime-session-owner-lease-${FileBackedAgentQueueSnapshotStoreFactory.encodeSessionId("session-1")}.json"
+    val corruptContent = "{\"sessionId\":\"session-1\",\"phase\":"
+    File(root, fileName).writeText(corruptContent)
+
+    val loadFailure = assertThrows(RuntimeLeaseStoreCorruptedException::class.java) {
+      store.load("session-1")
+    }
+    assertTrue(loadFailure.quarantined)
+    assertEquals(fileName, loadFailure.fileName)
+    assertThrows(RuntimeLeaseStoreCorruptedException::class.java) {
+      store.loadLiveOwner("session-1", nowEpochMs = 10_000L)
+    }
+
+    val attempted = sessionLease(
+      target = RuntimeServiceTarget.DETACHED_BACKGROUND,
+      ownerId = "newcomer",
+      nowEpochMs = 20_000L,
+    )
+    val acquireFailure = assertThrows(RuntimeLeaseStoreCorruptedException::class.java) {
+      store.acquire(attempted)
+    }
+    assertTrue(acquireFailure.quarantined)
+    assertThrows(RuntimeLeaseStoreCorruptedException::class.java) {
+      store.release(attempted.released(21_000L))
+    }
+
+    assertEquals(corruptContent, File(root, fileName).readText())
+    assertEquals(4, corruptBackupCount(root, fileName))
+    root.listFiles()!!
+      .filter { file -> file.name.startsWith("$fileName.corrupt-") }
+      .forEach { backup -> assertEquals(corruptContent, backup.readText()) }
+  }
+
+  private fun corruptBackupCount(
+    root: File,
+    fileName: String,
+  ): Int = checkNotNull(root.listFiles()).count { file ->
+    file.name.startsWith("$fileName.corrupt-")
   }
 
   private fun sessionLease(

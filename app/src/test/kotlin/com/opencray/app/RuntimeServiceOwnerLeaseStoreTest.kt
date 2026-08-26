@@ -1,6 +1,9 @@
 package com.opencray.app
 
+import java.io.File
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
@@ -127,6 +130,89 @@ class RuntimeServiceOwnerLeaseStoreTest {
 
     assertEquals(replacementLease, store.save(replacementLease))
     assertEquals(replacementLease, store.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+  }
+
+  @Test
+  fun corruptOwnerLeaseFileFailsClosedIsQuarantinedAndIsNeverOverwritten() {
+    val root = temporaryFolder.newFolder("runtime-owner-lease-corrupt")
+    val store = FileBackedRuntimeServiceOwnerLeaseStore.fromRootDirectory(root)
+    val fileName = "runtime-service-owner-lease-${RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue}.json"
+    val corruptContent = "{\"schemaVersion\":1,\"target\":\"detached_background\",\"ph"
+    File(root, fileName).writeText(corruptContent)
+
+    val loadFailure = assertThrows(RuntimeLeaseStoreCorruptedException::class.java) {
+      store.load(RuntimeServiceTarget.DETACHED_BACKGROUND)
+    }
+    assertTrue(loadFailure.quarantined)
+    assertEquals(fileName, loadFailure.fileName)
+    assertEquals(corruptContent, File(root, fileName).readText())
+    assertEquals(1, corruptBackupCount(root, fileName))
+
+    val competingLease = ownerLease(
+      runtimeOwnerId = "owner-competing",
+      acquiredAtEpochMs = 5_000L,
+    )
+    val saveFailure = assertThrows(RuntimeLeaseStoreCorruptedException::class.java) {
+      store.save(competingLease)
+    }
+    assertTrue(saveFailure.quarantined)
+    assertThrows(RuntimeLeaseStoreCorruptedException::class.java) {
+      store.release(competingLease.released(6_000L))
+    }
+
+    assertEquals(corruptContent, File(root, fileName).readText())
+    assertEquals(3, corruptBackupCount(root, fileName))
+    root.listFiles()!!
+      .filter { file -> file.name.startsWith("$fileName.corrupt-") }
+      .forEach { backup -> assertEquals(corruptContent, backup.readText()) }
+
+    assertThrows(RuntimeLeaseStoreCorruptedException::class.java) {
+      store.load(RuntimeServiceTarget.DETACHED_BACKGROUND)
+    }
+    assertEquals(corruptContent, File(root, fileName).readText())
+    assertEquals(4, corruptBackupCount(root, fileName))
+    assertTrue(
+      checkNotNull(root.listFiles()).none { it.name.endsWith(".tmp") },
+    )
+  }
+
+  @Test
+  fun ownerLeaseFileHoldingAnotherTargetIsTreatedAsCorruptAndQuarantined() {
+    val root = temporaryFolder.newFolder("runtime-owner-lease-cross-target")
+    val store = FileBackedRuntimeServiceOwnerLeaseStore.fromRootDirectory(root)
+    val interactiveLease = ownerLease(
+      target = RuntimeServiceTarget.INTERACTIVE,
+      runtimeOwnerId = "owner-interactive",
+      acquiredAtEpochMs = 1_000L,
+    )
+    store.save(interactiveLease)
+    val interactiveFileName =
+      "runtime-service-owner-lease-${RuntimeServiceTarget.INTERACTIVE.wireValue}.json"
+    val detachedFileName =
+      "runtime-service-owner-lease-${RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue}.json"
+    val misplacedContent = File(root, interactiveFileName).readText()
+    File(root, detachedFileName).writeText(misplacedContent)
+
+    assertThrows(RuntimeLeaseStoreCorruptedException::class.java) {
+      store.load(RuntimeServiceTarget.DETACHED_BACKGROUND)
+    }
+    assertThrows(RuntimeLeaseStoreCorruptedException::class.java) {
+      store.save(ownerLease(runtimeOwnerId = "owner-detached", acquiredAtEpochMs = 2_000L))
+    }
+
+    assertEquals(misplacedContent, File(root, detachedFileName).readText())
+    assertEquals(2, corruptBackupCount(root, detachedFileName))
+    root.listFiles()!!
+      .filter { file -> file.name.startsWith("$detachedFileName.corrupt-") }
+      .forEach { backup -> assertEquals(misplacedContent, backup.readText()) }
+    assertEquals(interactiveLease, store.load(RuntimeServiceTarget.INTERACTIVE))
+  }
+
+  private fun corruptBackupCount(
+    root: File,
+    fileName: String,
+  ): Int = checkNotNull(root.listFiles()).count { file ->
+    file.name.startsWith("$fileName.corrupt-")
   }
 
   private fun ownerLease(

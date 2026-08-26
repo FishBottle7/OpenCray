@@ -3,7 +3,9 @@ package com.opencray.app
 import android.app.PendingIntent
 import android.content.Context
 import android.content.ContextWrapper
+import java.io.File
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -540,6 +542,231 @@ class RuntimeServiceProjectionCoordinatorTest {
     assertEquals(0, ownerAccess.observerCount)
   }
 
+  @Test
+  fun projectionCoordinatorFailsClosedWhenOwnerLeaseFileIsCorrupt() {
+    val root = temporaryFolder.newFolder("coordinator-corrupt-lease-root")
+    val fileName =
+      "runtime-service-owner-lease-${RuntimeServiceTarget.DETACHED_BACKGROUND.wireValue}.json"
+    val corruptContent = "{\"target\":\"detached_background\",\"phase\":"
+    File(root, fileName).writeText(corruptContent)
+    var now = 10_000L
+    val projectionStore = inMemoryRuntimeServiceProjectionStore()
+    val heartbeatScheduler = RecordingRuntimeServiceDelayScheduler()
+    val ownerAccess = RecordingRuntimeNotificationHostAccess(baseTestRuntimeOwnerLifecycle())
+    val coordinator = newDefaultProjectionCoordinator(
+      clock = { now },
+      projectionStore = projectionStore,
+      ownerLeaseStore = FileBackedRuntimeServiceOwnerLeaseStore.fromRootDirectory(root),
+      heartbeatScheduler = heartbeatScheduler,
+      ownerAccess = ownerAccess,
+      stateFolderName = "chat-session-store-corrupt-lease",
+    )
+
+    coordinator.bindServiceLifecycle(testServiceLifecycle("runtime-service-a"))
+
+    assertFalse(coordinator.tryAcquireOwnerLease())
+    assertNull(coordinator.currentOwnerLease())
+    assertNull(projectionStore.loadSnapshot())
+    assertEquals(0, heartbeatScheduler.tasks.size)
+    assertEquals(corruptContent, File(root, fileName).readText())
+    val backups = checkNotNull(root.listFiles()).filter { file ->
+      file.name.startsWith("$fileName.corrupt-")
+    }
+    assertEquals(1, backups.size)
+    assertEquals(corruptContent, backups.single().readText())
+  }
+
+  @Test
+  fun replaceRuntimeOwnerDisposesPreviousObserverEvenWhenLeaseReleaseFails() {
+    var now = 10_000L
+    val projectionStore = inMemoryRuntimeServiceProjectionStore()
+    val leaseStore = ToggleFailingReleaseRuntimeServiceOwnerLeaseStore(
+      inMemoryRuntimeServiceOwnerLeaseStore(),
+    )
+    val heartbeatScheduler = RecordingRuntimeServiceDelayScheduler()
+    val runtimeOwnerLifecycle = baseTestRuntimeOwnerLifecycle()
+    val ownerAccess = RecordingRuntimeNotificationHostAccess(runtimeOwnerLifecycle)
+    val coordinator = newDefaultProjectionCoordinator(
+      clock = { now },
+      projectionStore = projectionStore,
+      ownerLeaseStore = leaseStore,
+      heartbeatScheduler = heartbeatScheduler,
+      ownerAccess = ownerAccess,
+      stateFolderName = "chat-session-store-replace-release-failure",
+    )
+    coordinator.bindServiceLifecycle(testServiceLifecycle("runtime-service-a"))
+    coordinator.start()
+    assertEquals(1, ownerAccess.observerCount)
+
+    now = 10_050L
+    leaseStore.failNextRelease = true
+    val replacementOwnerLifecycle = runtimeOwnerLifecycle.copy(
+      runtimeOwnerId = "runtime-owner-b",
+      runtimeControllerId = "runtime-controller-b",
+    )
+    val replacementOwnerAccess =
+      RecordingRuntimeNotificationHostAccess(replacementOwnerLifecycle)
+
+    coordinator.replaceRuntimeOwner(
+      runtimeOwnerLifecycle = replacementOwnerLifecycle,
+      ownerObservationAccess = replacementOwnerAccess,
+      notificationHostAccess = replacementOwnerAccess,
+    )
+
+    assertEquals(0, ownerAccess.observerCount)
+    assertEquals(1, replacementOwnerAccess.observerCount)
+    val storedLease = checkNotNull(leaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+    assertEquals(RuntimeServiceOwnerLease.PHASE_HELD, storedLease.phase)
+    assertEquals("runtime-owner-a", storedLease.runtimeOwnerId)
+    val snapshotLease = checkNotNull(projectionStore.loadSnapshot()?.runtimeServiceOwnerLease)
+    assertEquals("runtime-owner-a", snapshotLease.runtimeOwnerId)
+  }
+
+  @Test
+  fun disposeCompletesCleanupWhenReleasedProjectionPersistFails() {
+    var now = 10_000L
+    val projectionStore = ToggleFailingRuntimeServiceProjectionStore(
+      inMemoryRuntimeServiceProjectionStore(),
+    )
+    val ownerLeaseStore = inMemoryRuntimeServiceOwnerLeaseStore()
+    val heartbeatScheduler = RecordingRuntimeServiceDelayScheduler()
+    val ownerAccess =
+      RecordingRuntimeNotificationHostAccess(baseTestRuntimeOwnerLifecycle())
+    val coordinator = newDefaultProjectionCoordinator(
+      clock = { now },
+      projectionStore = projectionStore,
+      ownerLeaseStore = ownerLeaseStore,
+      heartbeatScheduler = heartbeatScheduler,
+      ownerAccess = ownerAccess,
+      stateFolderName = "chat-session-store-dispose-projection-failure",
+    )
+    coordinator.bindServiceLifecycle(testServiceLifecycle("runtime-service-a"))
+    coordinator.start()
+    assertEquals(1, ownerAccess.observerCount)
+
+    now = 10_090L
+    projectionStore.failNextSave()
+    coordinator.dispose()
+
+    assertEquals(0, ownerAccess.observerCount)
+    val releasedLease =
+      checkNotNull(ownerLeaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+    assertEquals(RuntimeServiceOwnerLease.PHASE_RELEASED, releasedLease.phase)
+    assertEquals("runtime-owner-a", releasedLease.runtimeOwnerId)
+  }
+
+  @Test
+  fun disposeCompletesCleanupWhenLeaseReleaseFails() {
+    var now = 10_000L
+    val projectionStore = inMemoryRuntimeServiceProjectionStore()
+    val leaseStore = ToggleFailingReleaseRuntimeServiceOwnerLeaseStore(
+      inMemoryRuntimeServiceOwnerLeaseStore(),
+    )
+    val heartbeatScheduler = RecordingRuntimeServiceDelayScheduler()
+    val ownerAccess =
+      RecordingRuntimeNotificationHostAccess(baseTestRuntimeOwnerLifecycle())
+    val coordinator = newDefaultProjectionCoordinator(
+      clock = { now },
+      projectionStore = projectionStore,
+      ownerLeaseStore = leaseStore,
+      heartbeatScheduler = heartbeatScheduler,
+      ownerAccess = ownerAccess,
+      stateFolderName = "chat-session-store-dispose-release-failure",
+    )
+    coordinator.bindServiceLifecycle(testServiceLifecycle("runtime-service-a"))
+    coordinator.start()
+
+    now = 10_090L
+    leaseStore.failNextRelease = true
+    coordinator.dispose()
+
+    assertEquals(0, ownerAccess.observerCount)
+    val storedLease = checkNotNull(leaseStore.load(RuntimeServiceTarget.DETACHED_BACKGROUND))
+    assertEquals(RuntimeServiceOwnerLease.PHASE_HELD, storedLease.phase)
+    assertEquals("runtime-owner-a", storedLease.runtimeOwnerId)
+  }
+
+  private fun baseTestRuntimeOwnerLifecycle(): HostRuntimeLifecycleDescriptor =
+    HostRuntimeLifecycleDescriptor(
+      processStartId = "process-owner",
+      processStartedAtEpochMs = 9_000L,
+      runtimeOwnerId = "runtime-owner-a",
+      runtimeControllerId = "runtime-controller-a",
+      durableRuntimeControllerId = "runtime-controller-durable",
+    )
+
+  private fun testServiceLifecycle(serviceInstanceId: String): RuntimeServiceLifecycleDescriptor =
+    RuntimeServiceLifecycleDescriptor(
+      serviceInstanceId = serviceInstanceId,
+      serviceCreatedAtEpochMs = 9_500L,
+      serviceProcess = runtimeServiceProcessDescriptor(
+        packageName = "org.opencray.app",
+        processName = "org.opencray.app:runtime",
+      ),
+    )
+
+  private fun newDefaultProjectionCoordinator(
+    clock: () -> Long,
+    projectionStore: RuntimeServiceProjectionStore,
+    ownerLeaseStore: RuntimeServiceOwnerLeaseStore,
+    heartbeatScheduler: RecordingRuntimeServiceDelayScheduler,
+    ownerAccess: RuntimeNotificationHostAccess,
+    stateFolderName: String,
+  ): DefaultRuntimeServiceProjectionCoordinator = DefaultRuntimeServiceProjectionCoordinator(
+    runtimeTarget = RuntimeServiceTarget.DETACHED_BACKGROUND,
+    runtimeControllerLifecycle = RuntimeControllerLifecycleDescriptor(
+      processStartId = "process-controller",
+      processStartedAtEpochMs = 8_000L,
+      controllerInstanceId = "runtime-controller-a",
+      durableControllerId = "runtime-controller-durable",
+      controllerCreatedAtEpochMs = 8_500L,
+    ),
+    clock = clock,
+    ownerLeaseDurationMs = 100L,
+    ownerLeaseHeartbeatIntervalMs = 25L,
+    runtimeOwnerLifecycle = baseTestRuntimeOwnerLifecycle(),
+    ownerObservationAccess = ownerAccess,
+    notificationHostAccess = ownerAccess,
+    serviceWorkStateTracker = RuntimeServiceWorkStateTracker(
+      workSummaryProvider = ownerAccess::activeWorkSummary,
+      clock = clock,
+    ),
+    appContext = ContextWrapper(null),
+    localizedContext = ContextWrapper(null),
+    chatSessionStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder(stateFolderName),
+    ),
+    scheduledTaskSpecStore = inMemoryScheduledTaskSpecStoreFactory().create(),
+    scheduledTaskRunRecordStore = inMemoryScheduledTaskRunRecordStoreFactory().create(),
+    runtimeServiceAccessGateway = NoOpRuntimeServiceAccessGateway,
+    projectionStore = projectionStore,
+    ownerLeaseStore = ownerLeaseStore,
+    ownerLeaseHeartbeatScheduler = heartbeatScheduler,
+    runtimeNotificationCoordinator = null,
+  )
+
+  private class ToggleFailingReleaseRuntimeServiceOwnerLeaseStore(
+    private val delegate: RuntimeServiceOwnerLeaseStore,
+  ) : RuntimeServiceOwnerLeaseStore {
+    var failNextRelease: Boolean = false
+
+    override fun load(target: RuntimeServiceTarget): RuntimeServiceOwnerLease? =
+      delegate.load(target)
+
+    override fun save(lease: RuntimeServiceOwnerLease): RuntimeServiceOwnerLease =
+      delegate.save(lease)
+
+    override fun release(lease: RuntimeServiceOwnerLease): RuntimeServiceOwnerLease {
+      if (failNextRelease) {
+        failNextRelease = false
+        throw IllegalStateException("injected lease release failure")
+      }
+      return delegate.release(lease)
+    }
+
+    override fun clear(target: RuntimeServiceTarget) = delegate.clear(target)
+  }
+
   private class RecordingRuntimeNotificationHostAccess(
     override val lifecycleDescriptor: HostRuntimeLifecycleDescriptor,
   ) : RuntimeNotificationHostAccess {
@@ -628,6 +855,8 @@ class RuntimeServiceProjectionCoordinatorTest {
       sessionId: String,
       taskId: String,
       runId: String,
+      executionId: String?,
+      executionOrdinal: Int?,
       requestCode: Int,
       target: RuntimeServiceTarget,
     ): PendingIntent = error("unused in test")

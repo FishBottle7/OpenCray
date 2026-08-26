@@ -66,11 +66,7 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
   scheduledTaskRunRecordStore: ScheduledTaskRunRecordStore,
   runtimeServiceAccessGateway: RuntimeServiceAccessGateway,
   private val projectionStore: RuntimeServiceProjectionStore =
-    runCatching {
-      FileBackedRuntimeServiceProjectionStoreFactory.fromContext(appContext).create(runtimeTarget)
-    }.getOrElse {
-      inMemoryRuntimeServiceProjectionStore()
-    },
+    defaultRuntimeServiceProjectionStoreOrInMemoryDegraded(appContext, runtimeTarget),
   private val ownerLeaseStore: RuntimeServiceOwnerLeaseStore =
     FileBackedRuntimeServiceOwnerLeaseStore.fromContext(appContext),
   private val ownerLeaseHeartbeatScheduler: RuntimeServiceDelayScheduler =
@@ -184,23 +180,35 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
       boundServiceLifecycle = null
       activeServiceLifecycle = null
     }
-    (ownerLeaseHeartbeatScheduler as? OwnerLeaseHeartbeatDelayScheduler)?.shutdown()
-    val persistedReleasedLease = ownerLeaseToRelease?.let(ownerLeaseStore::release)
-    if (
-      ownerLeaseToRelease != null &&
-        persistedReleasedLease != null &&
-        persistedReleasedLease.sameRuntimeServiceOwnerAs(ownerLeaseToRelease) &&
-        persistedReleasedLease.phase == RuntimeServiceOwnerLease.PHASE_RELEASED &&
-        releasedProjectionState?.serviceLifecycle != null
-    ) {
-      persistReleasedOwnerLeaseProjection(
-        releasedLease = persistedReleasedLease,
-        projectionState = releasedProjectionState,
-      )
+    runCleanupPhase("ownerLeaseHeartbeatSchedulerShutdown") {
+      (ownerLeaseHeartbeatScheduler as? OwnerLeaseHeartbeatDelayScheduler)?.shutdown()
     }
-    runtimeNotificationCoordinator?.dispose()
-    runtimeOwnerDisposer?.invoke()
-    workStateDisposer?.invoke()
+    val persistedReleasedLease: RuntimeServiceOwnerLease? = ownerLeaseToRelease?.let { lease ->
+      try {
+        ownerLeaseStore.release(lease)
+      } catch (failure: Exception) {
+        logCleanupPhaseFailure("ownerLeaseRelease", failure)
+        null
+      }
+    }
+    if (
+      persistedReleasedLease != null &&
+        releasedProjectionState?.serviceLifecycle != null &&
+        persistedReleasedLease.sameRuntimeServiceOwnerAs(checkNotNull(ownerLeaseToRelease)) &&
+        persistedReleasedLease.phase == RuntimeServiceOwnerLease.PHASE_RELEASED
+    ) {
+      runCleanupPhase("releasedOwnerLeaseProjectionPersist") {
+        persistReleasedOwnerLeaseProjection(
+          releasedLease = persistedReleasedLease,
+          projectionState = checkNotNull(releasedProjectionState),
+        )
+      }
+    }
+    runCleanupPhase("notificationCoordinatorDispose") {
+      runtimeNotificationCoordinator?.dispose()
+    }
+    runCleanupPhase("runtimeOwnerObserverDispose") { runtimeOwnerDisposer?.invoke() }
+    runCleanupPhase("serviceWorkStateObserverDispose") { workStateDisposer?.invoke() }
   }
 
   override fun replaceRuntimeOwner(
@@ -210,6 +218,7 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
   ) {
     val previousDisposer: (() -> Unit)?
     val ownerLeaseToRelease: RuntimeServiceOwnerLease?
+    var replacementObserverStarted = false
     synchronized(lock) {
       if (disposed) {
         return
@@ -220,20 +229,44 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
       this.ownerObservationAccess = ownerObservationAccess
       ownerLeaseAcquiredAtEpochMs = now
       currentOwnerLease = null
+      replacementObserverStarted = started
       previousDisposer = if (started) {
         runtimeOwnerProjectionObservationDisposer.also {
-          runtimeOwnerProjectionObservationDisposer = ownerObservationAccess.observe(
-            runtimeOwnerProjectionListener,
-          )
+          runtimeOwnerProjectionObservationDisposer = null
         }
       } else {
         null
       }
     }
-    ownerLeaseToRelease?.let(ownerLeaseStore::release)
-    runtimeNotificationCoordinator?.replaceHostAccess(notificationHostAccess)
-    previousDisposer?.invoke()
-    persistProjectionSnapshot()
+    if (replacementObserverStarted) {
+      installReplacementOwnerObserver(ownerObservationAccess)
+    }
+    runCleanupPhase("previousOwnerLeaseRelease") {
+      ownerLeaseToRelease?.let(ownerLeaseStore::release)
+    }
+    runCleanupPhase("notificationHostAccessReplace") {
+      runtimeNotificationCoordinator?.replaceHostAccess(notificationHostAccess)
+    }
+    runCleanupPhase("previousOwnerObserverDispose") { previousDisposer?.invoke() }
+    runCleanupPhase("replacementOwnerProjectionPersist") { persistProjectionSnapshot() }
+  }
+
+  private fun installReplacementOwnerObserver(access: RuntimeOwnerObservationAccess) {
+    val disposer = try {
+      access.observe(runtimeOwnerProjectionListener)
+    } catch (failure: Exception) {
+      logCleanupPhaseFailure("replacementObserverInstall", failure)
+      return
+    }
+    var orphanedDisposer: (() -> Unit)? = null
+    synchronized(lock) {
+      if (disposed || !started) {
+        orphanedDisposer = disposer
+      } else {
+        runtimeOwnerProjectionObservationDisposer = disposer
+      }
+    }
+    orphanedDisposer?.invoke()
   }
 
   override fun persistProjectionSnapshot(
@@ -293,6 +326,35 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
     persistProjectionSnapshot(workState = workState)
   }
 
+  private inline fun runCleanupPhase(phase: String, block: () -> Unit) {
+    try {
+      block()
+    } catch (failure: Exception) {
+      logCleanupPhaseFailure(phase, failure)
+    }
+  }
+
+  private fun logCleanupPhaseFailure(phase: String, failure: Exception) {
+    runCatching {
+      Log.e(
+        OWNER_LEASE_HEARTBEAT_LOG_TAG,
+        "runtime.coordinatorCleanupPhaseFailure phase=$phase " +
+          "type=${failure::class.java.name} message=${failure.message}",
+      )
+    }
+  }
+
+  private fun logOwnerLeaseStoreCorrupted(failure: RuntimeLeaseStoreCorruptedException) {
+    runCatching {
+      Log.e(
+        OWNER_LEASE_HEARTBEAT_LOG_TAG,
+        "runtime.ownerLeaseStoreCorrupted errorCode=OWNER_LEASE_STORE_CORRUPTED " +
+          "file=${failure.fileName} quarantined=${failure.quarantined} " +
+          "contentLength=${failure.contentLength}",
+      )
+    }
+  }
+
   private fun writeOwnerLeaseHeartbeat(): RuntimeServiceOwnerLease? {
     val lease = synchronized(lock) {
       if (disposed) {
@@ -304,7 +366,12 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
       }
       createOwnerLeaseLocked(nowEpochMs)
     } ?: return null
-    val savedLease = ownerLeaseStore.save(lease)
+    val savedLease = try {
+      ownerLeaseStore.save(lease)
+    } catch (failure: RuntimeLeaseStoreCorruptedException) {
+      logOwnerLeaseStoreCorrupted(failure)
+      return null
+    }
     val ownsLease = savedLease.sameRuntimeServiceOwnerAs(lease)
     synchronized(lock) {
       currentOwnerLease = savedLease.takeIf { ownsLease }
@@ -429,6 +496,23 @@ internal class DefaultRuntimeServiceProjectionCoordinator(
 
 private fun defaultRuntimeServiceOwnerLeaseHeartbeatScheduler(): RuntimeServiceDelayScheduler =
   OwnerLeaseHeartbeatDelayScheduler()
+
+private fun defaultRuntimeServiceProjectionStoreOrInMemoryDegraded(
+  appContext: Context,
+  runtimeTarget: RuntimeServiceTarget,
+): RuntimeServiceProjectionStore =
+  try {
+    FileBackedRuntimeServiceProjectionStoreFactory.fromContext(appContext).create(runtimeTarget)
+  } catch (failure: Exception) {
+    runCatching {
+      Log.e(
+        OWNER_LEASE_HEARTBEAT_LOG_TAG,
+        "runtime.projectionStoreDegraded durability-degraded " +
+          "reason=${failure::class.java.name} message=${failure.message}",
+      )
+    }
+    inMemoryRuntimeServiceProjectionStore()
+  }
 
 private const val OWNER_LEASE_HEARTBEAT_LOG_TAG: String = "OpenCrayRuntimeLease"
 
