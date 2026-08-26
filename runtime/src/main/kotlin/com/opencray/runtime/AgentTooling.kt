@@ -112,6 +112,7 @@ class OpenCrayToolDispatcher(
     modePolicy = config.modePolicy,
     approvedTaskId = config.approvedTaskId,
     approvedToolName = config.approvedToolName,
+    approvedTaskGrantScopedToFirstRequest = config.approvedTaskGrantScopedToFirstRequest,
     rejectedTaskId = config.rejectedTaskId,
     rejectedToolName = config.rejectedToolName,
   )
@@ -285,6 +286,10 @@ class OpenCrayToolDispatcher(
         invocation = invocation,
       )
     }
+    val managedProcessCancellationRegistration =
+      com.opencray.runtime.process.ManagedProcessCancellationRegistry.register(task.id) {
+        hooks.isCancellationRequested()
+      }
     return try {
       val result = when (invocation.normalizedToolName) {
         "workspace_list_files" -> listWorkspaceFiles(task = task, arguments = invocation.arguments)
@@ -380,6 +385,8 @@ class OpenCrayToolDispatcher(
         ),
         invocation = invocation,
       )
+    } finally {
+      managedProcessCancellationRegistration.close()
     }
   }
 
@@ -2094,13 +2101,17 @@ class OpenCrayToolDispatcher(
   }
 
   private fun executeClaudeBash(task: AgentTask, arguments: JsonObject): AgentToolResult {
-    val waitTimeoutMs = arguments.optionalLong("wait_timeout_ms")
+    val rawWaitTimeoutMs = arguments.optionalLong("wait_timeout_ms")
       ?: arguments.optionalLong("timeout_ms")
       ?: DEFAULT_BASH_WAIT_TIMEOUT_MS
-    require(waitTimeoutMs >= 0L) { "Bash wait timeout must be >= 0." }
-    val processTimeoutMs = arguments.optionalLong("process_timeout_ms")
+    require(rawWaitTimeoutMs >= 0L) { "Bash wait timeout must be >= 0." }
+    val waitTimeoutMs = rawWaitTimeoutMs
+      .coerceAtMost(com.opencray.runtime.process.MAX_MANAGED_PROCESS_WAIT_TIMEOUT_MS)
+    val rawProcessTimeoutMs = arguments.optionalLong("process_timeout_ms")
       ?: DEFAULT_MANAGED_PROCESS_TIMEOUT_MS
-    require(processTimeoutMs > 0L) { "Bash process_timeout_ms must be > 0." }
+    require(rawProcessTimeoutMs > 0L) { "Bash process_timeout_ms must be > 0." }
+    val processTimeoutMs = rawProcessTimeoutMs
+      .coerceAtMost(com.opencray.runtime.process.MAX_MANAGED_PROCESS_TIMEOUT_MS)
     val background = arguments.optionalBoolean("background") ?: false
     unsupportedBashPythonInvocation(arguments = arguments)?.let { return it }
     val launch = resolveBashLaunch(arguments = arguments)
@@ -2506,7 +2517,12 @@ class OpenCrayToolDispatcher(
 
   private fun waitForManagedProcess(arguments: JsonObject): AgentToolResult {
     val processId = arguments.requiredString("process_id")
-    val timeoutMs = arguments.optionalLong("timeout_ms") ?: DEFAULT_MANAGED_PROCESS_WAIT_TIMEOUT_MS
+    val timeoutMs = (
+      arguments.optionalLong("timeout_ms")
+        ?: DEFAULT_MANAGED_PROCESS_WAIT_TIMEOUT_MS
+      )
+      .coerceAtLeast(0L)
+      .coerceAtMost(com.opencray.runtime.process.MAX_MANAGED_PROCESS_WAIT_TIMEOUT_MS)
     val snapshot = processRegistry.wait(processId, timeoutMs)
       ?: return missingManagedProcess(processId = processId, toolName = "ProcessWait")
     val observationDelivery = observeManagedProcessOutput(snapshot)

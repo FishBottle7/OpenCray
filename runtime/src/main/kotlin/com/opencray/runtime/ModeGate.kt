@@ -3,6 +3,8 @@ package com.opencray.runtime
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyApprovalRisk
 import com.opencray.core.contracts.PolicyDecisionOutcome
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -28,6 +30,7 @@ data class CommandApprovalToken(
   val approvedAtEpochMs: Long,
   val approvedBy: String? = null,
   val note: String? = null,
+  val approvedRequestFingerprint: String? = null,
 ) {
   init {
     require(tokenId.isNotBlank()) { "CommandApprovalToken tokenId must not be blank." }
@@ -61,6 +64,9 @@ object CommandGateReasonCode {
   const val ALLOW_APPROVAL_TOKEN = "ALLOW_APPROVAL_TOKEN"
   const val BLOCK_APPROVAL_REQUIRED = "BLOCK_APPROVAL_REQUIRED"
   const val BLOCK_APPROVAL_TASK_MISMATCH = "BLOCK_APPROVAL_TASK_MISMATCH"
+  const val BLOCK_APPROVAL_EXPIRED = "BLOCK_APPROVAL_EXPIRED"
+  const val BLOCK_APPROVAL_CONTENT_MISMATCH = "BLOCK_APPROVAL_CONTENT_MISMATCH"
+  const val BLOCK_APPROVAL_TOKEN_CONSUMED = "BLOCK_APPROVAL_TOKEN_CONSUMED"
   const val DENY_POLICY_DECISION = "DENY_POLICY_DECISION"
 }
 
@@ -110,7 +116,24 @@ data class CommandGateDecision(
   }
 }
 
+fun CommandExecutionRequest.approvalFingerprint(): String {
+  val payload = listOf(
+    command,
+    args.joinToString("\u0000"),
+    workingDirectory.orEmpty(),
+  ).joinToString("\u0000")
+  return MessageDigest.getInstance("SHA-256")
+    .digest(payload.toByteArray(Charsets.UTF_8))
+    .joinToString(separator = "") { byte -> (byte.toInt() and 0xff).toString(16).padStart(2, '0') }
+}
+
 object ModeGate {
+  const val APPROVAL_TOKEN_VALIDITY_MS = 10L * 60L * 1000L
+
+  private const val CONSUMED_APPROVAL_TOKEN_RETENTION_MS = 2L * APPROVAL_TOKEN_VALIDITY_MS
+
+  private val consumedApprovalTokenIds = ConcurrentHashMap<String, Long>()
+
   fun evaluatePreExec(
     request: CommandExecutionRequest,
     policyDecision: PolicyDecision,
@@ -141,6 +164,27 @@ object ModeGate {
           reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_TASK_MISMATCH,
           shouldExecute = false,
           detail = approvalTaskMismatchDetail,
+        )
+
+        isApprovalTokenExpired(approvalToken, decidedAtEpochMs) -> ResolvedGate(
+          status = CommandGateStatus.BLOCKED,
+          reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_EXPIRED,
+          shouldExecute = false,
+          detail = "Approval token expired before command execution.",
+        )
+
+        isApprovalContentMismatch(approvalToken, request) -> ResolvedGate(
+          status = CommandGateStatus.BLOCKED,
+          reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_CONTENT_MISMATCH,
+          shouldExecute = false,
+          detail = "Approval token does not cover this command content.",
+        )
+
+        !consumeApprovalToken(approvalToken.tokenId, decidedAtEpochMs) -> ResolvedGate(
+          status = CommandGateStatus.BLOCKED,
+          reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_TOKEN_CONSUMED,
+          shouldExecute = false,
+          detail = "Approval token was already consumed by an earlier execution.",
         )
 
         else -> ResolvedGate(
@@ -187,6 +231,28 @@ object ModeGate {
       auditRecord = auditRecord,
       detail = resolvedGate.detail,
     )
+  }
+
+  private fun isApprovalTokenExpired(
+    approvalToken: CommandApprovalToken,
+    decidedAtEpochMs: Long,
+  ): Boolean = decidedAtEpochMs - approvalToken.approvedAtEpochMs > APPROVAL_TOKEN_VALIDITY_MS
+
+  private fun isApprovalContentMismatch(
+    approvalToken: CommandApprovalToken,
+    request: CommandExecutionRequest,
+  ): Boolean = approvalToken.approvedRequestFingerprint != null &&
+    approvalToken.approvedRequestFingerprint != request.approvalFingerprint()
+
+  private fun consumeApprovalToken(tokenId: String, decidedAtEpochMs: Long): Boolean {
+    pruneConsumedApprovalTokens(decidedAtEpochMs)
+    return consumedApprovalTokenIds.putIfAbsent(tokenId, decidedAtEpochMs) == null
+  }
+
+  private fun pruneConsumedApprovalTokens(nowEpochMs: Long) {
+    consumedApprovalTokenIds.entries.removeIf { entry ->
+      nowEpochMs - entry.value > CONSUMED_APPROVAL_TOKEN_RETENTION_MS
+    }
   }
 
   private data class ResolvedGate(

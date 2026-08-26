@@ -798,6 +798,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
           approvalGrant != null || hostUiTaskPreapproved
         },
         approvedToolName = approvalGrant?.toolName,
+        approvedTaskGrantScopedToFirstRequest = approvalGrant != null,
         rejectedTaskId = task.id.takeIf { approvalRejection != null },
         rejectedToolName = approvalRejection?.toolName,
         commandExecutor = commandExecutorProvider(),

@@ -54,6 +54,8 @@ internal class ToolPolicyPipeline(
         approvedReadRoots = readRoots,
         approvedWriteRoots = writeRoots,
         approvedHostManagedReadRoots = approvedHostManagedReadRoots,
+        invocationFingerprint = (intent as? ExecutionIntent)?.commandPreview
+          ?.takeIf(String::isNotBlank),
       ),
     ),
     metadataContext = metadataContext(

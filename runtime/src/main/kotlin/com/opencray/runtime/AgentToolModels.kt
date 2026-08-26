@@ -160,6 +160,7 @@ data class OpenCrayToolDispatcherConfig(
   val modePolicy: ModePolicy = ModePolicy(),
   val approvedTaskId: String? = null,
   val approvedToolName: String? = null,
+  val approvedTaskGrantScopedToFirstRequest: Boolean = true,
   val rejectedTaskId: String? = null,
   val rejectedToolName: String? = null,
   val commandExecutor: CommandExecutor? = null,

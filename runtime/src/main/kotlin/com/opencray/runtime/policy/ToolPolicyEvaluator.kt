@@ -13,6 +13,8 @@ import com.opencray.policy.SafetySettingsMetadataKeys
 import com.opencray.policy.ToolPolicyOverride
 import java.nio.file.Path
 
+private const val APPROVED_TASK_GRANT_VALIDITY_MS = 10L * 60L * 1000L
+
 data class ToolPolicyEvaluationRequest(
   val task: AgentTask,
   val toolName: String,
@@ -23,6 +25,7 @@ data class ToolPolicyEvaluationRequest(
   val approvedReadRoots: Set<Path> = setOf(workspaceRoot),
   val approvedWriteRoots: Set<Path> = setOf(workspaceRoot),
   val approvedHostManagedReadRoots: Set<Path> = emptySet(),
+  val invocationFingerprint: String? = null,
 ) {
   constructor(
     task: AgentTask,
@@ -48,9 +51,15 @@ internal class ToolPolicyEvaluator(
   private val modePolicy: ModePolicy,
   private val approvedTaskId: String? = null,
   private val approvedToolName: String? = null,
+  private val approvedTaskGrantScopedToFirstRequest: Boolean = true,
   private val rejectedTaskId: String? = null,
   private val rejectedToolName: String? = null,
+  private val clock: () -> Long = System::currentTimeMillis,
 ) {
+  private val approvedTaskGrantLock = Any()
+  private var approvedTaskGrantFingerprint: String? = null
+  private var approvedTaskGrantFirstAllowedAtEpochMs: Long = 0L
+
   fun evaluate(request: ToolPolicyEvaluationRequest): PolicyDecision {
     val executionMode = ToolExecutionModeResolver.infer(request.task)
     val baseDecision = modePolicy.decide(
@@ -81,6 +90,7 @@ internal class ToolPolicyEvaluator(
     )
     val approvedTaskDecision = applyApprovedTaskOverride(
       task = request.task,
+      request = request,
       policyDecision = mergedDecision,
     )
     val approvedToolDecision = applyApprovedToolOverride(
@@ -231,6 +241,7 @@ internal class ToolPolicyEvaluator(
 
   private fun applyApprovedTaskOverride(
     task: AgentTask,
+    request: ToolPolicyEvaluationRequest,
     policyDecision: PolicyDecision,
   ): PolicyDecision {
     if (!approvedToolName.isNullOrBlank()) {
@@ -242,6 +253,33 @@ internal class ToolPolicyEvaluator(
     if (approvedTaskId != task.id || policyDecision.outcome != PolicyDecisionOutcome.ASK) {
       return policyDecision
     }
+    if (!approvedTaskGrantScopedToFirstRequest) {
+      return PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "USER_APPROVED_RETRY",
+        detail = "User approved this task retry.",
+        approvalRisk = policyDecision.approvalRisk,
+      )
+    }
+    val grantAllowsRequest = synchronized(approvedTaskGrantLock) {
+      val grantFingerprint = approvedTaskGrantFingerprint
+      val requestFingerprint = approvedRequestFingerprint(request)
+      when {
+        grantFingerprint == null -> {
+          approvedTaskGrantFingerprint = requestFingerprint
+          approvedTaskGrantFirstAllowedAtEpochMs = clock()
+          true
+        }
+
+        grantFingerprint == requestFingerprint &&
+          clock() - approvedTaskGrantFirstAllowedAtEpochMs <= APPROVED_TASK_GRANT_VALIDITY_MS -> true
+
+        else -> false
+      }
+    }
+    if (!grantAllowsRequest) {
+      return policyDecision
+    }
     return PolicyDecision(
       outcome = PolicyDecisionOutcome.ALLOW,
       reasonCode = "USER_APPROVED_RETRY",
@@ -249,6 +287,14 @@ internal class ToolPolicyEvaluator(
       approvalRisk = policyDecision.approvalRisk,
     )
   }
+
+  private fun approvedRequestFingerprint(request: ToolPolicyEvaluationRequest): String = listOf(
+    request.toolName,
+    request.toolClass.name,
+    request.targetPath?.toString().orEmpty(),
+    request.destinationPath?.toString().orEmpty(),
+    request.invocationFingerprint.orEmpty(),
+  ).joinToString("\u001f")
 
   private fun applyApprovedToolOverride(
     task: AgentTask,
