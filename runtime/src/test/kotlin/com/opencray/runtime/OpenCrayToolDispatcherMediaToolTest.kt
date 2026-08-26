@@ -6,6 +6,7 @@ import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.RetryRequest
 import com.opencray.core.orchestrator.RuntimeExecutionHooks
+import com.opencray.runtime.media.encodeProviderMediaJobId
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
@@ -59,8 +60,9 @@ class OpenCrayToolDispatcherMediaToolTest {
       },
     )
 
-    val result = dispatcher.dispatch(
+    val result = dispatchScoped(
       task = agentTask(),
+      dispatcher = dispatcher,
       call = AgentToolCall(
         toolName = "GenerateImage",
         arguments = buildJsonObject {
@@ -69,7 +71,6 @@ class OpenCrayToolDispatcherMediaToolTest {
           put("size", "1024x1024")
         },
       ),
-      hooks = runtimeHooks(),
     )
 
     assertEquals(AgentToolResultStatus.SUCCESS, result.status)
@@ -115,8 +116,9 @@ class OpenCrayToolDispatcherMediaToolTest {
       },
     )
 
-    val result = dispatcher.dispatch(
+    val result = dispatchScoped(
       task = agentTask(),
+      dispatcher = dispatcher,
       call = AgentToolCall(
         toolName = "SynthesizeSpeech",
         arguments = buildJsonObject {
@@ -124,7 +126,6 @@ class OpenCrayToolDispatcherMediaToolTest {
           put("format", "m4a")
         },
       ),
-      hooks = runtimeHooks(),
     )
 
     assertEquals(AgentToolResultStatus.SUCCESS, result.status)
@@ -201,29 +202,32 @@ class OpenCrayToolDispatcherMediaToolTest {
       },
     )
 
-    val startResult = dispatcher.dispatch(
+    val startResult = dispatchScoped(
       task = agentTask(),
+      dispatcher = dispatcher,
       call = AgentToolCall(
         toolName = "GenerateVideo",
         arguments = buildJsonObject {
           put("prompt", "A calm aerial harbor shot")
         },
       ),
-      hooks = runtimeHooks(),
     )
 
     assertEquals(AgentToolResultStatus.SUCCESS, startResult.status)
     assertEquals("true", startResult.metadata["jobPending"])
     val jobId = startResult.metadata["jobId"]
     assertNotNull(jobId)
-    val encodedPayload = String(
-      Base64.getUrlDecoder().decode(jobId!!.removePrefix("provider_media_job:")),
+    val encodedToken = jobId!!.removePrefix("provider_media_job:")
+    assertTrue(encodedToken.contains('.'))
+    val encodedPayload = encodedToken.substringBefore('.')
+    val decodedPayload = String(
+      Base64.getUrlDecoder().decode(encodedPayload),
       StandardCharsets.UTF_8,
     )
-    assertTrue(encodedPayload.contains("providerPollUrl"))
-    assertTrue(!encodedPayload.contains("providerInternalSecret"))
-    assertTrue(!encodedPayload.contains("promptPreview"))
-    assertTrue(!encodedPayload.contains("outputDirectory"))
+    assertTrue(decodedPayload.contains("providerPollUrl"))
+    assertTrue(!decodedPayload.contains("providerInternalSecret"))
+    assertTrue(!decodedPayload.contains("promptPreview"))
+    assertTrue(!decodedPayload.contains("outputDirectory"))
     val recoveredDispatcher = dispatcher(
       workspaceRoot = workspaceRoot,
       mediaGenerationClient = object : MediaGenerationClient {
@@ -258,15 +262,15 @@ class OpenCrayToolDispatcherMediaToolTest {
         }
       },
     )
-    val pollResult = recoveredDispatcher.dispatch(
+    val pollResult = dispatchScoped(
       task = agentTask(),
+      dispatcher = recoveredDispatcher,
       call = AgentToolCall(
         toolName = "PollMediaJob",
         arguments = buildJsonObject {
           put("job_id", jobId)
         },
       ),
-      hooks = runtimeHooks(),
     )
 
     assertEquals(AgentToolResultStatus.SUCCESS, pollResult.status)
@@ -336,15 +340,15 @@ class OpenCrayToolDispatcherMediaToolTest {
       },
     )
 
-    val startResult = dispatcher.dispatch(
+    val startResult = dispatchScoped(
       task = agentTask(),
+      dispatcher = dispatcher,
       call = AgentToolCall(
         toolName = "GenerateVideo",
         arguments = buildJsonObject {
           put("prompt", "A looping city timelapse")
         },
       ),
-      hooks = runtimeHooks(),
     )
     val jobId = startResult.metadata["jobId"]!!
 
@@ -381,28 +385,28 @@ class OpenCrayToolDispatcherMediaToolTest {
       },
     )
 
-    val cancelResult = recoveredDispatcher.dispatch(
+    val cancelResult = dispatchScoped(
       task = agentTask(),
+      dispatcher = recoveredDispatcher,
       call = AgentToolCall(
         toolName = "CancelMediaJob",
         arguments = buildJsonObject {
           put("job_id", jobId)
         },
       ),
-      hooks = runtimeHooks(),
     )
 
     assertEquals(AgentToolResultStatus.SUCCESS, cancelResult.status)
     assertEquals("cancelled", cancelResult.metadata["jobStatus"])
-    val pollResult = recoveredDispatcher.dispatch(
+    val pollResult = dispatchScoped(
       task = agentTask(),
+      dispatcher = recoveredDispatcher,
       call = AgentToolCall(
         toolName = "PollMediaJob",
         arguments = buildJsonObject {
           put("job_id", jobId)
         },
       ),
-      hooks = runtimeHooks(),
     )
 
     assertEquals(AgentToolResultStatus.SUCCESS, pollResult.status)
@@ -536,6 +540,215 @@ class OpenCrayToolDispatcherMediaToolTest {
     assertNull(registry.resolve("artifact-escape"))
   }
 
+  @Test
+  fun pollMediaJobRejectsTamperedJobIdSignatureWithoutNetworkRequests() {
+    val workspaceRoot = temporaryFolder.newFolder("media-forge-workspace").toPath()
+    val client = CountingMediaClient()
+    val dispatcher = dispatcher(workspaceRoot = workspaceRoot, imageGenerationClient = client)
+    val snapshot = providerVideoSnapshot(
+      jobId = "provider-video-forged-1",
+      pollUrl = "https://media.example.com/jobs/provider-video-forged-1",
+      cancelUrl = "https://media.example.com/jobs/provider-video-forged-1/cancel",
+    )
+    val legitimateJobId = dispatcher.encodeProviderMediaJobId(snapshot)
+    val tamperedJobId = legitimateJobId.dropLast(3) + "AAA"
+
+    val result = dispatchScoped(
+      task = agentTask(),
+      dispatcher = dispatcher,
+      call = AgentToolCall(
+        toolName = "PollMediaJob",
+        arguments = buildJsonObject { put("job_id", tamperedJobId) },
+      ),
+    )
+
+    assertEquals(AgentToolResultStatus.FAILED, result.status)
+    assertEquals("MEDIA_JOB_ID_INVALID", result.errorCode)
+    assertTrue(result.content.contains("signature verification failed"))
+    assertEquals(0, client.pollCalls)
+    assertEquals(0, client.cancelCalls)
+  }
+
+  @Test
+  fun pollMediaJobRejectsLegacyUnsignedJobIdWithoutNetworkRequests() {
+    val workspaceRoot = temporaryFolder.newFolder("media-legacy-workspace").toPath()
+    val client = CountingMediaClient()
+    val dispatcher = dispatcher(workspaceRoot = workspaceRoot, imageGenerationClient = client)
+    val legacyPayload = """
+      {"v":1,"toolName":"GenerateVideo","providerJobId":"legacy-job","status":"pending",
+       "pollAfterMs":1000,"metadata":{"providerPollUrl":"https://attacker.example.com/jobs/legacy-job"}}
+    """.trimIndent()
+    val legacyJobId = "provider_media_job:" + Base64.getUrlEncoder()
+      .withoutPadding()
+      .encodeToString(legacyPayload.toByteArray(StandardCharsets.UTF_8))
+
+    val result = dispatchScoped(
+      task = agentTask(),
+      dispatcher = dispatcher,
+      call = AgentToolCall(
+        toolName = "PollMediaJob",
+        arguments = buildJsonObject { put("job_id", legacyJobId) },
+      ),
+    )
+
+    assertEquals(AgentToolResultStatus.FAILED, result.status)
+    assertEquals("MEDIA_JOB_ID_INVALID", result.errorCode)
+    assertTrue(result.content.contains("no longer accepted"))
+    assertEquals(0, client.pollCalls)
+  }
+
+  @Test
+  fun pollMediaJobIsDeniedByTaskPolicyWithDecisionMetadataAndNoNetworkRequests() {
+    val workspaceRoot = temporaryFolder.newFolder("media-deny-workspace").toPath()
+    val client = CountingMediaClient()
+    val dispatcher = dispatcher(workspaceRoot = workspaceRoot, imageGenerationClient = client)
+    val snapshot = providerVideoSnapshot(
+      jobId = "provider-video-denied-1",
+      pollUrl = "https://media.example.com/jobs/provider-video-denied-1",
+      cancelUrl = null,
+    )
+    val jobId = dispatcher.encodeProviderMediaJobId(snapshot)
+    val deniedTask = agentTask(
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.DENY,
+        reasonCode = "TEST_DENY_NETWORK",
+      ),
+    )
+
+    val result = dispatchScoped(
+      task = deniedTask,
+      dispatcher = dispatcher,
+      call = AgentToolCall(
+        toolName = "PollMediaJob",
+        arguments = buildJsonObject { put("job_id", jobId) },
+      ),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("DENY_POLICY", result.errorCode)
+    assertEquals("DENY", result.metadata["policyOutcome"])
+    assertEquals("TEST_DENY_NETWORK", result.metadata["policyReasonCode"])
+    assertEquals("network_access", result.metadata["capabilityKind"])
+    assertEquals(0, client.pollCalls)
+  }
+
+  @Test
+  fun cancelMediaJobRequiresApprovalInSafeModeWithoutNetworkRequests() {
+    val workspaceRoot = temporaryFolder.newFolder("media-ask-workspace").toPath()
+    val client = CountingMediaClient()
+    val dispatcher = dispatcher(workspaceRoot = workspaceRoot, imageGenerationClient = client)
+    val snapshot = providerVideoSnapshot(
+      jobId = "provider-video-approval-1",
+      pollUrl = "https://media.example.com/jobs/provider-video-approval-1",
+      cancelUrl = "https://media.example.com/jobs/provider-video-approval-1/cancel",
+    )
+    val jobId = dispatcher.encodeProviderMediaJobId(snapshot)
+
+    val result = dispatchScoped(
+      task = agentTask(mode = "SAFE"),
+      dispatcher = dispatcher,
+      call = AgentToolCall(
+        toolName = "CancelMediaJob",
+        arguments = buildJsonObject { put("job_id", jobId) },
+      ),
+    )
+
+    assertEquals(AgentToolResultStatus.DENIED, result.status)
+    assertEquals("HIGH_RISK_APPROVAL_REQUIRED", result.errorCode)
+    assertEquals("ASK", result.metadata["policyOutcome"])
+    assertEquals("HIGH_RISK", result.metadata["approvalRisk"])
+    assertEquals(0, client.cancelCalls)
+    assertEquals(0, client.pollCalls)
+  }
+
+  @Test
+  fun pollMediaJobRejectsCrossOriginRegisteredUrlBeforeAnyNetworkRequest() {
+    val workspaceRoot = temporaryFolder.newFolder("media-cross-origin-workspace").toPath()
+    val client = CountingMediaClient()
+    val dispatcher = dispatcher(workspaceRoot = workspaceRoot, imageGenerationClient = client)
+    val snapshot = providerVideoSnapshot(
+      jobId = "provider-video-cross-origin-1",
+      pollUrl = "https://attacker.example.com/jobs/provider-video-cross-origin-1",
+      cancelUrl = null,
+    )
+    val jobId = dispatcher.encodeProviderMediaJobId(snapshot)
+
+    val result = dispatchScoped(
+      task = agentTask(),
+      dispatcher = dispatcher,
+      call = AgentToolCall(
+        toolName = "PollMediaJob",
+        arguments = buildJsonObject { put("job_id", jobId) },
+      ),
+    )
+
+    assertEquals(AgentToolResultStatus.FAILED, result.status)
+    assertEquals("MEDIA_JOB_ORIGIN_MISMATCH", result.errorCode)
+    assertTrue(result.content.contains("attacker.example.com"))
+    assertEquals(0, client.pollCalls)
+  }
+
+  private fun providerVideoSnapshot(
+    jobId: String,
+    pollUrl: String?,
+    cancelUrl: String?,
+  ): OpenCrayMediaJobSnapshot = OpenCrayMediaJobSnapshot(
+    receipt = OpenCrayMediaJobReceipt(
+      jobId = jobId,
+      toolName = "GenerateVideo",
+      status = OpenCrayMediaJobStatus.PENDING,
+    ),
+    metadata = buildMap {
+      pollUrl?.let { put("providerPollUrl", it) }
+      cancelUrl?.let { put("providerCancelUrl", it) }
+    },
+  )
+
+  private class CountingMediaClient :
+    OpenCrayImageGenerationClient,
+    OpenCrayVideoGenerationClient,
+    OpenCrayMediaJobClient {
+    var generateCalls = 0
+    var pollCalls = 0
+    var cancelCalls = 0
+    var pendingVideoJob: OpenCrayMediaJobSnapshot? = null
+    var pollResponse: OpenCrayMediaJobPollResult? = null
+    var cancelResponse: OpenCrayMediaJobSnapshot? = null
+
+    override fun generate(
+      request: OpenCrayImageGenerationRequest,
+      cancellationRequested: () -> Boolean,
+    ): OpenCrayImageGenerationResponse = error("Image generation not expected.")
+
+    override fun generateVideo(
+      request: OpenCrayVideoGenerationRequest,
+      cancellationRequested: () -> Boolean,
+    ): OpenCrayVideoGenerationResponse {
+      generateCalls++
+      return OpenCrayVideoGenerationResponse(pendingJob = pendingVideoJob)
+    }
+
+    override fun poll(
+      job: OpenCrayMediaJobSnapshot,
+      settings: OpenCrayMediaToolSettings,
+      cancellationRequested: () -> Boolean,
+    ): OpenCrayMediaJobPollResult {
+      pollCalls++
+      return pollResponse ?: error("Poll response not configured.")
+    }
+
+    override fun cancel(
+      job: OpenCrayMediaJobSnapshot,
+      settings: OpenCrayMediaToolSettings,
+      cancellationRequested: () -> Boolean,
+    ): OpenCrayMediaJobSnapshot {
+      cancelCalls++
+      return cancelResponse ?: job.copy(
+        receipt = job.receipt.copy(status = OpenCrayMediaJobStatus.CANCELLED),
+      )
+    }
+  }
+
   private fun dispatcher(
     workspaceRoot: Path,
     imageGenerationClient: OpenCrayImageGenerationClient? = null,
@@ -572,15 +785,26 @@ class OpenCrayToolDispatcherMediaToolTest {
     ),
   )
 
-  private fun agentTask(): AgentTask = AgentTask(
-    id = "task-media-tool",
-    type = AgentTaskType.PROMPT,
-    input = "Generate media.",
-    policyDecision = PolicyDecision(
+  private fun dispatchScoped(
+    task: AgentTask,
+    dispatcher: OpenCrayToolDispatcher,
+    call: AgentToolCall,
+  ): AgentToolResult = DispatchTaskScope.withCurrentTask(task) {
+    dispatcher.dispatch(task = task, call = call, hooks = runtimeHooks())
+  }
+
+  private fun agentTask(
+    mode: String = "DEVELOPER",
+    policyDecision: PolicyDecision = PolicyDecision(
       outcome = PolicyDecisionOutcome.ALLOW,
       reasonCode = "TEST_ALLOW",
     ),
-    metadata = mapOf("mode" to "DEVELOPER"),
+  ): AgentTask = AgentTask(
+    id = "task-media-tool",
+    type = AgentTaskType.PROMPT,
+    input = "Generate media.",
+    policyDecision = policyDecision,
+    metadata = mapOf("mode" to mode),
     createdAtEpochMs = 1_000L,
   )
 

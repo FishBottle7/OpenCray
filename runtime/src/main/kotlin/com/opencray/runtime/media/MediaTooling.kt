@@ -3,6 +3,7 @@ package com.opencray.runtime.media
 import com.opencray.core.contracts.AgentTask
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.DispatchTaskScope
 import com.opencray.runtime.OpenCrayAttachmentArtifacts
 import com.opencray.runtime.OpenCrayBinaryAsset
 import com.opencray.runtime.OpenCrayGeneratedWorkspaceArtifact
@@ -31,28 +32,18 @@ import com.opencray.runtime.policy.ToolMetadataContextRequest
 import com.opencray.runtime.policy.ToolPolicyPlan
 import com.opencray.runtime.policy.ToolTargetKind
 import com.opencray.runtime.policy.ToolWorkspaceRelation
-import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
-import java.util.Base64
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
 
 internal const val DEFAULT_GENERATED_IMAGE_FORMAT: String = "png"
 internal const val DEFAULT_GENERATED_VIDEO_FORMAT: String = "mp4"
 internal const val DEFAULT_GENERATED_AUDIO_FORMAT: String = "mp3"
-internal const val PROVIDER_MEDIA_JOB_ID_PREFIX: String = "provider_media_job:"
-internal val ENCODED_PROVIDER_MEDIA_JOB_METADATA_KEYS: Set<String> = setOf(
-  "providerPollUrl",
-  "providerCancelUrl",
-)
 internal const val MAX_GENERATED_IMAGE_COUNT: Int = 9
 internal const val MAX_GENERATED_VIDEO_DURATION_SECONDS: Int = 60
 
@@ -307,25 +298,75 @@ internal fun OpenCrayToolDispatcher.synthesizeSpeech(
 internal fun OpenCrayToolDispatcher.pollMediaJob(arguments: JsonObject): AgentToolResult {
     val jobId = arguments.requiredText("job_id").trim()
     require(jobId.isNotBlank()) { "PollMediaJob job_id must not be blank." }
-    decodeProviderMediaJobId(jobId)?.let { providerSnapshot ->
+    val decoding = decodeProviderMediaJobId(jobId)
+    val providerSnapshot = when (decoding) {
+      is ProviderMediaJobTokenDecoding.Valid -> decoding.snapshot
+      is ProviderMediaJobTokenDecoding.Invalid -> return invalidProviderMediaJobIdResult(
+        toolName = "PollMediaJob",
+        jobId = jobId,
+        reason = decoding.reason,
+      )
+      ProviderMediaJobTokenDecoding.NotProviderToken -> null
+    }
+    if (providerSnapshot != null) {
+      providerMediaJobOriginMismatch(providerSnapshot)?.let { mismatch ->
+        return providerMediaJobOriginMismatchResult(
+          toolName = "PollMediaJob",
+          jobId = jobId,
+          mismatch = mismatch,
+        )
+      }
+    }
+    val task = DispatchTaskScope.currentTask()
+      ?: return mediaJobPolicyContextUnavailableResult(toolName = "PollMediaJob", jobId = jobId)
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "PollMediaJob",
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.NONE,
+        primaryTargetPath = providerSnapshot?.metadata?.get("providerPollUrl")?.takeIf(String::isNotBlank),
+        targetSummary = inlinePreview(jobId, maxChars = 128),
+      ),
+    )
+    toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("jobId", inlinePreview(jobId, maxChars = 128))
+        providerSnapshot?.let { snapshot ->
+          put("providerJobId", snapshot.receipt.jobId)
+          snapshot.metadata["providerPollUrl"]
+            ?.takeIf(String::isNotBlank)
+            ?.let { put("providerPollUrl", it) }
+          snapshot.metadata["providerCancelUrl"]
+            ?.takeIf(String::isNotBlank)
+            ?.let { put("providerCancelUrl", it) }
+        }
+      },
+      askDetail = "Approval is required before PollMediaJob can access the network.",
+      denyDetail = "Policy denied PollMediaJob.",
+    )?.let { return it }
+    providerSnapshot?.let { providerSnapshot ->
       return pollProviderMediaJob(
         externalJobId = jobId,
         snapshot = providerSnapshot,
+        plan = plan,
       )
     }
     val handle = synchronized(mediaJobCoordinator.jobs) { mediaJobCoordinator.jobs[jobId] }
-      ?: return missingMediaJobResult(toolName = "PollMediaJob", jobId = jobId)
+      ?: return missingMediaJobResult(toolName = "PollMediaJob", jobId = jobId, plan = plan)
     if (!handle.future.isDone) {
-      return mediaJobPendingResult(toolName = "PollMediaJob", handle = handle)
+      return mediaJobPendingResult(toolName = "PollMediaJob", handle = handle, plan = plan)
     }
     val finalResult = try {
       handle.future.get()
     } catch (_: CancellationException) {
-      cancelledMediaJobTerminalResult(handle)
+      cancelledMediaJobTerminalResult(handle, plan = plan)
     } catch (exception: Throwable) {
       failedMediaJobTerminalResult(
         toolName = handle.toolName,
         message = exception.cause?.message ?: exception.message ?: "Background media job failed.",
+        plan = plan,
       )
     }
     return when (finalResult.status) {
@@ -339,11 +380,7 @@ internal fun OpenCrayToolDispatcher.pollMediaJob(arguments: JsonObject): AgentTo
           append(finalResult.content)
         }.trim(),
         metadata = toolPolicyPipeline.resultMetadata(
-          toolName = "PollMediaJob",
-          request = ToolMetadataContextRequest(
-            targetKind = ToolTargetKind.NETWORK,
-            workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-          ),
+          plan = plan,
           metadata = finalResult.metadata + mediaJobMetadata(
             handle = handle,
             status = OpenCrayMediaJobStatus.COMPLETED,
@@ -351,7 +388,7 @@ internal fun OpenCrayToolDispatcher.pollMediaJob(arguments: JsonObject): AgentTo
         ),
       )
 
-      AgentToolResultStatus.CANCELLED -> mediaJobCancelledObservationResult(handle)
+      AgentToolResultStatus.CANCELLED -> mediaJobCancelledObservationResult(handle, plan = plan)
       else -> AgentToolResult(
         toolName = "PollMediaJob",
         status = AgentToolResultStatus.FAILED,
@@ -359,11 +396,7 @@ internal fun OpenCrayToolDispatcher.pollMediaJob(arguments: JsonObject): AgentTo
         errorCode = finalResult.errorCode ?: "MEDIA_JOB_FAILED",
         errorMessage = finalResult.errorMessage ?: finalResult.content,
         metadata = toolPolicyPipeline.resultMetadata(
-          toolName = "PollMediaJob",
-          request = ToolMetadataContextRequest(
-            targetKind = ToolTargetKind.NETWORK,
-            workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-          ),
+          plan = plan,
           metadata = finalResult.metadata + mediaJobMetadata(
             handle = handle,
             status = OpenCrayMediaJobStatus.FAILED,
@@ -376,14 +409,63 @@ internal fun OpenCrayToolDispatcher.pollMediaJob(arguments: JsonObject): AgentTo
 internal fun OpenCrayToolDispatcher.cancelMediaJob(arguments: JsonObject): AgentToolResult {
     val jobId = arguments.requiredText("job_id").trim()
     require(jobId.isNotBlank()) { "CancelMediaJob job_id must not be blank." }
-    decodeProviderMediaJobId(jobId)?.let { providerSnapshot ->
+    val decoding = decodeProviderMediaJobId(jobId)
+    val providerSnapshot = when (decoding) {
+      is ProviderMediaJobTokenDecoding.Valid -> decoding.snapshot
+      is ProviderMediaJobTokenDecoding.Invalid -> return invalidProviderMediaJobIdResult(
+        toolName = "CancelMediaJob",
+        jobId = jobId,
+        reason = decoding.reason,
+      )
+      ProviderMediaJobTokenDecoding.NotProviderToken -> null
+    }
+    if (providerSnapshot != null) {
+      providerMediaJobOriginMismatch(providerSnapshot)?.let { mismatch ->
+        return providerMediaJobOriginMismatchResult(
+          toolName = "CancelMediaJob",
+          jobId = jobId,
+          mismatch = mismatch,
+        )
+      }
+    }
+    val task = DispatchTaskScope.currentTask()
+      ?: return mediaJobPolicyContextUnavailableResult(toolName = "CancelMediaJob", jobId = jobId)
+    val plan = toolPolicyPipeline.plan(
+      task = task,
+      toolName = "CancelMediaJob",
+      metadataRequest = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.NONE,
+        primaryTargetPath = providerSnapshot?.metadata?.get("providerCancelUrl")?.takeIf(String::isNotBlank),
+        targetSummary = inlinePreview(jobId, maxChars = 128),
+      ),
+    )
+    toolPolicyPipeline.gate(
+      plan = plan,
+      affectedPaths = buildMap {
+        put("jobId", inlinePreview(jobId, maxChars = 128))
+        providerSnapshot?.let { snapshot ->
+          put("providerJobId", snapshot.receipt.jobId)
+          snapshot.metadata["providerPollUrl"]
+            ?.takeIf(String::isNotBlank)
+            ?.let { put("providerPollUrl", it) }
+          snapshot.metadata["providerCancelUrl"]
+            ?.takeIf(String::isNotBlank)
+            ?.let { put("providerCancelUrl", it) }
+        }
+      },
+      askDetail = "Approval is required before CancelMediaJob can access the network.",
+      denyDetail = "Policy denied CancelMediaJob.",
+    )?.let { return it }
+    providerSnapshot?.let { providerSnapshot ->
       return cancelProviderMediaJob(
         externalJobId = jobId,
         snapshot = providerSnapshot,
+        plan = plan,
       )
     }
     val handle = synchronized(mediaJobCoordinator.jobs) { mediaJobCoordinator.jobs[jobId] }
-      ?: return missingMediaJobResult(toolName = "CancelMediaJob", jobId = jobId)
+      ?: return missingMediaJobResult(toolName = "CancelMediaJob", jobId = jobId, plan = plan)
     val alreadyDone = handle.future.isDone
     if (!alreadyDone) {
       handle.cancelRequested.set(true)
@@ -412,17 +494,94 @@ internal fun OpenCrayToolDispatcher.cancelMediaJob(arguments: JsonObject): Agent
           "Media job cancellation is pending.\njob_id=${handle.jobId}"
       },
       metadata = toolPolicyPipeline.resultMetadata(
-        toolName = "CancelMediaJob",
-        request = ToolMetadataContextRequest(
-          targetKind = ToolTargetKind.NETWORK,
-          workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-        ),
+        plan = plan,
         metadata = handle.baseMetadata + mediaJobMetadata(
           handle = handle,
           status = status,
         ),
       ),
     )
+  }
+
+internal fun OpenCrayToolDispatcher.invalidProviderMediaJobIdResult(
+    toolName: String,
+    jobId: String,
+    reason: String,
+  ): AgentToolResult = AgentToolResult(
+    toolName = toolName,
+    status = AgentToolResultStatus.FAILED,
+    content = "Media job id was rejected because $reason No network request was made.",
+    errorCode = "MEDIA_JOB_ID_INVALID",
+    errorMessage = "Media job id was rejected because $reason",
+    metadata = toolPolicyPipeline.resultMetadata(
+      toolName = toolName,
+      request = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.NONE,
+      ),
+      metadata = mapOf(
+        "jobId" to inlinePreview(jobId, maxChars = 128),
+        "jobRejectionReason" to reason,
+      ),
+    ),
+  )
+
+internal fun OpenCrayToolDispatcher.mediaJobPolicyContextUnavailableResult(
+    toolName: String,
+    jobId: String,
+  ): AgentToolResult = AgentToolResult(
+    toolName = toolName,
+    status = AgentToolResultStatus.DENIED,
+    content = "Media job tools require an active execution context. Retry inside a running agent turn.",
+    errorCode = "DENY_POLICY",
+    errorMessage = "Media job tools require an active execution context.",
+    metadata = toolPolicyPipeline.resultMetadata(
+      toolName = toolName,
+      request = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.NONE,
+      ),
+      metadata = mapOf("jobId" to inlinePreview(jobId, maxChars = 128)),
+    ),
+  )
+
+internal fun OpenCrayToolDispatcher.providerMediaJobOriginMismatchResult(
+    toolName: String,
+    jobId: String,
+    mismatch: String,
+  ): AgentToolResult = AgentToolResult(
+    toolName = toolName,
+    status = AgentToolResultStatus.FAILED,
+    content = "Media job endpoint origin does not match the configured provider origin ($mismatch). No network request was made.",
+    errorCode = "MEDIA_JOB_ORIGIN_MISMATCH",
+    errorMessage = "Media job endpoint origin does not match the configured provider origin ($mismatch).",
+    metadata = toolPolicyPipeline.resultMetadata(
+      toolName = toolName,
+      request = ToolMetadataContextRequest(
+        targetKind = ToolTargetKind.NETWORK,
+        workspaceRelation = ToolWorkspaceRelation.NONE,
+      ),
+      metadata = mapOf(
+        "jobId" to inlinePreview(jobId, maxChars = 128),
+        "originMismatch" to mismatch,
+      ),
+    ),
+  )
+
+internal fun OpenCrayToolDispatcher.providerMediaJobOriginMismatch(
+    snapshot: OpenCrayMediaJobSnapshot,
+  ): String? {
+    val configuredBaseUrl = when (snapshot.receipt.toolName) {
+      "GenerateImage" -> config.mediaToolSettingsProvider()?.imageGeneration?.baseUrl
+      "GenerateVideo" -> config.mediaToolSettingsProvider()?.videoGeneration?.baseUrl
+      else -> config.mediaToolSettingsProvider()?.speechSynthesis?.baseUrl
+    }
+    val configuredOrigin = endpointOriginOrNull(configuredBaseUrl) ?: return null
+    return ENCODED_PROVIDER_MEDIA_JOB_METADATA_KEYS.firstNotNullOfOrNull { key ->
+      endpointOriginOrNull(snapshot.metadata[key])
+        ?.takeUnless { origin -> origin == configuredOrigin }
+        ?.let { origin -> "$key registered origin $origin" }
+    }
   }
 
 internal fun OpenCrayToolDispatcher.executeImageGeneration(
@@ -747,6 +906,7 @@ internal fun OpenCrayToolDispatcher.nextMediaJobId(toolName: String): String {
 internal fun OpenCrayToolDispatcher.mediaJobPendingResult(
     toolName: String,
     handle: MediaJobHandle,
+    plan: ToolPolicyPlan,
   ): AgentToolResult = AgentToolResult(
     toolName = toolName,
     status = AgentToolResultStatus.SUCCESS,
@@ -761,11 +921,7 @@ internal fun OpenCrayToolDispatcher.mediaJobPendingResult(
       ),
     ),
     metadata = toolPolicyPipeline.resultMetadata(
-      toolName = toolName,
-      request = ToolMetadataContextRequest(
-        targetKind = ToolTargetKind.NETWORK,
-        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-      ),
+      plan = plan,
       metadata = handle.baseMetadata + mediaJobMetadata(
         handle = handle,
         status = OpenCrayMediaJobStatus.PENDING,
@@ -775,16 +931,13 @@ internal fun OpenCrayToolDispatcher.mediaJobPendingResult(
 
 internal fun OpenCrayToolDispatcher.mediaJobCancelledObservationResult(
     handle: MediaJobHandle,
+    plan: ToolPolicyPlan,
   ): AgentToolResult = AgentToolResult(
     toolName = "PollMediaJob",
     status = AgentToolResultStatus.SUCCESS,
     content = "Media job was cancelled.\njob_id=${handle.jobId}",
     metadata = toolPolicyPipeline.resultMetadata(
-      toolName = "PollMediaJob",
-      request = ToolMetadataContextRequest(
-        targetKind = ToolTargetKind.NETWORK,
-        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-      ),
+      plan = plan,
       metadata = handle.baseMetadata + mediaJobMetadata(
         handle = handle,
         status = OpenCrayMediaJobStatus.CANCELLED,
@@ -795,6 +948,7 @@ internal fun OpenCrayToolDispatcher.mediaJobCancelledObservationResult(
 internal fun OpenCrayToolDispatcher.missingMediaJobResult(
     toolName: String,
     jobId: String,
+    plan: ToolPolicyPlan,
   ): AgentToolResult = AgentToolResult(
     toolName = toolName,
     status = AgentToolResultStatus.FAILED,
@@ -802,11 +956,7 @@ internal fun OpenCrayToolDispatcher.missingMediaJobResult(
     errorCode = "MEDIA_JOB_NOT_FOUND",
     errorMessage = "Media job '$jobId' was not found.",
     metadata = toolPolicyPipeline.resultMetadata(
-      toolName = toolName,
-      request = ToolMetadataContextRequest(
-        targetKind = ToolTargetKind.NETWORK,
-        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-      ),
+      plan = plan,
       metadata = mapOf(
         "jobId" to jobId,
         "jobStatus" to OpenCrayMediaJobStatus.FAILED.name.lowercase(Locale.US),
@@ -827,25 +977,36 @@ internal fun OpenCrayToolDispatcher.cancelledMediaToolResult(
     metadata = metadata,
   )
 
-internal fun OpenCrayToolDispatcher.cancelledMediaJobTerminalResult(handle: MediaJobHandle): AgentToolResult =
+internal fun OpenCrayToolDispatcher.cancelledMediaJobTerminalResult(
+    handle: MediaJobHandle,
+    plan: ToolPolicyPlan,
+  ): AgentToolResult =
     AgentToolResult(
       toolName = handle.toolName,
       status = AgentToolResultStatus.CANCELLED,
       content = "Media job was cancelled.",
       errorCode = "MEDIA_JOB_CANCELLED",
       errorMessage = "Media job was cancelled.",
-      metadata = handle.baseMetadata,
+      metadata = toolPolicyPipeline.resultMetadata(
+        plan = plan,
+        metadata = handle.baseMetadata,
+      ),
     )
 
 internal fun OpenCrayToolDispatcher.failedMediaJobTerminalResult(
     toolName: String,
     message: String,
+    plan: ToolPolicyPlan,
   ): AgentToolResult = AgentToolResult(
     toolName = toolName,
     status = AgentToolResultStatus.FAILED,
     content = message,
     errorCode = "MEDIA_JOB_FAILED",
     errorMessage = message,
+    metadata = toolPolicyPipeline.resultMetadata(
+      plan = plan,
+      metadata = mapOf("jobToolName" to toolName),
+    ),
   )
 
 internal fun OpenCrayToolDispatcher.pendingMediaJobContent(
@@ -896,6 +1057,7 @@ internal fun OpenCrayToolDispatcher.providerPendingMediaJobResult(
 internal fun OpenCrayToolDispatcher.pollProviderMediaJob(
     externalJobId: String,
     snapshot: OpenCrayMediaJobSnapshot,
+    plan: ToolPolicyPlan,
   ): AgentToolResult {
     val settings = config.mediaToolSettingsProvider()
       ?: return unavailableMediaTool(
@@ -918,6 +1080,7 @@ internal fun OpenCrayToolDispatcher.pollProviderMediaJob(
         snapshot = snapshot.copy(
           receipt = snapshot.receipt.copy(status = OpenCrayMediaJobStatus.CANCELLED),
         ),
+        plan = plan,
       )
     } catch (exception: Throwable) {
       return AgentToolResult(
@@ -927,11 +1090,7 @@ internal fun OpenCrayToolDispatcher.pollProviderMediaJob(
         errorCode = "MEDIA_JOB_FAILED",
         errorMessage = exception.message ?: "Media job polling failed.",
         metadata = toolPolicyPipeline.resultMetadata(
-          toolName = "PollMediaJob",
-          request = ToolMetadataContextRequest(
-            targetKind = ToolTargetKind.NETWORK,
-            workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-          ),
+          plan = plan,
           metadata = providerMediaJobMetadata(
             externalJobId = externalJobId,
             snapshot = snapshot.copy(
@@ -948,11 +1107,7 @@ internal fun OpenCrayToolDispatcher.pollProviderMediaJob(
         status = AgentToolResultStatus.SUCCESS,
         content = pendingMediaJobContent(polled.snapshot, externalJobId = updatedExternalJobId),
         metadata = toolPolicyPipeline.resultMetadata(
-          toolName = "PollMediaJob",
-          request = ToolMetadataContextRequest(
-            targetKind = ToolTargetKind.NETWORK,
-            workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-          ),
+          plan = plan,
           metadata = polled.snapshot.metadata +
             polled.metadata +
             providerMediaJobMetadata(
@@ -965,6 +1120,7 @@ internal fun OpenCrayToolDispatcher.pollProviderMediaJob(
       OpenCrayMediaJobStatus.CANCELLED -> providerCancelledMediaJobResult(
         externalJobId = updatedExternalJobId,
         snapshot = polled.snapshot,
+        plan = plan,
       )
 
       OpenCrayMediaJobStatus.FAILED -> AgentToolResult(
@@ -974,11 +1130,7 @@ internal fun OpenCrayToolDispatcher.pollProviderMediaJob(
         errorCode = "MEDIA_JOB_FAILED",
         errorMessage = "Media job failed.",
         metadata = toolPolicyPipeline.resultMetadata(
-          toolName = "PollMediaJob",
-          request = ToolMetadataContextRequest(
-            targetKind = ToolTargetKind.NETWORK,
-            workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-          ),
+          plan = plan,
           metadata = polled.snapshot.metadata +
             polled.metadata +
             providerMediaJobMetadata(
@@ -992,6 +1144,7 @@ internal fun OpenCrayToolDispatcher.pollProviderMediaJob(
         externalJobId = updatedExternalJobId,
         snapshot = polled.snapshot,
         pollResult = polled,
+        plan = plan,
       )
     }
   }
@@ -999,6 +1152,7 @@ internal fun OpenCrayToolDispatcher.pollProviderMediaJob(
 internal fun OpenCrayToolDispatcher.cancelProviderMediaJob(
     externalJobId: String,
     snapshot: OpenCrayMediaJobSnapshot,
+    plan: ToolPolicyPlan,
   ): AgentToolResult {
     val settings = config.mediaToolSettingsProvider()
       ?: return unavailableMediaTool(
@@ -1027,11 +1181,7 @@ internal fun OpenCrayToolDispatcher.cancelProviderMediaJob(
         errorCode = "MEDIA_JOB_CANCEL_FAILED",
         errorMessage = exception.message ?: "Media job cancellation failed.",
         metadata = toolPolicyPipeline.resultMetadata(
-          toolName = "CancelMediaJob",
-          request = ToolMetadataContextRequest(
-            targetKind = ToolTargetKind.NETWORK,
-            workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-          ),
+          plan = plan,
           metadata = providerMediaJobMetadata(
             externalJobId = externalJobId,
             snapshot = snapshot.copy(
@@ -1057,11 +1207,7 @@ internal fun OpenCrayToolDispatcher.cancelProviderMediaJob(
           "Media job cancellation is pending.\njob_id=$updatedExternalJobId"
       },
       metadata = toolPolicyPipeline.resultMetadata(
-        toolName = "CancelMediaJob",
-        request = ToolMetadataContextRequest(
-          targetKind = ToolTargetKind.NETWORK,
-          workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-        ),
+        plan = plan,
         metadata = cancelledSnapshot.metadata + providerMediaJobMetadata(
           externalJobId = updatedExternalJobId,
           snapshot = cancelledSnapshot,
@@ -1074,11 +1220,8 @@ internal fun OpenCrayToolDispatcher.completedProviderMediaJobResult(
     externalJobId: String,
     snapshot: OpenCrayMediaJobSnapshot,
     pollResult: OpenCrayMediaJobPollResult,
+    plan: ToolPolicyPlan,
   ): AgentToolResult {
-    val request = ToolMetadataContextRequest(
-      targetKind = ToolTargetKind.NETWORK,
-      workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-    )
     return when (snapshot.receipt.toolName) {
       "GenerateImage" -> {
         require(pollResult.images.isNotEmpty()) { "Media job completed without image payloads." }
@@ -1109,8 +1252,7 @@ internal fun OpenCrayToolDispatcher.completedProviderMediaJobResult(
             append(buildGeneratedImageResultContent(artifacts))
           }.trim(),
           metadata = toolPolicyPipeline.resultMetadata(
-            toolName = "PollMediaJob",
-            request = request,
+            plan = plan,
             metadata = snapshot.metadata +
               pollResult.metadata +
               mapOf("imageCount" to artifacts.size.toString()) +
@@ -1152,8 +1294,7 @@ internal fun OpenCrayToolDispatcher.completedProviderMediaJobResult(
             append(buildGeneratedVideoResultContent(artifacts))
           }.trim(),
           metadata = toolPolicyPipeline.resultMetadata(
-            toolName = "PollMediaJob",
-            request = request,
+            plan = plan,
             metadata = snapshot.metadata +
               pollResult.metadata +
               mapOf("videoCount" to artifacts.size.toString()) +
@@ -1191,8 +1332,7 @@ internal fun OpenCrayToolDispatcher.completedProviderMediaJobResult(
             append(buildGeneratedSpeechResultContent(artifact))
           }.trim(),
           metadata = toolPolicyPipeline.resultMetadata(
-            toolName = "PollMediaJob",
-            request = request,
+            plan = plan,
             metadata = snapshot.metadata +
               pollResult.metadata +
               attachmentArtifactsMetadata(listOf(artifact)) +
@@ -1209,16 +1349,13 @@ internal fun OpenCrayToolDispatcher.completedProviderMediaJobResult(
 internal fun OpenCrayToolDispatcher.providerCancelledMediaJobResult(
     externalJobId: String,
     snapshot: OpenCrayMediaJobSnapshot,
+    plan: ToolPolicyPlan,
   ): AgentToolResult = AgentToolResult(
     toolName = "PollMediaJob",
     status = AgentToolResultStatus.SUCCESS,
     content = "Media job was cancelled.\njob_id=$externalJobId",
     metadata = toolPolicyPipeline.resultMetadata(
-      toolName = "PollMediaJob",
-      request = ToolMetadataContextRequest(
-        targetKind = ToolTargetKind.NETWORK,
-        workspaceRelation = ToolWorkspaceRelation.INSIDE_WORKSPACE,
-      ),
+      plan = plan,
       metadata = snapshot.metadata + providerMediaJobMetadata(
         externalJobId = externalJobId,
         snapshot = snapshot.copy(
@@ -1241,73 +1378,6 @@ internal fun OpenCrayToolDispatcher.providerMediaJobMetadata(
     "jobPending" to (snapshot.receipt.status == OpenCrayMediaJobStatus.PENDING).toString(),
     "jobPollAfterMs" to snapshot.receipt.pollAfterMs.toString(),
   ) + snapshot.providerRequestId?.let { mapOf("providerRequestId" to it) }.orEmpty()
-
-internal fun OpenCrayToolDispatcher.encodeProviderMediaJobId(snapshot: OpenCrayMediaJobSnapshot): String {
-    val payload = buildJsonObject {
-      put("v", 1)
-      put("toolName", snapshot.receipt.toolName)
-      put("providerJobId", snapshot.receipt.jobId)
-      put("status", snapshot.receipt.status.name.lowercase(Locale.US))
-      put("pollAfterMs", snapshot.receipt.pollAfterMs)
-      snapshot.providerRequestId?.let { put("providerRequestId", it) }
-      put(
-        "metadata",
-        buildJsonObject {
-          snapshot.metadata
-            .filterKeys { key -> key in ENCODED_PROVIDER_MEDIA_JOB_METADATA_KEYS }
-            .toSortedMap()
-            .forEach { (key, value) ->
-            put(key, value)
-          }
-        },
-      )
-    }
-    val encoded = Base64.getUrlEncoder()
-      .withoutPadding()
-      .encodeToString(config.json.encodeToString(JsonObject.serializer(), payload).toByteArray(StandardCharsets.UTF_8))
-    return "$PROVIDER_MEDIA_JOB_ID_PREFIX$encoded"
-  }
-
-internal fun OpenCrayToolDispatcher.decodeProviderMediaJobId(jobId: String): OpenCrayMediaJobSnapshot? {
-    if (!jobId.startsWith(PROVIDER_MEDIA_JOB_ID_PREFIX)) {
-      return null
-    }
-    val encodedPayload = jobId.removePrefix(PROVIDER_MEDIA_JOB_ID_PREFIX)
-    val decoded = runCatching {
-      String(Base64.getUrlDecoder().decode(encodedPayload), StandardCharsets.UTF_8)
-    }.getOrNull() ?: return null
-    val payload = config.json.parseToJsonElement(decoded) as? JsonObject ?: return null
-    val toolName = (payload["toolName"] as? JsonPrimitive)?.content.orEmpty()
-      .takeIf(String::isNotBlank)
-      ?: return null
-    val providerJobId = (payload["providerJobId"] as? JsonPrimitive)?.content.orEmpty()
-      .takeIf(String::isNotBlank)
-      ?: return null
-    val status = (payload["status"] as? JsonPrimitive)?.content
-      ?.trim()
-      ?.uppercase(Locale.US)
-      ?.let { raw -> OpenCrayMediaJobStatus.entries.firstOrNull { entry -> entry.name == raw } }
-      ?: OpenCrayMediaJobStatus.PENDING
-    val pollAfterMs = (payload["pollAfterMs"] as? JsonPrimitive)?.content
-      ?.toLongOrNull()
-      ?.takeIf { it > 0L }
-      ?: 1_000L
-    val providerRequestId = (payload["providerRequestId"] as? JsonPrimitive)?.content
-      ?.takeIf(String::isNotBlank)
-    val metadata = (payload["metadata"] as? JsonObject)
-      ?.mapValues { (_, value) -> (value as? JsonPrimitive)?.content.orEmpty() }
-      .orEmpty()
-    return OpenCrayMediaJobSnapshot(
-      receipt = OpenCrayMediaJobReceipt(
-        jobId = providerJobId,
-        toolName = toolName,
-        status = status,
-        pollAfterMs = pollAfterMs,
-      ),
-      providerRequestId = providerRequestId,
-      metadata = metadata,
-    )
-  }
 
 internal fun OpenCrayToolDispatcher.publishMediaArtifact(
     task: AgentTask,

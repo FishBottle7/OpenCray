@@ -7,6 +7,7 @@ import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.DispatchTaskScope
 import com.opencray.runtime.OpenCrayAgentRuntime
 import com.opencray.runtime.OpenCrayAgentRuntime.Companion.CHILD_APPROVAL_METADATA_KEYS
 import com.opencray.runtime.OpenCrayAgentRuntime.Companion.ERROR_APPROVAL_REQUIRED
@@ -32,7 +33,9 @@ import java.util.UUID
   ): AgentToolResult? {
     val canonicalToolName = canonicalSubAgentToolName(call.toolName) ?: return null
     if (!isSubAgentToolExposed(canonicalToolName)) {
-      return toolDispatcher.dispatch(task = task, call = call, hooks = hooks)
+      return DispatchTaskScope.withCurrentTask(task) {
+        toolDispatcher.dispatch(task = task, call = call, hooks = hooks)
+      }
     }
     when (canonicalToolName) {
       "spawn_agent" -> return spawnSubAgentHandle(

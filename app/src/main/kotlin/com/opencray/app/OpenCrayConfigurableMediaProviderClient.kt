@@ -257,6 +257,12 @@ internal class OpenCrayConfigurableMediaProviderClient(
   ): OpenCrayMediaJobPollResult {
     val toolKind = toolKindFor(job.receipt.toolName)
     val endpoint = pollEndpointFor(job, toolKind, settings)
+    ensureEndpointOriginAllowed(
+      endpoint = endpoint,
+      job = job,
+      toolKind = toolKind,
+      settings = settings,
+    )
     val response = executeRequest(
       endpoint = endpoint,
       method = "GET",
@@ -352,6 +358,12 @@ internal class OpenCrayConfigurableMediaProviderClient(
   ): OpenCrayMediaJobSnapshot {
     val toolKind = toolKindFor(job.receipt.toolName)
     val endpoint = cancelEndpointFor(job, toolKind, settings)
+    ensureEndpointOriginAllowed(
+      endpoint = endpoint,
+      job = job,
+      toolKind = toolKind,
+      settings = settings,
+    )
     val response = executeRequest(
       endpoint = endpoint,
       method = job.metadata[CANCEL_METHOD_METADATA_KEY].orEmpty().ifBlank { "POST" },
@@ -1099,6 +1111,28 @@ internal class OpenCrayConfigurableMediaProviderClient(
       providerRequestId = providerRequestId,
       metadata = mergedMetadata,
     )
+  }
+
+  private fun ensureEndpointOriginAllowed(
+    endpoint: String,
+    job: OpenCrayMediaJobSnapshot,
+    toolKind: MediaToolKind,
+    settings: OpenCrayMediaToolSettings,
+  ) {
+    val allowedOrigins = buildSet {
+      job.metadata[POLL_URL_METADATA_KEY]?.let { url -> endpointOrigin(url)?.let(::add) }
+      job.metadata[CANCEL_URL_METADATA_KEY]?.let { url -> endpointOrigin(url)?.let(::add) }
+      endpointOrigin(toolKind.baseUrl(settings))?.let(::add)
+    }
+    if (allowedOrigins.isEmpty()) {
+      return
+    }
+    val targetOrigin = endpointOrigin(endpoint)
+    if (targetOrigin == null || targetOrigin !in allowedOrigins) {
+      throw IllegalStateException(
+        "Provider media job endpoint origin is not allowed: $endpoint",
+      )
+    }
   }
 
   private fun pollEndpointFor(

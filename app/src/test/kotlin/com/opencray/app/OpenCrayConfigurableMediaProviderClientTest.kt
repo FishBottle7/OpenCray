@@ -958,6 +958,100 @@ class OpenCrayConfigurableMediaProviderClientTest {
     }
   }
 
+  @Test
+  fun pollDoesNotForwardProviderAuthHeadersAcrossCrossOriginRedirects() {
+    val initialAuthorization = AtomicReference<String>()
+    val redirectedAuthorization = AtomicReference<String>()
+    val pollServer = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val redirectServer = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
+    val videoBytes = byteArrayOf(2, 4, 6, 8)
+    val pollThread = Thread {
+      pollServer.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readJsonHttpRequest(
+            client = client,
+            requestLine = AtomicReference(),
+            authorization = initialAuthorization,
+            requestBody = AtomicReference(),
+          )
+          writeEmptyResponse(
+            client = client,
+            statusLine = "HTTP/1.1 307 Temporary Redirect",
+            extraHeaders = mapOf(
+              "Location" to "http://127.0.0.1:${redirectServer.localPort}/jobs/redirected",
+            ),
+          )
+        }
+      }
+    }
+    val redirectThread = Thread {
+      redirectServer.use { listeningSocket ->
+        listeningSocket.accept().use { client ->
+          readJsonHttpRequest(
+            client = client,
+            requestLine = AtomicReference(),
+            authorization = redirectedAuthorization,
+            requestBody = AtomicReference(),
+          )
+          writeJsonResponse(
+            client = client,
+            body = """
+              {
+                "status": "completed",
+                "videos": [
+                  { "b64_json": "${Base64.getEncoder().encodeToString(videoBytes)}" }
+                ]
+              }
+            """.trimIndent(),
+          )
+        }
+      }
+    }
+    pollThread.start()
+    redirectThread.start()
+
+    try {
+      val client = OpenCrayConfigurableMediaProviderClient(
+        userAgent = "OpenCray/1.0.0-test",
+      )
+      val settings = OpenCrayMediaToolSettings(
+        videoGeneration = OpenCrayVideoGenerationSettings(
+          provider = "Test Video",
+          baseUrl = "http://127.0.0.1:${pollServer.localPort}",
+          endpoint = "/v1/videos",
+          model = "gen4",
+          authHeaders = mapOf("Authorization" to "Bearer media-key"),
+        ),
+      )
+      val job = OpenCrayMediaJobSnapshot(
+        receipt = OpenCrayMediaJobReceipt(
+          jobId = "video-job-redirect-1",
+          toolName = "GenerateVideo",
+          status = OpenCrayMediaJobStatus.PENDING,
+        ),
+        metadata = mapOf(
+          "providerPollUrl" to "http://127.0.0.1:${pollServer.localPort}/jobs/video-job-redirect-1",
+        ),
+      )
+
+      val pollResult = client.poll(
+        job = job,
+        settings = settings,
+        cancellationRequested = { false },
+      )
+
+      assertEquals("Bearer media-key", initialAuthorization.get())
+      assertNull(redirectedAuthorization.get())
+      assertEquals(OpenCrayMediaJobStatus.COMPLETED, pollResult.snapshot.receipt.status)
+      assertArrayEquals(videoBytes, pollResult.videos.single().bytes)
+    } finally {
+      runCatching { pollServer.close() }
+      runCatching { redirectServer.close() }
+      pollThread.join(5_000L)
+      redirectThread.join(5_000L)
+    }
+  }
+
   @Test(expected = CancellationException::class)
   fun mediaRequestsDisconnectWhenCancellationIsRequested() {
     val requestObserved = CountDownLatch(1)

@@ -5,6 +5,7 @@ import com.opencray.core.orchestrator.RuntimeExecutionHooks
 import com.opencray.runtime.AgentToolCall
 import com.opencray.runtime.AgentToolResult
 import com.opencray.runtime.AgentToolResultStatus
+import com.opencray.runtime.DispatchTaskScope
 import com.opencray.runtime.OpenCrayToolDispatcher
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -50,14 +51,16 @@ internal class LiteRtAutomaticToolExecutor(
     arguments: Map<String, Any?>,
   ): String {
     val toolResult = runCatching {
-      context.toolDispatcher.dispatch(
-        task = context.task,
-        call = AgentToolCall(
-          toolName = toolName,
-          arguments = arguments.toJsonObject(),
-        ),
-        hooks = context.hooks,
-      )
+      DispatchTaskScope.withCurrentTask(context.task) {
+        context.toolDispatcher.dispatch(
+          task = context.task,
+          call = AgentToolCall(
+            toolName = toolName,
+            arguments = arguments.toJsonObject(),
+          ),
+          hooks = context.hooks,
+        )
+      }
     }.getOrElse { error ->
       AgentToolResult(
         toolName = toolName,

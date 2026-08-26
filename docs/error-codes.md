@@ -38,6 +38,8 @@
 | E0006 | BLOCK_APPROVAL_REQUIRED | 命令门控：缺少所需审批 |
 | E0007 | BLOCK_APPROVAL_TASK_MISMATCH | 命令门控：审批与目标任务不匹配 |
 | E0008 | DENY_POLICY_DECISION | 命令门控：策略决定拒绝执行 |
+| E0009 | MEDIA_JOB_ID_INVALID | 媒体任务 job_id 验签失败或格式非法，已拒绝且未发起网络请求 |
+| E0010 | MEDIA_JOB_ORIGIN_MISMATCH | 媒体任务登记 URL 的 origin 与配置的 provider origin 不一致，已拒绝且未发起网络请求 |
 | E0011 | DENY_INVALID_PATH | 路径非法，无法解析 |
 | E0012 | DENY_PATH_TRAVERSAL | 路径穿越（如 `..`）被拒绝 |
 | E0013 | DENY_PATH_ESCAPE | 路径逃出允许的根目录被拒绝 |
@@ -80,6 +82,7 @@
 | E3001 | RUNTIME_EXCEPTION | 运行时抛出未归类异常（兜底捕获） |
 | E3002 | RUNTIME_INTERRUPTED | 运行时执行被中断 |
 | E3003 | RESTART_REQUIRES_EXPLICIT_RETRY | 宿主重启后需要用户显式重试该任务 |
+| E3004 | OWNER_LEASE_STORE_CORRUPTED | 运行时所有权租约文件损坏，已隔离备份并拒绝接管（fail-closed），需人工修复后才恢复 |
 
 ## E4xxx 文件系统
 
