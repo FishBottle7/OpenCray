@@ -6,6 +6,11 @@ import com.opencray.core.contracts.ContractSchemaVersion
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import java.util.UUID
+import java.util.concurrent.ExecutionException
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -85,7 +90,7 @@ object NoOpSessionQueueRestoreTransformer : SessionQueueRestoreTransformer {
 class InMemorySessionQueueSnapshotStore(
   initialSnapshot: SessionQueueSnapshot? = null,
 ) : SessionQueueSnapshotStore {
-  private var snapshot: SessionQueueSnapshot? = initialSnapshot
+  @Volatile private var snapshot: SessionQueueSnapshot? = initialSnapshot
 
   override fun load(): SessionQueueSnapshot? = snapshot
 
@@ -174,45 +179,62 @@ class SessionQueue(
   private var drainInProgress: Boolean = false
   private var lifecycleState: SessionLifecycleState = SessionLifecycleState.IDLE
   private var nextEnqueueOrder: Long = 1L
+  private val persistExecutor: ExecutorService =
+    Executors.newSingleThreadExecutor { runnable ->
+      Thread(runnable, "session-queue-persist").apply { isDaemon = true }
+    }
+  private val persistError = AtomicReference<Throwable?>()
+  @Volatile private var lastPersistFuture: Future<*>? = null
 
   init {
     require(sessionId.isNotBlank()) { "SessionQueue sessionId must not be blank." }
     require(agentId.isNotBlank()) { "SessionQueue agentId must not be blank." }
 
     synchronized(lock) {
+      val loadedSnapshot = snapshotStore.load()
       val restoreEpochMs = clock.nowEpochMs()
       restoreLocked(
-        snapshot = restoreTransformer.restore(snapshotStore.load(), restoreEpochMs),
+        snapshot = restoreTransformer.restore(loadedSnapshot, restoreEpochMs),
         restoreEpochMs = restoreEpochMs,
       )
-      persistSnapshotLocked()
+      if (
+        loadedSnapshot == null ||
+        (loadedSnapshot.sessionId == sessionId && loadedSnapshot.agentId == agentId)
+      ) {
+        persistSnapshotLocked()
+      }
     }
+    awaitPersistCompletion()
   }
 
-  fun enqueue(task: AgentTask): AgentTask = synchronized(lock) {
-    require(task.id.isNotBlank()) { "Queued task id must not be blank." }
-    require(taskEntries.none { it.task.id == task.id }) {
-      "Task id already exists in session queue: ${task.id}"
+  fun enqueue(task: AgentTask): AgentTask {
+    val enqueuedTask = synchronized(lock) {
+      require(task.id.isNotBlank()) { "Queued task id must not be blank." }
+      require(taskEntries.none { it.task.id == task.id }) {
+        "Task id already exists in session queue: ${task.id}"
+      }
+
+      val now = clock.nowEpochMs()
+      val queuedTask = task.copy(
+        state = AgentTaskState.QUEUED,
+        updatedAtEpochMs = maxOf(now, task.createdAtEpochMs),
+        metadata = task.metadata + mapOf(
+          METADATA_PENDING_EXECUTION_KIND to EXECUTION_KIND_INITIAL,
+        ),
+      )
+
+      taskEntries += SessionQueueTaskSnapshot(
+        enqueueOrder = nextEnqueueOrder,
+        task = queuedTask,
+        lifecycleState = QueueTaskLifecycleState.QUEUED,
+        attempt = 0,
+      )
+      nextEnqueueOrder += 1
+      persistSnapshotLocked()
+      queuedTask
     }
-
-    val now = clock.nowEpochMs()
-    val queuedTask = task.copy(
-      state = AgentTaskState.QUEUED,
-      updatedAtEpochMs = maxOf(now, task.createdAtEpochMs),
-      metadata = task.metadata + mapOf(
-        METADATA_PENDING_EXECUTION_KIND to EXECUTION_KIND_INITIAL,
-      ),
-    )
-
-    taskEntries += SessionQueueTaskSnapshot(
-      enqueueOrder = nextEnqueueOrder,
-      task = queuedTask,
-      lifecycleState = QueueTaskLifecycleState.QUEUED,
-      attempt = 0,
-    )
-    nextEnqueueOrder += 1
-    persistSnapshotLocked()
-    return queuedTask
+    awaitPersistCompletion()
+    return enqueuedTask
   }
 
   /**
@@ -260,6 +282,7 @@ class SessionQueue(
           transitionSessionStateLocked(SessionLifecycleState.IDLE)
         }
       }
+      awaitPersistCompletion()
     }
   }
 
@@ -269,30 +292,34 @@ class SessionQueue(
    * - QUEUED/RETRY_PENDING/SUSPENDED tasks are cancelled before execution.
    * - RUNNING tasks transition to CANCEL_REQUESTED and runtime can observe this via hooks.
    */
-  fun requestCancel(taskId: String): Boolean = synchronized(lock) {
-    val index = indexOfTaskLocked(taskId) ?: return false
-    val current = taskEntries[index]
+  fun requestCancel(taskId: String): Boolean {
+    val cancelled = synchronized(lock) {
+      val index = indexOfTaskLocked(taskId) ?: return@synchronized false
+      val current = taskEntries[index]
 
-    return when (current.lifecycleState) {
-      QueueTaskLifecycleState.QUEUED,
-      QueueTaskLifecycleState.RETRY_PENDING,
-      QueueTaskLifecycleState.SUSPENDED,
-      -> {
-        transitionTaskLocked(index, QueueTaskLifecycleState.CANCELLED)
-        true
+      when (current.lifecycleState) {
+        QueueTaskLifecycleState.QUEUED,
+        QueueTaskLifecycleState.RETRY_PENDING,
+        QueueTaskLifecycleState.SUSPENDED,
+        -> {
+          transitionTaskLocked(index, QueueTaskLifecycleState.CANCELLED)
+          true
+        }
+
+        QueueTaskLifecycleState.RUNNING -> {
+          transitionTaskLocked(index, QueueTaskLifecycleState.CANCEL_REQUESTED)
+          true
+        }
+
+        QueueTaskLifecycleState.CANCEL_REQUESTED -> true
+        QueueTaskLifecycleState.COMPLETED,
+        QueueTaskLifecycleState.FAILED,
+        QueueTaskLifecycleState.CANCELLED,
+        -> false
       }
-
-      QueueTaskLifecycleState.RUNNING -> {
-        transitionTaskLocked(index, QueueTaskLifecycleState.CANCEL_REQUESTED)
-        true
-      }
-
-      QueueTaskLifecycleState.CANCEL_REQUESTED -> true
-      QueueTaskLifecycleState.COMPLETED,
-      QueueTaskLifecycleState.FAILED,
-      QueueTaskLifecycleState.CANCELLED,
-      -> false
     }
+    awaitPersistCompletion()
+    return cancelled
   }
 
   /**
@@ -301,53 +328,63 @@ class SessionQueue(
   fun requestRetry(
     taskId: String,
     taskMetadataUpdates: Map<String, String> = emptyMap(),
-  ): Boolean = synchronized(lock) {
-    val index = indexOfTaskLocked(taskId) ?: return false
-    val current = taskEntries[index]
-    if (current.lifecycleState != QueueTaskLifecycleState.FAILED) return false
-    val restartInterrupted = current.lastErrorCode == ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
-    if (!restartInterrupted && current.attempt >= config.maxAttempts) return false
+  ): Boolean {
+    val retried = synchronized(lock) {
+      val index = indexOfTaskLocked(taskId) ?: return@synchronized false
+      val current = taskEntries[index]
+      if (current.lifecycleState != QueueTaskLifecycleState.FAILED) return@synchronized false
+      val restartInterrupted = current.lastErrorCode == ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
+      if (!restartInterrupted && current.attempt >= config.maxAttempts) {
+        return@synchronized false
+      }
 
-    if (taskMetadataUpdates.isNotEmpty()) {
-      applyTaskMetadataUpdatesLocked(index = index, updates = taskMetadataUpdates)
+      if (taskMetadataUpdates.isNotEmpty()) {
+        applyTaskMetadataUpdatesLocked(index = index, updates = taskMetadataUpdates)
+      }
+      markPendingExecutionKindLocked(index, EXECUTION_KIND_RETRY)
+      transitionTaskLocked(
+        index = index,
+        to = QueueTaskLifecycleState.RETRY_PENDING,
+        errorCode = "",
+        errorMessage = "",
+      )
+      transitionTaskLocked(
+        index = index,
+        to = QueueTaskLifecycleState.QUEUED,
+        clearExecutionContext = true,
+      )
+      true
     }
-    markPendingExecutionKindLocked(index, EXECUTION_KIND_RETRY)
-    transitionTaskLocked(
-      index = index,
-      to = QueueTaskLifecycleState.RETRY_PENDING,
-      errorCode = "",
-      errorMessage = "",
-    )
-    transitionTaskLocked(
-      index = index,
-      to = QueueTaskLifecycleState.QUEUED,
-      clearExecutionContext = true,
-    )
-    return true
+    awaitPersistCompletion()
+    return retried
   }
 
   fun reconcileFailure(
     taskId: String,
     errorCode: String,
     errorMessage: String,
-  ): Boolean = synchronized(lock) {
+  ): Boolean {
     require(errorCode.isNotBlank()) { "Reconciled failure errorCode must not be blank." }
-    val index = indexOfTaskLocked(taskId) ?: return false
-    val current = taskEntries[index]
-    if (
-      current.lifecycleState == QueueTaskLifecycleState.COMPLETED ||
-      current.lifecycleState == QueueTaskLifecycleState.FAILED ||
-      current.lifecycleState == QueueTaskLifecycleState.CANCELLED
-    ) {
-      return false
+    val reconciled = synchronized(lock) {
+      val index = indexOfTaskLocked(taskId) ?: return@synchronized false
+      val current = taskEntries[index]
+      if (
+        current.lifecycleState == QueueTaskLifecycleState.COMPLETED ||
+        current.lifecycleState == QueueTaskLifecycleState.FAILED ||
+        current.lifecycleState == QueueTaskLifecycleState.CANCELLED
+      ) {
+        return@synchronized false
+      }
+      transitionTaskLocked(
+        index = index,
+        to = QueueTaskLifecycleState.FAILED,
+        errorCode = errorCode,
+        errorMessage = errorMessage,
+      )
+      true
     }
-    transitionTaskLocked(
-      index = index,
-      to = QueueTaskLifecycleState.FAILED,
-      errorCode = errorCode,
-      errorMessage = errorMessage,
-    )
-    return true
+    awaitPersistCompletion()
+    return reconciled
   }
 
   /**
@@ -363,42 +400,56 @@ class SessionQueue(
     taskId: String,
     executionKind: String,
     taskMetadataUpdates: Map<String, String> = emptyMap(),
-  ): Boolean = synchronized(lock) {
-    val index = indexOfTaskLocked(taskId) ?: return false
-    val current = taskEntries[index]
-    if (current.lifecycleState != QueueTaskLifecycleState.SUSPENDED) return false
+  ): Boolean {
+    val resumed = synchronized(lock) {
+      val index = indexOfTaskLocked(taskId) ?: return@synchronized false
+      val current = taskEntries[index]
+      if (current.lifecycleState != QueueTaskLifecycleState.SUSPENDED) {
+        return@synchronized false
+      }
 
-    require(
-      executionKind == EXECUTION_KIND_APPROVAL_RESUME ||
-        executionKind == EXECUTION_KIND_CHECKPOINT_RESUME,
-    ) {
-      "Unsupported resume execution kind: $executionKind"
-    }
+      require(
+        executionKind == EXECUTION_KIND_APPROVAL_RESUME ||
+          executionKind == EXECUTION_KIND_CHECKPOINT_RESUME,
+      ) {
+        "Unsupported resume execution kind: $executionKind"
+      }
 
-    if (taskMetadataUpdates.isNotEmpty()) {
-      applyTaskMetadataUpdatesLocked(index = index, updates = taskMetadataUpdates)
+      if (taskMetadataUpdates.isNotEmpty()) {
+        applyTaskMetadataUpdatesLocked(index = index, updates = taskMetadataUpdates)
+      }
+      markPendingExecutionKindLocked(index, executionKind)
+      transitionTaskLocked(
+        index = index,
+        to = QueueTaskLifecycleState.QUEUED,
+        errorCode = "",
+        errorMessage = "",
+        clearExecutionContext = true,
+      )
+      true
     }
-    markPendingExecutionKindLocked(index, executionKind)
-    transitionTaskLocked(
-      index = index,
-      to = QueueTaskLifecycleState.QUEUED,
-      errorCode = "",
-      errorMessage = "",
-      clearExecutionContext = true,
-    )
-    return true
+    awaitPersistCompletion()
+    return resumed
   }
 
-  fun stop(): SessionLifecycleState = synchronized(lock) {
-    transitionSessionStateLocked(SessionLifecycleState.STOPPED)
-    return lifecycleState
+  fun stop(): SessionLifecycleState {
+    val stoppedState = synchronized(lock) {
+      transitionSessionStateLocked(SessionLifecycleState.STOPPED)
+      lifecycleState
+    }
+    awaitPersistCompletion()
+    return stoppedState
   }
 
-  fun resume(): SessionLifecycleState = synchronized(lock) {
-    if (lifecycleState == SessionLifecycleState.STOPPED) {
-      transitionSessionStateLocked(SessionLifecycleState.IDLE)
+  fun resume(): SessionLifecycleState {
+    val resumedState = synchronized(lock) {
+      if (lifecycleState == SessionLifecycleState.STOPPED) {
+        transitionSessionStateLocked(SessionLifecycleState.IDLE)
+      }
+      lifecycleState
     }
-    return lifecycleState
+    awaitPersistCompletion()
+    return resumedState
   }
 
   fun currentSessionState(): SessionLifecycleState = synchronized(lock) { lifecycleState }
@@ -921,7 +972,32 @@ class SessionQueue(
   )
 
   private fun persistSnapshotLocked() {
-    snapshotStore.save(buildSnapshotLocked())
+    val snapshot = buildSnapshotLocked()
+    lastPersistFuture = persistExecutor.submit<Any> {
+      try {
+        snapshotStore.save(snapshot)
+      } catch (failure: Throwable) {
+        persistError.compareAndSet(null, failure)
+        throw failure
+      }
+    }
+  }
+
+  private fun awaitPersistCompletion() {
+    val lastFuture = lastPersistFuture ?: return
+    var wasInterrupted = Thread.interrupted()
+    try {
+      lastFuture.get()
+    } catch (interrupted: InterruptedException) {
+      wasInterrupted = true
+    } catch (execution: ExecutionException) {
+      throw execution.cause ?: execution
+    } finally {
+      if (wasInterrupted) {
+        Thread.currentThread().interrupt()
+      }
+    }
+    persistError.getAndSet(null)?.let { error -> throw error }
   }
 
   private fun mapLifecycleToAgentTaskState(state: QueueTaskLifecycleState): AgentTaskState = when (state) {

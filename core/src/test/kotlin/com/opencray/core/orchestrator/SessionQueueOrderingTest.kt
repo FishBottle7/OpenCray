@@ -10,6 +10,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -870,6 +871,142 @@ class SessionQueueOrderingTest {
     )
   }
 
+  @Test
+  fun concurrentTransitionsPersistMonotonicallyOrderedSnapshots() {
+    val store = ConcurrentRecordingSnapshotStore()
+    val queueClock = IncrementingClock(start = 200_000L)
+    val attempts = linkedMapOf<String, Int>()
+    lateinit var queue: SessionQueue
+
+    val runtime = SessionTaskRuntime { task, hooks ->
+      val attempt = (attempts[task.id] ?: 0) + 1
+      attempts[task.id] = attempt
+      val started = 300_000L + attempt
+
+      when (attempt) {
+        1 -> {
+          hooks.requestSuspend(
+            SuspensionRequest(
+              reasonCode = "AWAITING_CONCURRENT_MUTATORS",
+              detail = "suspend so concurrent resumes race with persistence",
+            ),
+          )
+          ExecutionResult(
+            taskId = task.id,
+            status = ExecutionStatus.DENIED,
+            errorCode = "AWAITING_CONCURRENT_MUTATORS",
+            startedAtEpochMs = started,
+            finishedAtEpochMs = started + 1,
+          )
+        }
+
+        2 -> {
+          hooks.requestRetry(
+            RetryRequest(
+              reasonCode = "TRANSIENT_RUNTIME_FAILURE",
+              detail = "force extra micro transitions while mutators persist",
+            ),
+          )
+          ExecutionResult(
+            taskId = task.id,
+            status = ExecutionStatus.FAILED,
+            errorCode = "TRANSIENT_RUNTIME_FAILURE",
+            startedAtEpochMs = started,
+            finishedAtEpochMs = started + 1,
+          )
+        }
+
+        else -> ExecutionResult(
+          taskId = task.id,
+          status = ExecutionStatus.SUCCESS,
+          startedAtEpochMs = started,
+          finishedAtEpochMs = started + 1,
+        )
+      }
+    }
+
+    queue = SessionQueue(
+      sessionId = "session-monotonic-persist",
+      agentId = "agent-monotonic-persist",
+      runtime = runtime,
+      snapshotStore = store,
+      clock = queueClock,
+      config = SessionQueueConfig(maxAttempts = 3),
+    )
+    queue.enqueue(task(id = "task-monotonic", createdAt = 20_000L))
+    queue.enqueue(task(id = "task-monotonic-cancelled", createdAt = 20_100L))
+    assertTrue(queue.requestCancel("task-monotonic-cancelled"))
+
+    val readerFailure = AtomicReference<Throwable?>()
+    val stopReader = AtomicBoolean(false)
+    val readerThread = Thread {
+      try {
+        while (!stopReader.get()) {
+          val observed = store.load()
+          if (observed != null) {
+            assertEquals("session-monotonic-persist", observed.sessionId)
+            val orders = observed.tasks.map { it.enqueueOrder }
+            assertEquals(orders.sorted(), orders)
+          }
+        }
+      } catch (failure: Throwable) {
+        readerFailure.compareAndSet(null, failure)
+      }
+    }
+    readerThread.start()
+
+    val mutatorThreads = (1..3).map {
+      Thread {
+        repeat(40) {
+          queue.requestResumeTask("task-monotonic")
+          queue.requestRetry("task-monotonic")
+          queue.requestCancel("task-monotonic-missing")
+          queue.requestCancel("task-monotonic-cancelled")
+        }
+      }
+    }
+
+    val drainThread = Thread { queue.drain() }
+    drainThread.start()
+    mutatorThreads.forEach { it.start() }
+
+    mutatorThreads.forEach { it.join(5_000L) }
+    drainThread.join(5_000L)
+    stopReader.set(true)
+    readerThread.join(2_000L)
+
+    assertFalse(drainThread.isAlive)
+    assertFalse(readerThread.isAlive)
+    mutatorThreads.forEach { thread -> assertFalse(thread.isAlive) }
+    assertNull(readerFailure.get())
+
+    var settleRounds = 0
+    var mainTaskState =
+      queue.snapshot().tasks.single { it.task.id == "task-monotonic" }.lifecycleState
+    while (mainTaskState != QueueTaskLifecycleState.COMPLETED && settleRounds < 5) {
+      queue.requestResumeTask("task-monotonic")
+      queue.drain()
+      mainTaskState =
+        queue.snapshot().tasks.single { it.task.id == "task-monotonic" }.lifecycleState
+      settleRounds += 1
+    }
+
+    val byTaskId = queue.snapshot().tasks.associateBy { it.task.id }
+    assertEquals(
+      QueueTaskLifecycleState.COMPLETED,
+      byTaskId.getValue("task-monotonic").lifecycleState,
+    )
+    assertEquals(
+      QueueTaskLifecycleState.CANCELLED,
+      byTaskId.getValue("task-monotonic-cancelled").lifecycleState,
+    )
+
+    val timestamps = store.history.map { it.updatedAtEpochMs }
+    assertTrue(timestamps.size > 10)
+    assertEquals(timestamps.sorted(), timestamps)
+    assertEquals(timestamps.distinct().size, timestamps.size)
+  }
+
   private fun task(id: String, createdAt: Long): AgentTask = AgentTask(
     id = id,
     type = AgentTaskType.PROMPT,
@@ -903,6 +1040,23 @@ class SessionQueueOrderingTest {
     override fun clear() {
       latest = null
       history.clear()
+    }
+  }
+
+  private class ConcurrentRecordingSnapshotStore : SessionQueueSnapshotStore {
+    private val delegate = InMemorySessionQueueSnapshotStore()
+    val history: MutableList<SessionQueueSnapshot> = mutableListOf()
+
+    override fun load(): SessionQueueSnapshot? = delegate.load()
+
+    override fun save(snapshot: SessionQueueSnapshot) {
+      delegate.save(snapshot)
+      synchronized(history) { history += snapshot }
+    }
+
+    override fun clear() {
+      delegate.clear()
+      synchronized(history) { history.clear() }
     }
   }
 
