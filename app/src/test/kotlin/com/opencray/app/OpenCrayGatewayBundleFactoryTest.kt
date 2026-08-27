@@ -581,6 +581,8 @@ class OpenCrayGatewayBundleFactoryTest {
           sessionId: String,
           taskId: String,
           runId: String,
+          executionId: String?,
+          executionOrdinal: Int?,
           requestCode: Int,
           target: RuntimeServiceTarget,
         ) = error("Unexpected approval pending intent.")

@@ -783,8 +783,7 @@ class RuntimeServiceProcessIsolationTest {
 
     try {
       val approveTaskId = "approval-approve-$suffix"
-      val approveNotificationId =
-        RuntimeNotificationCoordinator.approvalNotificationIdForTask(approveTaskId)
+      val approveNotificationId = RuntimeNotificationKeys.approvalId(approveTaskId)
       notificationManager.notify(
         approveNotificationId,
         coordinator.buildApprovalNotification(
@@ -808,8 +807,7 @@ class RuntimeServiceProcessIsolationTest {
       )
 
       val rejectTaskId = "approval-reject-$suffix"
-      val rejectNotificationId =
-        RuntimeNotificationCoordinator.approvalNotificationIdForTask(rejectTaskId)
+      val rejectNotificationId = RuntimeNotificationKeys.approvalId(rejectTaskId)
       notificationManager.notify(
         rejectNotificationId,
         coordinator.buildApprovalNotification(

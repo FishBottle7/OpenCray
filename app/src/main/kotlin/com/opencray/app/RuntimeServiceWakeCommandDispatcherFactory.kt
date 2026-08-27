@@ -50,10 +50,14 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
   private val projectionCoordinator: RuntimeServiceProjectionCoordinator,
   private val wakeIntentParser: RuntimeServiceWakeIntentParser =
     DefaultRuntimeServiceWakeIntentParser(),
-  private val approvalNotificationDismisser: (Context, String?) -> Unit =
-    { context, taskId -> RuntimeNotificationCoordinator.dismissApprovalNotification(context, taskId) },
-  private val terminalNotificationDismisser: (Context, String?) -> Unit =
-    { context, taskId -> RuntimeNotificationCoordinator.dismissTerminalInterruptedNotification(context, taskId) },
+  private val approvalNotificationDismisser: (Context, RuntimeServiceNotificationCommand) -> Unit =
+    { context, command ->
+      RuntimeNotificationCoordinator.dismissApprovalNotification(context, command)
+    },
+  private val terminalNotificationDismisser: (Context, String?, String?) -> Unit =
+    { context, runId, taskId ->
+      RuntimeNotificationCoordinator.dismissTerminalInterruptedNotification(context, runId, taskId)
+    },
   private val scheduleNotificationDismisser: (Context, String?) -> Unit =
     { context, scheduleId -> RuntimeNotificationCoordinator.dismissScheduleNotifications(context, scheduleId) },
   private val notificationActionFailureReporter:
@@ -68,7 +72,8 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
       is RuntimeServiceWakeIntentCommand.ChatWrite -> {
         try {
           gatewayBundle.dispatchChatWriteCommand(command.command)
-          terminalNotificationDismisser(appContext, command.terminalNotificationTaskId)
+          val retryRunId = (command.command as? OpenCrayChatWriteCommand.RetryChatRun)?.taskIdOrRunId
+          terminalNotificationDismisser(appContext, retryRunId, command.terminalNotificationTaskId)
         } finally {
           refreshAndPersist()
         }
@@ -104,23 +109,48 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
     }
   }
 
+  private enum class NotificationCommandOutcome { APPLIED, STALE, FAILED }
+
   private fun handleNotificationCommand(
     command: RuntimeServiceNotificationCommand,
   ) {
+    var outcome = NotificationCommandOutcome.FAILED
     val succeeded = try {
       when (command) {
         is RuntimeServiceNotificationCommand.ApproveApproval -> {
-          dispatcherDependencies.approvalDecisionAccess.approve(
-            command.runId ?: command.taskId.orEmpty(),
+          val result = dispatcherDependencies.approvalDecisionAccess.approve(
+            RuntimeApprovalDecisionRequest(
+              sessionId = command.sessionId,
+              taskId = command.taskId,
+              runId = command.runId,
+              executionId = command.executionId,
+              executionOrdinal = command.executionOrdinal,
+            ),
           )
-          true
+          approvalNotificationDismisser(appContext, command)
+          outcome = when (result.outcome) {
+            RuntimeApprovalDecisionOutcome.APPLIED -> NotificationCommandOutcome.APPLIED
+            else -> NotificationCommandOutcome.STALE
+          }
+          outcome == NotificationCommandOutcome.APPLIED
         }
 
         is RuntimeServiceNotificationCommand.RejectApproval -> {
-          dispatcherDependencies.approvalDecisionAccess.reject(
-            command.runId ?: command.taskId.orEmpty(),
+          val result = dispatcherDependencies.approvalDecisionAccess.reject(
+            RuntimeApprovalDecisionRequest(
+              sessionId = command.sessionId,
+              taskId = command.taskId,
+              runId = command.runId,
+              executionId = command.executionId,
+              executionOrdinal = command.executionOrdinal,
+            ),
           )
-          true
+          approvalNotificationDismisser(appContext, command)
+          outcome = when (result.outcome) {
+            RuntimeApprovalDecisionOutcome.APPLIED -> NotificationCommandOutcome.APPLIED
+            else -> NotificationCommandOutcome.STALE
+          }
+          outcome == NotificationCommandOutcome.APPLIED
         }
 
         is RuntimeServiceNotificationCommand.RunScheduleNow ->
@@ -166,7 +196,7 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
       throw failure
     }
     gatewayBundle.notifyChatSnapshotsChanged()
-    if (!succeeded) {
+    if (!succeeded && outcome != NotificationCommandOutcome.STALE) {
       notificationActionFailureReporter(
         command,
         IllegalStateException("Runtime notification action did not complete."),
@@ -176,7 +206,7 @@ internal class DefaultRuntimeServiceWakeCommandDispatcher(
     when (command) {
       is RuntimeServiceNotificationCommand.ApproveApproval,
       is RuntimeServiceNotificationCommand.RejectApproval,
-      -> approvalNotificationDismisser(appContext, command.taskId)
+      -> Unit
 
       is RuntimeServiceNotificationCommand.RunScheduleNow ->
         scheduleNotificationDismisser(appContext, command.scheduleId)

@@ -11,12 +11,16 @@ internal sealed interface RuntimeServiceNotificationCommand {
     override val sessionId: String?,
     override val taskId: String?,
     override val runId: String?,
+    val executionId: String? = null,
+    val executionOrdinal: Int? = null,
   ) : RuntimeServiceNotificationCommand
 
   data class RejectApproval(
     override val sessionId: String?,
     override val taskId: String?,
     override val runId: String?,
+    val executionId: String? = null,
+    val executionOrdinal: Int? = null,
   ) : RuntimeServiceNotificationCommand
 
   data class RunScheduleNow(
@@ -65,6 +69,15 @@ internal fun parseRuntimeNotificationCommand(
       intent = intent,
       key = RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SCHEDULE_ID,
     ),
+    executionId = notificationCommandExtra(
+      intent = intent,
+      key = RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_EXECUTION_ID,
+    ),
+    executionOrdinal = runCatching {
+      intent?.getIntExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_EXECUTION_ORDINAL, 0)
+        ?: 0
+    }.getOrNull()
+      ?.takeIf { value -> value > 0 },
   )
 }
 
@@ -74,7 +87,12 @@ internal fun parseRuntimeNotificationCommand(
   taskId: String?,
   runId: String?,
   scheduleId: String? = null,
+  executionId: String? = null,
+  executionOrdinal: Int? = null,
 ): RuntimeServiceNotificationCommand? {
+  val normalizedExecutionId = executionId
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
   return when (action) {
     RuntimeNotificationIntentActions.ACTION_APPROVE_RUNTIME_APPROVAL ->
       if (taskId == null && runId == null) {
@@ -84,6 +102,8 @@ internal fun parseRuntimeNotificationCommand(
           sessionId = sessionId,
           taskId = taskId,
           runId = runId,
+          executionId = normalizedExecutionId,
+          executionOrdinal = executionOrdinal,
         )
       }
 
@@ -95,6 +115,8 @@ internal fun parseRuntimeNotificationCommand(
           sessionId = sessionId,
           taskId = taskId,
           runId = runId,
+          executionId = normalizedExecutionId,
+          executionOrdinal = executionOrdinal,
         )
       }
 

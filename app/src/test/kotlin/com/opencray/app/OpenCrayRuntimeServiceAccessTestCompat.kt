@@ -89,6 +89,8 @@ internal object OpenCrayRuntimeServiceAccess {
     sessionId: String,
     taskId: String,
     runId: String,
+    executionId: String?,
+    executionOrdinal: Int?,
     requestCode: Int,
     target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
   ): PendingIntent = compatGateway.approvalActionPendingIntent(
@@ -97,6 +99,8 @@ internal object OpenCrayRuntimeServiceAccess {
     sessionId = sessionId,
     taskId = taskId,
     runId = runId,
+    executionId = executionId,
+    executionOrdinal = executionOrdinal,
     requestCode = requestCode,
     target = target,
   )

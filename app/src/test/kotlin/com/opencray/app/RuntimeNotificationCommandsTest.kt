@@ -39,6 +39,48 @@ class RuntimeNotificationCommandsTest {
   }
 
   @Test
+  fun parseRuntimeNotificationCommandCarriesExecutionIdentityForApprovalActions() {
+    val command = parseRuntimeNotificationCommand(
+      action = RuntimeNotificationIntentActions.ACTION_APPROVE_RUNTIME_APPROVAL,
+      sessionId = "session-execution",
+      taskId = "task-execution",
+      runId = "run-execution",
+      executionId = " execution-7 ",
+      executionOrdinal = 3,
+    )
+
+    assertEquals(
+      RuntimeServiceNotificationCommand.ApproveApproval(
+        sessionId = "session-execution",
+        taskId = "task-execution",
+        runId = "run-execution",
+        executionId = "execution-7",
+        executionOrdinal = 3,
+      ),
+      command,
+    )
+  }
+
+  @Test
+  fun parseRuntimeNotificationCommandFromLegacyIntentHasNoExecutionIdentity() {
+    val command = parseRuntimeNotificationCommand(
+      action = RuntimeNotificationIntentActions.ACTION_APPROVE_RUNTIME_APPROVAL,
+      sessionId = "session-old",
+      taskId = "task-old",
+      runId = "run-old",
+    )
+
+    assertEquals(
+      RuntimeServiceNotificationCommand.ApproveApproval(
+        sessionId = "session-old",
+        taskId = "task-old",
+        runId = "run-old",
+      ),
+      command,
+    )
+  }
+
+  @Test
   fun parseRuntimeNotificationCommandParsesScheduleActions() {
     val runNow = parseRuntimeNotificationCommand(
       action = RuntimeNotificationIntentActions.ACTION_RUN_SCHEDULE_NOW,

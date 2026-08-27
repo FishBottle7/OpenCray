@@ -1812,7 +1812,7 @@ abstract class RuntimeServiceHostTestBase {
             label = slot.label,
             baseUrl = slot.baseUrl,
             model = slot.model,
-            apiKey = slot.apiKey,
+            apiKey = slot.apiKey.orEmpty(),
             enabled = slot.enabled,
           )
         },
@@ -1887,7 +1887,7 @@ abstract class RuntimeServiceHostTestBase {
           endpoint = request.imageGeneration.endpoint,
           model = request.imageGeneration.model,
           authProtocol = request.imageGeneration.authProtocol,
-          apiKey = request.imageGeneration.apiKey,
+          apiKey = request.imageGeneration.apiKey.orEmpty(),
         ),
         videoGeneration = com.opencray.app.facade.media.MediaProviderSnapshot(
           provider = request.videoGeneration.provider,
@@ -1895,7 +1895,7 @@ abstract class RuntimeServiceHostTestBase {
           endpoint = request.videoGeneration.endpoint,
           model = request.videoGeneration.model,
           authProtocol = request.videoGeneration.authProtocol,
-          apiKey = request.videoGeneration.apiKey,
+          apiKey = request.videoGeneration.apiKey.orEmpty(),
         ),
         voiceGeneration = com.opencray.app.facade.media.VoiceProviderSnapshot(
           provider = request.voiceGeneration.provider,
@@ -1904,7 +1904,7 @@ abstract class RuntimeServiceHostTestBase {
           model = request.voiceGeneration.model,
           voicePreset = request.voiceGeneration.voicePreset,
           authProtocol = request.voiceGeneration.authProtocol,
-          apiKey = request.voiceGeneration.apiKey,
+          apiKey = request.voiceGeneration.apiKey.orEmpty(),
         ),
         sttRouteId = request.sttRouteId,
         externalStt = com.opencray.app.facade.media.MediaProviderSnapshot(
@@ -1913,7 +1913,7 @@ abstract class RuntimeServiceHostTestBase {
           endpoint = request.externalStt.endpoint,
           model = request.externalStt.model,
           authProtocol = request.externalStt.authProtocol,
-          apiKey = request.externalStt.apiKey,
+          apiKey = request.externalStt.apiKey.orEmpty(),
         ),
         onDeviceModel = com.opencray.app.facade.media.OnDeviceSttSnapshot(
           modelPackage = request.onDeviceModel.modelPackage,

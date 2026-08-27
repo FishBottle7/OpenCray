@@ -12,6 +12,26 @@ import com.opencray.runtime.subagent.SubAgentMetadataKeys
 import java.util.Locale
 import org.opencray.app.R
 
+internal enum class RuntimeApprovalDecisionOutcome {
+  APPLIED,
+  STALE,
+  NOT_FOUND,
+}
+
+internal data class RuntimeApprovalDecisionResult(
+  val outcome: RuntimeApprovalDecisionOutcome,
+  val sessionId: String? = null,
+  val taskId: String? = null,
+)
+
+internal data class RuntimeApprovalDecisionRequest(
+  val sessionId: String?,
+  val taskId: String?,
+  val runId: String?,
+  val executionId: String? = null,
+  val executionOrdinal: Int? = null,
+)
+
 internal fun runtimeServiceApprovalDecisionAccess(
   dependencies: RuntimeServiceApprovalDecisionDependencies,
   nowEpochMsProvider: () -> Long = System::currentTimeMillis,
@@ -32,22 +52,180 @@ internal class RuntimeServiceApprovalDecisionAccess(
   private val nowEpochMsProvider: () -> Long = System::currentTimeMillis,
 ) {
   fun approve(taskIdOrRunId: String) {
-    approvalDecisionCoordinator().approve(taskIdOrRunId)
+    approvalDecisionCoordinator(::resolvePendingApprovalById).approve(taskIdOrRunId)
   }
 
   fun approveForSession(taskIdOrRunId: String) {
-    approvalDecisionCoordinator().approveForSession(taskIdOrRunId)
+    approvalDecisionCoordinator(::resolvePendingApprovalById).approveForSession(taskIdOrRunId)
   }
 
   fun reject(taskIdOrRunId: String) {
-    approvalDecisionCoordinator().reject(taskIdOrRunId)
+    approvalDecisionCoordinator(::resolvePendingApprovalById).reject(taskIdOrRunId)
   }
 
-  private fun approvalDecisionCoordinator():
-    ChatApprovalDecisionCoordinator<RuntimeServicePendingApprovalResolution> {
+  fun approve(request: RuntimeApprovalDecisionRequest): RuntimeApprovalDecisionResult =
+    decide(approve = true, request = request)
+
+  fun reject(request: RuntimeApprovalDecisionRequest): RuntimeApprovalDecisionResult =
+    decide(approve = false, request = request)
+
+  private fun decide(
+    approve: Boolean,
+    request: RuntimeApprovalDecisionRequest,
+  ): RuntimeApprovalDecisionResult {
+    val hostAccess = dependencies.runtimeHostAccess
+    val sessionId = request.sessionId?.trim()?.takeIf(String::isNotBlank)
+    val taskId = request.taskId?.trim()?.takeIf(String::isNotBlank)
+    val runId = request.runId?.trim()?.takeIf(String::isNotBlank)
+    if (sessionId == null || taskId == null) {
+      return RuntimeApprovalDecisionResult(RuntimeApprovalDecisionOutcome.STALE)
+    }
+    val lookup = findApprovalRequiredTaskProjectionInSession(
+      sessionId = sessionId,
+      hostAccess = hostAccess,
+      taskId = taskId,
+      runId = runId,
+    )
+    val projection = lookup.exact ?: return RuntimeApprovalDecisionResult(
+      outcome = if (lookup.sameTaskPending) {
+        RuntimeApprovalDecisionOutcome.STALE
+      } else {
+        RuntimeApprovalDecisionOutcome.NOT_FOUND
+      },
+      sessionId = sessionId,
+      taskId = taskId,
+    )
+    if (
+      hostAccess.isApprovalApproved(sessionId, projection.taskId) ||
+      hostAccess.isApprovalRejected(sessionId, projection.taskId)
+    ) {
+      return RuntimeApprovalDecisionResult(
+        outcome = RuntimeApprovalDecisionOutcome.STALE,
+        sessionId = sessionId,
+        taskId = taskId,
+      )
+    }
+    if (!request.executionBinding().matches(approvalProjectionExecutionBinding(projection))) {
+      return RuntimeApprovalDecisionResult(
+        outcome = RuntimeApprovalDecisionOutcome.STALE,
+        sessionId = sessionId,
+        taskId = taskId,
+      )
+    }
+    if (!hostAccess.tryBeginApprovalDecision(sessionId, projection.taskId)) {
+      return RuntimeApprovalDecisionResult(
+        outcome = RuntimeApprovalDecisionOutcome.STALE,
+        sessionId = sessionId,
+        taskId = taskId,
+      )
+    }
+    return try {
+      val applied = executeDecision(
+        approve = approve,
+        projection = projection,
+      )
+      RuntimeApprovalDecisionResult(
+        outcome = if (applied) {
+          RuntimeApprovalDecisionOutcome.APPLIED
+        } else {
+          RuntimeApprovalDecisionOutcome.STALE
+        },
+        sessionId = sessionId,
+        taskId = projection.taskId,
+      )
+    } catch (failure: Throwable) {
+      hostAccess.releaseUnresolvedApprovalDecision(sessionId, projection.taskId)
+      throw failure
+    }
+  }
+
+  private fun executeDecision(
+    approve: Boolean,
+    projection: ApprovalRequiredTaskProjection,
+  ): Boolean {
+    var cachedResolution: RuntimeServicePendingApprovalResolution? = null
+    val coordinator = approvalDecisionCoordinator(resolver@ { _ ->
+      cachedResolution ?: resolvePendingApproval(projection).also { resolution ->
+        cachedResolution = resolution
+      }
+    })
+    return if (approve) {
+      coordinator.approve(projection.taskId)
+    } else {
+      coordinator.reject(projection.taskId)
+    }
+  }
+
+  private fun RuntimeApprovalDecisionRequest.executionBinding(): RuntimeApprovalExecutionBinding =
+    RuntimeApprovalExecutionBinding(
+      executionId = executionId,
+      executionOrdinal = executionOrdinal,
+    )
+
+  private fun resolvePendingApprovalById(
+    taskIdOrRunId: String,
+  ): RuntimeServicePendingApprovalResolution? {
+    val hostAccess = dependencies.runtimeHostAccess
+    val projection = findApprovalRequiredTaskProjection(
+      sessionIds = knownChatSessionIds(dependencies.chatSessionStore),
+      hostAccess = hostAccess,
+      taskIdOrRunId = taskIdOrRunId,
+      approvalRequiredErrorCode = SERVICE_ERROR_APPROVAL_REQUIRED,
+      highRiskApprovalRequiredErrorCode = SERVICE_ERROR_HIGH_RISK_APPROVAL_REQUIRED,
+    ) ?: return null
+    return resolvePendingApproval(projection)
+  }
+
+  private fun resolvePendingApproval(
+    projection: ApprovalRequiredTaskProjection,
+  ): RuntimeServicePendingApprovalResolution? {
+    val hostAccess = dependencies.runtimeHostAccess
+    if (
+      approvalDecisionState(
+        approved = hostAccess.isApprovalApproved(projection.sessionId, projection.taskId),
+        rejected = hostAccess.isApprovalRejected(projection.sessionId, projection.taskId),
+        checkpoint = projection.checkpoint,
+      ) != null
+    ) {
+      return null
+    }
+    val metadata = projection.metadata
+    val decisionRecord = projection.toApprovalDecisionRecord(
+      highRiskApprovalRequiredErrorCode = SERVICE_ERROR_HIGH_RISK_APPROVAL_REQUIRED,
+    )
+    return RuntimeServicePendingApprovalResolution(
+      sessionId = projection.sessionId,
+      runId = decisionRecord.runId,
+      taskId = decisionRecord.taskId,
+      pendingMessageId = decisionRecord.pendingMessageId,
+      toolName = decisionRecord.toolName,
+      resumeToolName = decisionRecord.resumeToolName,
+      promptCheckpointBoundary = decisionRecord.promptCheckpointBoundary,
+      promptResumeState = decisionRecord.promptResumeState,
+      subAgentApprovalResume = decisionRecord.subAgentApprovalResume,
+      isHighRisk = decisionRecord.isHighRisk,
+      supportsSessionApproval = approvalMetadataSupportsSessionScope(metadata),
+      subAgentParentRunId = metadata[com.opencray.runtime.subagent.SubAgentMetadataKeys.PARENT_RUN_ID]
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
+      subAgentLifecycle = decisionRecord.subAgentLifecycle
+        ?.toRuntimeServicePendingApprovalSubAgentLifecycle(),
+      subAgentControlTool = metadata[SubAgentMetadataKeys.CONTROL_TOOL]
+        ?.trim()
+        ?.lowercase(Locale.US)
+        ?.takeIf(String::isNotBlank),
+      executionId = decisionRecord.executionId,
+      executionOrdinal = decisionRecord.executionOrdinal,
+      executionKind = decisionRecord.executionKind,
+    )
+  }
+
+  private fun approvalDecisionCoordinator(
+    resolveApproval: (String) -> RuntimeServicePendingApprovalResolution?,
+  ): ChatApprovalDecisionCoordinator<RuntimeServicePendingApprovalResolution> {
     val nowEpochMs = nowEpochMsProvider()
     return ChatApprovalDecisionCoordinator(
-      resolveApproval = ::resolvePendingApproval,
+      resolveApproval = resolveApproval,
       approvalSubject = { resolution ->
         ApprovalDecisionSubject(
           sessionId = resolution.sessionId,
@@ -176,57 +354,6 @@ internal class RuntimeServiceApprovalDecisionAccess(
         }
       },
       nowEpochMsProvider = { nowEpochMs },
-    )
-  }
-
-  private fun resolvePendingApproval(
-    taskIdOrRunId: String,
-  ): RuntimeServicePendingApprovalResolution? {
-    val hostAccess = dependencies.runtimeHostAccess
-    val projection = findApprovalRequiredTaskProjection(
-      sessionIds = knownChatSessionIds(dependencies.chatSessionStore),
-      hostAccess = hostAccess,
-      taskIdOrRunId = taskIdOrRunId,
-      approvalRequiredErrorCode = SERVICE_ERROR_APPROVAL_REQUIRED,
-      highRiskApprovalRequiredErrorCode = SERVICE_ERROR_HIGH_RISK_APPROVAL_REQUIRED,
-    ) ?: return null
-    if (
-      approvalDecisionState(
-        approved = hostAccess.isApprovalApproved(projection.sessionId, projection.taskId),
-        rejected = hostAccess.isApprovalRejected(projection.sessionId, projection.taskId),
-        checkpoint = projection.checkpoint,
-      ) != null
-    ) {
-      return null
-    }
-    val metadata = projection.metadata
-    val decisionRecord = projection.toApprovalDecisionRecord(
-      highRiskApprovalRequiredErrorCode = SERVICE_ERROR_HIGH_RISK_APPROVAL_REQUIRED,
-    )
-    return RuntimeServicePendingApprovalResolution(
-      sessionId = projection.sessionId,
-      runId = decisionRecord.runId,
-      taskId = decisionRecord.taskId,
-      pendingMessageId = decisionRecord.pendingMessageId,
-      toolName = decisionRecord.toolName,
-      resumeToolName = decisionRecord.resumeToolName,
-      promptCheckpointBoundary = decisionRecord.promptCheckpointBoundary,
-      promptResumeState = decisionRecord.promptResumeState,
-      subAgentApprovalResume = decisionRecord.subAgentApprovalResume,
-      isHighRisk = decisionRecord.isHighRisk,
-      supportsSessionApproval = approvalMetadataSupportsSessionScope(metadata),
-      subAgentParentRunId = metadata[com.opencray.runtime.subagent.SubAgentMetadataKeys.PARENT_RUN_ID]
-        ?.trim()
-        ?.takeIf(String::isNotBlank),
-      subAgentLifecycle = decisionRecord.subAgentLifecycle
-        ?.toRuntimeServicePendingApprovalSubAgentLifecycle(),
-      subAgentControlTool = metadata[SubAgentMetadataKeys.CONTROL_TOOL]
-        ?.trim()
-        ?.lowercase(Locale.US)
-        ?.takeIf(String::isNotBlank),
-      executionId = decisionRecord.executionId,
-      executionOrdinal = decisionRecord.executionOrdinal,
-      executionKind = decisionRecord.executionKind,
     )
   }
 

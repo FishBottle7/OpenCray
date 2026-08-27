@@ -14,6 +14,8 @@ import com.opencray.core.contracts.AgentTask
 import com.opencray.core.contracts.ExecutionResult
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.orchestrator.ERROR_RESTART_REQUIRES_EXPLICIT_RETRY
+import com.opencray.core.orchestrator.METADATA_EXECUTION_ID
+import com.opencray.core.orchestrator.METADATA_EXECUTION_ORDINAL
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.runtime.OpenCrayApprovalEvent
 import com.opencray.runtime.OpenCrayApprovalPhase
@@ -21,7 +23,6 @@ import com.opencray.runtime.OpenCrayAgentRunEvent
 import com.opencray.runtime.OpenCrayCancellationEvent
 import com.opencray.runtime.OpenCrayToolCallEvent
 import com.opencray.runtime.subagent.SubAgentApprovalResumeMetadata
-import kotlin.math.absoluteValue
 import org.opencray.app.R
 
 internal object RuntimeNotificationIntentActions {
@@ -44,6 +45,36 @@ internal object RuntimeNotificationIntentExtras {
   const val EXTRA_NOTIFICATION_TASK_ID: String = "notificationTaskId"
   const val EXTRA_NOTIFICATION_RUN_ID: String = "notificationRunId"
   const val EXTRA_NOTIFICATION_SCHEDULE_ID: String = "notificationScheduleId"
+  const val EXTRA_NOTIFICATION_EXECUTION_ID: String = "notificationExecutionId"
+  const val EXTRA_NOTIFICATION_EXECUTION_ORDINAL: String = "notificationExecutionOrdinal"
+}
+
+internal data class RuntimeApprovalExecutionBinding(
+  val executionId: String? = null,
+  val executionOrdinal: Int? = null,
+) {
+  val hasIdentity: Boolean
+    get() = !normalizedExecutionId.isNullOrEmpty() || normalizedExecutionOrdinal != null
+
+  val normalizedExecutionId: String?
+    get() = executionId?.trim()?.takeIf(String::isNotBlank)
+
+  val normalizedExecutionOrdinal: Int?
+    get() = executionOrdinal?.takeIf { value -> value > 0 }
+
+  fun identityToken(): String =
+    normalizedExecutionId ?: normalizedExecutionOrdinal?.let { value -> "ordinal-$value" } ?: "unknown"
+
+  fun matches(other: RuntimeApprovalExecutionBinding): Boolean {
+    if (!hasIdentity && !other.hasIdentity) {
+      return true
+    }
+    if (!hasIdentity || !other.hasIdentity) {
+      return false
+    }
+    return normalizedExecutionId == other.normalizedExecutionId &&
+      normalizedExecutionOrdinal == other.normalizedExecutionOrdinal
+  }
 }
 
 internal data class RuntimeApprovalNotificationModel(
@@ -55,7 +86,16 @@ internal data class RuntimeApprovalNotificationModel(
   val title: String,
   val body: String,
   val isHighRisk: Boolean,
-)
+  val executionBinding: RuntimeApprovalExecutionBinding = RuntimeApprovalExecutionBinding(),
+) {
+  val notificationKey: RuntimeNotificationKey =
+    RuntimeNotificationKeys.approvalKey(
+      sessionId = sessionId,
+      runId = runId,
+      taskId = taskId,
+      executionBinding = executionBinding,
+    )
+}
 
 internal data class RuntimeTerminalNotificationModel(
   val sessionId: String,
@@ -189,8 +229,15 @@ internal class RuntimeNotificationCoordinator(
   private var hostAccess: RuntimeNotificationHostAccess = hostAccess
   private var hostObservationDisposer: (() -> Unit)? = null
   private var visibilityObservationDisposer: (() -> Unit)? = null
-  private var activeApprovalTaskIds: Set<String> = emptySet()
+  private val activeApprovalNotifications = LinkedHashMap<String, TrackedApprovalNotification>()
   private val appVisibleProvider: () -> Boolean = appVisibilitySignalAccess::currentVisibility
+
+  private data class TrackedApprovalNotification(
+    val sessionId: String,
+    val taskId: String,
+    val runId: String,
+    val key: RuntimeNotificationKey,
+  )
 
   fun start() {
     val resolvedHostAccess: RuntimeNotificationHostAccess
@@ -229,7 +276,7 @@ internal class RuntimeNotificationCoordinator(
     val visibilityDisposer: (() -> Unit)?
     synchronized(lock) {
       started = false
-      activeApprovalTaskIds = emptySet()
+      activeApprovalNotifications.clear()
       hostDisposer = hostObservationDisposer
       visibilityDisposer = visibilityObservationDisposer
       hostObservationDisposer = null
@@ -255,7 +302,7 @@ internal class RuntimeNotificationCoordinator(
       } else {
         null
       }
-      activeApprovalTaskIds = emptySet()
+      activeApprovalNotifications.clear()
     }
     previousDisposer?.invoke()
     if (shouldSync) {
@@ -272,10 +319,11 @@ internal class RuntimeNotificationCoordinator(
     }
     val spec = scheduledTaskSpecStore.get(outcome.scheduleId)
     val model = scheduleNotificationModel(outcome = outcome, spec = spec) ?: return
-    notificationManager.notify(
-      scheduleNotificationId(scheduleId = model.scheduleId, outcome = outcome.result.name),
-      buildScheduleNotification(model),
+    val key = RuntimeNotificationKeys.scheduleKey(
+      scheduleId = model.scheduleId,
+      outcome = outcome.result.name,
     )
+    notificationManager.notify(key.tag, key.id, buildScheduleNotification(model))
   }
 
   private val hostListener = object : AgentSessionRuntimeListener {
@@ -316,19 +364,17 @@ internal class RuntimeNotificationCoordinator(
         toolReason = result.metadata["toolReason"],
       )
       if (approvalModel != null) {
-        addActiveApprovalTaskId(approvalModel.taskId)
+        trackActiveApproval(approvalModel)
         if (!appVisibleProvider() && shouldNotifyApproval(task = task)) {
-          notificationManager.notify(
-            approvalNotificationId(approvalModel.taskId),
-            buildApprovalNotification(approvalModel),
-          )
+          val key = approvalModel.notificationKey
+          notificationManager.notify(key.tag, key.id, buildApprovalNotification(approvalModel))
+          cancelLegacyApprovalSlot(approvalModel.taskId)
         }
       }
       return
     }
 
-    removeActiveApprovalTaskId(task.id)
-    cancelApprovalNotification(task.id)
+    cancelApprovalsForTask(sessionId = sessionId, taskId = task.id)
     if (appVisibleProvider()) {
       return
     }
@@ -348,14 +394,20 @@ internal class RuntimeNotificationCoordinator(
     when (event) {
       is OpenCrayApprovalEvent -> {
         if (event.phase != OpenCrayApprovalPhase.REQUIRED) {
-          removeActiveApprovalTaskId(event.taskId)
-          cancelApprovalNotification(event.taskId)
+          cancelApprovalsForTask(
+            sessionId = sessionId,
+            taskId = event.taskId,
+            runId = event.runId,
+          )
         }
       }
 
       is OpenCrayCancellationEvent -> {
-        removeActiveApprovalTaskId(event.taskId)
-        cancelApprovalNotification(event.taskId)
+        cancelApprovalsForTask(
+          sessionId = sessionId,
+          taskId = event.taskId,
+          runId = event.runId,
+        )
       }
 
       else -> Unit
@@ -374,21 +426,23 @@ internal class RuntimeNotificationCoordinator(
   private fun syncPendingApprovalNotifications() {
     val models = knownSessionIds()
       .flatMap(::pendingApprovalNotificationsForSession)
-    val taskIds = models.mapTo(linkedSetOf(), RuntimeApprovalNotificationModel::taskId)
-    val staleTaskIds = synchronized(lock) {
-      val stale = activeApprovalTaskIds - taskIds
-      activeApprovalTaskIds = taskIds
+    val staleKeys: List<RuntimeNotificationKey> = synchronized(lock) {
+      val currentTags = models.mapTo(linkedSetOf()) { model -> model.notificationKey.tag }
+      val trackedByTag = activeApprovalNotifications.keys.toSet()
+      val stale = (trackedByTag - currentTags).mapNotNull { tag ->
+        activeApprovalNotifications.remove(tag)?.key
+      }
+      models.forEach { model -> trackActiveApprovalLocked(model) }
       stale
     }
-    staleTaskIds.forEach(::cancelApprovalNotification)
+    staleKeys.forEach { key -> notificationManager.cancel(key.tag, key.id) }
     if (appVisibleProvider()) {
       return
     }
     models.forEach { model ->
-      notificationManager.notify(
-        approvalNotificationId(model.taskId),
-        buildApprovalNotification(model),
-      )
+      val key = model.notificationKey
+      notificationManager.notify(key.tag, key.id, buildApprovalNotification(model))
+      cancelLegacyApprovalSlot(model.taskId)
     }
   }
 
@@ -453,6 +507,7 @@ internal class RuntimeNotificationCoordinator(
           metadata = projection.metadata,
           errorBody = projection.errorBody,
           toolReason = projection.toolReason,
+          runSnapshot = projection.runSnapshot,
         )
       }
       .toList()
@@ -460,9 +515,12 @@ internal class RuntimeNotificationCoordinator(
 
   private fun onAppVisibilityChanged(isVisible: Boolean) {
     if (isVisible) {
-      synchronized(lock) {
-        activeApprovalTaskIds.toList()
-      }.forEach(::cancelApprovalNotification)
+      val tracked: List<TrackedApprovalNotification> = synchronized(lock) {
+        activeApprovalNotifications.values.toList().also { activeApprovalNotifications.clear() }
+      }
+      tracked.forEach { entry ->
+        notificationManager.cancel(entry.key.tag, entry.key.id)
+      }
       return
     }
     syncPendingApprovalNotifications()
@@ -476,6 +534,7 @@ internal class RuntimeNotificationCoordinator(
     metadata: Map<String, String>,
     errorBody: String?,
     toolReason: String?,
+    runSnapshot: AgentRunSnapshot? = null,
   ): RuntimeApprovalNotificationModel? {
     val runId = task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID]
       ?.trim()
@@ -506,8 +565,28 @@ internal class RuntimeNotificationCoordinator(
       },
       body = body,
       isHighRisk = isHighRisk,
+      executionBinding = approvalExecutionBinding(
+        task = task,
+        runSnapshot = runSnapshot,
+        resultMetadata = metadata,
+      ),
     )
   }
+
+  private fun approvalExecutionBinding(
+    task: AgentTask,
+    runSnapshot: AgentRunSnapshot?,
+    resultMetadata: Map<String, String>,
+  ): RuntimeApprovalExecutionBinding = RuntimeApprovalExecutionBinding(
+    executionId = task.metadata[METADATA_EXECUTION_ID]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: runSnapshot?.executionId
+      ?: resultMetadata[METADATA_EXECUTION_ID]?.trim()?.takeIf(String::isNotBlank),
+    executionOrdinal = task.metadata[METADATA_EXECUTION_ORDINAL]?.trim()?.toIntOrNull()
+      ?: runSnapshot?.executionOrdinal?.takeIf { value -> value > 0 }
+      ?: resultMetadata[METADATA_EXECUTION_ORDINAL]?.trim()?.toIntOrNull(),
+  )
 
   private fun terminalNotificationModel(
     sessionId: String,
@@ -557,13 +636,13 @@ internal class RuntimeNotificationCoordinator(
     if (terminalDeliveryStore.wasDelivered(deliveryKey, fingerprint)) {
       return
     }
-    notificationManager.notify(
-      terminalNotificationId(
-        taskId = terminalModel.taskId,
-        interrupted = terminalModel.interrupted,
-      ),
-      buildTerminalNotification(terminalModel),
+    val key = RuntimeNotificationKeys.terminalKey(
+      runId = terminalModel.runId,
+      taskId = terminalModel.taskId,
+      interrupted = terminalModel.interrupted,
     )
+    notificationManager.notify(key.tag, key.id, buildTerminalNotification(terminalModel))
+    cancelLegacyTerminalSlots(terminalModel.taskId)
     terminalDeliveryStore.markDelivered(deliveryKey, fingerprint)
   }
 
@@ -581,10 +660,8 @@ internal class RuntimeNotificationCoordinator(
     if (terminalDeliveryStore.wasDelivered(deliveryKey, fingerprint)) {
       return
     }
-    notificationManager.notify(
-      serviceRecoveredNotificationId(processStartId),
-      buildServiceRecoveredNotification(model),
-    )
+    val key = RuntimeNotificationKeys.recoveredKey(processStartId)
+    notificationManager.notify(key.tag, key.id, buildServiceRecoveredNotification(model))
     terminalDeliveryStore.markDelivered(deliveryKey, fingerprint)
   }
 
@@ -699,10 +776,7 @@ internal class RuntimeNotificationCoordinator(
       localizedContext.getString(R.string.runtime_notification_action_approve),
       approvalActionPendingIntent(
         action = RuntimeNotificationIntentActions.ACTION_APPROVE_RUNTIME_APPROVAL,
-        sessionId = model.sessionId,
-        taskId = model.taskId,
-        runId = model.runId,
-        target = model.runtimeTarget,
+        model = model,
       ),
     )
     .addAction(
@@ -710,10 +784,7 @@ internal class RuntimeNotificationCoordinator(
       localizedContext.getString(R.string.runtime_notification_action_reject),
       approvalActionPendingIntent(
         action = RuntimeNotificationIntentActions.ACTION_REJECT_RUNTIME_APPROVAL,
-        sessionId = model.sessionId,
-        taskId = model.taskId,
-        runId = model.runId,
-        target = model.runtimeTarget,
+        model = model,
       ),
     )
     .build()
@@ -955,20 +1026,50 @@ internal class RuntimeNotificationCoordinator(
       ?.takeIf(String::isNotBlank)
       ?.let(scheduledTaskSpecStore::get)
 
-  private fun cancelApprovalNotification(taskId: String) {
-    dismissApprovalNotification(appContext, taskId)
+  private fun cancelApprovalsForTask(
+    sessionId: String,
+    taskId: String,
+    runId: String? = null,
+  ) {
+    val normalizedRunId = runId?.trim()?.takeIf(String::isNotBlank)
+    val keys: List<RuntimeNotificationKey> = synchronized(lock) {
+      activeApprovalNotifications.values
+        .filter { entry ->
+          entry.sessionId == sessionId &&
+            entry.taskId == taskId &&
+            (normalizedRunId == null || entry.runId == normalizedRunId)
+        }
+        .map { entry -> entry.key }
+        .also { matching ->
+          matching.forEach { key -> activeApprovalNotifications.remove(key.tag) }
+        }
+    }
+    keys.forEach { key -> notificationManager.cancel(key.tag, key.id) }
+    cancelLegacyApprovalSlot(taskId)
   }
 
-  private fun addActiveApprovalTaskId(taskId: String) {
+  private fun trackActiveApproval(model: RuntimeApprovalNotificationModel) {
     synchronized(lock) {
-      activeApprovalTaskIds = activeApprovalTaskIds + taskId
+      trackActiveApprovalLocked(model)
     }
   }
 
-  private fun removeActiveApprovalTaskId(taskId: String) {
-    synchronized(lock) {
-      activeApprovalTaskIds = activeApprovalTaskIds - taskId
-    }
+  private fun trackActiveApprovalLocked(model: RuntimeApprovalNotificationModel) {
+    activeApprovalNotifications[model.notificationKey.tag] = TrackedApprovalNotification(
+      sessionId = model.sessionId,
+      taskId = model.taskId,
+      runId = model.runId,
+      key = model.notificationKey,
+    )
+  }
+
+  private fun cancelLegacyApprovalSlot(taskId: String) {
+    notificationManager.cancel(RuntimeNotificationKeys.legacyApprovalId(taskId))
+  }
+
+  private fun cancelLegacyTerminalSlots(taskId: String) {
+    notificationManager.cancel(RuntimeNotificationKeys.legacyTerminalCompletedId(taskId))
+    notificationManager.cancel(RuntimeNotificationKeys.legacyTerminalInterruptedId(taskId))
   }
 
   private fun openChatPendingIntent(
@@ -993,7 +1094,7 @@ internal class RuntimeNotificationCoordinator(
     }
     return PendingIntent.getActivity(
       appContext,
-      stableRequestCode("open:$sessionId:$approvalTaskId"),
+      RuntimeNotificationKeys.stableRequestCode("open:$sessionId:$approvalTaskId"),
       intent,
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
@@ -1020,7 +1121,7 @@ internal class RuntimeNotificationCoordinator(
     }
     return PendingIntent.getActivity(
       appContext,
-      stableRequestCode("open-schedule:${model.scheduleId}:${model.sessionId.orEmpty()}"),
+      RuntimeNotificationKeys.stableRequestCode("open-schedule:${model.scheduleId}:${model.sessionId.orEmpty()}"),
       intent,
       PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
@@ -1028,19 +1129,26 @@ internal class RuntimeNotificationCoordinator(
 
   private fun approvalActionPendingIntent(
     action: String,
-    sessionId: String,
-    taskId: String,
-    runId: String,
-    target: RuntimeServiceTarget,
+    model: RuntimeApprovalNotificationModel,
   ): PendingIntent {
     return runtimeServiceAccessGateway.approvalActionPendingIntent(
       context = appContext,
       action = action,
-      sessionId = sessionId,
-      taskId = taskId,
-      runId = runId,
-      requestCode = stableRequestCode("$action:$sessionId:$taskId"),
-      target = target,
+      sessionId = model.sessionId,
+      taskId = model.taskId,
+      runId = model.runId,
+      executionId = model.executionBinding.normalizedExecutionId,
+      executionOrdinal = model.executionBinding.normalizedExecutionOrdinal,
+      requestCode = RuntimeNotificationKeys.stableRequestCode(
+        RuntimeNotificationKeys.approvalActionRequestKey(
+          action = action,
+          sessionId = model.sessionId,
+          runId = model.runId,
+          taskId = model.taskId,
+          executionBinding = model.executionBinding,
+        ),
+      ),
+      target = model.runtimeTarget,
     )
   }
 
@@ -1053,7 +1161,7 @@ internal class RuntimeNotificationCoordinator(
     sessionId = action.sessionId,
     taskId = action.taskId,
     runId = action.runId,
-    requestCode = stableRequestCode(
+    requestCode = RuntimeNotificationKeys.stableRequestCode(
       "${action.action}:${action.scheduleId}:${action.sessionId.orEmpty()}:${action.taskId.orEmpty()}:${action.runId.orEmpty()}",
     ),
     target = action.runtimeTarget,
@@ -1064,7 +1172,7 @@ internal class RuntimeNotificationCoordinator(
   ): PendingIntent = runtimeServiceAccessGateway.chatWriteActionPendingIntent(
     context = appContext,
     command = action.command,
-    requestCode = stableRequestCode(action.requestKey),
+    requestCode = RuntimeNotificationKeys.stableRequestCode(action.requestKey),
     target = action.runtimeTarget,
     terminalNotificationTaskId = action.terminalNotificationTaskId,
   )
@@ -1143,20 +1251,6 @@ internal class RuntimeNotificationCoordinator(
       result.errorCode == ERROR_RESTART_REQUIRES_EXPLICIT_RETRY ||
       result.metadata[METADATA_RESTORED_TERMINAL_STATE] == RESTORED_TERMINAL_STATE_INTERRUPTED
 
-  private fun approvalNotificationId(taskId: String): Int =
-    approvalNotificationIdForTask(taskId)
-
-  private fun terminalNotificationId(taskId: String, interrupted: Boolean): Int =
-    terminalNotificationIdForTask(taskId, interrupted)
-
-  private fun scheduleNotificationId(scheduleId: String, outcome: String): Int =
-    scheduleNotificationIdForOutcome(scheduleId, outcome)
-
-  private fun stableRequestCode(key: String): Int = 60_000 + notificationStableHash(key, modulo = 30_000)
-
-  private fun serviceRecoveredNotificationId(processStartId: String): Int =
-    53_800 + notificationStableHash(processStartId, modulo = 1_000)
-
   companion object {
     private const val ERROR_APPROVAL_REQUIRED: String = "APPROVAL_REQUIRED"
     private const val ERROR_HIGH_RISK_APPROVAL_REQUIRED: String = "HIGH_RISK_APPROVAL_REQUIRED"
@@ -1169,12 +1263,41 @@ internal class RuntimeNotificationCoordinator(
         ?.trim()
         ?.takeIf(String::isNotBlank)
         ?: return
-      context.getSystemService(NotificationManager::class.java)
-        ?.cancel(approvalNotificationIdForTask(normalizedTaskId))
+      val manager = context.getSystemService(NotificationManager::class.java) ?: return
+      manager.cancel(RuntimeNotificationKeys.legacyApprovalId(normalizedTaskId))
     }
 
-    internal fun approvalNotificationIdForTask(taskId: String): Int =
-      52_100 + notificationStableHash(taskId, modulo = 5_000)
+    internal fun dismissApprovalNotification(
+      context: Context,
+      command: RuntimeServiceNotificationCommand,
+    ) {
+      val sessionId = command.sessionId?.trim()?.takeIf(String::isNotBlank)
+      val taskId = command.taskId?.trim()?.takeIf(String::isNotBlank)
+      val executionBinding = when (command) {
+        is RuntimeServiceNotificationCommand.ApproveApproval -> RuntimeApprovalExecutionBinding(
+          executionId = command.executionId,
+          executionOrdinal = command.executionOrdinal,
+        )
+        is RuntimeServiceNotificationCommand.RejectApproval -> RuntimeApprovalExecutionBinding(
+          executionId = command.executionId,
+          executionOrdinal = command.executionOrdinal,
+        )
+        else -> null
+      }
+      if (sessionId == null || taskId == null || executionBinding == null) {
+        dismissApprovalNotification(context, command.taskId)
+        return
+      }
+      val key = RuntimeNotificationKeys.approvalKey(
+        sessionId = sessionId,
+        runId = command.runId?.trim()?.takeIf(String::isNotBlank) ?: taskId,
+        taskId = taskId,
+        executionBinding = executionBinding,
+      )
+      context.getSystemService(NotificationManager::class.java)
+        ?.cancel(key.tag, key.id)
+      dismissApprovalNotification(context, taskId)
+    }
 
     internal fun dismissScheduleNotifications(
       context: Context,
@@ -1186,27 +1309,41 @@ internal class RuntimeNotificationCoordinator(
         ?: return
       val manager = context.getSystemService(NotificationManager::class.java) ?: return
       ScheduledTaskRunResult.entries.forEach { outcome ->
-        manager.cancel(scheduleNotificationIdForOutcome(normalizedScheduleId, outcome.name))
+        val key = RuntimeNotificationKeys.scheduleKey(normalizedScheduleId, outcome.name)
+        manager.cancel(key.tag, key.id)
+      }
+      RuntimeNotificationKeys.legacyScheduleIdsForAllOutcomes(normalizedScheduleId).forEach { legacyId ->
+        manager.cancel(legacyId)
       }
     }
-
-    internal fun scheduleNotificationIdForOutcome(
-      scheduleId: String,
-      outcome: String,
-    ): Int = 53_100 + notificationStableHash("$scheduleId:$outcome", modulo = 4_000)
 
     private fun terminalNotificationDeliveryKey(runId: String): String = "terminal:$runId"
 
     internal fun dismissTerminalInterruptedNotification(
       context: Context,
+      runId: String?,
       taskId: String?,
     ) {
       val normalizedTaskId = taskId
         ?.trim()
         ?.takeIf(String::isNotBlank)
         ?: return
-      context.getSystemService(NotificationManager::class.java)
-        ?.cancel(terminalNotificationIdForTask(normalizedTaskId, interrupted = true))
+      val manager = context.getSystemService(NotificationManager::class.java) ?: return
+      val normalizedRunId = runId?.trim()?.takeIf(String::isNotBlank) ?: normalizedTaskId
+      val key = RuntimeNotificationKeys.terminalKey(
+        runId = normalizedRunId,
+        taskId = normalizedTaskId,
+        interrupted = true,
+      )
+      manager.cancel(key.tag, key.id)
+      manager.cancel(RuntimeNotificationKeys.legacyTerminalInterruptedId(normalizedTaskId))
+    }
+
+    internal fun dismissTerminalInterruptedNotification(
+      context: Context,
+      taskId: String?,
+    ) {
+      dismissTerminalInterruptedNotification(context, runId = null, taskId = taskId)
     }
 
     private fun terminalNotificationFingerprint(
@@ -1219,12 +1356,6 @@ internal class RuntimeNotificationCoordinator(
       terminalModel.body,
       updatedAtEpochMs,
     ).joinToString("|")
-
-    private fun notificationStableHash(key: String, modulo: Int): Int =
-      (key.hashCode().absoluteValue % modulo).coerceAtLeast(0)
-
-    private fun terminalNotificationIdForTask(taskId: String, interrupted: Boolean): Int =
-      (if (interrupted) 52_700 else 52_300) + notificationStableHash(taskId, modulo = 4_000)
   }
 }
 

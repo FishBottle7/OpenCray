@@ -95,6 +95,15 @@ internal class DefaultRuntimeServiceIntentDescriptorParser(
       ?.trim()
       ?.takeIf(String::isNotBlank)
   },
+  private val notificationExecutionIdReader: (Intent?) -> String? = { intent ->
+    safeStringExtra(intent, RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_EXECUTION_ID)
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+  },
+  private val notificationExecutionOrdinalReader: (Intent?) -> Int? = { intent ->
+    safeIntExtra(intent, RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_EXECUTION_ORDINAL, 0)
+      ?.takeIf { value -> value > 0 }
+  },
   private val chatWriteIdentifierReader: (Intent?) -> String? = { intent ->
     safeStringExtra(intent, EXTRA_CHAT_WRITE_IDENTIFIER)
       ?.trim()
@@ -187,6 +196,8 @@ internal class DefaultRuntimeServiceIntentDescriptorParser(
       runId = notificationRunIdReader(intent),
       scheduleId = scheduleIdReader(intent)
         ?: safeStringExtra(intent, RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SCHEDULE_ID),
+      executionId = notificationExecutionIdReader(intent),
+      executionOrdinal = notificationExecutionOrdinalReader(intent),
     )?.let(RuntimeServiceWakeIntentCommand::Notification)
 
     COMMAND_KIND_SCHEDULED_TASK ->

@@ -155,6 +155,10 @@ internal interface RuntimeApprovalRegistryAccess {
   fun isApprovalApproved(sessionId: String, taskId: String): Boolean
 
   fun isApprovalRejected(sessionId: String, taskId: String): Boolean
+
+  fun tryBeginApprovalDecision(sessionId: String, taskId: String): Boolean = true
+
+  fun releaseUnresolvedApprovalDecision(sessionId: String, taskId: String) = Unit
 }
 
 internal interface RuntimeRunLookupAccess :
@@ -392,6 +396,13 @@ internal class DefaultOpenCrayRuntimeHostAccess(
 
   override fun isApprovalRejected(sessionId: String, taskId: String): Boolean =
     approvalRegistry.isRejected(sessionId, taskId)
+
+  override fun tryBeginApprovalDecision(sessionId: String, taskId: String): Boolean =
+    approvalRegistry.tryBeginDecision(sessionId, taskId)
+
+  override fun releaseUnresolvedApprovalDecision(sessionId: String, taskId: String) {
+    approvalRegistry.releaseUnresolvedDecision(sessionId, taskId)
+  }
 
   private fun mirrorPendingSubAgentApprovalDecision(
     sessionId: String,

@@ -137,6 +137,8 @@ internal class RuntimeServiceIntentFactory(
     sessionId: String,
     taskId: String,
     runId: String,
+    executionId: String? = null,
+    executionOrdinal: Int? = null,
     target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
   ): Intent = commandIntent(
     context = context,
@@ -147,6 +149,12 @@ internal class RuntimeServiceIntentFactory(
     putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_SESSION_ID, sessionId)
     putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_TASK_ID, taskId)
     putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_RUN_ID, runId)
+    executionId?.trim()?.takeIf(String::isNotBlank)?.let { value ->
+      putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_EXECUTION_ID, value)
+    }
+    executionOrdinal?.takeIf { value -> value > 0 }?.let { value ->
+      putExtra(RuntimeNotificationIntentExtras.EXTRA_NOTIFICATION_EXECUTION_ORDINAL, value)
+    }
   }
 
   fun scheduleNotificationActionIntent(

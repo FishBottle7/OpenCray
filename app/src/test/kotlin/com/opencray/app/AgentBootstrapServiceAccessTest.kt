@@ -88,6 +88,8 @@ class AgentBootstrapServiceAccessTest : AgentBootstrapTestBase() {
             sessionId: String,
             taskId: String,
             runId: String,
+            executionId: String?,
+            executionOrdinal: Int?,
             requestCode: Int,
             target: RuntimeServiceTarget,
           ): android.app.PendingIntent = error("Unexpected approval pending intent.")
@@ -258,6 +260,8 @@ class AgentBootstrapServiceAccessTest : AgentBootstrapTestBase() {
             sessionId: String,
             taskId: String,
             runId: String,
+            executionId: String?,
+            executionOrdinal: Int?,
             requestCode: Int,
             target: RuntimeServiceTarget,
           ): android.app.PendingIntent = error("Approval pending intent should not be used in this test.")
@@ -370,6 +374,8 @@ class AgentBootstrapServiceAccessTest : AgentBootstrapTestBase() {
             sessionId: String,
             taskId: String,
             runId: String,
+            executionId: String?,
+            executionOrdinal: Int?,
             requestCode: Int,
             target: RuntimeServiceTarget,
           ): android.app.PendingIntent = error("Approval pending intent should not be used in this test.")
@@ -515,6 +521,8 @@ class AgentBootstrapServiceAccessTest : AgentBootstrapTestBase() {
             sessionId: String,
             taskId: String,
             runId: String,
+            executionId: String?,
+            executionOrdinal: Int?,
             requestCode: Int,
             target: RuntimeServiceTarget,
           ): android.app.PendingIntent = error("Approval pending intent should not be used in this test.")
@@ -685,6 +693,8 @@ class AgentBootstrapServiceAccessTest : AgentBootstrapTestBase() {
             sessionId: String,
             taskId: String,
             runId: String,
+            executionId: String?,
+            executionOrdinal: Int?,
             requestCode: Int,
             target: RuntimeServiceTarget,
           ): android.app.PendingIntent = error("Unexpected approval pending intent.")
@@ -752,6 +762,8 @@ class AgentBootstrapServiceAccessTest : AgentBootstrapTestBase() {
             sessionId: String,
             taskId: String,
             runId: String,
+            executionId: String?,
+            executionOrdinal: Int?,
             requestCode: Int,
             target: RuntimeServiceTarget,
           ): android.app.PendingIntent = error("Unexpected approval pending intent.")

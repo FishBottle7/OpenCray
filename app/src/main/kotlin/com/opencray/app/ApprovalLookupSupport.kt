@@ -6,6 +6,8 @@ import com.opencray.core.contracts.AgentTaskType
 import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyDecisionOutcome
+import com.opencray.core.orchestrator.METADATA_EXECUTION_ID
+import com.opencray.core.orchestrator.METADATA_EXECUTION_ORDINAL
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.runtime.OpenCrayToolCallEvent
@@ -133,6 +135,48 @@ internal fun findApprovalRequiredTaskProjection(
   ).firstOrNull { projection ->
     projection.taskId == taskIdOrRunId || projection.runId == taskIdOrRunId
   }
+}
+
+internal data class ScopedApprovalProjectionLookup(
+  val exact: ApprovalRequiredTaskProjection?,
+  val sameTaskPending: Boolean,
+)
+
+internal fun findApprovalRequiredTaskProjectionInSession(
+  sessionId: String,
+  hostAccess: RuntimeRunLookupAccess,
+  taskId: String,
+  runId: String?,
+): ScopedApprovalProjectionLookup {
+  val projections = approvalRequiredTaskProjectionsForSession(
+    sessionId = sessionId,
+    hostAccess = hostAccess,
+  )
+  val normalizedRunId = runId?.trim()?.takeIf(String::isNotBlank)
+  val exact = projections.firstOrNull { projection ->
+    projection.taskId == taskId &&
+      (normalizedRunId == null || projection.runId == normalizedRunId)
+  }
+  return ScopedApprovalProjectionLookup(
+    exact = exact,
+    sameTaskPending = projections.any { projection -> projection.taskId == taskId },
+  )
+}
+
+internal fun approvalProjectionExecutionBinding(
+  projection: ApprovalRequiredTaskProjection,
+): RuntimeApprovalExecutionBinding {
+  val taskMetadata = projection.taskSnapshot.task.metadata
+  return RuntimeApprovalExecutionBinding(
+    executionId = taskMetadata[METADATA_EXECUTION_ID]
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?: projection.runSnapshot?.executionId
+      ?: projection.metadata[METADATA_EXECUTION_ID]?.trim()?.takeIf(String::isNotBlank),
+    executionOrdinal = taskMetadata[METADATA_EXECUTION_ORDINAL]?.trim()?.toIntOrNull()
+      ?: projection.runSnapshot?.executionOrdinal?.takeIf { value -> value > 0 }
+      ?: projection.metadata[METADATA_EXECUTION_ORDINAL]?.trim()?.toIntOrNull(),
+  )
 }
 
 private fun approvalLookupIsRequiredError(

@@ -69,6 +69,8 @@ internal interface RuntimeServiceEndpoint {
     sessionId: String,
     taskId: String,
     runId: String,
+    executionId: String? = null,
+    executionOrdinal: Int? = null,
     requestCode: Int,
     target: RuntimeServiceTarget = DEFAULT_RUNTIME_SERVICE_TARGET,
   ): PendingIntent
@@ -197,6 +199,8 @@ private object AndroidRuntimeServiceEndpoint : RuntimeServiceEndpoint {
     sessionId: String,
     taskId: String,
     runId: String,
+    executionId: String?,
+    executionOrdinal: Int?,
     requestCode: Int,
     target: RuntimeServiceTarget,
   ): PendingIntent = PendingIntent.getService(
@@ -208,6 +212,8 @@ private object AndroidRuntimeServiceEndpoint : RuntimeServiceEndpoint {
       sessionId = sessionId,
       taskId = taskId,
       runId = runId,
+      executionId = executionId,
+      executionOrdinal = executionOrdinal,
       target = target,
     ),
     PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,

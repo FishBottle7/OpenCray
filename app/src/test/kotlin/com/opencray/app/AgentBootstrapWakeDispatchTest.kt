@@ -32,7 +32,7 @@ class AgentBootstrapWakeDispatchTest : AgentBootstrapTestBase() {
           ),
         )
       },
-      approvalNotificationDismisser = { _, taskId -> dismissedTaskIds += taskId },
+      approvalNotificationDismisser = { _, command -> dismissedTaskIds += command.taskId },
     )
 
     dispatcher.dispatch(null)
@@ -70,10 +70,12 @@ class AgentBootstrapWakeDispatchTest : AgentBootstrapTestBase() {
             sessionId = fixture.sessionId,
             taskId = fixture.taskId,
             runId = fixture.runId,
+            executionId = "execution-1",
+            executionOrdinal = 1,
           ),
         )
       },
-      approvalNotificationDismisser = { _, taskId -> dismissedTaskIds += taskId },
+      approvalNotificationDismisser = { _, command -> dismissedTaskIds += command.taskId },
     )
 
     dispatcher.dispatch(null)
@@ -89,10 +91,144 @@ class AgentBootstrapWakeDispatchTest : AgentBootstrapTestBase() {
   }
 
   @Test
-  fun defaultWakeDispatcherUsesRunIdForApprovalRoutingWhileDismissingProvidedTaskId() {
+  fun defaultWakeDispatcherAppliesExecutionBoundApprovalAndConsumesDuplicateTap() {
     val context = MinimalContext()
     val fixture = pendingApprovalWakeDispatcherFixture(
-      temporaryFolder.newFolder("wake-dispatcher-run-id-routing"),
+      temporaryFolder.newFolder("wake-dispatcher-execution-bound"),
+    )
+    var chatSnapshotNotificationCount = 0
+    val gatewayBundle = testServiceGatewayBundle(
+      notifyChatSnapshotsChanged = { chatSnapshotNotificationCount += 1 },
+    )
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dismissedCommands = mutableListOf<RuntimeServiceNotificationCommand>()
+    val reportedFailures = mutableListOf<Throwable>()
+    fun buildDispatcher(): DefaultRuntimeServiceWakeCommandDispatcher =
+      DefaultRuntimeServiceWakeCommandDispatcher(
+        appContext = context,
+        dispatcherDependencies = fixture.serviceHost
+          .toRuntimeServiceBootstrapState()
+          .wakeCommandDispatcherDependencies,
+        gatewayBundle = gatewayBundle,
+        projectionCoordinator = projectionCoordinator,
+        wakeIntentParser = RuntimeServiceWakeIntentParser {
+          RuntimeServiceWakeIntentCommand.Notification(
+            RuntimeServiceNotificationCommand.ApproveApproval(
+              sessionId = fixture.sessionId,
+              taskId = fixture.taskId,
+              runId = fixture.runId,
+              executionId = "execution-1",
+              executionOrdinal = 1,
+            ),
+          )
+        },
+        approvalNotificationDismisser = { _, command -> dismissedCommands += command },
+        notificationActionFailureReporter = { _, failure -> reportedFailures += failure },
+      )
+
+    buildDispatcher().dispatch(null)
+    buildDispatcher().dispatch(null)
+
+    assertEquals(2, chatSnapshotNotificationCount)
+    assertEquals(2, dismissedCommands.size)
+    assertEquals(listOf(fixture.taskId), fixture.handle.resumedTaskIds)
+    assertTrue(fixture.handle.cancelledTaskIds.isEmpty())
+    assertTrue(reportedFailures.isEmpty())
+    assertEquals(2, projectionCoordinator.persistCallCount)
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
+  fun defaultWakeDispatcherTreatsMismatchedExecutionIdentityAsStaleWithoutStateChange() {
+    val context = MinimalContext()
+    val fixture = pendingApprovalWakeDispatcherFixture(
+      temporaryFolder.newFolder("wake-dispatcher-stale-execution"),
+    )
+    val gatewayBundle = testServiceGatewayBundle()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dismissedTaskIds = mutableListOf<String?>()
+    val reportedFailures = mutableListOf<Throwable>()
+    val dispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
+      appContext = context,
+      dispatcherDependencies = fixture.serviceHost
+        .toRuntimeServiceBootstrapState()
+        .wakeCommandDispatcherDependencies,
+      gatewayBundle = gatewayBundle,
+      projectionCoordinator = projectionCoordinator,
+      wakeIntentParser = RuntimeServiceWakeIntentParser {
+        RuntimeServiceWakeIntentCommand.Notification(
+          RuntimeServiceNotificationCommand.ApproveApproval(
+            sessionId = fixture.sessionId,
+            taskId = fixture.taskId,
+            runId = fixture.runId,
+            executionId = "execution-999",
+            executionOrdinal = 9,
+          ),
+        )
+      },
+      approvalNotificationDismisser = { _, command -> dismissedTaskIds += command.taskId },
+      notificationActionFailureReporter = { _, failure -> reportedFailures += failure },
+    )
+
+    dispatcher.dispatch(null)
+
+    assertEquals(listOf(fixture.taskId), dismissedTaskIds)
+    assertTrue(reportedFailures.isEmpty())
+    assertTrue(fixture.handle.resumedTaskIds.isEmpty())
+    assertTrue(fixture.handle.cancelledTaskIds.isEmpty())
+    assertEquals(1, projectionCoordinator.persistCallCount)
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
+  fun defaultWakeDispatcherTreatsLegacyIntentWithoutExecutionIdentityAsStale() {
+    val context = MinimalContext()
+    val fixture = pendingApprovalWakeDispatcherFixture(
+      temporaryFolder.newFolder("wake-dispatcher-legacy-intent"),
+    )
+    val gatewayBundle = testServiceGatewayBundle()
+    val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
+    val dismissedTaskIds = mutableListOf<String?>()
+    val reportedFailures = mutableListOf<Throwable>()
+    val dispatcher = DefaultRuntimeServiceWakeCommandDispatcher(
+      appContext = context,
+      dispatcherDependencies = fixture.serviceHost
+        .toRuntimeServiceBootstrapState()
+        .wakeCommandDispatcherDependencies,
+      gatewayBundle = gatewayBundle,
+      projectionCoordinator = projectionCoordinator,
+      wakeIntentParser = RuntimeServiceWakeIntentParser {
+        RuntimeServiceWakeIntentCommand.Notification(
+          parseRuntimeNotificationCommand(
+            action = RuntimeNotificationIntentActions.ACTION_APPROVE_RUNTIME_APPROVAL,
+            sessionId = fixture.sessionId,
+            taskId = fixture.taskId,
+            runId = fixture.runId,
+          ) ?: error("Legacy approval intent must stay parseable."),
+        )
+      },
+      approvalNotificationDismisser = { _, command -> dismissedTaskIds += command.taskId },
+      notificationActionFailureReporter = { _, failure -> reportedFailures += failure },
+    )
+
+    dispatcher.dispatch(null)
+
+    assertEquals(listOf(fixture.taskId), dismissedTaskIds)
+    assertTrue(reportedFailures.isEmpty())
+    assertTrue(fixture.handle.resumedTaskIds.isEmpty())
+    assertTrue(fixture.handle.cancelledTaskIds.isEmpty())
+    assertEquals(1, projectionCoordinator.persistCallCount)
+    assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
+    assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
+  }
+
+  @Test
+  fun defaultWakeDispatcherRequiresPreciseSessionRunAndTaskMatchForApprovalRouting() {
+    val context = MinimalContext()
+    val fixture = pendingApprovalWakeDispatcherFixture(
+      temporaryFolder.newFolder("wake-dispatcher-precise-routing"),
     )
     val gatewayBundle = testServiceGatewayBundle()
     val projectionCoordinator = RecordingRuntimeServiceProjectionCoordinator()
@@ -108,16 +244,18 @@ class AgentBootstrapWakeDispatchTest : AgentBootstrapTestBase() {
             sessionId = fixture.sessionId,
             taskId = "notification-task-id",
             runId = fixture.runId,
+            executionId = "execution-1",
+            executionOrdinal = 1,
           ),
         )
       },
-      approvalNotificationDismisser = { _, taskId -> dismissedTaskIds += taskId },
+      approvalNotificationDismisser = { _, command -> dismissedTaskIds += command.taskId },
     )
 
     dispatcher.dispatch(null)
 
     assertEquals(listOf("notification-task-id"), dismissedTaskIds)
-    assertEquals(listOf(fixture.taskId), fixture.handle.resumedTaskIds)
+    assertTrue(fixture.handle.resumedTaskIds.isEmpty())
     assertEquals(1, projectionCoordinator.persistCallCount)
     assertNull(OpenCrayRuntimeServiceHostRegistry.peek())
     assertNull(InProcessOpenCrayRuntimeOwnerRegistry.peek())
@@ -446,7 +584,7 @@ class AgentBootstrapWakeDispatchTest : AgentBootstrapTestBase() {
         )
       },
       approvalNotificationDismisser = { _, _ -> },
-      terminalNotificationDismisser = { _, taskId ->
+      terminalNotificationDismisser = { _, _, taskId ->
         dismissedTerminalTaskIds += taskId
       },
     )
@@ -494,7 +632,7 @@ class AgentBootstrapWakeDispatchTest : AgentBootstrapTestBase() {
         wakeIntentParser = RuntimeServiceWakeIntentParser {
           RuntimeServiceWakeIntentCommand.Notification(command)
         },
-        approvalNotificationDismisser = { _, taskId -> dismissedTaskIds += taskId },
+        approvalNotificationDismisser = { _, command -> dismissedTaskIds += command.taskId },
       ).dispatch(null)
     }
 
@@ -530,10 +668,12 @@ class AgentBootstrapWakeDispatchTest : AgentBootstrapTestBase() {
             sessionId = fixture.sessionId,
             taskId = fixture.taskId,
             runId = fixture.runId,
+            executionId = "execution-1",
+            executionOrdinal = 1,
           ),
         )
       },
-      approvalNotificationDismisser = { _, taskId -> dismissedTaskIds += taskId },
+      approvalNotificationDismisser = { _, command -> dismissedTaskIds += command.taskId },
       notificationActionFailureReporter = { _, failure -> reportedFailures += failure },
     )
 
@@ -612,7 +752,7 @@ class AgentBootstrapWakeDispatchTest : AgentBootstrapTestBase() {
         )
       },
       approvalNotificationDismisser = { _, _ -> },
-      terminalNotificationDismisser = { _, taskId ->
+      terminalNotificationDismisser = { _, _, taskId ->
         dismissedTerminalTaskIds += taskId
       },
     )

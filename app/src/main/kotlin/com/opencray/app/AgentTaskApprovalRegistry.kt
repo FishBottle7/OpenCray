@@ -6,6 +6,7 @@ import java.util.concurrent.ConcurrentMap
 internal enum class AgentTaskApprovalState {
   APPROVED,
   REJECTED,
+  DECIDING,
 }
 
 internal data class AgentTaskApprovalGrant(
@@ -191,6 +192,15 @@ internal class AgentTaskApprovalRegistry {
   fun isRejected(sessionId: String, taskId: String): Boolean {
     val sessionState = statesBySession[sessionId] ?: return false
     return sessionState[taskId] == AgentTaskApprovalState.REJECTED
+  }
+
+  fun tryBeginDecision(sessionId: String, taskId: String): Boolean {
+    val sessionState = statesBySession.computeIfAbsent(sessionId) { ConcurrentHashMap() }
+    return sessionState.putIfAbsent(taskId, AgentTaskApprovalState.DECIDING) == null
+  }
+
+  fun releaseUnresolvedDecision(sessionId: String, taskId: String) {
+    statesBySession[sessionId]?.remove(taskId, AgentTaskApprovalState.DECIDING)
   }
 
   fun isApproved(sessionId: String, taskId: String): Boolean {
