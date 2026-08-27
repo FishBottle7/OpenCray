@@ -96,6 +96,12 @@ internal data class StructuredToolCallParseResult(
   val rawPreview: String? = null,
 )
 
+internal data class SuccessResponseRead(
+  val text: String,
+  val streamTransportMode: String = STREAM_TRANSPORT_MODE_PLAIN_BODY,
+  val streamDowngradeReason: String? = null,
+)
+
 internal class OpenAiCompatibleLiteLlmProviderClient(
   private val userAgent: String = OpenCrayUserAgent.providerApi("0"),
   internal val streamUpdateMinIntervalMs: Long = DEFAULT_STREAM_UPDATE_MIN_INTERVAL_MS,
@@ -239,7 +245,7 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       streamDebug(
         "provider.response code=$responseCode protocol=$protocol contentType=${connection.contentType ?: "-"} contentEncoding=${connection.contentEncoding ?: "-"}",
       )
-      val responseText = if (responseCode in 200..299) {
+      val successResponse = if (responseCode in 200..299) {
         readSuccessResponse(
           input = connection.inputStream,
           protocol = protocol,
@@ -248,8 +254,9 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
           streamObserver = request.request.streamObserver,
         )
       } else {
-        readStream(connection.errorStream)
+        SuccessResponseRead(text = readStream(connection.errorStream))
       }
+      val responseText = successResponse.text
 
       val providerResult = when {
         responseCode == 429 -> LiteLlmProviderResult.RateLimited(
@@ -286,6 +293,8 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
             statusCode = responseCode,
             nativeToolCallRequested = request.request.tools.isNotEmpty(),
             completion = completion,
+            streamRequested = streamResponses,
+            successResponse = successResponse,
           )
           val content = extractMessageContent(parsed, protocol)
           val success = LiteLlmProviderResult.Success(
@@ -826,6 +835,8 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     statusCode: Int,
     nativeToolCallRequested: Boolean,
     completion: LiteLlmStructuredCompletion?,
+    streamRequested: Boolean,
+    successResponse: SuccessResponseRead,
   ): Map<String, String> = buildMap {
     put("statusCode", statusCode.toString())
     put(LiteLlmMetadataKeys.NATIVE_TOOL_CALL_REQUESTED, nativeToolCallRequested.toString())
@@ -833,6 +844,11 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
       "conversationTransportMode",
       if (request.request.messages.isNotEmpty()) "messages" else "prompt_projection",
     )
+    put(LiteLlmMetadataKeys.STREAM_REQUESTED, streamRequested.toString())
+    put(LiteLlmMetadataKeys.STREAM_TRANSPORT_MODE, successResponse.streamTransportMode)
+    successResponse.streamDowngradeReason?.let { downgradeReason ->
+      put(LiteLlmMetadataKeys.STREAM_DOWNGRADE_REASON, downgradeReason)
+    }
     payload.optString("id")
       .takeIf { value -> value.isNotBlank() }
       ?.let { providerRequestId ->
@@ -1096,46 +1112,77 @@ internal class OpenAiCompatibleLiteLlmProviderClient(
     streamResponses: Boolean,
     contentType: String?,
     streamObserver: LiteLlmVisibleTextObserver,
-  ): String = when {
-    input == null -> ""
-    else -> {
-      val normalizedInput = if (input is BufferedInputStream) {
-        input
-      } else {
-        BufferedInputStream(input)
-      }
-      if (
-        streamResponses &&
-        shouldTreatSuccessResponseAsEventStream(
-          input = normalizedInput,
+  ): SuccessResponseRead {
+    if (input == null) {
+      return SuccessResponseRead(
+        text = "",
+        streamTransportMode = STREAM_TRANSPORT_MODE_PLAIN_BODY,
+        streamDowngradeReason = streamDowngradeReason(
+          streamResponses = streamResponses,
           contentType = contentType,
+        ),
+      )
+    }
+    val normalizedInput = if (input is BufferedInputStream) {
+      input
+    } else {
+      BufferedInputStream(input)
+    }
+    if (
+      streamResponses &&
+      shouldTreatSuccessResponseAsEventStream(
+        input = normalizedInput,
+        contentType = contentType,
+      )
+    ) {
+      streamDebug(
+        "provider.readSuccessResponse protocol=$protocol stream=true contentType=$contentType mode=event_stream",
+      )
+      val text = when (protocol) {
+        LlmProviderProtocols.ANTHROPIC -> readAnthropicStream(
+          input = normalizedInput,
+          streamObserver = streamObserver,
         )
-      ) {
-        streamDebug(
-          "provider.readSuccessResponse protocol=$protocol stream=true contentType=$contentType mode=event_stream",
-        )
-        when (protocol) {
-          LlmProviderProtocols.ANTHROPIC -> readAnthropicStream(
-            input = normalizedInput,
-            streamObserver = streamObserver,
-          )
 
-          LlmProviderProtocols.OPENAI_RESPONSES -> readOpenAiResponsesStream(
-            input = normalizedInput,
-            streamObserver = streamObserver,
-          )
-
-          else -> readOpenAiChatCompletionsStream(
-            input = normalizedInput,
-            streamObserver = streamObserver,
-          )
-        }
-      } else {
-        streamDebug(
-          "provider.readSuccessResponse protocol=$protocol stream=$streamResponses contentType=$contentType mode=plain_body",
+        LlmProviderProtocols.OPENAI_RESPONSES -> readOpenAiResponsesStream(
+          input = normalizedInput,
+          streamObserver = streamObserver,
         )
-        readStream(normalizedInput)
+
+        else -> readOpenAiChatCompletionsStream(
+          input = normalizedInput,
+          streamObserver = streamObserver,
+        )
       }
+      return SuccessResponseRead(
+        text = text,
+        streamTransportMode = STREAM_TRANSPORT_MODE_SSE,
+      )
+    }
+    streamDebug(
+      "provider.readSuccessResponse protocol=$protocol stream=$streamResponses contentType=$contentType mode=plain_body",
+    )
+    return SuccessResponseRead(
+      text = readStream(normalizedInput),
+      streamTransportMode = STREAM_TRANSPORT_MODE_PLAIN_BODY,
+      streamDowngradeReason = streamDowngradeReason(
+        streamResponses = streamResponses,
+        contentType = contentType,
+      ),
+    )
+  }
+
+  private fun streamDowngradeReason(
+    streamResponses: Boolean,
+    contentType: String?,
+  ): String? {
+    if (!streamResponses) {
+      return null
+    }
+    return if (contentType.isNullOrBlank()) {
+      STREAM_DOWNGRADE_REASON_NON_EVENT_STREAM_CONTENT_TYPE_MISSING
+    } else {
+      STREAM_DOWNGRADE_REASON_NON_EVENT_STREAM
     }
   }
 
@@ -1769,6 +1816,15 @@ internal class VisibleTextSnapshotCoalescer(
 }
 
 private const val STREAM_DEBUG_TAG: String = "OpenCrayStream"
+
+internal const val STREAM_TRANSPORT_MODE_SSE: String = "sse"
+
+internal const val STREAM_TRANSPORT_MODE_PLAIN_BODY: String = "plain_body"
+
+internal const val STREAM_DOWNGRADE_REASON_NON_EVENT_STREAM: String = "provider_returned_non_event_stream"
+
+internal const val STREAM_DOWNGRADE_REASON_NON_EVENT_STREAM_CONTENT_TYPE_MISSING: String =
+  "provider_returned_non_event_stream_content_type_missing"
 
 internal const val PROVIDER_REQUEST_CANCELLED_ERROR_CODE: String = "PROVIDER_REQUEST_CANCELLED"
 

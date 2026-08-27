@@ -169,6 +169,12 @@ internal fun llmDiagnosticsFromMetadata(metadata: Map<String, String>): Map<Stri
     ?.takeIf(String::isNotBlank)
   val lastSuccessfulToolName = metadata[LiteLlmMetadataKeys.LAST_SUCCESSFUL_TOOL_NAME]
     ?.takeIf(String::isNotBlank)
+  val streamRequested = metadata[LiteLlmMetadataKeys.STREAM_REQUESTED]
+    ?.toBooleanStrictOrNull()
+  val streamTransportMode = metadata[LiteLlmMetadataKeys.STREAM_TRANSPORT_MODE]
+    ?.takeIf(String::isNotBlank)
+  val streamDowngradeReason = metadata[LiteLlmMetadataKeys.STREAM_DOWNGRADE_REASON]
+    ?.takeIf(String::isNotBlank)
   if (
     nativeToolCallRequested == null &&
     responseShape == null &&
@@ -187,7 +193,10 @@ internal fun llmDiagnosticsFromMetadata(metadata: Map<String, String>): Map<Stri
     toolCallEventEmitted == null &&
     toolResultEventEmitted == null &&
     contextCacheBreakReason == null &&
-    lastSuccessfulToolName == null
+    lastSuccessfulToolName == null &&
+    streamRequested == null &&
+    streamTransportMode == null &&
+    streamDowngradeReason == null
   ) {
     return null
   }
@@ -210,6 +219,9 @@ internal fun llmDiagnosticsFromMetadata(metadata: Map<String, String>): Map<Stri
     put("toolResultEventEmitted", toolResultEventEmitted)
     put("contextCacheBreakReason", contextCacheBreakReason)
     put("lastSuccessfulToolName", lastSuccessfulToolName)
+    put("streamRequested", streamRequested)
+    put("streamTransportMode", streamTransportMode)
+    put("streamDowngradeReason", streamDowngradeReason)
   }
 }
 
