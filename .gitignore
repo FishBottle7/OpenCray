@@ -124,3 +124,6 @@
 /.sisyphus/notepads/
 /.sisyphus/boulder.json
 /.sisyphus/tools/
+
+# Internal growth/marketing plan (not published on GitHub)
+/docs/github-seo-and-growth-plan.md
