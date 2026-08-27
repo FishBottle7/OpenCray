@@ -395,7 +395,8 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     val root = temporaryFolder.newFolder("runtime-service-bootstrap-projected-reconnect")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
-    val projectedSessionId = "session-projected-bootstrap-reconnect"
+    val projectedSessionId = chatSessionStore.copySession(activeSessionId).activeSession.sessionId
+    chatSessionStore.selectSession(activeSessionId)
     val activeSession = RecordingRuntimeSessionAccess(activeSessionId, runs = emptyList())
     val projectedSession = RecordingRuntimeSessionAccess(projectedSessionId, runs = emptyList())
     val runtimeAccess = runtimeAccessForSessions(listOf(activeSession, projectedSession))
@@ -451,7 +452,9 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
   fun bootstrapRuntimeServiceSessionsOnlyConstructsSessionForEvidenceTarget() {
     val root = temporaryFolder.newFolder("runtime-service-bootstrap-target-owner")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
-    val sessionId = "session-detached-owner"
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val sessionId = chatSessionStore.copySession(activeSessionId).activeSession.sessionId
+    chatSessionStore.selectSession(activeSessionId)
     val session = RecordingRuntimeSessionAccess(sessionId, runs = emptyList())
     val hostAccess = RecordingRuntimeHostAccess(mapOf(sessionId to session))
     val replayAccess = runtimeAccessForSessions(listOf(session)).replayAccess
@@ -489,7 +492,8 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     val runtimeRoot = root.resolve("runtime")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
-    val reconnectSessionId = "session-projected-run-record-reconnect"
+    val reconnectSessionId = chatSessionStore.copySession(activeSessionId).activeSession.sessionId
+    chatSessionStore.selectSession(activeSessionId)
     val runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
     val runRecord = PersistedAgentRunRecord(
       runId = "run-projected-run-record-reconnect",
@@ -572,7 +576,8 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     val runtimeRoot = root.resolve("runtime")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
-    val terminalSessionId = "session-projected-terminal-reconnect"
+    val terminalSessionId = chatSessionStore.copySession(activeSessionId).activeSession.sessionId
+    chatSessionStore.selectSession(activeSessionId)
     val runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
     val terminalRecord = PersistedAgentRunRecord(
       runId = "run-projected-terminal-reconnect",
@@ -625,7 +630,8 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     val runtimeRoot = root.resolve("runtime")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
-    val terminalSessionId = "session-projected-final-journal"
+    val terminalSessionId = chatSessionStore.copySession(activeSessionId).activeSession.sessionId
+    chatSessionStore.selectSession(activeSessionId)
     val runId = "run-projected-final-journal"
     val taskId = "task-projected-final-journal"
     val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
@@ -673,8 +679,10 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     val root = temporaryFolder.newFolder("runtime-service-interactive-repair-run-record")
     val runtimeRoot = root.resolve("runtime")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
     val runRecordStoreFactory = FileBackedAgentRunRecordStoreFactory(runtimeRoot)
-    val durableOnlySessionId = "session-run-record-only"
+    val durableOnlySessionId = chatSessionStore.copySession(activeSessionId).activeSession.sessionId
+    chatSessionStore.selectSession(activeSessionId)
     val runRecord = PersistedAgentRunRecord(
       runId = "run-record-only",
       taskId = "task-record-only",
@@ -691,7 +699,7 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     runRecordStoreFactory.forChatSession(durableOnlySessionId).upsert(runRecord)
 
     val activeSession = RecordingRuntimeSessionAccess(
-      chatSessionStore.loadState().activeSession.sessionId,
+      activeSessionId,
       runs = emptyList(),
     )
     val durableRun = AgentRunSnapshot(
@@ -756,8 +764,10 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     val root = temporaryFolder.newFolder("runtime-service-interactive-repair-journal")
     val runtimeRoot = root.resolve("runtime")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
     val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory(runtimeRoot)
-    val durableOnlySessionId = "session-journal-only"
+    val durableOnlySessionId = chatSessionStore.copySession(activeSessionId).activeSession.sessionId
+    chatSessionStore.selectSession(activeSessionId)
     runEventJournalStoreFactory.forChatSession(durableOnlySessionId).append(
       com.opencray.runtime.OpenCrayAssistantEvent(
         runId = "run-journal-only",
@@ -770,7 +780,7 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     )
 
     val activeSession = RecordingRuntimeSessionAccess(
-      chatSessionStore.loadState().activeSession.sessionId,
+      activeSessionId,
       runs = emptyList(),
     )
     val durableRun = AgentRunSnapshot(

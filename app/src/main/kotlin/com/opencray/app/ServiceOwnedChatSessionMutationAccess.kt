@@ -2,6 +2,7 @@ package com.opencray.app
 
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.model.ChatTranscriptSessionEntry
+import java.io.File
 
 internal class ChatSessionMutationCoordinator(
   private val chatSessionStore: ChatSessionLocalStore,
@@ -11,6 +12,7 @@ internal class ChatSessionMutationCoordinator(
   private val runtimeEventState: ChatRuntimeEventState = ChatRuntimeEventState(),
   private val terminalReplayRepairer: (String, List<AgentRunSnapshot>) -> Unit = { _, _ -> },
   private val mediaGc: () -> Unit = {},
+  private val deletedSessionCleanup: ChatDeletedSessionCleanupDependencies? = null,
 ) {
   fun createChatSession(): String {
     val sessionId = chatSessionStore.createSession().activeSession.sessionId
@@ -171,6 +173,7 @@ internal class ChatSessionMutationCoordinator(
         runtimeSession.requestCancel(run.taskId)
       }
     runtimeSession.terminateRunningManagedProcesses()
+    awaitRunsSettled(runtimeSession) { runs -> runs.all(AgentRunSnapshot::isTerminal) }
     runtimeHostAccess.retainKnownApprovalTasks(sessionId, emptySet())
     pendingApprovalState.removeSession(sessionId)
     runtimeEventState.removeSession(sessionId)
@@ -179,6 +182,112 @@ internal class ChatSessionMutationCoordinator(
     chatUnreadMessageState.clear(sessionId)
     runtimeHostAccess.supplementStore(sessionId).clear()
     runtimeHostAccess.releaseSession(sessionId)
+    cleanupDeletedSessionArtifacts(sessionId)
+  }
+
+  private fun awaitRunsSettled(
+    runtimeSession: OpenCrayRuntimeSessionAccess,
+    isSettled: (List<AgentRunSnapshot>) -> Boolean,
+  ) {
+    val deadlineEpochMs = System.currentTimeMillis() + SETTLE_TIMEOUT_MS
+    while (true) {
+      val runs = runtimeSession.listRuns()
+      terminateLiveManagedProcesses(
+        runtimeSession = runtimeSession,
+        runs = runs.filter(AgentRunSnapshot::hasLiveManagedProcesses),
+      )
+      if (isSettled(runs) || System.currentTimeMillis() >= deadlineEpochMs) {
+        return
+      }
+      try {
+        Thread.sleep(SETTLE_POLL_INTERVAL_MS)
+      } catch (_: InterruptedException) {
+        Thread.currentThread().interrupt()
+        return
+      }
+    }
+  }
+
+  private fun terminateLiveManagedProcesses(
+    runtimeSession: OpenCrayRuntimeSessionAccess,
+    runs: List<AgentRunSnapshot>,
+  ) {
+    val liveProcessIds = runs
+      .flatMapTo(linkedSetOf(), AgentRunSnapshot::managedProcessIds)
+    if (liveProcessIds.isEmpty()) {
+      return
+    }
+    runCatching {
+      runtimeSession.terminateManagedProcesses(liveProcessIds)
+    }
+  }
+
+  private fun cleanupDeletedSessionArtifacts(sessionId: String) {
+    val cleanup = deletedSessionCleanup ?: return
+    runCatching {
+      cleanup.tombstoneStore.tombstone(sessionId)
+    }.onFailure { failure ->
+      tombstoneGuardDebug(
+        "chat.deletedSessionTombstoneFailed session=$sessionId error=${failure::class.java.simpleName}",
+      )
+    }
+    runCatching { cleanup.queueSnapshotStoreFactory?.forChatSession(sessionId)?.clear() }
+    runCatching { cleanup.runRecordStoreFactory?.forChatSession(sessionId)?.clear() }
+    cascadeDeleteScheduledTaskSpecs(cleanup.scheduledTaskSpecStore, sessionId)
+    deleteRuntimeSessionDirectories(cleanup, sessionId)
+  }
+
+  private fun cascadeDeleteScheduledTaskSpecs(
+    specStore: ScheduledTaskSpecStore?,
+    sessionId: String,
+  ) {
+    specStore ?: return
+    specStore.list()
+      .filter { spec -> spec.sessionId == sessionId }
+      .forEach { spec ->
+        runCatching { specStore.remove(spec.scheduleId) }
+          .onFailure { failure ->
+            tombstoneGuardDebug(
+              "chat.deletedSessionSpecCascadeFailed session=$sessionId " +
+                "schedule=${spec.scheduleId} error=${failure::class.java.simpleName}",
+            )
+          }
+      }
+  }
+
+  private fun deleteRuntimeSessionDirectories(
+    cleanup: ChatDeletedSessionCleanupDependencies,
+    sessionId: String,
+  ) {
+    listOfNotNull(
+      runCatching {
+        (cleanup.queueSnapshotStoreFactory as? FileBackedAgentQueueSnapshotStoreFactory)
+          ?.directoryForSession(sessionId)
+      }.getOrNull(),
+      runCatching {
+        (cleanup.runRecordStoreFactory as? FileBackedAgentRunRecordStoreFactory)
+          ?.directoryForSession(sessionId)
+      }.getOrNull(),
+      runCatching {
+        (cleanup.processRegistryFactory as? FileBackedAgentProcessRegistryFactory)
+          ?.directoryForSession(sessionId)
+      }.getOrNull(),
+      runCatching {
+        (cleanup.promptCheckpointStoreFactory as? FileBackedPromptCheckpointStoreFactory)
+          ?.directoryForSession(sessionId)
+      }.getOrNull(),
+    )
+      .distinctBy(File::getAbsolutePath)
+      .filter { directory -> directory.exists() && directory.isDirectory }
+      .forEach { directory ->
+        runCatching { directory.deleteRecursively() }
+          .onFailure { failure ->
+            tombstoneGuardDebug(
+              "chat.deletedSessionDirectoryDeleteFailed session=$sessionId " +
+                "error=${failure::class.java.simpleName}",
+            )
+          }
+      }
   }
 
   private fun cancelPendingMessageIds(
@@ -190,6 +299,11 @@ internal class ChatSessionMutationCoordinator(
     }
     val runtimeSession = runtimeHostAccess.session(sessionId)
     runtimeSession.requestCancelForPendingMessageIds(pendingMessageIds)
+    awaitRunsSettled(runtimeSession) { runs ->
+      runs
+        .filter { run -> run.pendingMessageId != null && run.pendingMessageId in pendingMessageIds }
+        .all(AgentRunSnapshot::isTerminal)
+    }
     val checkpointStore = runtimeHostAccess.promptCheckpointStore(sessionId)
     pendingApprovalState.removeByPendingMessageIds(
       sessionId = sessionId,
@@ -264,6 +378,11 @@ internal class ChatSessionMutationCoordinator(
   private fun isRuntimeProjectedAgentMessageId(messageId: String): Boolean =
     messageId.startsWith("runtime-assistant-") ||
       messageId.startsWith("runtime-process-")
+
+  private companion object {
+    private const val SETTLE_TIMEOUT_MS: Long = 5_000L
+    private const val SETTLE_POLL_INTERVAL_MS: Long = 50L
+  }
 }
 
 internal class ServiceOwnedChatSessionMutationAccess(
@@ -274,6 +393,7 @@ internal class ServiceOwnedChatSessionMutationAccess(
   private val runtimeEventState: ChatRuntimeEventState = ChatRuntimeEventState(),
   private val terminalReplayRepairer: (String, List<AgentRunSnapshot>) -> Unit = { _, _ -> },
   private val mediaGc: () -> Unit = {},
+  private val deletedSessionCleanup: ChatDeletedSessionCleanupDependencies? = null,
 ) {
   private val lock = Any()
   private val coordinator = ChatSessionMutationCoordinator(
@@ -284,6 +404,7 @@ internal class ServiceOwnedChatSessionMutationAccess(
     runtimeEventState = runtimeEventState,
     terminalReplayRepairer = terminalReplayRepairer,
     mediaGc = mediaGc,
+    deletedSessionCleanup = deletedSessionCleanup,
   )
 
   fun createChatSession() {

@@ -1061,7 +1061,7 @@ internal open class ChatSessionLocalStore(
           result = null,
           write = false,
         )
-      val currentSession = workspace.sessions.firstOrNull { it.sessionId == sessionId } ?: activeSessionFrom(workspace)
+      val currentSession = workspace.sessions.firstOrNull { it.sessionId == sessionId }
         ?: return@update ChatWorkspaceStoreUpdate(
           record = workspace,
           result = null,

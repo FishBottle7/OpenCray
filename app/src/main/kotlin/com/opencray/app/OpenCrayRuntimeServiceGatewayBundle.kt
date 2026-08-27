@@ -149,6 +149,7 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
           pendingApprovalState = pendingApprovalState,
           runtimeEventState = runtimeEventState,
           terminalReplayRepairer = runtimeServicePort.replayAccess.terminalReplayRepairer,
+          deletedSessionCleanup = defaultDeletedChatSessionCleanupDependencies(appContext),
           mediaGc = {
             AppAgentWorkspaceMediaGc.sweep(
               workspaceRoot = gatewayDependencies.workspaceRootProvider(),

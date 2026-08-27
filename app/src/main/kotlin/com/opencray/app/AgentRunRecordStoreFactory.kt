@@ -54,6 +54,8 @@ internal interface AgentRunRecordStore {
   fun list(): List<PersistedAgentRunRecord>
 
   fun upsert(record: PersistedAgentRunRecord)
+
+  fun clear() {}
 }
 
 internal data class AgentRunRecordStoreConfig(
@@ -261,6 +263,12 @@ private class FileBackedAgentRunRecordStore(
           runs = normalizedRuns,
         )
       }
+    }
+  }
+
+  override fun clear() {
+    synchronized(lock) {
+      storage.delete(FILE_NAME)
     }
   }
 

@@ -192,6 +192,7 @@ internal class OpenCrayHostRuntime internal constructor(
   private val chatUnreadMessageState: ChatUnreadMessageState = ChatUnreadMessageState(),
   private val chatPendingApprovalState: ChatPendingApprovalState = ChatPendingApprovalState(),
   internal val chatRuntimeEventState: ChatRuntimeEventState = ChatRuntimeEventState(),
+  providedDeletedSessionCleanup: ChatDeletedSessionCleanupDependencies? = null,
 ) : OpenCrayLocalHostGateway,
   OpenCrayShellGateway,
   OpenCrayChatRuntimeGateway,
@@ -229,6 +230,8 @@ internal class OpenCrayHostRuntime internal constructor(
     runtimeEventState = chatRuntimeEventState,
     terminalReplayRepairer = terminalReplayRepairer,
     mediaGc = ::sweepWorkspaceChatMedia,
+    deletedSessionCleanup = providedDeletedSessionCleanup
+      ?: appContext?.let(::defaultDeletedChatSessionCleanupDependencies),
   )
   internal val chatSubmissionCoordinator = ChatSubmissionCoordinator(
     chatSessionStore = chatSessionStore,

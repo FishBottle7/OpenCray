@@ -248,6 +248,12 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
   val supplementStoreFactory = FileBackedAgentSessionSupplementStoreFactory.fromContext(appContext)
   val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory.fromContext(appContext)
   val runEventJournalStoreFactory = FileBackedRunEventJournalStoreFactory.fromContext(appContext)
+  val chatDeletedSessionTombstones =
+    FileBackedChatSessionTombstoneStore.fromRootDirectory(runtimeRootDirectory)
+  val tombstoneGuardedRunEventJournalStoreFactory = TombstoneGuardedRunEventJournalStoreFactory(
+    delegate = runEventJournalStoreFactory,
+    tombstones = chatDeletedSessionTombstones,
+  )
   val subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory.fromContext(appContext)
   val subAgentSessionLinkStoreFactory = FileBackedSubAgentSessionLinkStoreFactory.fromContext(appContext)
   val workingStateStoreFactory = FileBackedWorkingStateStoreFactory.fromContext(appContext)
@@ -358,7 +364,7 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
     providerUserAgent = providerUserAgent,
     approvalRegistry = approvalRegistry,
     promptCheckpointStoreProvider = promptCheckpointStoreFactory::forChatSession,
-    runEventJournalStoreFactory = runEventJournalStoreFactory,
+    runEventJournalStoreFactory = tombstoneGuardedRunEventJournalStoreFactory,
     todoStoreProvider = { sessionId ->
       ChatSessionBackedAgentTodoStore(
         chatSessionStore = chatSessionStore,
@@ -481,12 +487,13 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
     sessionOwnerLeaseStore = FileBackedRuntimeSessionOwnerLeaseStore.fromRootDirectory(
       runtimeRootDirectory,
     ),
+    deletedSessionTombstones = chatDeletedSessionTombstones,
   )
   return RetainedInProcessOpenCrayRuntimeOwnerCore(
     runtimeControllerLifecycle = runtimeControllerLifecycle,
     runtimeOwnerLifecycleState = runtimeOwnerLifecycleState,
     sessionRuntimeManager = sessionRuntimeManager,
-    runEventJournalStoreFactory = runEventJournalStoreFactory,
+    runEventJournalStoreFactory = tombstoneGuardedRunEventJournalStoreFactory,
     promptCheckpointStoreFactory = promptCheckpointStoreFactory,
     supplementStoreFactory = supplementStoreFactory,
     transcriptMessagesProvider = { sessionId ->

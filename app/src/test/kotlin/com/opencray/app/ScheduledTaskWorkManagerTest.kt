@@ -315,7 +315,7 @@ class ScheduledTaskWorkManagerTest {
     val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
     val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
     val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
-    val sessionId = "session-projection-durable"
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
 
     snapshotStoreFactory.forChatSession(sessionId).save(
       queueSnapshot(
@@ -1751,17 +1751,17 @@ class ScheduledTaskWorkManagerTest {
   }
 
   @Test
-  fun hasPotentialInteractiveRunRepairWorkFindsDurableSessionOutsideChatSessionStoreState() {
+  fun hasPotentialInteractiveRunRepairWorkFindsDurableCheckpointForChatTrackedSession() {
     val root = temporaryFolder.newFolder("scheduled-task-interactive-repair-durable-only")
     val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
     val snapshotStoreFactory = InMemoryAgentQueueSnapshotStoreFactory()
     val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
     val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
-    val durableOnlySessionId = "session-durable-only"
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
 
-    promptCheckpointStoreFactory.forChatSession(durableOnlySessionId).upsert(
+    promptCheckpointStoreFactory.forChatSession(sessionId).upsert(
       PersistedPromptCheckpoint(
-        sessionId = durableOnlySessionId,
+        sessionId = sessionId,
         runId = "run-durable-only",
         taskId = "task-durable-only",
         checkpointId = "checkpoint-durable-only",
@@ -1789,7 +1789,7 @@ class ScheduledTaskWorkManagerTest {
     val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
     val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
     val runRecordStoreFactory = InMemoryAgentRunRecordStoreFactory()
-    val durableOnlySessionId = "session-run-record-only"
+    val durableOnlySessionId = chatSessionStore.loadState().activeSession.sessionId
 
     runRecordStoreFactory.forChatSession(durableOnlySessionId).upsert(
       PersistedAgentRunRecord(
@@ -1836,7 +1836,7 @@ class ScheduledTaskWorkManagerTest {
     val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
     val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
     val runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory()
-    val durableOnlySessionId = "session-journal-only"
+    val durableOnlySessionId = chatSessionStore.loadState().activeSession.sessionId
 
     runEventJournalStoreFactory.forChatSession(durableOnlySessionId).append(
       OpenCrayAssistantEvent(
@@ -2035,8 +2035,9 @@ class ScheduledTaskWorkManagerTest {
     val promptCheckpointStoreFactory = inMemoryPromptCheckpointStoreFactory()
     val subAgentHandleStoreFactory = inMemorySubAgentHandleStoreFactory()
     val runEventJournalStoreFactory = inMemoryRunEventJournalStoreFactory()
+    val sessionId = chatSessionStore.loadState().activeSession.sessionId
 
-    runEventJournalStoreFactory.forChatSession("session-final-journal").append(
+    runEventJournalStoreFactory.forChatSession(sessionId).append(
       OpenCrayAssistantEvent(
         runId = "run-final-journal",
         taskId = "task-final-journal",
@@ -2076,12 +2077,12 @@ class ScheduledTaskWorkManagerTest {
         runEventJournalStoreFactory = runEventJournalStoreFactory,
         runtimeServiceProjectionSnapshots = mapOf(
           RuntimeServiceTarget.INTERACTIVE to runtimeProjectionSnapshot(
-            activeSessionIds = listOf("session-final-journal"),
+            activeSessionIds = listOf(sessionId),
             lastInterruptedRunRepair = RuntimeServiceInterruptedRunRepairProjection(
               repairEvidenceBySession = mapOf(
-                "session-final-journal" to listOf(
+                sessionId to listOf(
                   InterruptedRunRepairEvidence(
-                    sessionId = "session-final-journal",
+                    sessionId = sessionId,
                     kind = InterruptedRunRepairEvidenceKind.JOURNAL_TAIL,
                     target = RuntimeServiceTarget.INTERACTIVE,
                     runId = "run-final-journal",

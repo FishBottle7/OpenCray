@@ -114,7 +114,7 @@ class AgentBootstrapExecutionControllerTest : AgentBootstrapTestBase() {
     val context = MinimalContext()
     val runtimeRoot = temporaryFolder.newFolder("execution-controller-provider-durable-only").toPath()
     val chatStore = ChatSessionLocalStore(runtimeRoot.resolve("chat-session").toFile())
-    val durableOnlySessionId = "session-durable-only"
+    val durableOnlySessionId = chatStore.loadState().activeSession.sessionId
     val runtimeManager = RecordingAgentSessionRuntimeManager().apply {
       putHandle(
         RecordingAgentSessionHandle(

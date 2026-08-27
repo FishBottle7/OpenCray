@@ -168,6 +168,7 @@ internal class DefaultAgentSessionRuntimeManager(
   private val clock: () -> Long = System::currentTimeMillis,
   private val sessionOwnerLeaseDurationMs: Long =
     DEFAULT_RUNTIME_SESSION_OWNER_LEASE_DURATION_MS,
+  private val deletedSessionTombstones: ChatSessionTombstoneStore? = null,
 ) : AgentSessionRuntimeManager {
   private val listeners = linkedSetOf<AgentSessionRuntimeListener>()
   private val sessions = linkedMapOf<String, ManagedAgentSessionHandle>()
@@ -178,13 +179,30 @@ internal class DefaultAgentSessionRuntimeManager(
     acquireSessionOwnershipLocked(sessionId)
     sessions.getOrPut(sessionId) {
       try {
+        val tombstones = deletedSessionTombstones
         ManagedAgentSessionHandle(
           sessionId = sessionId,
           agentId = agentId,
           runtimeFactory = runtimeFactory,
-          snapshotStoreFactory = snapshotStoreFactory,
-          runRecordStore = runRecordStoreFactory.forChatSession(sessionId),
-          runEventJournalStore = runEventJournalStoreFactory.forChatSession(sessionId),
+          snapshotStoreFactory = if (tombstones == null) {
+            snapshotStoreFactory
+          } else {
+            TombstoneGuardedAgentQueueSnapshotStoreFactory(snapshotStoreFactory, tombstones)
+          },
+          runRecordStore = runRecordStoreFactory.forChatSession(sessionId).let { store ->
+            if (tombstones == null) {
+              store
+            } else {
+              TombstoneGuardedAgentRunRecordStore(store, sessionId, tombstones)
+            }
+          },
+          runEventJournalStore = runEventJournalStoreFactory.forChatSession(sessionId).let { store ->
+            if (tombstones == null) {
+              store
+            } else {
+              TombstoneGuardedRunEventJournalStore(store, sessionId, tombstones)
+            }
+          },
           promptCheckpointStore = promptCheckpointStoreFactory.forChatSession(sessionId),
           executor = executor,
           subAgentRecoveryExecutor = subAgentRecoveryExecutor,
@@ -203,12 +221,22 @@ internal class DefaultAgentSessionRuntimeManager(
   }
 
   override fun sessionOwnerTarget(sessionId: String): RuntimeServiceTarget? =
-    sessionOwnerLeaseStore?.loadLiveOwner(sessionId, clock())?.target
+    try {
+      sessionOwnerLeaseStore?.loadLiveOwner(sessionId, clock())?.target
+    } catch (failure: RuntimeLeaseStoreCorruptedException) {
+      logSessionOwnerLeaseCorrupted(sessionId, failure)
+      null
+    }
 
   override fun ownsSession(sessionId: String): Boolean {
     val resolvedRuntimeTarget = runtimeTarget ?: return true
     val lifecycle = runtimeLifecycleProvider()
-    val owner = sessionOwnerLeaseStore?.loadLiveOwner(sessionId, clock()) ?: return false
+    val owner = try {
+      sessionOwnerLeaseStore?.loadLiveOwner(sessionId, clock())
+    } catch (failure: RuntimeLeaseStoreCorruptedException) {
+      logSessionOwnerLeaseCorrupted(sessionId, failure)
+      return false
+    } ?: return false
     return owner.target == resolvedRuntimeTarget &&
       owner.processStartId == lifecycle.processStartId &&
       owner.runtimeControllerId == lifecycle.runtimeControllerId &&
@@ -337,6 +365,19 @@ internal class DefaultAgentSessionRuntimeManager(
     val store = sessionOwnerLeaseStore ?: return
     val lease = ownedSessionLeases.remove(sessionId) ?: return
     store.release(lease.released(clock()))
+  }
+
+  private fun logSessionOwnerLeaseCorrupted(
+    sessionId: String,
+    failure: RuntimeLeaseStoreCorruptedException,
+  ) {
+    runCatching {
+      Log.e(
+        RUNTIME_FLOW_DEBUG_TAG,
+        "runtime.sessionOwnerLeaseCorrupted errorCode=OWNER_LEASE_STORE_CORRUPTED " +
+          "quarantined=${failure.quarantined} type=${failure::class.java.name}",
+      )
+    }
   }
 }
 

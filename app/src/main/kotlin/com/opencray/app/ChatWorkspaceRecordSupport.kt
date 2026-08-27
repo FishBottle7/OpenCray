@@ -64,18 +64,13 @@ internal fun ChatSessionLocalStore.workspaceAndSessionForAppend(
 ): CreatedChatSessionWorkspace {
   val currentWorkspace = workspace ?: seedWorkspaceRecord(now)
   val currentSession = currentWorkspace.sessions.firstOrNull { it.sessionId == sessionId }
-    ?: activeSessionFrom(currentWorkspace)
-  return if (currentSession == null) {
-    workspaceWithNewSession(
-      workspace = currentWorkspace,
-      now = now,
+    ?: error(
+      "Chat session '$sessionId' no longer exists; rejecting transcript append.",
     )
-  } else {
-    CreatedChatSessionWorkspace(
-      workspace = currentWorkspace,
-      session = currentSession,
-    )
-  }
+  return CreatedChatSessionWorkspace(
+    workspace = currentWorkspace,
+    session = currentSession,
+  )
 }
 
 internal fun ChatSessionLocalStore.workspaceAndActiveSessionForUpdate(

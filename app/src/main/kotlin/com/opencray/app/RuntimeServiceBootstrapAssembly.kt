@@ -765,13 +765,17 @@ internal fun recoveryCandidateSessionIds(
   runEventJournalStoreFactory: RunEventJournalStoreFactory? = null,
   processRegistryFactory: AgentProcessRegistryFactory? = null,
   projectedRepairEvidenceBySession: Map<String, List<InterruptedRunRepairEvidence>> = emptyMap(),
-): List<String> = buildSet {
-  addAll(knownChatSessionIds(chatSessionStore))
-  snapshotStoreFactory?.knownSessionIds()?.let(::addAll)
-  promptCheckpointStoreFactory?.knownSessionIds()?.let(::addAll)
-  subAgentHandleStoreFactory?.knownSessionIds()?.let(::addAll)
-  runRecordStoreFactory?.knownSessionIds()?.let(::addAll)
-  runEventJournalStoreFactory?.knownSessionIds()?.let(::addAll)
-  processRegistryFactory?.knownSessionIds()?.let(::addAll)
-  addAll(projectedRepairEvidenceBySession.keys)
-}.toList()
+): List<String> {
+  val existingSessionIdSet = knownChatSessionIds(chatSessionStore).toSet()
+  return buildSet {
+    addAll(existingSessionIdSet)
+    snapshotStoreFactory?.knownSessionIds()?.let(::addAll)
+    promptCheckpointStoreFactory?.knownSessionIds()?.let(::addAll)
+    subAgentHandleStoreFactory?.knownSessionIds()?.let(::addAll)
+    runRecordStoreFactory?.knownSessionIds()?.let(::addAll)
+    runEventJournalStoreFactory?.knownSessionIds()?.let(::addAll)
+    processRegistryFactory?.knownSessionIds()?.let(::addAll)
+    addAll(projectedRepairEvidenceBySession.keys)
+  }.filter { sessionId -> sessionId in existingSessionIdSet }
+    .toList()
+}
