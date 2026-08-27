@@ -10,6 +10,8 @@ param(
 
   [switch]$UninstallFirst,
 
+  [switch]$AllowDebugSigned,
+
   [string]$DeviceSerial
 )
 
@@ -412,6 +414,14 @@ try {
   }
   
   Write-Step "Building Flutter APK ($Variant)"
+  if ($Variant -eq "release" -and $AllowDebugSigned) {
+    Write-Host ""
+    Write-Host "WARNING: -AllowDebugSigned is set. The release APK will be signed with the Android debug certificate." -ForegroundColor Yellow
+    Write-Host "WARNING: For local development only. Do not distribute or ship this artifact." -ForegroundColor Yellow
+    $env:ORG_GRADLE_PROJECT_opencrayAllowDebugSignedRelease = "true"
+  } elseif ($Variant -eq "release") {
+    Remove-Item Env:ORG_GRADLE_PROJECT_opencrayAllowDebugSignedRelease -ErrorAction SilentlyContinue
+  }
   & $flutterCommand "build" "apk" "--$Variant" "--target-platform" "android-arm64" "--suppress-analytics"
   if ($LASTEXITCODE -ne 0) {
     throw "Flutter build failed with exit code $LASTEXITCODE"

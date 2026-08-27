@@ -1,4 +1,5 @@
 import java.io.File
+import java.util.Properties
 
 plugins {
     id("com.android.application")
@@ -37,6 +38,78 @@ val runtimeIsolationAndroidTestOnly = providers
     .map(String::toBoolean)
     .getOrElse(false)
 
+data class OpencrayReleaseSigningCredentials(
+    val storeFile: String,
+    val storePassword: String,
+    val keyAlias: String,
+    val keyPassword: String,
+)
+
+fun loadOpencrayPropertiesFile(file: File): Properties =
+    Properties().apply { file.inputStream().use(::load) }
+
+fun resolveOpencrayReleaseSigningCredentials(
+    androidProjectDir: File,
+): Pair<OpencrayReleaseSigningCredentials, String>? {
+    val envNames = listOf(
+        "OPENCRAY_SIGN_STORE_FILE",
+        "OPENCRAY_SIGN_STORE_PASSWORD",
+        "OPENCRAY_SIGN_KEY_ALIAS",
+        "OPENCRAY_SIGN_KEY_PASSWORD",
+    )
+    val envValues = envNames.map { name -> System.getenv(name)?.takeIf { it.isNotBlank() } }
+    if (envValues.all { it != null }) {
+        return OpencrayReleaseSigningCredentials(
+            envValues[0]!!,
+            envValues[1]!!,
+            envValues[2]!!,
+            envValues[3]!!,
+        ) to "environment variables"
+    }
+    val propertiesFile = androidProjectDir.resolve("keystore.properties")
+    if (propertiesFile.isFile) {
+        val properties = loadOpencrayPropertiesFile(propertiesFile)
+        val values = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+            .map { key -> properties.getProperty(key)?.takeIf { it.isNotBlank() } }
+        if (values.all { it != null }) {
+            return OpencrayReleaseSigningCredentials(
+                values[0]!!,
+                values[1]!!,
+                values[2]!!,
+                values[3]!!,
+            ) to propertiesFile.absolutePath
+        }
+    }
+    return null
+}
+
+val opencrayAllowDebugSignedRelease = providers
+    .gradleProperty("opencrayAllowDebugSignedRelease")
+    .map(String::toBoolean)
+    .getOrElse(false)
+
+val opencrayReleaseSigning = resolveOpencrayReleaseSigningCredentials(rootProject.projectDir)
+
+val opencrayRequestedReleaseBuild = gradle.startParameter.taskNames.any { taskName ->
+    val lowered = taskName.lowercase()
+    lowered.contains("release") && !lowered.contains("verifyreleasesigning")
+}
+
+if (opencrayReleaseSigning == null && opencrayRequestedReleaseBuild && !opencrayAllowDebugSignedRelease) {
+    throw GradleException(
+        """
+        Release signing credentials are missing; refusing to produce a debug-signed release APK.
+
+        Provide credentials either via environment variables:
+          OPENCRAY_SIGN_STORE_FILE, OPENCRAY_SIGN_STORE_PASSWORD, OPENCRAY_SIGN_KEY_ALIAS, OPENCRAY_SIGN_KEY_PASSWORD
+        or via flutter_app/android/keystore.properties:
+          storeFile=..., storePassword=..., keyAlias=..., keyPassword=
+
+        Local development escape hatch: -PopencrayAllowDebugSignedRelease=true (or build-apk.ps1 -AllowDebugSigned).
+        """.trimIndent(),
+    )
+}
+
 android {
     namespace = "org.opencray.app"
     compileSdk = 36
@@ -70,6 +143,23 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        if (opencrayReleaseSigning != null) {
+            create("opencrayRelease") {
+                val credentials = opencrayReleaseSigning.first
+                val declaredStoreFile = File(credentials.storeFile)
+                storeFile = if (declaredStoreFile.isAbsolute) {
+                    declaredStoreFile
+                } else {
+                    rootProject.projectDir.resolve(credentials.storeFile)
+                }
+                storePassword = credentials.storePassword
+                keyAlias = credentials.keyAlias
+                keyPassword = credentials.keyPassword
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isDebuggable = true
@@ -79,7 +169,24 @@ android {
         release {
             isMinifyEnabled = false
             isShrinkResources = false
-            signingConfig = signingConfigs.getByName("debug")
+            when {
+                opencrayReleaseSigning != null -> {
+                    signingConfig = signingConfigs.getByName("opencrayRelease")
+                }
+                opencrayAllowDebugSignedRelease -> {
+                    logger.warn(
+                        "WARNING: falling back to the Android debug certificate for the release build " +
+                            "(-PopencrayAllowDebugSignedRelease=true); do not distribute this artifact.",
+                    )
+                    signingConfig = signingConfigs.getByName("debug")
+                }
+                else -> {
+                    logger.warn(
+                        "WARNING: release signing credentials are missing; release outputs stay unsigned " +
+                            "and assembleRelease will be blocked by the credential gate.",
+                    )
+                }
+            }
         }
     }
 
@@ -173,6 +280,141 @@ tasks.matching { task ->
     task.name == "assembleRelease" || task.name == "bundleRelease"
 }.configureEach {
     dependsOn(verifyReleaseManifestSecurity)
+}
+
+fun resolveOpencrayAndroidSdkDir(androidProjectDir: File): File? {
+    System.getenv("ANDROID_HOME")?.takeIf { it.isNotBlank() }?.let { return File(it) }
+    val localPropertiesFile = androidProjectDir.resolve("local.properties")
+    if (localPropertiesFile.isFile) {
+        val properties = loadOpencrayPropertiesFile(localPropertiesFile)
+        properties.getProperty("sdk.dir")?.takeIf { it.isNotBlank() }?.let { return File(it) }
+    }
+    System.getenv("ANDROID_SDK_ROOT")?.takeIf { it.isNotBlank() }?.let { return File(it) }
+    return null
+}
+
+fun compareOpencrayVersionedDirectoryNames(left: String, right: String): Int {
+    fun segments(value: String): List<Int> = value.split('.').mapNotNull { it.toIntOrNull() }
+    val leftSegments = segments(left)
+    val rightSegments = segments(right)
+    for (index in 0 until maxOf(leftSegments.size, rightSegments.size)) {
+        val leftValue = leftSegments.getOrElse(index) { 0 }
+        val rightValue = rightSegments.getOrElse(index) { 0 }
+        if (leftValue != rightValue) {
+            return leftValue.compareTo(rightValue)
+        }
+    }
+    return left.compareTo(right)
+}
+
+fun resolveOpencrayApksignerExecutable(sdkDir: File): File? {
+    val buildToolsDir = sdkDir.resolve("build-tools")
+    if (!buildToolsDir.isDirectory) {
+        return null
+    }
+    val versionPattern = Regex("\\d+(\\.\\d+)*")
+    val candidateDir = buildToolsDir.listFiles { file -> file.isDirectory }.orEmpty()
+        .filter { dir ->
+            versionPattern.matches(dir.name) &&
+                (dir.resolve("apksigner.bat").isFile || dir.resolve("apksigner").isFile)
+        }
+        .sortedWith { left, right -> compareOpencrayVersionedDirectoryNames(right.name, left.name) }
+        .firstOrNull() ?: return null
+    return candidateDir.resolve("apksigner.bat").takeIf(File::isFile)
+        ?: candidateDir.resolve("apksigner")
+}
+
+val verifyReleaseSigning = tasks.register("verifyReleaseSigning") {
+    group = "verification"
+    description = "Rejects release APK artifacts signed with the Android debug certificate."
+    val apkOutputDir = layout.buildDirectory.dir("outputs/apk/release")
+    inputs.dir(apkOutputDir)
+    doLast {
+        if (opencrayAllowDebugSignedRelease) {
+            logger.warn(
+                "WARNING: skipping debug certificate verification because " +
+                    "-PopencrayAllowDebugSignedRelease=true.",
+            )
+            return@doLast
+        }
+
+        fun normalizedSha256(value: String): String = value.replace(":", "").uppercase()
+
+        fun runCommand(vararg command: String): String {
+            val process = ProcessBuilder(*command).redirectErrorStream(true).start()
+            val output = process.inputStream.bufferedReader().readText()
+            val exitCode = process.waitFor()
+            check(exitCode == 0) {
+                "Command failed with exit code $exitCode: ${command.joinToString(" ")}\n$output"
+            }
+            return output
+        }
+
+        val apkDirectory = apkOutputDir.get().asFile
+        val apkFile = apkDirectory.walkTopDown()
+            .filter { file -> file.isFile && file.extension.equals("apk", ignoreCase = true) }
+            .minByOrNull { it.name }
+            ?: error("No release APK found under ${apkDirectory.absolutePath}.")
+
+        val sdkDir = resolveOpencrayAndroidSdkDir(rootProject.projectDir)
+            ?: error(
+                "ANDROID_HOME or local.properties sdk.dir is required to locate apksigner for " +
+                    "verifyReleaseSigning.",
+            )
+        val apksignerExecutable = resolveOpencrayApksignerExecutable(sdkDir)
+            ?: error("apksigner was not found under ${sdkDir.resolve("build-tools").absolutePath}.")
+
+        val usesBatchWrapper = apksignerExecutable.absolutePath.endsWith(".bat", ignoreCase = true)
+        val apksignerOutput = if (usesBatchWrapper) {
+            runCommand(
+                "cmd.exe",
+                "/c",
+                apksignerExecutable.absolutePath,
+                "verify",
+                "--print-certs",
+                apkFile.absolutePath,
+            )
+        } else {
+            runCommand(
+                apksignerExecutable.absolutePath,
+                "verify",
+                "--print-certs",
+                apkFile.absolutePath,
+            )
+        }
+        val apkDigest = Regex("certificate SHA-256 digest:\\s*([0-9A-Fa-f:]+)")
+            .find(apksignerOutput)?.groupValues?.get(1)
+            ?: error("Could not read the certificate digest from apksigner output:\n$apksignerOutput")
+
+        val debugKeystoreFile = File(System.getProperty("user.home"))
+            .resolve(".android").resolve("debug.keystore")
+        check(debugKeystoreFile.isFile) {
+            "Debug keystore was not found at ${debugKeystoreFile.absolutePath}."
+        }
+        val keytoolOutput = runCommand(
+            "keytool",
+            "-list",
+            "-v",
+            "-keystore",
+            debugKeystoreFile.absolutePath,
+            "-storepass",
+            "android",
+        )
+        val debugDigest = Regex("^\\s*SHA256:\\s*([0-9A-Fa-f:]+)", RegexOption.MULTILINE)
+            .find(keytoolOutput)?.groupValues?.get(1)
+            ?: error("Could not read the debug certificate digest from keytool output.")
+
+        check(normalizedSha256(apkDigest) != normalizedSha256(debugDigest)) {
+            "The release APK is signed with the Android debug certificate: ${apkFile.absolutePath}"
+        }
+        logger.lifecycle(
+            "verifyReleaseSigning: ${apkFile.name} is not signed with the Android debug certificate.",
+        )
+    }
+}
+
+tasks.matching { task -> task.name == "assembleRelease" }.configureEach {
+    finalizedBy(verifyReleaseSigning)
 }
 
 dependencies {

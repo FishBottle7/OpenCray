@@ -71,6 +71,10 @@ Use these checks before reviewing the deeper release gates. Consumer release not
   - Pass if: every item in the user-facing disclosure checklist is checked and backed by release UI or validation evidence.
   - Fail if: any required warning is missing. Release must fail if Developer mode disclosure is missing.
 
+- [ ] RG-09 Release APK signing gate
+  - Pass if: the final release APK passed `verifyReleaseSigning` (signer SHA-256 differs from the Android debug keystore); debug-signed artifacts require explicit `-PopencrayAllowDebugSignedRelease=true`, are local-only, and must never ship.
+  - Fail if: release packaging succeeds without signing credentials unless the escape hatch was explicit, or the APK signer matches the Android debug certificate.
+
 ## User-facing disclosure checklist
 
 - [ ] UD-01 Developer mode disclosure
