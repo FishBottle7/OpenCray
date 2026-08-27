@@ -1,3 +1,7 @@
+<p align="center">
+  <b><a href="README.md">English</a></b>&nbsp;·&nbsp;简体中文
+</p>
+
 <div align="center">
   <p>
     <img src="assets/branding/readme_header.png" alt="OpenCray - 移动端 AI Agent 工作台" width="100%">

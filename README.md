@@ -1,3 +1,7 @@
+<p align="center">
+  <b><a href="README.zh-CN.md">简体中文</a></b>&nbsp;·&nbsp;English
+</p>
+
 <div align="center">
   <p>
     <img src="assets/branding/readme_header.png" alt="OpenCray - Android AI Agent runtime and mobile workspace" width="100%">
