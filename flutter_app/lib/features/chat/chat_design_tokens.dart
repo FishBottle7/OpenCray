@@ -21,10 +21,23 @@ class _ChatPalette {
   static const Color highRiskAccent = Color(0xFFC2491D);
   static const Color highRiskBorder = Color(0xFFF0CFC0);
   static const Color highRiskBadgeSurface = Color(0xFFFBE4D8);
+  static const Color highRiskSurface = Color(0xFFFDF6F2);
+  static const Color highRiskReasonText = Color(0xFF8A5A3B);
   static const Color textPrimary = OpenCrayColors.textPrimary;
   static const Color textSecondary = OpenCrayColors.textSecondary;
   static const Color textTertiary = OpenCrayColors.textTertiary;
   static const Color border = OpenCrayColors.divider;
+
+  /// Zero-alpha counterparts used as the resting end of a fade. Kept as
+  /// literals so the interpolated mid-tones stay identical to the values the
+  /// layout was tuned against.
+  static const Color surfaceClear = Color(0x00FFFFFF);
+  static const Color borderClear = Color(0x00E5E9F0);
+
+  /// Summary card title once a thread is active — a step quieter than
+  /// [textPrimary] without dropping all the way to [textSecondary].
+  static const Color summaryQuietTitle = Color(0xFF3B4757);
+
   static const Color runTraceBorder = Color(0xFFDDE4F0);
   static const Color runTraceStatusSurface = OpenCrayColors.primaryTint;
   static const Color runTraceStatusText = OpenCrayColors.primaryPressed;
@@ -36,6 +49,7 @@ class _ChatPalette {
   static const Color runTraceInterruptSurface = Color(0xFFFCEFE8);
   static const Color runTraceInterruptBorder = Color(0xFFF0CFC0);
   static const Color runTraceInterruptAction = Color(0xFFC2491D);
+  static const Color runTraceRetryMark = OpenCrayColors.warningMark;
   static const Color runTraceTabDivider = OpenCrayColors.divider;
   static const Color inspectorAction = OpenCrayColors.primary;
   static const Color inspectorTarget = Color(0xFF7C3AED);
@@ -48,18 +62,71 @@ class _ChatPalette {
   static const Color todoCompletedFill = OpenCrayColors.textTertiary;
   static const Color selectionRowHighlight = OpenCrayColors.surfaceSunken;
   static const Color selectionControlBorder = OpenCrayColors.outline;
+
+  /// Text selection tints — bright over the accent-filled outbound bubble,
+  /// accent-tinted everywhere else.
+  static const Color textSelectionOnAccent = Color(0x52FFFFFF);
+  static const Color textSelectionOnSurface = Color(0x332563EB);
+
+  /// Markdown links rendered on a dark bubble.
+  static const Color linkOnDarkSurface = Color(0xFFDCEBFF);
+
+  /// Modal barriers: previews dim to workbench ink, full-bleed images go
+  /// darker so the photo owns the screen.
+  static const Color previewBarrier = Color(0x8A0B0E14);
+  static const Color imageBarrier = Color(0xB3000000);
+}
+
+/// Translucent chrome painted over blurred content — top bar, composer sheen,
+/// message popover, approval card.
+///
+/// These stay literal rather than derived: they are tuned against whatever the
+/// blur behind them produces, so an alpha computed off a solid token would
+/// drift the moment the underlying surface changes.
+class _ChatGlass {
+  const _ChatGlass._();
+
+  /// Top bar. Each `Rest`/`Active` pair is the scroll-driven lerp range.
+  static const Color barTopRest = Color(0xA8FFFFFF);
+  static const Color barTopActive = Color(0xE8FFFFFF);
+  static const Color barMidRest = Color(0x70FFFFFF);
+  static const Color barMidActive = Color(0xC2FFFFFF);
+  static const Color barFootRest = Color(0x14F8FAFE);
+  static const Color barFootActive = Color(0x54F8FAFE);
+  static const Color barFootClear = Color(0x00F8FAFE);
+  static const Color barBorderActive = Color(0x24DCE7F6);
+  static const Color barShadowActive = Color(0x0A101828);
+
+  /// Composer sheen behind the input row, plus its lift ink.
+  static const Color composerHighlight = Color(0x73FFFFFF);
+  static const Color composerSheen = Color(0x61F0F5FF);
+  static const Color composerSheenClear = Color(0x00F0F5FF);
+  static const Color composerShadowInk = Color(0xFF0D1B2A);
+
+  /// Floating popovers and inline controls.
+  static const Color popoverBorder = Color(0xCCFFFFFF);
+  static const Color approvalShadow = Color(0x14101828);
+  static const Color interruptThumbShadow = Color(0x1E0F172A);
+}
+
+/// Chat gradients that are deliberately tighter than [OpenCrayGradients.brand]
+/// so the bubble keeps its own weight next to the send button.
+class _ChatGradients {
+  const _ChatGradients._();
+
+  static const LinearGradient outboundBubble = LinearGradient(
+    begin: Alignment.topCenter,
+    end: Alignment.bottomCenter,
+    colors: <Color>[Color(0xFF3D7BF7), OpenCrayColors.primary],
+  );
 }
 
 class _ChatTextStyles {
   const _ChatTextStyles._();
 
-  static const TextStyle pageTitle = TextStyle(
-    fontSize: 30,
-    height: 1.1,
-    fontWeight: FontWeight.w700,
-    color: _ChatPalette.textPrimary,
-    letterSpacing: -0.6,
-  );
+  /// Shared with the other tabs so every large-title header agrees on metrics.
+  /// The chat header still animates this style (colour lerp on scroll).
+  static const TextStyle pageTitle = OpenCrayTypography.pageTitle;
 
   static const TextStyle cardTitle = TextStyle(
     fontSize: 17,

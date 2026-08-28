@@ -3,99 +3,69 @@ import 'package:flutter/material.dart';
 import '../../app/opencray_tabs.dart';
 import '../copy/opencray_ui_copy.dart';
 import '../models/opencray_shell_snapshot.dart';
+import 'opencray_controls.dart';
 import 'opencray_motion.dart';
 import 'opencray_tokens.dart';
 
-typedef OpenCrayPageContentBuilder =
-    List<Widget> Function(BuildContext context);
-
-class OpenCrayTopBar extends StatelessWidget {
-  const OpenCrayTopBar({super.key, this.leading, this.trailing});
-
-  final Widget? leading;
-  final Widget? trailing;
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      height: OpenCraySizes.compactTopBarHeight,
-      child: Row(
-        children: [
-          if (leading != null) leading!,
-          const Spacer(),
-          if (trailing != null) trailing!,
-        ],
-      ),
-    );
-  }
-}
-
-class OpenCrayPageTemplate extends StatelessWidget {
-  const OpenCrayPageTemplate({
+/// Large-title page header shared by the tabs and every settings subpage.
+///
+/// Owns the whole title block rhythm (eyebrow → title → summary → first
+/// section) so pages stop hand-rolling slightly different gaps and metrics.
+class OpenCrayPageHeader extends StatelessWidget {
+  const OpenCrayPageHeader({
     super.key,
+    this.leading,
     this.eyebrow,
     required this.title,
-    required this.subtitle,
-    this.topBarLeading,
-    this.topBarTrailing,
-    required this.children,
+    this.summary,
+    this.trailing,
+    this.titleStyle,
+    this.leadingGap = OpenCrayTypography.eyebrowGap,
+    this.bottomGap = OpenCrayTypography.headerBottomGap,
   });
 
+  /// Rendered above the eyebrow — typically a back affordance.
+  final Widget? leading;
   final String? eyebrow;
   final String title;
-  final String subtitle;
-  final Widget? topBarLeading;
-  final Widget? topBarTrailing;
-  final List<Widget> children;
+  final String? summary;
+
+  /// Rendered on the title baseline row, right aligned.
+  final Widget? trailing;
+  final TextStyle? titleStyle;
+  final double leadingGap;
+  final double bottomGap;
 
   @override
   Widget build(BuildContext context) {
-    final textTheme = Theme.of(context).textTheme;
-    return SafeArea(
-      bottom: false,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: OpenCraySpacing.lg),
-            child: OpenCrayTopBar(
-              leading: topBarLeading,
-              trailing: topBarTrailing,
-            ),
-          ),
-          Expanded(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(
-                OpenCraySpacing.lg,
-                OpenCraySpacing.sm,
-                OpenCraySpacing.lg,
-                OpenCraySpacing.xxl,
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  if (eyebrow != null)
-                    Text(
-                      eyebrow!,
-                      style: textTheme.labelSmall?.copyWith(
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 1.1,
-                        color: OpenCrayColors.textTertiary,
-                      ),
-                    ),
-                  if (eyebrow != null)
-                    const SizedBox(height: OpenCraySpacing.xs),
-                  Text(title, style: textTheme.headlineLarge),
-                  const SizedBox(height: OpenCraySpacing.xs),
-                  Text(subtitle, style: textTheme.bodyMedium),
-                  const SizedBox(height: OpenCraySpacing.lg),
-                  ...children,
-                ],
-              ),
-            ),
-          ),
+    final bool hasEyebrow = eyebrow?.trim().isNotEmpty ?? false;
+    final bool hasSummary = summary?.trim().isNotEmpty ?? false;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (leading != null) ...[leading!, SizedBox(height: leadingGap)],
+        if (hasEyebrow) ...[
+          Text(eyebrow!, style: OpenCrayTypography.pageEyebrow),
+          const SizedBox(height: OpenCrayTypography.eyebrowGap),
         ],
-      ),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: titleStyle ?? OpenCrayTypography.pageTitle,
+              ),
+            ),
+            if (trailing != null) trailing!,
+          ],
+        ),
+        if (hasSummary) ...[
+          const SizedBox(height: OpenCrayTypography.summaryGap),
+          Text(summary!, style: OpenCrayTypography.pageSummary),
+        ],
+        if (bottomGap > 0) SizedBox(height: bottomGap),
+      ],
     );
   }
 }
@@ -125,7 +95,9 @@ class OpenCrayCard extends StatelessWidget {
         border: Border.all(color: borderColor ?? OpenCrayColors.divider),
         boxShadow: showShadow ? OpenCrayShadows.card : null,
       ),
-      child: Padding(padding: padding, child: child),
+      child: OpenCrayInkSurface(
+        child: Padding(padding: padding, child: child),
+      ),
     );
   }
 }
@@ -313,46 +285,6 @@ _OpenCrayStateToneColors _stateToneColors(OpenCrayStateTone tone) {
   }
 }
 
-class OpenCrayPillButton extends StatelessWidget {
-  const OpenCrayPillButton({super.key, required this.label, this.icon});
-
-  final String label;
-  final IconData? icon;
-
-  @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: const BoxDecoration(
-        color: OpenCrayColors.surface,
-        borderRadius: BorderRadius.all(OpenCrayRadii.pill),
-        border: Border.fromBorderSide(
-          BorderSide(color: OpenCrayColors.divider),
-        ),
-        boxShadow: OpenCrayShadows.card,
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            if (icon != null)
-              Icon(icon, size: 15, color: OpenCrayColors.textSecondary),
-            if (icon != null) const SizedBox(width: 6),
-            Text(
-              label,
-              style: const TextStyle(
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-                color: OpenCrayColors.textPrimary,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class OpenCrayBottomNavigation extends StatelessWidget {
   const OpenCrayBottomNavigation({
     super.key,
@@ -399,58 +331,6 @@ class OpenCrayBottomNavigation extends StatelessWidget {
           ),
         ),
       ),
-    );
-  }
-}
-
-class OpenCrayShellHeader extends StatelessWidget {
-  const OpenCrayShellHeader({super.key, required this.snapshot});
-
-  final OpenCrayShellSnapshot snapshot;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context).textTheme;
-    return OpenCrayCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(snapshot.hostLabel, style: theme.labelMedium),
-          const SizedBox(height: OpenCraySpacing.xs),
-          Text(snapshot.hostSummary, style: theme.bodyMedium),
-        ],
-      ),
-    );
-  }
-}
-
-class OpenCrayTabPlaceholder extends StatelessWidget {
-  const OpenCrayTabPlaceholder({
-    super.key,
-    this.eyebrow,
-    required this.title,
-    required this.subtitle,
-    required this.items,
-    this.topBarLeading,
-    this.topBarTrailing,
-  });
-
-  final String? eyebrow;
-  final String title;
-  final String subtitle;
-  final List<Widget> items;
-  final Widget? topBarLeading;
-  final Widget? topBarTrailing;
-
-  @override
-  Widget build(BuildContext context) {
-    return OpenCrayPageTemplate(
-      eyebrow: eyebrow,
-      title: title,
-      subtitle: subtitle,
-      topBarLeading: topBarLeading,
-      topBarTrailing: topBarTrailing,
-      children: items,
     );
   }
 }
@@ -511,25 +391,34 @@ class _BottomNavItem extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: OpenCraySizes.bottomNavItemGap),
-              AnimatedDefaultTextStyle(
-                duration: duration,
-                curve: OpenCrayMotion.enter,
-                style:
-                    Theme.of(context).textTheme.labelMedium?.copyWith(
-                      color: color,
-                      fontSize: 11,
-                      height: 14 / 11,
-                      letterSpacing: 0.1,
-                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                    ) ??
-                    TextStyle(
-                      color: color,
-                      fontSize: 11,
-                      height: 14 / 11,
-                      letterSpacing: 0.1,
-                      fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                    ),
-                child: Text(copy.tabLabel(tab)),
+              // The bar keeps a fixed height, so cap label growth instead of
+              // letting a large system font clip the row.
+              MediaQuery.withClampedTextScaling(
+                maxScaleFactor: 1.2,
+                child: AnimatedDefaultTextStyle(
+                  duration: duration,
+                  curve: OpenCrayMotion.enter,
+                  style:
+                      Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: color,
+                        fontSize: 11,
+                        height: 14 / 11,
+                        letterSpacing: 0.1,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w500,
+                      ) ??
+                      TextStyle(
+                        color: color,
+                        fontSize: 11,
+                        height: 14 / 11,
+                        letterSpacing: 0.1,
+                        fontWeight: selected
+                            ? FontWeight.w600
+                            : FontWeight.w500,
+                      ),
+                  child: Text(copy.tabLabel(tab)),
+                ),
               ),
             ],
           ),

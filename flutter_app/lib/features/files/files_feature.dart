@@ -12,6 +12,7 @@ import '../../core/models/opencray_file_image_preview.dart';
 import '../../core/models/opencray_file_text_preview.dart';
 import '../../core/models/opencray_files_snapshot.dart';
 import '../../core/models/opencray_workspace_text_document.dart';
+import '../../core/design/opencray_controls.dart';
 import '../../core/design/opencray_motion.dart';
 import '../../core/design/opencray_tokens.dart';
 import '../../core/design/opencray_widgets.dart';
@@ -1010,6 +1011,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
       backdropKey: const ValueKey<String>('files-image-preview-backdrop'),
       child: _ImagePreviewDialog(
         key: const ValueKey<String>('files-image-preview-dialog'),
+        copy: widget.copy,
         preview: preview,
       ),
     );

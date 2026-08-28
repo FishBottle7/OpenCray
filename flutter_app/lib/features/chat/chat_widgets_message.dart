@@ -95,7 +95,7 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: Colors.white.withValues(alpha: 0.92),
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: const Color(0xCCFFFFFF)),
+                    border: Border.all(color: _ChatGlass.popoverBorder),
                   ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -589,13 +589,7 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
       child: DecoratedBox(
         decoration: ShapeDecoration(
           color: useBrandGradient ? null : widget.backgroundColor,
-          gradient: useBrandGradient
-              ? const LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: <Color>[Color(0xFF3D7BF7), OpenCrayColors.primary],
-                )
-              : null,
+          gradient: useBrandGradient ? _ChatGradients.outboundBubble : null,
           shape: RoundedSuperellipseBorder(
             borderRadius: const BorderRadius.all(Radius.circular(18)),
             side: showInboundOutline
@@ -1106,7 +1100,7 @@ MarkdownStyleSheet _openCrayMarkdownStyleSheet(
   final Color resolvedLinkColor =
       linkColor ??
       (darkSurface
-          ? const Color(0xFFDCEBFF)
+          ? _ChatPalette.linkOnDarkSurface
           : Theme.of(context).colorScheme.primary);
   final Color resolvedStrongAccentColor =
       strongAccentColor ?? Theme.of(context).colorScheme.primary;

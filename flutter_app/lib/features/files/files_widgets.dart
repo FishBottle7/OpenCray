@@ -18,34 +18,23 @@ class _TitleRow extends StatelessWidget {
     final title = isSelectionMode
         ? copy.filesSelectedCount(selectedCount)
         : copy.filesTitle;
-    return Row(
-      children: [
-        Expanded(
-          child: Text(
-            title,
-            style: const TextStyle(
-              fontSize: 28,
-              height: 1.05,
-              fontWeight: FontWeight.w700,
-              letterSpacing: -0.6,
-              color: FilesFeatureScreen.textPrimary,
-            ),
-          ),
-        ),
-        if (isSelectionMode)
-          TextButton(
-            key: const ValueKey<String>('files-selection-done'),
-            onPressed: onDone,
-            child: Text(
-              copy.filesDoneAction,
-              style: const TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: FilesFeatureScreen.accent,
+    return OpenCrayPageHeader(
+      title: title,
+      bottomGap: 0,
+      trailing: isSelectionMode
+          ? TextButton(
+              key: const ValueKey<String>('files-selection-done'),
+              onPressed: onDone,
+              child: Text(
+                copy.filesDoneAction,
+                style: const TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: FilesFeatureScreen.accent,
+                ),
               ),
-            ),
-          ),
-      ],
+            )
+          : null,
     );
   }
 }
@@ -226,24 +215,29 @@ class _LocationCard extends StatelessWidget {
                   ),
                 ),
                 const Spacer(),
-                InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: isLoading || isMutating ? null : () => onRefresh(),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: FilesFeatureScreen.surfaceMuted,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    child: Text(
-                      copy.filesRefreshAction,
-                      style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: FilesFeatureScreen.textSecondary,
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: FilesFeatureScreen.surfaceMuted,
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(color: OpenCrayColors.divider),
+                  ),
+                  child: OpenCrayInkSurface(
+                    borderRadius: BorderRadius.circular(999),
+                    child: InkWell(
+                      onTap: isLoading || isMutating ? null : () => onRefresh(),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 6,
+                        ),
+                        child: Text(
+                          copy.filesRefreshAction,
+                          style: const TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: FilesFeatureScreen.textSecondary,
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -711,33 +705,44 @@ class _DirectoryEntryTile extends StatelessWidget {
     return AnimatedOpacity(
       duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
       opacity: isFaded ? 0.38 : 1,
-      child: InkWell(
-        key: ValueKey<String>('files-row-${entry.relativePath}'),
-        onTap: onTap,
-        onLongPress: onLongPress,
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
-          decoration: BoxDecoration(
-            color: isSelected
-                ? FilesFeatureScreen.surfacePressed
-                : Colors.transparent,
-            borderRadius: BorderRadius.circular(14),
-          ),
-          child: Row(
-            children: [
-              if (isSelectionMode) ...[
-                Icon(
-                  isSelected
-                      ? CupertinoIcons.check_mark_circled_solid
-                      : CupertinoIcons.circle,
-                  size: 20,
-                  color: isSelected
-                      ? FilesFeatureScreen.accent
-                      : FilesFeatureScreen.textTertiary,
-                ),
-                const SizedBox(width: 10),
-              ],
+      child: AnimatedContainer(
+        duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+        curve: OpenCrayMotion.enter,
+        decoration: BoxDecoration(
+          color: isSelected
+              ? FilesFeatureScreen.surfacePressed
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: OpenCrayInkSurface(
+          borderRadius: BorderRadius.circular(14),
+          child: InkWell(
+            key: ValueKey<String>('files-row-${entry.relativePath}'),
+            onTap: onTap,
+            onLongPress: onLongPress,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 10),
+              child: Row(
+                children: [
+                  if (isSelectionMode) ...[
+                    AnimatedSwitcher(
+                      duration: OpenCrayMotion.resolve(
+                        context,
+                        OpenCrayMotion.micro,
+                      ),
+                      child: Icon(
+                        isSelected
+                            ? CupertinoIcons.check_mark_circled_solid
+                            : CupertinoIcons.circle,
+                        key: ValueKey<bool>(isSelected),
+                        size: 20,
+                        color: isSelected
+                            ? FilesFeatureScreen.accent
+                            : FilesFeatureScreen.textTertiary,
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                  ],
               Icon(icon, size: 20, color: iconColor),
               const SizedBox(width: 10),
               Expanded(
@@ -764,13 +769,15 @@ class _DirectoryEntryTile extends StatelessWidget {
                   ],
                 ),
               ),
-              if (entry.isDirectory && !isSelectionMode)
-                const Icon(
-                  CupertinoIcons.chevron_right,
-                  size: 16,
-                  color: FilesFeatureScreen.textTertiary,
-                ),
-            ],
+                  if (entry.isDirectory && !isSelectionMode)
+                    const Icon(
+                      CupertinoIcons.chevron_right,
+                      size: 16,
+                      color: FilesFeatureScreen.textTertiary,
+                    ),
+                ],
+              ),
+            ),
           ),
         ),
       ),

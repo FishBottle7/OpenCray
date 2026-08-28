@@ -107,7 +107,7 @@ class _ChatImageAttachmentPreviewState
   ) {
     return _showChatPreviewDialog(
       context,
-      barrierColor: const Color(0xB3000000),
+      barrierColor: _ChatPalette.imageBarrier,
       builder: (dialogContext) {
         return Dialog(
           backgroundColor: Colors.transparent,
@@ -1332,7 +1332,7 @@ Future<void> _showChatTextPreviewDialog(
 Future<void> _showChatPreviewDialog(
   BuildContext context, {
   required WidgetBuilder builder,
-  Color barrierColor = const Color(0x8A0B0E14),
+  Color barrierColor = _ChatPalette.previewBarrier,
 }) {
   return showGeneralDialog<void>(
     context: context,

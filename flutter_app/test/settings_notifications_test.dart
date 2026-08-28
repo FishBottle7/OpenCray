@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:opencray/core/design/opencray_controls.dart';
 import 'package:opencray/features/settings/settings.dart';
 
 import 'settings_feature_test_support.dart';
@@ -59,7 +60,7 @@ void main() {
 
       final masterSwitch = find.descendant(
         of: find.byKey(const ValueKey<String>('notification-master-enabled')),
-        matching: find.byType(Switch),
+        matching: find.byType(OpenCraySwitch),
       );
       await tester.ensureVisible(masterSwitch);
       await tester.tap(masterSwitch);
@@ -124,7 +125,7 @@ void main() {
       expect(find.text('Morning review'), findsOneWidget);
       final taskSwitch = find.descendant(
         of: find.byKey(const ValueKey<String>('settings-scheduled-tasks')),
-        matching: find.byType(Switch),
+        matching: find.byType(OpenCraySwitch),
       );
       await tester.tap(taskSwitch);
       await tester.pump();
@@ -213,7 +214,7 @@ void main() {
 
     final enabledSwitch = find.descendant(
       of: find.byKey(const ValueKey<String>('scheduled-task-enabled')),
-      matching: find.byType(Switch),
+      matching: find.byType(OpenCraySwitch),
     );
     await tester.ensureVisible(enabledSwitch);
     await tester.tap(enabledSwitch);
@@ -269,7 +270,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byType(Switch).first);
+    await tester.tap(find.byType(OpenCraySwitch).first);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
@@ -309,13 +310,13 @@ void main() {
 
       final masterSwitch = find.descendant(
         of: find.byKey(const ValueKey<String>('notification-master-enabled')),
-        matching: find.byType(Switch),
+        matching: find.byType(OpenCraySwitch),
       );
       final quietHoursSwitch = find.descendant(
         of: find.byKey(
           const ValueKey<String>('notification-quiet-hours-enabled'),
         ),
-        matching: find.byType(Switch),
+        matching: find.byType(OpenCraySwitch),
       );
       await tester.tap(masterSwitch);
       await tester.pump();
@@ -364,15 +365,15 @@ void main() {
 
     final masterSwitch = find.descendant(
       of: find.byKey(const ValueKey<String>('notification-master-enabled')),
-      matching: find.byType(Switch),
+      matching: find.byType(OpenCraySwitch),
     );
-    expect(tester.widget<Switch>(masterSwitch).value, isTrue);
+    expect(tester.widget<OpenCraySwitch>(masterSwitch).value, isTrue);
 
     await tester.tap(masterSwitch);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(tester.widget<Switch>(masterSwitch).value, isTrue);
+    expect(tester.widget<OpenCraySwitch>(masterSwitch).value, isTrue);
     expect(facade.notificationSettings.masterEnabled, isTrue);
     expect(find.text('Notification save rejected'), findsOneWidget);
   });
@@ -409,13 +410,13 @@ void main() {
 
       final masterSwitch = find.descendant(
         of: find.byKey(const ValueKey<String>('notification-master-enabled')),
-        matching: find.byType(Switch),
+        matching: find.byType(OpenCraySwitch),
       );
       final quietHoursSwitch = find.descendant(
         of: find.byKey(
           const ValueKey<String>('notification-quiet-hours-enabled'),
         ),
-        matching: find.byType(Switch),
+        matching: find.byType(OpenCraySwitch),
       );
       await tester.tap(masterSwitch);
       await tester.pump();
@@ -431,7 +432,7 @@ void main() {
       expect(facade.notificationSaveCallCount, 2);
       expect(facade.notificationSettings.masterEnabled, isFalse);
       expect(facade.notificationSettings.quietHoursEnabled, isFalse);
-      expect(tester.widget<Switch>(masterSwitch).value, isFalse);
+      expect(tester.widget<OpenCraySwitch>(masterSwitch).value, isFalse);
     },
   );
 
@@ -502,13 +503,13 @@ void main() {
       of: find.byKey(
         const ValueKey<String>('notification-event-approval-requests'),
       ),
-      matching: find.byType(Switch),
+      matching: find.byType(OpenCraySwitch),
     );
     final reminderSwitch = find.descendant(
       of: find.byKey(
         const ValueKey<String>('notification-event-approval-reminder'),
       ),
-      matching: find.byType(Switch),
+      matching: find.byType(OpenCraySwitch),
     );
     await tester.tap(approvalSwitch);
     await tester.pump();

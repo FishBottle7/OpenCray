@@ -50,12 +50,11 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: _handleBack, label: _backLabel()),
-          const SizedBox(height: 8),
-          Text(_title(), style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 8),
-          Text(_subtitle(_snapshot), style: _SettingsTextStyles.subtitle),
-          const SizedBox(height: 16),
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: _handleBack, label: _backLabel()),
+            title: _title(),
+            summary: _subtitle(_snapshot),
+          ),
           if (_isLoading)
             const _SettingsLoading(
               key: ValueKey<String>('settings-safety-loading'),
@@ -786,39 +785,26 @@ class _WorkspaceAccessSettingsPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(
-            onTap: () {
+          OpenCrayPageHeader(
+            leading: _BackLink(
+              onTap: () {
               if (_page == _WorkspaceSubpage.root) {
-                widget.onBack();
+              widget.onBack();
               } else {
-                setState(() {
-                  _page = _WorkspaceSubpage.root;
-                });
+              setState(() {
+              _page = _WorkspaceSubpage.root;
+              });
               }
-            },
-            label: _page == _WorkspaceSubpage.root
-                ? widget.backLabel
-                : SafetySettingsCopy.workspaceTitle,
+              },
+              label: _page == _WorkspaceSubpage.root
+              ? widget.backLabel
+              : SafetySettingsCopy.workspaceTitle,
+            ),
+            title:
+                _page == _WorkspaceSubpage.root ? SafetySettingsCopy.workspaceTitle : _page == _WorkspaceSubpage.approvedPaths ? SafetySettingsCopy.approvedPathsTitle : SafetySettingsCopy.childAgentContextTitle,
+            summary:
+                _page == _WorkspaceSubpage.root ? SafetySettingsCopy.workspaceSubtitle : _page == _WorkspaceSubpage.approvedPaths ? SafetySettingsCopy.approvedPathsSubtitle : SafetySettingsCopy.childAgentContextSubtitle,
           ),
-          const SizedBox(height: 8),
-          Text(
-            _page == _WorkspaceSubpage.root
-                ? SafetySettingsCopy.workspaceTitle
-                : _page == _WorkspaceSubpage.approvedPaths
-                ? SafetySettingsCopy.approvedPathsTitle
-                : SafetySettingsCopy.childAgentContextTitle,
-            style: _SettingsTextStyles.pageTitleSubpage,
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _page == _WorkspaceSubpage.root
-                ? SafetySettingsCopy.workspaceSubtitle
-                : _page == _WorkspaceSubpage.approvedPaths
-                ? SafetySettingsCopy.approvedPathsSubtitle
-                : SafetySettingsCopy.childAgentContextSubtitle,
-            style: _SettingsTextStyles.subtitle,
-          ),
-          const SizedBox(height: 16),
           if (_isLoading)
             const _SettingsLoading(
               key: ValueKey<String>('settings-workspace-loading'),

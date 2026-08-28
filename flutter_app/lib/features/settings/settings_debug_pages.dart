@@ -23,21 +23,15 @@ class _DebugToolsPage extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _BackLink(
-                onTap: () => Navigator.of(context).pop(),
-                label: backLabel,
+              OpenCrayPageHeader(
+                leading: _BackLink(
+                  onTap: () => Navigator.of(context).pop(),
+                  label: backLabel,
+                ),
+                title: 'Debug tools',
+                summary:
+                    'Inspect runtime ownership, trace, memory, soul state, and the embedded Python runner.',
               ),
-              const SizedBox(height: 8),
-              const Text(
-                'Debug tools',
-                style: _SettingsTextStyles.pageTitleSubpage,
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Inspect runtime ownership, trace, memory, soul state, and the embedded Python runner.',
-                style: _SettingsTextStyles.subtitle,
-              ),
-              const SizedBox(height: 16),
               const _SettingsCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -197,21 +191,15 @@ print(os.getcwd())
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _BackLink(
-                onTap: () => Navigator.of(context).pop(),
-                label: widget.backLabel,
+              OpenCrayPageHeader(
+                leading: _BackLink(
+                  onTap: () => Navigator.of(context).pop(),
+                  label: widget.backLabel,
+                ),
+                title: 'Run Python Script',
+                summary:
+                    'Execute a script through the embedded Android Python runtime used by the p4a debug path.',
               ),
-              const SizedBox(height: 8),
-              const Text(
-                'Run Python Script',
-                style: _SettingsTextStyles.pageTitleSubpage,
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Execute a script through the embedded Android Python runtime used by the p4a debug path.',
-                style: _SettingsTextStyles.subtitle,
-              ),
-              const SizedBox(height: 16),
               _SettingsCard(
                 child: Row(
                   children: [
@@ -495,21 +483,15 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _BackLink(
-                onTap: () => Navigator.of(context).pop(),
-                label: widget.backLabel,
+              OpenCrayPageHeader(
+                leading: _BackLink(
+                  onTap: () => Navigator.of(context).pop(),
+                  label: widget.backLabel,
+                ),
+                title: 'Runtime Diagnostics',
+                summary:
+                    'Inspect detached runtime ownership, service keepalive, and bridge transport.',
               ),
-              const SizedBox(height: 8),
-              const Text(
-                'Runtime Diagnostics',
-                style: _SettingsTextStyles.pageTitleSubpage,
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Inspect detached runtime ownership, service keepalive, and bridge transport.',
-                style: _SettingsTextStyles.subtitle,
-              ),
-              const SizedBox(height: 16),
               _SettingsCard(
                 child: Row(
                   children: [
@@ -1183,21 +1165,14 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _BackLink(
-                onTap: () => Navigator.of(context).pop(),
-                label: widget.backLabel,
+              OpenCrayPageHeader(
+                leading: _BackLink(
+                  onTap: () => Navigator.of(context).pop(),
+                  label: widget.backLabel,
+                ),
+                title: 'Memory Inspector',
+                summary: 'Review durable and session memory.',
               ),
-              const SizedBox(height: 8),
-              const Text(
-                'Memory Inspector',
-                style: _SettingsTextStyles.pageTitleSubpage,
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Review durable and session memory.',
-                style: _SettingsTextStyles.subtitle,
-              ),
-              const SizedBox(height: 16),
               _buildStoreSummaryCard(),
               const SizedBox(height: 16),
               _buildFilterCard(),
@@ -1853,21 +1828,14 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _BackLink(
-                onTap: () => Navigator.of(context).pop(),
-                label: widget.backLabel,
+              OpenCrayPageHeader(
+                leading: _BackLink(
+                  onTap: () => Navigator.of(context).pop(),
+                  label: widget.backLabel,
+                ),
+                title: 'Soul Inspector',
+                summary: 'Base preset, overlays, and effective soul.',
               ),
-              const SizedBox(height: 8),
-              const Text(
-                'Soul Inspector',
-                style: _SettingsTextStyles.pageTitleSubpage,
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Base preset, overlays, and effective soul.',
-                style: _SettingsTextStyles.subtitle,
-              ),
-              const SizedBox(height: 16),
               Align(
                 alignment: Alignment.centerRight,
                 child: _HeaderActionChip(
@@ -2235,22 +2203,33 @@ class _DebugToggleChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(999),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: selected ? OpenCrayColors.primaryTint : OpenCrayColors.surfaceMuted,
-          borderRadius: BorderRadius.circular(999),
+    return AnimatedContainer(
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
+      decoration: BoxDecoration(
+        color: selected
+            ? OpenCrayColors.primaryTint
+            : OpenCrayColors.surfaceMuted,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: selected
+              ? OpenCrayColors.primaryBorder
+              : OpenCrayColors.divider,
         ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          child: Text(
-            label,
-            style: _SettingsTextStyles.actionChip.copyWith(
-              color: selected
-                  ? OpenCrayColors.primary
-                  : OpenCrayColors.textSecondary,
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(999),
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            child: Text(
+              label,
+              style: _SettingsTextStyles.actionChip.copyWith(
+                color: selected
+                    ? OpenCrayColors.primary
+                    : OpenCrayColors.textSecondary,
+              ),
             ),
           ),
         ),
@@ -2272,32 +2251,38 @@ class _MemoryDebugRecordRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: selected ? OpenCrayColors.surfaceMuted : Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: selected ? OpenCrayColors.primaryBorder : OpenCrayColors.divider,
-          ),
+    return AnimatedContainer(
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
+      decoration: BoxDecoration(
+        color: selected ? OpenCrayColors.surfaceMuted : Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: selected
+              ? OpenCrayColors.primaryBorder
+              : OpenCrayColors.divider,
         ),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                _memoryRecordTitleLine(record),
-                style: _SettingsTextStyles.bodyStrong,
-              ),
-              const SizedBox(height: 6),
-              Text(
-                _memoryRecordSummaryLine(record),
-                style: _SettingsTextStyles.body,
-              ),
-            ],
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  _memoryRecordTitleLine(record),
+                  style: _SettingsTextStyles.bodyStrong,
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  _memoryRecordSummaryLine(record),
+                  style: _SettingsTextStyles.body,
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -2318,46 +2303,52 @@ class _MemoryDebugSearchResultRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: selected ? OpenCrayColors.surfaceMuted : Colors.white,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: selected ? OpenCrayColors.primaryBorder : OpenCrayColors.divider,
-          ),
+    return AnimatedContainer(
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
+      decoration: BoxDecoration(
+        color: selected ? OpenCrayColors.surfaceMuted : Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: selected
+              ? OpenCrayColors.primaryBorder
+              : OpenCrayColors.divider,
         ),
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '${result.recordId} · ${result.path}#${_formatMemoryLineRange(result.startLine, result.endLine)}',
-                style: _SettingsTextStyles.bodyStrong,
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'score ${result.score} · ${result.kind}/${result.scope}/${result.status}',
-                style: _SettingsTextStyles.body,
-              ),
-              if (result.matchedTerms.isNotEmpty) ...[
-                const SizedBox(height: 4),
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
                 Text(
-                  'terms ${result.matchedTerms.join(', ')}',
-                  style: _SettingsTextStyles.body,
+                  '${result.recordId} · ${result.path}#${_formatMemoryLineRange(result.startLine, result.endLine)}',
+                  style: _SettingsTextStyles.bodyStrong,
                 ),
-              ],
-              if (result.snippet.trim().isNotEmpty) ...[
                 const SizedBox(height: 6),
                 Text(
-                  _truncateDebugText(result.snippet.trim(), 220),
+                  'score ${result.score} · ${result.kind}/${result.scope}/${result.status}',
                   style: _SettingsTextStyles.body,
                 ),
+                if (result.matchedTerms.isNotEmpty) ...[
+                  const SizedBox(height: 4),
+                  Text(
+                    'terms ${result.matchedTerms.join(', ')}',
+                    style: _SettingsTextStyles.body,
+                  ),
+                ],
+                if (result.snippet.trim().isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    _truncateDebugText(result.snippet.trim(), 220),
+                    style: _SettingsTextStyles.body,
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),

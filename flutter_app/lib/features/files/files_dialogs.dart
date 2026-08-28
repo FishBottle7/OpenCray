@@ -156,24 +156,12 @@ class _TextPreviewDialog extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  InkWell(
-                    key: const ValueKey<String>('files-text-preview-close'),
-                    borderRadius: BorderRadius.circular(16),
-                    onTap: () => Navigator.of(context).pop(),
-                    child: Container(
-                      width: 32,
-                      height: 32,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: FilesFeatureScreen.surfaceMuted,
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: const Icon(
-                        CupertinoIcons.xmark,
-                        size: 16,
-                        color: FilesFeatureScreen.textSecondary,
-                      ),
+                  _DialogCloseButton(
+                    buttonKey: const ValueKey<String>(
+                      'files-text-preview-close',
                     ),
+                    semanticLabel: copy.filesPreviewCloseAction,
+                    onTap: () => Navigator.of(context).pop(),
                   ),
                 ],
               ),
@@ -394,24 +382,12 @@ class _CreateEntryDialogState extends State<_CreateEntryDialog> {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  InkWell(
-                    key: const ValueKey<String>('files-create-entry-close'),
-                    borderRadius: BorderRadius.circular(16),
-                    onTap: widget.onCancel,
-                    child: Container(
-                      width: 32,
-                      height: 32,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: FilesFeatureScreen.surfaceMuted,
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: const Icon(
-                        CupertinoIcons.xmark,
-                        size: 16,
-                        color: FilesFeatureScreen.textSecondary,
-                      ),
+                  _DialogCloseButton(
+                    buttonKey: const ValueKey<String>(
+                      'files-create-entry-close',
                     ),
+                    semanticLabel: widget.copy.filesCancelAction,
+                    onTap: widget.onCancel,
                   ),
                 ],
               ),
@@ -613,24 +589,12 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
                         : Text(widget.copy.filesSaveAction),
                   ),
                   const SizedBox(width: 4),
-                  InkWell(
-                    key: const ValueKey<String>('files-text-editor-close'),
-                    borderRadius: BorderRadius.circular(16),
-                    onTap: _isSaving ? null : widget.onClose,
-                    child: Container(
-                      width: 32,
-                      height: 32,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: FilesFeatureScreen.surfaceMuted,
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: const Icon(
-                        CupertinoIcons.xmark,
-                        size: 16,
-                        color: FilesFeatureScreen.textSecondary,
-                      ),
+                  _DialogCloseButton(
+                    buttonKey: const ValueKey<String>(
+                      'files-text-editor-close',
                     ),
+                    semanticLabel: widget.copy.filesCancelAction,
+                    onTap: _isSaving ? null : widget.onClose,
                   ),
                 ],
               ),
@@ -674,8 +638,13 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
 }
 
 class _ImagePreviewDialog extends StatelessWidget {
-  const _ImagePreviewDialog({super.key, required this.preview});
+  const _ImagePreviewDialog({
+    super.key,
+    required this.copy,
+    required this.preview,
+  });
 
+  final OpenCrayUiCopy copy;
   final OpenCrayFileImagePreview preview;
 
   @override
@@ -755,24 +724,12 @@ class _ImagePreviewDialog extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  InkWell(
-                    key: const ValueKey<String>('files-image-preview-close'),
-                    borderRadius: BorderRadius.circular(16),
-                    onTap: () => Navigator.of(context).pop(),
-                    child: Container(
-                      width: 32,
-                      height: 32,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: FilesFeatureScreen.surfaceMuted,
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: const Icon(
-                        CupertinoIcons.xmark,
-                        size: 16,
-                        color: FilesFeatureScreen.textSecondary,
-                      ),
+                  _DialogCloseButton(
+                    buttonKey: const ValueKey<String>(
+                      'files-image-preview-close',
                     ),
+                    semanticLabel: copy.filesPreviewCloseAction,
+                    onTap: () => Navigator.of(context).pop(),
                   ),
                 ],
               ),
@@ -918,4 +875,45 @@ MarkdownStyleSheet _filesMarkdownStyleSheet(BuildContext context) {
       ),
     ),
   );
+}
+
+class _DialogCloseButton extends StatelessWidget {
+  const _DialogCloseButton({
+    required this.buttonKey,
+    required this.onTap,
+    required this.semanticLabel,
+  });
+
+  final Key buttonKey;
+  final VoidCallback? onTap;
+  final String semanticLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: FilesFeatureScreen.surfaceMuted,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          key: buttonKey,
+          onTap: onTap,
+          child: SizedBox(
+            width: 32,
+            height: 32,
+            child: Center(
+              child: Icon(
+                CupertinoIcons.xmark,
+                size: 16,
+                semanticLabel: semanticLabel,
+                color: FilesFeatureScreen.textSecondary,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

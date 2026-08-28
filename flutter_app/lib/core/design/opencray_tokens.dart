@@ -30,6 +30,10 @@ final class OpenCrayColors {
   static const textOnPrimary = Colors.white;
   static const scrim = Color(0x52101828);
 
+  /// Lighter scrim for panels that slide in beside content (session drawer)
+  /// rather than covering it.
+  static const scrimSoft = Color(0x26101828);
+
   // Status
   static const success = Color(0xFF179457);
   static const successTint = Color(0xFFE7F6EE);
@@ -37,6 +41,10 @@ final class OpenCrayColors {
   static const warning = Color(0xFFB45309);
   static const warningTint = Color(0xFFFBF1E0);
   static const warningBorder = Color(0xFFEFD9B3);
+
+  /// Brighter amber for small status marks, where [warning] reads muddy at
+  /// dot/glyph scale. Text keeps [warning] for contrast.
+  static const warningMark = Color(0xFFF59E0B);
   static const danger = Color(0xFFD93B4E);
   static const dangerTint = Color(0xFFFCEDEF);
   static const dangerBorder = Color(0xFFF3C5CC);
@@ -74,6 +82,17 @@ final class OpenCrayShadows {
   static const floating = <BoxShadow>[
     BoxShadow(color: Color(0x0F101828), offset: Offset(0, 2), blurRadius: 8),
     BoxShadow(color: Color(0x14101828), offset: Offset(0, 8), blurRadius: 24),
+  ];
+
+  /// Coloured lift under a brand-gradient control (send, primary CTA) so it
+  /// reads as the one hero affordance on the surface.
+  static const brandGlow = <BoxShadow>[
+    BoxShadow(color: Color(0x3D2563EB), offset: Offset(0, 3), blurRadius: 10),
+  ];
+
+  /// [brandGlow] scaled up for a full-width primary button.
+  static const brandGlowLarge = <BoxShadow>[
+    BoxShadow(color: Color(0x3D2563EB), offset: Offset(0, 4), blurRadius: 14),
   ];
 
   const OpenCrayShadows._();
@@ -119,5 +138,47 @@ final class OpenCraySizes {
   static const inputHeight = 50.0;
   static const sendButtonSize = 40.0;
 
+  // Switch: the hit box keeps the Material switch footprint, the track is the
+  // painted pill inside it.
+  static const switchHitWidth = 52.0;
+  static const switchHitHeight = 32.0;
+  static const switchTrackWidth = 46.0;
+  static const switchTrackHeight = 28.0;
+  static const switchThumbSize = 22.0;
+
   const OpenCraySizes._();
+}
+
+/// Shared page-level typography. One definition for the large-title header so
+/// the four tabs and every settings subpage agree on metrics.
+/// See `docs/mobile-ui-layout-spec.md` — *Large-title page template*.
+final class OpenCrayTypography {
+  static const TextStyle pageEyebrow = TextStyle(
+    fontSize: 11,
+    height: 1.1,
+    fontWeight: FontWeight.w700,
+    letterSpacing: 1.1,
+    color: OpenCrayColors.textTertiary,
+  );
+
+  static const TextStyle pageTitle = TextStyle(
+    fontSize: 28,
+    height: 1.12,
+    fontWeight: FontWeight.w700,
+    letterSpacing: -0.6,
+    color: OpenCrayColors.textPrimary,
+  );
+
+  static const TextStyle pageSummary = TextStyle(
+    fontSize: 14,
+    height: 1.35,
+    color: OpenCrayColors.textSecondary,
+  );
+
+  /// Gap rhythm for the header block.
+  static const double eyebrowGap = 8;
+  static const double summaryGap = 6;
+  static const double headerBottomGap = 20;
+
+  const OpenCrayTypography._();
 }

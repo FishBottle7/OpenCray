@@ -341,59 +341,57 @@ class _AgentChoiceTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: onTap,
-      child: Container(
-        constraints: const BoxConstraints(minHeight: 64),
-        decoration: BoxDecoration(
+    return AnimatedContainer(
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
+      constraints: const BoxConstraints(minHeight: 64),
+      decoration: BoxDecoration(
+        color: selected
+            ? OpenCrayColors.surfaceAccent
+            : OpenCrayColors.surfaceSubtle,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
           color: selected
-              ? OpenCrayColors.surfaceAccent
-              : OpenCrayColors.surfaceSubtle,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: selected
-                ? OpenCrayColors.primaryBorder
-                : OpenCrayColors.divider,
-          ),
+              ? OpenCrayColors.primaryBorder
+              : OpenCrayColors.divider,
         ),
-        padding: const EdgeInsets.all(12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Expanded(
-                  child: Text(
-                    title,
-                    style: _SettingsTextStyles.rowTitle.copyWith(
-                      fontWeight: FontWeight.w600,
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        title,
+                        style: _SettingsTextStyles.rowTitle.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                     ),
+                    if (selected)
+                      _AgentSoftBadge(label: selectedLabel)
+                    else
+                      const OpenCraySelectionCheck(selected: false, dimension: 18),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  body,
+                  style: _SettingsTextStyles.body.copyWith(
+                    fontSize: 13,
+                    color: OpenCrayColors.textSecondary,
                   ),
                 ),
-                if (selected)
-                  _AgentSoftBadge(label: selectedLabel)
-                else
-                  Container(
-                    width: 18,
-                    height: 18,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      shape: BoxShape.circle,
-                      border: Border.all(color: OpenCrayColors.outline),
-                    ),
-                  ),
               ],
             ),
-            const SizedBox(height: 2),
-            Text(
-              body,
-              style: _SettingsTextStyles.body.copyWith(
-                fontSize: 13,
-                color: OpenCrayColors.textSecondary,
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -514,25 +512,38 @@ class _AgentPillButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      key: key,
-      borderRadius: BorderRadius.circular(999),
-      onTap: onTap,
-      child: Container(
-        height: 34,
-        padding: const EdgeInsets.symmetric(horizontal: 14),
-        decoration: BoxDecoration(
-          color: OpenCrayColors.primary,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          label,
-          style: const TextStyle(
-            fontSize: 13,
-            height: 1.1,
-            fontWeight: FontWeight.w600,
-            color: Colors.white,
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: OpenCrayColors.primary,
+        borderRadius: BorderRadius.circular(999),
+        boxShadow: const <BoxShadow>[
+          BoxShadow(
+            color: Color(0x332563EB),
+            offset: Offset(0, 2),
+            blurRadius: 8,
+          ),
+        ],
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(999),
+        child: InkWell(
+          key: key,
+          onTap: onTap,
+          splashColor: Colors.white24,
+          highlightColor: Colors.white10,
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 34),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+            alignment: Alignment.center,
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 13,
+                height: 1.1,
+                fontWeight: FontWeight.w600,
+                color: Colors.white,
+              ),
+            ),
           ),
         ),
       ),
@@ -552,23 +563,31 @@ class _AgentPrimaryButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(16),
-      onTap: onTap,
-      child: Container(
-        height: 48,
-        decoration: BoxDecoration(
-          color: OpenCrayColors.primary,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          label,
-          style: const TextStyle(
-            fontSize: 17,
-            height: 1.2,
-            fontWeight: FontWeight.w600,
-            color: Colors.white,
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: OpenCrayGradients.brand,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: OpenCrayShadows.brandGlowLarge,
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          onTap: onTap,
+          splashColor: Colors.white24,
+          highlightColor: Colors.white10,
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 48),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+            alignment: Alignment.center,
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 17,
+                height: 1.2,
+                fontWeight: FontWeight.w600,
+                color: Colors.white,
+              ),
+            ),
           ),
         ),
       ),
@@ -584,22 +603,27 @@ class _AgentTertiaryButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(999),
-      onTap: onTap,
-      child: Container(
-        decoration: BoxDecoration(
-          color: OpenCrayColors.primaryTint,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        child: Text(
-          label,
-          style: const TextStyle(
-            fontSize: 11,
-            height: 1.1,
-            fontWeight: FontWeight.w600,
-            color: OpenCrayColors.primary,
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: OpenCrayColors.primaryTint,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: OpenCrayColors.primaryBorder),
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(999),
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 11,
+                height: 1.1,
+                fontWeight: FontWeight.w600,
+                color: OpenCrayColors.primary,
+              ),
+            ),
           ),
         ),
       ),
@@ -615,22 +639,27 @@ class _AgentMutedButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(999),
-      onTap: onTap,
-      child: Container(
-        decoration: BoxDecoration(
-          color: OpenCrayColors.surfaceMuted,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        child: Text(
-          label,
-          style: const TextStyle(
-            fontSize: 11,
-            height: 1.1,
-            fontWeight: FontWeight.w600,
-            color: OpenCrayColors.textSecondary,
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: OpenCrayColors.surfaceMuted,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: OpenCrayColors.divider),
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(999),
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 11,
+                height: 1.1,
+                fontWeight: FontWeight.w600,
+                color: OpenCrayColors.textSecondary,
+              ),
+            ),
           ),
         ),
       ),
@@ -687,36 +716,40 @@ class _AgentUploadZone extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: onTap,
-      child: Container(
-        height: 148,
-        decoration: BoxDecoration(
-          color: OpenCrayColors.surfaceSubtle,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: OpenCrayColors.outline),
-        ),
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              title,
-              style: _SettingsTextStyles.bodyStrong.copyWith(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-              ),
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: OpenCrayColors.surfaceSubtle,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: OpenCrayColors.outline),
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: onTap,
+          child: Container(
+            height: 148,
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  title,
+                  style: _SettingsTextStyles.bodyStrong.copyWith(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  body,
+                  textAlign: TextAlign.center,
+                  style: _SettingsTextStyles.body,
+                ),
+                const SizedBox(height: 10),
+                _AgentTertiaryButton(label: buttonLabel, onTap: onTap),
+              ],
             ),
-            const SizedBox(height: 8),
-            Text(
-              body,
-              textAlign: TextAlign.center,
-              style: _SettingsTextStyles.body,
-            ),
-            const SizedBox(height: 10),
-            _AgentTertiaryButton(label: buttonLabel, onTap: onTap),
-          ],
+          ),
         ),
       ),
     );
@@ -910,36 +943,38 @@ Future<T?> _showSelectionSheet<T>(
               Text(title, style: _SettingsTextStyles.cardTitle),
               const SizedBox(height: 12),
               for (int index = 0; index < options.length; index++) ...[
-                InkWell(
-                  borderRadius: BorderRadius.circular(14),
-                  onTap: () => Navigator.of(context).pop(options[index]),
-                  child: Container(
-                    height: 48,
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
-                    decoration: BoxDecoration(
-                      color: options[index] == selectedValue
-                          ? OpenCrayColors.surfaceAccent
-                          : OpenCrayColors.surfaceSubtle,
-                      borderRadius: BorderRadius.circular(14),
-                      border: options[index] == selectedValue
-                          ? Border.all(color: OpenCrayColors.primaryBorder)
-                          : Border.all(color: OpenCrayColors.divider),
-                    ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: Text(
-                            labelBuilder(options[index]),
-                            style: _SettingsTextStyles.rowTitle,
-                          ),
+                DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: options[index] == selectedValue
+                        ? OpenCrayColors.surfaceAccent
+                        : OpenCrayColors.surfaceSubtle,
+                    borderRadius: BorderRadius.circular(14),
+                    border: options[index] == selectedValue
+                        ? Border.all(color: OpenCrayColors.primaryBorder)
+                        : Border.all(color: OpenCrayColors.divider),
+                  ),
+                  child: OpenCrayInkSurface(
+                    borderRadius: BorderRadius.circular(14),
+                    child: InkWell(
+                      onTap: () => Navigator.of(context).pop(options[index]),
+                      child: Container(
+                        height: 48,
+                        padding: const EdgeInsets.symmetric(horizontal: 14),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                labelBuilder(options[index]),
+                                style: _SettingsTextStyles.rowTitle,
+                              ),
+                            ),
+                            OpenCraySelectionCheck(
+                              selected: options[index] == selectedValue,
+                              dimension: 18,
+                            ),
+                          ],
                         ),
-                        if (options[index] == selectedValue)
-                          const Icon(
-                            Icons.check_rounded,
-                            size: 18,
-                            color: OpenCrayColors.primary,
-                          ),
-                      ],
+                      ),
                     ),
                   ),
                 ),
@@ -1112,31 +1147,39 @@ class _AgentDialogButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: onTap,
-      child: Container(
-        height: 44,
-        decoration: BoxDecoration(
-          color: primary
-              ? (onTap == null
-                    ? OpenCrayColors.surfaceSunken
-                    : OpenCrayColors.primary)
-              : OpenCrayColors.surfaceMuted,
-          borderRadius: BorderRadius.circular(14),
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 14,
-            height: 1.2,
-            fontWeight: FontWeight.w600,
-            color: primary
-                ? (onTap == null
-                      ? OpenCrayColors.textTertiary
-                      : Colors.white)
-                : OpenCrayColors.textSecondary,
+    final bool enabled = onTap != null;
+    final Color background = primary
+        ? (enabled ? OpenCrayColors.primary : OpenCrayColors.surfaceSunken)
+        : OpenCrayColors.surfaceMuted;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(14),
+        border: primary
+            ? null
+            : Border.all(color: OpenCrayColors.divider),
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: onTap,
+          splashColor: primary && enabled ? Colors.white24 : null,
+          highlightColor: primary && enabled ? Colors.white10 : null,
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 44),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+            alignment: Alignment.center,
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 14,
+                height: 1.2,
+                fontWeight: FontWeight.w600,
+                color: primary
+                    ? (enabled ? Colors.white : OpenCrayColors.textTertiary)
+                    : OpenCrayColors.textSecondary,
+              ),
+            ),
           ),
         ),
       ),

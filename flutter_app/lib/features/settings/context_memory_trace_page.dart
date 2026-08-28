@@ -44,21 +44,14 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _BackLink(
-                onTap: () => Navigator.of(context).pop(),
-                label: widget.backLabel,
+              OpenCrayPageHeader(
+                leading: _BackLink(
+                  onTap: () => Navigator.of(context).pop(),
+                  label: widget.backLabel,
+                ),
+                title: 'Context & Memory Trace',
+                summary: 'Inspect one run end to end.',
               ),
-              const SizedBox(height: 8),
-              const Text(
-                'Context & Memory Trace',
-                style: _SettingsTextStyles.pageTitleSubpage,
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Inspect one run end to end.',
-                style: _SettingsTextStyles.subtitle,
-              ),
-              const SizedBox(height: 16),
               _SettingsCard(
                 child: Row(
                   children: [

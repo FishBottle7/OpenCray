@@ -364,32 +364,7 @@ class _SkillToggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onChanged == null ? null : () => onChanged!(!value),
-      behavior: HitTestBehavior.opaque,
-      child: AnimatedContainer(
-        duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
-        curve: OpenCrayMotion.enter,
-        width: 50,
-        height: 30,
-        decoration: BoxDecoration(
-          color: value ? OpenCrayColors.primary : OpenCrayColors.surfaceSunken,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        padding: const EdgeInsets.all(3),
-        child: Align(
-          alignment: value ? Alignment.centerRight : Alignment.centerLeft,
-          child: Container(
-            width: 24,
-            height: 24,
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              shape: BoxShape.circle,
-            ),
-          ),
-        ),
-      ),
-    );
+    return OpenCraySwitch(value: value, onChanged: onChanged);
   }
 }
 
@@ -591,74 +566,80 @@ class _SuggestedRow extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
-              InkWell(
-                borderRadius: BorderRadius.circular(999),
-                onTap: onPreview,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: OpenCrayColors.surfaceMuted,
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    previewLabel,
-                    style: const TextStyle(
-                      fontSize: 12,
-                      height: 1.1,
-                      fontWeight: FontWeight.w600,
-                      color: _textSecondary,
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: OpenCrayColors.surfaceMuted,
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: OpenCrayColors.divider),
+                ),
+                child: OpenCrayInkSurface(
+                  borderRadius: BorderRadius.circular(999),
+                  child: InkWell(
+                    onTap: onPreview,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      child: Text(
+                        previewLabel,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          height: 1.1,
+                          fontWeight: FontWeight.w600,
+                          color: _textSecondary,
+                        ),
+                      ),
                     ),
                   ),
                 ),
               ),
               const SizedBox(height: 8),
-              InkWell(
-                borderRadius: BorderRadius.circular(999),
-                onTap: isInstalling || isInstalled ? null : onInstall,
-                child: AnimatedContainer(
-                  key: ValueKey<String>(
-                    'skills-install-action-${item.sourceRef}-${installState.name}',
+              AnimatedContainer(
+                key: ValueKey<String>(
+                  'skills-install-action-${item.sourceRef}-${installState.name}',
+                ),
+                duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+                curve: OpenCrayMotion.enter,
+                decoration: BoxDecoration(
+                  color: installBackground,
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(
+                    color: didFail
+                        ? OpenCrayColors.danger.withValues(alpha: 0.22)
+                        : Colors.transparent,
                   ),
-                  duration: OpenCrayMotion.resolve(
-                    context,
-                    OpenCrayMotion.micro,
-                  ),
-                  curve: OpenCrayMotion.enter,
-                  constraints: const BoxConstraints(minWidth: 76),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: installBackground,
-                    borderRadius: BorderRadius.circular(999),
-                    border: Border.all(
-                      color: didFail
-                          ? OpenCrayColors.danger.withValues(alpha: 0.22)
-                          : Colors.transparent,
-                    ),
-                  ),
-                  child: AnimatedSwitcher(
-                    duration: OpenCrayMotion.resolve(
-                      context,
-                      OpenCrayMotion.micro,
-                    ),
-                    switchInCurve: OpenCrayMotion.enter,
-                    switchOutCurve: OpenCrayMotion.exit,
-                    child: Text(
-                      resolvedInstallLabel,
-                      key: ValueKey<String>(
-                        'skills-install-label-${item.sourceRef}-${installState.name}',
+                ),
+                child: OpenCrayInkSurface(
+                  borderRadius: BorderRadius.circular(999),
+                  child: InkWell(
+                    onTap: isInstalling || isInstalled ? null : onInstall,
+                    child: Container(
+                      constraints: const BoxConstraints(minWidth: 76),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
                       ),
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        fontSize: 12,
-                        height: 1.1,
-                        fontWeight: FontWeight.w600,
-                        color: installTextColor,
+                      child: AnimatedSwitcher(
+                        duration: OpenCrayMotion.resolve(
+                          context,
+                          OpenCrayMotion.micro,
+                        ),
+                        switchInCurve: OpenCrayMotion.enter,
+                        switchOutCurve: OpenCrayMotion.exit,
+                        child: Text(
+                          resolvedInstallLabel,
+                          key: ValueKey<String>(
+                            'skills-install-label-${item.sourceRef}-${installState.name}',
+                          ),
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 12,
+                            height: 1.1,
+                            fontWeight: FontWeight.w600,
+                            color: installTextColor,
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -757,47 +738,51 @@ class _DirectInstallCard extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 12),
-            InkWell(
-              borderRadius: BorderRadius.circular(999),
-              onTap: isInstalling || isInstalled ? null : onInstall,
-              child: AnimatedContainer(
-                key: ValueKey<String>(
-                  'skills-direct-install-action-${installState.name}',
+            AnimatedContainer(
+              key: ValueKey<String>(
+                'skills-direct-install-action-${installState.name}',
+              ),
+              duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+              curve: OpenCrayMotion.enter,
+              decoration: BoxDecoration(
+                color: installBackground,
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(
+                  color: didFail
+                      ? OpenCrayColors.danger.withValues(alpha: 0.22)
+                      : Colors.transparent,
                 ),
-                duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
-                curve: OpenCrayMotion.enter,
-                constraints: const BoxConstraints(minWidth: 76),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: installBackground,
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(
-                    color: didFail
-                        ? OpenCrayColors.danger.withValues(alpha: 0.22)
-                        : Colors.transparent,
-                  ),
-                ),
-                child: AnimatedSwitcher(
-                  duration: OpenCrayMotion.resolve(
-                    context,
-                    OpenCrayMotion.micro,
-                  ),
-                  switchInCurve: OpenCrayMotion.enter,
-                  switchOutCurve: OpenCrayMotion.exit,
-                  child: Text(
-                    resolvedInstallLabel,
-                    key: ValueKey<String>(
-                      'skills-direct-install-label-${installState.name}',
+              ),
+              child: OpenCrayInkSurface(
+                borderRadius: BorderRadius.circular(999),
+                child: InkWell(
+                  onTap: isInstalling || isInstalled ? null : onInstall,
+                  child: Container(
+                    constraints: const BoxConstraints(minWidth: 76),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
                     ),
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 12,
-                      height: 1.1,
-                      fontWeight: FontWeight.w600,
-                      color: installTextColor,
+                    child: AnimatedSwitcher(
+                      duration: OpenCrayMotion.resolve(
+                        context,
+                        OpenCrayMotion.micro,
+                      ),
+                      switchInCurve: OpenCrayMotion.enter,
+                      switchOutCurve: OpenCrayMotion.exit,
+                      child: Text(
+                        resolvedInstallLabel,
+                        key: ValueKey<String>(
+                          'skills-direct-install-label-${installState.name}',
+                        ),
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          fontSize: 12,
+                          height: 1.1,
+                          fontWeight: FontWeight.w600,
+                          color: installTextColor,
+                        ),
+                      ),
                     ),
                   ),
                 ),

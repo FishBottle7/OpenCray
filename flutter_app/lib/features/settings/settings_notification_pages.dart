@@ -143,12 +143,11 @@ class _NotificationsBackgroundSettingsPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: widget.onBack, label: widget.backLabel),
-          const SizedBox(height: 8),
-          Text(detail.title, style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 8),
-          Text(detail.subtitle, style: _SettingsTextStyles.subtitle),
-          const SizedBox(height: 16),
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: widget.onBack, label: widget.backLabel),
+            title: detail.title,
+            summary: detail.subtitle,
+          ),
           _buildBackgroundProfileCard(copy, strongBackground),
           const SizedBox(height: 16),
           _buildNotificationsCard(copy, settings, enabledEventCount),
@@ -767,12 +766,11 @@ class _NotificationEventAlertsSettingsPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: widget.onBack, label: widget.backLabel),
-          const SizedBox(height: 8),
-          Text(detail.title, style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 8),
-          Text(detail.subtitle, style: _SettingsTextStyles.subtitle),
-          const SizedBox(height: 16),
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: widget.onBack, label: widget.backLabel),
+            title: detail.title,
+            summary: detail.subtitle,
+          ),
           _SettingsCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -895,7 +893,7 @@ class _NotificationToggleRow extends StatelessWidget {
           const SizedBox(width: 12),
           Padding(
             padding: const EdgeInsets.only(top: 2),
-            child: _PrototypeSwitch(value: value, onChanged: onChanged),
+            child: OpenCraySwitch(value: value, onChanged: onChanged),
           ),
         ],
       ),

@@ -93,7 +93,7 @@ class _SessionsDrawerOverlayState extends State<_SessionsDrawerOverlay> {
                       ? OpenCrayMotion.enter
                       : OpenCrayMotion.exit,
                   child: const ColoredBox(
-                    color: Color(0x26101828),
+                    color: OpenCrayColors.scrimSoft,
                     child: SizedBox.expand(),
                   ),
                 ),
@@ -140,13 +140,7 @@ class _SessionsDrawerOverlayState extends State<_SessionsDrawerOverlay> {
                             decoration: BoxDecoration(
                               gradient: OpenCrayGradients.brand,
                               borderRadius: BorderRadius.circular(14),
-                              boxShadow: const <BoxShadow>[
-                                BoxShadow(
-                                  color: Color(0x3D2563EB),
-                                  offset: Offset(0, 3),
-                                  blurRadius: 10,
-                                ),
-                              ],
+                              boxShadow: OpenCrayShadows.brandGlow,
                             ),
                             alignment: Alignment.center,
                             child: Text(

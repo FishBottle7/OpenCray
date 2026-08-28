@@ -22,10 +22,10 @@ class _SettingsLoadErrorCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: onBack, label: backLabel),
-          const SizedBox(height: 8),
-          Text(title, style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 16),
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: onBack, label: backLabel),
+            title: title,
+          ),
           OpenCrayStateCard(
             key: const ValueKey<String>('settings-state-error-card'),
             tone: OpenCrayStateTone.danger,
@@ -97,27 +97,36 @@ class _BackLink extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final bool hasLabel = label.trim().isNotEmpty;
     return Align(
       alignment: Alignment.centerLeft,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(999),
-        onTap: onTap,
-        child: Padding(
-          padding: EdgeInsets.symmetric(vertical: 4),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              const Icon(
-                Icons.arrow_back_ios_new_rounded,
-                size: 14,
-                color: OpenCrayColors.primary,
-              ),
-              if (label.trim().isNotEmpty) ...[
-                const SizedBox(width: 6),
-                Text(label, style: _SettingsTextStyles.actionChip),
+      child: OpenCrayInkSurface(
+        borderRadius: const BorderRadius.all(OpenCrayRadii.pill),
+        child: InkWell(
+          borderRadius: const BorderRadius.all(OpenCrayRadii.pill),
+          onTap: onTap,
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(4, 6, hasLabel ? 12 : 4, 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                const SizedBox.square(
+                  dimension: 24,
+                  child: Center(
+                    child: Icon(
+                      Icons.arrow_back_ios_new_rounded,
+                      size: 15,
+                      color: OpenCrayColors.primary,
+                    ),
+                  ),
+                ),
+                if (hasLabel) ...[
+                  const SizedBox(width: 2),
+                  Text(label, style: _SettingsTextStyles.actionChip),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),
@@ -200,56 +209,44 @@ class _PrototypeSelectionRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(12),
-      onTap: onTap,
-      child: _PrototypeFieldSurface(
-        child: ConstrainedBox(
-          constraints: BoxConstraints(minHeight: compact ? 44 : 52),
-          child: Padding(
-            padding: EdgeInsets.symmetric(
-              horizontal: 12,
-              vertical: compact ? 12 : 14,
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Expanded(
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      title,
-                      style: _SettingsTextStyles.fieldValue,
-                      strutStyle: _SettingsTextStyles.fieldValueStrut,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+    return _PrototypeFieldSurface(
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          onTap: onTap,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: compact ? 44 : 52),
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(12, compact ? 12 : 14, 8, compact ? 12 : 14),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text(
+                        title,
+                        style: _SettingsTextStyles.fieldValue,
+                        strutStyle: _SettingsTextStyles.fieldValueStrut,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
                   ),
-                ),
-                if (trailingLabel != null) ...[
-                  Center(
-                    child: Text(
+                  if (trailingLabel != null) ...[
+                    Text(
                       trailingLabel!,
                       style: _SettingsTextStyles.selectionMeta,
                     ),
-                  ),
-                  const SizedBox(width: 6),
-                  const Center(
-                    child: Text(
-                      '›',
-                      style: _SettingsTextStyles.selectionChevron,
-                    ),
-                  ),
-                ] else ...[
-                  const Spacer(),
-                  const Center(
-                    child: Text(
-                      '›',
-                      style: _SettingsTextStyles.selectionChevron,
-                    ),
+                    const SizedBox(width: 2),
+                  ],
+                  const Icon(
+                    Icons.chevron_right_rounded,
+                    size: 20,
+                    color: OpenCrayColors.textTertiary,
                   ),
                 ],
-              ],
+              ),
             ),
           ),
         ),
@@ -273,51 +270,11 @@ class _InteractiveSegmentedSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: OpenCrayColors.surfaceSunken,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(4),
-        child: Row(
-          children: [
-            for (final label in labels)
-              Expanded(
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: () => onSelected(label),
-                  child: AnimatedContainer(
-                    duration: OpenCrayMotion.resolve(
-                      context,
-                      OpenCrayMotion.micro,
-                    ),
-                    curve: OpenCrayMotion.enter,
-                    decoration: BoxDecoration(
-                      color: label == selectedId
-                          ? Colors.white
-                          : Colors.transparent,
-                      borderRadius: BorderRadius.circular(999),
-                      boxShadow: label == selectedId
-                          ? OpenCrayShadows.card
-                          : null,
-                    ),
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    child: Text(
-                      labelBuilder(label),
-                      textAlign: TextAlign.center,
-                      style: _SettingsTextStyles.valueChip.copyWith(
-                        color: label == selectedId
-                            ? OpenCrayColors.textPrimary
-                            : OpenCrayColors.textSecondary,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
+    return OpenCraySegmentedControl(
+      labels: labels.map(labelBuilder).toList(growable: false),
+      selectedIndex: labels.indexOf(selectedId),
+      textStyle: _SettingsTextStyles.valueChip,
+      onSelected: (index) => onSelected(labels[index]),
     );
   }
 }
@@ -394,33 +351,6 @@ class _PrototypeFieldSurface extends StatelessWidget {
         border: Border.all(color: OpenCrayColors.divider),
       ),
       child: child,
-    );
-  }
-}
-
-class _PrototypeSwitch extends StatelessWidget {
-  const _PrototypeSwitch({required this.value, required this.onChanged});
-
-  final bool value;
-  final ValueChanged<bool>? onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    return Switch(
-      value: value,
-      onChanged: onChanged,
-      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-      thumbColor: const WidgetStatePropertyAll<Color>(Colors.white),
-      trackColor: WidgetStateProperty.resolveWith<Color>((states) {
-        if (states.contains(WidgetState.selected)) {
-          return OpenCrayColors.primary;
-        }
-        return OpenCrayColors.surfaceSunken;
-      }),
-      trackOutlineColor: const WidgetStatePropertyAll<Color>(
-        Colors.transparent,
-      ),
-      trackOutlineWidth: const WidgetStatePropertyAll<double>(0),
     );
   }
 }
@@ -570,19 +500,22 @@ class _HeaderActionChip extends StatelessWidget {
       letterSpacing: 0,
       color: OpenCrayColors.primary,
     );
-    return InkWell(
-      borderRadius: BorderRadius.circular(999),
-      onTap: onTap,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: OpenCrayColors.primaryTint,
-          borderRadius: BorderRadius.circular(999),
-        ),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
-          child: Text(
-            label,
-            style: textStyle ?? _SettingsTextStyles.actionChip,
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: OpenCrayColors.primaryTint,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: OpenCrayColors.primaryBorder),
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(999),
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            child: Text(
+              label,
+              style: textStyle ?? _SettingsTextStyles.actionChip,
+            ),
           ),
         ),
       ),
@@ -610,7 +543,98 @@ class _SettingsCard extends StatelessWidget {
         border: Border.all(color: borderColor),
         boxShadow: OpenCrayShadows.card,
       ),
-      child: Padding(padding: const EdgeInsets.all(16), child: child),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(16),
+        child: Padding(padding: const EdgeInsets.all(16), child: child),
+      ),
+    );
+  }
+}
+
+class _DeviceSummaryCard extends StatelessWidget {
+  const _DeviceSummaryCard({required this.title, required this.summary});
+
+  final String title;
+  final String summary;
+
+  @override
+  Widget build(BuildContext context) {
+    return _SettingsCard(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: OpenCrayGradients.brand,
+              borderRadius: BorderRadius.all(OpenCrayRadii.md),
+            ),
+            child: SizedBox.square(
+              dimension: 38,
+              child: Center(
+                child: Icon(
+                  Icons.hub_rounded,
+                  size: 19,
+                  color: OpenCrayColors.textOnPrimary,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: _SettingsTextStyles.cardTitle),
+                const SizedBox(height: 4),
+                Text(summary, style: _SettingsTextStyles.body),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SettingsEntryGroupCard extends StatelessWidget {
+  const _SettingsEntryGroupCard({
+    required this.entries,
+    required this.onOpenPage,
+  });
+
+  final List<SettingsHomeEntrySnapshot> entries;
+  final ValueChanged<SettingsPage> onOpenPage;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: OpenCrayColors.surface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: OpenCrayColors.divider),
+        boxShadow: OpenCrayShadows.card,
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (int index = 0; index < entries.length; index++) ...[
+              _HomeEntryRow(
+                title: entries[index].title,
+                icon: _iconForSettingsPage(entries[index].page),
+                horizontalPadding: 16,
+                onTap: () => onOpenPage(entries[index].page),
+              ),
+              if (index < entries.length - 1)
+                const Padding(
+                  padding: EdgeInsets.only(left: 56),
+                  child: Divider(height: 1, color: OpenCrayColors.divider),
+                ),
+            ],
+          ],
+        ),
+      ),
     );
   }
 }
@@ -619,35 +643,68 @@ class _HomeEntryRow extends StatelessWidget {
   const _HomeEntryRow({
     required this.title,
     required this.onTap,
+    this.icon,
+    this.horizontalPadding = 0,
     this.selected = false,
   });
 
   final String title;
+  final IconData? icon;
+  final double horizontalPadding;
   final bool selected;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
+    final Color tint = selected
+        ? OpenCrayColors.primary
+        : OpenCrayColors.textPrimary;
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(14),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        padding: EdgeInsets.symmetric(
+          horizontal: horizontalPadding,
+          vertical: 14,
+        ),
         child: Row(
           children: [
+            if (icon != null) ...[
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: selected
+                      ? OpenCrayColors.primaryTint
+                      : OpenCrayColors.surfaceSubtle,
+                  borderRadius: const BorderRadius.all(OpenCrayRadii.sm),
+                  border: Border.all(
+                    color: selected
+                        ? OpenCrayColors.primaryBorder
+                        : OpenCrayColors.divider,
+                  ),
+                ),
+                child: SizedBox.square(
+                  dimension: 28,
+                  child: Center(
+                    child: Icon(
+                      icon,
+                      size: 16,
+                      color: selected
+                          ? OpenCrayColors.primary
+                          : OpenCrayColors.textSecondary,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+            ],
             Expanded(
               child: Text(
                 title,
-                style: _SettingsTextStyles.homeRow.copyWith(
-                  color: selected
-                      ? OpenCrayColors.primary
-                      : OpenCrayColors.textPrimary,
-                ),
+                style: _SettingsTextStyles.homeRow.copyWith(color: tint),
               ),
             ),
             Icon(
               Icons.chevron_right_rounded,
-              size: 18,
+              size: 20,
               color: selected
                   ? OpenCrayColors.primary
                   : OpenCrayColors.textTertiary,
@@ -659,38 +716,100 @@ class _HomeEntryRow extends StatelessWidget {
   }
 }
 
+/// Home entries grouped so the overview reads as a few short lists instead of
+/// one long undifferentiated column. Unknown pages keep working: they fall into
+/// a trailing group in facade order.
+const List<List<SettingsPage>> _homeEntryGroupOrder = <List<SettingsPage>>[
+  <SettingsPage>[
+    SettingsPage.llm,
+    SettingsPage.mcp,
+    SettingsPage.apiIntegrations,
+    SettingsPage.networkSearch,
+    SettingsPage.mediaSpeech,
+    SettingsPage.sandboxProviders,
+    SettingsPage.sandboxE2b,
+  ],
+  <SettingsPage>[
+    SettingsPage.personalization,
+    SettingsPage.notificationsBackground,
+    SettingsPage.scheduledTasks,
+    SettingsPage.eventAlerts,
+  ],
+  <SettingsPage>[
+    SettingsPage.workspaceAccess,
+    SettingsPage.safetyLimits,
+    SettingsPage.privacyTelemetry,
+  ],
+  <SettingsPage>[SettingsPage.aboutVersion],
+];
+
+List<List<SettingsHomeEntrySnapshot>> _groupSettingsHomeEntries(
+  List<SettingsHomeEntrySnapshot> entries,
+) {
+  final List<List<SettingsHomeEntrySnapshot>> groups =
+      <List<SettingsHomeEntrySnapshot>>[];
+  final Set<SettingsPage> claimed = <SettingsPage>{};
+  for (final List<SettingsPage> pages in _homeEntryGroupOrder) {
+    final List<SettingsHomeEntrySnapshot> group = entries
+        .where((entry) => pages.contains(entry.page))
+        .toList(growable: false);
+    if (group.isEmpty) {
+      continue;
+    }
+    groups.add(group);
+    claimed.addAll(group.map((entry) => entry.page));
+  }
+  final List<SettingsHomeEntrySnapshot> rest = entries
+      .where((entry) => !claimed.contains(entry.page))
+      .toList(growable: false);
+  if (rest.isNotEmpty) {
+    groups.add(rest);
+  }
+  return groups;
+}
+
+IconData _iconForSettingsPage(SettingsPage page) {
+  switch (page) {
+    case SettingsPage.llm:
+      return Icons.memory_rounded;
+    case SettingsPage.mcp:
+      return Icons.extension_outlined;
+    case SettingsPage.apiIntegrations:
+      return Icons.api_rounded;
+    case SettingsPage.networkSearch:
+      return Icons.travel_explore_rounded;
+    case SettingsPage.mediaSpeech:
+      return Icons.graphic_eq_rounded;
+    case SettingsPage.sandboxProviders:
+      return Icons.dns_outlined;
+    case SettingsPage.sandboxE2b:
+      return Icons.terminal_rounded;
+    case SettingsPage.personalization:
+      return Icons.palette_outlined;
+    case SettingsPage.notificationsBackground:
+      return Icons.notifications_none_rounded;
+    case SettingsPage.eventAlerts:
+      return Icons.campaign_outlined;
+    case SettingsPage.scheduledTasks:
+    case SettingsPage.scheduledTaskDetail:
+      return Icons.schedule_rounded;
+    case SettingsPage.workspaceAccess:
+      return Icons.folder_open_rounded;
+    case SettingsPage.safetyLimits:
+      return Icons.verified_user_outlined;
+    case SettingsPage.privacyTelemetry:
+      return Icons.shield_outlined;
+    case SettingsPage.agents:
+      return Icons.smart_toy_outlined;
+    case SettingsPage.aboutVersion:
+      return Icons.info_outline_rounded;
+    case SettingsPage.home:
+      return Icons.tune_rounded;
+  }
+}
+
 class _SettingsTextStyles {
   const _SettingsTextStyles._();
-
-  static const TextStyle eyebrow = TextStyle(
-    fontSize: 11,
-    height: 1.1,
-    fontWeight: FontWeight.w700,
-    letterSpacing: 1.1,
-    color: OpenCrayColors.textTertiary,
-  );
-
-  static const TextStyle pageTitle = TextStyle(
-    fontSize: 28,
-    height: 1.15,
-    fontWeight: FontWeight.w700,
-    letterSpacing: -0.6,
-    color: OpenCrayColors.textPrimary,
-  );
-
-  static const TextStyle pageTitleSubpage = TextStyle(
-    fontSize: 28,
-    height: 1.15,
-    fontWeight: FontWeight.w700,
-    letterSpacing: -0.6,
-    color: OpenCrayColors.textPrimary,
-  );
-
-  static const TextStyle subtitle = TextStyle(
-    fontSize: 14,
-    height: 1.35,
-    color: OpenCrayColors.textSecondary,
-  );
 
   static const TextStyle cardTitle = TextStyle(
     fontSize: 17,
@@ -767,13 +886,6 @@ class _SettingsTextStyles {
     color: OpenCrayColors.textTertiary,
   );
 
-  static const TextStyle selectionChevron = TextStyle(
-    fontSize: 16,
-    height: 1.0,
-    fontWeight: FontWeight.w500,
-    color: OpenCrayColors.textTertiary,
-  );
-
   static const TextStyle actionChip = TextStyle(
     fontSize: 12,
     height: 16 / 12,
@@ -803,48 +915,14 @@ class _EnumSegmentedSelector<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: OpenCrayColors.surfaceSunken,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(4),
-        child: Row(
-          children: [
-            for (final value in values)
-              Expanded(
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(999),
-                  onTap: onChanged == null ? null : () => onChanged!(value),
-                  child: AnimatedContainer(
-                    duration: OpenCrayMotion.resolve(
-                      context,
-                      OpenCrayMotion.micro,
-                    ),
-                    curve: OpenCrayMotion.enter,
-                    decoration: BoxDecoration(
-                      color: value == currentValue
-                          ? Colors.white
-                          : Colors.transparent,
-                      borderRadius: BorderRadius.circular(999),
-                    ),
-                    padding: const EdgeInsets.symmetric(vertical: 10),
-                    child: Text(
-                      labelBuilder(value),
-                      textAlign: TextAlign.center,
-                      style: _SettingsTextStyles.valueChip.copyWith(
-                        color: value == currentValue
-                            ? OpenCrayColors.textPrimary
-                            : OpenCrayColors.textSecondary,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
+    return OpenCraySegmentedControl(
+      labels: values.map(labelBuilder).toList(growable: false),
+      selectedIndex: values.indexOf(currentValue),
+      textStyle: _SettingsTextStyles.valueChip,
+      verticalPadding: 10,
+      onSelected: onChanged == null
+          ? null
+          : (index) => onChanged!(values[index]),
     );
   }
 }
@@ -866,24 +944,32 @@ class _PrototypeToggleTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title, style: _SettingsTextStyles.rowTitle),
-                const SizedBox(height: 2),
-                Text(subtitle, style: _SettingsTextStyles.rowSubtitle),
-              ],
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: enabled ? () => onChanged(!value) : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: _SettingsTextStyles.rowTitle),
+                  const SizedBox(height: 2),
+                  Text(subtitle, style: _SettingsTextStyles.rowSubtitle),
+                ],
+              ),
             ),
-          ),
-          const SizedBox(width: 12),
-          _PrototypeSwitch(value: value, onChanged: enabled ? onChanged : null),
-        ],
+            const SizedBox(width: 12),
+            OpenCraySwitch(
+              value: value,
+              onChanged: enabled ? onChanged : null,
+              semanticLabel: title,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -904,15 +990,23 @@ class _PrototypeSwitchRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          Expanded(child: Text(title, style: _SettingsTextStyles.rowTitle)),
-          const SizedBox(width: 12),
-          _PrototypeSwitch(value: value, onChanged: enabled ? onChanged : null),
-        ],
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: enabled ? () => onChanged(!value) : null,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Expanded(child: Text(title, style: _SettingsTextStyles.rowTitle)),
+            const SizedBox(width: 12),
+            OpenCraySwitch(
+              value: value,
+              onChanged: enabled ? onChanged : null,
+              semanticLabel: title,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -948,15 +1042,12 @@ class _PrototypeDisclosureRow extends StatelessWidget {
                   color: OpenCrayColors.textSecondary,
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
             ],
-            const Text(
-              '›',
-              style: TextStyle(
-                color: OpenCrayColors.outline,
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-              ),
+            const Icon(
+              Icons.chevron_right_rounded,
+              size: 20,
+              color: OpenCrayColors.textTertiary,
             ),
           ],
         ),
@@ -1019,31 +1110,50 @@ class _PrototypeStepperRow extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(child: Text(title, style: _SettingsTextStyles.rowTitle)),
-              const SizedBox(width: 12),
-              _StepperButton(
-                label: decrementLabel,
-                enabled: canDecrement,
-                onTap: onDecrement,
-              ),
-              const SizedBox(width: 8),
-              _PrototypeValuePill(
-                key: valueKey,
-                value: value,
-                onTap: onValueTap,
-              ),
-              const SizedBox(width: 8),
-              _StepperButton(
-                label: incrementLabel,
-                enabled: canIncrement,
-                onTap: onIncrement,
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
+          Text(title, style: _SettingsTextStyles.rowTitle),
+          const SizedBox(height: 4),
           Text(subtitle, style: _SettingsTextStyles.rowSubtitle),
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: OpenCrayColors.surfaceSubtle,
+                borderRadius: const BorderRadius.all(OpenCrayRadii.pill),
+                border: Border.all(color: OpenCrayColors.divider),
+              ),
+              child: OpenCrayInkSurface(
+                borderRadius: const BorderRadius.all(OpenCrayRadii.pill),
+                child: IntrinsicHeight(
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _StepperButton(
+                        icon: Icons.remove_rounded,
+                        label: decrementLabel,
+                        enabled: canDecrement,
+                        onTap: onDecrement,
+                      ),
+                      const _StepperDivider(),
+                      _StepperValueCell(
+                        key: valueKey,
+                        value: value,
+                        onTap: onValueTap,
+                      ),
+                      const _StepperDivider(),
+                      _StepperButton(
+                        icon: Icons.add_rounded,
+                        label: incrementLabel,
+                        enabled: canIncrement,
+                        onTap: onIncrement,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -1052,11 +1162,13 @@ class _PrototypeStepperRow extends StatelessWidget {
 
 class _StepperButton extends StatelessWidget {
   const _StepperButton({
+    required this.icon,
     required this.label,
     required this.enabled,
     required this.onTap,
   });
 
+  final IconData icon;
   final String label;
   final bool enabled;
   final VoidCallback onTap;
@@ -1064,21 +1176,59 @@ class _StepperButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return InkWell(
-      borderRadius: BorderRadius.circular(999),
       onTap: enabled ? onTap : null,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: enabled ? OpenCrayColors.surfaceSubtle : OpenCrayColors.surfaceMuted,
-          borderRadius: BorderRadius.circular(999),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 44, minHeight: 38),
+        child: Center(
+          child: Icon(
+            icon,
+            size: 18,
+            semanticLabel: label,
+            color: enabled
+                ? OpenCrayColors.textPrimary
+                : OpenCrayColors.textTertiary,
+          ),
         ),
+      ),
+    );
+  }
+}
+
+class _StepperDivider extends StatelessWidget {
+  const _StepperDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return const SizedBox(
+      width: 1,
+      child: ColoredBox(color: OpenCrayColors.divider),
+    );
+  }
+}
+
+class _StepperValueCell extends StatelessWidget {
+  const _StepperValueCell({super.key, required this.value, this.onTap});
+
+  final String value;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 84, minHeight: 38),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          child: Text(
-            label,
-            style: _SettingsTextStyles.valueChip.copyWith(
-              color: enabled
-                  ? OpenCrayColors.textPrimary
-                  : OpenCrayColors.textSecondary,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Center(
+            child: Text(
+              value,
+              textAlign: TextAlign.center,
+              style: _SettingsTextStyles.valueChip.copyWith(
+                fontSize: 13,
+                height: 18 / 13,
+                fontWeight: FontWeight.w600,
+              ),
             ),
           ),
         ),
@@ -1088,30 +1238,22 @@ class _StepperButton extends StatelessWidget {
 }
 
 class _PrototypeValuePill extends StatelessWidget {
-  const _PrototypeValuePill({super.key, required this.value, this.onTap});
+  const _PrototypeValuePill({required this.value});
 
   final String value;
-  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    final child = DecoratedBox(
+    return DecoratedBox(
       decoration: BoxDecoration(
         color: OpenCrayColors.surfaceSubtle,
         borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: OpenCrayColors.divider),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
         child: Text(value, style: _SettingsTextStyles.valueChip),
       ),
-    );
-    if (onTap == null) {
-      return child;
-    }
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: child,
     );
   }
 }
@@ -1193,25 +1335,22 @@ class _PolicyOptionTile extends StatelessWidget {
       borderRadius: BorderRadius.circular(12),
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 16),
+        padding: const EdgeInsets.symmetric(vertical: 14),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Expanded(child: Text(title, style: _SettingsTextStyles.rowTitle)),
             const SizedBox(width: 12),
-            if (selected)
-              const Icon(
-                Icons.check_rounded,
-                size: 18,
-                color: OpenCrayColors.primary,
-              )
-            else if (trailingLabel != null)
+            if (trailingLabel != null && !selected) ...[
               Text(
                 trailingLabel!,
                 style: _SettingsTextStyles.rowTitle.copyWith(
                   color: OpenCrayColors.textSecondary,
                 ),
               ),
+              const SizedBox(width: 10),
+            ],
+            OpenCraySelectionCheck(selected: selected),
           ],
         ),
       ),

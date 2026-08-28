@@ -42,9 +42,11 @@ PageRoute<T> openCrayHorizontalPageRoute<T>({
   required WidgetBuilder builder,
   RouteSettings? settings,
   OpenCrayRouteDirection direction = OpenCrayRouteDirection.fromRight,
+  bool opaque = true,
 }) {
   return PageRouteBuilder<T>(
     settings: settings,
+    opaque: opaque,
     transitionDuration: OpenCrayMotion.page,
     reverseTransitionDuration: OpenCrayMotion.pageExit,
     pageBuilder: (context, animation, secondaryAnimation) => builder(context),

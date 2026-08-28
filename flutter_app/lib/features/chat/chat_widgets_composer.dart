@@ -589,7 +589,9 @@ class _ComposerMaterialSurface extends StatelessWidget {
             ? const <BoxShadow>[]
             : <BoxShadow>[
                 BoxShadow(
-                  color: const Color(0xFF0D1B2A).withValues(alpha: 0.05 * t),
+                  color: _ChatGlass.composerShadowInk.withValues(
+                    alpha: 0.05 * t,
+                  ),
                   blurRadius: 18 * t,
                   offset: Offset(0, 5 * t),
                 ),
@@ -1175,10 +1177,10 @@ class _InputRow extends StatelessWidget {
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
                         colors: <Color>[
-                          Color(0x00FFFFFF),
-                          Color(0x73FFFFFF),
-                          Color(0x61F0F5FF),
-                          Color(0x00F0F5FF),
+                          _ChatPalette.surfaceClear,
+                          _ChatGlass.composerHighlight,
+                          _ChatGlass.composerSheen,
+                          _ChatGlass.composerSheenClear,
                         ],
                         stops: <double>[0, 0.32, 0.72, 1],
                       ),
@@ -1197,7 +1199,7 @@ class _InputRow extends StatelessWidget {
   }
 }
 
-class _CircleButton extends StatelessWidget {
+class _CircleButton extends StatefulWidget {
   const _CircleButton({
     super.key,
     required this.backgroundColor,
@@ -1214,37 +1216,60 @@ class _CircleButton extends StatelessWidget {
   final Gradient? gradient;
 
   @override
+  State<_CircleButton> createState() => _CircleButtonState();
+}
+
+class _CircleButtonState extends State<_CircleButton> {
+  bool _isPressed = false;
+
+  @override
   Widget build(BuildContext context) {
-    final bool enabled = onPressed != null;
+    final bool enabled = widget.onPressed != null;
+    final Color backgroundColor = widget.backgroundColor;
     return GestureDetector(
-      onTap: onPressed,
+      onTap: enabled ? _handleTap : null,
+      onTapDown: enabled ? (_) => _setPressed(true) : null,
+      onTapUp: enabled ? (_) => _setPressed(false) : null,
+      onTapCancel: enabled ? () => _setPressed(false) : null,
       behavior: HitTestBehavior.opaque,
-      child: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          color: enabled ? backgroundColor : backgroundColor.withValues(alpha: 0.4),
-          gradient: enabled ? gradient : null,
-          borderRadius: BorderRadius.circular(14),
-          boxShadow: enabled && gradient != null
-              ? const <BoxShadow>[
-                  BoxShadow(
-                    color: Color(0x3D2563EB),
-                    offset: Offset(0, 3),
-                    blurRadius: 10,
-                  ),
-                ]
-              : null,
-        ),
-        child: Icon(
-          icon,
-          color: enabled
-              ? foregroundColor
-              : foregroundColor.withValues(alpha: 0.5),
-          size: 18,
+      child: AnimatedScale(
+        scale: _isPressed ? 0.9 : 1,
+        duration: OpenCrayMotion.resolve(context, OpenCrayMotion.instant),
+        curve: OpenCrayMotion.enter,
+        child: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: enabled ? backgroundColor : backgroundColor.withValues(alpha: 0.4),
+            gradient: enabled ? widget.gradient : null,
+            borderRadius: BorderRadius.circular(14),
+            boxShadow: enabled && widget.gradient != null
+                ? OpenCrayShadows.brandGlow
+                : null,
+          ),
+          child: Icon(
+            widget.icon,
+            color: enabled
+                ? widget.foregroundColor
+                : widget.foregroundColor.withValues(alpha: 0.5),
+            size: 18,
+          ),
         ),
       ),
     );
+  }
+
+  void _setPressed(bool value) {
+    if (_isPressed == value) {
+      return;
+    }
+    setState(() => _isPressed = value);
+  }
+
+  void _handleTap() {
+    // Send / interrupt / add all commit something; confirm the tap in the hand.
+    HapticFeedback.selectionClick();
+    widget.onPressed!();
   }
 }
 

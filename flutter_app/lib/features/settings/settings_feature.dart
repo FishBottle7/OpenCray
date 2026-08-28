@@ -14,6 +14,7 @@ import '../../core/models/opencray_debug_snapshot.dart';
 import '../../core/models/opencray_image_reference.dart';
 import '../../core/models/opencray_shell_snapshot.dart';
 import '../../core/copy/opencray_ui_copy.dart';
+import '../../core/design/opencray_controls.dart';
 import '../../core/design/opencray_motion.dart';
 import '../../core/design/opencray_tokens.dart';
 import '../../core/design/opencray_widgets.dart';
@@ -520,38 +521,25 @@ class _SettingsHome extends StatelessWidget {
     final visibleEntries = snapshot.entries
         .where((entry) => entry.page != SettingsPage.agents)
         .toList(growable: false);
+    final groups = _groupSettingsHomeEntries(visibleEntries);
     return SingleChildScrollView(
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(snapshot.eyebrow, style: _SettingsTextStyles.eyebrow),
-          const SizedBox(height: 8),
-          Text(snapshot.title, style: _SettingsTextStyles.pageTitle),
-          const SizedBox(height: 8),
-          Text(snapshot.subtitle, style: _SettingsTextStyles.subtitle),
-          const SizedBox(height: 20),
-          _SettingsCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  snapshot.deviceTitle,
-                  style: _SettingsTextStyles.cardTitle,
-                ),
-                const SizedBox(height: 8),
-                Text(snapshot.deviceSummary, style: _SettingsTextStyles.body),
-              ],
-            ),
+          OpenCrayPageHeader(
+            eyebrow: snapshot.eyebrow,
+            title: snapshot.title,
+            summary: snapshot.subtitle,
           ),
-          const SizedBox(height: 16),
-          ...visibleEntries.map(
-            (SettingsHomeEntrySnapshot item) => _HomeEntryRow(
-              title: item.title,
-              selected: false,
-              onTap: () => onOpenPage(item.page),
-            ),
+          _DeviceSummaryCard(
+            title: snapshot.deviceTitle,
+            summary: snapshot.deviceSummary,
           ),
+          for (final group in groups) ...[
+            const SizedBox(height: 14),
+            _SettingsEntryGroupCard(entries: group, onOpenPage: onOpenPage),
+          ],
         ],
       ),
     );
@@ -663,12 +651,11 @@ class _DetailSettingsPage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: onBack, label: backLabel),
-          const SizedBox(height: 8),
-          Text(snapshot.title, style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 8),
-          Text(snapshot.subtitle, style: _SettingsTextStyles.subtitle),
-          const SizedBox(height: 16),
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: onBack, label: backLabel),
+            title: snapshot.title,
+            summary: snapshot.subtitle,
+          ),
           ..._buildDetailSectionCards(snapshot.sections),
           if (debugBridge != null && facade != null) ...[
             Padding(
@@ -785,12 +772,11 @@ class _PersonalizationSettingsPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: widget.onBack, label: widget.backLabel),
-          const SizedBox(height: 8),
-          Text(snapshot.title, style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 8),
-          Text(snapshot.subtitle, style: _SettingsTextStyles.subtitle),
-          const SizedBox(height: 16),
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: widget.onBack, label: widget.backLabel),
+            title: snapshot.title,
+            summary: snapshot.subtitle,
+          ),
           _SettingsCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1265,12 +1251,11 @@ class _McpSettingsPageState extends State<_McpSettingsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: widget.onBack, label: widget.backLabel),
-          const SizedBox(height: 8),
-          Text(snapshot.title, style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 8),
-          Text(snapshot.subtitle, style: _SettingsTextStyles.subtitle),
-          const SizedBox(height: 16),
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: widget.onBack, label: widget.backLabel),
+            title: snapshot.title,
+            summary: snapshot.subtitle,
+          ),
           _SettingsCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1295,7 +1280,7 @@ class _McpSettingsPageState extends State<_McpSettingsPage> {
                       ),
                     ),
                     const SizedBox(width: 12),
-                    _PrototypeSwitch(
+                    OpenCraySwitch(
                       value: snapshot.masterEnabled,
                       onChanged: _isUpdatingMaster ? null : _toggleMaster,
                     ),
@@ -1459,47 +1444,49 @@ class _PresetOptionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return InkWell(
-      borderRadius: BorderRadius.circular(14),
-      onTap: onTap,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: isSelected
-              ? OpenCrayColors.primaryTint
-              : OpenCrayColors.surfaceSubtle,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: isSelected
-                ? OpenCrayColors.primary
-                : OpenCrayColors.divider,
-          ),
+    return AnimatedContainer(
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
+      decoration: BoxDecoration(
+        color: isSelected
+            ? OpenCrayColors.primaryTint
+            : OpenCrayColors.surfaceSubtle,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: isSelected ? OpenCrayColors.primary : OpenCrayColors.divider,
         ),
-        child: Padding(
-          padding: const EdgeInsets.all(14),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      preset.title,
-                      style: _SettingsTextStyles.rowTitle,
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        preset.title,
+                        style: _SettingsTextStyles.rowTitle,
+                      ),
                     ),
-                  ),
-                  _SettingsStatusPill(
-                    label: preset.status,
-                    tone: isSelected ? 'active' : 'neutral',
-                  ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              Text(preset.summary, style: _SettingsTextStyles.body),
-              const SizedBox(height: 8),
-              Text(preset.voice, style: _SettingsTextStyles.bodyStrong),
-              const SizedBox(height: 8),
-              Text(preset.status, style: _SettingsTextStyles.body),
-            ],
+                    _SettingsStatusPill(
+                      label: preset.status,
+                      tone: isSelected ? 'active' : 'neutral',
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(preset.summary, style: _SettingsTextStyles.body),
+                const SizedBox(height: 8),
+                Text(preset.voice, style: _SettingsTextStyles.bodyStrong),
+                const SizedBox(height: 8),
+                Text(preset.status, style: _SettingsTextStyles.body),
+              ],
+            ),
           ),
         ),
       ),
@@ -1665,47 +1652,10 @@ class _SegmentedSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: OpenCrayColors.surfaceSunken,
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.all(4),
-        child: Row(
-          children: [
-            for (int index = 0; index < labels.length; index++)
-              Expanded(
-                child: AnimatedContainer(
-                  duration: OpenCrayMotion.resolve(
-                    context,
-                    OpenCrayMotion.micro,
-                  ),
-                  curve: OpenCrayMotion.enter,
-                  decoration: BoxDecoration(
-                    color: index == selectedIndex
-                        ? Colors.white
-                        : Colors.transparent,
-                    borderRadius: BorderRadius.circular(999),
-                    boxShadow: index == selectedIndex
-                        ? OpenCrayShadows.card
-                        : null,
-                  ),
-                  padding: const EdgeInsets.symmetric(vertical: 8),
-                  child: Text(
-                    labels[index],
-                    textAlign: TextAlign.center,
-                    style: _SettingsTextStyles.valueChip.copyWith(
-                      color: index == selectedIndex
-                          ? OpenCrayColors.textPrimary
-                          : OpenCrayColors.textSecondary,
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
+    return OpenCraySegmentedControl(
+      labels: labels,
+      selectedIndex: selectedIndex,
+      textStyle: _SettingsTextStyles.valueChip,
     );
   }
 }
@@ -1742,7 +1692,7 @@ class _DetailRow extends StatelessWidget {
               color: OpenCrayColors.textTertiary,
             )
           else if (row.trailingKind == SettingsRowTrailingKind.toggle)
-            _PrototypeSwitch(value: row.toggleValue ?? false, onChanged: (_) {})
+            OpenCraySwitch(value: row.toggleValue ?? false, onChanged: (_) {})
           else
             DecoratedBox(
               decoration: BoxDecoration(

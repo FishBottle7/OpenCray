@@ -55,15 +55,11 @@ class _ScheduledTasksSettingsPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: widget.onBack, label: widget.backLabel),
-          const SizedBox(height: 8),
-          Text(copy.tasksTitle, style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 8),
-          Text(
-            copy.taskCount(snapshot.totalCount),
-            style: _SettingsTextStyles.subtitle,
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: widget.onBack, label: widget.backLabel),
+            title: copy.tasksTitle,
+            summary: copy.taskCount(snapshot.totalCount),
           ),
-          const SizedBox(height: 16),
           if (snapshot.tasks.isEmpty)
             _SettingsCard(
               child: Text(copy.emptyTasks, style: _SettingsTextStyles.body),
@@ -208,7 +204,7 @@ class _ScheduledTaskListCard extends StatelessWidget {
                   ),
                 )
               else
-                _PrototypeSwitch(
+                OpenCraySwitch(
                   value: task.enabled,
                   onChanged: onEnabledChanged,
                 ),
@@ -277,13 +273,10 @@ class _ScheduledTaskDetailSettingsPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: widget.onBack, label: widget.backLabel),
-          const SizedBox(height: 8),
-          Text(
-            task.title.isEmpty ? copy.untitledTask : task.title,
-            style: _SettingsTextStyles.pageTitleSubpage,
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: widget.onBack, label: widget.backLabel),
+            title: task.title.isEmpty ? copy.untitledTask : task.title,
           ),
-          const SizedBox(height: 16),
           _SettingsCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,

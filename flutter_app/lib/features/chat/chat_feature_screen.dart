@@ -20,6 +20,7 @@ import '../../core/models/opencray_file_text_preview.dart';
 import '../../core/models/opencray_file_voice_playback_source.dart';
 import '../../core/models/opencray_sandbox_preview_embed_config.dart';
 import '../../core/models/opencray_sandbox_settings.dart';
+import '../../core/design/opencray_controls.dart';
 import '../../core/design/opencray_motion.dart';
 import '../../core/design/opencray_tokens.dart';
 import '../../core/widgets/opencray_image_bytes_view.dart';
@@ -59,11 +60,11 @@ TextSelectionThemeData chatBubbleSelectionTheme(ChatMessageKind kind) {
     ChatMessageKind.outbound => const TextSelectionThemeData(
       // Outbound bubbles already use the app accent, so switch to a bright
       // translucent selection color to preserve contrast.
-      selectionColor: Color(0x52FFFFFF),
+      selectionColor: _ChatPalette.textSelectionOnAccent,
       selectionHandleColor: Colors.white,
     ),
     _ => const TextSelectionThemeData(
-      selectionColor: Color(0x332563EB),
+      selectionColor: _ChatPalette.textSelectionOnSurface,
       selectionHandleColor: OpenCrayColors.primary,
     ),
   };

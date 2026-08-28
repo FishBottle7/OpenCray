@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:opencray/core/design/opencray_controls.dart';
 import 'package:opencray/features/settings/settings.dart';
 
 import 'settings_feature_test_support.dart';
@@ -161,7 +162,7 @@ void main() {
       await tester.tap(find.text('External access'));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.byType(Switch).at(3));
+      await tester.tap(find.byType(OpenCraySwitch).at(3));
       await tester.pumpAndSettle();
 
       expect(facade.authorizationRequests, <String>['recordings']);
@@ -211,7 +212,7 @@ void main() {
 
       await tester.ensureVisible(find.text('Read-only outside workspace'));
       await tester.pumpAndSettle();
-      await tester.tap(find.byType(Switch).at(1));
+      await tester.tap(find.byType(OpenCraySwitch).at(1));
       await tester.pumpAndSettle();
 
       expect(facade.safetySettings.readOnlyOutsideWorkspace, isFalse);

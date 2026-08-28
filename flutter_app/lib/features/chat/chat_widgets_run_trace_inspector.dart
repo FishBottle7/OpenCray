@@ -178,33 +178,22 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
   }
 
   Widget _buildActorTabs(List<_RunTraceInspectorActorSection> sections) {
+    final String activeId = _selectedActorId ?? sections.first.id;
     final List<Widget> tabChildren = sections
-        .map((section) {
-          final bool selected =
-              (_selectedActorId ?? sections.first.id) == section.id;
-          return Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: GestureDetector(
-              onTap: () {
-                setState(() => _selectedActorId = section.id);
-                _scheduleScrollToBottom();
-              },
-              behavior: HitTestBehavior.opaque,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Text(
-                  section.label,
-                  style: _ChatTextStyles.timeline.copyWith(
-                    color: selected
-                        ? _ChatPalette.inspectorAction
-                        : _ChatPalette.textSecondary,
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
-                  ),
-                ),
-              ),
-            ),
-          );
-        })
+        .map(
+          (section) => _RunTraceActorTab(
+            key: ValueKey<String>('chat-run-trace-actor-tab-${section.id}'),
+            label: section.label,
+            selected: activeId == section.id,
+            onTap: () {
+              if (_selectedActorId == section.id) {
+                return;
+              }
+              setState(() => _selectedActorId = section.id);
+              _scheduleScrollToBottom();
+            },
+          ),
+        )
         .toList(growable: false);
     if (sections.length <= 1) {
       return Row(children: tabChildren);
@@ -275,9 +264,9 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
     final Color containerBorderColor = trace.isHighRisk
         ? _ChatPalette.highRiskBorder
         : _ChatPalette.runTraceBorder;
-    return Dialog.fullscreen(
+    return Material(
       key: ValueKey<String>('chat-run-trace-fullscreen-${trace.runId}'),
-      backgroundColor: _ChatPalette.background,
+      color: _ChatPalette.background,
       child: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
@@ -431,7 +420,7 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
                       Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
+                        padding: const EdgeInsets.fromLTRB(8, 12, 8, 6),
                         child: _buildActorTabs(actorSections),
                       ),
                       const Divider(
@@ -531,6 +520,64 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                 ),
               ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Actor tab in the run inspector. Selection lands as a tinted pill — the same
+/// vocabulary the bottom nav uses — so switching inspectors reads as a move
+/// rather than a redraw.
+class _RunTraceActorTab extends StatelessWidget {
+  const _RunTraceActorTab({
+    super.key,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final Duration duration = OpenCrayMotion.resolve(
+      context,
+      OpenCrayMotion.micro,
+    );
+    return Padding(
+      padding: const EdgeInsets.only(right: 4),
+      child: Semantics(
+        button: true,
+        selected: selected,
+        label: label,
+        child: GestureDetector(
+          onTap: onTap,
+          behavior: HitTestBehavior.opaque,
+          child: AnimatedContainer(
+            duration: duration,
+            curve: OpenCrayMotion.enter,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: selected
+                  ? _ChatPalette.runTraceStatusSurface
+                  : Colors.transparent,
+              borderRadius: const BorderRadius.all(OpenCrayRadii.pill),
+            ),
+            child: AnimatedDefaultTextStyle(
+              duration: duration,
+              curve: OpenCrayMotion.enter,
+              style: _ChatTextStyles.timeline.copyWith(
+                color: selected
+                    ? _ChatPalette.inspectorAction
+                    : _ChatPalette.textSecondary,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+              ),
+              child: Text(label),
+            ),
           ),
         ),
       ),
@@ -697,7 +744,7 @@ class _RunTraceInterruptConfirmRowState
                           borderRadius: BorderRadius.circular(999),
                           boxShadow: const <BoxShadow>[
                             BoxShadow(
-                              color: Color(0x1E0F172A),
+                              color: _ChatGlass.interruptThumbShadow,
                               blurRadius: 10,
                               offset: Offset(0, 4),
                             ),
@@ -1517,19 +1564,25 @@ class _RunInspectorCollapsibleTextBlockState
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        if (_isExpanded)
-          KeyedSubtree(
-            key: ValueKey<String>('${widget.blockKey}-expanded'),
-            child: _buildMarkdownBlock(data),
-          )
-        else
-          Text(
-            _runInspectorCollapsedPreviewText(data),
-            key: ValueKey<String>('${widget.blockKey}-collapsed'),
-            maxLines: _runInspectorCollapsedLineCount,
-            overflow: TextOverflow.ellipsis,
-            style: widget.bodyStyle,
-          ),
+        // Height animates so the surrounding card grows into the extra body
+        // instead of jumping; the child itself swaps immediately.
+        AnimatedSize(
+          duration: OpenCrayMotion.resolve(context, OpenCrayMotion.expand),
+          curve: OpenCrayMotion.expandCurve,
+          alignment: Alignment.topLeft,
+          child: _isExpanded
+              ? KeyedSubtree(
+                  key: ValueKey<String>('${widget.blockKey}-expanded'),
+                  child: _buildMarkdownBlock(data),
+                )
+              : Text(
+                  _runInspectorCollapsedPreviewText(data),
+                  key: ValueKey<String>('${widget.blockKey}-collapsed'),
+                  maxLines: _runInspectorCollapsedLineCount,
+                  overflow: TextOverflow.ellipsis,
+                  style: widget.bodyStyle,
+                ),
+        ),
         const SizedBox(height: 4),
         Align(
           alignment: Alignment.centerRight,
@@ -1549,7 +1602,10 @@ class _RunInspectorCollapsibleTextBlockState
                 child: Center(
                   child: AnimatedRotation(
                     key: ValueKey<String>('${widget.blockKey}-rotation'),
-                    duration: const Duration(milliseconds: 180),
+                    duration: OpenCrayMotion.resolve(
+                      context,
+                      OpenCrayMotion.quick,
+                    ),
                     turns: _isExpanded ? 0.5 : 0,
                     child: const Icon(
                       Icons.keyboard_arrow_down_rounded,

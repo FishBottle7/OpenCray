@@ -116,28 +116,39 @@ class _RunTraceBubbleState extends State<_RunTraceBubble> {
           .putIfAbsent(traceKey, () => <ValueNotifier<ChatRunTraceData>>{})
           .add(traceNotifier);
     }
-    return showDialog<void>(
-      context: context,
-      barrierColor: const Color(0x8A0B0E14),
-      builder: (dialogContext) => _RunTraceFullscreenSheet(
-        copy: widget.copy,
-        traceListenable: traceNotifier,
-        showSandboxPreviewCard: widget.showSandboxPreviewCard,
-        bridge: widget.bridge,
-        onRetry: widget.onRetry,
-        isRetryBusy: widget.isRetryBusy,
-      ),
-    ).whenComplete(() {
-      for (final traceKey in traceKeys) {
-        final Set<ValueNotifier<ChatRunTraceData>>? notifiers =
-            _openTraceNotifiersByRunKey[traceKey];
-        notifiers?.remove(traceNotifier);
-        if (notifiers != null && notifiers.isEmpty) {
-          _openTraceNotifiersByRunKey.remove(traceKey);
-        }
-      }
-      traceNotifier.dispose();
-    });
+    // A drill-down, not a decision: push it like a settings subpage so the
+    // inspector slides in over the thread instead of popping as a modal.
+    //
+    // Deliberately non-opaque. An opaque route parks the routes below it
+    // offstage, and offstage means the thread's list never lays out — so the
+    // bubbles stop rebuilding and stop pushing trace updates into
+    // [traceNotifier], freezing the open inspector. The sheet paints its own
+    // solid background, so nothing shows through anyway.
+    return Navigator.of(context)
+        .push<void>(
+          openCrayHorizontalPageRoute<void>(
+            opaque: false,
+            builder: (routeContext) => _RunTraceFullscreenSheet(
+              copy: widget.copy,
+              traceListenable: traceNotifier,
+              showSandboxPreviewCard: widget.showSandboxPreviewCard,
+              bridge: widget.bridge,
+              onRetry: widget.onRetry,
+              isRetryBusy: widget.isRetryBusy,
+            ),
+          ),
+        )
+        .whenComplete(() {
+          for (final traceKey in traceKeys) {
+            final Set<ValueNotifier<ChatRunTraceData>>? notifiers =
+                _openTraceNotifiersByRunKey[traceKey];
+            notifiers?.remove(traceNotifier);
+            if (notifiers != null && notifiers.isEmpty) {
+              _openTraceNotifiersByRunKey.remove(traceKey);
+            }
+          }
+          traceNotifier.dispose();
+        });
   }
 
   Future<void> _openPreviewCard(ChatRunTracePreviewCardData preview) async {
@@ -462,7 +473,7 @@ class _RunTraceStatusTone {
     if (trace.isRetryable) {
       return const _RunTraceStatusTone(
         textColor: OpenCrayColors.warning,
-        markColor: Color(0xFFF59E0B),
+        markColor: _ChatPalette.runTraceRetryMark,
         icon: Icons.priority_high_rounded,
         showProgress: false,
       );

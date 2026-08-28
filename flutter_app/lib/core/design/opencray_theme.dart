@@ -82,7 +82,10 @@ final class OpenCrayTheme {
 
     return base.copyWith(
       scaffoldBackgroundColor: OpenCrayColors.shellBackground,
-      splashColor: Colors.transparent,
+      // Restrained ripple: enough feedback to feel responsive, quiet enough to
+      // keep the workbench surfaces calm.
+      splashFactory: InkRipple.splashFactory,
+      splashColor: OpenCrayColors.primary.withValues(alpha: 0.07),
       highlightColor: OpenCrayColors.textPrimary.withValues(alpha: 0.04),
       dividerColor: OpenCrayColors.divider,
       textTheme: textTheme,

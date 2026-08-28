@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:opencray/core/design/opencray_controls.dart';
 import 'package:opencray/features/settings/settings.dart';
 
 import 'settings_feature_test_support.dart';
@@ -55,7 +56,7 @@ void main() {
 
       expect(facade.networkSearchConfig.slots.first.model, 'gpt-5-mini');
 
-      await tester.tap(find.byType(Switch).first);
+      await tester.tap(find.byType(OpenCraySwitch).first);
       await tester.pump(const Duration(milliseconds: 500));
 
       expect(facade.networkSearchConfig.slots.first.enabled, isFalse);

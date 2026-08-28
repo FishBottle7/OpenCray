@@ -152,13 +152,13 @@ class _TopGlassBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final double blurSigma = lerpDouble(0, 14, strength)!;
     final Color borderColor = Color.lerp(
-      const Color(0x00FFFFFF),
-      const Color(0x24DCE7F6),
+      _ChatPalette.surfaceClear,
+      _ChatGlass.barBorderActive,
       strength,
     )!;
     final Color shadowColor = Color.lerp(
-      const Color(0x00000000),
-      const Color(0x0A101828),
+      Colors.transparent,
+      _ChatGlass.barShadowActive,
       strength,
     )!;
     final double shadowBlur = lerpDouble(0, 16, strength)!;
@@ -176,21 +176,21 @@ class _TopGlassBar extends StatelessWidget {
                 end: Alignment.bottomCenter,
                 colors: <Color>[
                   Color.lerp(
-                    const Color(0xA8FFFFFF),
-                    const Color(0xE8FFFFFF),
+                    _ChatGlass.barTopRest,
+                    _ChatGlass.barTopActive,
                     strength,
                   )!,
                   Color.lerp(
-                    const Color(0x70FFFFFF),
-                    const Color(0xC2FFFFFF),
+                    _ChatGlass.barMidRest,
+                    _ChatGlass.barMidActive,
                     strength,
                   )!,
                   Color.lerp(
-                    const Color(0x14F8FAFE),
-                    const Color(0x54F8FAFE),
+                    _ChatGlass.barFootRest,
+                    _ChatGlass.barFootActive,
                     strength,
                   )!,
-                  const Color(0x00F8FAFE),
+                  _ChatGlass.barFootClear,
                 ],
                 stops: const <double>[0, 0.32, 0.72, 1],
               ),
@@ -653,17 +653,17 @@ class _SummaryCard extends StatelessWidget {
     final double quietProgress = isActiveThread ? 1 : 0;
     final Color surfaceColor = Color.lerp(
       Colors.white,
-      const Color(0x00FFFFFF),
+      _ChatPalette.surfaceClear,
       quietProgress * 0.22,
     )!;
     final Color borderColor = Color.lerp(
-      const Color(0x00E5E9F0),
+      _ChatPalette.borderClear,
       _ChatPalette.border,
       quietProgress,
     )!;
     final Color titleColor = Color.lerp(
       _ChatPalette.textPrimary,
-      const Color(0xFF3B4757),
+      _ChatPalette.summaryQuietTitle,
       quietProgress,
     )!;
     final Color bodyColor = Color.lerp(

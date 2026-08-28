@@ -860,18 +860,14 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (widget.backLabel.isNotEmpty) ...[
-            _BackLink(onTap: widget.onBack, label: widget.backLabel),
-            const SizedBox(height: 8),
-          ],
-          const SizedBox(height: 4),
-          const Text('Agents', style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 8),
-          const Text(
-            'Reuse a saved agent or create a new one.',
-            style: _SettingsTextStyles.subtitle,
+          OpenCrayPageHeader(
+            leading: widget.backLabel.isNotEmpty
+                ? _BackLink(onTap: widget.onBack, label: widget.backLabel)
+                : null,
+            title: 'Agents',
+            summary: 'Reuse a saved agent or create a new one.',
+            bottomGap: 12,
           ),
-          const SizedBox(height: 12),
           SizedBox(
             height: 34,
             child: Row(
@@ -1082,16 +1078,14 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _BackLink(
-                onTap: () => Navigator.of(context).pop(),
-                label: widget.backLabel,
+              OpenCrayPageHeader(
+                leading: _BackLink(
+                  onTap: () => Navigator.of(context).pop(),
+                  label: widget.backLabel,
+                ),
+                title: 'Create agent',
+                bottomGap: 10,
               ),
-              const SizedBox(height: 8),
-              const Text(
-                'Create agent',
-                style: _SettingsTextStyles.pageTitleSubpage,
-              ),
-              const SizedBox(height: 10),
               _AgentCreateStatusCard(
                 key: const ValueKey<String>('agent-create-status-card'),
                 status: _createStatus,
@@ -2115,15 +2109,15 @@ class _AgentSubpageScaffold extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _BackLink(
-                onTap: () => Navigator.of(context).pop(),
-                label: 'Create agent',
+              OpenCrayPageHeader(
+                leading: _BackLink(
+                  onTap: () => Navigator.of(context).pop(),
+                  label: 'Create agent',
+                ),
+                title: title,
+                summary: subtitle,
+                bottomGap: 10,
               ),
-              const SizedBox(height: 8),
-              Text(title, style: _SettingsTextStyles.pageTitleSubpage),
-              const SizedBox(height: 8),
-              Text(subtitle, style: _SettingsTextStyles.subtitle),
-              const SizedBox(height: 10),
               child,
             ],
           ),

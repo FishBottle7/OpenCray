@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/copy/opencray_ui_copy.dart';
+import '../../core/design/opencray_controls.dart';
 import '../../core/design/opencray_motion.dart';
 import '../../core/design/opencray_tokens.dart';
 import '../../core/design/opencray_widgets.dart';
@@ -174,39 +175,14 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                widget.copy.skillsEyebrow,
-                style: const TextStyle(
-                  fontSize: 11,
-                  height: 1.1,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 1.1,
-                  color: OpenCrayColors.textTertiary,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                widget.copy.skillsTitle,
-                style: const TextStyle(
-                  fontSize: 28,
-                  height: 1.08,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: -0.6,
-                  color: _textPrimary,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _selectedPage == SkillsPage.manage
+              OpenCrayPageHeader(
+                eyebrow: widget.copy.skillsEyebrow,
+                title: widget.copy.skillsTitle,
+                summary: _selectedPage == SkillsPage.manage
                     ? widget.copy.skillsManageSubtitle
                     : widget.copy.skillsInstallSubtitle,
-                style: const TextStyle(
-                  fontSize: 14,
-                  height: 1.35,
-                  color: _textSecondary,
-                ),
+                bottomGap: 18,
               ),
-              const SizedBox(height: 18),
               _SummaryCard(
                 copy: widget.copy,
                 page: _selectedPage,

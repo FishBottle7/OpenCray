@@ -80,18 +80,15 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              _BackLink(
-                onTap: () => Navigator.of(context).pop(),
-                label: widget.backLabel,
+              OpenCrayPageHeader(
+                leading: _BackLink(
+                  onTap: () => Navigator.of(context).pop(),
+                  label: widget.backLabel,
+                ),
+                title: 'Debug',
+                summary:
+                    'Recent runtime runs and the structured memory trace captured for each run.',
               ),
-              const SizedBox(height: 8),
-              const Text('Debug', style: _SettingsTextStyles.pageTitleSubpage),
-              const SizedBox(height: 8),
-              const Text(
-                'Recent runtime runs and the structured memory trace captured for each run.',
-                style: _SettingsTextStyles.subtitle,
-              ),
-              const SizedBox(height: 16),
               _SettingsCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -664,12 +661,11 @@ class _NetworkSearchSettingsPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: widget.onBack, label: widget.backLabel),
-          const SizedBox(height: 8),
-          Text(snapshot.title, style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 8),
-          Text(snapshot.subtitle, style: _SettingsTextStyles.subtitle),
-          const SizedBox(height: 16),
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: widget.onBack, label: widget.backLabel),
+            title: snapshot.title,
+            summary: snapshot.subtitle,
+          ),
           for (int index = 0; index < _slots.length; index++) ...[
             _NetworkSearchSlotCard(
               key: ValueKey<String>('network-search-slot-${_slots[index].id}'),
@@ -939,7 +935,7 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
                   style: _SettingsTextStyles.cardTitle,
                 ),
               ),
-              _PrototypeSwitch(
+              OpenCraySwitch(
                 value: widget.slot.enabled,
                 onChanged: (enabled) {
                   widget.onChanged(widget.slot.copyWith(enabled: enabled));
@@ -1331,12 +1327,11 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: widget.onBack, label: widget.backLabel),
-          const SizedBox(height: 8),
-          const Text('LLM', style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 8),
-          Text(copy.llmPageSubtitle, style: _SettingsTextStyles.subtitle),
-          const SizedBox(height: 16),
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: widget.onBack, label: widget.backLabel),
+            title: 'LLM',
+            summary: copy.llmPageSubtitle,
+          ),
           _buildModelSourceCard(copy),
           const SizedBox(height: 16),
           if (isCloudMode) ...[
@@ -3817,7 +3812,7 @@ class _PrototypeToggleRow extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 12),
-              _PrototypeSwitch(value: value, onChanged: onChanged),
+              OpenCraySwitch(value: value, onChanged: onChanged),
             ],
           ),
         ),
@@ -4077,23 +4072,25 @@ class _OnDeviceModelTile extends StatelessWidget {
                 ),
                 if (actionLabel != null) ...[
                   const SizedBox(width: 12),
-                  InkWell(
-                    borderRadius: BorderRadius.circular(999),
-                    onTap: actionEnabled ? onActionTap : null,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: chipBackground,
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 6,
-                        ),
-                        child: Text(
-                          actionLabel!,
-                          style: _SettingsTextStyles.valueChip.copyWith(
-                            color: chipColor,
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: chipBackground,
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: OpenCrayInkSurface(
+                      borderRadius: BorderRadius.circular(999),
+                      child: InkWell(
+                        onTap: actionEnabled ? onActionTap : null,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          child: Text(
+                            actionLabel!,
+                            style: _SettingsTextStyles.valueChip.copyWith(
+                              color: chipColor,
+                            ),
                           ),
                         ),
                       ),

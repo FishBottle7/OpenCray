@@ -19,18 +19,12 @@ class _ApiIntegrationsSettingsPage extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: onBack, label: backLabel),
-          const SizedBox(height: 8),
-          const Text(
-            'API Integrations',
-            style: _SettingsTextStyles.pageTitleSubpage,
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: onBack, label: backLabel),
+            title: 'API Integrations',
+            summary:
+                'Choose where OpenCray connects for search, media, and cloud execution.',
           ),
-          const SizedBox(height: 8),
-          const Text(
-            'Choose where OpenCray connects for search, media, and cloud execution.',
-            style: _SettingsTextStyles.subtitle,
-          ),
-          const SizedBox(height: 16),
           _SettingsCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -126,18 +120,12 @@ class _SandboxProvidersSettingsPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: widget.onBack, label: widget.backLabel),
-          const SizedBox(height: 8),
-          const Text(
-            'Sandbox Providers',
-            style: _SettingsTextStyles.pageTitleSubpage,
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: widget.onBack, label: widget.backLabel),
+            title: 'Sandbox Providers',
+            summary:
+                'Keep local execution available while enabling remote sandboxes when needed.',
           ),
-          const SizedBox(height: 8),
-          const Text(
-            'Keep local execution available while enabling remote sandboxes when needed.',
-            style: _SettingsTextStyles.subtitle,
-          ),
-          const SizedBox(height: 16),
           _SettingsCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -276,15 +264,12 @@ class _SandboxE2bSettingsPageState extends State<_SandboxE2bSettingsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: widget.onBack, label: widget.backLabel),
-          const SizedBox(height: 8),
-          const Text('E2B', style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 8),
-          const Text(
-            'Add an API key and choose how OpenCray routes to the cloud sandbox.',
-            style: _SettingsTextStyles.subtitle,
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: widget.onBack, label: widget.backLabel),
+            title: 'E2B',
+            summary:
+                'Add an API key and choose how OpenCray routes to the cloud sandbox.',
           ),
-          const SizedBox(height: 16),
           _SettingsCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -709,12 +694,11 @@ class _MediaSpeechSettingsPageState extends State<_MediaSpeechSettingsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _BackLink(onTap: widget.onBack, label: widget.backLabel),
-          const SizedBox(height: 8),
-          Text(snapshot.title, style: _SettingsTextStyles.pageTitleSubpage),
-          const SizedBox(height: 8),
-          Text(snapshot.subtitle, style: _SettingsTextStyles.subtitle),
-          const SizedBox(height: 16),
+          OpenCrayPageHeader(
+            leading: _BackLink(onTap: widget.onBack, label: widget.backLabel),
+            title: snapshot.title,
+            summary: snapshot.subtitle,
+          ),
           _MediaSpeechServiceCard(
             title: 'Image generation',
             child: Column(
@@ -1452,7 +1436,7 @@ class _SandboxToggleRow extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 12),
-        _PrototypeSwitch(value: value, onChanged: onChanged),
+        OpenCraySwitch(value: value, onChanged: onChanged),
       ],
     );
   }

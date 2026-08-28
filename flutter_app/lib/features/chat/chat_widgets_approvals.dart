@@ -81,7 +81,7 @@ class _ApprovalGlassSurface extends StatelessWidget {
                     ),
                     boxShadow: <BoxShadow>[
                       BoxShadow(
-                        color: const Color(0x14101828),
+                        color: _ChatGlass.approvalShadow,
                         blurRadius: 22,
                         offset: const Offset(0, 10),
                       ),
@@ -222,13 +222,13 @@ class _PendingApprovalCard extends StatelessWidget {
     final _PendingApprovalPresentation presentation =
         _PendingApprovalPresentation.fromApproval(copy, approval);
     final Color surfaceColor = approval.isHighRisk
-        ? const Color(0xFFFDF6F2)
+        ? _ChatPalette.highRiskSurface
         : OpenCrayColors.surfaceSubtle;
     final Color borderColor = approval.isHighRisk
         ? _ChatPalette.highRiskBorder
         : _ChatPalette.runTraceBorder;
     final Color reasonColor = approval.isHighRisk
-        ? const Color(0xFF8A5A3B)
+        ? _ChatPalette.highRiskReasonText
         : OpenCrayColors.textSecondary;
     final TextStyle detailStyle = _ChatTextStyles.approvalRequest.copyWith(
       color: OpenCrayColors.textPrimary,
@@ -285,9 +285,22 @@ class _PendingApprovalCard extends StatelessWidget {
                             horizontal: 8,
                             vertical: 4,
                           ),
-                          child: Text(
-                            copy.chatHighRiskApproval,
-                            style: _ChatTextStyles.highRiskBadge,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: <Widget>[
+                              // Shape as well as colour, so the risk still
+                              // reads without colour vision.
+                              const Icon(
+                                Icons.warning_amber_rounded,
+                                size: 13,
+                                color: _ChatPalette.highRiskAccent,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                copy.chatHighRiskApproval,
+                                style: _ChatTextStyles.highRiskBadge,
+                              ),
+                            ],
                           ),
                         ),
                       ),
@@ -647,63 +660,92 @@ class _ApprovalActionButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final bool enabled = onPressed != null;
-    return GestureDetector(
-      onTap: onPressed,
-      behavior: HitTestBehavior.opaque,
-      child: Container(
-        height: 38,
-        decoration: BoxDecoration(
-          color: enabled
-              ? backgroundColor
-              : backgroundColor.withValues(alpha: 0.55),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(
-            color: enabled ? borderColor : borderColor.withValues(alpha: 0.55),
-          ),
+    final Color surfaceColor = enabled
+        ? backgroundColor
+        : backgroundColor.withValues(alpha: 0.55);
+    // Filled variants need a light ripple; the app-wide 7% blue splash
+    // disappears on terracotta and on the accent fill.
+    final bool filled =
+        ThemeData.estimateBrightnessForColor(surfaceColor) == Brightness.dark;
+    return AnimatedContainer(
+      duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
+      curve: OpenCrayMotion.enter,
+      decoration: BoxDecoration(
+        color: surfaceColor,
+        borderRadius: const BorderRadius.all(OpenCrayRadii.md),
+        border: Border.all(
+          color: enabled ? borderColor : borderColor.withValues(alpha: 0.55),
         ),
-        alignment: Alignment.center,
-        child: AnimatedSwitcher(
-          duration: OpenCrayMotion.resolve(context, OpenCrayMotion.quick),
-          switchInCurve: OpenCrayMotion.enter,
-          switchOutCurve: OpenCrayMotion.exit,
-          child: isBusy
-              ? Row(
-                  key: const ValueKey<String>('approval-action-busy'),
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: <Widget>[
-                    SizedBox.square(
-                      dimension: 13,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 1.6,
-                        color: foregroundColor.withValues(alpha: 0.88),
-                      ),
-                    ),
-                    const SizedBox(width: 7),
-                    Flexible(
-                      child: Text(
-                        label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: _ChatTextStyles.approvalAction.copyWith(
-                          color: foregroundColor.withValues(alpha: 0.88),
-                        ),
-                      ),
-                    ),
-                  ],
-                )
-              : Text(
-                  label,
-                  key: const ValueKey<String>('approval-action-label'),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: _ChatTextStyles.approvalAction.copyWith(
-                    color: enabled
-                        ? foregroundColor
-                        : foregroundColor.withValues(alpha: 0.6),
+      ),
+      child: OpenCrayInkSurface(
+        borderRadius: const BorderRadius.all(OpenCrayRadii.md),
+        child: InkWell(
+          onTap: enabled ? _handleTap : null,
+          splashColor: filled ? Colors.white24 : null,
+          highlightColor: filled ? Colors.white10 : null,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(minHeight: 38),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              child: Center(
+                child: AnimatedSwitcher(
+                  duration: OpenCrayMotion.resolve(
+                    context,
+                    OpenCrayMotion.quick,
                   ),
+                  switchInCurve: OpenCrayMotion.enter,
+                  switchOutCurve: OpenCrayMotion.exit,
+                  child: isBusy
+                      ? Row(
+                          key: const ValueKey<String>('approval-action-busy'),
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: <Widget>[
+                            SizedBox.square(
+                              dimension: 13,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 1.6,
+                                color: foregroundColor.withValues(alpha: 0.88),
+                              ),
+                            ),
+                            const SizedBox(width: 7),
+                            Flexible(
+                              child: Text(
+                                label,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: _ChatTextStyles.approvalAction.copyWith(
+                                  color: foregroundColor.withValues(
+                                    alpha: 0.88,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      : Text(
+                          label,
+                          key: const ValueKey<String>('approval-action-label'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: _ChatTextStyles.approvalAction.copyWith(
+                            color: enabled
+                                ? foregroundColor
+                                : foregroundColor.withValues(alpha: 0.6),
+                          ),
+                        ),
                 ),
+              ),
+            ),
+          ),
         ),
       ),
     );
+  }
+
+  void _handleTap() {
+    // Approving or rejecting is the most consequential tap in the app; confirm
+    // it in the hand before the request leaves.
+    HapticFeedback.selectionClick();
+    onPressed!();
   }
 }

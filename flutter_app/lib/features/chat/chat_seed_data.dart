@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/copy/opencray_ui_copy.dart';
+import '../../core/design/opencray_tokens.dart';
 import 'chat_models.dart';
 
 class OpenCrayChatSeedData {
@@ -131,14 +132,14 @@ class OpenCrayChatSeedData {
           kind: ChatAttachmentKind.image,
           label: 'workspace-shot.png',
           detail: copy.chatSeedImageDetail,
-          accentColor: const Color(0xFFE6F0FF),
+          accentColor: OpenCrayColors.primaryTint,
         ),
         ChatAttachmentData(
           id: 'seed-file',
           kind: ChatAttachmentKind.file,
           label: 'mobile-ui-layout-spec.md',
           detail: copy.chatSeedFileDetail,
-          accentColor: const Color(0xFFF2F3F7),
+          accentColor: OpenCrayColors.surfaceMuted,
         ),
       ];
 
