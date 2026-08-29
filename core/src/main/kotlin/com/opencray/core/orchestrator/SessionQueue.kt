@@ -187,6 +187,7 @@ class SessionQueue(
     }
   private val persistError = AtomicReference<Throwable?>()
   @Volatile private var lastPersistFuture: Future<*>? = null
+  private val persistThreadMarker: ThreadLocal<Boolean> = ThreadLocal.withInitial { false }
 
   init {
     require(sessionId.isNotBlank()) { "SessionQueue sessionId must not be blank." }
@@ -210,6 +211,7 @@ class SessionQueue(
   }
 
   fun enqueue(task: AgentTask): AgentTask {
+    checkNoPersistThreadReentry()
     val enqueuedTask = synchronized(lock) {
       require(task.id.isNotBlank()) { "Queued task id must not be blank." }
       require(taskEntries.none { it.task.id == task.id }) {
@@ -244,6 +246,7 @@ class SessionQueue(
    */
   fun drain(maxTasks: Int = Int.MAX_VALUE): List<ExecutionResult> {
     require(maxTasks >= 0) { "drain maxTasks must be >= 0." }
+    checkNoPersistThreadReentry()
     synchronized(lock) {
       if (maxTasks == 0 || lifecycleState == SessionLifecycleState.STOPPED) {
         return emptyList()
@@ -295,6 +298,7 @@ class SessionQueue(
    * - RUNNING tasks transition to CANCEL_REQUESTED and runtime can observe this via hooks.
    */
   fun requestCancel(taskId: String): Boolean {
+    checkNoPersistThreadReentry()
     val cancelled = synchronized(lock) {
       val index = indexOfTaskLocked(taskId) ?: return@synchronized false
       val current = taskEntries[index]
@@ -331,6 +335,7 @@ class SessionQueue(
     taskId: String,
     taskMetadataUpdates: Map<String, String> = emptyMap(),
   ): Boolean {
+    checkNoPersistThreadReentry()
     val retried = synchronized(lock) {
       val index = indexOfTaskLocked(taskId) ?: return@synchronized false
       val current = taskEntries[index]
@@ -367,6 +372,7 @@ class SessionQueue(
     errorMessage: String,
   ): Boolean {
     require(errorCode.isNotBlank()) { "Reconciled failure errorCode must not be blank." }
+    checkNoPersistThreadReentry()
     val reconciled = synchronized(lock) {
       val index = indexOfTaskLocked(taskId) ?: return@synchronized false
       val current = taskEntries[index]
@@ -403,6 +409,7 @@ class SessionQueue(
     executionKind: String,
     taskMetadataUpdates: Map<String, String> = emptyMap(),
   ): Boolean {
+    checkNoPersistThreadReentry()
     val resumed = synchronized(lock) {
       val index = indexOfTaskLocked(taskId) ?: return@synchronized false
       val current = taskEntries[index]
@@ -435,6 +442,7 @@ class SessionQueue(
   }
 
   fun stop(): SessionLifecycleState {
+    checkNoPersistThreadReentry()
     val stoppedState = synchronized(lock) {
       transitionSessionStateLocked(SessionLifecycleState.STOPPED)
       lifecycleState
@@ -444,6 +452,7 @@ class SessionQueue(
   }
 
   fun resume(): SessionLifecycleState {
+    checkNoPersistThreadReentry()
     val resumedState = synchronized(lock) {
       if (lifecycleState == SessionLifecycleState.STOPPED) {
         transitionSessionStateLocked(SessionLifecycleState.IDLE)
@@ -454,9 +463,15 @@ class SessionQueue(
     return resumedState
   }
 
-  fun currentSessionState(): SessionLifecycleState = synchronized(lock) { lifecycleState }
+  fun currentSessionState(): SessionLifecycleState {
+    checkNoPersistThreadReentry()
+    return synchronized(lock) { lifecycleState }
+  }
 
-  fun snapshot(): SessionQueueSnapshot = synchronized(lock) { buildSnapshotLocked() }
+  fun snapshot(): SessionQueueSnapshot {
+    checkNoPersistThreadReentry()
+    return synchronized(lock) { buildSnapshotLocked() }
+  }
 
   private fun restoreLocked(
     snapshot: SessionQueueSnapshot?,
@@ -986,14 +1001,26 @@ class SessionQueue(
     updatedAtEpochMs = clock.nowEpochMs(),
   )
 
+  private fun checkNoPersistThreadReentry() {
+    check(!persistThreadMarker.get()) {
+      "SessionQueue detected a re-entrant call on the persist executor thread: " +
+        "SessionQueueSnapshotStore.save() must not call back into SessionQueue public methods " +
+        "(enqueue, drain, requestCancel, requestRetry, stop, resume, snapshot, currentSessionState) " +
+        "because the serial persist executor would deadlock."
+    }
+  }
+
   private fun persistSnapshotLocked() {
     val snapshot = buildSnapshotLocked()
     lastPersistFuture = persistExecutor.submit<Any> {
       try {
+        persistThreadMarker.set(true)
         snapshotStore.save(snapshot)
       } catch (failure: Throwable) {
         persistError.compareAndSet(null, failure)
         throw failure
+      } finally {
+        persistThreadMarker.set(false)
       }
     }
   }
