@@ -74,6 +74,7 @@
 | E2032 | EMPTY_RESPONSE_RECOVERY_EXHAUSTED | 空响应恢复尝试耗尽 |
 | E2040 | MISSING_LLM_CONFIG | LLM 配置不完整（显示为 Missing LLM 文案） |
 | E2041 | ON_DEVICE_LLM_NOT_SUPPORTED | 所选端上模型不受支持或不可用 |
+| E2042 | PROVIDER_REQUEST_CANCELLED | 用户取消在途 LLM 请求（不重试、不回退） |
 
 ## E3xxx 会话编排与运行时
 
