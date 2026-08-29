@@ -10,6 +10,7 @@ import com.opencray.persistence.store.file.DirectoryDurableTextStorage
 import com.opencray.persistence.store.file.RecordStorageUpdate
 import com.opencray.persistence.store.file.updateRecord
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.Serializable
 
@@ -200,6 +201,7 @@ internal data class PersistedPromptCheckpoint(
   val subAgentAgentId: String? = null,
   val subAgentChildRunId: String? = null,
   val subAgentChildTaskId: String? = null,
+  val approvedRequestFingerprint: String? = null,
 ) {
   init {
     require(sessionId.isNotBlank()) { "PersistedPromptCheckpoint sessionId must not be blank." }
@@ -233,6 +235,17 @@ internal fun PersistedPromptCheckpoint.toApprovalGrantOrNull(): AgentTaskApprova
     promptCheckpointBoundary = runtimeCheckpointBoundaryOrNull(),
     promptResumeState = promptResumeState,
     subAgentApprovalResume = restoredSubAgentApprovalResume(),
+    commandApprovalToken = approvedRequestFingerprint
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+      ?.let { fingerprint ->
+        com.opencray.runtime.CommandApprovalToken(
+          tokenId = UUID.randomUUID().toString(),
+          taskId = taskId,
+          approvedAtEpochMs = createdAtEpochMs,
+          approvedRequestFingerprint = fingerprint,
+        )
+      },
   )
 }
 

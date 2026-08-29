@@ -1,5 +1,7 @@
 package com.opencray.app
 
+import com.opencray.runtime.CommandApprovalToken
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentMap
 
@@ -15,6 +17,7 @@ internal data class AgentTaskApprovalGrant(
   val promptCheckpointBoundary: com.opencray.runtime.OpenCrayPromptCheckpointBoundary? = null,
   val promptResumeState: com.opencray.runtime.OpenCrayPromptResumeState? = null,
   val subAgentApprovalResume: com.opencray.runtime.subagent.SubAgentApprovalResume? = null,
+  val commandApprovalToken: CommandApprovalToken? = null,
 )
 
 internal data class AgentTaskApprovalRejection(
@@ -36,6 +39,9 @@ internal class AgentTaskApprovalRegistry {
   private val approvedSubAgentResumesBySession:
     ConcurrentMap<String, ConcurrentMap<String, com.opencray.runtime.subagent.SubAgentApprovalResume>> =
     ConcurrentHashMap()
+  private val approvedCommandApprovalTokensBySession:
+    ConcurrentMap<String, ConcurrentMap<String, CommandApprovalToken>> =
+    ConcurrentHashMap()
   private val rejectedToolNamesBySession: ConcurrentMap<String, ConcurrentMap<String, String>> =
     ConcurrentHashMap()
   private val rejectedPromptResumesBySession:
@@ -51,6 +57,7 @@ internal class AgentTaskApprovalRegistry {
     toolName: String? = null,
     promptResumeState: com.opencray.runtime.OpenCrayPromptResumeState? = null,
     subAgentApprovalResume: com.opencray.runtime.subagent.SubAgentApprovalResume? = null,
+    approvedRequestFingerprint: String? = null,
   ) {
     sessionState(sessionId)[taskId] = AgentTaskApprovalState.APPROVED
     rejectedToolNamesBySession[sessionId]?.remove(taskId)
@@ -83,6 +90,24 @@ internal class AgentTaskApprovalRegistry {
     } else {
       subAgentResumes[taskId] = subAgentApprovalResume
     }
+    val commandApprovalTokens =
+      approvedCommandApprovalTokensBySession.computeIfAbsent(sessionId) { ConcurrentHashMap() }
+    val normalizedFingerprint = approvedRequestFingerprint
+      ?.trim()
+      ?.takeIf(String::isNotBlank)
+    if (normalizedFingerprint == null) {
+      commandApprovalTokens.remove(taskId)
+      if (commandApprovalTokens.isEmpty()) {
+        approvedCommandApprovalTokensBySession.remove(sessionId, commandApprovalTokens)
+      }
+    } else {
+      commandApprovalTokens[taskId] = CommandApprovalToken(
+        tokenId = UUID.randomUUID().toString(),
+        taskId = taskId,
+        approvedAtEpochMs = System.currentTimeMillis(),
+        approvedRequestFingerprint = normalizedFingerprint,
+      )
+    }
   }
 
   fun markRejected(
@@ -96,6 +121,7 @@ internal class AgentTaskApprovalRegistry {
     approvedToolNamesBySession[sessionId]?.remove(taskId)
     approvedPromptResumesBySession[sessionId]?.remove(taskId)
     approvedSubAgentResumesBySession[sessionId]?.remove(taskId)
+    approvedCommandApprovalTokensBySession[sessionId]?.remove(taskId)
     val toolNames = rejectedToolNamesBySession.computeIfAbsent(sessionId) { ConcurrentHashMap() }
     if (toolName.isNullOrBlank()) {
       toolNames.remove(taskId)
@@ -134,9 +160,11 @@ internal class AgentTaskApprovalRegistry {
     val toolNames = approvedToolNamesBySession[sessionId]
     val resumes = approvedPromptResumesBySession[sessionId]
     val subAgentResumes = approvedSubAgentResumesBySession[sessionId]
+    val commandApprovalTokens = approvedCommandApprovalTokensBySession[sessionId]
     val toolName = toolNames?.remove(taskId)
     val promptResumeState = resumes?.remove(taskId)
     val subAgentApprovalResume = subAgentResumes?.remove(taskId)
+    val commandApprovalToken = commandApprovalTokens?.remove(taskId)
     if (sessionState.isEmpty()) {
       statesBySession.remove(sessionId, sessionState)
     }
@@ -149,11 +177,15 @@ internal class AgentTaskApprovalRegistry {
     if (subAgentResumes != null && subAgentResumes.isEmpty()) {
       approvedSubAgentResumesBySession.remove(sessionId, subAgentResumes)
     }
+    if (commandApprovalTokens != null && commandApprovalTokens.isEmpty()) {
+      approvedCommandApprovalTokensBySession.remove(sessionId, commandApprovalTokens)
+    }
     return AgentTaskApprovalGrant(
       taskId = taskId,
       toolName = toolName,
       promptResumeState = promptResumeState,
       subAgentApprovalResume = subAgentApprovalResume,
+      commandApprovalToken = commandApprovalToken,
     )
   }
 
@@ -213,6 +245,7 @@ internal class AgentTaskApprovalRegistry {
     approvedToolNamesBySession[sessionId]?.remove(taskId)
     approvedPromptResumesBySession[sessionId]?.remove(taskId)
     approvedSubAgentResumesBySession[sessionId]?.remove(taskId)
+    approvedCommandApprovalTokensBySession[sessionId]?.remove(taskId)
     rejectedToolNamesBySession[sessionId]?.remove(taskId)
     rejectedPromptResumesBySession[sessionId]?.remove(taskId)
     rejectedSubAgentResumesBySession[sessionId]?.remove(taskId)
@@ -237,6 +270,12 @@ internal class AgentTaskApprovalRegistry {
       resumes.keys.retainAll(taskIds)
       if (resumes.isEmpty()) {
         approvedSubAgentResumesBySession.remove(sessionId, resumes)
+      }
+    }
+    approvedCommandApprovalTokensBySession[sessionId]?.let { tokens ->
+      tokens.keys.retainAll(taskIds)
+      if (tokens.isEmpty()) {
+        approvedCommandApprovalTokensBySession.remove(sessionId, tokens)
       }
     }
     rejectedToolNamesBySession[sessionId]?.let { toolNames ->

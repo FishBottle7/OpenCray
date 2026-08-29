@@ -144,54 +144,37 @@ object ModeGate {
     denyDetail: String = "Policy denied command execution.",
   ): CommandGateDecision {
     val resolvedGate = when (policyDecision.outcome) {
-      PolicyDecisionOutcome.ALLOW -> ResolvedGate(
-        status = CommandGateStatus.ALLOWED,
-        reasonCode = CommandGateReasonCode.ALLOW_POLICY_ALLOW,
-        shouldExecute = true,
-        detail = policyDecision.detail,
-      )
+      PolicyDecisionOutcome.ALLOW -> if (approvalToken == null) {
+        ResolvedGate(
+          status = CommandGateStatus.ALLOWED,
+          reasonCode = CommandGateReasonCode.ALLOW_POLICY_ALLOW,
+          shouldExecute = true,
+          detail = policyDecision.detail,
+        )
+      } else {
+        approvalGatedResolution(
+          request = request,
+          policyDecision = policyDecision,
+          approvalToken = approvalToken,
+          decidedAtEpochMs = decidedAtEpochMs,
+          approvalTaskMismatchDetail = approvalTaskMismatchDetail,
+        )
+      }
 
-      PolicyDecisionOutcome.ASK -> when {
-        approvalToken == null -> ResolvedGate(
+      PolicyDecisionOutcome.ASK -> if (approvalToken == null) {
+        ResolvedGate(
           status = CommandGateStatus.BLOCKED,
           reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_REQUIRED,
           shouldExecute = false,
           detail = approvalRequiredDetail(policyDecision, approvalRequiredDetail),
         )
-
-        approvalToken.taskId != request.taskId -> ResolvedGate(
-          status = CommandGateStatus.BLOCKED,
-          reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_TASK_MISMATCH,
-          shouldExecute = false,
-          detail = approvalTaskMismatchDetail,
-        )
-
-        isApprovalTokenExpired(approvalToken, decidedAtEpochMs) -> ResolvedGate(
-          status = CommandGateStatus.BLOCKED,
-          reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_EXPIRED,
-          shouldExecute = false,
-          detail = "Approval token expired before command execution.",
-        )
-
-        isApprovalContentMismatch(approvalToken, request) -> ResolvedGate(
-          status = CommandGateStatus.BLOCKED,
-          reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_CONTENT_MISMATCH,
-          shouldExecute = false,
-          detail = "Approval token does not cover this command content.",
-        )
-
-        !consumeApprovalToken(approvalToken.tokenId, decidedAtEpochMs) -> ResolvedGate(
-          status = CommandGateStatus.BLOCKED,
-          reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_TOKEN_CONSUMED,
-          shouldExecute = false,
-          detail = "Approval token was already consumed by an earlier execution.",
-        )
-
-        else -> ResolvedGate(
-          status = CommandGateStatus.ALLOWED,
-          reasonCode = CommandGateReasonCode.ALLOW_APPROVAL_TOKEN,
-          shouldExecute = true,
-          detail = approvalToken.note ?: policyDecision.detail,
+      } else {
+        approvalGatedResolution(
+          request = request,
+          policyDecision = policyDecision,
+          approvalToken = approvalToken,
+          decidedAtEpochMs = decidedAtEpochMs,
+          approvalTaskMismatchDetail = approvalTaskMismatchDetail,
         )
       }
 
@@ -230,6 +213,49 @@ object ModeGate {
       approvalToken = approvalToken,
       auditRecord = auditRecord,
       detail = resolvedGate.detail,
+    )
+  }
+
+  private fun approvalGatedResolution(
+    request: CommandExecutionRequest,
+    policyDecision: PolicyDecision,
+    approvalToken: CommandApprovalToken,
+    decidedAtEpochMs: Long,
+    approvalTaskMismatchDetail: String,
+  ): ResolvedGate = when {
+    approvalToken.taskId != request.taskId -> ResolvedGate(
+      status = CommandGateStatus.BLOCKED,
+      reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_TASK_MISMATCH,
+      shouldExecute = false,
+      detail = approvalTaskMismatchDetail,
+    )
+
+    isApprovalTokenExpired(approvalToken, decidedAtEpochMs) -> ResolvedGate(
+      status = CommandGateStatus.BLOCKED,
+      reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_EXPIRED,
+      shouldExecute = false,
+      detail = "Approval token expired before command execution.",
+    )
+
+    isApprovalContentMismatch(approvalToken, request) -> ResolvedGate(
+      status = CommandGateStatus.BLOCKED,
+      reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_CONTENT_MISMATCH,
+      shouldExecute = false,
+      detail = "Approval token does not cover this command content.",
+    )
+
+    !consumeApprovalToken(approvalToken.tokenId, decidedAtEpochMs) -> ResolvedGate(
+      status = CommandGateStatus.BLOCKED,
+      reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_TOKEN_CONSUMED,
+      shouldExecute = false,
+      detail = "Approval token was already consumed by an earlier execution.",
+    )
+
+    else -> ResolvedGate(
+      status = CommandGateStatus.ALLOWED,
+      reasonCode = CommandGateReasonCode.ALLOW_APPROVAL_TOKEN,
+      shouldExecute = true,
+      detail = approvalToken.note ?: policyDecision.detail,
     )
   }
 

@@ -1005,6 +1005,7 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
       toolName: String?,
       promptResumeState: com.opencray.runtime.OpenCrayPromptResumeState?,
       subAgentApprovalResume: com.opencray.runtime.subagent.SubAgentApprovalResume?,
+      approvedRequestFingerprint: String?,
     ) = Unit
 
     override fun markApprovalRejected(

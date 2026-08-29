@@ -801,6 +801,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
         approvedTaskGrantScopedToFirstRequest = approvalGrant != null,
         rejectedTaskId = task.id.takeIf { approvalRejection != null },
         rejectedToolName = approvalRejection?.toolName,
+        commandApprovalToken = approvalGrant?.commandApprovalToken,
         commandExecutor = commandExecutorProvider(),
         pythonRuntimeAdapter = pythonRuntimeProvider(),
         pythonRuntimeManifestProvider = pythonRuntimeManifestProvider,

@@ -230,6 +230,95 @@ class AppAgentSessionTaskRuntimeFactoryApprovalResumeTest {
   }
 
   @Test
+  fun approvalContinuationFromDurableCheckpointCarriesCommandApprovalToken() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-approval-fingerprint-resume").toPath()
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-approval-fingerprint-resume-factory"),
+    )
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val checkpointFactory = com.opencray.app.inMemoryPromptCheckpointStoreFactoryForTest()
+    val checkpointStore = checkpointFactory.forChatSession(sessionId)
+    val resumeState = OpenCrayPromptResumeState(turnIndex = 1, toolCallCount = 1)
+
+    checkpointStore.upsert(
+      PersistedPromptCheckpoint(
+        sessionId = sessionId,
+        runId = "run-1",
+        taskId = "task-1",
+        checkpointId = "checkpoint-1",
+        checkpointKind = PromptCheckpointKind.APPROVED_PENDING_RESUME,
+        createdAtEpochMs = 100L,
+        updatedAtEpochMs = 100L,
+        toolName = "command_exec",
+        promptCheckpointBoundary = OpenCrayPromptCheckpointBoundary.TOOL_RESULT_COMMITTED,
+        promptResumeState = resumeState,
+        approvedRequestFingerprint = "fingerprint-abc",
+      ),
+    )
+
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      approvalRegistry = AgentTaskApprovalRegistry(),
+      promptCheckpointStoreProvider = checkpointFactory::forChatSession,
+    )
+
+    val continuation = factory.approvalContinuationForExecution(
+      sessionId = sessionId,
+      taskId = "task-1",
+    )
+
+    val token = requireNotNull(continuation.grant?.commandApprovalToken)
+    assertEquals("fingerprint-abc", token.approvedRequestFingerprint)
+    assertEquals("task-1", token.taskId)
+    assertEquals(100L, token.approvedAtEpochMs)
+    assertEquals("command_exec", continuation.grant?.toolName)
+  }
+
+  @Test
+  fun approvalContinuationFromInMemoryRegistryCarriesCommandApprovalToken() {
+    val workspaceRoot = temporaryFolder.newFolder("workspace-registry-fingerprint-resume").toPath()
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("chat-store-registry-fingerprint-resume-factory"),
+    )
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val checkpointFactory = com.opencray.app.inMemoryPromptCheckpointStoreFactoryForTest()
+    val approvalRegistry = AgentTaskApprovalRegistry()
+
+    approvalRegistry.markApproved(
+      sessionId = sessionId,
+      taskId = "task-1",
+      toolName = "command_exec",
+      approvedRequestFingerprint = "fingerprint-registry",
+    )
+
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+      approvalRegistry = approvalRegistry,
+      promptCheckpointStoreProvider = checkpointFactory::forChatSession,
+    )
+
+    val continuation = factory.approvalContinuationForExecution(
+      sessionId = sessionId,
+      taskId = "task-1",
+    )
+
+    val token = requireNotNull(continuation.grant?.commandApprovalToken)
+    assertEquals("fingerprint-registry", token.approvedRequestFingerprint)
+    assertEquals("task-1", token.taskId)
+    assertNull(factory.promptCheckpointStoreForSession(sessionId).get("task-1"))
+  }
+
+  @Test
   fun rejectionContinuationForExecutionFallsBackToDurableCheckpointBoundary() {
     val workspaceRoot = temporaryFolder.newFolder("workspace-rejected-resume").toPath()
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-rejected-resume-factory"))

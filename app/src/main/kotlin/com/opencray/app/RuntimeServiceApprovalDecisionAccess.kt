@@ -217,6 +217,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
       executionId = decisionRecord.executionId,
       executionOrdinal = decisionRecord.executionOrdinal,
       executionKind = decisionRecord.executionKind,
+      approvedRequestFingerprint = decisionRecord.approvedRequestFingerprint,
     )
   }
 
@@ -247,6 +248,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
           toolName = subject.decisionRecord.resumeToolName ?: subject.decisionRecord.toolName,
           promptResumeState = subject.decisionRecord.promptResumeState,
           subAgentApprovalResume = subject.decisionRecord.subAgentApprovalResume,
+          approvedRequestFingerprint = subject.decisionRecord.approvedRequestFingerprint,
         )
       },
       markApprovalRejected = { subject ->
@@ -401,6 +403,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
       toolName = resolution.resumeToolName ?: resolution.toolName,
       promptResumeState = resolution.promptResumeState,
       subAgentApprovalResume = resolution.subAgentApprovalResume,
+      approvedRequestFingerprint = resolution.approvedRequestFingerprint,
     )
     dependencies.runtimeHostAccess.promptCheckpointStore(resolution.sessionId).upsert(
       resolution.toApprovalDecisionRecord().decisionCheckpoint(
@@ -452,6 +455,7 @@ private data class RuntimeServicePendingApprovalResolution(
   val executionId: String?,
   val executionOrdinal: Int?,
   val executionKind: String?,
+  val approvedRequestFingerprint: String?,
 ) {
   fun usesExplicitSubAgentHandleControlPlane(): Boolean =
     subAgentApprovalResume != null &&
@@ -545,6 +549,7 @@ private fun RuntimeServicePendingApprovalResolution.toApprovalDecisionRecord():
   subAgentApprovalResume = subAgentApprovalResume,
   isHighRisk = isHighRisk,
   subAgentLifecycle = subAgentLifecycle?.toApprovalDecisionSubAgentLifecycle(),
+  approvedRequestFingerprint = approvedRequestFingerprint,
 )
 
 private fun ApprovalDecisionSubAgentLifecycle.toRuntimeServicePendingApprovalSubAgentLifecycle():

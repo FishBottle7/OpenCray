@@ -598,6 +598,7 @@ open class CommandExecutor(
     metadata.putAll(runtimeMetadata)
     metadata["command"] = request.command
     metadata["args"] = request.args.joinToString("\u0000")
+    metadata["approvalRequestFingerprint"] = request.approvalFingerprint()
     metadata["gateStatus"] = gateDecision.status.name
     metadata["gateReasonCode"] = gateDecision.reasonCode
     metadata["policyOutcome"] = gateDecision.policyDecision.outcome.name

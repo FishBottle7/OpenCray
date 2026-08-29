@@ -7,6 +7,7 @@ import com.opencray.runtime.context.RuntimeConversationRole
 import com.opencray.runtime.subagent.SubAgentApprovalResume
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -74,6 +75,94 @@ class AgentTaskApprovalRegistryTest {
     assertEquals(parentResumeState, grant.promptResumeState)
     assertEquals(childResume, grant.subAgentApprovalResume)
     assertNull(registry.consumeApproved("session-1", "task-1"))
+  }
+
+  @Test
+  fun consumeApprovedReturnsCommandApprovalTokenForFingerprintGrant() {
+    val registry = AgentTaskApprovalRegistry()
+    val beforeApprovalEpochMs = System.currentTimeMillis()
+
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-1",
+      toolName = "command_exec",
+      approvedRequestFingerprint = "  fingerprint-abc  ",
+    )
+    val afterApprovalEpochMs = System.currentTimeMillis()
+
+    val grant = requireNotNull(registry.consumeApproved("session-1", "task-1"))
+
+    val token = requireNotNull(grant.commandApprovalToken)
+    assertEquals("fingerprint-abc", token.approvedRequestFingerprint)
+    assertEquals("task-1", token.taskId)
+    assertTrue(token.tokenId.isNotBlank())
+    assertTrue(token.approvedAtEpochMs >= beforeApprovalEpochMs)
+    assertTrue(token.approvedAtEpochMs <= afterApprovalEpochMs)
+
+    val secondGrant = registry.consumeApproved("session-1", "task-1")
+    assertNull(secondGrant)
+  }
+
+  @Test
+  fun consumeApprovedReturnsNewTokenAfterReapproval() {
+    val registry = AgentTaskApprovalRegistry()
+
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-1",
+      approvedRequestFingerprint = "fingerprint-abc",
+    )
+    val firstToken = requireNotNull(registry.consumeApproved("session-1", "task-1"))
+      .commandApprovalToken
+    assertNotNull(firstToken)
+
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-1",
+      approvedRequestFingerprint = "fingerprint-abc",
+    )
+    val secondToken = requireNotNull(registry.consumeApproved("session-1", "task-1"))
+      .commandApprovalToken
+
+    assertNotNull(secondToken)
+    assertTrue(firstToken!!.tokenId != secondToken!!.tokenId)
+  }
+
+  @Test
+  fun consumeApprovedOmitsCommandApprovalTokenWithoutFingerprint() {
+    val registry = AgentTaskApprovalRegistry()
+
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-1",
+      toolName = "Write",
+    )
+
+    val grant = requireNotNull(registry.consumeApproved("session-1", "task-1"))
+
+    assertEquals("Write", grant.toolName)
+    assertNull(grant.commandApprovalToken)
+  }
+
+  @Test
+  fun rejectionAndClearDropPendingCommandApprovalToken() {
+    val registry = AgentTaskApprovalRegistry()
+
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-1",
+      approvedRequestFingerprint = "fingerprint-abc",
+    )
+    registry.markRejected(sessionId = "session-1", taskId = "task-1")
+    assertNull(registry.consumeApproved("session-1", "task-1"))
+
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-2",
+      approvedRequestFingerprint = "fingerprint-abc",
+    )
+    registry.clear(sessionId = "session-1", taskId = "task-2")
+    assertNull(registry.consumeApproved("session-1", "task-2"))
   }
 
   @Test

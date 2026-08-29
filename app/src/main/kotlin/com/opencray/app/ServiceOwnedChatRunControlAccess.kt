@@ -332,6 +332,9 @@ internal class ServiceOwnedChatRunControlAccess(
       approveForSessionLabel = null,
       subAgentLifecycle = approvalMetadataSubAgentLifecycle(run.resultMetadata)
         ?.toPendingApprovalSubAgentLifecycle(),
+      approvedRequestFingerprint = run.resultMetadata["approvalRequestFingerprint"]
+        ?.trim()
+        ?.takeIf(String::isNotBlank),
       title = "Approval required",
       body = run.errorMessage.orEmpty(),
     )

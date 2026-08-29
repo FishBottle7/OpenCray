@@ -334,6 +334,7 @@ internal class OpenCrayHostRuntime internal constructor(
         toolName = subject.decisionRecord.resumeToolName ?: subject.decisionRecord.toolName,
         promptResumeState = subject.decisionRecord.promptResumeState,
         subAgentApprovalResume = subject.decisionRecord.subAgentApprovalResume,
+        approvedRequestFingerprint = subject.decisionRecord.approvedRequestFingerprint,
       )
     },
     markApprovalRejected = { subject ->
@@ -3829,6 +3830,7 @@ internal data class PendingApprovalSnapshot(
   val supportsSessionApproval: Boolean = false,
   val approveForSessionLabel: String? = null,
   val subAgentLifecycle: PendingApprovalSubAgentLifecycle? = null,
+  val approvedRequestFingerprint: String? = null,
   val title: String,
   val body: String,
 )

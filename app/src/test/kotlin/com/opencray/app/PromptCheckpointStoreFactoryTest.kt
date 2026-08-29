@@ -384,6 +384,51 @@ class PromptCheckpointStoreFactoryTest {
     assertEquals("child-task-1", restored?.subAgentApprovalResume?.childTaskId)
   }
 
+  @Test
+  fun fileBackedStoreRestoresApprovalFingerprintAsEquivalentCommandApprovalToken() {
+    val runtimeRoot = temporaryFolder.newFolder("runtime-prompt-checkpoints-fingerprint")
+    val store = FileBackedPromptCheckpointStoreFactory(runtimeRoot).forChatSession("session-1")
+
+    store.upsert(
+      PersistedPromptCheckpoint(
+        sessionId = "session-1",
+        runId = "run-1",
+        taskId = "task-1",
+        checkpointId = "checkpoint-1",
+        checkpointKind = PromptCheckpointKind.APPROVED_PENDING_RESUME,
+        createdAtEpochMs = 100L,
+        updatedAtEpochMs = 100L,
+        toolName = "command_exec",
+        approvedRequestFingerprint = "fingerprint-abc",
+      ),
+    )
+    store.upsert(
+      PersistedPromptCheckpoint(
+        sessionId = "session-1",
+        runId = "run-2",
+        taskId = "task-2",
+        checkpointId = "checkpoint-2",
+        checkpointKind = PromptCheckpointKind.APPROVED_PENDING_RESUME,
+        createdAtEpochMs = 150L,
+        updatedAtEpochMs = 150L,
+        toolName = "Write",
+      ),
+    )
+
+    val restoredStore = FileBackedPromptCheckpointStoreFactory(runtimeRoot).forChatSession("session-1")
+    assertEquals("fingerprint-abc", restoredStore.get("task-1")?.approvedRequestFingerprint)
+
+    val grant = requireNotNull(restoredStore.get("task-1")?.toApprovalGrantOrNull())
+    val token = requireNotNull(grant.commandApprovalToken)
+    assertEquals("fingerprint-abc", token.approvedRequestFingerprint)
+    assertEquals("task-1", token.taskId)
+    assertEquals(100L, token.approvedAtEpochMs)
+    assertTrue(token.tokenId.isNotBlank())
+
+    val legacyGrant = requireNotNull(restoredStore.get("task-2")?.toApprovalGrantOrNull())
+    assertNull(legacyGrant.commandApprovalToken)
+  }
+
   private fun sanitizedToolResultPayload(): String = """
     {"run_id":"run-1","task_id":"task-1","turn":1,"tool_name":"WebSearch","status":"success","content":"done","metadata":{"sourceUrls":"https://example.com"}}
   """.trimIndent()

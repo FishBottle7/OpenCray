@@ -43,6 +43,7 @@ internal data class ApprovalDecisionRecord(
   val subAgentApprovalResume: SubAgentApprovalResume?,
   val isHighRisk: Boolean,
   val subAgentLifecycle: ApprovalDecisionSubAgentLifecycle? = null,
+  val approvedRequestFingerprint: String? = null,
 ) {
   fun replayExecutionContext(): RuntimeReplayExecutionContext =
     RuntimeReplayExecutionContext(
@@ -77,6 +78,7 @@ internal data class ApprovalDecisionRecord(
     subAgentAgentId = subAgentApprovalResume?.agentId,
     subAgentChildRunId = subAgentApprovalResume?.childRunId,
     subAgentChildTaskId = subAgentApprovalResume?.childTaskId,
+    approvedRequestFingerprint = approvedRequestFingerprint,
   )
 
   fun resultEvent(
@@ -275,6 +277,9 @@ internal fun ApprovalRequiredTaskProjection.toApprovalDecisionRecord(
       metadata = metadata,
     ),
     subAgentLifecycle = subAgentLifecycle,
+    approvedRequestFingerprint = metadata["approvalRequestFingerprint"]
+      ?.trim()
+      ?.takeIf(String::isNotBlank),
   )
 }
 
