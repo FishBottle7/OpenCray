@@ -993,9 +993,11 @@ import kotlinx.serialization.json.put
     val coordinatedHandle = (coordinatedSubAgentHandle(localHandle) ?: localHandle)
       .withNormalizedMailbox()
     synchronized(cursor.subAgentExecutionLock) {
-      cursor.subAgentHandles[agentId] = coordinatedHandle
+      if (cursor.subAgentHandles[agentId] === localHandle) {
+        cursor.subAgentHandles[agentId] = coordinatedHandle
+      }
+      return cursor.subAgentHandles[agentId]
     }
-    return coordinatedHandle
   }
 
   internal fun OpenCrayAgentRuntime.synchronizedSubAgentHandles(
