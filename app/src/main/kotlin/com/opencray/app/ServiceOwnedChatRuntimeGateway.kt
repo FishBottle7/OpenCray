@@ -587,6 +587,16 @@ internal class ServiceOwnedChatRuntimeGateway(
     notifyChatSnapshotsChanged()
   }
 
+  override fun approveChatApprovalAsBatch(taskIdOrRunId: String) {
+    val access = chatApprovalAccess
+    if (access == null) {
+      delegateFor("approveChatApprovalAsBatch").approveChatApprovalAsBatch(taskIdOrRunId)
+      return
+    }
+    access.approveChatApprovalAsBatch(taskIdOrRunId)
+    notifyChatSnapshotsChanged()
+  }
+
   override fun rejectChatApproval(taskIdOrRunId: String) {
     val access = chatApprovalAccess
     if (access == null) {

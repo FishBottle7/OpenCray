@@ -197,6 +197,13 @@ internal class ServiceBackedOpenCrayChatRuntimeGateway(
     )
   }
 
+  override fun approveChatApprovalAsBatch(taskIdOrRunId: String) {
+    dispatchWriteCommand(
+      operation = "approveChatApprovalAsBatch",
+      command = OpenCrayChatWriteCommand.ApproveChatApprovalAsBatch(taskIdOrRunId),
+    )
+  }
+
   override fun rejectChatApproval(taskIdOrRunId: String) {
     dispatchWriteCommand(
       operation = "rejectChatApproval",

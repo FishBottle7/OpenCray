@@ -1136,6 +1136,8 @@ abstract class AgentBootstrapTestBase {
 
         override fun approveChatApprovalForSession(taskIdOrRunId: String) = Unit
 
+        override fun approveChatApprovalAsBatch(taskIdOrRunId: String) = Unit
+
         override fun rejectChatApproval(taskIdOrRunId: String) = Unit
 
         override fun interruptChatRun(taskIdOrRunId: String) = interruptChatRun(taskIdOrRunId)

@@ -226,6 +226,7 @@ class RuntimeServiceWriteCommandProtocolTest {
     ),
     OpenCrayChatWriteCommand.ApproveChatApproval("run-1"),
     OpenCrayChatWriteCommand.ApproveChatApprovalForSession("run-2"),
+    OpenCrayChatWriteCommand.ApproveChatApprovalAsBatch("run-6"),
     OpenCrayChatWriteCommand.RejectChatApproval("run-3"),
     OpenCrayChatWriteCommand.InterruptChatRun("run-4"),
     OpenCrayChatWriteCommand.RetryChatRun("run-5"),

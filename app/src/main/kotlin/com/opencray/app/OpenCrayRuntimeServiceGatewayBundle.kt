@@ -174,6 +174,8 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
           approveChatApprovalHandler = gatewayDependencies.approvalDecisionAccess::approve,
           approveChatApprovalForSessionHandler =
             gatewayDependencies.approvalDecisionAccess::approveForSession,
+          approveChatApprovalAsBatchHandler =
+            gatewayDependencies.approvalDecisionAccess::approveForBatch,
           rejectChatApprovalHandler = gatewayDependencies.approvalDecisionAccess::reject,
         ),
         chatSubmissionAccess = ServiceOwnedChatSubmissionAccess(

@@ -279,7 +279,7 @@ internal class HostChatRuntimeGatewayImpl(
     host.emitChatRuntimeSnapshot()
   }
 
-  fun approveChatApprovalBatch(taskIdOrRunId: String) {
+  override fun approveChatApprovalAsBatch(taskIdOrRunId: String) {
     synchronized(host.lock) {
       host.chatApprovalDecisionCoordinator.approve(
         taskIdOrRunId,

@@ -67,6 +67,8 @@ internal class ProjectionBackedChatRuntimeWriteTargetResolver(
       targetForIdentifier(command.taskIdOrRunId)
     is OpenCrayChatWriteCommand.ApproveChatApprovalForSession ->
       targetForIdentifier(command.taskIdOrRunId)
+    is OpenCrayChatWriteCommand.ApproveChatApprovalAsBatch ->
+      targetForIdentifier(command.taskIdOrRunId)
     is OpenCrayChatWriteCommand.RejectChatApproval ->
       targetForIdentifier(command.taskIdOrRunId)
     is OpenCrayChatWriteCommand.InterruptChatRun ->

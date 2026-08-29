@@ -90,6 +90,12 @@ internal class DefaultRuntimeServiceBinderEndpoint(
       OpenCrayChatWriteDispatchResult.Completed
     }
 
+    is OpenCrayChatWriteCommand.ApproveChatApprovalAsBatch -> {
+      binderEndpointDependencies.approvalDecisionAccess.approveForBatch(command.taskIdOrRunId)
+      gatewayBundle.notifyChatSnapshotsChanged()
+      OpenCrayChatWriteDispatchResult.Completed
+    }
+
     is OpenCrayChatWriteCommand.RejectChatApproval -> {
       binderEndpointDependencies.approvalDecisionAccess.reject(command.taskIdOrRunId)
       gatewayBundle.notifyChatSnapshotsChanged()

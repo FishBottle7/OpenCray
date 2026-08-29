@@ -708,6 +708,12 @@ private class LoopbackHttpOpenCrayChatRuntimeGateway(
     )
   }
 
+  override fun approveChatApprovalAsBatch(taskIdOrRunId: String) {
+    commandTransport.requireChatDispatch(
+      OpenCrayChatWriteCommand.ApproveChatApprovalAsBatch(taskIdOrRunId),
+    )
+  }
+
   override fun rejectChatApproval(taskIdOrRunId: String) {
     commandTransport.requireChatDispatch(OpenCrayChatWriteCommand.RejectChatApproval(taskIdOrRunId))
   }

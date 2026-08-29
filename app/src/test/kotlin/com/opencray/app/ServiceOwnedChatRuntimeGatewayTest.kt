@@ -1426,6 +1426,7 @@ class ServiceOwnedChatRuntimeGatewayTest {
     val delegate = RecordingChatGateway("delegate")
     val approved = mutableListOf<String>()
     val approvedForSession = mutableListOf<String>()
+    val approvedAsBatch = mutableListOf<String>()
     val rejected = mutableListOf<String>()
     val gateway = ServiceOwnedChatRuntimeGateway(
       delegate = delegate,
@@ -1434,6 +1435,7 @@ class ServiceOwnedChatRuntimeGatewayTest {
       chatApprovalAccess = ServiceOwnedChatApprovalAccess(
         approveChatApprovalHandler = approved::add,
         approveChatApprovalForSessionHandler = approvedForSession::add,
+        approveChatApprovalAsBatchHandler = approvedAsBatch::add,
         rejectChatApprovalHandler = rejected::add,
       ),
       mainThreadPoster = ImmediateMainThreadPoster,
@@ -1441,15 +1443,18 @@ class ServiceOwnedChatRuntimeGatewayTest {
 
     gateway.approveChatApproval("run-approve")
     gateway.approveChatApprovalForSession("run-approve-session")
+    gateway.approveChatApprovalAsBatch("run-approve-batch")
     gateway.rejectChatApproval("run-reject")
 
     assertTrue(delegate.approvedRunIds.isEmpty())
     assertTrue(delegate.approvedForSessionRunIds.isEmpty())
+    assertTrue(delegate.approvedAsBatchRunIds.isEmpty())
     assertTrue(delegate.rejectedRunIds.isEmpty())
     assertEquals(listOf("run-approve"), approved)
     assertEquals(listOf("run-approve-session"), approvedForSession)
+    assertEquals(listOf("run-approve-batch"), approvedAsBatch)
     assertEquals(listOf("run-reject"), rejected)
-    assertEquals(3, delegate.notifiedChatSnapshotCount)
+    assertEquals(4, delegate.notifiedChatSnapshotCount)
   }
 
   @Test
@@ -1948,6 +1953,7 @@ class ServiceOwnedChatRuntimeGatewayTest {
     val recalledMessages = mutableListOf<Pair<String, String>>()
     val approvedRunIds = mutableListOf<String>()
     val approvedForSessionRunIds = mutableListOf<String>()
+    val approvedAsBatchRunIds = mutableListOf<String>()
     val rejectedRunIds = mutableListOf<String>()
     val interruptedRunIds = mutableListOf<String>()
     val retriedRunIds = mutableListOf<String>()
@@ -2079,6 +2085,10 @@ class ServiceOwnedChatRuntimeGatewayTest {
 
     override fun approveChatApprovalForSession(taskIdOrRunId: String) {
       approvedForSessionRunIds += taskIdOrRunId
+    }
+
+    override fun approveChatApprovalAsBatch(taskIdOrRunId: String) {
+      approvedAsBatchRunIds += taskIdOrRunId
     }
 
     override fun rejectChatApproval(taskIdOrRunId: String) {

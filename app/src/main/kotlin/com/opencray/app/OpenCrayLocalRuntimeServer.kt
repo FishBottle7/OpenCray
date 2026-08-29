@@ -770,6 +770,12 @@ internal class OpenCrayLocalRuntimeServer(
         )
         null
       }
+      "POST" to "/v1/approve_chat_approval_batch" -> {
+        chatRuntimeGateway.approveChatApprovalAsBatch(
+          body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),
+        )
+        null
+      }
       "POST" to "/v1/reject_chat_approval" -> {
         chatRuntimeGateway.rejectChatApproval(
           body.optString("runId").takeIf(String::isNotBlank) ?: body.optString("taskId"),

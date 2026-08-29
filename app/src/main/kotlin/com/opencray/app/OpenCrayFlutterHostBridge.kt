@@ -951,6 +951,16 @@ internal class OpenCrayFlutterHostBridge(
           }
           return
         }
+        "approveChatApprovalAsBatch" -> {
+          runAsync(result) {
+            chatRuntimeGateway.approveChatApprovalAsBatch(
+              call.argument<String>("runId")?.takeIf(String::isNotBlank)
+                ?: call.argument<String>("taskId").orEmpty(),
+            )
+            null
+          }
+          return
+        }
         "rejectChatApproval" -> {
           runAsync(result) {
             chatRuntimeGateway.rejectChatApproval(

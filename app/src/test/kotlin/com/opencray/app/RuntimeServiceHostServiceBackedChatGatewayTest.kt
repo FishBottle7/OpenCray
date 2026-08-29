@@ -324,6 +324,41 @@ class RuntimeServiceHostServiceBackedChatGatewayTest : RuntimeServiceHostTestBas
   }
 
   @Test
+  fun serviceBackedChatRuntimeGatewayDispatchesBatchApprovalOverWakeTransport() {
+    val bindingAdapter = RecordingBindingAdapter()
+    val fallbackGateway = RecordingChatRuntimeGateway("fallback")
+    val wakeCommands = mutableListOf<OpenCrayChatWriteCommand>()
+    val serviceClient = AndroidBindingOpenCrayRuntimeServiceClient(
+      appContext = ContextWrapper(null),
+      bindingAdapter = bindingAdapter,
+      startRequester = { },
+      wakeChatWriteRequester = { command ->
+        wakeCommands += command
+        true
+      },
+      mainThreadPoster = ImmediateMainThreadPoster,
+      serviceIntentFactory = { Intent() },
+      isMainThread = { true },
+    )
+    val gateway = ServiceBackedOpenCrayChatRuntimeGateway(
+      serviceClient = serviceClient,
+      fallbackGateway = fallbackGateway,
+    )
+
+    gateway.approveChatApprovalAsBatch("run-batch")
+
+    assertEquals(1, bindingAdapter.bindCount)
+    assertEquals(
+      listOf(OpenCrayChatWriteCommand.ApproveChatApprovalAsBatch("run-batch")),
+      wakeCommands,
+    )
+    assertNull(fallbackGateway.approvedTaskIdOrRunId)
+    assertNull(fallbackGateway.approvedAsBatchTaskIdOrRunId)
+    assertEquals("binding", serviceClient.loadConnectionState().phase)
+    assertEquals("in_process", serviceClient.loadConnectionState().transport)
+  }
+
+  @Test
   fun serviceBackedChatRuntimeGatewayKeepsWakeFallbackWhenCommandFallbackTransportIsUnavailable() {
     val bindingAdapter = RecordingBindingAdapter()
     val wakeCommands = mutableListOf<OpenCrayChatWriteCommand>()

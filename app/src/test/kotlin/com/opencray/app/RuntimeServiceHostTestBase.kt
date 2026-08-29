@@ -716,6 +716,8 @@ abstract class RuntimeServiceHostTestBase {
     var approvedTaskIdOrRunId: String? = null
       private set
     var approvedForSessionTaskIdOrRunId: String? = null
+
+    var approvedAsBatchTaskIdOrRunId: String? = null
       private set
     var notifiedChatSnapshotCount: Int = 0
       private set
@@ -841,6 +843,10 @@ abstract class RuntimeServiceHostTestBase {
 
     override fun approveChatApprovalForSession(taskIdOrRunId: String) {
       approvedForSessionTaskIdOrRunId = taskIdOrRunId
+    }
+
+    override fun approveChatApprovalAsBatch(taskIdOrRunId: String) {
+      approvedAsBatchTaskIdOrRunId = taskIdOrRunId
     }
 
     override fun rejectChatApproval(taskIdOrRunId: String) = Unit

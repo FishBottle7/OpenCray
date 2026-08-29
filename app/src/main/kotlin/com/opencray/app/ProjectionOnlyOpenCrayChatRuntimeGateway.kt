@@ -300,6 +300,9 @@ internal class ProjectionOnlyOpenCrayChatRuntimeGateway(
   override fun approveChatApprovalForSession(taskIdOrRunId: String) =
     throw unavailable("approveChatApprovalForSession")
 
+  override fun approveChatApprovalAsBatch(taskIdOrRunId: String) =
+    throw unavailable("approveChatApprovalAsBatch")
+
   override fun rejectChatApproval(taskIdOrRunId: String) =
     throw unavailable("rejectChatApproval")
 

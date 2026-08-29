@@ -1299,6 +1299,10 @@ class OpenCrayFlutterHostBridgeTest {
       throw UnsupportedOperationException()
     }
 
+    override fun approveChatApprovalAsBatch(taskIdOrRunId: String) {
+      throw UnsupportedOperationException()
+    }
+
     override fun rejectChatApproval(taskIdOrRunId: String) {
       throw UnsupportedOperationException()
     }

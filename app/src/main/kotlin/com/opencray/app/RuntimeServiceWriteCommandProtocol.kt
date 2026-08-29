@@ -130,6 +130,11 @@ internal fun runtimeServiceWriteCommandEnvelope(
     payload = approvalPayload(command.taskIdOrRunId),
   )
 
+  is OpenCrayChatWriteCommand.ApproveChatApprovalAsBatch -> chatCommandEnvelope(
+    route = "v1/approve_chat_approval_batch",
+    payload = approvalPayload(command.taskIdOrRunId),
+  )
+
   is OpenCrayChatWriteCommand.RejectChatApproval -> chatCommandEnvelope(
     route = "v1/reject_chat_approval",
     payload = approvalPayload(command.taskIdOrRunId),
@@ -616,6 +621,9 @@ private fun RuntimeServiceWriteCommandEnvelope.decodeChatCommand(): OpenCrayChat
 
     "POST" to "v1/approve_chat_approval_for_session" ->
       OpenCrayChatWriteCommand.ApproveChatApprovalForSession(payload.requireTaskOrRunId())
+
+    "POST" to "v1/approve_chat_approval_batch" ->
+      OpenCrayChatWriteCommand.ApproveChatApprovalAsBatch(payload.requireTaskOrRunId())
 
     "POST" to "v1/reject_chat_approval" -> OpenCrayChatWriteCommand.RejectChatApproval(
       payload.requireTaskOrRunId(),

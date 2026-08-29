@@ -79,6 +79,8 @@ internal interface OpenCrayChatRuntimeGateway {
 
   fun approveChatApprovalForSession(taskIdOrRunId: String)
 
+  fun approveChatApprovalAsBatch(taskIdOrRunId: String)
+
   fun rejectChatApproval(taskIdOrRunId: String)
 
   fun interruptChatRun(taskIdOrRunId: String)
@@ -129,6 +131,8 @@ internal sealed interface OpenCrayChatWriteCommand {
   data class ApproveChatApproval(val taskIdOrRunId: String) : OpenCrayChatWriteCommand
 
   data class ApproveChatApprovalForSession(val taskIdOrRunId: String) : OpenCrayChatWriteCommand
+
+  data class ApproveChatApprovalAsBatch(val taskIdOrRunId: String) : OpenCrayChatWriteCommand
 
   data class RejectChatApproval(val taskIdOrRunId: String) : OpenCrayChatWriteCommand
 
@@ -209,6 +213,11 @@ internal fun OpenCrayChatRuntimeGateway.dispatchChatWriteCommand(
 
   is OpenCrayChatWriteCommand.ApproveChatApprovalForSession -> {
     approveChatApprovalForSession(command.taskIdOrRunId)
+    OpenCrayChatWriteDispatchResult.Completed
+  }
+
+  is OpenCrayChatWriteCommand.ApproveChatApprovalAsBatch -> {
+    approveChatApprovalAsBatch(command.taskIdOrRunId)
     OpenCrayChatWriteDispatchResult.Completed
   }
 

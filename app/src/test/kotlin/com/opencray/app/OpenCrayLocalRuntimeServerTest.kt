@@ -920,6 +920,31 @@ class OpenCrayLocalRuntimeServerTest {
   }
 
   @Test
+  fun forwardsBatchApprovalRequestsToHostRuntime() {
+    val chatRuntimeGateway = RecordingChatRuntimeGateway()
+    val server = localRuntimeServer(
+      chatRuntimeGatewayResolver = { chatRuntimeGateway },
+    )
+    server.ensureStarted()
+
+    try {
+      val response = request(
+        server,
+        "POST",
+        "/v1/approve_chat_approval_batch",
+        body = JSONObject().apply {
+          put("runId", "run-approval-batch")
+        }.toString(),
+      )
+
+      assertEquals(200, response.statusCode)
+      assertEquals("run-approval-batch", chatRuntimeGateway.lastBatchApprovedTaskIdOrRunId)
+    } finally {
+      server.close()
+    }
+  }
+
+  @Test
   fun copyAndDeleteChatSessionRoutesMutateStoredSessions() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-session-routes"))
     val originalSessionId = chatStore.loadState().activeSession.sessionId
@@ -3283,6 +3308,8 @@ class OpenCrayLocalRuntimeServerTest {
       private set
 
     var lastSessionApprovedTaskIdOrRunId: String? = null
+
+    var lastBatchApprovedTaskIdOrRunId: String? = null
       private set
 
     override fun loadChatSnapshot(): Map<String, Any?> = mapOf("source" to "gateway-chat")
@@ -3355,6 +3382,10 @@ class OpenCrayLocalRuntimeServerTest {
 
     override fun approveChatApprovalForSession(taskIdOrRunId: String) {
       lastSessionApprovedTaskIdOrRunId = taskIdOrRunId
+    }
+
+    override fun approveChatApprovalAsBatch(taskIdOrRunId: String) {
+      lastBatchApprovedTaskIdOrRunId = taskIdOrRunId
     }
 
     override fun rejectChatApproval(taskIdOrRunId: String) = Unit

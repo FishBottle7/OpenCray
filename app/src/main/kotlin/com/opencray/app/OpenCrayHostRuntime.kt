@@ -1590,8 +1590,8 @@ internal class OpenCrayHostRuntime internal constructor(
     chatRuntimeGateway.approveChatApprovalForSession(taskIdOrRunId)
   }
 
-  fun approveChatApprovalBatch(taskIdOrRunId: String) {
-    chatRuntimeGateway.approveChatApprovalBatch(taskIdOrRunId)
+  override fun approveChatApprovalAsBatch(taskIdOrRunId: String) {
+    chatRuntimeGateway.approveChatApprovalAsBatch(taskIdOrRunId)
   }
 
   override fun rejectChatApproval(taskIdOrRunId: String) {
