@@ -797,6 +797,7 @@ class OpenCrayToolDispatcher(
     val text: String,
     val truncated: Boolean,
     val byteCount: Long,
+    val usableByteCount: Long,
   )
 
   internal fun readFileHeadWithinCharBudget(
@@ -840,7 +841,32 @@ class OpenCrayToolDispatcher(
       text = if (exceededCharBudget) decodedText.substring(0, maxChars) else decodedText,
       truncated = exceededCharBudget || usableBytes < totalBytes,
       byteCount = totalBytes,
+      usableByteCount = usableBytes.toLong(),
     )
+  }
+
+  private fun countRawLineSeparatorBytes(file: Path, fromExclusive: Long, toExclusive: Long): Long {
+    if (toExclusive <= fromExclusive) return 0L
+    var separators = 0L
+    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+    Files.newInputStream(file).use { input ->
+      var skipped = 0L
+      while (skipped < fromExclusive) {
+        val read = input.read(buffer, 0, minOf(buffer.size.toLong(), fromExclusive - skipped).toInt())
+        if (read <= 0) return separators
+        skipped += read
+      }
+      while (skipped < toExclusive) {
+        val read = input.read(buffer, 0, minOf(buffer.size.toLong(), toExclusive - skipped).toInt())
+        if (read <= 0) break
+        skipped += read
+        for (index in 0 until read) {
+          val byte = buffer[index].toInt() and 0xFF
+          if (byte == 0x0A || byte == 0x0D) separators += 1L
+        }
+      }
+    }
+    return separators
   }
 
   internal fun editableFileSizeLimitBytes(): Long =
@@ -996,6 +1022,13 @@ class OpenCrayToolDispatcher(
     val body = rawContent
     val truncated = head.truncated
     val returnedLineCount = if (fullBody.isEmpty()) 0 else selectedLines.size
+    val totalLineCount = if (truncated) {
+      val separatorBytes = countRawLineSeparatorBytes(file, 0L, head.usableByteCount) +
+        countRawLineSeparatorBytes(file, head.usableByteCount, Long.MAX_VALUE)
+      (separatorBytes + 1L).toString()
+    } else {
+      lines.size.toString()
+    }
     return AgentToolResult(
       toolName = "Read",
       status = AgentToolResultStatus.SUCCESS,
@@ -1005,7 +1038,7 @@ class OpenCrayToolDispatcher(
         metadata = mapOf(
           "filePath" to toolTargetResolver.displayModelPath(file),
           "byteCount" to head.byteCount.toString(),
-          "totalLineCount" to lines.size.toString(),
+          "totalLineCount" to totalLineCount,
           "offset" to offset.toString(),
           "returnedLineCount" to returnedLineCount.toString(),
           "truncated" to truncated.toString(),

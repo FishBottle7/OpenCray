@@ -100,6 +100,27 @@ class WorkspaceFileReadBudgetTest {
   }
 
   @Test
+  fun readReportsTrueTotalLineCountForTruncatedMultiLineFile() {
+    val workspaceRoot = newWorkspaceRoot("budget-total-line-count")
+    val content = (1..500).joinToString("\n") { "line-$it" }
+    Files.write(workspaceRoot.resolve("many-lines.txt"), content.toByteArray(StandardCharsets.UTF_8))
+    val dispatcher = dispatcher(workspaceRoot, maxReadBytes = 100)
+
+    val result = dispatcher.dispatch(
+      task = agentTask(),
+      call = AgentToolCall(
+        toolName = "Read",
+        arguments = buildJsonObject { put("file_path", "many-lines.txt") },
+      ),
+      hooks = runtimeHooks(),
+    )
+
+    assertEquals(AgentToolResultStatus.SUCCESS, result.status)
+    assertEquals("true", result.metadata["truncated"])
+    assertEquals("500", result.metadata["totalLineCount"])
+  }
+
+  @Test
   fun editRejectsOversizedTargetWithoutLoadingOrModifyingIt() {
     val workspaceRoot = newWorkspaceRoot("budget-edit-oversized")
     val target = workspaceRoot.resolve("big.txt")

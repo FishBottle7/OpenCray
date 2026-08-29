@@ -5,7 +5,6 @@ import com.opencray.core.contracts.ExecutionStatus
 import com.opencray.runtime.policy.ToolTargetResolver
 import com.opencray.runtime.process.ManagedProcessSnapshot
 import com.opencray.runtime.process.ManagedProcessStatus
-import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
@@ -32,14 +31,6 @@ internal data class ShellPlan(
   val args: List<String>,
   val kind: String,
 )
-
-internal fun truncateToReadBudget(config: OpenCrayToolDispatcherConfig, text: String): Pair<String, Boolean> {
-  val bytes = text.toByteArray(StandardCharsets.UTF_8)
-  if (bytes.size <= config.maxReadBytes) {
-    return text to false
-  }
-  return bytes.copyOf(config.maxReadBytes).toString(StandardCharsets.UTF_8) to true
-}
 
 internal fun splitLines(text: String): List<String> {
   if (text.isEmpty()) {
