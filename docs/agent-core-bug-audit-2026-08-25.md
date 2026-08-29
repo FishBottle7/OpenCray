@@ -251,7 +251,7 @@ llm/src/main/kotlin 仅 4 个文件（LiteLlmGateway、ProviderRouting、LiteLlm
 2. 	runcateToReadBudget 死代码待清理；Read 工具大文件 	otalLineCount 语义变为窗口内行数，待产品确认。
 3. SessionQueue 每实例一个常驻持久化线程；自定义 store 回调队列公共方法会自锁死（现无此模式）。
 4. 进程注册表满载 fail-closed：极端长任务下 Bash 会收到明确失败（原为静默挤掉 RUNNING）。
-5. W-05 内容绑定休眠中：生产端尚无 commandApprovalToken 签发方，app 层接入审批签发时激活。
+5. W-05 内容绑定已激活（07711e5）：批准时刻签发带指纹的 CommandApprovalToken 随 grant/checkpoint 流转，ModeGate ASK/ALLOW 双分支校验，指纹不符落回重新弹窗；宿主预批准路径保持无 token 现状。
 6. PROVIDER_REQUEST_CANCELLED 未注册 UserFacingErrorCodes（当前路径不产生用户可见文案，如未来直连网关渲染失败需补注册）。
 
 ### 验证状态
