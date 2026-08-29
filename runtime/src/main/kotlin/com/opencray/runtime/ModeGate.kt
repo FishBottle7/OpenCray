@@ -4,6 +4,7 @@ import com.opencray.core.contracts.PolicyDecision
 import com.opencray.core.contracts.PolicyApprovalRisk
 import com.opencray.core.contracts.PolicyDecisionOutcome
 import java.security.MessageDigest
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -31,6 +32,8 @@ data class CommandApprovalToken(
   val approvedBy: String? = null,
   val note: String? = null,
   val approvedRequestFingerprint: String? = null,
+  val batchPrefixArgs: List<String>? = null,
+  val batchWorkingDirectory: String? = null,
 ) {
   init {
     require(tokenId.isNotBlank()) { "CommandApprovalToken tokenId must not be blank." }
@@ -62,6 +65,7 @@ enum class CommandGateStatus {
 object CommandGateReasonCode {
   const val ALLOW_POLICY_ALLOW = "ALLOW_POLICY_ALLOW"
   const val ALLOW_APPROVAL_TOKEN = "ALLOW_APPROVAL_TOKEN"
+  const val ALLOW_APPROVAL_BATCH_RULE = "ALLOW_APPROVAL_BATCH_RULE"
   const val BLOCK_APPROVAL_REQUIRED = "BLOCK_APPROVAL_REQUIRED"
   const val BLOCK_APPROVAL_TASK_MISMATCH = "BLOCK_APPROVAL_TASK_MISMATCH"
   const val BLOCK_APPROVAL_EXPIRED = "BLOCK_APPROVAL_EXPIRED"
@@ -126,6 +130,84 @@ fun CommandExecutionRequest.approvalFingerprint(): String {
     .digest(payload.toByteArray(Charsets.UTF_8))
     .joinToString(separator = "") { byte -> (byte.toInt() and 0xff).toString(16).padStart(2, '0') }
 }
+
+const val MAX_BATCH_PREFIX_TOKENS: Int = 8
+
+const val MAX_BATCH_PREFIX_TOKEN_LENGTH: Int = 256
+
+private val BATCH_PREFIX_WRAPPER_TOKENS: Set<String> = setOf(
+  "bash",
+  "sh",
+  "zsh",
+  "cmd",
+  "pwsh",
+  "powershell",
+  "python",
+  "python3",
+  "node",
+  "perl",
+  "ruby",
+  "osascript",
+  "rscript",
+  "env",
+  "sudo",
+  "doas",
+  "pkexec",
+  "xargs",
+  "nohup",
+  "timeout",
+  "nice",
+  "time",
+  "stdbuf",
+)
+
+private val BATCH_PREFIX_BROAD_SINGLE_TOKENS: Set<String> = setOf(
+  "git",
+  "rm",
+  "npm",
+  "docker",
+)
+
+fun CommandApprovalToken.matchesBatchRule(request: CommandExecutionRequest): Boolean {
+  val prefix = batchPrefixArgs ?: return false
+  val workingDirectory = batchWorkingDirectory ?: return false
+  if (!isValidBatchPrefix(prefix)) {
+    return false
+  }
+  val requestTokens = listOf(request.command) + request.args
+  return requestTokens.size >= prefix.size &&
+    requestTokens.take(prefix.size) == prefix &&
+    request.workingDirectory == workingDirectory
+}
+
+fun isValidBatchPrefix(prefix: List<String>): Boolean {
+  if (prefix.isEmpty() || prefix.size > MAX_BATCH_PREFIX_TOKENS) {
+    return false
+  }
+  if (prefix.any(::isInvalidBatchPrefixToken)) {
+    return false
+  }
+  val first = prefix.first().lowercase(Locale.US)
+  if (first in BATCH_PREFIX_WRAPPER_TOKENS) {
+    return false
+  }
+  if (prefix.size == 1 && first in BATCH_PREFIX_BROAD_SINGLE_TOKENS) {
+    return false
+  }
+  if (first == "npm" &&
+    prefix.size >= 2 &&
+    prefix[1].lowercase(Locale.US) == "run"
+  ) {
+    return false
+  }
+  return true
+}
+
+private fun isInvalidBatchPrefixToken(token: String): Boolean =
+  token.isEmpty() ||
+    token.length > MAX_BATCH_PREFIX_TOKEN_LENGTH ||
+    token.indexOf('\u0000') >= 0 ||
+    token.any(Char::isWhitespace)
 
 object ModeGate {
   const val APPROVAL_TOKEN_VALIDITY_MS = 10L * 60L * 1000L
@@ -237,6 +319,12 @@ object ModeGate {
       detail = "Approval token expired before command execution.",
     )
 
+    approvalToken.batchPrefixArgs != null -> batchApprovalResolution(
+      request = request,
+      policyDecision = policyDecision,
+      approvalToken = approvalToken,
+    )
+
     isApprovalContentMismatch(approvalToken, request) -> ResolvedGate(
       status = CommandGateStatus.BLOCKED,
       reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_CONTENT_MISMATCH,
@@ -258,6 +346,39 @@ object ModeGate {
       detail = approvalToken.note ?: policyDecision.detail,
     )
   }
+
+  private fun batchApprovalResolution(
+    request: CommandExecutionRequest,
+    policyDecision: PolicyDecision,
+    approvalToken: CommandApprovalToken,
+  ): ResolvedGate {
+    if (!approvalToken.matchesBatchRule(request)) {
+      return batchRuleFallbackGate(policyDecision)
+    }
+    return ResolvedGate(
+      status = CommandGateStatus.ALLOWED,
+      reasonCode = CommandGateReasonCode.ALLOW_APPROVAL_BATCH_RULE,
+      shouldExecute = true,
+      detail = approvalToken.note ?: policyDecision.detail,
+    )
+  }
+
+  private fun batchRuleFallbackGate(policyDecision: PolicyDecision): ResolvedGate =
+    if (policyDecision.outcome == PolicyDecisionOutcome.ALLOW) {
+      ResolvedGate(
+        status = CommandGateStatus.ALLOWED,
+        reasonCode = CommandGateReasonCode.ALLOW_POLICY_ALLOW,
+        shouldExecute = true,
+        detail = policyDecision.detail,
+      )
+    } else {
+      ResolvedGate(
+        status = CommandGateStatus.BLOCKED,
+        reasonCode = CommandGateReasonCode.BLOCK_APPROVAL_CONTENT_MISMATCH,
+        shouldExecute = false,
+        detail = "Approval token does not cover this command content.",
+      )
+    }
 
   private fun isApprovalTokenExpired(
     approvalToken: CommandApprovalToken,

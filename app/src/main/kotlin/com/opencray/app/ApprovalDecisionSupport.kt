@@ -29,6 +29,47 @@ internal data class ApprovalDecisionSubAgentLifecycle(
   val liveContext: SubAgentLiveContextSnapshot? = null,
 )
 
+internal data class CommandBatchApprovalSpec(
+  val prefixArgs: List<String>,
+  val workingDirectory: String,
+)
+
+private val batchApprovalSecondTokenShape: Regex = Regex("[a-z][a-z0-9-]*")
+
+internal fun commandBatchPrefixArgs(command: String, args: List<String>): List<String> {
+  val second = args.firstOrNull()
+  return if (second != null && batchApprovalSecondTokenShape.matches(second)) {
+    listOf(command, second)
+  } else {
+    listOf(command)
+  }
+}
+
+internal fun commandBatchApprovalSpecFromMetadata(
+  metadata: Map<String, String>,
+): CommandBatchApprovalSpec? {
+  val command = metadata["command"]
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: return null
+  val args = metadata["args"]
+    ?.split('\u0000')
+    ?.filter(String::isNotEmpty)
+    .orEmpty()
+  val prefix = commandBatchPrefixArgs(command, args)
+  if (!com.opencray.runtime.isValidBatchPrefix(prefix)) {
+    return null
+  }
+  val workingDirectory = metadata["workingDirectory"]
+    ?.trim()
+    ?.takeIf(String::isNotBlank)
+    ?: return null
+  return CommandBatchApprovalSpec(
+    prefixArgs = prefix,
+    workingDirectory = workingDirectory,
+  )
+}
+
 internal data class ApprovalDecisionRecord(
   val runId: String,
   val taskId: String,
@@ -44,6 +85,7 @@ internal data class ApprovalDecisionRecord(
   val isHighRisk: Boolean,
   val subAgentLifecycle: ApprovalDecisionSubAgentLifecycle? = null,
   val approvedRequestFingerprint: String? = null,
+  val commandBatchApproval: CommandBatchApprovalSpec? = null,
 ) {
   fun replayExecutionContext(): RuntimeReplayExecutionContext =
     RuntimeReplayExecutionContext(
@@ -280,6 +322,7 @@ internal fun ApprovalRequiredTaskProjection.toApprovalDecisionRecord(
     approvedRequestFingerprint = metadata["approvalRequestFingerprint"]
       ?.trim()
       ?.takeIf(String::isNotBlank),
+    commandBatchApproval = commandBatchApprovalSpecFromMetadata(metadata),
   )
 }
 

@@ -200,4 +200,131 @@ class AgentTaskApprovalRegistryTest {
     assertFalse(registry.isApproved("session-1", "task-1"))
     assertNull(registry.consumeRejected("session-1", "task-1"))
   }
+
+  @Test
+  fun batchApprovalStoresSessionTokenIndependentOfOneShotGrant() {
+    val registry = AgentTaskApprovalRegistry()
+
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-1",
+      commandBatchApproval = CommandBatchApprovalSpec(
+        prefixArgs = listOf("git", "status"),
+        workingDirectory = "/workspace",
+      ),
+    )
+
+    val batchToken = requireNotNull(registry.batchCommandApprovalToken("session-1"))
+    assertEquals(listOf("git", "status"), batchToken.batchPrefixArgs)
+    assertEquals("/workspace", batchToken.batchWorkingDirectory)
+    assertNull(batchToken.approvedRequestFingerprint)
+    assertEquals("task-1", batchToken.taskId)
+    val grant = requireNotNull(registry.consumeApproved("session-1", "task-1"))
+    assertNull(grant.commandApprovalToken)
+    assertEquals(
+      batchToken.tokenId,
+      requireNotNull(registry.batchCommandApprovalToken("session-1")).tokenId,
+    )
+  }
+
+  @Test
+  fun batchApprovalOverwritesPreviousSessionToken() {
+    val registry = AgentTaskApprovalRegistry()
+
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-1",
+      commandBatchApproval = CommandBatchApprovalSpec(
+        prefixArgs = listOf("git", "status"),
+        workingDirectory = "/workspace",
+      ),
+    )
+    val firstToken = requireNotNull(registry.batchCommandApprovalToken("session-1"))
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-2",
+      commandBatchApproval = CommandBatchApprovalSpec(
+        prefixArgs = listOf("npm", "test"),
+        workingDirectory = "/workspace",
+      ),
+    )
+    val secondToken = requireNotNull(registry.batchCommandApprovalToken("session-1"))
+
+    assertTrue(firstToken.tokenId != secondToken.tokenId)
+    assertEquals(listOf("npm", "test"), secondToken.batchPrefixArgs)
+  }
+
+  @Test
+  fun singleApprovalKeepsExistingBatchSlotWithoutCreatingOne() {
+    val registry = AgentTaskApprovalRegistry()
+
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-1",
+      approvedRequestFingerprint = "fingerprint-abc",
+    )
+    assertNull(registry.batchCommandApprovalToken("session-1"))
+
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-1",
+      commandBatchApproval = CommandBatchApprovalSpec(
+        prefixArgs = listOf("git", "status"),
+        workingDirectory = "/workspace",
+      ),
+    )
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-2",
+      approvedRequestFingerprint = "fingerprint-abc",
+    )
+    val batchToken = requireNotNull(registry.batchCommandApprovalToken("session-1"))
+    assertEquals(listOf("git", "status"), batchToken.batchPrefixArgs)
+  }
+
+  @Test
+  fun rejectionAndClearDropBatchApprovalToken() {
+    val registry = AgentTaskApprovalRegistry()
+
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-1",
+      commandBatchApproval = CommandBatchApprovalSpec(
+        prefixArgs = listOf("git", "status"),
+        workingDirectory = "/workspace",
+      ),
+    )
+    registry.markRejected(sessionId = "session-1", taskId = "task-1")
+    assertNull(registry.batchCommandApprovalToken("session-1"))
+
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-2",
+      commandBatchApproval = CommandBatchApprovalSpec(
+        prefixArgs = listOf("git", "status"),
+        workingDirectory = "/workspace",
+      ),
+    )
+    registry.clear(sessionId = "session-1", taskId = "task-2")
+    assertNull(registry.batchCommandApprovalToken("session-1"))
+  }
+
+  @Test
+  fun retainKnownTasksOnlyDropsBatchSlotForSessionTeardown() {
+    val registry = AgentTaskApprovalRegistry()
+
+    registry.markApproved(
+      sessionId = "session-1",
+      taskId = "task-1",
+      commandBatchApproval = CommandBatchApprovalSpec(
+        prefixArgs = listOf("git", "status"),
+        workingDirectory = "/workspace",
+      ),
+    )
+    registry.retainKnownTasks(sessionId = "session-1", taskIds = setOf("task-1"))
+    assertNotNull(registry.batchCommandApprovalToken("session-1"))
+
+    registry.retainKnownTasks(sessionId = "session-1", taskIds = emptySet())
+    assertNull(registry.batchCommandApprovalToken("session-1"))
+  }
 }

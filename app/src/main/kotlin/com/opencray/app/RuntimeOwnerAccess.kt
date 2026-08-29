@@ -139,6 +139,7 @@ internal interface RuntimeApprovalRegistryAccess {
     promptResumeState: com.opencray.runtime.OpenCrayPromptResumeState?,
     subAgentApprovalResume: com.opencray.runtime.subagent.SubAgentApprovalResume?,
     approvedRequestFingerprint: String?,
+    commandBatchApproval: CommandBatchApprovalSpec? = null,
   )
 
   fun markApprovalRejected(
@@ -349,6 +350,7 @@ internal class DefaultOpenCrayRuntimeHostAccess(
     promptResumeState: com.opencray.runtime.OpenCrayPromptResumeState?,
     subAgentApprovalResume: com.opencray.runtime.subagent.SubAgentApprovalResume?,
     approvedRequestFingerprint: String?,
+    commandBatchApproval: CommandBatchApprovalSpec?,
   ) {
     approvalRegistry.markApproved(
       sessionId = sessionId,
@@ -357,6 +359,7 @@ internal class DefaultOpenCrayRuntimeHostAccess(
       promptResumeState = promptResumeState,
       subAgentApprovalResume = subAgentApprovalResume,
       approvedRequestFingerprint = approvedRequestFingerprint,
+      commandBatchApproval = commandBatchApproval,
     )
     mirrorPendingSubAgentApprovalDecision(
       sessionId = sessionId,

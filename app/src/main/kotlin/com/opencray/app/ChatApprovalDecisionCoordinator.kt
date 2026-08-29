@@ -5,6 +5,11 @@ import com.opencray.runtime.OpenCrayApprovalEvent
 import com.opencray.runtime.OpenCrayApprovalPhase
 import com.opencray.runtime.OpenCraySubAgentEvent
 
+internal enum class ApprovalDecisionScope {
+  SINGLE,
+  BATCH,
+}
+
 internal data class ApprovalDecisionSubject(
   val sessionId: String,
   val supportsSessionApproval: Boolean,
@@ -38,7 +43,7 @@ internal class ChatApprovalDecisionCoordinator<TApproval>(
   private val approvalSubject: (TApproval) -> ApprovalDecisionSubject,
   private val shouldDeferDecisionUntilManualResume: (TApproval) -> Boolean,
   private val submitDetachedApprovedRecovery: (TApproval, Long) -> Boolean = { _, _ -> false },
-  private val markApprovalApproved: (ApprovalDecisionSubject) -> Unit,
+  private val markApprovalApproved: (ApprovalDecisionSubject, ApprovalDecisionScope) -> Unit,
   private val markApprovalRejected: (ApprovalDecisionSubject) -> Unit,
   private val clearApproval: (String, String) -> Unit,
   private val upsertCheckpoint: (String, PersistedPromptCheckpoint) -> Unit,
@@ -56,16 +61,21 @@ internal class ChatApprovalDecisionCoordinator<TApproval>(
   private val stringsProvider: () -> ApprovalDecisionStrings,
   private val nowEpochMsProvider: () -> Long = System::currentTimeMillis,
 ) {
-  fun approve(taskIdOrRunId: String): Boolean =
+  fun approve(
+    taskIdOrRunId: String,
+    scope: ApprovalDecisionScope = ApprovalDecisionScope.SINGLE,
+  ): Boolean =
     approveInternal(
       taskIdOrRunId = taskIdOrRunId,
       sessionScoped = false,
+      scope = scope,
     )
 
   fun approveForSession(taskIdOrRunId: String): Boolean =
     approveInternal(
       taskIdOrRunId = taskIdOrRunId,
       sessionScoped = true,
+      scope = ApprovalDecisionScope.SINGLE,
     )
 
   fun reject(taskIdOrRunId: String): Boolean {
@@ -132,6 +142,7 @@ internal class ChatApprovalDecisionCoordinator<TApproval>(
   private fun approveInternal(
     taskIdOrRunId: String,
     sessionScoped: Boolean,
+    scope: ApprovalDecisionScope,
   ): Boolean {
     val approval = resolveApproval(taskIdOrRunId)
       ?: return false
@@ -151,7 +162,7 @@ internal class ChatApprovalDecisionCoordinator<TApproval>(
       false
     }
     if (!deferUntilManualResume && !detachedChildResumed) {
-      markApprovalApproved(subject)
+      markApprovalApproved(subject, scope)
     }
     if (!detachedChildResumed) {
       upsertCheckpoint(

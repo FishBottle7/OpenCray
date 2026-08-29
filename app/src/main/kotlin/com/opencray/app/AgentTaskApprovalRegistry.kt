@@ -42,6 +42,8 @@ internal class AgentTaskApprovalRegistry {
   private val approvedCommandApprovalTokensBySession:
     ConcurrentMap<String, ConcurrentMap<String, CommandApprovalToken>> =
     ConcurrentHashMap()
+  private val batchCommandApprovalTokensBySession: ConcurrentMap<String, CommandApprovalToken> =
+    ConcurrentHashMap()
   private val rejectedToolNamesBySession: ConcurrentMap<String, ConcurrentMap<String, String>> =
     ConcurrentHashMap()
   private val rejectedPromptResumesBySession:
@@ -58,6 +60,7 @@ internal class AgentTaskApprovalRegistry {
     promptResumeState: com.opencray.runtime.OpenCrayPromptResumeState? = null,
     subAgentApprovalResume: com.opencray.runtime.subagent.SubAgentApprovalResume? = null,
     approvedRequestFingerprint: String? = null,
+    commandBatchApproval: CommandBatchApprovalSpec? = null,
   ) {
     sessionState(sessionId)[taskId] = AgentTaskApprovalState.APPROVED
     rejectedToolNamesBySession[sessionId]?.remove(taskId)
@@ -108,7 +111,19 @@ internal class AgentTaskApprovalRegistry {
         approvedRequestFingerprint = normalizedFingerprint,
       )
     }
+    if (commandBatchApproval != null) {
+      batchCommandApprovalTokensBySession[sessionId] = CommandApprovalToken(
+        tokenId = UUID.randomUUID().toString(),
+        taskId = taskId,
+        approvedAtEpochMs = System.currentTimeMillis(),
+        batchPrefixArgs = commandBatchApproval.prefixArgs,
+        batchWorkingDirectory = commandBatchApproval.workingDirectory,
+      )
+    }
   }
+
+  fun batchCommandApprovalToken(sessionId: String): CommandApprovalToken? =
+    batchCommandApprovalTokensBySession[sessionId]
 
   fun markRejected(
     sessionId: String,
@@ -122,6 +137,7 @@ internal class AgentTaskApprovalRegistry {
     approvedPromptResumesBySession[sessionId]?.remove(taskId)
     approvedSubAgentResumesBySession[sessionId]?.remove(taskId)
     approvedCommandApprovalTokensBySession[sessionId]?.remove(taskId)
+    batchCommandApprovalTokensBySession.remove(sessionId)
     val toolNames = rejectedToolNamesBySession.computeIfAbsent(sessionId) { ConcurrentHashMap() }
     if (toolName.isNullOrBlank()) {
       toolNames.remove(taskId)
@@ -246,6 +262,7 @@ internal class AgentTaskApprovalRegistry {
     approvedPromptResumesBySession[sessionId]?.remove(taskId)
     approvedSubAgentResumesBySession[sessionId]?.remove(taskId)
     approvedCommandApprovalTokensBySession[sessionId]?.remove(taskId)
+    batchCommandApprovalTokensBySession.remove(sessionId)
     rejectedToolNamesBySession[sessionId]?.remove(taskId)
     rejectedPromptResumesBySession[sessionId]?.remove(taskId)
     rejectedSubAgentResumesBySession[sessionId]?.remove(taskId)
@@ -253,6 +270,9 @@ internal class AgentTaskApprovalRegistry {
 
   fun retainKnownTasks(sessionId: String, taskIds: Set<String>) {
     val sessionState = statesBySession[sessionId] ?: return
+    if (taskIds.isEmpty()) {
+      batchCommandApprovalTokensBySession.remove(sessionId)
+    }
     sessionState.keys.retainAll(taskIds)
     approvedToolNamesBySession[sessionId]?.let { toolNames ->
       toolNames.keys.retainAll(taskIds)

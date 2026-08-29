@@ -30,6 +30,7 @@ internal data class RuntimeApprovalDecisionRequest(
   val runId: String?,
   val executionId: String? = null,
   val executionOrdinal: Int? = null,
+  val approvalScope: ApprovalDecisionScope = ApprovalDecisionScope.SINGLE,
 )
 
 internal fun runtimeServiceApprovalDecisionAccess(
@@ -57,6 +58,13 @@ internal class RuntimeServiceApprovalDecisionAccess(
 
   fun approveForSession(taskIdOrRunId: String) {
     approvalDecisionCoordinator(::resolvePendingApprovalById).approveForSession(taskIdOrRunId)
+  }
+
+  fun approveForBatch(taskIdOrRunId: String) {
+    approvalDecisionCoordinator(::resolvePendingApprovalById).approve(
+      taskIdOrRunId,
+      ApprovalDecisionScope.BATCH,
+    )
   }
 
   fun reject(taskIdOrRunId: String) {
@@ -123,6 +131,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
       val applied = executeDecision(
         approve = approve,
         projection = projection,
+        scope = request.approvalScope,
       )
       RuntimeApprovalDecisionResult(
         outcome = if (applied) {
@@ -142,6 +151,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
   private fun executeDecision(
     approve: Boolean,
     projection: ApprovalRequiredTaskProjection,
+    scope: ApprovalDecisionScope,
   ): Boolean {
     var cachedResolution: RuntimeServicePendingApprovalResolution? = null
     val coordinator = approvalDecisionCoordinator(resolver@ { _ ->
@@ -150,7 +160,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
       }
     })
     return if (approve) {
-      coordinator.approve(projection.taskId)
+      coordinator.approve(projection.taskId, scope)
     } else {
       coordinator.reject(projection.taskId)
     }
@@ -218,6 +228,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
       executionOrdinal = decisionRecord.executionOrdinal,
       executionKind = decisionRecord.executionKind,
       approvedRequestFingerprint = decisionRecord.approvedRequestFingerprint,
+      commandBatchApproval = commandBatchApprovalSpecFromMetadata(metadata),
     )
   }
 
@@ -241,7 +252,7 @@ internal class RuntimeServiceApprovalDecisionAccess(
           nowEpochMs = emittedAtEpochMs,
         )
       },
-      markApprovalApproved = { subject ->
+      markApprovalApproved = { subject, scope ->
         dependencies.runtimeHostAccess.markApprovalApproved(
           sessionId = subject.sessionId,
           taskId = subject.taskId,
@@ -249,6 +260,8 @@ internal class RuntimeServiceApprovalDecisionAccess(
           promptResumeState = subject.decisionRecord.promptResumeState,
           subAgentApprovalResume = subject.decisionRecord.subAgentApprovalResume,
           approvedRequestFingerprint = subject.decisionRecord.approvedRequestFingerprint,
+          commandBatchApproval = subject.decisionRecord.commandBatchApproval
+            ?.takeIf { scope == ApprovalDecisionScope.BATCH },
         )
       },
       markApprovalRejected = { subject ->
@@ -456,6 +469,7 @@ private data class RuntimeServicePendingApprovalResolution(
   val executionOrdinal: Int?,
   val executionKind: String?,
   val approvedRequestFingerprint: String?,
+  val commandBatchApproval: CommandBatchApprovalSpec? = null,
 ) {
   fun usesExplicitSubAgentHandleControlPlane(): Boolean =
     subAgentApprovalResume != null &&
@@ -550,6 +564,7 @@ private fun RuntimeServicePendingApprovalResolution.toApprovalDecisionRecord():
   isHighRisk = isHighRisk,
   subAgentLifecycle = subAgentLifecycle?.toApprovalDecisionSubAgentLifecycle(),
   approvedRequestFingerprint = approvedRequestFingerprint,
+  commandBatchApproval = commandBatchApproval,
 )
 
 private fun ApprovalDecisionSubAgentLifecycle.toRuntimeServicePendingApprovalSubAgentLifecycle():

@@ -327,7 +327,7 @@ internal class OpenCrayHostRuntime internal constructor(
         approval = approval,
       )
     },
-    markApprovalApproved = { subject ->
+    markApprovalApproved = { subject, scope ->
       runtimeHostAccess.markApprovalApproved(
         sessionId = subject.sessionId,
         taskId = subject.taskId,
@@ -335,6 +335,8 @@ internal class OpenCrayHostRuntime internal constructor(
         promptResumeState = subject.decisionRecord.promptResumeState,
         subAgentApprovalResume = subject.decisionRecord.subAgentApprovalResume,
         approvedRequestFingerprint = subject.decisionRecord.approvedRequestFingerprint,
+        commandBatchApproval = subject.decisionRecord.commandBatchApproval
+          ?.takeIf { scope == ApprovalDecisionScope.BATCH },
       )
     },
     markApprovalRejected = { subject ->
@@ -1586,6 +1588,10 @@ internal class OpenCrayHostRuntime internal constructor(
 
   override fun approveChatApprovalForSession(taskIdOrRunId: String) {
     chatRuntimeGateway.approveChatApprovalForSession(taskIdOrRunId)
+  }
+
+  fun approveChatApprovalBatch(taskIdOrRunId: String) {
+    chatRuntimeGateway.approveChatApprovalBatch(taskIdOrRunId)
   }
 
   override fun rejectChatApproval(taskIdOrRunId: String) {
@@ -3831,6 +3837,7 @@ internal data class PendingApprovalSnapshot(
   val approveForSessionLabel: String? = null,
   val subAgentLifecycle: PendingApprovalSubAgentLifecycle? = null,
   val approvedRequestFingerprint: String? = null,
+  val commandBatchApproval: CommandBatchApprovalSpec? = null,
   val title: String,
   val body: String,
 )

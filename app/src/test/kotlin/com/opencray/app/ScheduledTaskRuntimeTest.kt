@@ -2011,6 +2011,7 @@ class ScheduledTaskRuntimeTest {
       promptResumeState: com.opencray.runtime.OpenCrayPromptResumeState?,
       subAgentApprovalResume: SubAgentApprovalResume?,
       approvedRequestFingerprint: String?,
+      commandBatchApproval: CommandBatchApprovalSpec?,
     ) = Unit
 
     override fun markApprovalRejected(

@@ -3059,19 +3059,20 @@ class OpenCrayToolDispatcher(
         workingDirectory = toolTargetResolver.displayModelPath(workingDirectory),
       ),
     )
+    val request = CommandExecutionRequest(
+      taskId = task.id,
+      command = command,
+      args = arguments.optionalStringArray("args"),
+      workingDirectory = workingDirectory.toString(),
+      requestedAtEpochMs = System.currentTimeMillis(),
+      metadata = mapOf(
+        "toolName" to "command_exec",
+      ) + toolPolicyPipeline.policyMetadata(plan),
+    )
     val executionResult = commandExecutor.execute(
-      request = CommandExecutionRequest(
-        taskId = task.id,
-        command = command,
-        args = arguments.optionalStringArray("args"),
-        workingDirectory = workingDirectory.toString(),
-        requestedAtEpochMs = System.currentTimeMillis(),
-        metadata = mapOf(
-          "toolName" to "command_exec",
-        ) + toolPolicyPipeline.policyMetadata(plan),
-      ),
+      request = request,
       policyDecision = plan.policyDecision,
-      approvalToken = config.commandApprovalToken,
+      approvalToken = selectCommandApprovalToken(request = request),
       hooks = hooks,
     )
     val toolResult = executionResult.toAgentToolResult(config = config, toolName = "command_exec")
@@ -3082,6 +3083,23 @@ class OpenCrayToolDispatcher(
         resultEnvelope = commandResultEnvelope(toolResult),
       ),
     )
+  }
+
+  private fun selectCommandApprovalToken(
+    request: CommandExecutionRequest,
+  ): CommandApprovalToken? {
+    val preciseToken = config.commandApprovalToken
+    val batchToken = config.commandBatchApprovalToken
+    if (preciseToken != null &&
+      preciseToken.approvedRequestFingerprint != null &&
+      preciseToken.approvedRequestFingerprint == request.approvalFingerprint()
+    ) {
+      return preciseToken
+    }
+    if (batchToken != null && batchToken.matchesBatchRule(request)) {
+      return batchToken
+    }
+    return preciseToken ?: batchToken
   }
 
   private fun executePython(task: AgentTask, arguments: JsonObject): AgentToolResult {

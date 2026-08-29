@@ -146,6 +146,7 @@ internal fun pendingApprovalSnapshot(
     approvedRequestFingerprint = metadata["approvalRequestFingerprint"]
       ?.trim()
       ?.takeIf(String::isNotBlank),
+    commandBatchApproval = commandBatchApprovalSpecFromMetadata(metadata),
     title = if (isHighRisk) {
       strings.chatHighRiskApprovalRequiredTitle
     } else {
@@ -298,6 +299,7 @@ internal fun PendingApprovalSnapshot.toApprovalDecisionRecord(): ApprovalDecisio
     isHighRisk = isHighRisk,
     subAgentLifecycle = subAgentLifecycle?.toApprovalDecisionSubAgentLifecycle(),
     approvedRequestFingerprint = approvedRequestFingerprint,
+    commandBatchApproval = commandBatchApproval,
   )
 
 internal fun ApprovalDecisionSubAgentLifecycle.toPendingApprovalSubAgentLifecycle():

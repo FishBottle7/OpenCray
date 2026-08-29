@@ -169,6 +169,7 @@ data class OpenCrayToolDispatcherConfig(
   val supportsManagedPythonProcessStart: Boolean = true,
   val managedPythonProcessUsesRuntimeAdapter: Boolean = false,
   val commandApprovalToken: CommandApprovalToken? = null,
+  val commandBatchApprovalToken: CommandApprovalToken? = null,
   val todoStore: AgentTodoStore = InMemoryAgentTodoStore(),
   val processRegistry: AgentProcessRegistry = InMemoryAgentProcessRegistry(),
   val webContentFetcher: WebContentFetcher = HttpUrlWebContentFetcher(),
