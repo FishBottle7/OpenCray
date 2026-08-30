@@ -883,14 +883,48 @@ class _ActionRow extends StatelessWidget {
 }
 
 class _LoadingCard extends StatelessWidget {
-  const _LoadingCard();
+  const _LoadingCard({required this.copy, this.showsToggle = false});
+
+  final OpenCrayUiCopy copy;
+
+  /// Manage rows end in a switch, install rows do not; the placeholder keeps the
+  /// difference so the row does not reflow when the real list arrives.
+  final bool showsToggle;
 
   @override
   Widget build(BuildContext context) {
-    return const OpenCrayStateCard(
-      key: ValueKey<String>('skills-state-loading'),
-      isLoading: true,
-      padding: EdgeInsets.all(20),
+    return OpenCraySkeletonPulse(
+      key: const ValueKey<String>('skills-state-loading'),
+      semanticsLabel: copy.contentLoadingLabel,
+      child: OpenCraySkeletonCard(
+        dividerIndent: 16,
+        rows: <Widget>[
+          for (final double titleWidthFactor in const <double>[0.46, 0.62, 0.5])
+            OpenCraySkeletonListRow(
+              titleWidthFactor: titleWidthFactor,
+              metaWidthFactor: 0.78,
+              titleHeight: 16,
+              metaHeight: 11,
+              trailing: Row(
+                children: <Widget>[
+                  const OpenCraySkeletonBar(
+                    width: 28,
+                    height: 28,
+                    radius: BorderRadius.all(OpenCrayRadii.pill),
+                  ),
+                  if (showsToggle) ...<Widget>[
+                    const SizedBox(width: 12),
+                    const OpenCraySkeletonBar(
+                      width: OpenCraySizes.switchTrackWidth,
+                      height: OpenCraySizes.switchTrackHeight,
+                      radius: BorderRadius.all(OpenCrayRadii.pill),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+        ],
+      ),
     );
   }
 }

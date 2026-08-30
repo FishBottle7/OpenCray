@@ -15,6 +15,7 @@ import '../../core/models/opencray_workspace_text_document.dart';
 import '../../core/design/opencray_controls.dart';
 import '../../core/design/opencray_motion.dart';
 import '../../core/design/opencray_palette.dart';
+import '../../core/design/opencray_skeleton.dart';
 import '../../core/design/opencray_widgets.dart';
 import '../../core/widgets/opencray_image_bytes_view.dart';
 import '../../core/widgets/opencray_markdown.dart';
@@ -193,73 +194,77 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
             children: [
               AbsorbPointer(
                 absorbing: _isMutating,
-                child: CustomScrollView(
-                  key: const ValueKey<String>('files-scroll-view'),
-                  controller: _scrollController,
-                  slivers: [
-                    SliverToBoxAdapter(
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            _TitleRow(
-                              copy: widget.copy,
-                              isSelectionMode: _isSelectionMode,
-                              selectedCount: _selectedPaths.length,
-                              onDone: _isSelectionMode
-                                  ? _exitSelectionMode
-                                  : null,
-                            ),
-                            const SizedBox(height: 16),
-                            _SearchBar(
-                              controller: _searchController,
-                              hint: widget.copy.filesSearchHint,
-                              clearLabel: widget.copy.filesSearchClearAction,
-                            ),
-                            const SizedBox(height: 12),
-                            _LocationCard(
-                              copy: widget.copy,
-                              snapshot: snapshot,
-                              directoryName: _currentDirectoryName(snapshot),
-                              absolutePath: _currentAbsolutePath(snapshot),
-                              visibleItemCount: currentEntries.length,
-                              isLoading: _isLoading,
-                              isMutating: _isMutating,
-                              actionRowKey: _locationActionRowKey,
-                              breadcrumbs: _visibleBreadcrumbs(),
-                              breadcrumbsEnabled: !_isSelectionMode,
-                              onRefresh: _handleManualRefresh,
-                              onCreateFolder: _handleCreateFolder,
-                              onBreadcrumbTap: _handleBreadcrumbTap,
-                            ),
-                            const SizedBox(height: 12),
-                          ],
+                child: OpenCrayRefreshIndicator(
+                  onRefresh: _handlePullToRefresh,
+                  child: CustomScrollView(
+                    key: const ValueKey<String>('files-scroll-view'),
+                    controller: _scrollController,
+                    physics: const AlwaysScrollableScrollPhysics(),
+                    slivers: [
+                      SliverToBoxAdapter(
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              _TitleRow(
+                                copy: widget.copy,
+                                isSelectionMode: _isSelectionMode,
+                                selectedCount: _selectedPaths.length,
+                                onDone: _isSelectionMode
+                                    ? _exitSelectionMode
+                                    : null,
+                              ),
+                              const SizedBox(height: 16),
+                              _SearchBar(
+                                controller: _searchController,
+                                hint: widget.copy.filesSearchHint,
+                                clearLabel: widget.copy.filesSearchClearAction,
+                              ),
+                              const SizedBox(height: 12),
+                              _LocationCard(
+                                copy: widget.copy,
+                                snapshot: snapshot,
+                                directoryName: _currentDirectoryName(snapshot),
+                                absolutePath: _currentAbsolutePath(snapshot),
+                                visibleItemCount: currentEntries.length,
+                                isLoading: _isLoading,
+                                isMutating: _isMutating,
+                                actionRowKey: _locationActionRowKey,
+                                breadcrumbs: _visibleBreadcrumbs(),
+                                breadcrumbsEnabled: !_isSelectionMode,
+                                onRefresh: _handleManualRefresh,
+                                onCreateFolder: _handleCreateFolder,
+                                onBreadcrumbTap: _handleBreadcrumbTap,
+                              ),
+                              const SizedBox(height: 12),
+                            ],
+                          ),
                         ),
                       ),
-                    ),
-                    _DirectoryCard(
-                      copy: widget.copy,
-                      query: _query,
-                      isFiltered: _query.trim().isNotEmpty,
-                      snapshot: snapshot,
-                      entries: currentEntries,
-                      isLoading: _isLoading,
-                      errorMessage: _errorMessage,
-                      isSelectionMode: _isSelectionMode,
-                      selectedPaths: _selectedPaths,
-                      pendingTransfer: _pendingTransfer,
-                      onEntryTap: _handleEntryTap,
-                      onEntryLongPress: _handleEntryLongPress,
-                    ),
-                    SliverToBoxAdapter(
-                      child: SizedBox(
-                        height: _showsSelectionToolbar
-                            ? (_operationState == null ? 118 : 154)
-                            : 28,
+                      _DirectoryCard(
+                        copy: widget.copy,
+                        query: _query,
+                        isFiltered: _query.trim().isNotEmpty,
+                        snapshot: snapshot,
+                        entries: currentEntries,
+                        isLoading: _isLoading,
+                        errorMessage: _errorMessage,
+                        isSelectionMode: _isSelectionMode,
+                        selectedPaths: _selectedPaths,
+                        pendingTransfer: _pendingTransfer,
+                        onEntryTap: _handleEntryTap,
+                        onEntryLongPress: _handleEntryLongPress,
                       ),
-                    ),
-                  ],
+                      SliverToBoxAdapter(
+                        child: SizedBox(
+                          height: _showsSelectionToolbar
+                              ? (_operationState == null ? 118 : 154)
+                              : 28,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
               ),
               if (_showStickyBrowseBar && snapshot != null)
@@ -320,6 +325,12 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
   }
 
   Future<void> _handleManualRefresh() => _loadSnapshot(showBusyIndicator: true);
+
+  /// Pull-to-refresh keeps the current tree on screen: the gesture already draws
+  /// its own spinner, and swapping the list for the loading placeholder under
+  /// the user's finger would throw the rows away mid-drag.
+  Future<void> _handlePullToRefresh() =>
+      _loadSnapshot(showBusyIndicator: false);
 
   Future<void> _loadSnapshot({bool showBusyIndicator = true}) async {
     if (_isMutating || _isSnapshotLoadInFlight) {

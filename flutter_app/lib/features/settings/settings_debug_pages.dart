@@ -531,7 +531,7 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
               ],
               const SizedBox(height: 16),
               if (_isLoading)
-                const _SettingsLoading(
+                const _SettingsLoading.inline(
                   key: ValueKey<String>('runtime-diagnostics-loading'),
                 )
               else if (snapshot != null) ...[
@@ -1190,7 +1190,7 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
               ],
               const SizedBox(height: 16),
               if (_isLoading)
-                const _SettingsLoading(
+                const _SettingsLoading.inline(
                   key: ValueKey<String>('memory-inspector-loading'),
                 )
               else ...[
@@ -1856,7 +1856,7 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
               ],
               const SizedBox(height: 16),
               if (_isLoading)
-                const _SettingsLoading(
+                const _SettingsLoading.inline(
                   key: ValueKey<String>('soul-inspector-loading'),
                 )
               else if (snapshot == null)

@@ -56,7 +56,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
             summary: _subtitle(_snapshot),
           ),
           if (_isLoading)
-            const _SettingsLoading(
+            const _SettingsLoading.inline(
               key: ValueKey<String>('settings-safety-loading'),
             )
           else if (_snapshot == null)
@@ -806,7 +806,7 @@ class _WorkspaceAccessSettingsPageState
                 _page == _WorkspaceSubpage.root ? SafetySettingsCopy.workspaceSubtitle : _page == _WorkspaceSubpage.approvedPaths ? SafetySettingsCopy.approvedPathsSubtitle : SafetySettingsCopy.childAgentContextSubtitle,
           ),
           if (_isLoading)
-            const _SettingsLoading(
+            const _SettingsLoading.inline(
               key: ValueKey<String>('settings-workspace-loading'),
             )
           else if (_snapshot == null)

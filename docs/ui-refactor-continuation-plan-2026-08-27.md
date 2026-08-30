@@ -26,7 +26,7 @@
 | 3 | 页头四套并行 + 死代码 | chat/files/settings/skills 各自定义 28px 标题 + eyebrow + 副标题；`core/design/opencray_widgets.dart` 中 `OpenCrayPageTemplate`/`OpenCrayTabPlaceholder`/`OpenCrayShellHeader`/`OpenCrayPillButton`/`OpenCrayTopBar` **均为 0 调用点、0 测试覆盖** | 中高 |
 | 4 | 图标两套体系 | `CupertinoIcons` 28 处（5 个文件，集中在 files/chat）对 Material `Icons` 144 处 | 中 |
 | 5 | 无障碍与字号缩放 | 全应用 `Semantics(` 仅 10 处；零 `textScaler` 处理；开关/步进/导航使用固定高度（28/38/44/48/54） | 中 |
-| 6 | 加载与刷新态 | 13 个 `CircularProgressIndicator`、0 骨架屏、`RefreshIndicator` 0 处（Skills/Files 仅文字 Refresh + 后台轮询） | 中 |
+| 6 | 加载与刷新态 | 13 个 `CircularProgressIndicator`、0 骨架屏、`RefreshIndicator` 0 处（Skills/Files 仅文字 Refresh + 后台轮询） | 中 → 阶段 D 已收（13 个转圈复核后全是行内忙碌指示，保留） |
 | 7 | 平板/横屏 | 应用壳与设置页无 `LayoutBuilder`、无最大宽度约束，单列直接拉伸 | 低中 |
 | 8 | 动效纵深 | 无 hero/共享元素（开会话、开文件预览）、列表无入场 stagger、底部 sheet 无拖拽把手 | 低中 |
 | 9 | 触感 | 仅新增控件有 `HapticFeedback`，发送/审批/保存/删除等主操作没有 | 低 → 阶段 B 已补发送与审批，保存/删除待办 |
@@ -122,9 +122,26 @@ chat 中枢 24 处 light-only 字面量按 `_base.isDark` 分支给出 dark 版�
 
 验收：`flutter analyze lib` 零问题；`flutter test` 436 通过 / 23 失败，失败集与基线**逐条一致**（并行会话新增的批量批准测试另算一笔提交，不在本轮）；真机上逐个核对了开关、分段控件、搜索框静止与聚焦两态。真机 light 没核对成——ColorOS 的 `cmd uimode night no` 报告已切换，应用仍然收到 dark。
 
-### 阶段 D：加载态与刷新（夹带在 A/B 之后）
+### 阶段 D：加载态与刷新（已完成）
 
-骨架屏替换设置详情/会话列表/文件树的转圈；Skills、Files、设置详情接 `RefreshIndicator`（复用已有 reload 通路，不新增业务逻辑）。
+先纠正一个本计划自己的错误前提：缺口 6 数出来的 13 个 `CircularProgressIndicator` **没有一个是页面级转圈**，全是 12–22px 的行内忙碌指示（审批三键、composer 发送、agent 保存、skills/files 行内 pending、run trace 状态点）。按钮在飞行中就该是转圈，这批一个不动。真正的页面级加载态全仓只有 3 处，都是 `OpenCrayStateCard(isLoading: true)`——文件树、skills 列表、设置页。
+
+1. **骨架基元**：新增 `core/design/opencray_skeleton.dart`。`OpenCraySkeletonPulse` 用**一个** ticker 给整组做 1→0.46 的透明度呼吸（每根条各带一个控制器会各自错相，看起来像噪点），并承载整块区域的 `Semantics(label:)`，条本身进 `ExcludeSemantics`；减少动效时把控制器停在中值而不是在 build 里分支。`OpenCraySkeletonBar`（固定宽或占比宽）、`OpenCraySkeletonListRow`（leading + 标题行 + 次行 + trailing）、`OpenCraySkeletonCard`（复刻标准列表卡：`surface` + `divider` 发丝线 + r16 + `cardShadow`，行间同一条 1px 分隔线）。
+2. **三处加载态换骨架，形状对着真实内容抄**：
+   - Files `files-state-loading`：6 行，外层 `padding: 20`、卡内 `(16,12,16,12)`、行内 `(4,10)`、20×20 leading 与分隔线全部与 `_DirectoryEntryTile` 对齐；标题条宽度按 `_filesSkeletonTitleWidthFactors` 错开，六根等宽会读成进度条而不是「一批文件在路上」。
+   - Skills `_LoadingCard`：3 行，manage 页 trailing 是 28 圆点 + `switchTrackWidth × switchTrackHeight` 开关轨（`showsToggle`），install 页只有圆点。
+   - Settings `_SettingsLoading`：**改一处覆盖 21 个调用点**。它同时承担两种角色——13 处作为整页返回、7 处作为页内一块（`if (_isLoading)`），所以拆成默认构造（整页：eyebrow/title/summary 三条 + 两张卡，间距取 `OpenCrayTypography` 的 header 节奏）与 `.inline`（单卡，无页边距）。
+3. **下拉刷新**：新增 `OpenCrayRefreshIndicator`（`palette.primary` 弧 + `palette.surface` 底 + `displacement: 32`，`HapticFeedback.lightImpact()` 在业务回调**之前**，与阶段 B 的触感顺序一致）。接到 Files（`_loadSnapshot(showBusyIndicator: false)`）、Skills（`_reloadSkillsSnapshot(showProgressIndicator: false)`）、设置首页（`_loadOverview`）、设置详情页（`_loadDetail(page, force: true)`）。三个滚动视图补 `AlwaysScrollableScrollPhysics`——内容不满一屏时没有 overscroll，手势会静默失效。
+
+三条实测教训：
+
+- **下拉刷新不能复用「显示忙碌」的那条通路**。Files 的 `_loadSnapshot(showBusyIndicator: true)` 会把 `_isLoading` 置真，也就是把列表换成骨架——手指还按在列表上，内容就被抽走了。下拉手势自带进度指示，刷新期间必须保留旧内容，所以走 `showBusyIndicator: false`。
+- **`_loadDetail` 有 `_detailCache` 短路**（`if (_detailCache.containsKey(page)) return;`），不补 `force` 参数的话，详情页下拉就是一次静默空转，看不出任何异常。
+- **骨架的脉冲是无限动画，`pumpAndSettle` 会超时**。现有 441 条用例没踩到（加载态都在一帧内消失），但以后写触及加载态的测试必须用 `pump()`。
+
+验收：`flutter analyze` lib 零问题（`test/` 7 条 `unnecessary_import` 属既有项）；`flutter test` 441 通过 / 23 失败，失败集与基线**逐条一致**（+3 是本轮新增的 `test/loading_and_refresh_test.dart`：骨架出现、Files 下拉确实触发 reload、Skills 骨架）；临时 golden 抓了 files / skills / settings × light / dark 六张核对版式，核完即删；真机 PLB110 上 Files、Skills、设置首页三处下拉逐个核对过指示器。
+
+会话列表（缺口 6 原文提到的第三处）没有加载态可换：会话随 chat snapshot 流一起到，抽屉里从来没有转圈。
 
 ### 阶段 E：可选打磨
 
@@ -147,6 +164,6 @@ chat 中枢 24 处 light-only 字面量按 `_base.isDark` 分支给出 dark 版�
 | C2 dark 配色 | 已完成（2026-08-28） |
 | C3 接线 darkTheme | 已完成（2026-08-28） |
 | 真机核对与控件修正 | 已完成（2026-08-30） |
-| D 加载态与刷新 | 下一步 |
-| E 可选打磨 | 未开始 |
+| D 加载态与刷新 | 已完成（2026-08-30） |
+| E 可选打磨 | 下一步 |
 

@@ -485,6 +485,17 @@ class _BreadcrumbChip extends StatelessWidget {
   }
 }
 
+/// Name widths for the placeholder rows. Uneven on purpose: six identical bars
+/// read as a progress bar rather than as a list of files on its way.
+const List<double> _filesSkeletonTitleWidthFactors = <double>[
+  0.58,
+  0.42,
+  0.66,
+  0.5,
+  0.62,
+  0.46,
+];
+
 class _DirectoryCard extends StatelessWidget {
   const _DirectoryCard({
     required this.copy,
@@ -517,13 +528,32 @@ class _DirectoryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (isLoading && snapshot == null) {
-      return const SliverPadding(
-        padding: EdgeInsets.symmetric(horizontal: 20),
+      return SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 20),
         sliver: SliverToBoxAdapter(
-          child: OpenCrayStateCard(
-            key: ValueKey<String>('files-state-loading'),
-            isLoading: true,
-            padding: EdgeInsets.all(24),
+          child: OpenCraySkeletonPulse(
+            key: const ValueKey<String>('files-state-loading'),
+            semanticsLabel: copy.contentLoadingLabel,
+            child: OpenCraySkeletonCard(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+              rows: <Widget>[
+                for (final double titleWidthFactor
+                    in _filesSkeletonTitleWidthFactors)
+                  OpenCraySkeletonListRow(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 4,
+                      vertical: 10,
+                    ),
+                    leading: const OpenCraySkeletonBar(
+                      width: 20,
+                      height: 20,
+                      radius: BorderRadius.all(Radius.circular(6)),
+                    ),
+                    titleWidthFactor: titleWidthFactor,
+                    metaWidthFactor: 0.22,
+                  ),
+              ],
+            ),
           ),
         ),
       );

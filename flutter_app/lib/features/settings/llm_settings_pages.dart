@@ -121,7 +121,7 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
               ),
               const SizedBox(height: 16),
               if (_isLoading)
-                const _SettingsLoading(
+                const _SettingsLoading.inline(
                   key: ValueKey<String>('memory-debug-loading'),
                 )
               else ...[

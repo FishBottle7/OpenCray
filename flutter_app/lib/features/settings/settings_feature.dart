@@ -17,6 +17,7 @@ import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/design/opencray_controls.dart';
 import '../../core/design/opencray_motion.dart';
 import '../../core/design/opencray_palette.dart';
+import '../../core/design/opencray_skeleton.dart';
 import '../../core/design/opencray_tokens.dart';
 import '../../core/design/opencray_widgets.dart';
 import 'notification_settings_models.dart';
@@ -201,6 +202,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
           key: const ValueKey<String>('settings-home'),
           snapshot: overview,
           onOpenPage: _openPage,
+          onRefresh: _loadOverview,
         );
       case SettingsPage.notificationsBackground:
         return _NotificationsBackgroundSettingsPage(
@@ -332,6 +334,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
           snapshot: detailSnapshot,
           onBack: onBack,
           backLabel: backLabel,
+          onRefresh: () => _loadDetail(_page, force: true),
           facade: _page == SettingsPage.aboutVersion ? widget.facade : null,
           debugBridge: _page == SettingsPage.aboutVersion
               ? widget.debugBridge
@@ -385,8 +388,8 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
     });
   }
 
-  Future<void> _loadDetail(SettingsPage page) async {
-    if (_detailCache.containsKey(page)) {
+  Future<void> _loadDetail(SettingsPage page, {bool force = false}) async {
+    if (!force && _detailCache.containsKey(page)) {
       return;
     }
     final detail = await widget.facade.loadDetail(page);
@@ -512,10 +515,12 @@ class _SettingsHome extends StatelessWidget {
     super.key,
     required this.snapshot,
     required this.onOpenPage,
+    required this.onRefresh,
   });
 
   final SettingsOverviewSnapshot snapshot;
   final ValueChanged<SettingsPage> onOpenPage;
+  final Future<void> Function() onRefresh;
 
   @override
   Widget build(BuildContext context) {
@@ -523,7 +528,8 @@ class _SettingsHome extends StatelessWidget {
         .where((entry) => entry.page != SettingsPage.agents)
         .toList(growable: false);
     final groups = _groupSettingsHomeEntries(visibleEntries);
-    return SingleChildScrollView(
+    final Widget body = SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -544,21 +550,71 @@ class _SettingsHome extends StatelessWidget {
         ],
       ),
     );
+    return OpenCrayRefreshIndicator(onRefresh: onRefresh, child: body);
   }
 }
 
+/// Placeholder for settings content that has not arrived yet.
+///
+/// The default shape stands in for a whole page — header block plus the first
+/// two cards — because most call sites return it instead of the page. Pages that
+/// have already drawn their header and are waiting on one section use
+/// [_SettingsLoading.inline], which is the card on its own.
 class _SettingsLoading extends StatelessWidget {
-  const _SettingsLoading({super.key});
+  const _SettingsLoading({super.key}) : _isWholePage = true;
+
+  const _SettingsLoading.inline({super.key}) : _isWholePage = false;
+
+  final bool _isWholePage;
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
-      child: SizedBox(
-        width: 96,
-        child: OpenCrayStateCard(
-          key: ValueKey<String>('settings-state-loading-card'),
-          isLoading: true,
-          padding: EdgeInsets.all(14),
+    final Widget card = OpenCraySkeletonCard(
+      key: const ValueKey<String>('settings-state-loading-card'),
+      padding: const EdgeInsets.all(16),
+      rows: <Widget>[
+        for (final double titleWidthFactor in const <double>[0.44, 0.6, 0.5])
+          OpenCraySkeletonListRow(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            titleWidthFactor: titleWidthFactor,
+            metaWidthFactor: 0.72,
+            titleHeight: 14,
+            metaHeight: 10,
+            trailing: const OpenCraySkeletonBar(width: 8, height: 14),
+          ),
+      ],
+    );
+    if (!_isWholePage) {
+      return OpenCraySkeletonPulse(child: card);
+    }
+    return OpenCraySkeletonPulse(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            const OpenCraySkeletonBar(height: 12, widthFactor: 0.2),
+            const SizedBox(height: OpenCrayTypography.eyebrowGap),
+            const OpenCraySkeletonBar(height: 24, widthFactor: 0.52),
+            const SizedBox(height: OpenCrayTypography.summaryGap),
+            const OpenCraySkeletonBar(height: 13, widthFactor: 0.78),
+            const SizedBox(height: OpenCrayTypography.headerBottomGap),
+            card,
+            const SizedBox(height: 16),
+            OpenCraySkeletonCard(
+              padding: const EdgeInsets.all(16),
+              rows: <Widget>[
+                for (final double titleWidthFactor in const <double>[0.56, 0.4])
+                  OpenCraySkeletonListRow(
+                    padding: const EdgeInsets.symmetric(vertical: 10),
+                    titleWidthFactor: titleWidthFactor,
+                    metaWidthFactor: 0.66,
+                    titleHeight: 14,
+                    metaHeight: 10,
+                  ),
+              ],
+            ),
+          ],
         ),
       ),
     );
@@ -636,6 +692,7 @@ class _DetailSettingsPage extends StatelessWidget {
     required this.snapshot,
     required this.onBack,
     required this.backLabel,
+    required this.onRefresh,
     this.facade,
     this.debugBridge,
   });
@@ -643,12 +700,14 @@ class _DetailSettingsPage extends StatelessWidget {
   final SettingsDetailSnapshot snapshot;
   final VoidCallback onBack;
   final String backLabel;
+  final Future<void> Function() onRefresh;
   final SettingsFacade? facade;
   final OpenCrayHostBridge? debugBridge;
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
+    final Widget body = SingleChildScrollView(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -695,6 +754,7 @@ class _DetailSettingsPage extends StatelessWidget {
         ],
       ),
     );
+    return OpenCrayRefreshIndicator(onRefresh: onRefresh, child: body);
   }
 }
 

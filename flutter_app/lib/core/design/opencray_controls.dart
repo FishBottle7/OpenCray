@@ -353,3 +353,40 @@ class OpenCraySelectionCheck extends StatelessWidget {
   }
 }
 
+/// Pull-to-refresh wrapper for a scroll view, themed to the app chrome and with
+/// the confirmation tick the raw gesture does not give on its own.
+///
+/// The [child] scroll view needs [AlwaysScrollableScrollPhysics]: a page whose
+/// content fits the viewport never reports the overscroll that arms the
+/// indicator, so short pages would silently lose the gesture. [edgeOffset]
+/// pushes the spinner below any chrome pinned over the top of the list.
+class OpenCrayRefreshIndicator extends StatelessWidget {
+  const OpenCrayRefreshIndicator({
+    super.key,
+    required this.onRefresh,
+    required this.child,
+    this.edgeOffset = 0,
+  });
+
+  final Future<void> Function() onRefresh;
+  final Widget child;
+  final double edgeOffset;
+
+  @override
+  Widget build(BuildContext context) {
+    final OpenCrayPalette palette = context.palette;
+    return RefreshIndicator(
+      onRefresh: () {
+        HapticFeedback.lightImpact();
+        return onRefresh();
+      },
+      edgeOffset: edgeOffset,
+      displacement: 32,
+      strokeWidth: 2.4,
+      color: palette.primary,
+      backgroundColor: palette.surface,
+      child: child,
+    );
+  }
+}
+

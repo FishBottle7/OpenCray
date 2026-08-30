@@ -31,6 +31,7 @@ class OpenCrayUiCopy {
   String get filesTitle => isChinese ? '文件' : 'Files';
   String get appBackExitHint =>
       isChinese ? '再按一次返回即可退出' : 'Press back again to exit';
+  String get contentLoadingLabel => isChinese ? '正在载入…' : 'Loading...';
   String get filesSearchHint =>
       isChinese ? '搜索文件和文件夹' : 'Search files and folders';
   String get filesSearchClearAction => isChinese ? '清空搜索' : 'Clear search';

@@ -8,6 +8,8 @@ import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/design/opencray_controls.dart';
 import '../../core/design/opencray_motion.dart';
 import '../../core/design/opencray_palette.dart';
+import '../../core/design/opencray_skeleton.dart';
+import '../../core/design/opencray_tokens.dart';
 import '../../core/design/opencray_widgets.dart';
 import '../../core/models/opencray_skills_snapshot.dart';
 part 'skills_widgets.dart';
@@ -162,45 +164,49 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
       color: context.palette.shellBackground,
       child: SafeArea(
         bottom: false,
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              OpenCrayPageHeader(
-                eyebrow: widget.copy.skillsEyebrow,
-                title: widget.copy.skillsTitle,
-                summary: _selectedPage == SkillsPage.manage
-                    ? widget.copy.skillsManageSubtitle
-                    : widget.copy.skillsInstallSubtitle,
-                bottomGap: 18,
-              ),
-              _SummaryCard(
-                copy: widget.copy,
-                page: _selectedPage,
-                enabledCount: installedSkills
-                    .where((skill) => skill.isEnabled)
-                    .length,
-                installedCount: installedSkills.length,
-                suggestedCount: availableSkills.length,
-              ),
-              const SizedBox(height: 12),
-              _SegmentedControl(
-                copy: widget.copy,
-                selectedPage: _selectedPage,
-                onChanged: (page) => setState(() => _selectedPage = page),
-              ),
-              const SizedBox(height: 16),
-              OpenCrayDirectionalSwitcher(
-                activeKey: ValueKey<String>(
-                  'skills-page-${_selectedPage.name}',
+        child: OpenCrayRefreshIndicator(
+          onRefresh: _handlePullToRefresh,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                OpenCrayPageHeader(
+                  eyebrow: widget.copy.skillsEyebrow,
+                  title: widget.copy.skillsTitle,
+                  summary: _selectedPage == SkillsPage.manage
+                      ? widget.copy.skillsManageSubtitle
+                      : widget.copy.skillsInstallSubtitle,
+                  bottomGap: 18,
                 ),
-                direction: _selectedPage == SkillsPage.install ? 1 : -1,
-                child: _selectedPage == SkillsPage.manage
-                    ? _buildManagePage(installedSkills)
-                    : _buildInstallPage(availableSkills),
-              ),
-            ],
+                _SummaryCard(
+                  copy: widget.copy,
+                  page: _selectedPage,
+                  enabledCount: installedSkills
+                      .where((skill) => skill.isEnabled)
+                      .length,
+                  installedCount: installedSkills.length,
+                  suggestedCount: availableSkills.length,
+                ),
+                const SizedBox(height: 12),
+                _SegmentedControl(
+                  copy: widget.copy,
+                  selectedPage: _selectedPage,
+                  onChanged: (page) => setState(() => _selectedPage = page),
+                ),
+                const SizedBox(height: 16),
+                OpenCrayDirectionalSwitcher(
+                  activeKey: ValueKey<String>(
+                    'skills-page-${_selectedPage.name}',
+                  ),
+                  direction: _selectedPage == SkillsPage.install ? 1 : -1,
+                  child: _selectedPage == SkillsPage.manage
+                      ? _buildManagePage(installedSkills)
+                      : _buildInstallPage(availableSkills),
+                ),
+              ],
+            ),
           ),
         ),
       ),
@@ -217,7 +223,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
             )
             .toList(growable: false);
     if (!_isLoaded) {
-      return const _LoadingCard();
+      return _LoadingCard(copy: widget.copy, showsToggle: true);
     }
     if (visibleInstalledSkills.isEmpty) {
       return _EmptyCard(
@@ -409,7 +415,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
         ),
         const SizedBox(height: 10),
         if (!_isLoaded)
-          const _LoadingCard()
+          _LoadingCard(copy: widget.copy)
         else if (availableSkills.isEmpty)
           _EmptyCard(title: emptyTitle, body: emptyBody)
         else ...[
@@ -476,6 +482,13 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
   Future<void> _hydrate() async {
     await _reloadSkillsSnapshot(showErrorMessage: true);
   }
+
+  /// Pull-to-refresh reuses the reload the Refresh action already runs, minus the
+  /// search spinner: the gesture is its own progress affordance.
+  Future<void> _handlePullToRefresh() => _reloadSkillsSnapshot(
+    showErrorMessage: true,
+    showProgressIndicator: false,
+  );
 
   void _onQueryChanged() {
     setState(() {

@@ -91,7 +91,7 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
               ],
               const SizedBox(height: 16),
               if (_isLoading)
-                const _SettingsLoading(
+                const _SettingsLoading.inline(
                   key: ValueKey<String>('context-memory-trace-loading'),
                 )
               else ...[
