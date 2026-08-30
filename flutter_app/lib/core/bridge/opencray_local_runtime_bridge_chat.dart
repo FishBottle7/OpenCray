@@ -242,6 +242,12 @@ mixin _LocalRuntimeBridgeChatDomain on _LocalRuntimeBridgeDeps {
   );
 
   @override
+  Future<void> approveChatApprovalAsBatch(String approvalId) => _postVoid(
+    'v1/approve_chat_approval_batch',
+    <String, Object?>{'runId': approvalId, 'taskId': approvalId},
+  );
+
+  @override
   Future<void> rejectChatApproval(String approvalId) => _postVoid(
     'v1/reject_chat_approval',
     <String, Object?>{'runId': approvalId, 'taskId': approvalId},

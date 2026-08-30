@@ -474,6 +474,8 @@ abstract interface class OpenCrayHostBridge {
 
   Future<void> approveChatApprovalForSession(String approvalId);
 
+  Future<void> approveChatApprovalAsBatch(String approvalId);
+
   Future<void> rejectChatApproval(String approvalId);
 
   Future<void> interruptChatRun(String runIdOrTaskId);

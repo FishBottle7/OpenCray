@@ -491,6 +491,11 @@ mixin _SeedBridgeChatDomain on _SeedBridgeDeps {
   }
 
   @override
+  Future<void> approveChatApprovalAsBatch(String approvalId) async {
+    _resolveChatApproval(approvalId);
+  }
+
+  @override
   Future<void> rejectChatApproval(String approvalId) async {
     _resolveChatApproval(approvalId);
   }

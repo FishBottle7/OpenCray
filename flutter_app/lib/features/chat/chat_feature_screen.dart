@@ -669,6 +669,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
             approvalResolutionById: _approvalResolutionById,
             onApproveApproval: _approvePendingApproval,
             onApproveApprovalForSession: _approvePendingApprovalForSession,
+            onApproveApprovalAsBatch: _approvePendingApprovalAsBatch,
             onRejectApproval: _rejectPendingApproval,
           )
         : _ComposerCard(

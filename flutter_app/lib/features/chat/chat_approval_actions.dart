@@ -21,6 +21,16 @@ extension _ChatApprovalActions on _OpenCrayChatFeatureState {
     );
   }
 
+  Future<void> _approvePendingApprovalAsBatch(
+    ChatPendingApprovalData approval,
+  ) async {
+    await _runApprovalAction(
+      approvalId: approval.approvalId,
+      resolutionKind: _ApprovalResolutionKind.approved,
+      action: (bridge) => bridge.approveChatApprovalAsBatch(approval.approvalId),
+    );
+  }
+
   Future<void> _rejectPendingApproval(ChatPendingApprovalData approval) async {
     await _runApprovalAction(
       approvalId: approval.approvalId,

@@ -609,6 +609,8 @@ class OpenCrayUiCopy {
   String get chatApprovalDecisionApproved => isChinese ? '已批准' : 'Approved';
   String get chatApprovalDecisionApprovedForSession =>
       isChinese ? '本会话已批准' : 'Approved for session';
+  String get chatApprovalBatchAction =>
+      isChinese ? '本次及同类命令都批准' : 'Approve this and similar commands';
   String get chatApprovalDecisionRejected => isChinese ? '已拒绝' : 'Rejected';
   String get chatApprovalActionFailed =>
       isChinese ? '处理审批请求失败。' : 'Failed to process approval request.';

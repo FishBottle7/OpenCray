@@ -298,6 +298,22 @@ void main() {
     expect(snapshot.needsManualSelection, isFalse);
   });
 
+  test('local runtime bridge posts batch chat approval requests', () async {
+    late Map<String, Object?> capturedBody;
+    requestHandler = (request) async {
+      expect(request.method, 'POST');
+      expect(request.uri.path, '/v1/approve_chat_approval_batch');
+      capturedBody = await readJsonBody(request);
+      await writeJson(request, <String, Object?>{'ok': true});
+    };
+
+    final bridge = OpenCrayLocalRuntimeBridge(baseUrl: baseUrl());
+    await bridge.approveChatApprovalAsBatch('run-approval-batch-1');
+
+    expect(capturedBody['runId'], 'run-approval-batch-1');
+    expect(capturedBody['taskId'], 'run-approval-batch-1');
+  });
+
   test('local runtime bridge loads text documents over http', () async {
     requestHandler = (request) async {
       expect(request.method, 'GET');

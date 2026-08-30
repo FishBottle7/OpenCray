@@ -8,6 +8,7 @@ class _PendingApprovalOverlaySurface extends StatelessWidget {
     required this.approvalResolutionById,
     required this.onApproveApproval,
     required this.onApproveApprovalForSession,
+    required this.onApproveApprovalAsBatch,
     required this.onRejectApproval,
   });
 
@@ -17,6 +18,7 @@ class _PendingApprovalOverlaySurface extends StatelessWidget {
   final Map<String, _ApprovalResolutionKind> approvalResolutionById;
   final ValueChanged<ChatPendingApprovalData> onApproveApproval;
   final ValueChanged<ChatPendingApprovalData> onApproveApprovalForSession;
+  final ValueChanged<ChatPendingApprovalData> onApproveApprovalAsBatch;
   final ValueChanged<ChatPendingApprovalData> onRejectApproval;
 
   @override
@@ -48,6 +50,7 @@ class _PendingApprovalOverlaySurface extends StatelessWidget {
               onApprove: () => onApproveApproval(activeApproval),
               onApproveForSession: () =>
                   onApproveApprovalForSession(activeApproval),
+              onApproveAsBatch: () => onApproveApprovalAsBatch(activeApproval),
               onReject: () => onRejectApproval(activeApproval),
             ),
           ],
@@ -479,6 +482,7 @@ class _ApprovalActionRow extends StatelessWidget {
     required this.resolutionKind,
     required this.onApprove,
     required this.onApproveForSession,
+    required this.onApproveAsBatch,
     required this.onReject,
   });
 
@@ -488,6 +492,7 @@ class _ApprovalActionRow extends StatelessWidget {
   final _ApprovalResolutionKind? resolutionKind;
   final VoidCallback onApprove;
   final VoidCallback onApproveForSession;
+  final VoidCallback onApproveAsBatch;
   final VoidCallback onReject;
 
   @override
@@ -528,37 +533,63 @@ class _ApprovalActionRow extends StatelessWidget {
       onPressed: isBusy ? null : onApprove,
       isBusy: isBusy,
     );
-    return LayoutBuilder(
-      builder: (BuildContext context, BoxConstraints constraints) {
-        final bool compact =
-            constraints.maxWidth < 344 && approveForSessionButton != null;
-        if (compact) {
-          return Column(
-            children: <Widget>[
-              Row(
-                children: <Widget>[
-                  Expanded(child: rejectButton),
-                  const SizedBox(width: 10),
-                  Expanded(child: approveForSessionButton),
-                ],
+    final Widget batchApproveButton = SizedBox(
+      width: double.infinity,
+      child: OpenCrayInkSurface(
+        child: InkWell(
+          key: const ValueKey<String>('chat-approval-batch-action'),
+          onTap: isBusy ? null : onApproveAsBatch,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Text(
+              copy.chatApprovalBatchAction,
+              textAlign: TextAlign.center,
+              style: context.chatText.approvalReason.copyWith(
+                color: accentColor,
+                fontWeight: FontWeight.w600,
               ),
-              const SizedBox(height: 8),
-              approveButton,
-            ],
-          );
-        }
-        return Row(
-          children: <Widget>[
-            Expanded(child: rejectButton),
-            const SizedBox(width: 10),
-            if (approveForSessionButton != null) ...<Widget>[
-              Expanded(child: approveForSessionButton),
-              const SizedBox(width: 10),
-            ],
-            Expanded(child: approveButton),
-          ],
-        );
-      },
+            ),
+          ),
+        ),
+      ),
+    );
+    return Column(
+      children: <Widget>[
+        LayoutBuilder(
+          builder: (BuildContext context, BoxConstraints constraints) {
+            final bool compact =
+                constraints.maxWidth < 344 && approveForSessionButton != null;
+            if (compact) {
+              return Column(
+                children: <Widget>[
+                  Row(
+                    children: <Widget>[
+                      Expanded(child: rejectButton),
+                      const SizedBox(width: 10),
+                      Expanded(child: approveForSessionButton),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  approveButton,
+                ],
+              );
+            }
+            return Row(
+              children: <Widget>[
+                Expanded(child: rejectButton),
+                const SizedBox(width: 10),
+                if (approveForSessionButton != null) ...<Widget>[
+                  Expanded(child: approveForSessionButton),
+                  const SizedBox(width: 10),
+                ],
+                Expanded(child: approveButton),
+              ],
+            );
+          },
+        ),
+        const SizedBox(height: 6),
+        batchApproveButton,
+      ],
     );
   }
 }

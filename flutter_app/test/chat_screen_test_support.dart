@@ -405,6 +405,7 @@ class FakeChatBridge implements OpenCrayHostBridge {
   onRecallChatMessage;
   OpenCraySandboxSettingsSnapshot sandboxSettings;
   final List<String> approvedApprovalIds = <String>[];
+  final List<String> batchApprovedApprovalIds = <String>[];
   final List<String> cancelledRunIds = <String>[];
   final List<String> rejectedApprovalIds = <String>[];
   final List<String> retriedRunIds = <String>[];
@@ -666,6 +667,12 @@ class FakeChatBridge implements OpenCrayHostBridge {
   @override
   Future<void> approveChatApprovalForSession(String approvalId) async {
     approvedApprovalIds.add(approvalId);
+  }
+
+  @override
+  Future<void> approveChatApprovalAsBatch(String approvalId) async {
+    approvedApprovalIds.add(approvalId);
+    batchApprovedApprovalIds.add(approvalId);
   }
 
   @override

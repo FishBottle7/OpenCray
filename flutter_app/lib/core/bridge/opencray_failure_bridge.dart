@@ -979,6 +979,9 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   Future<void> approveChatApprovalForSession(String approvalId) async {}
 
   @override
+  Future<void> approveChatApprovalAsBatch(String approvalId) async {}
+
+  @override
   Future<void> rejectChatApproval(String approvalId) async {}
 
   @override

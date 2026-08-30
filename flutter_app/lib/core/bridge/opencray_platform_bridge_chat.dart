@@ -262,6 +262,13 @@ mixin _PlatformBridgeChatDomain on _PlatformBridgeDeps {
       );
 
   @override
+  Future<void> approveChatApprovalAsBatch(String approvalId) =>
+      _methodChannel.invokeMethod<void>(
+        'approveChatApprovalAsBatch',
+        <String, Object?>{'runId': approvalId, 'taskId': approvalId},
+      );
+
+  @override
   Future<void> rejectChatApproval(String approvalId) =>
       _methodChannel.invokeMethod<void>('rejectChatApproval', <String, Object?>{
         'runId': approvalId,

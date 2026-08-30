@@ -375,4 +375,55 @@ void main() {
       );
     },
   );
+
+  testWidgets(
+    'approval card batch action calls the batch bridge method',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = FakeChatBridge(
+        chatSnapshot: hostChatSnapshot(
+          pendingApprovals: const <OpenCrayChatPendingApprovalSnapshot>[
+            OpenCrayChatPendingApprovalSnapshot(
+              runId: 'run-approval-batch-1',
+              taskId: 'task-approval-batch-1',
+              title: 'Approval required',
+              body: 'Command: git status --short',
+              approveLabel: 'Approve',
+              rejectLabel: 'Reject',
+              isHighRisk: false,
+              toolName: 'Bash',
+              requestSummary: 'git status --short',
+            ),
+          ],
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-1',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.byKey(const ValueKey<String>('chat-approval-batch-action')),
+      );
+      await tester.tap(
+        find.byKey(const ValueKey<String>('chat-approval-batch-action')),
+      );
+      await tester.pump();
+
+      expect(bridge.batchApprovedApprovalIds, <String>['run-approval-batch-1']);
+      expect(bridge.approvedApprovalIds, <String>['run-approval-batch-1']);
+      expect(bridge.rejectedApprovalIds, isEmpty);
+      expect(find.text(copy.chatApprovalDecisionApproved), findsOneWidget);
+    },
+  );
 }
