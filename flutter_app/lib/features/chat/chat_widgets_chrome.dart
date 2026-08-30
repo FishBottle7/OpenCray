@@ -557,7 +557,7 @@ class _ChatSelectionToolbar extends StatelessWidget {
             Expanded(
               child: _ChatSelectionActionButton(
                 key: const ValueKey<String>('chat-selection-copy'),
-                icon: CupertinoIcons.doc_on_doc,
+                icon: Icons.content_copy_rounded,
                 label: copy.chatMessageCopyAction,
                 onPressed: selectedCount > 0 ? onCopyPressed : null,
               ),
@@ -566,7 +566,7 @@ class _ChatSelectionToolbar extends StatelessWidget {
             Expanded(
               child: _ChatSelectionActionButton(
                 key: const ValueKey<String>('chat-selection-delete'),
-                icon: CupertinoIcons.delete,
+                icon: Icons.delete_outline_rounded,
                 label: copy.chatMessageDeleteAction,
                 isDestructive: true,
                 onPressed: selectedCount > 0 ? onDeletePressed : null,
@@ -598,8 +598,20 @@ class _ChatSelectionActionButton extends StatelessWidget {
     final Color foregroundColor = isDestructive
         ? context.palette.danger
         : context.chatPalette.textPrimary;
+    final VoidCallback? handlePress = onPressed == null
+        ? null
+        : () {
+            // Feedback first: the delete path pops a confirmation and the copy
+            // path writes the clipboard, and both read better after the tick.
+            if (isDestructive) {
+              HapticFeedback.mediumImpact();
+            } else {
+              HapticFeedback.selectionClick();
+            }
+            onPressed!();
+          };
     return GestureDetector(
-      onTap: onPressed,
+      onTap: handlePress,
       behavior: HitTestBehavior.opaque,
       child: Opacity(
         opacity: onPressed == null ? 0.38 : 1,
@@ -1233,7 +1245,7 @@ class _ChatSelectionControl extends StatelessWidget {
         duration: OpenCrayMotion.resolve(context, OpenCrayMotion.instant),
         opacity: isSelected ? 1 : 0,
         child: const Icon(
-          CupertinoIcons.check_mark,
+          Icons.check_rounded,
           size: 12,
           color: Colors.white,
         ),

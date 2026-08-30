@@ -107,7 +107,7 @@ class _SearchBarState extends State<_SearchBar> {
         child: Row(
           children: [
             Icon(
-              CupertinoIcons.search,
+              Icons.search_rounded,
               size: 18,
               color: isActive
                   ? context.palette.primary
@@ -139,7 +139,7 @@ class _SearchBarState extends State<_SearchBar> {
                   key: const ValueKey<String>('files-search-clear'),
                   tooltip: widget.clearLabel,
                   onPressed: () => widget.controller.clear(),
-                  icon: const Icon(CupertinoIcons.xmark_circle_fill, size: 18),
+                  icon: const Icon(Icons.cancel_rounded, size: 18),
                   color: context.palette.textTertiary,
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints.tightFor(
@@ -379,7 +379,7 @@ class _LocationActionRow extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(
-                  CupertinoIcons.folder_badge_plus,
+                  Icons.create_new_folder_rounded,
                   size: 18,
                   color: context.palette.primary,
                 ),
@@ -676,7 +676,7 @@ class _DirectoryFilterStatus extends StatelessWidget {
         key: const ValueKey<String>('files-filter-status'),
         children: [
           Icon(
-            CupertinoIcons.line_horizontal_3_decrease_circle,
+            Icons.filter_alt_rounded,
             size: 16,
             color: context.palette.primary,
           ),
@@ -722,8 +722,8 @@ class _DirectoryEntryTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final icon = entry.isDirectory
-        ? CupertinoIcons.folder_fill
-        : CupertinoIcons.doc_text;
+        ? Icons.folder_rounded
+        : Icons.description_rounded;
     final iconColor = entry.isDirectory
         ? context.palette.primary
         : context.palette.textTertiary;
@@ -761,8 +761,8 @@ class _DirectoryEntryTile extends StatelessWidget {
                       ),
                       child: Icon(
                         isSelected
-                            ? CupertinoIcons.check_mark_circled_solid
-                            : CupertinoIcons.circle,
+                            ? Icons.check_circle_rounded
+                            : Icons.circle_outlined,
                         key: ValueKey<bool>(isSelected),
                         size: 20,
                         color: isSelected
@@ -800,8 +800,8 @@ class _DirectoryEntryTile extends StatelessWidget {
               ),
                   if (entry.isDirectory && !isSelectionMode)
                     Icon(
-                      CupertinoIcons.chevron_right,
-                      size: 16,
+                      Icons.chevron_right_rounded,
+                      size: 18,
                       color: context.palette.textTertiary,
                     ),
                 ],
@@ -906,7 +906,7 @@ class _SelectionToolbar extends StatelessWidget {
                                 key: const ValueKey<String>(
                                   'files-toolbar-action-share',
                                 ),
-                                icon: CupertinoIcons.share,
+                                icon: Icons.share_rounded,
                                 label: copy.filesShareAction,
                                 enabled: canShare,
                                 onTap: onShare,
@@ -917,7 +917,7 @@ class _SelectionToolbar extends StatelessWidget {
                                 key: const ValueKey<String>(
                                   'files-toolbar-action-move',
                                 ),
-                                icon: CupertinoIcons.folder,
+                                icon: Icons.drive_file_move_rounded,
                                 label: copy.filesMoveAction,
                                 enabled: canMove,
                                 onTap: onMove,
@@ -931,8 +931,8 @@ class _SelectionToolbar extends StatelessWidget {
                                       : 'files-toolbar-action-copy',
                                 ),
                                 icon: isPendingTransfer
-                                    ? CupertinoIcons.doc_on_clipboard
-                                    : CupertinoIcons.doc_on_doc,
+                                    ? Icons.content_paste_rounded
+                                    : Icons.content_copy_rounded,
                                 label: isPendingTransfer
                                     ? copy.filesPasteAction
                                     : copy.filesCopyAction,
@@ -945,7 +945,7 @@ class _SelectionToolbar extends StatelessWidget {
                                 key: const ValueKey<String>(
                                   'files-toolbar-action-rename',
                                 ),
-                                icon: CupertinoIcons.pencil,
+                                icon: Icons.edit_rounded,
                                 label: copy.filesRenameAction,
                                 enabled: canRename,
                                 onTap: onRename,
@@ -962,7 +962,7 @@ class _SelectionToolbar extends StatelessWidget {
                         key: const ValueKey<String>(
                           'files-toolbar-action-delete',
                         ),
-                        icon: CupertinoIcons.delete,
+                        icon: Icons.delete_outline_rounded,
                         label: copy.filesDeleteAction,
                         enabled: canDelete,
                         accentColor: context.palette.danger,
@@ -1133,9 +1133,15 @@ class _ToolbarItem extends StatelessWidget {
     final color = enabled
         ? (accentColor ?? context.palette.textSecondary)
         : context.palette.textTertiary.withValues(alpha: 0.55);
+    final VoidCallback? handleTap = enabled && onTap != null
+        ? () {
+            HapticFeedback.selectionClick();
+            onTap!();
+          }
+        : null;
     return InkWell(
       borderRadius: BorderRadius.circular(12),
-      onTap: enabled ? onTap : null,
+      onTap: handleTap,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 4),
         child: Column(

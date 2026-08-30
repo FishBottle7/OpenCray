@@ -24,12 +24,12 @@
 | 1 | 完全没有暗色模式 | `lib/app/opencray_app.dart:45` 仅 `theme: OpenCrayTheme.light()`，无 `darkTheme`/`ThemeMode`；`OpenCrayColors` 全为单值 `const` | 高 → 阶段 C 已收 |
 | 2 | Chat 页未收口 | feature 内硬编码 `Color(0x…)` 共 63 处，其中 chat 占 38（`chat_widgets_chrome.dart` 14、`chat_design_tokens.dart` 10、`chat_widgets_composer.dart` 6）；`chat_widgets_run_trace_inspector.dart` 内 `AnimatedContainer`/`AnimatedDefaultTextStyle` 为 0 个，actor tab（`:185 _buildActorTabs`）、展开收起、inspector 开合均为瞬变 | 高 → 阶段 B 已收 |
 | 3 | 页头四套并行 + 死代码 | chat/files/settings/skills 各自定义 28px 标题 + eyebrow + 副标题；`core/design/opencray_widgets.dart` 中 `OpenCrayPageTemplate`/`OpenCrayTabPlaceholder`/`OpenCrayShellHeader`/`OpenCrayPillButton`/`OpenCrayTopBar` **均为 0 调用点、0 测试覆盖** | 中高 |
-| 4 | 图标两套体系 | `CupertinoIcons` 28 处（5 个文件，集中在 files/chat）对 Material `Icons` 144 处 | 中 |
+| 4 | 图标两套体系 | `CupertinoIcons` 28 处（5 个文件，集中在 files/chat）对 Material `Icons` 144 处 | 中 → 已收敛到 Material rounded（见阶段 D 之后的收敛一节） |
 | 5 | 无障碍与字号缩放 | 全应用 `Semantics(` 仅 10 处；零 `textScaler` 处理；开关/步进/导航使用固定高度（28/38/44/48/54） | 中 |
 | 6 | 加载与刷新态 | 13 个 `CircularProgressIndicator`、0 骨架屏、`RefreshIndicator` 0 处（Skills/Files 仅文字 Refresh + 后台轮询） | 中 → 阶段 D 已收（13 个转圈复核后全是行内忙碌指示，保留） |
 | 7 | 平板/横屏 | 应用壳与设置页无 `LayoutBuilder`、无最大宽度约束，单列直接拉伸 | 低中 |
 | 8 | 动效纵深 | 无 hero/共享元素（开会话、开文件预览）、列表无入场 stagger、底部 sheet 无拖拽把手 | 低中 |
-| 9 | 触感 | 仅新增控件有 `HapticFeedback`，发送/审批/保存/删除等主操作没有 | 低 → 阶段 B 已补发送与审批，保存/删除待办 |
+| 9 | 触感 | 仅新增控件有 `HapticFeedback`，发送/审批/保存/删除等主操作没有 | 低 → 阶段 B 已补发送与审批，保存/删除见收敛一节 |
 | 10 | 弹窗主题化 | agent 设置内手写 `Dialog` + `Container` 绕过主题 `dialogTheme` | 低 |
 
 ## 三、执行顺序与阶段拆解
@@ -143,9 +143,37 @@ chat 中枢 24 处 light-only 字面量按 `_base.isDark` 分支给出 dark 版�
 
 会话列表（缺口 6 原文提到的第三处）没有加载态可换：会话随 chat snapshot 流一起到，抽屉里从来没有转圈。
 
+### 图标收敛与主操作触感（2026-08-30，缺口 4 与缺口 9 收尾）
+
+**图标（缺口 4）**：28 处 `CupertinoIcons` 全部换成 Material rounded，`package:flutter/cupertino.dart` 从 chat 与 files 两个库的 import 里消失。映射按语义挑而不是按名字直译，其中几处顺手把语义修正了：Files 选择工具条的「移动」原本是 `CupertinoIcons.folder`（与目录行同一个文件夹图标），改 `Icons.drive_file_move_rounded`；「重命名」`pencil` → `Icons.edit_rounded`；两处删除统一到会话菜单已经在用的 `Icons.delete_outline_rounded`；筛选状态 `line_horizontal_3_decrease_circle` → `Icons.filter_alt_rounded`。文件树的目录/文件图标是 `Icons.folder_rounded` / `Icons.description_rounded`。
+
+两处尺寸跟着字形改了：Material 的字形在同一 `size` 下比 SF 视觉更小，目录行尾的 chevron 16 → 18、composer 的 TODO 折叠箭头 13 → 16（24dp 命中区不变）。另外 `files_dialogs.dart` 里唯一的 `CupertinoActivityIndicator` 换成 16dp `CircularProgressIndicator`，与全仓另外 13 个行内忙碌指示对齐。
+
+**触感（缺口 9 收尾）**：补在两个共享控件与三条提交路径上，一律在业务回调**之前**触发。
+
+- `_ToolbarItem`（Files 选择工具条的分享/移动/复制/粘贴/重命名/删除六个动作）：`selectionClick()`
+- `_ChatSelectionActionButton`（多选态的复制/删除）：破坏性动作 `mediumImpact()`，其余 `selectionClick()`
+- Files 删除确认通过之后、Skills `_deleteInstalledSkill` 入口：`mediumImpact()`——买单的是提交，不是工具条那一下
+- Files 新建条目提交与文本编辑器保存：`selectionClick()`
+
+设置页**有意不补**：个性化等页面是防抖自动保存，每次自动保存都震一下是噪音。
+
+缺口 8 的「sheet 拖拽把手」复核后发现已经有了：`bottomSheetTheme` 里 `showDragHandle: true`，12 个 `showModalBottomSheet` 全部走主题。
+
+验收：`flutter analyze` lib 零问题；`flutter test` 441 通过 / 23 失败，失败集与基线逐条一致；真机 PLB110 上核对了 Files 列表与工具条、chat 消息菜单的新图标。
+
+**顺带抓到的第二批暗色缺陷**（换完图标去真机核对消息菜单才看见，与图标本身无关）：`Colors.white.withValues(alpha:)` 里还剩两处其实是**表面**，C2 那轮按「压在强调色上的白色洗」一并放过了。
+
+1. **消息长按菜单整块发白**（`chat_widgets_message.dart` 的 `Colors.white.withValues(alpha: 0.92)`）。菜单里的图标与文字都是 `textPrimary`，dark 下接近白，压在白玻璃上等于只剩红色的「删除」可见。新增 `_ChatGlass.popoverSurface`（`_chatAlpha(_base.surface, 0xEB)`）。
+2. **composer 附件的文件类型图标底板**（`alpha: 0.75`）同一个毛病：底板白、图标 `textPrimary`。新增 `_ChatGlass.attachmentGlyphPlate`（`0xBF`）。
+3. 主题里 Material `Switch` 的 `thumbColor: Colors.white` 改 `palette.controlThumb`，与 `OpenCraySwitch` 同一条规则——拇指是轨道上的内容。
+
+light 下 `surface` 就是 `Colors.white`，`_chatAlpha` 的 alpha 字节与原来的 `withValues` 完全一致（0.92 → 0xEB、0.75 → 0xBF），所以这三处在 light 下逐字节不变。判据因此补一条：**半透明白也要分类**——只要压在它上面的是 `textPrimary`，它就是表面而不是洗。
+
+
 ### 阶段 E：可选打磨
 
-平板/横屏最大宽度约束与两栏、hero/共享元素、列表 stagger、sheet 拖拽把手、自定义 Dialog 主题化。
+平板/横屏最大宽度约束与两栏、hero/共享元素、列表 stagger、自定义 Dialog 主题化。（sheet 拖拽把手已由 `bottomSheetTheme` 覆盖，从本阶段划掉。四处手写 `Dialog` 复核后都已经走 `context.palette`，只是自己画容器而不吃 `dialogTheme` 的圆角与阴影，其中两处是图片查看器、有意透明。）
 
 ## 四、边界（明确不做）
 
@@ -165,5 +193,6 @@ chat 中枢 24 处 light-only 字面量按 `_base.isDark` 分支给出 dark 版�
 | C3 接线 darkTheme | 已完成（2026-08-28） |
 | 真机核对与控件修正 | 已完成（2026-08-30） |
 | D 加载态与刷新 | 已完成（2026-08-30） |
+| 图标收敛与主操作触感 | 已完成（2026-08-30） |
 | E 可选打磨 | 下一步 |
 

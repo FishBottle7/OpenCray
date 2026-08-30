@@ -147,6 +147,16 @@ class _ChatGlass {
 
   /// Floating popovers and inline controls.
   Color get popoverBorder => _chatAlpha(_base.surface, 0xCC);
+
+  /// Fill of the blurred message-menu popover. Tracks [OpenCrayPalette.surface]
+  /// rather than white: the labels and icons on it are `textPrimary`, so a white
+  /// sheet in dark mode hides everything except the destructive action.
+  Color get popoverSurface => _chatAlpha(_base.surface, 0xEB);
+
+  /// Plate behind a composer attachment's file-type glyph. Also a surface, for
+  /// the same reason — the glyph is `textPrimary` on top of it.
+  Color get attachmentGlyphPlate => _chatAlpha(_base.surface, 0xBF);
+
   Color get approvalShadow => _chatAlpha(_base.shadowInk, 0x14);
   Color get interruptThumbShadow =>
       _base.isDark ? const Color(0x52000000) : const Color(0x1E0F172A);

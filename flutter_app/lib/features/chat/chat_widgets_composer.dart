@@ -859,8 +859,8 @@ class _TodoListPanelState extends State<_TodoListPanel> {
                     ),
                     turns: _isExpanded ? 0.5 : 0,
                     child: Icon(
-                      CupertinoIcons.chevron_up,
-                      size: 13,
+                      Icons.expand_less_rounded,
+                      size: 16,
                       color: context.chatPalette.textTertiary,
                     ),
                   ),
@@ -1507,7 +1507,7 @@ class _ComposerAttachmentLeadingVisualState
       width: 32,
       height: 32,
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.75),
+        color: context.chatGlass.attachmentGlyphPlate,
         borderRadius: BorderRadius.circular(10),
       ),
       child: Icon(icon, size: 16, color: context.chatPalette.textPrimary),

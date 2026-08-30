@@ -171,7 +171,9 @@ final class OpenCrayTheme {
         ),
       ),
       switchTheme: SwitchThemeData(
-        thumbColor: const WidgetStatePropertyAll(Colors.white),
+        // A thumb is content on its track, so it follows controlThumb rather
+        // than the surface ramp — same rule as OpenCraySwitch.
+        thumbColor: WidgetStatePropertyAll(palette.controlThumb),
         trackOutlineColor: const WidgetStatePropertyAll(Colors.transparent),
         trackColor: WidgetStateProperty.resolveWith((states) {
           if (states.contains(WidgetState.selected)) {

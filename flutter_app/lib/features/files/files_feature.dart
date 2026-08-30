@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:ui';
 
-import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter/services.dart';
@@ -706,6 +705,8 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
     if (!mounted || confirmed != true) {
       return;
     }
+    // The commit, not the toolbar tap, is what cannot be undone.
+    unawaited(HapticFeedback.mediumImpact());
     _setOperationState(_FilesOperationState.deleting);
     final didDelete = await _runSnapshotMutation(
       () => widget.bridge.deleteWorkspaceEntries(targets),

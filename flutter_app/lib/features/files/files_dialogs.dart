@@ -115,7 +115,7 @@ class _TextPreviewDialog extends StatelessWidget {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Icon(
-                      CupertinoIcons.doc_text,
+                      Icons.description_rounded,
                       size: 20,
                       color: context.palette.primary,
                     ),
@@ -329,6 +329,7 @@ class _CreateEntryDialogState extends State<_CreateEntryDialog> {
     if (!_intent.canSubmit) {
       return;
     }
+    HapticFeedback.selectionClick();
     widget.onCreate(_intent);
   }
 
@@ -361,7 +362,7 @@ class _CreateEntryDialogState extends State<_CreateEntryDialog> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Icon(
-                      CupertinoIcons.folder_badge_plus,
+                      Icons.create_new_folder_rounded,
                       size: 20,
                       color: context.palette.primary,
                     ),
@@ -503,6 +504,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
     if (_isSaving) {
       return;
     }
+    HapticFeedback.selectionClick();
     setState(() {
       _isSaving = true;
     });
@@ -546,7 +548,7 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Icon(
-                      CupertinoIcons.doc_text,
+                      Icons.description_rounded,
                       size: 20,
                       color: context.palette.primary,
                     ),
@@ -585,7 +587,10 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
                     key: const ValueKey<String>('files-text-editor-save'),
                     onPressed: _isSaving ? null : _handleSave,
                     child: _isSaving
-                        ? const CupertinoActivityIndicator(radius: 8)
+                        ? const SizedBox.square(
+                            dimension: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
                         : Text(widget.copy.filesSaveAction),
                   ),
                   const SizedBox(width: 4),
@@ -683,7 +688,7 @@ class _ImagePreviewDialog extends StatelessWidget {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Icon(
-                      CupertinoIcons.photo,
+                      Icons.image_rounded,
                       size: 20,
                       color: context.palette.primary,
                     ),
@@ -905,7 +910,7 @@ class _DialogCloseButton extends StatelessWidget {
             height: 32,
             child: Center(
               child: Icon(
-                CupertinoIcons.xmark,
+                Icons.close_rounded,
                 size: 16,
                 semanticLabel: semanticLabel,
                 color: context.palette.textSecondary,

@@ -1355,6 +1355,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
   Future<void> _deleteInstalledSkill(
     OpenCrayInstalledSkillSnapshot skill,
   ) async {
+    unawaited(HapticFeedback.mediumImpact());
     _setInstalledSkillLifecycle(
       skill.id,
       _InstalledSkillLifecycleState.deleting,

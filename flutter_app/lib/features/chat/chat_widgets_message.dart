@@ -93,7 +93,7 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                   width: menuWidth,
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.92),
+                    color: context.chatGlass.popoverSurface,
                     borderRadius: BorderRadius.circular(20),
                     border: Border.all(color: context.chatGlass.popoverBorder),
                   ),
@@ -106,7 +106,7 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                             itemKey: const ValueKey<String>(
                               'chat-message-menu-action-copy',
                             ),
-                            icon: CupertinoIcons.doc_on_doc,
+                            icon: Icons.content_copy_rounded,
                             label: copy.chatMessageCopyAction,
                             onTap: () =>
                                 onActionSelected(_ChatMessageMenuAction.copy),
@@ -144,7 +144,7 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                             itemKey: const ValueKey<String>(
                               'chat-message-menu-action-delete',
                             ),
-                            icon: CupertinoIcons.delete_left,
+                            icon: Icons.delete_outline_rounded,
                             label: copy.chatMessageDeleteAction,
                             isDestructive: true,
                             enabled: menu.canDelete,
@@ -159,7 +159,7 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                             itemKey: const ValueKey<String>(
                               'chat-message-menu-action-multiSelect',
                             ),
-                            icon: CupertinoIcons.check_mark_circled,
+                            icon: Icons.check_circle_outline_rounded,
                             label: copy.chatMessageSelectAction,
                             onTap: () => onActionSelected(
                               _ChatMessageMenuAction.multiSelect,
@@ -170,7 +170,7 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                             itemKey: const ValueKey<String>(
                               'chat-message-menu-action-quote',
                             ),
-                            icon: CupertinoIcons.reply,
+                            icon: Icons.reply_rounded,
                             label: copy.chatMessageQuoteAction,
                             onTap: () =>
                                 onActionSelected(_ChatMessageMenuAction.quote),
