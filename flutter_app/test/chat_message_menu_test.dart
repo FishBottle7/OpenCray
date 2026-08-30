@@ -5,25 +5,38 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:opencray/core/bridge/opencray_host_bridge.dart';
 import 'package:opencray/core/bridge/opencray_seed_bridge.dart';
 import 'package:opencray/core/copy/opencray_ui_copy.dart';
+import 'package:opencray/core/design/opencray_palette.dart';
 import 'package:opencray/core/models/opencray_chat_snapshot.dart';
 import 'package:opencray/features/chat/chat_feature.dart';
 
 void main() {
   test('chat bubble selection theme uses contrast-aware colors', () {
     expect(
-      chatBubbleSelectionTheme(ChatMessageKind.outbound).selectionColor,
+      chatBubbleSelectionTheme(
+        ChatMessageKind.outbound,
+        OpenCrayPalette.light,
+      ).selectionColor,
       const Color(0x52FFFFFF),
     );
     expect(
-      chatBubbleSelectionTheme(ChatMessageKind.outbound).selectionHandleColor,
+      chatBubbleSelectionTheme(
+        ChatMessageKind.outbound,
+        OpenCrayPalette.light,
+      ).selectionHandleColor,
       Colors.white,
     );
     expect(
-      chatBubbleSelectionTheme(ChatMessageKind.inbound).selectionColor,
+      chatBubbleSelectionTheme(
+        ChatMessageKind.inbound,
+        OpenCrayPalette.light,
+      ).selectionColor,
       const Color(0x332563EB),
     );
     expect(
-      chatBubbleSelectionTheme(ChatMessageKind.inbound).selectionHandleColor,
+      chatBubbleSelectionTheme(
+        ChatMessageKind.inbound,
+        OpenCrayPalette.light,
+      ).selectionHandleColor,
       const Color(0xFF2563EB),
     );
   });

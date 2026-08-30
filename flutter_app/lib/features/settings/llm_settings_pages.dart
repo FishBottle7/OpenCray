@@ -72,7 +72,7 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: OpenCrayColors.shellBackground,
+      backgroundColor: context.palette.shellBackground,
       body: SafeArea(
         bottom: false,
         child: SingleChildScrollView(
@@ -95,10 +95,10 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
                   children: [
                     Row(
                       children: [
-                        const Expanded(
+                        Expanded(
                           child: Text(
                             'Runtime memory trace',
-                            style: _SettingsTextStyles.cardTitle,
+                            style: context.settingsText.cardTitle,
                           ),
                         ),
                         _HeaderActionChip(
@@ -108,13 +108,13 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
                       ],
                     ),
                     const SizedBox(height: 10),
-                    const Text(
+                    Text(
                       'Uses the existing host run snapshot path. No separate debug protocol or log scraping is required.',
-                      style: _SettingsTextStyles.body,
+                      style: context.settingsText.body,
                     ),
                     if (_loadError != null) ...[
                       const SizedBox(height: 12),
-                      Text(_loadError!, style: _SettingsTextStyles.bodyStrong),
+                      Text(_loadError!, style: context.settingsText.bodyStrong),
                     ],
                   ],
                 ),
@@ -147,12 +147,12 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
       return _SettingsCard(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
-            Text('Recent runs', style: _SettingsTextStyles.cardTitle),
+          children: [
+            Text('Recent runs', style: context.settingsText.cardTitle),
             SizedBox(height: 8),
             Text(
               'No recent run ids are visible in the current runtime activity snapshot.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             ),
           ],
         ),
@@ -162,11 +162,11 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Recent runs', style: _SettingsTextStyles.cardTitle),
+          Text('Recent runs', style: context.settingsText.cardTitle),
           const SizedBox(height: 8),
           Text(
             'Select a run to inspect its memory recall trace.',
-            style: _SettingsTextStyles.body,
+            style: context.settingsText.body,
           ),
           const SizedBox(height: 8),
           for (int index = 0; index < _recentRunIds.length; index++) ...[
@@ -176,7 +176,7 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
               onTap: () => _selectRun(_recentRunIds[index]),
             ),
             if (index < _recentRunIds.length - 1)
-              const Divider(height: 1, color: OpenCrayColors.divider),
+              Divider(height: 1, color: context.palette.divider),
           ],
         ],
       ),
@@ -192,7 +192,7 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Selected run', style: _SettingsTextStyles.cardTitle),
+              Text('Selected run', style: context.settingsText.cardTitle),
               const SizedBox(height: 12),
               Wrap(
                 spacing: 8,
@@ -217,7 +217,7 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
                 const SizedBox(height: 12),
                 Text(
                   'Error: ${run.errorCode} ${run.errorMessage ?? ''}'.trim(),
-                  style: _SettingsTextStyles.bodyStrong,
+                  style: context.settingsText.bodyStrong,
                 ),
               ],
             ],
@@ -228,12 +228,12 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text('Memory trace', style: _SettingsTextStyles.cardTitle),
+              Text('Memory trace', style: context.settingsText.cardTitle),
               const SizedBox(height: 10),
               if (trace == null)
-                const Text(
+                Text(
                   'No recalled memory trace was captured for this run.',
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 )
               else ...[
                 Wrap(
@@ -256,7 +256,7 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
                 ),
                 if (trace.queryTerms.isNotEmpty) ...[
                   const SizedBox(height: 12),
-                  Text('Query terms', style: _SettingsTextStyles.cardTitle),
+                  Text('Query terms', style: context.settingsText.cardTitle),
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 8,
@@ -272,7 +272,7 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
                   const SizedBox(height: 12),
                   Text(
                     'Selected records',
-                    style: _SettingsTextStyles.cardTitle,
+                    style: context.settingsText.cardTitle,
                   ),
                   const SizedBox(height: 8),
                   for (final selected in trace.selected) ...[
@@ -289,7 +289,7 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
                 ],
                 if (trace.omitted.isNotEmpty) ...[
                   const SizedBox(height: 4),
-                  Text('Omitted records', style: _SettingsTextStyles.cardTitle),
+                  Text('Omitted records', style: context.settingsText.cardTitle),
                   const SizedBox(height: 8),
                   for (final omitted in trace.omitted) ...[
                     _DebugKeyValueLine('Record', omitted.id),
@@ -299,7 +299,7 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
                 ],
                 if (trace.filteredCounts.isNotEmpty) ...[
                   const SizedBox(height: 4),
-                  Text('Filtered counts', style: _SettingsTextStyles.cardTitle),
+                  Text('Filtered counts', style: context.settingsText.cardTitle),
                   const SizedBox(height: 8),
                   ...trace.filteredCounts.entries.map(
                     (entry) => _DebugKeyValueLine(entry.key, '${entry.value}'),
@@ -328,20 +328,20 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             'Projected subagents',
-            style: _SettingsTextStyles.cardTitle,
+            style: context.settingsText.cardTitle,
           ),
           const SizedBox(height: 8),
-          const Text(
+          Text(
             'Uses runtimeActivity.subAgents directly, even when no parent run is currently selectable.',
-            style: _SettingsTextStyles.body,
+            style: context.settingsText.body,
           ),
           const SizedBox(height: 10),
           if (subAgents.isEmpty)
-            const Text(
+            Text(
               'No projected subagents are visible in the current runtime activity snapshot.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else
             for (int index = 0; index < subAgents.length; index++) ...[
@@ -383,7 +383,7 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
               const SizedBox(height: 8),
               Text(
                 _formatSubAgentSummary(subAgents[index]),
-                style: _SettingsTextStyles.body,
+                style: context.settingsText.body,
               ),
               if (subAgents[index].mailboxLastDeliveredMessageId
                       ?.trim()
@@ -410,7 +410,7 @@ class _MemoryDebugPageState extends State<_MemoryDebugPage> {
                 ),
               if (index < subAgents.length - 1) ...[
                 const SizedBox(height: 12),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 const SizedBox(height: 12),
               ],
             ],
@@ -567,12 +567,12 @@ class _DebugValueChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: OpenCrayColors.surfaceMuted,
+        color: context.palette.surfaceMuted,
         borderRadius: BorderRadius.circular(999),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        child: Text('$label: $value', style: _SettingsTextStyles.valueChip),
+        child: Text('$label: $value', style: context.settingsText.valueChip),
       ),
     );
   }
@@ -590,9 +590,9 @@ class _DebugKeyValueLine extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 4),
       child: RichText(
         text: TextSpan(
-          style: _SettingsTextStyles.body,
+          style: context.settingsText.body,
           children: [
-            TextSpan(text: '$label: ', style: _SettingsTextStyles.bodyStrong),
+            TextSpan(text: '$label: ', style: context.settingsText.bodyStrong),
             TextSpan(text: value),
           ],
         ),
@@ -691,7 +691,7 @@ class _NetworkSearchSettingsPageState
                 _isSaving
                     ? copy.networkSearchSaving
                     : copy.networkSearchAddSlotAction,
-                style: _SettingsTextStyles.actionChip,
+                style: context.settingsText.actionChip,
               ),
             ),
           ),
@@ -932,7 +932,7 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
               Expanded(
                 child: Text(
                   copy.networkSearchSlotTitle(widget.index),
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
               ),
               OpenCraySwitch(
@@ -946,7 +946,7 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
           const SizedBox(height: 12),
           Text(
             copy.networkSearchProviderLabel,
-            style: _SettingsTextStyles.fieldLabel,
+            style: context.settingsText.fieldLabel,
           ),
           const SizedBox(height: 6),
           _InteractiveSegmentedSelector(
@@ -1032,7 +1032,7 @@ class _NetworkSearchSlotCardState extends State<_NetworkSearchSlotCard> {
               const Spacer(),
               _InlineTextAction(
                 label: copy.networkSearchDelete,
-                color: OpenCrayColors.dangerText,
+                color: context.palette.danger,
                 onTap: widget.onDelete,
               ),
             ],
@@ -1374,7 +1374,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(copy.llmModelSourceTitle, style: _SettingsTextStyles.cardTitle),
+          Text(copy.llmModelSourceTitle, style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           _InteractiveSegmentedSelector(
             labels: _providerModeOptions,
@@ -1400,7 +1400,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         children: [
           Text(
             copy.llmPrimaryProviderTitle,
-            style: _SettingsTextStyles.cardTitle,
+            style: context.settingsText.cardTitle,
           ),
           const SizedBox(height: 10),
           _PrototypeSelectionRow(
@@ -1424,7 +1424,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                       ? TextOverflow.ellipsis
                       : TextOverflow.visible,
                   softWrap: !hasTemporarySavedCustomChanges,
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 ),
               ),
               if (selectedProvider.isCustom) ...[
@@ -1442,7 +1442,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                       _isSavingCustomProvider
                           ? copy.llmSaving
                           : copy.llmSaveProviderAction,
-                      style: _SettingsTextStyles.inlineAction,
+                      style: context.settingsText.inlineAction,
                     ),
                   ),
                 ),
@@ -1451,9 +1451,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
           ),
           if (selectedProvider.isCustom) ...[
             const SizedBox(height: 12),
-            const Divider(height: 1, color: OpenCrayColors.divider),
+            Divider(height: 1, color: context.palette.divider),
             const SizedBox(height: 12),
-            Text(copy.llmProtocolTitle, style: _SettingsTextStyles.fieldLabel),
+            Text(copy.llmProtocolTitle, style: context.settingsText.fieldLabel),
             const SizedBox(height: 8),
             _PrototypeSelectionRow(
               title: _protocolTitle(selectedProtocol),
@@ -1486,13 +1486,13 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(copy.llmPromptCacheTitle, style: _SettingsTextStyles.cardTitle),
+          Text(copy.llmPromptCacheTitle, style: context.settingsText.cardTitle),
           const SizedBox(height: 8),
           Text(
             _showsAnthropicPromptCacheControls(selectedProtocol)
                 ? copy.llmPromptCacheAnthropicHelper
                 : copy.llmPromptCacheOpenAiHelper,
-            style: _SettingsTextStyles.body,
+            style: context.settingsText.body,
           ),
           if (_showsOpenAiPromptCacheControls(selectedProtocol)) ...[
             const SizedBox(height: 12),
@@ -1559,7 +1559,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
               Expanded(
                 child: Text(
                   copy.llmConnectionTitle,
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
               ),
               _HeaderActionChip(
@@ -1633,7 +1633,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
               Expanded(
                 child: Text(
                   copy.llmContextBudgetTitle,
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
               ),
               InkWell(
@@ -1649,14 +1649,14 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                   ),
                   child: Text(
                     copy.llmContextBudgetEditRawAction,
-                    style: _SettingsTextStyles.inlineAction,
+                    style: context.settingsText.inlineAction,
                   ),
                 ),
               ),
             ],
           ),
           const SizedBox(height: 8),
-          Text(copy.llmContextBudgetHelper, style: _SettingsTextStyles.body),
+          Text(copy.llmContextBudgetHelper, style: context.settingsText.body),
           const SizedBox(height: 12),
           KeyedSubtree(
             key: const ValueKey<String>(
@@ -1677,7 +1677,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
               copy.llmContextBudgetResolved(
                 _formatTokenCount(resolvedContextWindowTokens),
               ),
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             ),
           ],
           if (_manualContextWindowTokens != null) ...[
@@ -1686,11 +1686,11 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
               copy.llmContextBudgetOverride(
                 _formatTokenCount(_manualContextWindowTokens!),
               ),
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             ),
           ],
           const SizedBox(height: 12),
-          const Divider(height: 1, color: OpenCrayColors.divider),
+          Divider(height: 1, color: context.palette.divider),
           const SizedBox(height: 12),
           _SegmentedSettingRow(
             label: 'Envelope preset',
@@ -1758,7 +1758,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         children: [
           Text(
             copy.llmAdvancedPromptTitle,
-            style: _SettingsTextStyles.cardTitle,
+            style: context.settingsText.cardTitle,
           ),
           const SizedBox(height: 12),
           _PrototypeField(
@@ -1770,9 +1770,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
             maxLines: 8,
           ),
           const SizedBox(height: 12),
-          Text(copy.llmAutosaveHint, style: _SettingsTextStyles.body),
+          Text(copy.llmAutosaveHint, style: context.settingsText.body),
           const SizedBox(height: 8),
-          Text(helperText, style: _SettingsTextStyles.body),
+          Text(helperText, style: context.settingsText.body),
         ],
       ),
     );
@@ -1788,7 +1788,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         children: [
           Text(
             copy.llmOnDeviceModelTitle,
-            style: _SettingsTextStyles.cardTitle,
+            style: context.settingsText.cardTitle,
           ),
           const SizedBox(height: 8),
           for (int index = 0; index < options.length; index++) ...[
@@ -1827,7 +1827,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
         children: [
           Text(
             copy.llmSamplingLimitsTitle,
-            style: _SettingsTextStyles.cardTitle,
+            style: context.settingsText.cardTitle,
           ),
           const SizedBox(height: 12),
           Row(
@@ -1835,7 +1835,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
               Expanded(
                 child: Text(
                   copy.llmMaxContextWindowLabel,
-                  style: _SettingsTextStyles.fieldValue,
+                  style: context.settingsText.fieldValue,
                 ),
               ),
               const SizedBox(width: 12),
@@ -1939,7 +1939,7 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(copy.llmRuntimeTitle, style: _SettingsTextStyles.cardTitle),
+          Text(copy.llmRuntimeTitle, style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           _PrototypeToggleRow(
             rowKey: const ValueKey<String>(
@@ -2180,8 +2180,8 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
               MediaQuery.of(context).viewInsets.bottom + 12,
             ),
             child: DecoratedBox(
-              decoration: const BoxDecoration(
-                color: Colors.white,
+              decoration: BoxDecoration(
+                color: context.palette.surface,
                 borderRadius: BorderRadius.all(Radius.circular(22)),
               ),
               child: Padding(
@@ -2196,19 +2196,19 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                         height: 4,
                         margin: const EdgeInsets.only(bottom: 16),
                         decoration: BoxDecoration(
-                          color: OpenCrayColors.divider,
+                          color: context.palette.divider,
                           borderRadius: BorderRadius.circular(999),
                         ),
                       ),
                     ),
                     Text(
                       copy.llmContextBudgetRawTitle,
-                      style: _SettingsTextStyles.cardTitle,
+                      style: context.settingsText.cardTitle,
                     ),
                     const SizedBox(height: 8),
                     Text(
                       copy.llmContextBudgetRawHelper,
-                      style: _SettingsTextStyles.body,
+                      style: context.settingsText.body,
                     ),
                     const SizedBox(height: 12),
                     _PrototypeFieldSurface(
@@ -2221,9 +2221,8 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                           FocusScope.of(context).unfocus();
                           Navigator.of(context).pop(value.trim());
                         },
-                        decoration: InputDecoration(
+                        decoration: openCrayBareInputDecoration.copyWith(
                           hintText: copy.llmContextBudgetRawHint,
-                          border: InputBorder.none,
                           contentPadding: const EdgeInsets.symmetric(
                             horizontal: 12,
                             vertical: 14,
@@ -2334,8 +2333,8 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             child: DecoratedBox(
-              decoration: const BoxDecoration(
-                color: Colors.white,
+              decoration: BoxDecoration(
+                color: context.palette.surface,
                 borderRadius: BorderRadius.all(Radius.circular(22)),
               ),
               child: Padding(
@@ -2350,14 +2349,14 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                         height: 4,
                         margin: const EdgeInsets.only(bottom: 16),
                         decoration: BoxDecoration(
-                          color: OpenCrayColors.divider,
+                          color: context.palette.divider,
                           borderRadius: BorderRadius.circular(999),
                         ),
                       ),
                     ),
                     Text(
                       copy.llmPrimaryProviderTitle,
-                      style: _SettingsTextStyles.cardTitle,
+                      style: context.settingsText.cardTitle,
                     ),
                     const SizedBox(height: 12),
                     Flexible(
@@ -2387,13 +2386,14 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                                             Text(
                                               option.title,
                                               style:
-                                                  _SettingsTextStyles.rowTitle,
+                                                  context.settingsText.rowTitle,
                                             ),
                                             if (option.subtitle.isNotEmpty) ...[
                                               const SizedBox(height: 4),
                                               Text(
                                                 option.subtitle,
-                                                style: _SettingsTextStyles
+                                                style: context
+                                                    .settingsText
                                                     .rowSubtitle,
                                               ),
                                             ],
@@ -2402,9 +2402,9 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                                       ),
                                       if (option.id ==
                                           _selectedProviderOptionId)
-                                        const Icon(
+                                        Icon(
                                           Icons.check_rounded,
-                                          color: OpenCrayColors.primary,
+                                          color: context.palette.primary,
                                           size: 18,
                                         ),
                                     ],
@@ -2444,8 +2444,8 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             child: DecoratedBox(
-              decoration: const BoxDecoration(
-                color: Colors.white,
+              decoration: BoxDecoration(
+                color: context.palette.surface,
                 borderRadius: BorderRadius.all(Radius.circular(22)),
               ),
               child: Padding(
@@ -2460,12 +2460,12 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                         height: 4,
                         margin: const EdgeInsets.only(bottom: 16),
                         decoration: BoxDecoration(
-                          color: OpenCrayColors.divider,
+                          color: context.palette.divider,
                           borderRadius: BorderRadius.circular(999),
                         ),
                       ),
                     ),
-                    Text(label, style: _SettingsTextStyles.cardTitle),
+                    Text(label, style: context.settingsText.cardTitle),
                     const SizedBox(height: 12),
                     for (final option in options)
                       InkWell(
@@ -2478,13 +2478,13 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                               Expanded(
                                 child: Text(
                                   _reasoningEffortTitle(option),
-                                  style: _SettingsTextStyles.rowTitle,
+                                  style: context.settingsText.rowTitle,
                                 ),
                               ),
                               if (option == _reasoningEffort)
-                                const Icon(
+                                Icon(
                                   Icons.check_rounded,
-                                  color: OpenCrayColors.primary,
+                                  color: context.palette.primary,
                                   size: 18,
                                 ),
                             ],
@@ -2517,8 +2517,8 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             child: DecoratedBox(
-              decoration: const BoxDecoration(
-                color: Colors.white,
+              decoration: BoxDecoration(
+                color: context.palette.surface,
                 borderRadius: BorderRadius.all(Radius.circular(22)),
               ),
               child: Padding(
@@ -2533,14 +2533,14 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                         height: 4,
                         margin: const EdgeInsets.only(bottom: 16),
                         decoration: BoxDecoration(
-                          color: OpenCrayColors.divider,
+                          color: context.palette.divider,
                           borderRadius: BorderRadius.circular(999),
                         ),
                       ),
                     ),
                     Text(
                       copy.llmProtocolTitle,
-                      style: _SettingsTextStyles.cardTitle,
+                      style: context.settingsText.cardTitle,
                     ),
                     const SizedBox(height: 12),
                     for (final option in _protocolOptions)
@@ -2554,13 +2554,13 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                               Expanded(
                                 child: Text(
                                   _protocolTitle(option),
-                                  style: _SettingsTextStyles.rowTitle,
+                                  style: context.settingsText.rowTitle,
                                 ),
                               ),
                               if (option == _protocol)
-                                const Icon(
+                                Icon(
                                   Icons.check_rounded,
-                                  color: OpenCrayColors.primary,
+                                  color: context.palette.primary,
                                   size: 18,
                                 ),
                             ],
@@ -2661,8 +2661,8 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             child: DecoratedBox(
-              decoration: const BoxDecoration(
-                color: Colors.white,
+              decoration: BoxDecoration(
+                color: context.palette.surface,
                 borderRadius: BorderRadius.all(Radius.circular(22)),
               ),
               child: Padding(
@@ -2677,12 +2677,12 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                         height: 4,
                         margin: const EdgeInsets.only(bottom: 16),
                         decoration: BoxDecoration(
-                          color: OpenCrayColors.divider,
+                          color: context.palette.divider,
                           borderRadius: BorderRadius.circular(999),
                         ),
                       ),
                     ),
-                    Text(title, style: _SettingsTextStyles.cardTitle),
+                    Text(title, style: context.settingsText.cardTitle),
                     const SizedBox(height: 12),
                     for (final option in options)
                       InkWell(
@@ -2695,13 +2695,13 @@ class _LlmSettingsPageState extends State<_LlmSettingsPage> {
                               Expanded(
                                 child: Text(
                                   labelBuilder(option),
-                                  style: _SettingsTextStyles.rowTitle,
+                                  style: context.settingsText.rowTitle,
                                 ),
                               ),
                               if (option == selectedValue)
-                                const Icon(
+                                Icon(
                                   Icons.check_rounded,
-                                  color: OpenCrayColors.primary,
+                                  color: context.palette.primary,
                                   size: 18,
                                 ),
                             ],
@@ -3735,7 +3735,7 @@ class _InlineEditableField extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
         child: Row(
           children: [
-            Text(title, style: _SettingsTextStyles.selectionMeta),
+            Text(title, style: context.settingsText.selectionMeta),
             const SizedBox(width: 12),
             Expanded(
               child: TextField(
@@ -3751,17 +3751,16 @@ class _InlineEditableField extends StatelessWidget {
                 smartDashesType: SmartDashesType.disabled,
                 smartQuotesType: SmartQuotesType.disabled,
                 keyboardType: keyboardType,
-                style: _SettingsTextStyles.fieldValue,
-                strutStyle: _SettingsTextStyles.fieldValueStrut,
-                decoration: InputDecoration(
+                style: context.settingsText.fieldValue,
+                strutStyle: context.settingsText.fieldValueStrut,
+                decoration: openCrayBareInputDecoration.copyWith(
                   hintText: hintText,
-                  hintStyle: _SettingsTextStyles.fieldValue.copyWith(
-                    color: OpenCrayColors.textTertiary,
+                  hintStyle: context.settingsText.fieldValue.copyWith(
+                    color: context.palette.textTertiary,
                     fontWeight: FontWeight.w400,
                   ),
                   isCollapsed: true,
                   contentPadding: const EdgeInsets.symmetric(vertical: 8),
-                  border: InputBorder.none,
                 ),
               ),
             ),
@@ -3803,10 +3802,10 @@ class _PrototypeToggleRow extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(title, style: _SettingsTextStyles.fieldValue),
+                    Text(title, style: context.settingsText.fieldValue),
                     if (subtitle != null && subtitle!.isNotEmpty) ...[
                       const SizedBox(height: 4),
-                      Text(subtitle!, style: _SettingsTextStyles.rowSubtitle),
+                      Text(subtitle!, style: context.settingsText.rowSubtitle),
                     ],
                   ],
                 ),
@@ -3857,12 +3856,14 @@ class _CompactInlineValueField extends StatelessWidget {
           spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
           smartDashesType: SmartDashesType.disabled,
           smartQuotesType: SmartQuotesType.disabled,
-          style: _SettingsTextStyles.fieldValue,
-          strutStyle: _SettingsTextStyles.fieldValueStrut,
-          decoration: const InputDecoration(
+          style: context.settingsText.fieldValue,
+          strutStyle: context.settingsText.fieldValueStrut,
+          decoration: openCrayBareInputDecoration.copyWith(
             isCollapsed: true,
-            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-            border: InputBorder.none,
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 12,
+              vertical: 12,
+            ),
           ),
         ),
       ),
@@ -3895,7 +3896,7 @@ class _BudgetOverrideRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Expanded(child: Text(label, style: _SettingsTextStyles.fieldValue)),
+        Expanded(child: Text(label, style: context.settingsText.fieldValue)),
         const SizedBox(width: 12),
         _CompactInlineValueField(
           fieldKey: fieldKey,
@@ -3913,18 +3914,18 @@ class _BudgetOverrideRow extends StatelessWidget {
           child: Text(
             suffix,
             overflow: TextOverflow.ellipsis,
-            style: _SettingsTextStyles.body,
+            style: context.settingsText.body,
           ),
         ),
         InkWell(
           borderRadius: BorderRadius.circular(8),
           onTap: onClear,
-          child: const Padding(
+          child: Padding(
             padding: EdgeInsets.all(6),
             child: Icon(
               Icons.close_rounded,
               size: 16,
-              color: OpenCrayColors.textSecondary,
+              color: context.palette.textSecondary,
             ),
           ),
         ),
@@ -3970,7 +3971,7 @@ class _SliderValueRow extends StatelessWidget {
       children: [
         Row(
           children: [
-            Expanded(child: Text(label, style: _SettingsTextStyles.fieldValue)),
+            Expanded(child: Text(label, style: context.settingsText.fieldValue)),
             const SizedBox(width: 12),
             _CompactInlineValueField(
               controller: controller,
@@ -3988,7 +3989,7 @@ class _SliderValueRow extends StatelessWidget {
           children: [
             SizedBox(
               width: 32,
-              child: Text(minLabel, style: _SettingsTextStyles.selectionMeta),
+              child: Text(minLabel, style: context.settingsText.selectionMeta),
             ),
             Expanded(
               child: SliderTheme(
@@ -4044,13 +4045,13 @@ class _OnDeviceModelTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final chipBackground = selected
-        ? OpenCrayColors.primaryTint
-        : OpenCrayColors.surfaceMuted;
+        ? context.palette.primaryTint
+        : context.palette.surfaceMuted;
     final chipColor = selected
-        ? OpenCrayColors.primary
+        ? context.palette.primary
         : (actionEnabled
-              ? OpenCrayColors.textPrimary
-              : OpenCrayColors.textTertiary);
+              ? context.palette.textPrimary
+              : context.palette.textTertiary);
     return _PrototypeFieldSurface(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
@@ -4064,9 +4065,9 @@ class _OnDeviceModelTile extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(title, style: _SettingsTextStyles.fieldValue),
+                      Text(title, style: context.settingsText.fieldValue),
                       const SizedBox(height: 4),
-                      Text(subtitle, style: _SettingsTextStyles.rowSubtitle),
+                      Text(subtitle, style: context.settingsText.rowSubtitle),
                     ],
                   ),
                 ),
@@ -4088,7 +4089,7 @@ class _OnDeviceModelTile extends StatelessWidget {
                           ),
                           child: Text(
                             actionLabel!,
-                            style: _SettingsTextStyles.valueChip.copyWith(
+                            style: context.settingsText.valueChip.copyWith(
                               color: chipColor,
                             ),
                           ),
@@ -4110,9 +4111,9 @@ class _OnDeviceModelTile extends StatelessWidget {
                         child: LinearProgressIndicator(
                           minHeight: 5,
                           value: progressValue,
-                          backgroundColor: OpenCrayColors.divider,
-                          valueColor: const AlwaysStoppedAnimation<Color>(
-                            OpenCrayColors.primary,
+                          backgroundColor: context.palette.divider,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            context.palette.primary,
                           ),
                         ),
                       ),
@@ -4130,7 +4131,7 @@ class _OnDeviceModelTile extends StatelessWidget {
                         ),
                         child: Text(
                           secondaryActionLabel!,
-                          style: _SettingsTextStyles.inlineAction,
+                          style: context.settingsText.inlineAction,
                         ),
                       ),
                     ),
@@ -4165,7 +4166,7 @@ class _SegmentedSettingRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Expanded(child: Text(label, style: _SettingsTextStyles.fieldValue)),
+        Expanded(child: Text(label, style: context.settingsText.fieldValue)),
         const SizedBox(width: 12),
         SizedBox(
           width: width,

@@ -54,23 +54,23 @@ class _SettingsStatusPill extends StatelessWidget {
       case 'active':
       case 'positive':
       case 'success':
-        backgroundColor = OpenCrayColors.successTint;
-        textColor = OpenCrayColors.success;
+        backgroundColor = context.palette.successTint;
+        textColor = context.palette.success;
         break;
       case 'warning':
       case 'attention':
       case 'caution':
-        backgroundColor = OpenCrayColors.warningTint;
-        textColor = OpenCrayColors.warning;
+        backgroundColor = context.palette.warningTint;
+        textColor = context.palette.warning;
         break;
       case 'danger':
       case 'blocked':
-        backgroundColor = OpenCrayColors.dangerTint;
-        textColor = OpenCrayColors.dangerText;
+        backgroundColor = context.palette.dangerTint;
+        textColor = context.palette.danger;
         break;
       default:
-        backgroundColor = OpenCrayColors.surfaceMuted;
-        textColor = OpenCrayColors.textSecondary;
+        backgroundColor = context.palette.surfaceMuted;
+        textColor = context.palette.textSecondary;
         break;
     }
     return DecoratedBox(
@@ -82,7 +82,7 @@ class _SettingsStatusPill extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         child: Text(
           label,
-          style: _SettingsTextStyles.valueChip.copyWith(color: textColor),
+          style: context.settingsText.valueChip.copyWith(color: textColor),
         ),
       ),
     );
@@ -111,19 +111,19 @@ class _BackLink extends StatelessWidget {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                const SizedBox.square(
+                SizedBox.square(
                   dimension: 24,
                   child: Center(
                     child: Icon(
                       Icons.arrow_back_ios_new_rounded,
                       size: 15,
-                      color: OpenCrayColors.primary,
+                      color: context.palette.primary,
                     ),
                   ),
                 ),
                 if (hasLabel) ...[
                   const SizedBox(width: 2),
-                  Text(label, style: _SettingsTextStyles.actionChip),
+                  Text(label, style: context.settingsText.actionChip),
                 ],
               ],
             ),
@@ -156,21 +156,21 @@ class _SettingsPickerRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 12),
         child: Row(
           children: [
-            Expanded(child: Text(title, style: _SettingsTextStyles.rowTitle)),
+            Expanded(child: Text(title, style: context.settingsText.rowTitle)),
             if (isBusy) ...[
-              const SizedBox(
+              SizedBox(
                 width: 14,
                 height: 14,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
-                  color: OpenCrayColors.primary,
+                  color: context.palette.primary,
                 ),
               ),
               const SizedBox(width: 10),
             ],
             DecoratedBox(
               decoration: BoxDecoration(
-                color: OpenCrayColors.surfaceMuted,
+                color: context.palette.surfaceMuted,
                 borderRadius: BorderRadius.circular(999),
               ),
               child: Padding(
@@ -178,14 +178,14 @@ class _SettingsPickerRow extends StatelessWidget {
                   horizontal: 10,
                   vertical: 5,
                 ),
-                child: Text(value, style: _SettingsTextStyles.valueChip),
+                child: Text(value, style: context.settingsText.valueChip),
               ),
             ),
             const SizedBox(width: 6),
-            const Icon(
+            Icon(
               Icons.chevron_right_rounded,
               size: 18,
-              color: OpenCrayColors.textTertiary,
+              color: context.palette.textTertiary,
             ),
           ],
         ),
@@ -226,8 +226,8 @@ class _PrototypeSelectionRow extends StatelessWidget {
                       alignment: Alignment.centerLeft,
                       child: Text(
                         title,
-                        style: _SettingsTextStyles.fieldValue,
-                        strutStyle: _SettingsTextStyles.fieldValueStrut,
+                        style: context.settingsText.fieldValue,
+                        strutStyle: context.settingsText.fieldValueStrut,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -236,14 +236,14 @@ class _PrototypeSelectionRow extends StatelessWidget {
                   if (trailingLabel != null) ...[
                     Text(
                       trailingLabel!,
-                      style: _SettingsTextStyles.selectionMeta,
+                      style: context.settingsText.selectionMeta,
                     ),
                     const SizedBox(width: 2),
                   ],
-                  const Icon(
+                  Icon(
                     Icons.chevron_right_rounded,
                     size: 20,
-                    color: OpenCrayColors.textTertiary,
+                    color: context.palette.textTertiary,
                   ),
                 ],
               ),
@@ -273,7 +273,7 @@ class _InteractiveSegmentedSelector extends StatelessWidget {
     return OpenCraySegmentedControl(
       labels: labels.map(labelBuilder).toList(growable: false),
       selectedIndex: labels.indexOf(selectedId),
-      textStyle: _SettingsTextStyles.valueChip,
+      textStyle: context.settingsText.valueChip,
       onSelected: (index) => onSelected(labels[index]),
     );
   }
@@ -283,12 +283,15 @@ class _InlineTextAction extends StatelessWidget {
   const _InlineTextAction({
     required this.label,
     required this.onTap,
-    this.color = OpenCrayColors.primary,
+    this.color,
   });
 
   final String label;
   final VoidCallback? onTap;
-  final Color color;
+
+  /// Defaults to the brand ink when omitted; resolved in [build] because the
+  /// palette comes from the theme.
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
@@ -299,7 +302,9 @@ class _InlineTextAction extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 2),
         child: Text(
           label,
-          style: _SettingsTextStyles.inlineAction.copyWith(color: color),
+          style: context.settingsText.inlineAction.copyWith(
+            color: color ?? context.palette.primary,
+          ),
         ),
       ),
     );
@@ -322,13 +327,13 @@ class _FieldClearButton extends StatelessWidget {
           key: buttonKey,
           borderRadius: BorderRadius.circular(999),
           onTap: onTap,
-          child: const SizedBox(
+          child: SizedBox(
             width: 28,
             height: 28,
             child: Icon(
               Icons.close_rounded,
               size: 18,
-              color: OpenCrayColors.textSecondary,
+              color: context.palette.textSecondary,
             ),
           ),
         ),
@@ -346,9 +351,9 @@ class _PrototypeFieldSurface extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: OpenCrayColors.surfaceSubtle,
+        color: context.palette.surfaceSubtle,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: OpenCrayColors.divider),
+        border: Border.all(color: context.palette.divider),
       ),
       child: child,
     );
@@ -394,7 +399,7 @@ class _PrototypeField extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: _SettingsTextStyles.fieldLabel),
+        Text(label, style: context.settingsText.fieldLabel),
         const SizedBox(height: 6),
         _PrototypeFieldSurface(
           child: ConstrainedBox(
@@ -421,18 +426,16 @@ class _PrototypeField extends StatelessWidget {
                     keyboardType: resolvedKeyboardType,
                     minLines: minLines,
                     maxLines: maxLines,
-                    style: _SettingsTextStyles.fieldValue.copyWith(
+                    style: context.settingsText.fieldValue.copyWith(
                       fontWeight: obscureText ? FontWeight.w500 : null,
                     ),
-                    strutStyle: _SettingsTextStyles.fieldValueStrut,
-                    decoration: InputDecoration(
+                    strutStyle: context.settingsText.fieldValueStrut,
+                    decoration: openCrayBareInputDecoration.copyWith(
                       hintText: hintText,
-                      hintStyle: _SettingsTextStyles.fieldValue.copyWith(
-                        color: OpenCrayColors.textTertiary,
+                      hintStyle: context.settingsText.fieldValue.copyWith(
+                        color: context.palette.textTertiary,
                         fontWeight: FontWeight.w400,
                       ),
-                      filled: true,
-                      fillColor: Colors.transparent,
                       isCollapsed: true,
                       contentPadding: EdgeInsets.fromLTRB(
                         12,
@@ -440,7 +443,6 @@ class _PrototypeField extends StatelessWidget {
                         12,
                         minLines == 1 ? 14 : 12,
                       ),
-                      border: InputBorder.none,
                     ),
                   ),
                 ),
@@ -472,7 +474,7 @@ class _PrototypeSelectionField extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: _SettingsTextStyles.fieldLabel),
+        Text(label, style: context.settingsText.fieldLabel),
         const SizedBox(height: 6),
         _PrototypeSelectionRow(
           title: title,
@@ -498,13 +500,13 @@ class _HeaderActionChip extends StatelessWidget {
       height: 16 / 12,
       fontWeight: FontWeight.w600,
       letterSpacing: 0,
-      color: OpenCrayColors.primary,
+      color: context.palette.primary,
     );
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: OpenCrayColors.primaryTint,
+        color: context.palette.primaryTint,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: OpenCrayColors.primaryBorder),
+        border: Border.all(color: context.palette.primaryBorder),
       ),
       child: OpenCrayInkSurface(
         borderRadius: BorderRadius.circular(999),
@@ -514,7 +516,7 @@ class _HeaderActionChip extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             child: Text(
               label,
-              style: textStyle ?? _SettingsTextStyles.actionChip,
+              style: textStyle ?? context.settingsText.actionChip,
             ),
           ),
         ),
@@ -526,22 +528,26 @@ class _HeaderActionChip extends StatelessWidget {
 class _SettingsCard extends StatelessWidget {
   const _SettingsCard({
     required this.child,
-    this.backgroundColor = Colors.white,
-    this.borderColor = OpenCrayColors.divider,
+    this.backgroundColor,
+    this.borderColor,
   });
 
   final Widget child;
-  final Color backgroundColor;
-  final Color borderColor;
+
+  /// Both default to the palette's card surface and hairline; resolved in
+  /// [build] because the palette comes from the theme.
+  final Color? backgroundColor;
+  final Color? borderColor;
 
   @override
   Widget build(BuildContext context) {
+    final OpenCrayPalette palette = context.palette;
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: backgroundColor,
+        color: backgroundColor ?? palette.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: borderColor),
-        boxShadow: OpenCrayShadows.card,
+        border: Border.all(color: borderColor ?? palette.divider),
+        boxShadow: palette.cardShadow,
       ),
       child: OpenCrayInkSurface(
         borderRadius: BorderRadius.circular(16),
@@ -563,9 +569,9 @@ class _DeviceSummaryCard extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const DecoratedBox(
+          DecoratedBox(
             decoration: BoxDecoration(
-              gradient: OpenCrayGradients.brand,
+              gradient: context.palette.brandGradient,
               borderRadius: BorderRadius.all(OpenCrayRadii.md),
             ),
             child: SizedBox.square(
@@ -574,7 +580,7 @@ class _DeviceSummaryCard extends StatelessWidget {
                 child: Icon(
                   Icons.hub_rounded,
                   size: 19,
-                  color: OpenCrayColors.textOnPrimary,
+                  color: context.palette.textOnPrimary,
                 ),
               ),
             ),
@@ -584,9 +590,9 @@ class _DeviceSummaryCard extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: _SettingsTextStyles.cardTitle),
+                Text(title, style: context.settingsText.cardTitle),
                 const SizedBox(height: 4),
-                Text(summary, style: _SettingsTextStyles.body),
+                Text(summary, style: context.settingsText.body),
               ],
             ),
           ),
@@ -609,10 +615,10 @@ class _SettingsEntryGroupCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: OpenCrayColors.surface,
+        color: context.palette.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: OpenCrayColors.divider),
-        boxShadow: OpenCrayShadows.card,
+        border: Border.all(color: context.palette.divider),
+        boxShadow: context.palette.cardShadow,
       ),
       child: OpenCrayInkSurface(
         borderRadius: BorderRadius.circular(16),
@@ -627,9 +633,9 @@ class _SettingsEntryGroupCard extends StatelessWidget {
                 onTap: () => onOpenPage(entries[index].page),
               ),
               if (index < entries.length - 1)
-                const Padding(
+                Padding(
                   padding: EdgeInsets.only(left: 56),
-                  child: Divider(height: 1, color: OpenCrayColors.divider),
+                  child: Divider(height: 1, color: context.palette.divider),
                 ),
             ],
           ],
@@ -657,8 +663,8 @@ class _HomeEntryRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color tint = selected
-        ? OpenCrayColors.primary
-        : OpenCrayColors.textPrimary;
+        ? context.palette.primary
+        : context.palette.textPrimary;
     return InkWell(
       onTap: onTap,
       child: Padding(
@@ -672,13 +678,13 @@ class _HomeEntryRow extends StatelessWidget {
               DecoratedBox(
                 decoration: BoxDecoration(
                   color: selected
-                      ? OpenCrayColors.primaryTint
-                      : OpenCrayColors.surfaceSubtle,
+                      ? context.palette.primaryTint
+                      : context.palette.surfaceSubtle,
                   borderRadius: const BorderRadius.all(OpenCrayRadii.sm),
                   border: Border.all(
                     color: selected
-                        ? OpenCrayColors.primaryBorder
-                        : OpenCrayColors.divider,
+                        ? context.palette.primaryBorder
+                        : context.palette.divider,
                   ),
                 ),
                 child: SizedBox.square(
@@ -688,8 +694,8 @@ class _HomeEntryRow extends StatelessWidget {
                       icon,
                       size: 16,
                       color: selected
-                          ? OpenCrayColors.primary
-                          : OpenCrayColors.textSecondary,
+                          ? context.palette.primary
+                          : context.palette.textSecondary,
                     ),
                   ),
                 ),
@@ -699,15 +705,15 @@ class _HomeEntryRow extends StatelessWidget {
             Expanded(
               child: Text(
                 title,
-                style: _SettingsTextStyles.homeRow.copyWith(color: tint),
+                style: context.settingsText.homeRow.copyWith(color: tint),
               ),
             ),
             Icon(
               Icons.chevron_right_rounded,
               size: 20,
               color: selected
-                  ? OpenCrayColors.primary
-                  : OpenCrayColors.textTertiary,
+                  ? context.palette.primary
+                  : context.palette.textTertiary,
             ),
           ],
         ),
@@ -808,96 +814,92 @@ IconData _iconForSettingsPage(SettingsPage page) {
   }
 }
 
+/// Settings type ramp. Instance-based rather than `static const` so the ink can
+/// come from the theme palette; reach it as `context.settingsText`.
 class _SettingsTextStyles {
-  const _SettingsTextStyles._();
+  const _SettingsTextStyles(this._palette);
 
-  static const TextStyle cardTitle = TextStyle(
+  final OpenCrayPalette _palette;
+
+  TextStyle get cardTitle => TextStyle(
     fontSize: 17,
     height: 1.25,
     fontWeight: FontWeight.w600,
     letterSpacing: -0.2,
-    color: OpenCrayColors.textPrimary,
+    color: _palette.textPrimary,
   );
 
-  static const TextStyle body = TextStyle(
-    fontSize: 13,
-    height: 1.35,
-    color: OpenCrayColors.textSecondary,
-  );
+  TextStyle get body =>
+      TextStyle(fontSize: 13, height: 1.35, color: _palette.textSecondary);
 
-  static const TextStyle inlineAction = TextStyle(
+  TextStyle get inlineAction => TextStyle(
     fontSize: 13,
     height: 1.35,
     fontWeight: FontWeight.w700,
-    color: OpenCrayColors.primary,
+    color: _palette.primary,
   );
 
-  static const TextStyle bodyStrong = TextStyle(
+  TextStyle get bodyStrong => TextStyle(
     fontSize: 15,
     height: 1.3,
     fontWeight: FontWeight.w500,
-    color: OpenCrayColors.textPrimary,
+    color: _palette.textPrimary,
   );
 
-  static const TextStyle fieldLabel = TextStyle(
+  TextStyle get fieldLabel => TextStyle(
     fontSize: 13,
     height: 18 / 13,
     fontWeight: FontWeight.w500,
-    color: OpenCrayColors.textSecondary,
+    color: _palette.textSecondary,
   );
 
-  static const TextStyle fieldValue = TextStyle(
+  TextStyle get fieldValue => TextStyle(
     fontSize: 15,
     height: 20 / 15,
     fontWeight: FontWeight.w500,
-    color: OpenCrayColors.textPrimary,
+    color: _palette.textPrimary,
   );
 
-  static const StrutStyle fieldValueStrut = StrutStyle(
-    fontSize: 15,
-    height: 20 / 15,
-    forceStrutHeight: true,
-  );
+  StrutStyle get fieldValueStrut =>
+      const StrutStyle(fontSize: 15, height: 20 / 15, forceStrutHeight: true);
 
-  static const TextStyle rowTitle = TextStyle(
+  TextStyle get rowTitle => TextStyle(
     fontSize: 15,
     height: 1.25,
     fontWeight: FontWeight.w500,
-    color: OpenCrayColors.textPrimary,
+    color: _palette.textPrimary,
   );
 
-  static const TextStyle rowSubtitle = TextStyle(
-    fontSize: 13,
-    height: 1.35,
-    color: OpenCrayColors.textSecondary,
-  );
+  TextStyle get rowSubtitle =>
+      TextStyle(fontSize: 13, height: 1.35, color: _palette.textSecondary);
 
-  static const TextStyle valueChip = TextStyle(
+  TextStyle get valueChip => TextStyle(
     fontSize: 11,
     height: 14 / 11,
     fontWeight: FontWeight.w500,
-    color: OpenCrayColors.textPrimary,
+    color: _palette.textPrimary,
   );
 
-  static const TextStyle selectionMeta = TextStyle(
+  TextStyle get selectionMeta => TextStyle(
     fontSize: 12,
     height: 16 / 12,
     fontWeight: FontWeight.w500,
-    color: OpenCrayColors.textTertiary,
+    color: _palette.textTertiary,
   );
 
-  static const TextStyle actionChip = TextStyle(
+  TextStyle get actionChip => TextStyle(
     fontSize: 12,
     height: 16 / 12,
     fontWeight: FontWeight.w600,
-    color: OpenCrayColors.primary,
+    color: _palette.primary,
   );
 
-  static const TextStyle homeRow = TextStyle(
-    fontSize: 16,
-    height: 1.2,
-    fontWeight: FontWeight.w500,
-  );
+  TextStyle get homeRow =>
+      const TextStyle(fontSize: 16, height: 1.2, fontWeight: FontWeight.w500);
+}
+
+extension _SettingsTextAccess on BuildContext {
+  _SettingsTextStyles get settingsText => _SettingsTextStyles(palette);
 }
 
 class _EnumSegmentedSelector<T> extends StatelessWidget {
@@ -918,7 +920,7 @@ class _EnumSegmentedSelector<T> extends StatelessWidget {
     return OpenCraySegmentedControl(
       labels: values.map(labelBuilder).toList(growable: false),
       selectedIndex: values.indexOf(currentValue),
-      textStyle: _SettingsTextStyles.valueChip,
+      textStyle: context.settingsText.valueChip,
       verticalPadding: 10,
       onSelected: onChanged == null
           ? null
@@ -956,9 +958,9 @@ class _PrototypeToggleTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title, style: _SettingsTextStyles.rowTitle),
+                  Text(title, style: context.settingsText.rowTitle),
                   const SizedBox(height: 2),
-                  Text(subtitle, style: _SettingsTextStyles.rowSubtitle),
+                  Text(subtitle, style: context.settingsText.rowSubtitle),
                 ],
               ),
             ),
@@ -998,7 +1000,7 @@ class _PrototypeSwitchRow extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Expanded(child: Text(title, style: _SettingsTextStyles.rowTitle)),
+            Expanded(child: Text(title, style: context.settingsText.rowTitle)),
             const SizedBox(width: 12),
             OpenCraySwitch(
               value: value,
@@ -1034,20 +1036,20 @@ class _PrototypeDisclosureRow extends StatelessWidget {
         padding: EdgeInsets.symmetric(vertical: verticalPadding),
         child: Row(
           children: [
-            Expanded(child: Text(title, style: _SettingsTextStyles.rowTitle)),
+            Expanded(child: Text(title, style: context.settingsText.rowTitle)),
             if (value != null) ...[
               Text(
                 value!,
-                style: _SettingsTextStyles.rowTitle.copyWith(
-                  color: OpenCrayColors.textSecondary,
+                style: context.settingsText.rowTitle.copyWith(
+                  color: context.palette.textSecondary,
                 ),
               ),
               const SizedBox(width: 6),
             ],
-            const Icon(
+            Icon(
               Icons.chevron_right_rounded,
               size: 20,
-              color: OpenCrayColors.textTertiary,
+              color: context.palette.textTertiary,
             ),
           ],
         ),
@@ -1068,7 +1070,7 @@ class _PrototypeValueRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 12),
       child: Row(
         children: [
-          Expanded(child: Text(title, style: _SettingsTextStyles.rowTitle)),
+          Expanded(child: Text(title, style: context.settingsText.rowTitle)),
           _PrototypeValuePill(value: value),
         ],
       ),
@@ -1110,17 +1112,17 @@ class _PrototypeStepperRow extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: _SettingsTextStyles.rowTitle),
+          Text(title, style: context.settingsText.rowTitle),
           const SizedBox(height: 4),
-          Text(subtitle, style: _SettingsTextStyles.rowSubtitle),
+          Text(subtitle, style: context.settingsText.rowSubtitle),
           const SizedBox(height: 10),
           Align(
             alignment: Alignment.centerLeft,
             child: DecoratedBox(
               decoration: BoxDecoration(
-                color: OpenCrayColors.surfaceSubtle,
+                color: context.palette.surfaceSubtle,
                 borderRadius: const BorderRadius.all(OpenCrayRadii.pill),
-                border: Border.all(color: OpenCrayColors.divider),
+                border: Border.all(color: context.palette.divider),
               ),
               child: OpenCrayInkSurface(
                 borderRadius: const BorderRadius.all(OpenCrayRadii.pill),
@@ -1185,8 +1187,8 @@ class _StepperButton extends StatelessWidget {
             size: 18,
             semanticLabel: label,
             color: enabled
-                ? OpenCrayColors.textPrimary
-                : OpenCrayColors.textTertiary,
+                ? context.palette.textPrimary
+                : context.palette.textTertiary,
           ),
         ),
       ),
@@ -1199,9 +1201,9 @@ class _StepperDivider extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const SizedBox(
+    return SizedBox(
       width: 1,
-      child: ColoredBox(color: OpenCrayColors.divider),
+      child: ColoredBox(color: context.palette.divider),
     );
   }
 }
@@ -1224,7 +1226,7 @@ class _StepperValueCell extends StatelessWidget {
             child: Text(
               value,
               textAlign: TextAlign.center,
-              style: _SettingsTextStyles.valueChip.copyWith(
+              style: context.settingsText.valueChip.copyWith(
                 fontSize: 13,
                 height: 18 / 13,
                 fontWeight: FontWeight.w600,
@@ -1246,13 +1248,13 @@ class _PrototypeValuePill extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: OpenCrayColors.surfaceSubtle,
+        color: context.palette.surfaceSubtle,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: OpenCrayColors.divider),
+        border: Border.all(color: context.palette.divider),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-        child: Text(value, style: _SettingsTextStyles.valueChip),
+        child: Text(value, style: context.settingsText.valueChip),
       ),
     );
   }
@@ -1302,14 +1304,14 @@ class _PolicySelectionCard extends StatelessWidget {
                         },
                 ),
                 if (index < ToolPolicyOverride.values.length - 1)
-                  const Divider(height: 1, color: OpenCrayColors.divider),
+                  Divider(height: 1, color: context.palette.divider),
               ],
             ],
           ),
         ),
         if (footnote != null) ...[
           const SizedBox(height: 12),
-          Text(footnote!, style: _SettingsTextStyles.rowSubtitle),
+          Text(footnote!, style: context.settingsText.rowSubtitle),
         ],
       ],
     );
@@ -1339,13 +1341,13 @@ class _PolicyOptionTile extends StatelessWidget {
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Expanded(child: Text(title, style: _SettingsTextStyles.rowTitle)),
+            Expanded(child: Text(title, style: context.settingsText.rowTitle)),
             const SizedBox(width: 12),
             if (trailingLabel != null && !selected) ...[
               Text(
                 trailingLabel!,
-                style: _SettingsTextStyles.rowTitle.copyWith(
-                  color: OpenCrayColors.textSecondary,
+                style: context.settingsText.rowTitle.copyWith(
+                  color: context.palette.textSecondary,
                 ),
               ),
               const SizedBox(width: 10),
@@ -1373,7 +1375,7 @@ class _ApprovedPathTile extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: OpenCrayColors.surfaceSubtle,
+        color: context.palette.surfaceSubtle,
         borderRadius: BorderRadius.circular(14),
       ),
       child: Padding(
@@ -1385,9 +1387,9 @@ class _ApprovedPathTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title, style: _SettingsTextStyles.rowTitle),
+                  Text(title, style: context.settingsText.rowTitle),
                   const SizedBox(height: 4),
-                  Text(subtitle, style: _SettingsTextStyles.rowSubtitle),
+                  Text(subtitle, style: context.settingsText.rowSubtitle),
                 ],
               ),
             ),

@@ -197,15 +197,15 @@ class _NotificationsBackgroundSettingsPageState
         children: [
           Text(
             copy.backgroundStatusTitle,
-            style: _SettingsTextStyles.cardTitle,
+            style: context.settingsText.cardTitle,
           ),
           const SizedBox(height: 8),
           Text(
             copy.backgroundStatusSummary(status),
-            style: _SettingsTextStyles.body,
+            style: context.settingsText.body,
           ),
           const SizedBox(height: 12),
-          const Divider(height: 1, color: OpenCrayColors.divider),
+          Divider(height: 1, color: context.palette.divider),
           _NotificationActionRow(
             title: copy.backgroundCurrentStatusTitle,
             subtitle: copy.backgroundStatusBody(status),
@@ -226,9 +226,9 @@ class _NotificationsBackgroundSettingsPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(copy.notificationsTitle, style: _SettingsTextStyles.cardTitle),
+          Text(copy.notificationsTitle, style: context.settingsText.cardTitle),
           const SizedBox(height: 8),
-          Text(copy.notificationsHelper, style: _SettingsTextStyles.body),
+          Text(copy.notificationsHelper, style: context.settingsText.body),
           const SizedBox(height: 8),
           _NotificationToggleRow(
             key: const ValueKey<String>('notification-master-enabled'),
@@ -238,7 +238,7 @@ class _NotificationsBackgroundSettingsPageState
             onChanged: (value) =>
                 _updateSettings(settings.copyWith(masterEnabled: value)),
           ),
-          const Divider(height: 1, color: OpenCrayColors.divider),
+          Divider(height: 1, color: context.palette.divider),
           _NotificationActionRow(
             title: copy.manageEventAlertsTitle,
             subtitle: copy.manageEventAlertsSubtitle(
@@ -264,9 +264,9 @@ class _NotificationsBackgroundSettingsPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(copy.deliveryTitle, style: _SettingsTextStyles.cardTitle),
+          Text(copy.deliveryTitle, style: context.settingsText.cardTitle),
           const SizedBox(height: 8),
-          Text(copy.deliveryHelper, style: _SettingsTextStyles.body),
+          Text(copy.deliveryHelper, style: context.settingsText.body),
           const SizedBox(height: 8),
           _NotificationActionRow(
             title: copy.defaultDeliveryRowTitle,
@@ -276,7 +276,7 @@ class _NotificationsBackgroundSettingsPageState
             valueLabel: copy.deliveryModeLabel(settings.defaultDeliveryMode),
             onTap: _openDeliveryModeSheet,
           ),
-          const Divider(height: 1, color: OpenCrayColors.divider),
+          Divider(height: 1, color: context.palette.divider),
           _NotificationToggleRow(
             key: const ValueKey<String>('notification-quiet-hours-enabled'),
             title: copy.quietHoursTitle,
@@ -290,13 +290,13 @@ class _NotificationsBackgroundSettingsPageState
                 _updateSettings(settings.copyWith(quietHoursEnabled: value)),
           ),
           if (settings.quietHoursEnabled) ...[
-            const Divider(height: 1, color: OpenCrayColors.divider),
+            Divider(height: 1, color: context.palette.divider),
             _SettingsPickerRow(
               title: copy.quietHoursStartTitle,
               value: _formatMinutesOfDay(settings.quietHoursStartMinutes),
               onTap: _pickQuietHoursStart,
             ),
-            const Divider(height: 1, color: OpenCrayColors.divider),
+            Divider(height: 1, color: context.palette.divider),
             _SettingsPickerRow(
               title: copy.quietHoursEndTitle,
               value: _formatMinutesOfDay(settings.quietHoursEndMinutes),
@@ -320,9 +320,9 @@ class _NotificationsBackgroundSettingsPageState
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(copy.systemTitle, style: _SettingsTextStyles.cardTitle),
+          Text(copy.systemTitle, style: context.settingsText.cardTitle),
           const SizedBox(height: 8),
-          Text(copy.systemHelper, style: _SettingsTextStyles.body),
+          Text(copy.systemHelper, style: context.settingsText.body),
           const SizedBox(height: 8),
           _NotificationActionRow(
             title: copy.foregroundServiceNoticeTitle,
@@ -337,7 +337,7 @@ class _NotificationsBackgroundSettingsPageState
                 _activeActionId ==
                 StrongBackgroundActionId.openNotificationSettings,
           ),
-          const Divider(height: 1, color: OpenCrayColors.divider),
+          Divider(height: 1, color: context.palette.divider),
           _NotificationActionRow(
             title: copy.exactAlarmsBatteryTitle,
             subtitle: copy.exactAlarmsBatterySubtitle(
@@ -467,8 +467,8 @@ class _NotificationsBackgroundSettingsPageState
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             child: DecoratedBox(
-              decoration: const BoxDecoration(
-                color: Colors.white,
+              decoration: BoxDecoration(
+                color: context.palette.surface,
                 borderRadius: BorderRadius.all(Radius.circular(22)),
               ),
               child: Padding(
@@ -483,14 +483,14 @@ class _NotificationsBackgroundSettingsPageState
                         height: 4,
                         margin: const EdgeInsets.only(bottom: 16),
                         decoration: BoxDecoration(
-                          color: OpenCrayColors.divider,
+                          color: context.palette.divider,
                           borderRadius: BorderRadius.circular(999),
                         ),
                       ),
                     ),
                     Text(
                       copy.defaultDeliverySheetTitle,
-                      style: _SettingsTextStyles.cardTitle,
+                      style: context.settingsText.cardTitle,
                     ),
                     const SizedBox(height: 12),
                     for (final mode in NotificationDeliveryMode.values)
@@ -507,21 +507,21 @@ class _NotificationsBackgroundSettingsPageState
                                   children: [
                                     Text(
                                       copy.deliveryModeLabel(mode),
-                                      style: _SettingsTextStyles.rowTitle,
+                                      style: context.settingsText.rowTitle,
                                     ),
                                     const SizedBox(height: 4),
                                     Text(
                                       copy.deliveryModeDescription(mode),
-                                      style: _SettingsTextStyles.rowSubtitle,
+                                      style: context.settingsText.rowSubtitle,
                                     ),
                                   ],
                                 ),
                               ),
                               if (mode == settings.defaultDeliveryMode)
-                                const Icon(
+                                Icon(
                                   Icons.check_rounded,
                                   size: 18,
-                                  color: OpenCrayColors.primary,
+                                  color: context.palette.primary,
                                 ),
                             ],
                           ),
@@ -775,7 +775,7 @@ class _NotificationEventAlertsSettingsPageState
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(copy.eventAlertsHelper, style: _SettingsTextStyles.body),
+                Text(copy.eventAlertsHelper, style: context.settingsText.body),
                 const SizedBox(height: 8),
                 for (int index = 0; index < events.length; index++) ...[
                   _NotificationToggleRow(
@@ -789,7 +789,7 @@ class _NotificationEventAlertsSettingsPageState
                         _updateSettings(events[index].update(settings, value)),
                   ),
                   if (index < events.length - 1)
-                    const Divider(height: 1, color: OpenCrayColors.divider),
+                    Divider(height: 1, color: context.palette.divider),
                 ],
               ],
             ),
@@ -884,9 +884,9 @@ class _NotificationToggleRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: _SettingsTextStyles.rowTitle),
+                Text(title, style: context.settingsText.rowTitle),
                 const SizedBox(height: 4),
-                Text(subtitle, style: _SettingsTextStyles.rowSubtitle),
+                Text(subtitle, style: context.settingsText.rowSubtitle),
               ],
             ),
           ),
@@ -927,22 +927,22 @@ class _NotificationActionRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: _SettingsTextStyles.rowTitle),
+                Text(title, style: context.settingsText.rowTitle),
                 const SizedBox(height: 4),
-                Text(subtitle, style: _SettingsTextStyles.rowSubtitle),
+                Text(subtitle, style: context.settingsText.rowSubtitle),
               ],
             ),
           ),
           const SizedBox(width: 12),
           if (isBusy) ...[
-            const Padding(
+            Padding(
               padding: EdgeInsets.only(top: 4),
               child: SizedBox(
                 width: 14,
                 height: 14,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
-                  color: OpenCrayColors.primary,
+                  color: context.palette.primary,
                 ),
               ),
             ),
@@ -950,22 +950,22 @@ class _NotificationActionRow extends StatelessWidget {
           ],
           DecoratedBox(
             decoration: BoxDecoration(
-              color: OpenCrayColors.surfaceMuted,
+              color: context.palette.surfaceMuted,
               borderRadius: BorderRadius.circular(999),
             ),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              child: Text(valueLabel, style: _SettingsTextStyles.valueChip),
+              child: Text(valueLabel, style: context.settingsText.valueChip),
             ),
           ),
           if (onTap != null) ...[
             const SizedBox(width: 6),
-            const Padding(
+            Padding(
               padding: EdgeInsets.only(top: 2),
               child: Icon(
                 Icons.chevron_right_rounded,
                 size: 18,
-                color: OpenCrayColors.textTertiary,
+                color: context.palette.textTertiary,
               ),
             ),
           ],

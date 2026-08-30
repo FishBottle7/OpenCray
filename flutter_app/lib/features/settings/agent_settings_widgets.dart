@@ -28,13 +28,13 @@ class _AgentListCard extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(agent.name, style: _SettingsTextStyles.cardTitle),
+                      Text(agent.name, style: context.settingsText.cardTitle),
                       const SizedBox(height: 2),
                       Text(
                         agent.summary,
-                        style: _SettingsTextStyles.body.copyWith(
+                        style: context.settingsText.body.copyWith(
                           fontSize: 12,
-                          color: OpenCrayColors.textTertiary,
+                          color: context.palette.textTertiary,
                         ),
                       ),
                     ],
@@ -45,14 +45,14 @@ class _AgentListCard extends StatelessWidget {
             const SizedBox(height: 10),
             Text(
               agent.description,
-              style: _SettingsTextStyles.bodyStrong.copyWith(
+              style: context.settingsText.bodyStrong.copyWith(
                 fontSize: 13,
                 fontWeight: FontWeight.w400,
-                color: OpenCrayColors.textSecondary,
+                color: context.palette.textSecondary,
               ),
             ),
             const SizedBox(height: 10),
-            Text(agent.meta, style: _SettingsTextStyles.selectionMeta),
+            Text(agent.meta, style: context.settingsText.selectionMeta),
           ],
         ),
       ),
@@ -74,7 +74,10 @@ class _AgentCreateStatusCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final _AgentStatusVisual visual = _AgentStatusVisual.fromStatus(status);
+    final _AgentStatusVisual visual = _AgentStatusVisual.fromStatus(
+      status,
+      context.palette,
+    );
     final String modelLabel = draft.model.trim().isEmpty
         ? 'Model'
         : draft.model.trim();
@@ -113,7 +116,7 @@ class _AgentCreateStatusCard extends StatelessWidget {
                     ],
                     Text(
                       visual.label,
-                      style: _SettingsTextStyles.selectionMeta.copyWith(
+                      style: context.settingsText.selectionMeta.copyWith(
                         color: visual.textColor,
                         fontWeight: FontWeight.w700,
                       ),
@@ -126,7 +129,7 @@ class _AgentCreateStatusCard extends StatelessWidget {
                 modelSummary,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: _SettingsTextStyles.selectionMeta,
+                style: context.settingsText.selectionMeta,
               ),
             ],
           ),
@@ -135,18 +138,18 @@ class _AgentCreateStatusCard extends StatelessWidget {
             draft.agentName.trim().isEmpty ? 'Unnamed agent' : draft.agentName,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: _SettingsTextStyles.cardTitle.copyWith(fontSize: 15),
+            style: context.settingsText.cardTitle.copyWith(fontSize: 15),
           ),
           const SizedBox(height: 4),
           Text(
             detail?.trim().isNotEmpty == true ? detail! : behaviorSummary,
             maxLines: 2,
             overflow: TextOverflow.ellipsis,
-            style: _SettingsTextStyles.body.copyWith(
+            style: context.settingsText.body.copyWith(
               fontSize: 12,
               color: status == _AgentCreateStatus.failed
-                  ? OpenCrayColors.dangerText
-                  : OpenCrayColors.textTertiary,
+                  ? context.palette.danger
+                  : context.palette.textTertiary,
             ),
           ),
         ],
@@ -168,37 +171,40 @@ class _AgentStatusVisual {
   final Color borderColor;
   final Color textColor;
 
-  factory _AgentStatusVisual.fromStatus(_AgentCreateStatus status) {
+  factory _AgentStatusVisual.fromStatus(
+    _AgentCreateStatus status,
+    OpenCrayPalette palette,
+  ) {
     return switch (status) {
-      _AgentCreateStatus.clean => const _AgentStatusVisual(
+      _AgentCreateStatus.clean => _AgentStatusVisual(
         label: 'Draft ready',
-        surfaceColor: OpenCrayColors.surfaceMuted,
-        borderColor: OpenCrayColors.divider,
-        textColor: OpenCrayColors.textSecondary,
+        surfaceColor: palette.surfaceMuted,
+        borderColor: palette.divider,
+        textColor: palette.textSecondary,
       ),
-      _AgentCreateStatus.edited => const _AgentStatusVisual(
+      _AgentCreateStatus.edited => _AgentStatusVisual(
         label: 'Unsaved changes',
-        surfaceColor: OpenCrayColors.warningTint,
-        borderColor: OpenCrayColors.warningBorder,
-        textColor: OpenCrayColors.warning,
+        surfaceColor: palette.warningTint,
+        borderColor: palette.warningBorder,
+        textColor: palette.warning,
       ),
-      _AgentCreateStatus.saving => const _AgentStatusVisual(
+      _AgentCreateStatus.saving => _AgentStatusVisual(
         label: 'Saving agent',
-        surfaceColor: OpenCrayColors.primaryTint,
-        borderColor: OpenCrayColors.primaryBorder,
-        textColor: OpenCrayColors.primary,
+        surfaceColor: palette.primaryTint,
+        borderColor: palette.primaryBorder,
+        textColor: palette.primary,
       ),
-      _AgentCreateStatus.saved => const _AgentStatusVisual(
+      _AgentCreateStatus.saved => _AgentStatusVisual(
         label: 'Saved',
-        surfaceColor: OpenCrayColors.successTint,
-        borderColor: OpenCrayColors.successBorder,
-        textColor: OpenCrayColors.success,
+        surfaceColor: palette.successTint,
+        borderColor: palette.successBorder,
+        textColor: palette.success,
       ),
-      _AgentCreateStatus.failed => const _AgentStatusVisual(
+      _AgentCreateStatus.failed => _AgentStatusVisual(
         label: 'Save failed',
-        surfaceColor: OpenCrayColors.dangerTint,
-        borderColor: OpenCrayColors.dangerBorder,
-        textColor: OpenCrayColors.dangerText,
+        surfaceColor: palette.dangerTint,
+        borderColor: palette.dangerBorder,
+        textColor: palette.danger,
       ),
     };
   }
@@ -215,7 +221,7 @@ class _AgentAvatarField extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('Avatar', style: _SettingsTextStyles.fieldLabel),
+        Text('Avatar', style: context.settingsText.fieldLabel),
         const SizedBox(height: 6),
         InkWell(
           borderRadius: BorderRadius.circular(12),
@@ -300,7 +306,7 @@ class _AgentSummaryLinkRow extends StatelessWidget {
         padding: const EdgeInsets.symmetric(vertical: 10),
         child: Row(
           children: [
-            Expanded(child: Text(title, style: _SettingsTextStyles.rowTitle)),
+            Expanded(child: Text(title, style: context.settingsText.rowTitle)),
             const SizedBox(width: 12),
             Flexible(
               child: Text(
@@ -308,14 +314,14 @@ class _AgentSummaryLinkRow extends StatelessWidget {
                 textAlign: TextAlign.right,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: _SettingsTextStyles.selectionMeta.copyWith(fontSize: 13),
+                style: context.settingsText.selectionMeta.copyWith(fontSize: 13),
               ),
             ),
             const SizedBox(width: 6),
-            const Icon(
+            Icon(
               Icons.chevron_right_rounded,
               size: 18,
-              color: OpenCrayColors.textTertiary,
+              color: context.palette.textTertiary,
             ),
           ],
         ),
@@ -347,13 +353,13 @@ class _AgentChoiceTile extends StatelessWidget {
       constraints: const BoxConstraints(minHeight: 64),
       decoration: BoxDecoration(
         color: selected
-            ? OpenCrayColors.surfaceAccent
-            : OpenCrayColors.surfaceSubtle,
+            ? context.palette.primaryTint
+            : context.palette.surfaceSubtle,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: selected
-              ? OpenCrayColors.primaryBorder
-              : OpenCrayColors.divider,
+              ? context.palette.primaryBorder
+              : context.palette.divider,
         ),
       ),
       child: OpenCrayInkSurface(
@@ -370,7 +376,7 @@ class _AgentChoiceTile extends StatelessWidget {
                     Expanded(
                       child: Text(
                         title,
-                        style: _SettingsTextStyles.rowTitle.copyWith(
+                        style: context.settingsText.rowTitle.copyWith(
                           fontWeight: FontWeight.w600,
                         ),
                       ),
@@ -384,9 +390,9 @@ class _AgentChoiceTile extends StatelessWidget {
                 const SizedBox(height: 2),
                 Text(
                   body,
-                  style: _SettingsTextStyles.body.copyWith(
+                  style: context.settingsText.body.copyWith(
                     fontSize: 13,
-                    color: OpenCrayColors.textSecondary,
+                    color: context.palette.textSecondary,
                   ),
                 ),
               ],
@@ -410,9 +416,9 @@ class _AgentInfoCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Text(title, style: _SettingsTextStyles.cardTitle),
+          Text(title, style: context.settingsText.cardTitle),
           const SizedBox(height: 8),
-          Text(body, style: _SettingsTextStyles.body),
+          Text(body, style: context.settingsText.body),
         ],
       ),
     );
@@ -428,17 +434,17 @@ class _AgentSoftBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: OpenCrayColors.primaryTint,
+        color: context.palette.primaryTint,
         borderRadius: BorderRadius.circular(999),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       child: Text(
         label,
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 11,
           height: 1.2,
           fontWeight: FontWeight.w600,
-          color: OpenCrayColors.primary,
+          color: context.palette.primary,
         ),
       ),
     );
@@ -454,17 +460,17 @@ class _TwinImportNeutralBadge extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: BoxDecoration(
-        color: OpenCrayColors.surfaceMuted,
+        color: context.palette.surfaceMuted,
         borderRadius: BorderRadius.circular(999),
       ),
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       child: Text(
         label,
-        style: const TextStyle(
+        style: TextStyle(
           fontSize: 11,
           height: 1.2,
           fontWeight: FontWeight.w600,
-          color: OpenCrayColors.textSecondary,
+          color: context.palette.textSecondary,
         ),
       ),
     );
@@ -483,11 +489,11 @@ class _TwinImportSignalPill extends StatelessWidget {
       height: 32,
       decoration: BoxDecoration(
         color: active
-            ? OpenCrayColors.surfaceAccent
-            : OpenCrayColors.surfaceMuted,
+            ? context.palette.primaryTint
+            : context.palette.surfaceMuted,
         borderRadius: BorderRadius.circular(999),
         border: active
-            ? Border.all(color: OpenCrayColors.primaryBorder)
+            ? Border.all(color: context.palette.primaryBorder)
             : null,
       ),
       alignment: Alignment.center,
@@ -497,7 +503,7 @@ class _TwinImportSignalPill extends StatelessWidget {
           fontSize: 10,
           height: 1.2,
           fontWeight: FontWeight.w600,
-          color: active ? OpenCrayColors.primary : OpenCrayColors.textSecondary,
+          color: active ? context.palette.primary : context.palette.textSecondary,
         ),
       ),
     );
@@ -514,12 +520,12 @@ class _AgentPillButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: OpenCrayColors.primary,
+        color: context.palette.primary,
         borderRadius: BorderRadius.circular(999),
-        boxShadow: const <BoxShadow>[
+        boxShadow: <BoxShadow>[
           BoxShadow(
-            color: Color(0x332563EB),
-            offset: Offset(0, 2),
+            color: context.palette.primary.withValues(alpha: 0x33 / 0xFF),
+            offset: const Offset(0, 2),
             blurRadius: 8,
           ),
         ],
@@ -565,9 +571,9 @@ class _AgentPrimaryButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        gradient: OpenCrayGradients.brand,
+        gradient: context.palette.brandGradient,
         borderRadius: BorderRadius.circular(16),
-        boxShadow: OpenCrayShadows.brandGlowLarge,
+        boxShadow: context.palette.brandGlowLarge,
       ),
       child: OpenCrayInkSurface(
         borderRadius: BorderRadius.circular(16),
@@ -605,9 +611,9 @@ class _AgentTertiaryButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: OpenCrayColors.primaryTint,
+        color: context.palette.primaryTint,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: OpenCrayColors.primaryBorder),
+        border: Border.all(color: context.palette.primaryBorder),
       ),
       child: OpenCrayInkSurface(
         borderRadius: BorderRadius.circular(999),
@@ -617,11 +623,11 @@ class _AgentTertiaryButton extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             child: Text(
               label,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 11,
                 height: 1.1,
                 fontWeight: FontWeight.w600,
-                color: OpenCrayColors.primary,
+                color: context.palette.primary,
               ),
             ),
           ),
@@ -641,9 +647,9 @@ class _AgentMutedButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: OpenCrayColors.surfaceMuted,
+        color: context.palette.surfaceMuted,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: OpenCrayColors.divider),
+        border: Border.all(color: context.palette.divider),
       ),
       child: OpenCrayInkSurface(
         borderRadius: BorderRadius.circular(999),
@@ -653,11 +659,11 @@ class _AgentMutedButton extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             child: Text(
               label,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 11,
                 height: 1.1,
                 fontWeight: FontWeight.w600,
-                color: OpenCrayColors.textSecondary,
+                color: context.palette.textSecondary,
               ),
             ),
           ),
@@ -675,9 +681,9 @@ class _AgentPlayDot extends StatelessWidget {
     return Container(
       width: 20,
       height: 20,
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: OpenCrayColors.primary,
+        color: context.palette.primary,
       ),
     );
   }
@@ -694,7 +700,7 @@ class _AgentWaveBar extends StatelessWidget {
       width: 4,
       height: height,
       decoration: BoxDecoration(
-        color: OpenCrayColors.brandSky,
+        color: context.palette.brandSky,
         borderRadius: BorderRadius.circular(999),
       ),
     );
@@ -718,9 +724,9 @@ class _AgentUploadZone extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: OpenCrayColors.surfaceSubtle,
+        color: context.palette.surfaceSubtle,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: OpenCrayColors.outline),
+        border: Border.all(color: context.palette.outline),
       ),
       child: OpenCrayInkSurface(
         borderRadius: BorderRadius.circular(14),
@@ -734,7 +740,7 @@ class _AgentUploadZone extends StatelessWidget {
               children: [
                 Text(
                   title,
-                  style: _SettingsTextStyles.bodyStrong.copyWith(
+                  style: context.settingsText.bodyStrong.copyWith(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
                   ),
@@ -743,7 +749,7 @@ class _AgentUploadZone extends StatelessWidget {
                 Text(
                   body,
                   textAlign: TextAlign.center,
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 ),
                 const SizedBox(height: 10),
                 _AgentTertiaryButton(label: buttonLabel, onTap: onTap),
@@ -778,7 +784,7 @@ class _AgentReferenceCard extends StatelessWidget {
         alignment: Alignment.bottomLeft,
         child: Container(
           decoration: BoxDecoration(
-            color: const Color(0xE0FFFFFF),
+            color: context.palette.surface.withValues(alpha: 0xE0 / 0xFF),
             borderRadius: BorderRadius.circular(999),
           ),
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -786,11 +792,11 @@ class _AgentReferenceCard extends StatelessWidget {
             image.label,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 10,
               height: 1.2,
               fontWeight: FontWeight.w600,
-              color: OpenCrayColors.textPrimary,
+              color: context.palette.textPrimary,
             ),
           ),
         ),
@@ -828,19 +834,19 @@ class _AgentDetailActionRow extends StatelessWidget {
                 children: [
                   Text(
                     title,
-                    style: _SettingsTextStyles.rowTitle.copyWith(
+                    style: context.settingsText.rowTitle.copyWith(
                       color: enabled
-                          ? OpenCrayColors.textPrimary
-                          : OpenCrayColors.textTertiary,
+                          ? context.palette.textPrimary
+                          : context.palette.textTertiary,
                     ),
                   ),
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: _SettingsTextStyles.selectionMeta.copyWith(
+                    style: context.settingsText.selectionMeta.copyWith(
                       color: enabled
-                          ? OpenCrayColors.textSecondary
-                          : OpenCrayColors.textTertiary,
+                          ? context.palette.textSecondary
+                          : context.palette.textTertiary,
                     ),
                   ),
                 ],
@@ -849,10 +855,10 @@ class _AgentDetailActionRow extends StatelessWidget {
             const SizedBox(width: 12),
             Text(
               trailingLabel,
-              style: _SettingsTextStyles.selectionMeta.copyWith(
+              style: context.settingsText.selectionMeta.copyWith(
                 color: enabled
-                    ? OpenCrayColors.primary
-                    : OpenCrayColors.textTertiary,
+                    ? context.palette.primary
+                    : context.palette.textTertiary,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -861,8 +867,8 @@ class _AgentDetailActionRow extends StatelessWidget {
               Icons.chevron_right_rounded,
               size: 18,
               color: enabled
-                  ? OpenCrayColors.textTertiary
-                  : OpenCrayColors.outline,
+                  ? context.palette.textTertiary
+                  : context.palette.outline,
             ),
           ],
         ),
@@ -887,7 +893,7 @@ class _AgentMultilineField extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: _SettingsTextStyles.fieldLabel),
+        Text(label, style: context.settingsText.fieldLabel),
         const SizedBox(height: 4),
         _PrototypeFieldSurface(
           child: TextField(
@@ -901,14 +907,13 @@ class _AgentMultilineField extends StatelessWidget {
             spellCheckConfiguration: const SpellCheckConfiguration.disabled(),
             smartDashesType: SmartDashesType.disabled,
             smartQuotesType: SmartQuotesType.disabled,
-            style: _SettingsTextStyles.bodyStrong.copyWith(
+            style: context.settingsText.bodyStrong.copyWith(
               fontSize: 13,
               fontWeight: FontWeight.w400,
             ),
-            decoration: const InputDecoration(
+            decoration: openCrayBareInputDecoration.copyWith(
               isCollapsed: true,
-              contentPadding: EdgeInsets.all(10),
-              border: InputBorder.none,
+              contentPadding: const EdgeInsets.all(10),
             ),
           ),
         ),
@@ -926,7 +931,7 @@ Future<T?> _showSelectionSheet<T>(
 }) {
   return showModalBottomSheet<T>(
     context: context,
-    backgroundColor: Colors.white,
+    backgroundColor: context.palette.surface,
     sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
     shape: const RoundedRectangleBorder(
       borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
@@ -940,18 +945,18 @@ Future<T?> _showSelectionSheet<T>(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(title, style: _SettingsTextStyles.cardTitle),
+              Text(title, style: context.settingsText.cardTitle),
               const SizedBox(height: 12),
               for (int index = 0; index < options.length; index++) ...[
                 DecoratedBox(
                   decoration: BoxDecoration(
                     color: options[index] == selectedValue
-                        ? OpenCrayColors.surfaceAccent
-                        : OpenCrayColors.surfaceSubtle,
+                        ? context.palette.primaryTint
+                        : context.palette.surfaceSubtle,
                     borderRadius: BorderRadius.circular(14),
                     border: options[index] == selectedValue
-                        ? Border.all(color: OpenCrayColors.primaryBorder)
-                        : Border.all(color: OpenCrayColors.divider),
+                        ? Border.all(color: context.palette.primaryBorder)
+                        : Border.all(color: context.palette.divider),
                   ),
                   child: OpenCrayInkSurface(
                     borderRadius: BorderRadius.circular(14),
@@ -965,7 +970,7 @@ Future<T?> _showSelectionSheet<T>(
                             Expanded(
                               child: Text(
                                 labelBuilder(options[index]),
-                                style: _SettingsTextStyles.rowTitle,
+                                style: context.settingsText.rowTitle,
                               ),
                             ),
                             OpenCraySelectionCheck(
@@ -994,7 +999,7 @@ Future<String?> _showImageNamingDialog(
 }) {
   return showDialog<String>(
     context: context,
-    barrierColor: OpenCrayColors.scrim,
+    barrierColor: context.palette.scrim,
     builder: (BuildContext context) {
       final TextEditingController controller = TextEditingController();
       String draftValue = '';
@@ -1006,9 +1011,9 @@ Future<String?> _showImageNamingDialog(
             backgroundColor: Colors.transparent,
             child: Container(
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: context.palette.surface,
                 borderRadius: BorderRadius.circular(22),
-                boxShadow: OpenCrayShadows.floating,
+                boxShadow: context.palette.floatingShadow,
               ),
               padding: const EdgeInsets.all(16),
               child: Column(
@@ -1029,41 +1034,41 @@ Future<String?> _showImageNamingDialog(
                     alignment: Alignment.bottomLeft,
                     child: Container(
                       decoration: BoxDecoration(
-                        color: const Color(0xE0FFFFFF),
+                        color: context.palette.surface.withValues(alpha: 0xE0 / 0xFF),
                         borderRadius: BorderRadius.circular(999),
                       ),
                       padding: const EdgeInsets.symmetric(
                         horizontal: 8,
                         vertical: 4,
                       ),
-                      child: const Text(
+                      child: Text(
                         'New upload',
                         style: TextStyle(
                           fontSize: 10,
                           height: 1.2,
                           fontWeight: FontWeight.w600,
-                          color: OpenCrayColors.textPrimary,
+                          color: context.palette.textPrimary,
                         ),
                       ),
                     ),
                   ),
                   const SizedBox(height: 12),
-                  const Text(
+                  Text(
                     'Image label',
                     style: TextStyle(
                       fontSize: 14,
                       height: 1.2,
                       fontWeight: FontWeight.w600,
-                      color: OpenCrayColors.textPrimary,
+                      color: context.palette.textPrimary,
                     ),
                   ),
                   const SizedBox(height: 6),
                   Container(
                     height: 48,
                     decoration: BoxDecoration(
-                      color: OpenCrayColors.surfaceSubtle,
+                      color: context.palette.surfaceSubtle,
                       borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: OpenCrayColors.outline),
+                      border: Border.all(color: context.palette.outline),
                     ),
                     alignment: Alignment.center,
                     padding: const EdgeInsets.symmetric(horizontal: 14),
@@ -1082,24 +1087,23 @@ Future<String?> _showImageNamingDialog(
                           const SpellCheckConfiguration.disabled(),
                       smartDashesType: SmartDashesType.disabled,
                       smartQuotesType: SmartQuotesType.disabled,
-                      style: _SettingsTextStyles.fieldValue.copyWith(
+                      style: context.settingsText.fieldValue.copyWith(
                         fontWeight: FontWeight.w400,
                       ),
-                      decoration: InputDecoration(
+                      decoration: openCrayBareInputDecoration.copyWith(
                         isCollapsed: true,
-                        border: InputBorder.none,
                         hintText: 'e.g. front portrait, red outfit, warm light',
-                        hintStyle: _SettingsTextStyles.fieldValue.copyWith(
-                          color: OpenCrayColors.textTertiary,
+                        hintStyle: context.settingsText.fieldValue.copyWith(
+                          color: context.palette.textTertiary,
                           fontWeight: FontWeight.w400,
                         ),
                       ),
                     ),
                   ),
                   const SizedBox(height: 10),
-                  const Text(
+                  Text(
                     'This label affects how the agent interprets the image. Use clear, literal wording so the reference is easier to understand later.',
-                    style: _SettingsTextStyles.selectionMeta,
+                    style: context.settingsText.selectionMeta,
                   ),
                   const SizedBox(height: 12),
                   Row(
@@ -1149,15 +1153,15 @@ class _AgentDialogButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final bool enabled = onTap != null;
     final Color background = primary
-        ? (enabled ? OpenCrayColors.primary : OpenCrayColors.surfaceSunken)
-        : OpenCrayColors.surfaceMuted;
+        ? (enabled ? context.palette.primary : context.palette.surfaceSunken)
+        : context.palette.surfaceMuted;
     return DecoratedBox(
       decoration: BoxDecoration(
         color: background,
         borderRadius: BorderRadius.circular(14),
         border: primary
             ? null
-            : Border.all(color: OpenCrayColors.divider),
+            : Border.all(color: context.palette.divider),
       ),
       child: OpenCrayInkSurface(
         borderRadius: BorderRadius.circular(14),
@@ -1176,8 +1180,8 @@ class _AgentDialogButton extends StatelessWidget {
                 height: 1.2,
                 fontWeight: FontWeight.w600,
                 color: primary
-                    ? (enabled ? Colors.white : OpenCrayColors.textTertiary)
-                    : OpenCrayColors.textSecondary,
+                    ? (enabled ? Colors.white : context.palette.textTertiary)
+                    : context.palette.textSecondary,
               ),
             ),
           ),

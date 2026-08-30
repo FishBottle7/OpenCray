@@ -63,14 +63,14 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
             _SettingsCard(
               child: Text(
                 _errorMessage ?? 'Safety settings are unavailable.',
-                style: _SettingsTextStyles.body,
+                style: context.settingsText.body,
               ),
             )
           else ...[
             if (_errorMessage != null) ...[
               _SettingsCard(
-                backgroundColor: OpenCrayColors.warningTint,
-                child: Text(_errorMessage!, style: _SettingsTextStyles.body),
+                backgroundColor: context.palette.warningTint,
+                child: Text(_errorMessage!, style: context.settingsText.body),
               ),
               const SizedBox(height: 16),
             ],
@@ -106,7 +106,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Automation mode', style: _SettingsTextStyles.cardTitle),
+            Text('Automation mode', style: context.settingsText.cardTitle),
             const SizedBox(height: 10),
             _EnumSegmentedSelector<SafetyAutomationMode>(
               values: SafetyAutomationMode.values,
@@ -121,7 +121,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
             const SizedBox(height: 12),
             Text(
               'Mode presets already control approvals and protected actions.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             ),
           ],
         ),
@@ -131,14 +131,14 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               'Advanced overrides',
-              style: _SettingsTextStyles.cardTitle,
+              style: context.settingsText.cardTitle,
             ),
             const SizedBox(height: 8),
             Text(
               'Optional. Most people can stay with the mode preset.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             ),
             const SizedBox(height: 12),
             _PrototypeDisclosureRow(
@@ -152,11 +152,11 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
       _SettingsCard(
         child: Column(
           children: [
-            const Align(
+            Align(
               alignment: Alignment.centerLeft,
               child: Text(
                 'Rollback & limits',
-                style: _SettingsTextStyles.cardTitle,
+                style: context.settingsText.cardTitle,
               ),
             ),
             const SizedBox(height: 12),
@@ -169,12 +169,12 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
                 _persist(snapshot.copyWith(rollbackJournalEnabled: value));
               },
             ),
-            const Divider(height: 1, color: OpenCrayColors.divider),
+            Divider(height: 1, color: context.palette.divider),
             _PrototypeValueRow(
               title: 'Max files per batch',
               value: '${snapshot.maxFilesPerBatch}',
             ),
-            const Divider(height: 1, color: OpenCrayColors.divider),
+            Divider(height: 1, color: context.palette.divider),
             _PrototypeStepperRow(
               title: SafetySettingsCopy.agentTurnLimitTitle,
               subtitle: SafetySettingsCopy.agentTurnLimitSubtitle,
@@ -218,7 +218,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
                 );
               },
             ),
-            const Divider(height: 1, color: OpenCrayColors.divider),
+            Divider(height: 1, color: context.palette.divider),
             _PrototypeStepperRow(
               title: SafetySettingsCopy.toolCallLimitTitle,
               subtitle: SafetySettingsCopy.toolCallLimitSubtitle,
@@ -262,7 +262,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
                 );
               },
             ),
-            const Divider(height: 1, color: OpenCrayColors.divider),
+            Divider(height: 1, color: context.palette.divider),
             _PrototypeValueRow(
               title: 'Undo window',
               value: '${snapshot.undoWindowHours} hours',
@@ -289,7 +289,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
               verticalPadding: 14,
               onTap: () => _push(_SafetySubpage.fileChanges),
             ),
-            const Divider(height: 1, color: OpenCrayColors.divider),
+            Divider(height: 1, color: context.palette.divider),
             _PrototypeDisclosureRow(
               title: 'File deletes',
               value: _effectivePolicyLabel(
@@ -301,7 +301,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
               verticalPadding: 14,
               onTap: () => _push(_SafetySubpage.fileDeletes),
             ),
-            const Divider(height: 1, color: OpenCrayColors.divider),
+            Divider(height: 1, color: context.palette.divider),
             _PrototypeDisclosureRow(
               title: 'Shell commands',
               value: _effectivePolicyLabel(
@@ -313,7 +313,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
               verticalPadding: 14,
               onTap: () => _push(_SafetySubpage.shellCommands),
             ),
-            const Divider(height: 1, color: OpenCrayColors.divider),
+            Divider(height: 1, color: context.palette.divider),
             _PrototypeDisclosureRow(
               title: 'External access',
               value: SafetySettingsCopy.externalAccessModeShortLabel(
@@ -387,7 +387,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Access model', style: _SettingsTextStyles.cardTitle),
+            Text('Access model', style: context.settingsText.cardTitle),
             const SizedBox(height: 10),
             _EnumSegmentedSelector<ExternalAccessMode>(
               values: ExternalAccessMode.values,
@@ -402,7 +402,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
             const SizedBox(height: 12),
             Text(
               'Private app sandboxes stay blocked.',
-              style: _SettingsTextStyles.rowSubtitle,
+              style: context.settingsText.rowSubtitle,
             ),
           ],
         ),
@@ -410,7 +410,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
       const SizedBox(height: 12),
       Text(
         'Public locations',
-        style: _SettingsTextStyles.rowSubtitle.copyWith(
+        style: context.settingsText.rowSubtitle.copyWith(
           fontWeight: FontWeight.w600,
         ),
       ),
@@ -434,7 +434,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
                 },
               ),
               if (index < snapshot.locations.length - 1)
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
             ],
           ],
         ),
@@ -442,7 +442,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
       const SizedBox(height: 12),
       Text(
         'Good for photos and shared downloads.',
-        style: _SettingsTextStyles.rowSubtitle,
+        style: context.settingsText.rowSubtitle,
       ),
     ];
   }
@@ -457,7 +457,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Always approved', style: _SettingsTextStyles.cardTitle),
+            Text('Always approved', style: context.settingsText.cardTitle),
             const SizedBox(height: 12),
             const _ApprovedPathTile(
               title: 'Workspace root',
@@ -466,9 +466,9 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
             ),
             if (visibleLocations.isNotEmpty) ...[
               const SizedBox(height: 14),
-              const Text(
+              Text(
                 'Selective public locations',
-                style: _SettingsTextStyles.cardTitle,
+                style: context.settingsText.cardTitle,
               ),
               const SizedBox(height: 10),
               for (int index = 0; index < visibleLocations.length; index++) ...[
@@ -486,7 +486,7 @@ class _SafetySettingsPageState extends State<_SafetySettingsPage> {
               const SizedBox(height: 14),
               Text(
                 'No extra public locations are currently approved.',
-                style: _SettingsTextStyles.body,
+                style: context.settingsText.body,
               ),
             ],
           ],
@@ -813,19 +813,20 @@ class _WorkspaceAccessSettingsPageState
             _SettingsCard(
               child: Text(
                 _errorMessage ?? 'Workspace access settings are unavailable.',
-                style: _SettingsTextStyles.body,
+                style: context.settingsText.body,
               ),
             )
           else ...[
             if (_errorMessage != null) ...[
               _SettingsCard(
-                backgroundColor: OpenCrayColors.warningTint,
-                child: Text(_errorMessage!, style: _SettingsTextStyles.body),
+                backgroundColor: context.palette.warningTint,
+                child: Text(_errorMessage!, style: context.settingsText.body),
               ),
               const SizedBox(height: 16),
             ],
             ...(_page == _WorkspaceSubpage.root
                 ? _buildWorkspaceAccessShared(
+                    context,
                     _snapshot!,
                     isSaving: _isSaving,
                     onPersist: _persist,
@@ -842,7 +843,7 @@ class _WorkspaceAccessSettingsPageState
                     },
                   )
                 : _page == _WorkspaceSubpage.approvedPaths
-                ? _buildApprovedPathsContent(_snapshot!)
+                ? _buildApprovedPathsContent(context, _snapshot!)
                 : _buildChildAgentContextContent(_snapshot!)),
           ],
         ],
@@ -891,8 +892,8 @@ class _WorkspaceAccessSettingsPageState
             child: ConstrainedBox(
               constraints: BoxConstraints(maxHeight: maxHeight),
               child: DecoratedBox(
-                decoration: const BoxDecoration(
-                  color: Colors.white,
+                decoration: BoxDecoration(
+                  color: context.palette.surface,
                   borderRadius: BorderRadius.all(Radius.circular(22)),
                 ),
                 child: SingleChildScrollView(
@@ -907,19 +908,19 @@ class _WorkspaceAccessSettingsPageState
                           height: 4,
                           margin: const EdgeInsets.only(bottom: 16),
                           decoration: BoxDecoration(
-                            color: OpenCrayColors.divider,
+                            color: context.palette.divider,
                             borderRadius: BorderRadius.circular(999),
                           ),
                         ),
                       ),
                       Text(
                         SafetySettingsCopy.liveContextTitle,
-                        style: _SettingsTextStyles.cardTitle,
+                        style: context.settingsText.cardTitle,
                       ),
                       const SizedBox(height: 8),
                       Text(
                         SafetySettingsCopy.liveContextSubtitle,
-                        style: _SettingsTextStyles.body,
+                        style: context.settingsText.body,
                       ),
                       const SizedBox(height: 12),
                       for (final option in LiveContextMode.values)
@@ -940,24 +941,24 @@ class _WorkspaceAccessSettingsPageState
                                         SafetySettingsCopy.liveContextModeLabel(
                                           option,
                                         ),
-                                        style: _SettingsTextStyles.rowTitle,
+                                        style: context.settingsText.rowTitle,
                                       ),
                                       const SizedBox(height: 4),
                                       Text(
                                         SafetySettingsCopy.liveContextModeSummary(
                                           option,
                                         ),
-                                        style: _SettingsTextStyles.rowSubtitle,
+                                        style: context.settingsText.rowSubtitle,
                                       ),
                                     ],
                                   ),
                                 ),
                                 if (option == snapshot.liveContextMode)
-                                  const Padding(
+                                  Padding(
                                     padding: EdgeInsets.only(left: 12, top: 2),
                                     child: Icon(
                                       Icons.check_rounded,
-                                      color: OpenCrayColors.primary,
+                                      color: context.palette.primary,
                                       size: 18,
                                     ),
                                   ),
@@ -1048,8 +1049,8 @@ class _WorkspaceAccessSettingsPageState
             child: ConstrainedBox(
               constraints: BoxConstraints(maxHeight: maxHeight),
               child: DecoratedBox(
-                decoration: const BoxDecoration(
-                  color: Colors.white,
+                decoration: BoxDecoration(
+                  color: context.palette.surface,
                   borderRadius: BorderRadius.all(Radius.circular(22)),
                 ),
                 child: SingleChildScrollView(
@@ -1064,14 +1065,14 @@ class _WorkspaceAccessSettingsPageState
                           height: 4,
                           margin: const EdgeInsets.only(bottom: 16),
                           decoration: BoxDecoration(
-                            color: OpenCrayColors.divider,
+                            color: context.palette.divider,
                             borderRadius: BorderRadius.circular(999),
                           ),
                         ),
                       ),
-                      Text(title, style: _SettingsTextStyles.cardTitle),
+                      Text(title, style: context.settingsText.cardTitle),
                       const SizedBox(height: 8),
-                      Text(subtitle, style: _SettingsTextStyles.body),
+                      Text(subtitle, style: context.settingsText.body),
                       const SizedBox(height: 12),
                       for (final option in <MapEntry<String, SubAgentContextMode?>>[
                         MapEntry<String, SubAgentContextMode?>(
@@ -1105,7 +1106,7 @@ class _WorkspaceAccessSettingsPageState
                                                   .subAgentContextModeLabel(
                                                     option.value,
                                                   ),
-                                        style: _SettingsTextStyles.rowTitle,
+                                        style: context.settingsText.rowTitle,
                                       ),
                                       const SizedBox(height: 4),
                                       Text(
@@ -1115,17 +1116,17 @@ class _WorkspaceAccessSettingsPageState
                                                   .subAgentContextModeSummary(
                                                     option.value,
                                                   ),
-                                        style: _SettingsTextStyles.rowSubtitle,
+                                        style: context.settingsText.rowSubtitle,
                                       ),
                                     ],
                                   ),
                                 ),
                                 if (option.key == selectedId)
-                                  const Padding(
+                                  Padding(
                                     padding: EdgeInsets.only(left: 12, top: 2),
                                     child: Icon(
                                       Icons.check_rounded,
-                                      color: OpenCrayColors.primary,
+                                      color: context.palette.primary,
                                       size: 18,
                                     ),
                                   ),
@@ -1180,11 +1181,11 @@ class _WorkspaceAccessSettingsPageState
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Default mode', style: _SettingsTextStyles.cardTitle),
+            Text('Default mode', style: context.settingsText.cardTitle),
             const SizedBox(height: 8),
             Text(
               'This applies when a specific child-agent profile has no explicit override.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             ),
             const SizedBox(height: 12),
             _PrototypeDisclosureRow(
@@ -1199,7 +1200,7 @@ class _WorkspaceAccessSettingsPageState
               SafetySettingsCopy.subAgentContextModeSummary(
                 snapshot.subAgentContextDefaultMode,
               ),
-              style: _SettingsTextStyles.rowSubtitle,
+              style: context.settingsText.rowSubtitle,
             ),
           ],
         ),
@@ -1209,14 +1210,14 @@ class _WorkspaceAccessSettingsPageState
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               'Profile overrides',
-              style: _SettingsTextStyles.cardTitle,
+              style: context.settingsText.cardTitle,
             ),
             const SizedBox(height: 8),
             Text(
               'Optional. Use these only when one built-in child profile should behave differently from the shared default.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             ),
             const SizedBox(height: 12),
             for (int index = 0;
@@ -1243,11 +1244,11 @@ class _WorkspaceAccessSettingsPageState
                 SafetySettingsCopy.subAgentContextOverrideSummary(
                   builtInSubAgentProfileIds[index],
                 ),
-                style: _SettingsTextStyles.rowSubtitle,
+                style: context.settingsText.rowSubtitle,
               ),
               if (index < builtInSubAgentProfileIds.length - 1) ...[
                 const SizedBox(height: 12),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 const SizedBox(height: 12),
               ],
             ],
@@ -1259,6 +1260,7 @@ class _WorkspaceAccessSettingsPageState
 }
 
 List<Widget> _buildWorkspaceAccessShared(
+  BuildContext context,
   SafetySettingsSnapshot snapshot, {
   required bool isSaving,
   required Future<void> Function(SafetySettingsSnapshot snapshot) onPersist,
@@ -1271,14 +1273,14 @@ List<Widget> _buildWorkspaceAccessShared(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             SafetySettingsCopy.liveContextTitle,
-            style: _SettingsTextStyles.cardTitle,
+            style: context.settingsText.cardTitle,
           ),
           const SizedBox(height: 8),
           Text(
             SafetySettingsCopy.liveContextSubtitle,
-            style: _SettingsTextStyles.body,
+            style: context.settingsText.body,
           ),
           const SizedBox(height: 12),
           _PrototypeDisclosureRow(
@@ -1291,7 +1293,7 @@ List<Widget> _buildWorkspaceAccessShared(
           const SizedBox(height: 12),
           Text(
             SafetySettingsCopy.liveContextModeSummary(snapshot.liveContextMode),
-            style: _SettingsTextStyles.rowSubtitle,
+            style: context.settingsText.rowSubtitle,
           ),
           const SizedBox(height: 16),
           _PrototypeSwitchRow(
@@ -1305,7 +1307,7 @@ List<Widget> _buildWorkspaceAccessShared(
           const SizedBox(height: 8),
           Text(
             SafetySettingsCopy.memoryToolsSummary(snapshot.memoryToolsEnabled),
-            style: _SettingsTextStyles.rowSubtitle,
+            style: context.settingsText.rowSubtitle,
           ),
         ],
       ),
@@ -1315,14 +1317,14 @@ List<Widget> _buildWorkspaceAccessShared(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             SafetySettingsCopy.childAgentContextTitle,
-            style: _SettingsTextStyles.cardTitle,
+            style: context.settingsText.cardTitle,
           ),
           const SizedBox(height: 8),
           Text(
             SafetySettingsCopy.childAgentContextSubtitle,
-            style: _SettingsTextStyles.body,
+            style: context.settingsText.body,
           ),
           const SizedBox(height: 12),
           _PrototypeDisclosureRow(
@@ -1337,7 +1339,7 @@ List<Widget> _buildWorkspaceAccessShared(
             SafetySettingsCopy.subAgentContextModeSummary(
               snapshot.subAgentContextDefaultMode,
             ),
-            style: _SettingsTextStyles.rowSubtitle,
+            style: context.settingsText.rowSubtitle,
           ),
         ],
       ),
@@ -1347,7 +1349,7 @@ List<Widget> _buildWorkspaceAccessShared(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Access profile', style: _SettingsTextStyles.cardTitle),
+          Text('Access profile', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           _EnumSegmentedSelector<WorkspaceAccessProfile>(
             values: WorkspaceAccessProfile.values,
@@ -1362,7 +1364,7 @@ List<Widget> _buildWorkspaceAccessShared(
           const SizedBox(height: 12),
           Text(
             'Profiles decide read and write scope.',
-            style: _SettingsTextStyles.body,
+            style: context.settingsText.body,
           ),
         ],
       ),
@@ -1372,11 +1374,11 @@ List<Widget> _buildWorkspaceAccessShared(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Allowed roots', style: _SettingsTextStyles.cardTitle),
+          Text('Allowed roots', style: context.settingsText.cardTitle),
           const SizedBox(height: 8),
           Text(
             'Keep file work inside approved folders.',
-            style: _SettingsTextStyles.body,
+            style: context.settingsText.body,
           ),
           const SizedBox(height: 12),
           _PrototypeDisclosureRow(
@@ -1390,9 +1392,9 @@ List<Widget> _buildWorkspaceAccessShared(
     _SettingsCard(
       child: Column(
         children: [
-          const Align(
+          Align(
             alignment: Alignment.centerLeft,
-            child: Text('Write behavior', style: _SettingsTextStyles.cardTitle),
+            child: Text('Write behavior', style: context.settingsText.cardTitle),
           ),
           const SizedBox(height: 12),
           _PrototypeToggleTile(
@@ -1404,12 +1406,12 @@ List<Widget> _buildWorkspaceAccessShared(
               onPersist(snapshot.copyWith(readOnlyOutsideWorkspace: value));
             },
           ),
-          const Divider(height: 1, color: OpenCrayColors.divider),
+          Divider(height: 1, color: context.palette.divider),
           _PrototypeValueRow(
             title: 'Approved roots',
             value: '${snapshot.approvedRootsCount}',
           ),
-          const Divider(height: 1, color: OpenCrayColors.divider),
+          Divider(height: 1, color: context.palette.divider),
           _PrototypeValueRow(
             title: 'Ask before edit',
             value: _askBeforeEditLabel(snapshot.workspaceAccessProfile),
@@ -1420,7 +1422,10 @@ List<Widget> _buildWorkspaceAccessShared(
   ];
 }
 
-List<Widget> _buildApprovedPathsContent(SafetySettingsSnapshot snapshot) {
+List<Widget> _buildApprovedPathsContent(
+  BuildContext context,
+  SafetySettingsSnapshot snapshot,
+) {
   final visibleLocations =
       snapshot.externalAccessMode == ExternalAccessMode.selectPaths
       ? snapshot.locations.where((location) => location.enabled).toList()
@@ -1430,7 +1435,7 @@ List<Widget> _buildApprovedPathsContent(SafetySettingsSnapshot snapshot) {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Always approved', style: _SettingsTextStyles.cardTitle),
+          Text('Always approved', style: context.settingsText.cardTitle),
           const SizedBox(height: 12),
           const _ApprovedPathTile(
             title: 'Workspace root',
@@ -1439,9 +1444,9 @@ List<Widget> _buildApprovedPathsContent(SafetySettingsSnapshot snapshot) {
           ),
           if (visibleLocations.isNotEmpty) ...[
             const SizedBox(height: 14),
-            const Text(
+            Text(
               'Selective public locations',
-              style: _SettingsTextStyles.cardTitle,
+              style: context.settingsText.cardTitle,
             ),
             const SizedBox(height: 10),
             for (int index = 0; index < visibleLocations.length; index++) ...[
@@ -1459,7 +1464,7 @@ List<Widget> _buildApprovedPathsContent(SafetySettingsSnapshot snapshot) {
             const SizedBox(height: 14),
             Text(
               'No extra public locations are currently approved.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             ),
           ],
         ],

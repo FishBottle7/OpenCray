@@ -92,8 +92,8 @@ class _SessionsDrawerOverlayState extends State<_SessionsDrawerOverlay> {
                   curve: isPresented
                       ? OpenCrayMotion.enter
                       : OpenCrayMotion.exit,
-                  child: const ColoredBox(
-                    color: OpenCrayColors.scrimSoft,
+                  child: ColoredBox(
+                    color: context.palette.scrimSoft,
                     child: SizedBox.expand(),
                   ),
                 ),
@@ -111,7 +111,7 @@ class _SessionsDrawerOverlayState extends State<_SessionsDrawerOverlay> {
                   alignment: Alignment.centerLeft,
                   child: Container(
                     width: 286,
-                    color: Colors.white,
+                    color: context.palette.surface,
                     padding: EdgeInsets.fromLTRB(
                       16,
                       safePadding.top + 18,
@@ -123,12 +123,12 @@ class _SessionsDrawerOverlayState extends State<_SessionsDrawerOverlay> {
                       children: <Widget>[
                         Text(
                           widget.drawer.eyebrow,
-                          style: _ChatTextStyles.drawerEyebrow,
+                          style: context.chatText.drawerEyebrow,
                         ),
                         const SizedBox(height: 10),
                         Text(
                           widget.drawer.title,
-                          style: _ChatTextStyles.drawerTitle,
+                          style: context.chatText.drawerTitle,
                         ),
                         const SizedBox(height: 16),
                         GestureDetector(
@@ -138,14 +138,14 @@ class _SessionsDrawerOverlayState extends State<_SessionsDrawerOverlay> {
                             height: 40,
                             width: 132,
                             decoration: BoxDecoration(
-                              gradient: OpenCrayGradients.brand,
+                              gradient: context.palette.brandGradient,
                               borderRadius: BorderRadius.circular(14),
-                              boxShadow: OpenCrayShadows.brandGlow,
+                              boxShadow: context.palette.brandGlow,
                             ),
                             alignment: Alignment.center,
                             child: Text(
                               widget.drawer.ctaLabel,
-                              style: _ChatTextStyles.drawerCta,
+                              style: context.chatText.drawerCta,
                             ),
                           ),
                         ),
@@ -252,19 +252,19 @@ class _SessionListTileState extends State<_SessionListTile> {
     final bool isSelected = widget.session.isSelected;
     final bool hasUnread = widget.session.unreadCount > 0;
     final Color backgroundColor = isSelected
-        ? OpenCrayColors.primaryTint
+        ? context.palette.primaryTint
         : _isPressed
-        ? OpenCrayColors.surfaceMuted
-        : OpenCrayColors.surfaceSubtle;
+        ? context.palette.surfaceMuted
+        : context.palette.surfaceSubtle;
     final Color borderColor = isSelected
-        ? OpenCrayColors.primaryBorder
+        ? context.palette.primaryBorder
         : hasUnread
-        ? OpenCrayColors.dangerBorder
+        ? context.palette.dangerBorder
         : Colors.transparent;
     final Color railColor = isSelected
-        ? _ChatPalette.accent
+        ? context.chatPalette.accent
         : hasUnread
-        ? OpenCrayColors.danger
+        ? context.palette.danger
         : Colors.transparent;
     return Semantics(
       button: true,
@@ -318,7 +318,7 @@ class _SessionListTileState extends State<_SessionListTile> {
                           Expanded(
                             child: Text(
                               widget.session.title,
-                              style: _ChatTextStyles.sessionTitle.copyWith(
+                              style: context.chatText.sessionTitle.copyWith(
                                 fontWeight: isSelected
                                     ? FontWeight.w700
                                     : FontWeight.w600,
@@ -328,7 +328,7 @@ class _SessionListTileState extends State<_SessionListTile> {
                           const SizedBox(width: 8),
                           Text(
                             sessionMetaLabel,
-                            style: _ChatTextStyles.sessionMeta,
+                            style: context.chatText.sessionMeta,
                           ),
                           if (hasUnread) ...<Widget>[
                             const SizedBox(width: 8),
@@ -344,7 +344,7 @@ class _SessionListTileState extends State<_SessionListTile> {
                         widget.session.preview,
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
-                        style: _ChatTextStyles.sessionPreview,
+                        style: context.chatText.sessionPreview,
                       ),
                     ],
                   ),
@@ -380,8 +380,8 @@ class _SessionUnreadBadge extends StatelessWidget {
         key: ValueKey<String>('chat-session-unread-$sessionId'),
         width: 10,
         height: 10,
-        decoration: const BoxDecoration(
-          color: OpenCrayColors.danger,
+        decoration: BoxDecoration(
+          color: context.palette.danger,
           shape: BoxShape.circle,
         ),
       );
@@ -392,13 +392,13 @@ class _SessionUnreadBadge extends StatelessWidget {
       constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
-        color: OpenCrayColors.danger,
+        color: context.palette.danger,
         borderRadius: BorderRadius.circular(999),
       ),
       alignment: Alignment.center,
       child: Text(
         label,
-        style: _ChatTextStyles.timeline.copyWith(
+        style: context.chatText.timeline.copyWith(
           color: Colors.white,
           fontSize: 11,
         ),

@@ -262,11 +262,11 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
               ? '当前运行细节会按工具调用和结果分组展示。'
               : 'Current run details are grouped by tool call and result.');
     final Color containerBorderColor = trace.isHighRisk
-        ? _ChatPalette.highRiskBorder
-        : _ChatPalette.runTraceBorder;
+        ? context.chatPalette.highRiskBorder
+        : context.chatPalette.runTraceBorder;
     return Material(
       key: ValueKey<String>('chat-run-trace-fullscreen-${trace.runId}'),
-      color: _ChatPalette.background,
+      color: context.chatPalette.background,
       child: SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 10, 20, 20),
@@ -279,7 +279,7 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                   Expanded(
                     child: Text(
                       inspectorTitle,
-                      style: _ChatTextStyles.runInspectorTitle,
+                      style: context.chatText.runInspectorTitle,
                     ),
                   ),
                   if (trace.isRetryable && widget.onRetry != null) ...<Widget>[
@@ -295,12 +295,12 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                   GestureDetector(
                     onTap: () => Navigator.of(context).pop(),
                     behavior: HitTestBehavior.opaque,
-                    child: const Padding(
+                    child: Padding(
                       padding: EdgeInsets.all(4),
                       child: Icon(
                         Icons.close_rounded,
                         size: 20,
-                        color: _ChatPalette.textSecondary,
+                        color: context.chatPalette.textSecondary,
                       ),
                     ),
                   ),
@@ -309,7 +309,7 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
               const SizedBox(height: 12),
               DecoratedBox(
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: context.palette.surface,
                   borderRadius: BorderRadius.circular(18),
                   border: Border.all(color: containerBorderColor),
                 ),
@@ -327,28 +327,28 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                 Expanded(
                                   child: Text(
                                     summaryTitle,
-                                    style: _ChatTextStyles.cardTitle,
+                                    style: context.chatText.cardTitle,
                                   ),
                                 ),
                                 const SizedBox(width: 12),
                                 _RunTracePill(
                                   label: compactPresentation.statusLabel,
                                   foregroundColor: trace.isHighRisk
-                                      ? _ChatPalette.highRiskAccent
-                                      : _ChatPalette.runTraceStatusText,
+                                      ? context.chatPalette.highRiskAccent
+                                      : context.chatPalette.runTraceStatusText,
                                   backgroundColor: trace.isHighRisk
-                                      ? _ChatPalette.highRiskBadgeSurface
-                                      : _ChatPalette.runTraceStatusSurface,
+                                      ? context.chatPalette.highRiskBadgeSurface
+                                      : context.chatPalette.runTraceStatusSurface,
                                 ),
                               ],
                             ),
                             const SizedBox(height: 8),
-                            Text(summaryBody, style: _ChatTextStyles.bodyMuted),
+                            Text(summaryBody, style: context.chatText.bodyMuted),
                             if (showCompactSummaryCard) ...<Widget>[
                               const SizedBox(height: 12),
                               Text(
                                 compactPresentation.headline,
-                                style: _ChatTextStyles.runTraceHeadline
+                                style: context.chatText.runTraceHeadline
                                     .copyWith(fontSize: 18),
                               ),
                               if (compactPresentation.description !=
@@ -357,10 +357,10 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                 _OpenCrayMarkdownTextBlock(
                                   copy: copy,
                                   data: compactPresentation.description!,
-                                  bodyStyle: _ChatTextStyles.bodyMuted.copyWith(
-                                    color: _ChatPalette.textPrimary,
+                                  bodyStyle: context.chatText.bodyMuted.copyWith(
+                                    color: context.chatPalette.textPrimary,
                                   ),
-                                  surfaceColor: Colors.white,
+                                  surfaceColor: context.palette.surface,
                                   bridge: widget.bridge,
                                 ),
                               ],
@@ -377,7 +377,7 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                           TextSpan(
                                             text:
                                                 '${line.label}${copy.isChinese ? '  ' : '  '}',
-                                            style: _ChatTextStyles
+                                            style: context.chatText
                                                 .runTraceDetailLabel,
                                           ),
                                           WidgetSpan(
@@ -387,9 +387,9 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                             child: _OpenCrayMarkdownTextBlock(
                                               copy: copy,
                                               data: line.value,
-                                              bodyStyle: _ChatTextStyles
+                                              bodyStyle: context.chatText
                                                   .runTraceDetailValue,
-                                              surfaceColor: Colors.white,
+                                              surfaceColor: context.palette.surface,
                                               bridge: widget.bridge,
                                               preferAccentForStrong: true,
                                             ),
@@ -412,7 +412,7 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
               Expanded(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: context.palette.surface,
                     borderRadius: BorderRadius.circular(24),
                     border: Border.all(color: containerBorderColor),
                   ),
@@ -423,10 +423,10 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                         padding: const EdgeInsets.fromLTRB(8, 12, 8, 6),
                         child: _buildActorTabs(actorSections),
                       ),
-                      const Divider(
+                      Divider(
                         height: 1,
                         thickness: 1,
-                        color: _ChatPalette.runTraceTabDivider,
+                        color: context.chatPalette.runTraceTabDivider,
                       ),
                       Expanded(
                         child: Scrollbar(
@@ -492,7 +492,7 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                 if (supplementalBody != null)
                                   DecoratedBox(
                                     decoration: BoxDecoration(
-                                      color: _ChatPalette.runTraceDetailSurface,
+                                      color: context.chatPalette.runTraceDetailSurface,
                                       borderRadius: BorderRadius.circular(18),
                                     ),
                                     child: Padding(
@@ -500,12 +500,12 @@ class _RunTraceFullscreenSheetState extends State<_RunTraceFullscreenSheet> {
                                       child: _OpenCrayMarkdownTextBlock(
                                         copy: copy,
                                         data: supplementalBody,
-                                        bodyStyle: _ChatTextStyles.bodyMuted
+                                        bodyStyle: context.chatText.bodyMuted
                                             .copyWith(
-                                              color: _ChatPalette.textPrimary,
+                                              color: context.chatPalette.textPrimary,
                                             ),
                                         surfaceColor:
-                                            _ChatPalette.runTraceDetailSurface,
+                                            context.chatPalette.runTraceDetailSurface,
                                         bridge: widget.bridge,
                                       ),
                                     ),
@@ -563,17 +563,17 @@ class _RunTraceActorTab extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
             decoration: BoxDecoration(
               color: selected
-                  ? _ChatPalette.runTraceStatusSurface
+                  ? context.chatPalette.runTraceStatusSurface
                   : Colors.transparent,
               borderRadius: const BorderRadius.all(OpenCrayRadii.pill),
             ),
             child: AnimatedDefaultTextStyle(
               duration: duration,
               curve: OpenCrayMotion.enter,
-              style: _ChatTextStyles.timeline.copyWith(
+              style: context.chatText.timeline.copyWith(
                 color: selected
-                    ? _ChatPalette.inspectorAction
-                    : _ChatPalette.textSecondary,
+                    ? context.chatPalette.inspectorAction
+                    : context.chatPalette.textSecondary,
                 fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
               ),
               child: Text(label),
@@ -608,8 +608,8 @@ class _RunTraceInlineInterruptAction extends StatelessWidget {
           padding: const EdgeInsets.only(top: 4, bottom: 4),
           child: Text(
             label,
-            style: _ChatTextStyles.timeline.copyWith(
-              color: _ChatPalette.runTraceInterruptAction,
+            style: context.chatText.timeline.copyWith(
+              color: context.chatPalette.runTraceInterruptAction,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -692,9 +692,9 @@ class _RunTraceInterruptConfirmRowState
               _horizontalInset + (1 - _progress) * travelDistance;
           return DecoratedBox(
             decoration: BoxDecoration(
-              color: _ChatPalette.runTraceInterruptSurface,
+              color: context.chatPalette.runTraceInterruptSurface,
               borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: _ChatPalette.runTraceInterruptBorder),
+              border: Border.all(color: context.chatPalette.runTraceInterruptBorder),
             ),
             child: GestureDetector(
               onHorizontalDragUpdate: widget.isBusy
@@ -723,10 +723,10 @@ class _RunTraceInterruptConfirmRowState
                               : widget.copy.chatRunInterruptConfirmLabel,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: _ChatTextStyles.timeline.copyWith(
+                          style: context.chatText.timeline.copyWith(
                             color: widget.isBusy
-                                ? _ChatPalette.runTraceInterruptAction
-                                : _ChatPalette.textSecondary,
+                                ? context.chatPalette.runTraceInterruptAction
+                                : context.chatPalette.textSecondary,
                             fontWeight: FontWeight.w600,
                           ),
                         ),
@@ -740,11 +740,11 @@ class _RunTraceInterruptConfirmRowState
                       bottom: 4,
                       child: DecoratedBox(
                         decoration: BoxDecoration(
-                          color: _ChatPalette.runTraceInterruptAction,
+                          color: context.chatPalette.runTraceInterruptAction,
                           borderRadius: BorderRadius.circular(999),
-                          boxShadow: const <BoxShadow>[
+                          boxShadow: <BoxShadow>[
                             BoxShadow(
-                              color: _ChatGlass.interruptThumbShadow,
+                              color: context.chatGlass.interruptThumbShadow,
                               blurRadius: 10,
                               offset: Offset(0, 4),
                             ),
@@ -791,14 +791,14 @@ class _RunTraceActionButton extends StatelessWidget {
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           decoration: BoxDecoration(
-            color: OpenCrayColors.surfaceSunken,
+            color: context.palette.surfaceSunken,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: OpenCrayColors.outline),
+            border: Border.all(color: context.palette.outline),
           ),
           child: Text(
             label,
-            style: _ChatTextStyles.timeline.copyWith(
-              color: _ChatPalette.textPrimary,
+            style: context.chatText.timeline.copyWith(
+              color: context.chatPalette.textPrimary,
             ),
           ),
         ),
@@ -873,7 +873,7 @@ class _RunTracePill extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         child: Text(
           label,
-          style: _ChatTextStyles.timeline.copyWith(
+          style: context.chatText.timeline.copyWith(
             color: foregroundColor,
             fontWeight: FontWeight.w600,
           ),
@@ -1607,10 +1607,10 @@ class _RunInspectorCollapsibleTextBlockState
                       OpenCrayMotion.quick,
                     ),
                     turns: _isExpanded ? 0.5 : 0,
-                    child: const Icon(
+                    child: Icon(
                       Icons.keyboard_arrow_down_rounded,
                       size: 18,
-                      color: _ChatPalette.textSecondary,
+                      color: context.chatPalette.textSecondary,
                     ),
                   ),
                 ),
@@ -1652,15 +1652,15 @@ class _RunTraceHistoryCard extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
         if (entry.hasStructuredInspectorContent)
-          _buildStructuredInspectorBody()
+          _buildStructuredInspectorBody(context)
         else ...<Widget>[
           if (entry.label.trim().isNotEmpty) ...<Widget>[
             Text(
               entry.label,
-              style: _ChatTextStyles.timeline.copyWith(
+              style: context.chatText.timeline.copyWith(
                 color: entry.isHighRisk
-                    ? _ChatPalette.highRiskAccent
-                    : _ChatPalette.textSecondary,
+                    ? context.chatPalette.highRiskAccent
+                    : context.chatPalette.textSecondary,
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -1671,10 +1671,10 @@ class _RunTraceHistoryCard extends StatelessWidget {
             blockKey: 'chat-run-inspector-body-$entryKey',
             copy: copy,
             data: entry.body,
-            bodyStyle: _ChatTextStyles.bubble.copyWith(
-              color: _ChatPalette.textPrimary,
+            bodyStyle: context.chatText.bubble.copyWith(
+              color: context.chatPalette.textPrimary,
             ),
-            surfaceColor: Colors.white,
+            surfaceColor: context.palette.surface,
             bridge: bridge,
           ),
         ],
@@ -1682,7 +1682,7 @@ class _RunTraceHistoryCard extends StatelessWidget {
     );
   }
 
-  Widget _buildStructuredInspectorBody() {
+  Widget _buildStructuredInspectorBody(BuildContext context) {
     final List<Widget> children = <Widget>[
       RichText(
         text: TextSpan(
@@ -1690,8 +1690,8 @@ class _RunTraceHistoryCard extends StatelessWidget {
               .map(
                 (part) => TextSpan(
                   text: part.text,
-                  style: _ChatTextStyles.runInspectorLog.copyWith(
-                    color: _inspectorSemanticColor(part.semantic),
+                  style: context.chatText.runInspectorLog.copyWith(
+                    color: _inspectorSemanticColor(context, part.semantic),
                   ),
                 ),
               )
@@ -1706,10 +1706,10 @@ class _RunTraceHistoryCard extends StatelessWidget {
         _OpenCrayMarkdownTextBlock(
           copy: copy,
           data: inspectorCallDetail,
-          bodyStyle: _ChatTextStyles.runInspectorDetail.copyWith(
-            color: _ChatPalette.textSecondary,
+          bodyStyle: context.chatText.runInspectorDetail.copyWith(
+            color: context.chatPalette.textSecondary,
           ),
-          surfaceColor: Colors.white,
+          surfaceColor: context.palette.surface,
           bridge: bridge,
         ),
       );
@@ -1717,7 +1717,7 @@ class _RunTraceHistoryCard extends StatelessWidget {
     final String inspectorResultBody = entry.inspectorResultBody.trim();
     if (inspectorResultBody.isNotEmpty) {
       children.add(const SizedBox(height: 6));
-      children.add(_buildInspectorResultText(inspectorResultBody));
+      children.add(_buildInspectorResultText(context, inspectorResultBody));
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1725,11 +1725,11 @@ class _RunTraceHistoryCard extends StatelessWidget {
     );
   }
 
-  Widget _buildInspectorResultText(String body) {
+  Widget _buildInspectorResultText(BuildContext context, String body) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: <Widget>[
-        Text('└', style: _ChatTextStyles.runInspectorResultBranch),
+        Text('└', style: context.chatText.runInspectorResultBranch),
         const SizedBox(width: 8),
         Expanded(
           child: _RunInspectorCollapsibleTextBlock(
@@ -1737,8 +1737,8 @@ class _RunTraceHistoryCard extends StatelessWidget {
             blockKey: 'chat-run-inspector-result-$entryKey',
             copy: copy,
             data: body,
-            bodyStyle: _ChatTextStyles.runInspectorResult,
-            surfaceColor: Colors.white,
+            bodyStyle: context.chatText.runInspectorResult,
+            surfaceColor: context.palette.surface,
             bridge: bridge,
           ),
         ),
@@ -1746,14 +1746,17 @@ class _RunTraceHistoryCard extends StatelessWidget {
     );
   }
 
-  Color _inspectorSemanticColor(ChatRunTraceInspectorTextSemantic semantic) {
+  Color _inspectorSemanticColor(
+    BuildContext context,
+    ChatRunTraceInspectorTextSemantic semantic,
+  ) {
     return switch (semantic) {
-      ChatRunTraceInspectorTextSemantic.action => _ChatPalette.inspectorAction,
-      ChatRunTraceInspectorTextSemantic.target => _ChatPalette.inspectorTarget,
-      ChatRunTraceInspectorTextSemantic.scope => _ChatPalette.inspectorScope,
-      ChatRunTraceInspectorTextSemantic.connector => _ChatPalette.textPrimary,
-      ChatRunTraceInspectorTextSemantic.result => _ChatPalette.inspectorResult,
-      ChatRunTraceInspectorTextSemantic.neutral => _ChatPalette.textPrimary,
+      ChatRunTraceInspectorTextSemantic.action => context.chatPalette.inspectorAction,
+      ChatRunTraceInspectorTextSemantic.target => context.chatPalette.inspectorTarget,
+      ChatRunTraceInspectorTextSemantic.scope => context.chatPalette.inspectorScope,
+      ChatRunTraceInspectorTextSemantic.connector => context.chatPalette.textPrimary,
+      ChatRunTraceInspectorTextSemantic.result => context.chatPalette.inspectorResult,
+      ChatRunTraceInspectorTextSemantic.neutral => context.chatPalette.textPrimary,
     };
   }
 }

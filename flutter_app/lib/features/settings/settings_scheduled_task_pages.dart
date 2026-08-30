@@ -62,7 +62,7 @@ class _ScheduledTasksSettingsPageState
           ),
           if (snapshot.tasks.isEmpty)
             _SettingsCard(
-              child: Text(copy.emptyTasks, style: _SettingsTextStyles.body),
+              child: Text(copy.emptyTasks, style: context.settingsText.body),
             )
           else
             for (int index = 0; index < snapshot.tasks.length; index++) ...[
@@ -171,23 +171,23 @@ class _ScheduledTaskListCard extends StatelessWidget {
                   children: [
                     Text(
                       task.title.isEmpty ? copy.untitledTask : task.title,
-                      style: _SettingsTextStyles.rowTitle,
+                      style: context.settingsText.rowTitle,
                     ),
                     const SizedBox(height: 5),
                     Text(
                       task.triggerSummary,
-                      style: _SettingsTextStyles.rowSubtitle,
+                      style: context.settingsText.rowSubtitle,
                     ),
                     const SizedBox(height: 5),
                     Text(
                       copy.nextRun(task.nextTriggerAtEpochMs),
-                      style: _SettingsTextStyles.rowSubtitle,
+                      style: context.settingsText.rowSubtitle,
                     ),
                     if (task.snoozedUntilEpochMs != null) ...[
                       const SizedBox(height: 3),
                       Text(
                         copy.snoozedUntil(task.snoozedUntilEpochMs!),
-                        style: _SettingsTextStyles.rowSubtitle,
+                        style: context.settingsText.rowSubtitle,
                       ),
                     ],
                   ],
@@ -288,18 +288,18 @@ class _ScheduledTaskDetailSettingsPageState
                   value: task.enabled,
                   onChanged: busy ? null : _setEnabled,
                 ),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 _ScheduledTaskValueRow(
                   label: copy.triggerLabel,
                   value: task.triggerSummary,
                 ),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 _ScheduledTaskValueRow(
                   label: copy.nextRunLabel,
                   value: copy.epoch(task.nextTriggerAtEpochMs),
                 ),
                 if (task.snoozedUntilEpochMs != null) ...[
-                  const Divider(height: 1, color: OpenCrayColors.divider),
+                  Divider(height: 1, color: context.palette.divider),
                   _ScheduledTaskValueRow(
                     label: copy.snoozedUntilLabel,
                     value: copy.epoch(task.snoozedUntilEpochMs),
@@ -313,9 +313,9 @@ class _ScheduledTaskDetailSettingsPageState
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(copy.promptTitle, style: _SettingsTextStyles.cardTitle),
+                Text(copy.promptTitle, style: context.settingsText.cardTitle),
                 const SizedBox(height: 8),
-                SelectableText(task.prompt, style: _SettingsTextStyles.body),
+                SelectableText(task.prompt, style: context.settingsText.body),
               ],
             ),
           ),
@@ -324,7 +324,7 @@ class _ScheduledTaskDetailSettingsPageState
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(copy.actionsTitle, style: _SettingsTextStyles.cardTitle),
+                Text(copy.actionsTitle, style: context.settingsText.cardTitle),
                 const SizedBox(height: 12),
                 Wrap(
                   spacing: 10,
@@ -365,7 +365,7 @@ class _ScheduledTaskDetailSettingsPageState
                   const SizedBox(height: 10),
                   Text(
                     copy.enableBeforeActions,
-                    style: _SettingsTextStyles.rowSubtitle,
+                    style: context.settingsText.rowSubtitle,
                   ),
                 ],
               ],
@@ -376,20 +376,20 @@ class _ScheduledTaskDetailSettingsPageState
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(copy.policyTitle, style: _SettingsTextStyles.cardTitle),
+                Text(copy.policyTitle, style: context.settingsText.cardTitle),
                 const SizedBox(height: 4),
                 _ScheduledTaskValueRow(
                   label: copy.conflictPolicyLabel,
                   value: copy.conflictPolicy(task.conflictPolicy),
                 ),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 _ScheduledTaskValueRow(
                   label: copy.foregroundNoticeLabel,
                   value: task.foregroundNotificationRequired
                       ? copy.requiredStatus
                       : copy.notRequiredStatus,
                 ),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 _ScheduledTaskValueRow(
                   label: copy.eventAlertsLabel,
                   value: copy.enabledAlertCount(task),
@@ -506,17 +506,17 @@ class _ScheduledTaskHistoryCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(copy.historyTitle, style: _SettingsTextStyles.cardTitle),
+          Text(copy.historyTitle, style: context.settingsText.cardTitle),
           const SizedBox(height: 4),
           Text(
             copy.runCount(snapshot.totalRunCount),
-            style: _SettingsTextStyles.rowSubtitle,
+            style: context.settingsText.rowSubtitle,
           ),
           const SizedBox(height: 8),
           if (snapshot.recentRuns.isEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
-              child: Text(copy.emptyHistory, style: _SettingsTextStyles.body),
+              child: Text(copy.emptyHistory, style: context.settingsText.body),
             )
           else
             for (
@@ -525,7 +525,7 @@ class _ScheduledTaskHistoryCard extends StatelessWidget {
               index++
             ) ...[
               if (index > 0)
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
               _ScheduledTaskHistoryRow(
                 run: snapshot.recentRuns[index],
                 copy: copy,
@@ -555,27 +555,27 @@ class _ScheduledTaskHistoryRow extends StatelessWidget {
               Expanded(
                 child: Text(
                   copy.runResult(run.result),
-                  style: _SettingsTextStyles.rowTitle,
+                  style: context.settingsText.rowTitle,
                 ),
               ),
               const SizedBox(width: 12),
               Text(
                 copy.epoch(run.triggeredAtEpochMs),
-                style: _SettingsTextStyles.rowSubtitle,
+                style: context.settingsText.rowSubtitle,
               ),
             ],
           ),
           const SizedBox(height: 4),
           Text(
             copy.triggerReason(run.triggerReason),
-            style: _SettingsTextStyles.rowSubtitle,
+            style: context.settingsText.rowSubtitle,
           ),
           if (run.failureReason?.isNotEmpty == true) ...[
             const SizedBox(height: 4),
             Text(
               run.failureReason!,
-              style: _SettingsTextStyles.rowSubtitle.copyWith(
-                color: OpenCrayColors.dangerText,
+              style: context.settingsText.rowSubtitle.copyWith(
+                color: context.palette.danger,
               ),
             ),
           ],
@@ -598,13 +598,13 @@ class _ScheduledTaskValueRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(child: Text(label, style: _SettingsTextStyles.rowTitle)),
+          Expanded(child: Text(label, style: context.settingsText.rowTitle)),
           const SizedBox(width: 16),
           Flexible(
             child: Text(
               value,
               textAlign: TextAlign.end,
-              style: _SettingsTextStyles.rowSubtitle,
+              style: context.settingsText.rowSubtitle,
             ),
           ),
         ],
@@ -636,7 +636,7 @@ class _ScheduledTaskMissingSelectionPage extends StatelessWidget {
           _BackLink(onTap: onBack, label: backLabel),
           const SizedBox(height: 16),
           _SettingsCard(
-            child: Text(copy.missingTask, style: _SettingsTextStyles.body),
+            child: Text(copy.missingTask, style: context.settingsText.body),
           ),
         ],
       ),

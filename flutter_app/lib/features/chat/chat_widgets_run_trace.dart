@@ -345,10 +345,10 @@ class _RunTraceStatusLineState extends State<_RunTraceStatusLine>
   Widget build(BuildContext context) {
     final bool animate = _shouldAnimate;
     final Color baseColor = widget.trace.isHighRisk
-        ? _ChatPalette.highRiskAccent
-        : _ChatPalette.runTraceActivityText;
+        ? context.chatPalette.highRiskAccent
+        : context.chatPalette.runTraceActivityText;
     final Color mutedColor = widget.trace.isTerminal || widget.trace.isRetryable
-        ? _ChatPalette.textSecondary
+        ? context.chatPalette.textSecondary
         : baseColor;
     final String lead = _runTraceStatusLineLead(
       trace: widget.trace,
@@ -361,10 +361,11 @@ class _RunTraceStatusLineState extends State<_RunTraceStatusLine>
     );
     final String label = detail == null ? lead : '$lead · $detail';
     final _RunTraceStatusTone tone = _RunTraceStatusTone.fromTrace(
+      context,
       widget.trace,
       animate: animate,
     );
-    final TextStyle lineStyle = _ChatTextStyles.timeline.copyWith(
+    final TextStyle lineStyle = context.chatText.timeline.copyWith(
       color: tone.textColor,
       fontWeight: FontWeight.w700,
     );
@@ -467,36 +468,37 @@ class _RunTraceStatusTone {
   final bool showProgress;
 
   factory _RunTraceStatusTone.fromTrace(
+    BuildContext context,
     ChatRunTraceData trace, {
     required bool animate,
   }) {
     if (trace.isRetryable) {
-      return const _RunTraceStatusTone(
-        textColor: OpenCrayColors.warning,
-        markColor: _ChatPalette.runTraceRetryMark,
+      return _RunTraceStatusTone(
+        textColor: context.palette.warning,
+        markColor: context.chatPalette.runTraceRetryMark,
         icon: Icons.priority_high_rounded,
         showProgress: false,
       );
     }
     if (trace.isTerminal) {
-      return const _RunTraceStatusTone(
-        textColor: _ChatPalette.textSecondary,
-        markColor: OpenCrayColors.textTertiary,
+      return _RunTraceStatusTone(
+        textColor: context.chatPalette.textSecondary,
+        markColor: context.palette.textTertiary,
         icon: Icons.check_rounded,
         showProgress: false,
       );
     }
     if (trace.isHighRisk) {
-      return const _RunTraceStatusTone(
-        textColor: _ChatPalette.highRiskAccent,
-        markColor: _ChatPalette.highRiskAccent,
+      return _RunTraceStatusTone(
+        textColor: context.chatPalette.highRiskAccent,
+        markColor: context.chatPalette.highRiskAccent,
         icon: null,
         showProgress: true,
       );
     }
     return _RunTraceStatusTone(
-      textColor: _ChatPalette.runTraceActivityText,
-      markColor: _ChatPalette.runTraceStatusText,
+      textColor: context.chatPalette.runTraceActivityText,
+      markColor: context.chatPalette.runTraceStatusText,
       icon: null,
       showProgress: animate,
     );
@@ -621,6 +623,7 @@ class _RunTracePreviewCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final _RunTracePreviewStatusStyle statusStyle = _runTracePreviewStatusStyle(
+      context,
       preview.status,
     );
     final List<String> detailParts = <String>[
@@ -632,9 +635,9 @@ class _RunTracePreviewCard extends StatelessWidget {
     ];
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: _ChatPalette.runTracePreviewSurface,
+        color: context.chatPalette.runTracePreviewSurface,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _ChatPalette.runTracePreviewBorder),
+        border: Border.all(color: context.chatPalette.runTracePreviewBorder),
       ),
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -643,16 +646,16 @@ class _RunTracePreviewCard extends StatelessWidget {
           children: <Widget>[
             Row(
               children: <Widget>[
-                const Icon(
+                Icon(
                   Icons.cloud_outlined,
                   size: 16,
-                  color: _ChatPalette.runTraceActivityText,
+                  color: context.chatPalette.runTraceActivityText,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     copy.chatRunPreviewTitle,
-                    style: _ChatTextStyles.cardTitle.copyWith(fontSize: 14),
+                    style: context.chatText.cardTitle.copyWith(fontSize: 14),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -681,11 +684,11 @@ class _RunTracePreviewCard extends StatelessWidget {
               child: _OpenCrayMarkdownTextBlock(
                 copy: copy,
                 data: preview.url,
-                bodyStyle: _ChatTextStyles.runTraceDetailValue.copyWith(
-                  color: _ChatPalette.runTraceUrlText,
+                bodyStyle: context.chatText.runTraceDetailValue.copyWith(
+                  color: context.chatPalette.runTraceUrlText,
                   fontWeight: FontWeight.w600,
                 ),
-                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                surfaceColor: context.chatPalette.runTracePreviewSurface,
                 bridge: bridge,
                 preferAccentForStrong: true,
               ),
@@ -705,8 +708,8 @@ class _RunTracePreviewCard extends StatelessWidget {
                   detailParts.join(' • '),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: _ChatTextStyles.runTraceFooter.copyWith(
-                    color: _ChatPalette.textSecondary,
+                  style: context.chatText.runTraceFooter.copyWith(
+                    color: context.chatPalette.textSecondary,
                   ),
                 ),
             ],
@@ -715,8 +718,8 @@ class _RunTracePreviewCard extends StatelessWidget {
               _OpenCrayMarkdownTextBlock(
                 copy: copy,
                 data: preview.message!.trim(),
-                bodyStyle: _ChatTextStyles.bodyMuted,
-                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bodyStyle: context.chatText.bodyMuted,
+                surfaceColor: context.chatPalette.runTracePreviewSurface,
                 bridge: bridge,
               ),
             ],
@@ -829,7 +832,7 @@ class _EmbeddedSandboxPreviewSurfaceState
       }
       final WebViewController controller = WebViewController()
         ..setJavaScriptMode(JavaScriptMode.unrestricted)
-        ..setBackgroundColor(_ChatPalette.runTracePreviewSurface)
+        ..setBackgroundColor(context.chatPalette.runTracePreviewSurface)
         ..setNavigationDelegate(
           NavigationDelegate(
             onWebResourceError: (WebResourceError error) {
@@ -877,8 +880,8 @@ class _EmbeddedSandboxPreviewSurfaceState
       child: AspectRatio(
         aspectRatio: aspectRatio,
         child: DecoratedBox(
-          decoration: const BoxDecoration(
-            color: _ChatPalette.runTraceDetailSurface,
+          decoration: BoxDecoration(
+            color: context.chatPalette.runTraceDetailSurface,
           ),
           child: _buildBody(),
         ),
@@ -918,15 +921,15 @@ class _EmbeddedSandboxPreviewSurfaceState
               child: CircularProgressIndicator(strokeWidth: 2.2),
             )
           else
-            Icon(icon, size: 22, color: _ChatPalette.textSecondary),
+            Icon(icon, size: 22, color: context.chatPalette.textSecondary),
           const SizedBox(height: 10),
           Text(
             message,
             textAlign: TextAlign.center,
             maxLines: widget.expanded ? 3 : 2,
             overflow: TextOverflow.ellipsis,
-            style: _ChatTextStyles.bodyMuted.copyWith(
-              color: _ChatPalette.textSecondary,
+            style: context.chatText.bodyMuted.copyWith(
+              color: context.chatPalette.textSecondary,
             ),
           ),
         ],
@@ -956,7 +959,10 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final _RunTraceSandboxSessionStatusStyle statusStyle =
-        _runTraceSandboxSessionStatusStyle(session.lifecycleStatus);
+        _runTraceSandboxSessionStatusStyle(
+          context,
+          session.lifecycleStatus,
+        );
     final List<String> detailParts = <String>[
       _runTraceSandboxSessionSourceLabel(session.source, copy),
       if (session.provider?.trim().isNotEmpty == true)
@@ -1003,9 +1009,9 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
         );
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: _ChatPalette.runTracePreviewSurface,
+        color: context.chatPalette.runTracePreviewSurface,
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: _ChatPalette.runTracePreviewBorder),
+        border: Border.all(color: context.chatPalette.runTracePreviewBorder),
       ),
       child: Padding(
         padding: const EdgeInsets.all(12),
@@ -1014,16 +1020,16 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
           children: <Widget>[
             Row(
               children: <Widget>[
-                const Icon(
+                Icon(
                   Icons.cloud_sync_outlined,
                   size: 16,
-                  color: _ChatPalette.runTraceActivityText,
+                  color: context.chatPalette.runTraceActivityText,
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     copy.chatRunSandboxSessionTitle,
-                    style: _ChatTextStyles.cardTitle.copyWith(fontSize: 14),
+                    style: context.chatText.cardTitle.copyWith(fontSize: 14),
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -1044,13 +1050,13 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
                 key: ValueKey<String>('$keyNamespace-summary-markdown-$runId'),
                 copy: copy,
                 data: summary,
-                bodyStyle: _ChatTextStyles.runTraceDetailValue.copyWith(
+                bodyStyle: context.chatText.runTraceDetailValue.copyWith(
                   color: session.sessionPresent
-                      ? _ChatPalette.textPrimary
-                      : _ChatPalette.textSecondary,
+                      ? context.chatPalette.textPrimary
+                      : context.chatPalette.textSecondary,
                   fontWeight: FontWeight.w600,
                 ),
-                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                surfaceColor: context.chatPalette.runTracePreviewSurface,
                 bridge: bridge,
                 preferAccentForStrong: true,
               ),
@@ -1060,10 +1066,10 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
               _OpenCrayMarkdownTextBlock(
                 copy: copy,
                 data: subtitle,
-                bodyStyle: _ChatTextStyles.runTraceFooter.copyWith(
-                  color: _ChatPalette.textSecondary,
+                bodyStyle: context.chatText.runTraceFooter.copyWith(
+                  color: context.chatPalette.textSecondary,
                 ),
-                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                surfaceColor: context.chatPalette.runTracePreviewSurface,
                 bridge: bridge,
               ),
             ],
@@ -1082,8 +1088,8 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
                   detailParts.join(' • '),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: _ChatTextStyles.runTraceFooter.copyWith(
-                    color: _ChatPalette.textSecondary,
+                  style: context.chatText.runTraceFooter.copyWith(
+                    color: context.chatPalette.textSecondary,
                   ),
                 ),
             ],
@@ -1092,8 +1098,8 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
               _OpenCrayMarkdownTextBlock(
                 copy: copy,
                 data: updatedLabel,
-                bodyStyle: _ChatTextStyles.bodyMuted,
-                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bodyStyle: context.chatText.bodyMuted,
+                surfaceColor: context.chatPalette.runTracePreviewSurface,
                 bridge: bridge,
               ),
             ],
@@ -1102,8 +1108,8 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
               _OpenCrayMarkdownTextBlock(
                 copy: copy,
                 data: lastActiveLabel,
-                bodyStyle: _ChatTextStyles.bodyMuted,
-                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bodyStyle: context.chatText.bodyMuted,
+                surfaceColor: context.chatPalette.runTracePreviewSurface,
                 bridge: bridge,
               ),
             ],
@@ -1112,8 +1118,8 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
               _OpenCrayMarkdownTextBlock(
                 copy: copy,
                 data: staleAfterLabel,
-                bodyStyle: _ChatTextStyles.bodyMuted,
-                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bodyStyle: context.chatText.bodyMuted,
+                surfaceColor: context.chatPalette.runTracePreviewSurface,
                 bridge: bridge,
               ),
             ],
@@ -1122,8 +1128,8 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
               _OpenCrayMarkdownTextBlock(
                 copy: copy,
                 data: previewCheckedLabel,
-                bodyStyle: _ChatTextStyles.bodyMuted,
-                surfaceColor: _ChatPalette.runTracePreviewSurface,
+                bodyStyle: context.chatText.bodyMuted,
+                surfaceColor: context.chatPalette.runTracePreviewSurface,
                 bridge: bridge,
               ),
             ],
@@ -1131,13 +1137,13 @@ class _RunTraceSandboxSessionCard extends StatelessWidget {
               const SizedBox(height: 10),
               Text(
                 copy.chatRunSandboxSessionRunningRequestsTitle,
-                style: _ChatTextStyles.runTraceDetailLabel,
+                style: context.chatText.runTraceDetailLabel,
               ),
               const SizedBox(height: 6),
               Text(
                 session.runningRequestIds.join(', '),
-                style: _ChatTextStyles.runTraceFooter.copyWith(
-                  color: _ChatPalette.textPrimary,
+                style: context.chatText.runTraceFooter.copyWith(
+                  color: context.chatPalette.textPrimary,
                   fontWeight: FontWeight.w600,
                 ),
               ),
@@ -1158,16 +1164,16 @@ class _RunTracePreviewFactChip extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: _ChatPalette.background,
+        color: context.chatPalette.background,
         borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: _ChatPalette.runTracePreviewBorder),
+        border: Border.all(color: context.chatPalette.runTracePreviewBorder),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         child: Text(
           label,
-          style: _ChatTextStyles.runTraceFooter.copyWith(
-            color: _ChatPalette.textSecondary,
+          style: context.chatText.runTraceFooter.copyWith(
+            color: context.chatPalette.textSecondary,
             fontWeight: FontWeight.w600,
           ),
         ),
@@ -1196,13 +1202,13 @@ class _RunTracePreviewActionButton extends StatelessWidget {
     final Color foregroundColor = emphasized
         ? Colors.white
         : enabled
-        ? _ChatPalette.runTraceActivityText
-        : _ChatPalette.textSecondary;
+        ? context.chatPalette.runTraceActivityText
+        : context.chatPalette.textSecondary;
     final Color backgroundColor = emphasized
         ? (enabled
-              ? _ChatPalette.runTraceActivityText
-              : _ChatPalette.runTraceActivityText.withValues(alpha: 0.32))
-        : _ChatPalette.background;
+              ? context.chatPalette.runTraceActivityText
+              : context.chatPalette.runTraceActivityText.withValues(alpha: 0.32))
+        : context.chatPalette.background;
     return Semantics(
       button: true,
       enabled: enabled,
@@ -1216,7 +1222,7 @@ class _RunTracePreviewActionButton extends StatelessWidget {
               side: BorderSide(
                 color: emphasized
                     ? Colors.transparent
-                    : _ChatPalette.runTracePreviewBorder,
+                    : context.chatPalette.runTracePreviewBorder,
               ),
             ),
           ),
@@ -1229,7 +1235,7 @@ class _RunTracePreviewActionButton extends StatelessWidget {
                 const SizedBox(width: 6),
                 Text(
                   label,
-                  style: _ChatTextStyles.runTraceFooter.copyWith(
+                  style: context.chatText.runTraceFooter.copyWith(
                     color: foregroundColor,
                     fontWeight: FontWeight.w700,
                   ),
@@ -1351,55 +1357,57 @@ String _runTraceSandboxSessionLifecycleLabel(
 }
 
 _RunTracePreviewStatusStyle _runTracePreviewStatusStyle(
+  BuildContext context,
   ChatRunTracePreviewStatus status,
 ) {
   switch (status) {
     case ChatRunTracePreviewStatus.ready:
-      return const _RunTracePreviewStatusStyle(
-        foregroundColor: OpenCrayColors.success,
-        backgroundColor: OpenCrayColors.successTint,
+      return _RunTracePreviewStatusStyle(
+        foregroundColor: context.palette.success,
+        backgroundColor: context.palette.successTint,
       );
     case ChatRunTracePreviewStatus.reachable:
-      return const _RunTracePreviewStatusStyle(
-        foregroundColor: OpenCrayColors.primaryPressed,
-        backgroundColor: OpenCrayColors.primaryTint,
+      return _RunTracePreviewStatusStyle(
+        foregroundColor: context.palette.primaryPressed,
+        backgroundColor: context.palette.primaryTint,
       );
     case ChatRunTracePreviewStatus.unreachable:
-      return const _RunTracePreviewStatusStyle(
-        foregroundColor: OpenCrayColors.warning,
-        backgroundColor: OpenCrayColors.warningTint,
+      return _RunTracePreviewStatusStyle(
+        foregroundColor: context.palette.warning,
+        backgroundColor: context.palette.warningTint,
       );
     case ChatRunTracePreviewStatus.skipped:
-      return const _RunTracePreviewStatusStyle(
-        foregroundColor: OpenCrayColors.textSecondary,
-        backgroundColor: OpenCrayColors.surfaceMuted,
+      return _RunTracePreviewStatusStyle(
+        foregroundColor: context.palette.textSecondary,
+        backgroundColor: context.palette.surfaceMuted,
       );
   }
 }
 
 _RunTraceSandboxSessionStatusStyle _runTraceSandboxSessionStatusStyle(
+  BuildContext context,
   ChatRunTraceSandboxSessionLifecycleStatus lifecycleStatus,
 ) {
   switch (lifecycleStatus) {
     case ChatRunTraceSandboxSessionLifecycleStatus.active:
-      return const _RunTraceSandboxSessionStatusStyle(
-        foregroundColor: OpenCrayColors.success,
-        backgroundColor: OpenCrayColors.successTint,
+      return _RunTraceSandboxSessionStatusStyle(
+        foregroundColor: context.palette.success,
+        backgroundColor: context.palette.successTint,
       );
     case ChatRunTraceSandboxSessionLifecycleStatus.stale:
-      return const _RunTraceSandboxSessionStatusStyle(
-        foregroundColor: OpenCrayColors.warning,
-        backgroundColor: OpenCrayColors.warningTint,
+      return _RunTraceSandboxSessionStatusStyle(
+        foregroundColor: context.palette.warning,
+        backgroundColor: context.palette.warningTint,
       );
     case ChatRunTraceSandboxSessionLifecycleStatus.reclaimed:
-      return const _RunTraceSandboxSessionStatusStyle(
-        foregroundColor: OpenCrayColors.textSecondary,
-        backgroundColor: OpenCrayColors.surfaceMuted,
+      return _RunTraceSandboxSessionStatusStyle(
+        foregroundColor: context.palette.textSecondary,
+        backgroundColor: context.palette.surfaceMuted,
       );
     case ChatRunTraceSandboxSessionLifecycleStatus.none:
-      return const _RunTraceSandboxSessionStatusStyle(
-        foregroundColor: OpenCrayColors.textSecondary,
-        backgroundColor: OpenCrayColors.surfaceMuted,
+      return _RunTraceSandboxSessionStatusStyle(
+        foregroundColor: context.palette.textSecondary,
+        backgroundColor: context.palette.surfaceMuted,
       );
   }
 }

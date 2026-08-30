@@ -74,7 +74,7 @@ class _ComposerCard extends StatelessWidget {
               child: hasCommands
                   ? Container(
                       decoration: BoxDecoration(
-                        color: _ChatPalette.subtleSurface,
+                        color: context.chatPalette.subtleSurface,
                         borderRadius: BorderRadius.circular(14),
                       ),
                       padding: const EdgeInsets.all(12),
@@ -83,7 +83,7 @@ class _ComposerCard extends StatelessWidget {
                         children: <Widget>[
                           Text(
                             copy.chatCommands,
-                            style: _ChatTextStyles.commandsLabel,
+                            style: context.chatText.commandsLabel,
                           ),
                           const SizedBox(height: 8),
                           ...state.composer.commandOptions.map(
@@ -582,14 +582,14 @@ class _ComposerMaterialSurface extends StatelessWidget {
     return DecoratedBox(
       key: const ValueKey<String>('chat-composer-material-surface'),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: t),
+        color: context.palette.surface.withValues(alpha: t),
         borderRadius: BorderRadius.circular(16 + (8 * t)),
-        border: Border.all(color: _ChatPalette.border.withValues(alpha: t)),
+        border: Border.all(color: context.chatPalette.border.withValues(alpha: t)),
         boxShadow: t == 0
             ? const <BoxShadow>[]
             : <BoxShadow>[
                 BoxShadow(
-                  color: _ChatGlass.composerShadowInk.withValues(
+                  color: context.chatGlass.composerShadowInk.withValues(
                     alpha: 0.05 * t,
                   ),
                   blurRadius: 18 * t,
@@ -669,7 +669,7 @@ class _ComposerAddMenu extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: <Widget>[
-          Text(copy.chatAddToMessage, style: _ChatTextStyles.sectionLabel),
+          Text(copy.chatAddToMessage, style: context.chatText.sectionLabel),
           const SizedBox(height: 10),
           Row(
             children: actions
@@ -782,16 +782,16 @@ class _ComposerGlassSurface extends StatelessWidget {
                   decoration: BoxDecoration(
                     borderRadius: BorderRadius.circular(24),
                     border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.42),
+                      color: context.palette.surface.withValues(alpha: 0.42),
                     ),
                     gradient: LinearGradient(
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
                       colors: <Color>[
-                        Colors.white.withValues(alpha: 0.34),
-                        Colors.white.withValues(alpha: 0.22),
-                        OpenCrayColors.primaryTint.withValues(alpha: 0.18),
-                        OpenCrayColors.primaryBorder.withValues(alpha: 0.12),
+                        context.palette.surface.withValues(alpha: 0.34),
+                        context.palette.surface.withValues(alpha: 0.22),
+                        context.palette.primaryTint.withValues(alpha: 0.18),
+                        context.palette.primaryBorder.withValues(alpha: 0.12),
                       ],
                       stops: const <double>[0, 0.28, 0.72, 1],
                     ),
@@ -839,7 +839,7 @@ class _TodoListPanelState extends State<_TodoListPanel> {
       children: <Widget>[
         Row(
           children: <Widget>[
-            Text('TODO', style: _ChatTextStyles.todoLabel),
+            Text('TODO', style: context.chatText.todoLabel),
             const Spacer(),
             GestureDetector(
               key: const ValueKey<String>('chat-composer-todo-chevron'),
@@ -858,10 +858,10 @@ class _TodoListPanelState extends State<_TodoListPanel> {
                       OpenCrayMotion.quick,
                     ),
                     turns: _isExpanded ? 0.5 : 0,
-                    child: const Icon(
+                    child: Icon(
                       CupertinoIcons.chevron_up,
                       size: 13,
-                      color: _ChatPalette.textTertiary,
+                      color: context.chatPalette.textTertiary,
                     ),
                   ),
                 ),
@@ -903,15 +903,15 @@ class _TodoRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final TextStyle style = switch (todo.status) {
-      ChatTodoStatus.pending => _ChatTextStyles.todoItem,
-      ChatTodoStatus.inProgress => _ChatTextStyles.todoItem.copyWith(
-        color: _ChatPalette.accent,
+      ChatTodoStatus.pending => context.chatText.todoItem,
+      ChatTodoStatus.inProgress => context.chatText.todoItem.copyWith(
+        color: context.chatPalette.accent,
         fontWeight: FontWeight.w600,
       ),
-      ChatTodoStatus.completed => _ChatTextStyles.todoItem.copyWith(
-        color: _ChatPalette.textSecondary,
+      ChatTodoStatus.completed => context.chatText.todoItem.copyWith(
+        color: context.chatPalette.textSecondary,
         decoration: TextDecoration.lineThrough,
-        decorationColor: _ChatPalette.textSecondary,
+        decorationColor: context.chatPalette.textSecondary,
       ),
     };
 
@@ -949,16 +949,16 @@ class _TodoStatusIndicator extends StatelessWidget {
       ChatTodoStatus.pending => BoxDecoration(
         shape: BoxShape.circle,
         color: Colors.transparent,
-        border: Border.all(color: _ChatPalette.composerStroke, width: 1.3),
+        border: Border.all(color: context.chatPalette.composerStroke, width: 1.3),
       ),
       ChatTodoStatus.inProgress => BoxDecoration(
         shape: BoxShape.circle,
         color: Colors.transparent,
-        border: Border.all(color: _ChatPalette.accent, width: 1.3),
+        border: Border.all(color: context.chatPalette.accent, width: 1.3),
       ),
       ChatTodoStatus.completed => BoxDecoration(
         shape: BoxShape.circle,
-        color: _ChatPalette.todoCompletedFill,
+        color: context.chatPalette.todoCompletedFill,
       ),
     };
 
@@ -1026,8 +1026,8 @@ class _InputRow extends StatelessWidget {
                     .toDouble();
                 final double outlineT = focusNode.hasFocus ? 1 : surfaceT;
                 final Color fieldOutlineColor = focusNode.hasFocus
-                    ? _ChatPalette.accent
-                    : _ChatPalette.composerStroke;
+                    ? context.chatPalette.accent
+                    : context.chatPalette.composerStroke;
 
                 return AnimatedSize(
                   duration: OpenCrayMotion.resolve(
@@ -1044,7 +1044,7 @@ class _InputRow extends StatelessWidget {
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         color: Color.lerp(
-                          Colors.white,
+                          context.palette.surface,
                           fieldOutlineColor,
                           outlineT,
                         ),
@@ -1059,7 +1059,7 @@ class _InputRow extends StatelessWidget {
                             outlineT,
                           )!,
                           child: ColoredBox(
-                            color: Colors.white,
+                            color: context.palette.surface,
                             child: Padding(
                               padding: const EdgeInsets.fromLTRB(
                                 14,
@@ -1077,18 +1077,13 @@ class _InputRow extends StatelessWidget {
                                 minLines: 1,
                                 maxLines: 4,
                                 textAlignVertical: TextAlignVertical.center,
-                                decoration: InputDecoration(
-                                  border: InputBorder.none,
-                                  enabledBorder: InputBorder.none,
-                                  focusedBorder: InputBorder.none,
-                                  disabledBorder: InputBorder.none,
-                                  errorBorder: InputBorder.none,
-                                  focusedErrorBorder: InputBorder.none,
-                                  isCollapsed: true,
-                                  hintText: placeholder,
-                                  hintStyle: _ChatTextStyles.placeholder,
-                                  contentPadding: EdgeInsets.zero,
-                                ),
+                                decoration: openCrayBareInputDecoration
+                                    .copyWith(
+                                      isCollapsed: true,
+                                      hintText: placeholder,
+                                      hintStyle: context.chatText.placeholder,
+                                      contentPadding: EdgeInsets.zero,
+                                    ),
                                 textInputAction: TextInputAction.newline,
                                 onSubmitted: enabled
                                     ? (_) => onSendPressed()
@@ -1109,13 +1104,13 @@ class _InputRow extends StatelessWidget {
         _CircleButton(
           key: const ValueKey<String>('chat-composer-plus-button'),
           backgroundColor: Color.lerp(
-            Colors.white,
-            _ChatPalette.plusActiveSurface,
+            context.palette.surface,
+            context.chatPalette.plusActiveSurface,
             plusProgress.clamp(0.0, 1.0).toDouble(),
           )!,
           foregroundColor: Color.lerp(
-            _ChatPalette.textSecondary,
-            _ChatPalette.accent,
+            context.chatPalette.textSecondary,
+            context.chatPalette.accent,
             plusProgress.clamp(0.0, 1.0).toDouble(),
           )!,
           icon: Icons.add_rounded,
@@ -1132,7 +1127,7 @@ class _InputRow extends StatelessWidget {
             if (showInterruptButton) {
               return _CircleButton(
                 key: const ValueKey<String>('chat-composer-interrupt-button'),
-                backgroundColor: _ChatPalette.runTraceInterruptAction,
+                backgroundColor: context.chatPalette.runTraceInterruptAction,
                 foregroundColor: Colors.white,
                 icon: Icons.stop_rounded,
                 onPressed: isInterruptBusy ? null : onInterruptPressed,
@@ -1140,8 +1135,8 @@ class _InputRow extends StatelessWidget {
             }
             return _CircleButton(
               key: const ValueKey<String>('chat-composer-send-button'),
-              backgroundColor: _ChatPalette.accent,
-              gradient: OpenCrayGradients.brand,
+              backgroundColor: context.chatPalette.accent,
+              gradient: context.palette.brandGradient,
               foregroundColor: Colors.white,
               icon: Icons.arrow_upward_rounded,
               onPressed: enabled ? onSendPressed : null,
@@ -1171,16 +1166,16 @@ class _InputRow extends StatelessWidget {
                 filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
                 child: Opacity(
                   opacity: glassT,
-                  child: const DecoratedBox(
+                  child: DecoratedBox(
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
                         begin: Alignment.topCenter,
                         end: Alignment.bottomCenter,
                         colors: <Color>[
-                          _ChatPalette.surfaceClear,
-                          _ChatGlass.composerHighlight,
-                          _ChatGlass.composerSheen,
-                          _ChatGlass.composerSheenClear,
+                          context.chatPalette.surfaceClear,
+                          context.chatGlass.composerHighlight,
+                          context.chatGlass.composerSheen,
+                          context.chatGlass.composerSheenClear,
                         ],
                         stops: <double>[0, 0.32, 0.72, 1],
                       ),
@@ -1244,7 +1239,7 @@ class _CircleButtonState extends State<_CircleButton> {
             gradient: enabled ? widget.gradient : null,
             borderRadius: BorderRadius.circular(14),
             boxShadow: enabled && widget.gradient != null
-                ? OpenCrayShadows.brandGlow
+                ? context.palette.brandGlow
                 : null,
           ),
           child: Icon(
@@ -1287,21 +1282,21 @@ class _AddActionPill extends StatelessWidget {
       child: Container(
         height: 40,
         decoration: BoxDecoration(
-          color: OpenCrayColors.surfaceSubtle,
+          color: context.palette.surfaceSubtle,
           borderRadius: BorderRadius.circular(12),
         ),
         padding: const EdgeInsets.symmetric(horizontal: 10),
         child: Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            Icon(action.icon, size: 16, color: _ChatPalette.textPrimary),
+            Icon(action.icon, size: 16, color: context.chatPalette.textPrimary),
             const SizedBox(width: 6),
             Flexible(
               child: Text(
                 action.label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: _ChatTextStyles.addAction,
+                style: context.chatText.addAction,
               ),
             ),
           ],
@@ -1352,14 +1347,14 @@ class _AttachmentCard extends StatelessWidget {
                         attachment.label,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: _ChatTextStyles.attachmentLabel,
+                        style: context.chatText.attachmentLabel,
                       ),
                       const SizedBox(height: 2),
                       Text(
                         attachment.detail,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: _ChatTextStyles.attachmentDetail,
+                        style: context.chatText.attachmentDetail,
                       ),
                     ],
                   ),
@@ -1377,15 +1372,15 @@ class _AttachmentCard extends StatelessWidget {
                 width: 16,
                 height: 16,
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.96),
+                  color: context.palette.surface.withValues(alpha: 0.96),
                   borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: _ChatPalette.border),
+                  border: Border.all(color: context.chatPalette.border),
                 ),
                 alignment: Alignment.center,
-                child: const Icon(
+                child: Icon(
                   Icons.close_rounded,
                   size: 10,
-                  color: _ChatPalette.textSecondary,
+                  color: context.chatPalette.textSecondary,
                 ),
               ),
             ),
@@ -1479,7 +1474,7 @@ class _ComposerAttachmentLeadingVisualState
               width: 32,
               height: 32,
               decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.75),
+                color: context.palette.surface.withValues(alpha: 0.75),
                 borderRadius: BorderRadius.circular(10),
               ),
               child: OpenCrayImageBytesView(
@@ -1515,7 +1510,7 @@ class _ComposerAttachmentLeadingVisualState
         color: Colors.white.withValues(alpha: 0.75),
         borderRadius: BorderRadius.circular(10),
       ),
-      child: Icon(icon, size: 16, color: _ChatPalette.textPrimary),
+      child: Icon(icon, size: 16, color: context.chatPalette.textPrimary),
     );
   }
 }
@@ -1535,7 +1530,7 @@ class _CommandOptionTile extends StatelessWidget {
         padding: const EdgeInsets.only(bottom: 10),
         child: DecoratedBox(
           decoration: BoxDecoration(
-            color: OpenCrayColors.surfaceSubtle,
+            color: context.palette.surfaceSubtle,
             borderRadius: BorderRadius.circular(14),
           ),
           child: Padding(
@@ -1546,20 +1541,20 @@ class _CommandOptionTile extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: <Widget>[
-                      Text(option.label, style: _ChatTextStyles.commandTitle),
+                      Text(option.label, style: context.chatText.commandTitle),
                       const SizedBox(height: 3),
                       Text(
                         option.description,
-                        style: _ChatTextStyles.commandDescription,
+                        style: context.chatText.commandDescription,
                       ),
                     ],
                   ),
                 ),
                 const SizedBox(width: 12),
-                const Icon(
+                Icon(
                   Icons.chevron_right_rounded,
                   size: 18,
-                  color: _ChatPalette.textSecondary,
+                  color: context.chatPalette.textSecondary,
                 ),
               ],
             ),

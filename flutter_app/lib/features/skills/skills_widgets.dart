@@ -27,10 +27,10 @@ class _SummaryCard extends StatelessWidget {
       width: double.infinity,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: _surface,
+          color: context.palette.surface,
           borderRadius: const BorderRadius.all(Radius.circular(16)),
-          border: Border.all(color: OpenCrayColors.divider),
-          boxShadow: OpenCrayShadows.card,
+          border: Border.all(color: context.palette.divider),
+          boxShadow: context.palette.cardShadow,
         ),
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -39,21 +39,21 @@ class _SummaryCard extends StatelessWidget {
             children: [
               Text(
                 title,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 17,
                   height: 1.2,
                   fontWeight: FontWeight.w600,
                   letterSpacing: -0.2,
-                  color: _textPrimary,
+                  color: context.palette.textPrimary,
                 ),
               ),
               const SizedBox(height: 8),
               Text(
                 subtitle,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 14,
                   height: 1.35,
-                  color: _textSecondary,
+                  color: context.palette.textSecondary,
                 ),
               ),
             ],
@@ -82,7 +82,7 @@ class _SegmentedControl extends StatelessWidget {
       height: 36,
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: OpenCrayColors.surfaceSunken,
+          color: context.palette.surfaceSunken,
           borderRadius: BorderRadius.circular(999),
         ),
         child: Padding(
@@ -108,9 +108,9 @@ class _SegmentedControl extends StatelessWidget {
                     width: indicatorWidth,
                     child: DecoratedBox(
                       decoration: BoxDecoration(
-                        color: Colors.white,
+                        color: context.palette.surface,
                         borderRadius: BorderRadius.circular(999),
-                        boxShadow: OpenCrayShadows.card,
+                        boxShadow: context.palette.cardShadow,
                       ),
                     ),
                   ),
@@ -173,8 +173,8 @@ class _SegmentButton extends StatelessWidget {
               height: 1.1,
               fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
               color: selected
-                  ? OpenCrayColors.textPrimary
-                  : OpenCrayColors.textSecondary,
+                  ? context.palette.textPrimary
+                  : context.palette.textSecondary,
             ),
             child: Text(label),
           ),
@@ -212,21 +212,21 @@ class _SkillRow extends StatelessWidget {
               children: [
                 Text(
                   skill.name,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 17,
                     height: 1.2,
                     fontWeight: FontWeight.w600,
                     letterSpacing: -0.2,
-                    color: _textPrimary,
+                    color: context.palette.textPrimary,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   skill.description,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 13,
                     height: 1.3,
-                    color: OpenCrayColors.textTertiary,
+                    color: context.palette.textTertiary,
                   ),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
@@ -247,14 +247,14 @@ class _SkillRow extends StatelessWidget {
             width: 28,
             height: 28,
             decoration: BoxDecoration(
-              color: OpenCrayColors.surfaceMuted,
+              color: context.palette.surfaceMuted,
               borderRadius: BorderRadius.circular(999),
             ),
             child: IconButton(
               padding: EdgeInsets.zero,
               splashRadius: 18,
               icon: const Icon(Icons.more_horiz_rounded, size: 16),
-              color: OpenCrayColors.textTertiary,
+              color: context.palette.textTertiary,
               onPressed: lifecycleState == null ? onMore : null,
             ),
           ),
@@ -294,15 +294,15 @@ class _InstalledSkillLifecyclePill extends StatelessWidget {
         state == _InstalledSkillLifecycleState.enabling ||
         state == _InstalledSkillLifecycleState.disabling;
     final Color textColor = isFailed
-        ? _danger
+        ? context.palette.danger
         : isDone
-        ? OpenCrayColors.success
-        : _textSecondary;
+        ? context.palette.success
+        : context.palette.textSecondary;
     final Color surfaceColor = isFailed
-        ? OpenCrayColors.dangerTint
+        ? context.palette.dangerTint
         : isDone
-        ? OpenCrayColors.successTint
-        : OpenCrayColors.surfaceMuted;
+        ? context.palette.successTint
+        : context.palette.surfaceMuted;
     return AnimatedContainer(
       key: ValueKey<String>('skills-manage-lifecycle-$skillId-${state.name}'),
       duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
@@ -377,11 +377,11 @@ class _SourceRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final titleColor = source.isAvailable
-        ? _textPrimary
-        : OpenCrayColors.textTertiary;
+        ? context.palette.textPrimary
+        : context.palette.textTertiary;
     final accentColor = source.isAvailable
-        ? _accent
-        : OpenCrayColors.textTertiary;
+        ? context.palette.primary
+        : context.palette.textTertiary;
     return InkWell(
       onTap: onTap,
       child: Padding(
@@ -411,10 +411,10 @@ class _SourceRow extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     source.subtitle,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 13,
                       height: 1.3,
-                      color: _textSecondary,
+                      color: context.palette.textSecondary,
                     ),
                   ),
                 ],
@@ -475,16 +475,16 @@ class _SuggestedRow extends StatelessWidget {
       _SkillInstallVisualState.idle => installLabel,
     };
     final Color installBackground = switch (installState) {
-      _SkillInstallVisualState.installing => OpenCrayColors.surfaceMuted,
-      _SkillInstallVisualState.installed => OpenCrayColors.successTint,
-      _SkillInstallVisualState.failed => OpenCrayColors.dangerTint,
-      _SkillInstallVisualState.idle => OpenCrayColors.primaryTint,
+      _SkillInstallVisualState.installing => context.palette.surfaceMuted,
+      _SkillInstallVisualState.installed => context.palette.successTint,
+      _SkillInstallVisualState.failed => context.palette.dangerTint,
+      _SkillInstallVisualState.idle => context.palette.primaryTint,
     };
     final Color installTextColor = switch (installState) {
-      _SkillInstallVisualState.installing => _textSecondary,
-      _SkillInstallVisualState.installed => OpenCrayColors.success,
-      _SkillInstallVisualState.failed => OpenCrayColors.danger,
-      _SkillInstallVisualState.idle => _accent,
+      _SkillInstallVisualState.installing => context.palette.textSecondary,
+      _SkillInstallVisualState.installed => context.palette.success,
+      _SkillInstallVisualState.failed => context.palette.danger,
+      _SkillInstallVisualState.idle => context.palette.primary,
     };
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
@@ -505,16 +505,16 @@ class _SuggestedRow extends StatelessWidget {
                         vertical: 3,
                       ),
                       decoration: BoxDecoration(
-                        color: OpenCrayColors.surfaceMuted,
+                        color: context.palette.surfaceMuted,
                         borderRadius: BorderRadius.circular(999),
                       ),
                       child: Text(
                         item.sourceLabel,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 11,
                           height: 1.1,
                           fontWeight: FontWeight.w600,
-                          color: _textSecondary,
+                          color: context.palette.textSecondary,
                         ),
                       ),
                     ),
@@ -525,16 +525,16 @@ class _SuggestedRow extends StatelessWidget {
                           vertical: 3,
                         ),
                         decoration: BoxDecoration(
-                          color: OpenCrayColors.primaryTint,
+                          color: context.palette.primaryTint,
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Text(
                           installsLabel!,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 11,
                             height: 1.1,
                             fontWeight: FontWeight.w600,
-                            color: _accent,
+                            color: context.palette.primary,
                           ),
                         ),
                       ),
@@ -543,20 +543,20 @@ class _SuggestedRow extends StatelessWidget {
                 const SizedBox(height: 8),
                 Text(
                   item.name,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 16,
                     height: 1.2,
                     fontWeight: FontWeight.w600,
-                    color: _textPrimary,
+                    color: context.palette.textPrimary,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
                   item.description,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 13,
                     height: 1.3,
-                    color: _textSecondary,
+                    color: context.palette.textSecondary,
                   ),
                 ),
               ],
@@ -568,9 +568,9 @@ class _SuggestedRow extends StatelessWidget {
             children: [
               DecoratedBox(
                 decoration: BoxDecoration(
-                  color: OpenCrayColors.surfaceMuted,
+                  color: context.palette.surfaceMuted,
                   borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: OpenCrayColors.divider),
+                  border: Border.all(color: context.palette.divider),
                 ),
                 child: OpenCrayInkSurface(
                   borderRadius: BorderRadius.circular(999),
@@ -583,11 +583,11 @@ class _SuggestedRow extends StatelessWidget {
                       ),
                       child: Text(
                         previewLabel,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 12,
                           height: 1.1,
                           fontWeight: FontWeight.w600,
-                          color: _textSecondary,
+                          color: context.palette.textSecondary,
                         ),
                       ),
                     ),
@@ -606,7 +606,7 @@ class _SuggestedRow extends StatelessWidget {
                   borderRadius: BorderRadius.circular(999),
                   border: Border.all(
                     color: didFail
-                        ? OpenCrayColors.danger.withValues(alpha: 0.22)
+                        ? context.palette.danger.withValues(alpha: 0.22)
                         : Colors.transparent,
                   ),
                 ),
@@ -687,30 +687,30 @@ class _DirectInstallCard extends StatelessWidget {
       _SkillInstallVisualState.idle => installLabel,
     };
     final Color installBackground = switch (installState) {
-      _SkillInstallVisualState.installing => OpenCrayColors.surfaceMuted,
-      _SkillInstallVisualState.installed => OpenCrayColors.successTint,
-      _SkillInstallVisualState.failed => OpenCrayColors.dangerTint,
-      _SkillInstallVisualState.idle => OpenCrayColors.primaryTint,
+      _SkillInstallVisualState.installing => context.palette.surfaceMuted,
+      _SkillInstallVisualState.installed => context.palette.successTint,
+      _SkillInstallVisualState.failed => context.palette.dangerTint,
+      _SkillInstallVisualState.idle => context.palette.primaryTint,
     };
     final Color installTextColor = switch (installState) {
-      _SkillInstallVisualState.installing => _textSecondary,
-      _SkillInstallVisualState.installed => OpenCrayColors.success,
-      _SkillInstallVisualState.failed => OpenCrayColors.danger,
-      _SkillInstallVisualState.idle => _accent,
+      _SkillInstallVisualState.installing => context.palette.textSecondary,
+      _SkillInstallVisualState.installed => context.palette.success,
+      _SkillInstallVisualState.failed => context.palette.danger,
+      _SkillInstallVisualState.idle => context.palette.primary,
     };
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: _surface,
+        color: context.palette.surface,
         borderRadius: const BorderRadius.all(Radius.circular(16)),
-        border: Border.all(color: OpenCrayColors.divider),
-        boxShadow: OpenCrayShadows.card,
+        border: Border.all(color: context.palette.divider),
+        boxShadow: context.palette.cardShadow,
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Icon(Icons.bolt_rounded, color: _accent, size: 20),
+            Icon(Icons.bolt_rounded, color: context.palette.primary, size: 20),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
@@ -718,20 +718,20 @@ class _DirectInstallCard extends StatelessWidget {
                 children: [
                   Text(
                     title,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 16,
                       height: 1.2,
                       fontWeight: FontWeight.w600,
-                      color: _textPrimary,
+                      color: context.palette.textPrimary,
                     ),
                   ),
                   const SizedBox(height: 4),
                   Text(
                     body,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 13,
                       height: 1.3,
-                      color: _textSecondary,
+                      color: context.palette.textSecondary,
                     ),
                   ),
                 ],
@@ -749,7 +749,7 @@ class _DirectInstallCard extends StatelessWidget {
                 borderRadius: BorderRadius.circular(999),
                 border: Border.all(
                   color: didFail
-                      ? OpenCrayColors.danger.withValues(alpha: 0.22)
+                      ? context.palette.danger.withValues(alpha: 0.22)
                       : Colors.transparent,
                 ),
               ),
@@ -805,29 +805,28 @@ class _SearchField extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: context.palette.surface,
         borderRadius: BorderRadius.circular(14),
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
         child: Row(
           children: [
-            const Icon(
+            Icon(
               Icons.search_rounded,
               size: 18,
-              color: OpenCrayColors.textTertiary,
+              color: context.palette.textTertiary,
             ),
             const SizedBox(width: 10),
             Expanded(
               child: TextField(
                 controller: controller,
-                decoration: InputDecoration(
-                  border: InputBorder.none,
+                decoration: openCrayBareInputDecoration.copyWith(
                   hintText: hintText,
-                  hintStyle: const TextStyle(
+                  hintStyle: TextStyle(
                     fontSize: 14,
                     height: 1.2,
-                    color: OpenCrayColors.textTertiary,
+                    color: context.palette.textTertiary,
                   ),
                 ),
               ),
@@ -844,16 +843,20 @@ class _ActionRow extends StatelessWidget {
     required this.icon,
     required this.label,
     required this.onTap,
-    this.color = OpenCrayColors.textPrimary,
+    this.color,
   });
 
   final IconData icon;
   final String label;
   final VoidCallback onTap;
-  final Color color;
+
+  /// Defaults to the primary ink when omitted; resolved in [build] because the
+  /// palette comes from the theme.
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
+    final Color color = this.color ?? context.palette.textPrimary;
     return InkWell(
       borderRadius: BorderRadius.circular(16),
       onTap: onTap,

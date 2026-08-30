@@ -27,10 +27,10 @@ class _TitleRow extends StatelessWidget {
               onPressed: onDone,
               child: Text(
                 copy.filesDoneAction,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
-                  color: FilesFeatureScreen.accent,
+                  color: context.palette.primary,
                 ),
               ),
             )
@@ -96,10 +96,10 @@ class _SearchBarState extends State<_SearchBar> {
       duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
       curve: OpenCrayMotion.enter,
       decoration: BoxDecoration(
-        color: isActive ? OpenCrayColors.primaryTint : Colors.white,
+        color: isActive ? context.palette.primaryTint : context.palette.surface,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
-          color: isActive ? OpenCrayColors.primary : Colors.transparent,
+          color: isActive ? context.palette.primary : Colors.transparent,
         ),
       ),
       child: Padding(
@@ -110,8 +110,8 @@ class _SearchBarState extends State<_SearchBar> {
               CupertinoIcons.search,
               size: 18,
               color: isActive
-                  ? FilesFeatureScreen.accent
-                  : FilesFeatureScreen.textTertiary,
+                  ? context.palette.primary
+                  : context.palette.textTertiary,
             ),
             const SizedBox(width: 10),
             Expanded(
@@ -119,13 +119,12 @@ class _SearchBarState extends State<_SearchBar> {
                 key: const ValueKey<String>('files-search-field'),
                 controller: widget.controller,
                 focusNode: _focusNode,
-                decoration: InputDecoration(
-                  border: InputBorder.none,
+                decoration: openCrayBareInputDecoration.copyWith(
                   hintText: widget.hint,
-                  hintStyle: const TextStyle(
+                  hintStyle: TextStyle(
                     fontSize: 14,
                     height: 1.2,
-                    color: FilesFeatureScreen.textTertiary,
+                    color: context.palette.textTertiary,
                   ),
                 ),
               ),
@@ -141,7 +140,7 @@ class _SearchBarState extends State<_SearchBar> {
                   tooltip: widget.clearLabel,
                   onPressed: () => widget.controller.clear(),
                   icon: const Icon(CupertinoIcons.xmark_circle_fill, size: 18),
-                  color: FilesFeatureScreen.textTertiary,
+                  color: context.palette.textTertiary,
                   padding: EdgeInsets.zero,
                   constraints: const BoxConstraints.tightFor(
                     width: 32,
@@ -194,10 +193,10 @@ class _LocationCard extends StatelessWidget {
 
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: FilesFeatureScreen.surface,
+        color: context.palette.surface,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: OpenCrayColors.divider),
-        boxShadow: OpenCrayShadows.card,
+        border: Border.all(color: context.palette.divider),
+        boxShadow: context.palette.cardShadow,
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
@@ -208,18 +207,18 @@ class _LocationCard extends StatelessWidget {
               children: [
                 Text(
                   copy.filesLocationTitle,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     height: 1.2,
-                    color: FilesFeatureScreen.textTertiary,
+                    color: context.palette.textTertiary,
                   ),
                 ),
                 const Spacer(),
                 DecoratedBox(
                   decoration: BoxDecoration(
-                    color: FilesFeatureScreen.surfaceMuted,
+                    color: context.palette.surfaceMuted,
                     borderRadius: BorderRadius.circular(999),
-                    border: Border.all(color: OpenCrayColors.divider),
+                    border: Border.all(color: context.palette.divider),
                   ),
                   child: OpenCrayInkSurface(
                     borderRadius: BorderRadius.circular(999),
@@ -232,10 +231,10 @@ class _LocationCard extends StatelessWidget {
                         ),
                         child: Text(
                           copy.filesRefreshAction,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.w600,
-                            color: FilesFeatureScreen.textSecondary,
+                            color: context.palette.textSecondary,
                           ),
                         ),
                       ),
@@ -247,12 +246,12 @@ class _LocationCard extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               directoryName,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 17,
                 height: 1.2,
                 fontWeight: FontWeight.w600,
                 letterSpacing: -0.2,
-                color: FilesFeatureScreen.textPrimary,
+                color: context.palette.textPrimary,
               ),
             ),
             const SizedBox(height: 6),
@@ -260,19 +259,19 @@ class _LocationCard extends StatelessWidget {
               absolutePath,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 13,
                 height: 1.3,
-                color: FilesFeatureScreen.textSecondary,
+                color: context.palette.textSecondary,
               ),
             ),
             const SizedBox(height: 10),
             Text(
               statsLabel,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 13,
                 height: 1.2,
-                color: FilesFeatureScreen.textSecondary,
+                color: context.palette.textSecondary,
               ),
             ),
             const SizedBox(height: 12),
@@ -317,10 +316,10 @@ class _StickyLocationBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: FilesFeatureScreen.surface.withValues(alpha: 0.96),
+        color: context.palette.surface.withValues(alpha: 0.96),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: OpenCrayColors.divider),
-        boxShadow: OpenCrayShadows.floating,
+        border: Border.all(color: context.palette.divider),
+        boxShadow: context.palette.floatingShadow,
       ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
@@ -379,18 +378,18 @@ class _LocationActionRow extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(
+                Icon(
                   CupertinoIcons.folder_badge_plus,
                   size: 18,
-                  color: FilesFeatureScreen.accent,
+                  color: context.palette.primary,
                 ),
                 const SizedBox(width: 6),
                 Text(
                   newLabel,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.w600,
-                    color: FilesFeatureScreen.accent,
+                    color: context.palette.primary,
                   ),
                 ),
               ],
@@ -419,13 +418,13 @@ class _BreadcrumbTrail extends StatelessWidget {
         children: [
           for (var index = 0; index < breadcrumbs.length; index++) ...[
             if (index > 0)
-              const Padding(
+              Padding(
                 padding: EdgeInsets.symmetric(horizontal: 4),
                 child: Text(
                   '/',
                   style: TextStyle(
                     fontSize: 13,
-                    color: FilesFeatureScreen.textTertiary,
+                    color: context.palette.textTertiary,
                   ),
                 ),
               ),
@@ -460,8 +459,8 @@ class _BreadcrumbChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = isCurrent
-        ? FilesFeatureScreen.textPrimary
-        : FilesFeatureScreen.textTertiary;
+        ? context.palette.textPrimary
+        : context.palette.textTertiary;
     return InkWell(
       key: segment.relativePath == null
           ? null
@@ -577,10 +576,10 @@ class _DirectoryCard extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 20),
       sliver: DecoratedSliver(
         decoration: BoxDecoration(
-          color: FilesFeatureScreen.surface,
+          color: context.palette.surface,
           borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: OpenCrayColors.divider),
-          boxShadow: OpenCrayShadows.card,
+          border: Border.all(color: context.palette.divider),
+          boxShadow: context.palette.cardShadow,
         ),
         sliver: SliverPadding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
@@ -596,16 +595,16 @@ class _DirectoryCard extends StatelessWidget {
                   );
                 }
                 if (isFiltered && index == 1) {
-                  return const Divider(
+                  return Divider(
                     height: 16,
-                    color: FilesFeatureScreen.divider,
+                    color: context.palette.divider,
                   );
                 }
                 final adjustedIndex = index - headerChildCount;
                 if (adjustedIndex.isOdd) {
-                  return const Divider(
+                  return Divider(
                     height: 1,
-                    color: FilesFeatureScreen.divider,
+                    color: context.palette.divider,
                   );
                 }
                 final entry = entries[adjustedIndex ~/ 2];
@@ -646,10 +645,10 @@ class _DirectoryFilterStatus extends StatelessWidget {
       child: Row(
         key: const ValueKey<String>('files-filter-status'),
         children: [
-          const Icon(
+          Icon(
             CupertinoIcons.line_horizontal_3_decrease_circle,
             size: 16,
-            color: FilesFeatureScreen.accent,
+            color: context.palette.primary,
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -657,11 +656,11 @@ class _DirectoryFilterStatus extends StatelessWidget {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 12,
                 height: 1.2,
                 fontWeight: FontWeight.w600,
-                color: FilesFeatureScreen.textSecondary,
+                color: context.palette.textSecondary,
               ),
             ),
           ),
@@ -696,8 +695,8 @@ class _DirectoryEntryTile extends StatelessWidget {
         ? CupertinoIcons.folder_fill
         : CupertinoIcons.doc_text;
     final iconColor = entry.isDirectory
-        ? FilesFeatureScreen.accent
-        : FilesFeatureScreen.textTertiary;
+        ? context.palette.primary
+        : context.palette.textTertiary;
     final metaText = entry.isDirectory
         ? copy.filesDirectoryItemCount(entry.childCount)
         : _formatBytes(entry.sizeBytes ?? 0);
@@ -710,7 +709,7 @@ class _DirectoryEntryTile extends StatelessWidget {
         curve: OpenCrayMotion.enter,
         decoration: BoxDecoration(
           color: isSelected
-              ? FilesFeatureScreen.surfacePressed
+              ? context.palette.primaryTint
               : Colors.transparent,
           borderRadius: BorderRadius.circular(14),
         ),
@@ -737,8 +736,8 @@ class _DirectoryEntryTile extends StatelessWidget {
                         key: ValueKey<bool>(isSelected),
                         size: 20,
                         color: isSelected
-                            ? FilesFeatureScreen.accent
-                            : FilesFeatureScreen.textTertiary,
+                            ? context.palette.primary
+                            : context.palette.textTertiary,
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -751,29 +750,29 @@ class _DirectoryEntryTile extends StatelessWidget {
                   children: [
                     Text(
                       entry.name,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 15,
                         height: 1.25,
                         fontWeight: FontWeight.w500,
-                        color: FilesFeatureScreen.textPrimary,
+                        color: context.palette.textPrimary,
                       ),
                     ),
                     const SizedBox(height: 4),
                     Text(
                       metaText,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 12,
-                        color: FilesFeatureScreen.textSecondary,
+                        color: context.palette.textSecondary,
                       ),
                     ),
                   ],
                 ),
               ),
                   if (entry.isDirectory && !isSelectionMode)
-                    const Icon(
+                    Icon(
                       CupertinoIcons.chevron_right,
                       size: 16,
-                      color: FilesFeatureScreen.textTertiary,
+                      color: context.palette.textTertiary,
                     ),
                 ],
               ),
@@ -839,15 +838,17 @@ class _SelectionToolbar extends StatelessWidget {
           key: isVisible
               ? const ValueKey<String>('files-selection-toolbar')
               : null,
-          decoration: const BoxDecoration(
-            color: FilesFeatureScreen.surface,
+          decoration: BoxDecoration(
+            color: context.palette.surface,
             borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
-            border: Border(top: BorderSide(color: FilesFeatureScreen.divider)),
+            border: Border(top: BorderSide(color: context.palette.divider)),
             boxShadow: [
               BoxShadow(
-                color: Color(0x12101828),
+                color: context.palette.shadowInk.withValues(
+                  alpha: 0x12 / 0xFF,
+                ),
                 blurRadius: 18,
-                offset: Offset(0, -6),
+                offset: const Offset(0, -6),
               ),
             ],
           ),
@@ -934,7 +935,7 @@ class _SelectionToolbar extends StatelessWidget {
                         icon: CupertinoIcons.delete,
                         label: copy.filesDeleteAction,
                         enabled: canDelete,
-                        accentColor: FilesFeatureScreen.danger,
+                        accentColor: context.palette.danger,
                         onTap: onDelete,
                       ),
                     ),
@@ -962,15 +963,15 @@ class _FilesOperationStatusStrip extends StatelessWidget {
         state == _FilesOperationState.pasting ||
         state == _FilesOperationState.deleting;
     final Color textColor = isFailed
-        ? FilesFeatureScreen.danger
+        ? context.palette.danger
         : state == _FilesOperationState.done
-        ? OpenCrayColors.success
-        : FilesFeatureScreen.textSecondary;
+        ? context.palette.success
+        : context.palette.textSecondary;
     final Color surfaceColor = isFailed
-        ? OpenCrayColors.dangerTint
+        ? context.palette.dangerTint
         : state == _FilesOperationState.done
-        ? OpenCrayColors.successTint
-        : FilesFeatureScreen.surfaceMuted;
+        ? context.palette.successTint
+        : context.palette.surfaceMuted;
     return AnimatedContainer(
       key: ValueKey<String>('files-operation-status-${state.name}'),
       duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
@@ -1037,7 +1038,7 @@ class _SelectionActionGroup extends StatelessWidget {
       child: DecoratedBox(
         key: const ValueKey<String>('files-toolbar-standard-group'),
         decoration: BoxDecoration(
-          color: FilesFeatureScreen.surfaceMuted,
+          color: context.palette.surfaceMuted,
           borderRadius: BorderRadius.circular(16),
         ),
         child: Padding(
@@ -1066,10 +1067,10 @@ class _SelectionDangerAction extends StatelessWidget {
       child: DecoratedBox(
         key: const ValueKey<String>('files-toolbar-danger-group'),
         decoration: BoxDecoration(
-          color: FilesFeatureScreen.danger.withValues(alpha: 0.08),
+          color: context.palette.danger.withValues(alpha: 0.08),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
-            color: FilesFeatureScreen.danger.withValues(alpha: 0.18),
+            color: context.palette.danger.withValues(alpha: 0.18),
           ),
         ),
         child: SizedBox(width: 64, child: child),
@@ -1085,20 +1086,23 @@ class _ToolbarItem extends StatelessWidget {
     required this.label,
     required this.enabled,
     required this.onTap,
-    this.accentColor = FilesFeatureScreen.textSecondary,
+    this.accentColor,
   });
 
   final IconData icon;
   final String label;
   final bool enabled;
   final VoidCallback? onTap;
-  final Color accentColor;
+
+  /// Defaults to the secondary ink when omitted; resolved in [build] because the
+  /// palette comes from the theme.
+  final Color? accentColor;
 
   @override
   Widget build(BuildContext context) {
     final color = enabled
-        ? accentColor
-        : FilesFeatureScreen.textTertiary.withValues(alpha: 0.55);
+        ? (accentColor ?? context.palette.textSecondary)
+        : context.palette.textTertiary.withValues(alpha: 0.55);
     return InkWell(
       borderRadius: BorderRadius.circular(12),
       onTap: enabled ? onTap : null,

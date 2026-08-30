@@ -94,10 +94,10 @@ class _TextPreviewDialog extends StatelessWidget {
       ),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: FilesFeatureScreen.surface.withValues(alpha: 0.96),
+          color: context.palette.surface.withValues(alpha: 0.96),
           borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: OpenCrayColors.divider),
-          boxShadow: OpenCrayShadows.floating,
+          border: Border.all(color: context.palette.divider),
+          boxShadow: context.palette.floatingShadow,
         ),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
@@ -111,13 +111,13 @@ class _TextPreviewDialog extends StatelessWidget {
                     width: 40,
                     height: 40,
                     decoration: BoxDecoration(
-                      color: FilesFeatureScreen.surfaceMuted,
+                      color: context.palette.surfaceMuted,
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Icon(
+                    child: Icon(
                       CupertinoIcons.doc_text,
                       size: 20,
-                      color: FilesFeatureScreen.accent,
+                      color: context.palette.primary,
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -132,11 +132,11 @@ class _TextPreviewDialog extends StatelessWidget {
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 17,
                             fontWeight: FontWeight.w600,
                             letterSpacing: -0.2,
-                            color: FilesFeatureScreen.textPrimary,
+                            color: context.palette.textPrimary,
                           ),
                         ),
                         const SizedBox(height: 4),
@@ -147,9 +147,9 @@ class _TextPreviewDialog extends StatelessWidget {
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 12,
-                            color: FilesFeatureScreen.textSecondary,
+                            color: context.palette.textSecondary,
                           ),
                         ),
                       ],
@@ -173,21 +173,21 @@ class _TextPreviewDialog extends StatelessWidget {
                     vertical: 9,
                   ),
                   decoration: BoxDecoration(
-                    color: FilesFeatureScreen.surfaceMuted,
+                    color: context.palette.surfaceMuted,
                     borderRadius: BorderRadius.circular(14),
                   ),
                   child: Text(
                     copy.filesPreviewTruncatedNotice,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 12,
                       height: 1.35,
-                      color: FilesFeatureScreen.textSecondary,
+                      color: context.palette.textSecondary,
                     ),
                   ),
                 ),
               ],
               const SizedBox(height: 14),
-              const Divider(height: 1, color: FilesFeatureScreen.divider),
+              Divider(height: 1, color: context.palette.divider),
               const SizedBox(height: 14),
               Expanded(
                 child: GestureDetector(
@@ -196,7 +196,7 @@ class _TextPreviewDialog extends StatelessWidget {
                   onDoubleTap: onEdit,
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      color: OpenCrayColors.surfaceSubtle,
+                      color: context.palette.surfaceSubtle,
                       borderRadius: BorderRadius.circular(18),
                     ),
                     child: Padding(
@@ -205,9 +205,9 @@ class _TextPreviewDialog extends StatelessWidget {
                           ? Center(
                               child: Text(
                                 copy.filesPreviewEmptyBody,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 14,
-                                  color: FilesFeatureScreen.textSecondary,
+                                  color: context.palette.textSecondary,
                                 ),
                               ),
                             )
@@ -226,18 +226,18 @@ class _TextPreviewDialog extends StatelessWidget {
                                           _handleMarkdownLinkTap(context, href),
                                         );
                                       },
-                                      latexTextStyle: const TextStyle(
+                                      latexTextStyle: TextStyle(
                                         fontSize: 14,
                                         height: 1.55,
-                                        color: FilesFeatureScreen.textPrimary,
+                                        color: context.palette.textPrimary,
                                       ),
                                       styleSheet: _filesMarkdownStyleSheet(
                                         context,
                                       ),
                                       imageBackgroundColor:
-                                          OpenCrayColors.surfaceMuted,
+                                          context.palette.surfaceMuted,
                                       imageBorderColor:
-                                          FilesFeatureScreen.divider,
+                                          context.palette.divider,
                                       contextMenuBuilder:
                                           (
                                             BuildContext context,
@@ -256,11 +256,11 @@ class _TextPreviewDialog extends StatelessWidget {
                                   : SelectionArea(
                                       child: Text(
                                         preview.content,
-                                        style: const TextStyle(
+                                        style: TextStyle(
                                           fontSize: 13.5,
                                           height: 1.5,
                                           fontFamily: 'monospace',
-                                          color: FilesFeatureScreen.textPrimary,
+                                          color: context.palette.textPrimary,
                                         ),
                                       ),
                                     ),
@@ -339,10 +339,10 @@ class _CreateEntryDialogState extends State<_CreateEntryDialog> {
       constraints: const BoxConstraints(maxWidth: 520),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: FilesFeatureScreen.surface.withValues(alpha: 0.97),
+          color: context.palette.surface.withValues(alpha: 0.97),
           borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: OpenCrayColors.divider),
-          boxShadow: OpenCrayShadows.floating,
+          border: Border.all(color: context.palette.divider),
+          boxShadow: context.palette.floatingShadow,
         ),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
@@ -357,13 +357,13 @@ class _CreateEntryDialogState extends State<_CreateEntryDialog> {
                     width: 40,
                     height: 40,
                     decoration: BoxDecoration(
-                      color: FilesFeatureScreen.surfaceMuted,
+                      color: context.palette.surfaceMuted,
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Icon(
+                    child: Icon(
                       CupertinoIcons.folder_badge_plus,
                       size: 20,
-                      color: FilesFeatureScreen.accent,
+                      color: context.palette.primary,
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -372,11 +372,11 @@ class _CreateEntryDialogState extends State<_CreateEntryDialog> {
                       padding: const EdgeInsets.only(top: 2),
                       child: Text(
                         widget.copy.filesCreateEntryTitle,
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 17,
                           fontWeight: FontWeight.w600,
                           letterSpacing: -0.2,
-                          color: FilesFeatureScreen.textPrimary,
+                          color: context.palette.textPrimary,
                         ),
                       ),
                     ),
@@ -402,7 +402,7 @@ class _CreateEntryDialogState extends State<_CreateEntryDialog> {
                   hintText: widget.copy.filesNameFieldHint,
                   errorText: _intent.errorText,
                   filled: true,
-                  fillColor: FilesFeatureScreen.surfaceMuted,
+                  fillColor: context.palette.surfaceMuted,
                   contentPadding: const EdgeInsets.symmetric(
                     horizontal: 14,
                     vertical: 14,
@@ -415,22 +415,22 @@ class _CreateEntryDialogState extends State<_CreateEntryDialog> {
                     borderRadius: BorderRadius.circular(16),
                     borderSide: BorderSide(
                       color: _intent.errorText == null
-                          ? FilesFeatureScreen.accent
-                          : FilesFeatureScreen.danger,
+                          ? context.palette.primary
+                          : context.palette.danger,
                       width: 1.4,
                     ),
                   ),
                   errorBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
-                    borderSide: const BorderSide(
-                      color: FilesFeatureScreen.danger,
+                    borderSide: BorderSide(
+                      color: context.palette.danger,
                       width: 1.2,
                     ),
                   ),
                   focusedErrorBorder: OutlineInputBorder(
                     borderRadius: BorderRadius.circular(16),
-                    borderSide: const BorderSide(
-                      color: FilesFeatureScreen.danger,
+                    borderSide: BorderSide(
+                      color: context.palette.danger,
                       width: 1.4,
                     ),
                   ),
@@ -525,10 +525,10 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
       ),
       child: DecoratedBox(
         decoration: BoxDecoration(
-          color: FilesFeatureScreen.surface.withValues(alpha: 0.97),
+          color: context.palette.surface.withValues(alpha: 0.97),
           borderRadius: BorderRadius.circular(24),
-          border: Border.all(color: OpenCrayColors.divider),
-          boxShadow: OpenCrayShadows.floating,
+          border: Border.all(color: context.palette.divider),
+          boxShadow: context.palette.floatingShadow,
         ),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
@@ -542,13 +542,13 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
                     width: 40,
                     height: 40,
                     decoration: BoxDecoration(
-                      color: FilesFeatureScreen.surfaceMuted,
+                      color: context.palette.surfaceMuted,
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Icon(
+                    child: Icon(
                       CupertinoIcons.doc_text,
                       size: 20,
-                      color: FilesFeatureScreen.accent,
+                      color: context.palette.primary,
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -560,11 +560,11 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
                           widget.document.name,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 17,
                             fontWeight: FontWeight.w600,
                             letterSpacing: -0.2,
-                            color: FilesFeatureScreen.textPrimary,
+                            color: context.palette.textPrimary,
                           ),
                         ),
                         const SizedBox(height: 4),
@@ -572,9 +572,9 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
                           widget.document.relativePath,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 12,
-                            color: FilesFeatureScreen.textSecondary,
+                            color: context.palette.textSecondary,
                           ),
                         ),
                       ],
@@ -599,12 +599,12 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
                 ],
               ),
               const SizedBox(height: 14),
-              const Divider(height: 1, color: FilesFeatureScreen.divider),
+              Divider(height: 1, color: context.palette.divider),
               const SizedBox(height: 14),
               Expanded(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: OpenCrayColors.surfaceSubtle,
+                    color: context.palette.surfaceSubtle,
                     borderRadius: BorderRadius.circular(18),
                   ),
                   child: Padding(
@@ -618,11 +618,11 @@ class _TextEditorDialogState extends State<_TextEditorDialog> {
                       maxLines: null,
                       keyboardType: TextInputType.multiline,
                       textAlignVertical: TextAlignVertical.top,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 14,
                         height: 1.5,
                         fontFamily: 'monospace',
-                        color: FilesFeatureScreen.textPrimary,
+                        color: context.palette.textPrimary,
                       ),
                       decoration: const InputDecoration.collapsed(hintText: ''),
                     ),
@@ -665,10 +665,10 @@ class _ImagePreviewDialog extends StatelessWidget {
         children: [
           DecoratedBox(
             decoration: BoxDecoration(
-              color: FilesFeatureScreen.surface.withValues(alpha: 0.94),
+              color: context.palette.surface.withValues(alpha: 0.94),
               borderRadius: BorderRadius.circular(24),
-              border: Border.all(color: OpenCrayColors.divider),
-              boxShadow: OpenCrayShadows.floating,
+              border: Border.all(color: context.palette.divider),
+              boxShadow: context.palette.floatingShadow,
             ),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
@@ -679,13 +679,13 @@ class _ImagePreviewDialog extends StatelessWidget {
                     width: 40,
                     height: 40,
                     decoration: BoxDecoration(
-                      color: FilesFeatureScreen.surfaceMuted,
+                      color: context.palette.surfaceMuted,
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: const Icon(
+                    child: Icon(
                       CupertinoIcons.photo,
                       size: 20,
-                      color: FilesFeatureScreen.accent,
+                      color: context.palette.primary,
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -700,11 +700,11 @@ class _ImagePreviewDialog extends StatelessWidget {
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 17,
                             fontWeight: FontWeight.w600,
                             letterSpacing: -0.2,
-                            color: FilesFeatureScreen.textPrimary,
+                            color: context.palette.textPrimary,
                           ),
                         ),
                         const SizedBox(height: 4),
@@ -715,9 +715,9 @@ class _ImagePreviewDialog extends StatelessWidget {
                           ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 12,
-                            color: FilesFeatureScreen.textSecondary,
+                            color: context.palette.textSecondary,
                           ),
                         ),
                       ],
@@ -744,8 +744,8 @@ class _ImagePreviewDialog extends StatelessWidget {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(28),
                 child: DecoratedBox(
-                  decoration: const BoxDecoration(
-                    color: OpenCrayColors.surfaceMuted,
+                  decoration: BoxDecoration(
+                    color: context.palette.surfaceMuted,
                   ),
                   child: OpenCrayImageBytesView(
                     key: const ValueKey<String>('files-image-preview-image'),
@@ -816,62 +816,62 @@ MarkdownStyleSheet _filesMarkdownStyleSheet(BuildContext context) {
       decoration: TextDecoration.underline,
       decorationColor: linkColor.withValues(alpha: 0.75),
     ),
-    p: const TextStyle(
+    p: TextStyle(
       fontSize: 14,
       height: 1.55,
-      color: FilesFeatureScreen.textPrimary,
+      color: context.palette.textPrimary,
     ),
-    h1: const TextStyle(
+    h1: TextStyle(
       fontSize: 24,
       height: 1.2,
       fontWeight: FontWeight.w700,
-      color: FilesFeatureScreen.textPrimary,
+      color: context.palette.textPrimary,
     ),
-    h2: const TextStyle(
+    h2: TextStyle(
       fontSize: 20,
       height: 1.25,
       fontWeight: FontWeight.w700,
-      color: FilesFeatureScreen.textPrimary,
+      color: context.palette.textPrimary,
     ),
-    h3: const TextStyle(
+    h3: TextStyle(
       fontSize: 17,
       height: 1.3,
       fontWeight: FontWeight.w700,
-      color: FilesFeatureScreen.textPrimary,
+      color: context.palette.textPrimary,
     ),
-    listBullet: const TextStyle(
+    listBullet: TextStyle(
       fontSize: 14,
       height: 1.55,
-      color: FilesFeatureScreen.textPrimary,
+      color: context.palette.textPrimary,
     ),
-    code: const TextStyle(
+    code: TextStyle(
       fontSize: 13,
       height: 1.45,
       fontFamily: 'monospace',
-      color: FilesFeatureScreen.textPrimary,
+      color: context.palette.textPrimary,
     ),
     codeblockPadding: const EdgeInsets.all(12),
     codeblockDecoration: BoxDecoration(
-      color: OpenCrayColors.codeSurface,
+      color: context.palette.codeSurface,
       borderRadius: BorderRadius.circular(12),
-      border: Border.all(color: OpenCrayColors.divider),
+      border: Border.all(color: context.palette.divider),
     ),
     blockSpacing: 14,
-    blockquote: const TextStyle(
+    blockquote: TextStyle(
       fontSize: 13,
       height: 1.5,
-      color: FilesFeatureScreen.textSecondary,
+      color: context.palette.textSecondary,
     ),
     blockquoteDecoration: BoxDecoration(
-      color: OpenCrayColors.surfaceMuted,
+      color: context.palette.surfaceMuted,
       borderRadius: BorderRadius.circular(12),
-      border: const Border(
-        left: BorderSide(color: FilesFeatureScreen.divider, width: 3),
+      border: Border(
+        left: BorderSide(color: context.palette.divider, width: 3),
       ),
     ),
-    horizontalRuleDecoration: const BoxDecoration(
+    horizontalRuleDecoration: BoxDecoration(
       border: Border(
-        top: BorderSide(color: FilesFeatureScreen.divider, width: 1),
+        top: BorderSide(color: context.palette.divider, width: 1),
       ),
     ),
   );
@@ -892,7 +892,7 @@ class _DialogCloseButton extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       decoration: BoxDecoration(
-        color: FilesFeatureScreen.surfaceMuted,
+        color: context.palette.surfaceMuted,
         borderRadius: BorderRadius.circular(16),
       ),
       child: OpenCrayInkSurface(
@@ -908,7 +908,7 @@ class _DialogCloseButton extends StatelessWidget {
                 CupertinoIcons.xmark,
                 size: 16,
                 semanticLabel: semanticLabel,
-                color: FilesFeatureScreen.textSecondary,
+                color: context.palette.textSecondary,
               ),
             ),
           ),

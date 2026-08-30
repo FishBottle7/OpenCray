@@ -34,13 +34,13 @@ class _ApiIntegrationsSettingsPage extends StatelessWidget {
                   subtitle: 'Search slots, priority, and API keys',
                   onTap: () => onOpenPage(SettingsPage.networkSearch),
                 ),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 _SettingsNavigationRow(
                   title: 'Media & Speech',
                   subtitle: 'Image and voice APIs, plus STT route',
                   onTap: () => onOpenPage(SettingsPage.mediaSpeech),
                 ),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 _SettingsNavigationRow(
                   title: 'Sandbox Providers',
                   subtitle: 'Cloud execution backends, API keys, and routing',
@@ -50,15 +50,15 @@ class _ApiIntegrationsSettingsPage extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
-          const _SettingsCard(
+          _SettingsCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Routing rules', style: _SettingsTextStyles.cardTitle),
+                Text('Routing rules', style: context.settingsText.cardTitle),
                 SizedBox(height: 8),
                 Text(
                   'Search keeps ordered slots. Media uses external APIs, while sandbox providers add optional cloud environments without removing local execution.',
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 ),
               ],
             ),
@@ -139,18 +139,18 @@ class _SandboxProvidersSettingsPageState
             ),
           ),
           const SizedBox(height: 16),
-          const _SettingsCard(
+          _SettingsCard(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
                   'Execution environments',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 SizedBox(height: 8),
                 Text(
                   'Cloud providers extend Python and future command execution without replacing the on-device runtime.',
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 ),
               ],
             ),
@@ -274,14 +274,14 @@ class _SandboxE2bSettingsPageState extends State<_SandboxE2bSettingsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
+                Text(
                   'Remote Linux sandbox',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   'Enable E2B for cloud execution while keeping local tools available on this device.',
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 ),
                 const SizedBox(height: 12),
                 _SandboxToggleRow(
@@ -324,7 +324,7 @@ class _SandboxE2bSettingsPageState extends State<_SandboxE2bSettingsPage> {
                   snapshot.apiKeyConfigured
                       ? 'Stored securely and only used for sandbox calls.'
                       : 'Add the provider key here before switching runs into the cloud environment.',
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 ),
               ],
             ),
@@ -334,9 +334,9 @@ class _SandboxE2bSettingsPageState extends State<_SandboxE2bSettingsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
+                Text(
                   'Execution defaults',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 12),
                 _SandboxSegmentedField(
@@ -395,9 +395,9 @@ class _SandboxE2bSettingsPageState extends State<_SandboxE2bSettingsPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
+                Text(
                   'Session & limits',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 12),
                 _PrototypeField(
@@ -1149,9 +1149,9 @@ class _MediaSpeechSettingsPageState extends State<_MediaSpeechSettingsPage> {
           ),
           if (_isSaving) ...[
             const SizedBox(height: 12),
-            const Text(
+            Text(
               'Saving media settings…',
-              style: _SettingsTextStyles.selectionMeta,
+              style: context.settingsText.selectionMeta,
             ),
           ],
         ],
@@ -1333,17 +1333,17 @@ class _SettingsNavigationRow extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title, style: _SettingsTextStyles.rowTitle),
+                  Text(title, style: context.settingsText.rowTitle),
                   const SizedBox(height: 4),
-                  Text(subtitle, style: _SettingsTextStyles.rowSubtitle),
+                  Text(subtitle, style: context.settingsText.rowSubtitle),
                 ],
               ),
             ),
             const SizedBox(width: 12),
-            const Icon(
+            Icon(
               Icons.chevron_right_rounded,
               size: 18,
-              color: OpenCrayColors.textTertiary,
+              color: context.palette.textTertiary,
             ),
           ],
         ),
@@ -1364,7 +1364,7 @@ class _MediaSpeechServiceCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: _SettingsTextStyles.cardTitle),
+          Text(title, style: context.settingsText.cardTitle),
           const SizedBox(height: 12),
           child,
         ],
@@ -1384,7 +1384,7 @@ class _MediaSpeechInfoField extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: _SettingsTextStyles.fieldLabel),
+        Text(label, style: context.settingsText.fieldLabel),
         const SizedBox(height: 6),
         _PrototypeFieldSurface(
           child: Padding(
@@ -1394,8 +1394,8 @@ class _MediaSpeechInfoField extends StatelessWidget {
                 Expanded(
                   child: Text(
                     value,
-                    style: _SettingsTextStyles.fieldValue,
-                    strutStyle: _SettingsTextStyles.fieldValueStrut,
+                    style: context.settingsText.fieldValue,
+                    strutStyle: context.settingsText.fieldValueStrut,
                   ),
                 ),
               ],
@@ -1429,9 +1429,9 @@ class _SandboxToggleRow extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title, style: _SettingsTextStyles.rowTitle),
+              Text(title, style: context.settingsText.rowTitle),
               const SizedBox(height: 4),
-              Text(subtitle, style: _SettingsTextStyles.rowSubtitle),
+              Text(subtitle, style: context.settingsText.rowSubtitle),
             ],
           ),
         ),
@@ -1462,7 +1462,7 @@ class _SandboxSegmentedField extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: _SettingsTextStyles.fieldLabel),
+        Text(label, style: context.settingsText.fieldLabel),
         const SizedBox(height: 6),
         _InteractiveSegmentedSelector(
           labels: options,

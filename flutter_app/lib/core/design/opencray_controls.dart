@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'opencray_motion.dart';
+import 'opencray_palette.dart';
 import 'opencray_tokens.dart';
 
 /// Shared interactive controls for the OpenCray design language.
@@ -9,6 +10,26 @@ import 'opencray_tokens.dart';
 /// Switches, segmented pickers and selection marks live here so every feature
 /// animates state changes the same way instead of hand-rolling a toggle that
 /// snaps between states.
+
+/// Decoration for a text field that already supplies its own frame — the Files
+/// and Skills search bars, the chat composer, the inline editors in settings.
+///
+/// `border: InputBorder.none` on its own is not enough. [InputDecorator] reads
+/// the painted border from `enabledBorder` / `focusedBorder` before it looks at
+/// `border`, and those two arrive from the theme, so the field draws a second
+/// outline inside the container it was meant to sit flush in. `filled` behaves
+/// the same way: the theme's surface fill lands on top of the host container's
+/// own fill, which shows up the moment that container is tinted. Reach for this
+/// with `copyWith` instead of repeating six border slots per call site.
+const InputDecoration openCrayBareInputDecoration = InputDecoration(
+  filled: false,
+  border: InputBorder.none,
+  enabledBorder: InputBorder.none,
+  focusedBorder: InputBorder.none,
+  disabledBorder: InputBorder.none,
+  errorBorder: InputBorder.none,
+  focusedErrorBorder: InputBorder.none,
+);
 
 /// Rounded surface that lets descendant [InkWell]s paint their ripple on top of
 /// the card they live in. Without it the ripple is added to the shell
@@ -77,6 +98,7 @@ class _OpenCraySwitchState extends State<OpenCraySwitch> {
   @override
   Widget build(BuildContext context) {
     final bool enabled = widget.onChanged != null;
+    final OpenCrayPalette palette = context.palette;
     final Duration duration = OpenCrayMotion.resolve(
       context,
       OpenCrayMotion.quick,
@@ -84,12 +106,10 @@ class _OpenCraySwitchState extends State<OpenCraySwitch> {
     final Color trackColor;
     if (!enabled) {
       trackColor = widget.value
-          ? OpenCrayColors.primary.withValues(alpha: 0.32)
-          : OpenCrayColors.surfaceMuted;
+          ? palette.primary.withValues(alpha: 0.32)
+          : palette.surfaceMuted;
     } else {
-      trackColor = widget.value
-          ? OpenCrayColors.primary
-          : OpenCrayColors.surfaceSunken;
+      trackColor = widget.value ? palette.primary : palette.surfaceSunken;
     }
     return Semantics(
       container: true,
@@ -114,6 +134,7 @@ class _OpenCraySwitchState extends State<OpenCraySwitch> {
 
   Widget _buildTrack(BuildContext context, Duration duration, Color track) {
     final bool enabled = widget.onChanged != null;
+    final OpenCrayPalette palette = context.palette;
     return AnimatedContainer(
       duration: duration,
       curve: OpenCrayMotion.enter,
@@ -134,12 +155,14 @@ class _OpenCraySwitchState extends State<OpenCraySwitch> {
           scale: _pressed ? 0.88 : 1,
           child: DecoratedBox(
             decoration: BoxDecoration(
-              color: enabled ? OpenCrayColors.surface : OpenCrayColors.surfaceSubtle,
+              color: enabled
+                  ? palette.controlThumb
+                  : palette.controlThumbDisabled,
               shape: BoxShape.circle,
-              boxShadow: const <BoxShadow>[
+              boxShadow: <BoxShadow>[
                 BoxShadow(
-                  color: Color(0x24101828),
-                  offset: Offset(0, 1),
+                  color: palette.shadowInk.withValues(alpha: 0x24 / 0xFF),
+                  offset: const Offset(0, 1),
                   blurRadius: 3,
                 ),
               ],
@@ -187,10 +210,11 @@ class OpenCraySegmentedControl extends StatelessWidget {
     final TextStyle base =
         textStyle ??
         const TextStyle(fontSize: 12, height: 16 / 12, letterSpacing: -0.1);
+    final OpenCrayPalette palette = context.palette;
     return DecoratedBox(
-      decoration: const BoxDecoration(
-        color: OpenCrayColors.surfaceSunken,
-        borderRadius: BorderRadius.all(OpenCrayRadii.pill),
+      decoration: BoxDecoration(
+        color: palette.surfaceSunken,
+        borderRadius: const BorderRadius.all(OpenCrayRadii.pill),
       ),
       child: Padding(
         padding: const EdgeInsets.all(4),
@@ -204,11 +228,17 @@ class OpenCraySegmentedControl extends StatelessWidget {
                 child: FractionallySizedBox(
                   widthFactor: 1 / count,
                   heightFactor: 1,
-                  child: const DecoratedBox(
+                  child: DecoratedBox(
                     decoration: BoxDecoration(
-                      color: OpenCrayColors.surface,
-                      borderRadius: BorderRadius.all(OpenCrayRadii.pill),
-                      boxShadow: OpenCrayShadows.card,
+                      color: palette.surface,
+                      borderRadius: const BorderRadius.all(OpenCrayRadii.pill),
+                      // Dark has no card shadow to lift the indicator off the
+                      // track, and the two fills are only a few steps apart, so
+                      // the edge has to come from a hairline instead.
+                      border: palette.isDark
+                          ? Border.all(color: palette.outline)
+                          : null,
+                      boxShadow: palette.cardShadow,
                     ),
                   ),
                 ),
@@ -227,6 +257,7 @@ class OpenCraySegmentedControl extends StatelessWidget {
     Duration duration,
     TextStyle base,
   ) {
+    final OpenCrayPalette palette = context.palette;
     return Row(
       children: [
         for (int index = 0; index < labels.length; index++)
@@ -249,8 +280,8 @@ class OpenCraySegmentedControl extends StatelessWidget {
                   textAlign: TextAlign.center,
                   style: base.copyWith(
                     color: index == activeIndex
-                        ? OpenCrayColors.textPrimary
-                        : OpenCrayColors.textSecondary,
+                        ? palette.textPrimary
+                        : palette.textSecondary,
                     fontWeight: index == activeIndex
                         ? FontWeight.w600
                         : FontWeight.w500,
@@ -284,6 +315,7 @@ class OpenCraySelectionCheck extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final OpenCrayPalette palette = context.palette;
     final Duration duration = OpenCrayMotion.resolve(
       context,
       OpenCrayMotion.micro,
@@ -294,10 +326,10 @@ class OpenCraySelectionCheck extends StatelessWidget {
       width: dimension,
       height: dimension,
       decoration: BoxDecoration(
-        color: selected ? OpenCrayColors.primary : Colors.transparent,
+        color: selected ? palette.primary : Colors.transparent,
         shape: BoxShape.circle,
         border: Border.all(
-          color: selected ? OpenCrayColors.primary : OpenCrayColors.outline,
+          color: selected ? palette.primary : palette.outline,
           width: selected ? 1 : 1.4,
         ),
       ),
@@ -313,7 +345,7 @@ class OpenCraySelectionCheck extends StatelessWidget {
           child: Icon(
             Icons.check_rounded,
             size: dimension - 6,
-            color: OpenCrayColors.textOnPrimary,
+            color: palette.textOnPrimary,
           ),
         ),
       ),

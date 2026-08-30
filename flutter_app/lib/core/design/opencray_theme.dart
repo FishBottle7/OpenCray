@@ -1,118 +1,129 @@
 import 'package:flutter/material.dart';
 
+import 'opencray_palette.dart';
 import 'opencray_tokens.dart';
 
 final class OpenCrayTheme {
-  static ThemeData light() {
+  static ThemeData light() => of(OpenCrayPalette.light, Brightness.light);
+
+  static ThemeData dark() => of(OpenCrayPalette.dark, Brightness.dark);
+
+  /// Builds the whole Material theme out of [palette], so every themed widget
+  /// (buttons, inputs, sheets, snack bars) follows a brightness swap without a
+  /// second set of definitions.
+  static ThemeData of(OpenCrayPalette palette, Brightness brightness) {
     final base = ThemeData(
       useMaterial3: true,
-      brightness: Brightness.light,
-      scaffoldBackgroundColor: OpenCrayColors.shellBackground,
-      colorScheme: const ColorScheme.light(
-        primary: OpenCrayColors.primary,
-        onPrimary: OpenCrayColors.textOnPrimary,
-        primaryContainer: OpenCrayColors.primaryTint,
-        onPrimaryContainer: OpenCrayColors.primaryPressed,
-        secondary: OpenCrayColors.textSecondary,
-        surface: OpenCrayColors.surface,
-        onSurface: OpenCrayColors.textPrimary,
-        onSurfaceVariant: OpenCrayColors.textSecondary,
-        outline: OpenCrayColors.outline,
-        outlineVariant: OpenCrayColors.divider,
-        error: OpenCrayColors.danger,
-        surfaceTint: Colors.transparent,
-      ),
+      brightness: brightness,
+      scaffoldBackgroundColor: palette.shellBackground,
+      colorScheme:
+          (brightness == Brightness.dark
+                  ? const ColorScheme.dark()
+                  : const ColorScheme.light())
+              .copyWith(
+                primary: palette.primary,
+                onPrimary: palette.textOnPrimary,
+                primaryContainer: palette.primaryTint,
+                onPrimaryContainer: palette.primaryPressed,
+                secondary: palette.textSecondary,
+                surface: palette.surface,
+                onSurface: palette.textPrimary,
+                onSurfaceVariant: palette.textSecondary,
+                outline: palette.outline,
+                outlineVariant: palette.divider,
+                error: palette.danger,
+                surfaceTint: Colors.transparent,
+              ),
     );
 
-    const textTheme = TextTheme(
+    final textTheme = TextTheme(
       headlineLarge: TextStyle(
         fontSize: 28,
         height: 34 / 28,
         fontWeight: FontWeight.w700,
         letterSpacing: -0.6,
-        color: OpenCrayColors.textPrimary,
+        color: palette.textPrimary,
       ),
       headlineMedium: TextStyle(
         fontSize: 20,
         height: 26 / 20,
         fontWeight: FontWeight.w700,
         letterSpacing: -0.3,
-        color: OpenCrayColors.textPrimary,
+        color: palette.textPrimary,
       ),
       titleMedium: TextStyle(
         fontSize: 17,
         height: 22 / 17,
         fontWeight: FontWeight.w600,
         letterSpacing: -0.2,
-        color: OpenCrayColors.textPrimary,
+        color: palette.textPrimary,
       ),
       bodyLarge: TextStyle(
         fontSize: 15,
         height: 22 / 15,
         fontWeight: FontWeight.w400,
-        color: OpenCrayColors.textPrimary,
+        color: palette.textPrimary,
       ),
       bodyMedium: TextStyle(
         fontSize: 14,
         height: 20 / 14,
         fontWeight: FontWeight.w400,
-        color: OpenCrayColors.textSecondary,
+        color: palette.textSecondary,
       ),
       labelLarge: TextStyle(
         fontSize: 15,
         height: 20 / 15,
         fontWeight: FontWeight.w600,
         letterSpacing: -0.1,
-        color: OpenCrayColors.textPrimary,
+        color: palette.textPrimary,
       ),
       labelMedium: TextStyle(
         fontSize: 13,
         height: 18 / 13,
         fontWeight: FontWeight.w500,
-        color: OpenCrayColors.textSecondary,
+        color: palette.textSecondary,
       ),
       labelSmall: TextStyle(
         fontSize: 11,
         height: 14 / 11,
         fontWeight: FontWeight.w600,
         letterSpacing: 0.2,
-        color: OpenCrayColors.textTertiary,
+        color: palette.textTertiary,
       ),
     );
 
     return base.copyWith(
-      scaffoldBackgroundColor: OpenCrayColors.shellBackground,
+      extensions: <ThemeExtension<dynamic>>[palette],
+      scaffoldBackgroundColor: palette.shellBackground,
       // Restrained ripple: enough feedback to feel responsive, quiet enough to
       // keep the workbench surfaces calm.
       splashFactory: InkRipple.splashFactory,
-      splashColor: OpenCrayColors.primary.withValues(alpha: 0.07),
-      highlightColor: OpenCrayColors.textPrimary.withValues(alpha: 0.04),
-      dividerColor: OpenCrayColors.divider,
+      splashColor: palette.primary.withValues(alpha: 0.07),
+      highlightColor: palette.textPrimary.withValues(alpha: 0.04),
+      dividerColor: palette.divider,
       textTheme: textTheme,
-      appBarTheme: const AppBarTheme(
-        backgroundColor: OpenCrayColors.shellBackground,
-        foregroundColor: OpenCrayColors.textPrimary,
+      appBarTheme: AppBarTheme(
+        backgroundColor: palette.shellBackground,
+        foregroundColor: palette.textPrimary,
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
       ),
       cardTheme: CardThemeData(
         elevation: 0,
-        color: OpenCrayColors.surface,
+        color: palette.surface,
         margin: EdgeInsets.zero,
         shape: RoundedRectangleBorder(
           borderRadius: const BorderRadius.all(OpenCrayRadii.lg),
-          side: BorderSide(
-            color: OpenCrayColors.divider.withValues(alpha: 0.9),
-          ),
+          side: BorderSide(color: palette.divider.withValues(alpha: 0.9)),
         ),
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          backgroundColor: OpenCrayColors.primary,
-          foregroundColor: OpenCrayColors.textOnPrimary,
-          disabledBackgroundColor: OpenCrayColors.surfaceSunken,
-          disabledForegroundColor: OpenCrayColors.textTertiary,
+          backgroundColor: palette.primary,
+          foregroundColor: palette.textOnPrimary,
+          disabledBackgroundColor: palette.surfaceSunken,
+          disabledForegroundColor: palette.textTertiary,
           minimumSize: const Size(64, 44),
           padding: const EdgeInsets.symmetric(horizontal: 18),
           shape: const RoundedRectangleBorder(
@@ -124,10 +135,10 @@ final class OpenCrayTheme {
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
           elevation: 0,
-          backgroundColor: OpenCrayColors.primary,
-          foregroundColor: OpenCrayColors.textOnPrimary,
-          disabledBackgroundColor: OpenCrayColors.surfaceSunken,
-          disabledForegroundColor: OpenCrayColors.textTertiary,
+          backgroundColor: palette.primary,
+          foregroundColor: palette.textOnPrimary,
+          disabledBackgroundColor: palette.surfaceSunken,
+          disabledForegroundColor: palette.textTertiary,
           minimumSize: const Size(64, 44),
           padding: const EdgeInsets.symmetric(horizontal: 18),
           shape: const RoundedRectangleBorder(
@@ -138,8 +149,8 @@ final class OpenCrayTheme {
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          foregroundColor: OpenCrayColors.textPrimary,
-          side: const BorderSide(color: OpenCrayColors.outline),
+          foregroundColor: palette.textPrimary,
+          side: BorderSide(color: palette.outline),
           minimumSize: const Size(64, 44),
           padding: const EdgeInsets.symmetric(horizontal: 18),
           shape: const RoundedRectangleBorder(
@@ -150,7 +161,7 @@ final class OpenCrayTheme {
       ),
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
-          foregroundColor: OpenCrayColors.primary,
+          foregroundColor: palette.primary,
           minimumSize: const Size(44, 40),
           padding: const EdgeInsets.symmetric(horizontal: 12),
           shape: const RoundedRectangleBorder(
@@ -164,19 +175,19 @@ final class OpenCrayTheme {
         trackOutlineColor: const WidgetStatePropertyAll(Colors.transparent),
         trackColor: WidgetStateProperty.resolveWith((states) {
           if (states.contains(WidgetState.selected)) {
-            return OpenCrayColors.primary;
+            return palette.primary;
           }
-          return OpenCrayColors.surfaceSunken;
+          return palette.surfaceSunken;
         }),
       ),
       checkboxTheme: CheckboxThemeData(
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.all(Radius.circular(6)),
         ),
-        side: const BorderSide(color: OpenCrayColors.outline, width: 1.5),
+        side: BorderSide(color: palette.outline, width: 1.5),
         fillColor: WidgetStateProperty.resolveWith((states) {
           if (states.contains(WidgetState.selected)) {
-            return OpenCrayColors.primary;
+            return palette.primary;
           }
           return Colors.transparent;
         }),
@@ -184,28 +195,28 @@ final class OpenCrayTheme {
       radioTheme: RadioThemeData(
         fillColor: WidgetStateProperty.resolveWith((states) {
           if (states.contains(WidgetState.selected)) {
-            return OpenCrayColors.primary;
+            return palette.primary;
           }
-          return OpenCrayColors.outline;
+          return palette.outline;
         }),
       ),
-      sliderTheme: const SliderThemeData(
-        activeTrackColor: OpenCrayColors.primary,
-        inactiveTrackColor: OpenCrayColors.surfaceSunken,
+      sliderTheme: SliderThemeData(
+        activeTrackColor: palette.primary,
+        inactiveTrackColor: palette.surfaceSunken,
         thumbColor: Colors.white,
-        overlayColor: Color(0x142563EB),
+        overlayColor: palette.primary.withValues(alpha: 0.08),
         trackHeight: 4,
       ),
-      progressIndicatorTheme: const ProgressIndicatorThemeData(
-        color: OpenCrayColors.primary,
-        linearTrackColor: OpenCrayColors.surfaceSunken,
+      progressIndicatorTheme: ProgressIndicatorThemeData(
+        color: palette.primary,
+        linearTrackColor: palette.surfaceSunken,
         circularTrackColor: Colors.transparent,
       ),
-      dialogTheme: const DialogThemeData(
-        backgroundColor: OpenCrayColors.surface,
+      dialogTheme: DialogThemeData(
+        backgroundColor: palette.surface,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        shape: RoundedRectangleBorder(
+        shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.all(OpenCrayRadii.xl),
         ),
         titleTextStyle: TextStyle(
@@ -213,35 +224,35 @@ final class OpenCrayTheme {
           height: 24 / 18,
           fontWeight: FontWeight.w700,
           letterSpacing: -0.2,
-          color: OpenCrayColors.textPrimary,
+          color: palette.textPrimary,
         ),
         contentTextStyle: TextStyle(
           fontSize: 14.5,
           height: 21 / 14.5,
-          color: OpenCrayColors.textSecondary,
+          color: palette.textSecondary,
         ),
       ),
-      bottomSheetTheme: const BottomSheetThemeData(
-        backgroundColor: OpenCrayColors.surface,
+      bottomSheetTheme: BottomSheetThemeData(
+        backgroundColor: palette.surface,
         surfaceTintColor: Colors.transparent,
-        modalBackgroundColor: OpenCrayColors.surface,
+        modalBackgroundColor: palette.surface,
         elevation: 0,
         modalElevation: 0,
-        shape: RoundedRectangleBorder(
+        shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: OpenCrayRadii.sheet),
         ),
         showDragHandle: true,
-        dragHandleColor: OpenCrayColors.outline,
-        dragHandleSize: Size(36, 4),
+        dragHandleColor: palette.outline,
+        dragHandleSize: const Size(36, 4),
       ),
       snackBarTheme: SnackBarThemeData(
-        backgroundColor: OpenCrayColors.inkSurface,
+        backgroundColor: palette.inkSurface,
         contentTextStyle: const TextStyle(
           fontSize: 14,
           height: 20 / 14,
           color: Colors.white,
         ),
-        actionTextColor: OpenCrayColors.brandSky,
+        actionTextColor: palette.brandSky,
         behavior: SnackBarBehavior.floating,
         elevation: 0,
         shape: RoundedRectangleBorder(
@@ -249,47 +260,42 @@ final class OpenCrayTheme {
         ),
       ),
       chipTheme: ChipThemeData(
-        backgroundColor: OpenCrayColors.surfaceMuted,
-        selectedColor: OpenCrayColors.primaryTint,
+        backgroundColor: palette.surfaceMuted,
+        selectedColor: palette.primaryTint,
         side: BorderSide.none,
-        labelStyle: const TextStyle(
+        labelStyle: TextStyle(
           fontSize: 13,
           fontWeight: FontWeight.w500,
-          color: OpenCrayColors.textSecondary,
+          color: palette.textSecondary,
         ),
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.all(OpenCrayRadii.pill),
         ),
       ),
       popupMenuTheme: PopupMenuThemeData(
-        color: OpenCrayColors.surface,
+        color: palette.surface,
         surfaceTintColor: Colors.transparent,
         elevation: 3,
-        shadowColor: const Color(0x1F101828),
+        shadowColor: palette.textPrimary.withValues(alpha: 0.12),
         shape: RoundedRectangleBorder(
           borderRadius: const BorderRadius.all(OpenCrayRadii.md),
-          side: BorderSide(
-            color: OpenCrayColors.divider.withValues(alpha: 0.9),
-          ),
+          side: BorderSide(color: palette.divider.withValues(alpha: 0.9)),
         ),
-        textStyle: const TextStyle(
-          fontSize: 14.5,
-          color: OpenCrayColors.textPrimary,
-        ),
+        textStyle: TextStyle(fontSize: 14.5, color: palette.textPrimary),
       ),
       tooltipTheme: TooltipThemeData(
-        decoration: const BoxDecoration(
-          color: OpenCrayColors.inkSurface,
-          borderRadius: BorderRadius.all(OpenCrayRadii.sm),
+        decoration: BoxDecoration(
+          color: palette.inkSurface,
+          borderRadius: const BorderRadius.all(OpenCrayRadii.sm),
         ),
         textStyle: const TextStyle(fontSize: 12.5, color: Colors.white),
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: OpenCrayColors.surface,
-        hintStyle: const TextStyle(
-          color: OpenCrayColors.textTertiary,
+        fillColor: palette.surface,
+        hintStyle: TextStyle(
+          color: palette.textTertiary,
           fontSize: 15,
           height: 22 / 15,
         ),
@@ -297,37 +303,34 @@ final class OpenCrayTheme {
           horizontal: 14,
           vertical: 12,
         ),
-        enabledBorder: const OutlineInputBorder(
-          borderRadius: BorderRadius.all(OpenCrayRadii.md),
-          borderSide: BorderSide(color: OpenCrayColors.divider),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: const BorderRadius.all(OpenCrayRadii.md),
+          borderSide: BorderSide(color: palette.divider),
         ),
-        focusedBorder: const OutlineInputBorder(
-          borderRadius: BorderRadius.all(OpenCrayRadii.md),
-          borderSide: BorderSide(
-            color: OpenCrayColors.primary,
-            width: 1.4,
-          ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: const BorderRadius.all(OpenCrayRadii.md),
+          borderSide: BorderSide(color: palette.primary, width: 1.4),
         ),
-        errorBorder: const OutlineInputBorder(
-          borderRadius: BorderRadius.all(OpenCrayRadii.md),
-          borderSide: BorderSide(color: OpenCrayColors.danger),
+        errorBorder: OutlineInputBorder(
+          borderRadius: const BorderRadius.all(OpenCrayRadii.md),
+          borderSide: BorderSide(color: palette.danger),
         ),
-        focusedErrorBorder: const OutlineInputBorder(
-          borderRadius: BorderRadius.all(OpenCrayRadii.md),
-          borderSide: BorderSide(color: OpenCrayColors.danger, width: 1.4),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: const BorderRadius.all(OpenCrayRadii.md),
+          borderSide: BorderSide(color: palette.danger, width: 1.4),
         ),
       ),
       textSelectionTheme: TextSelectionThemeData(
-        cursorColor: OpenCrayColors.primary,
-        selectionColor: OpenCrayColors.primary.withValues(alpha: 0.22),
-        selectionHandleColor: OpenCrayColors.primary,
+        cursorColor: palette.primary,
+        selectionColor: palette.primary.withValues(alpha: 0.22),
+        selectionHandleColor: palette.primary,
       ),
-      listTileTheme: const ListTileThemeData(
-        iconColor: OpenCrayColors.textSecondary,
-        textColor: OpenCrayColors.textPrimary,
+      listTileTheme: ListTileThemeData(
+        iconColor: palette.textSecondary,
+        textColor: palette.textPrimary,
       ),
-      dividerTheme: const DividerThemeData(
-        color: OpenCrayColors.divider,
+      dividerTheme: DividerThemeData(
+        color: palette.divider,
         thickness: 1,
         space: 1,
       ),

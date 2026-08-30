@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import 'opencray_palette.dart';
+
 /// OpenCray design tokens — "Refined Workbench" language.
 ///
 /// Brand anchor: the sky-blue crayfish claw. Blue stays the single accent
@@ -56,6 +58,9 @@ final class OpenCrayColors {
   // Workbench technical surfaces
   static const codeSurface = Color(0xFFF5F7FA);
   static const inkSurface = Color(0xFF16202E);
+
+  /// Ink that every drop shadow is tinted from.
+  static const shadowInk = Color(0xFF101828);
 
   const OpenCrayColors._();
 }
@@ -152,28 +157,29 @@ final class OpenCraySizes {
 /// Shared page-level typography. One definition for the large-title header so
 /// the four tabs and every settings subpage agree on metrics.
 /// See `docs/mobile-ui-layout-spec.md` — *Large-title page template*.
+///
+/// The styles take a palette rather than baking one in, so a header follows a
+/// brightness change; the gaps below are brightness-blind and stay `const` so
+/// they can still be constructor defaults.
 final class OpenCrayTypography {
-  static const TextStyle pageEyebrow = TextStyle(
+  static TextStyle pageEyebrow(OpenCrayPalette palette) => TextStyle(
     fontSize: 11,
     height: 1.1,
     fontWeight: FontWeight.w700,
     letterSpacing: 1.1,
-    color: OpenCrayColors.textTertiary,
+    color: palette.textTertiary,
   );
 
-  static const TextStyle pageTitle = TextStyle(
+  static TextStyle pageTitle(OpenCrayPalette palette) => TextStyle(
     fontSize: 28,
     height: 1.12,
     fontWeight: FontWeight.w700,
     letterSpacing: -0.6,
-    color: OpenCrayColors.textPrimary,
+    color: palette.textPrimary,
   );
 
-  static const TextStyle pageSummary = TextStyle(
-    fontSize: 14,
-    height: 1.35,
-    color: OpenCrayColors.textSecondary,
-  );
+  static TextStyle pageSummary(OpenCrayPalette palette) =>
+      TextStyle(fontSize: 14, height: 1.35, color: palette.textSecondary);
 
   /// Gap rhythm for the header block.
   static const double eyebrowGap = 8;

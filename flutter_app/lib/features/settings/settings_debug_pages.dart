@@ -14,7 +14,7 @@ class _DebugToolsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: OpenCrayColors.shellBackground,
+      backgroundColor: context.palette.shellBackground,
       body: SafeArea(
         bottom: false,
         child: SingleChildScrollView(
@@ -32,18 +32,18 @@ class _DebugToolsPage extends StatelessWidget {
                 summary:
                     'Inspect runtime ownership, trace, memory, soul state, and the embedded Python runner.',
               ),
-              const _SettingsCard(
+              _SettingsCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
                       'What you can inspect',
-                      style: _SettingsTextStyles.cardTitle,
+                      style: context.settingsText.cardTitle,
                     ),
                     SizedBox(height: 8),
                     Text(
                       'Host/service lifecycle, trace runs, memory, soul state, and embedded Python execution.',
-                      style: _SettingsTextStyles.body,
+                      style: context.settingsText.body,
                     ),
                   ],
                 ),
@@ -53,9 +53,9 @@ class _DebugToolsPage extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
+                    Text(
                       'Debug pages',
-                      style: _SettingsTextStyles.cardTitle,
+                      style: context.settingsText.cardTitle,
                     ),
                     const SizedBox(height: 8),
                     _HomeEntryRow(
@@ -71,7 +71,7 @@ class _DebugToolsPage extends StatelessWidget {
                         );
                       },
                     ),
-                    const Divider(height: 1, color: OpenCrayColors.divider),
+                    Divider(height: 1, color: context.palette.divider),
                     _HomeEntryRow(
                       title: 'Runtime Diagnostics',
                       onTap: () {
@@ -85,7 +85,7 @@ class _DebugToolsPage extends StatelessWidget {
                         );
                       },
                     ),
-                    const Divider(height: 1, color: OpenCrayColors.divider),
+                    Divider(height: 1, color: context.palette.divider),
                     _HomeEntryRow(
                       title: 'Context & Memory Trace',
                       onTap: () {
@@ -100,7 +100,7 @@ class _DebugToolsPage extends StatelessWidget {
                         );
                       },
                     ),
-                    const Divider(height: 1, color: OpenCrayColors.divider),
+                    Divider(height: 1, color: context.palette.divider),
                     _HomeEntryRow(
                       title: 'Memory Inspector',
                       onTap: () {
@@ -114,7 +114,7 @@ class _DebugToolsPage extends StatelessWidget {
                         );
                       },
                     ),
-                    const Divider(height: 1, color: OpenCrayColors.divider),
+                    Divider(height: 1, color: context.palette.divider),
                     _HomeEntryRow(
                       title: 'Soul Inspector',
                       onTap: () {
@@ -182,7 +182,7 @@ print(os.getcwd())
     final result = _result;
     final canRun = !_isRunning && _scriptController.text.trim().isNotEmpty;
     return Scaffold(
-      backgroundColor: OpenCrayColors.shellBackground,
+      backgroundColor: context.palette.shellBackground,
       body: SafeArea(
         bottom: false,
         child: SingleChildScrollView(
@@ -203,18 +203,18 @@ print(os.getcwd())
               _SettingsCard(
                 child: Row(
                   children: [
-                    const Expanded(
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             'Embedded runtime only',
-                            style: _SettingsTextStyles.cardTitle,
+                            style: context.settingsText.cardTitle,
                           ),
                           SizedBox(height: 8),
                           Text(
                             'The script is written into `.opencray/debug-python/` inside the workspace, then executed via the embedded p4a runtime with a 20s startup budget and a 60s script timeout.',
-                            style: _SettingsTextStyles.body,
+                            style: context.settingsText.body,
                           ),
                         ],
                       ),
@@ -232,7 +232,7 @@ print(os.getcwd())
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('Script', style: _SettingsTextStyles.cardTitle),
+                    Text('Script', style: context.settingsText.cardTitle),
                     const SizedBox(height: 10),
                     TextField(
                       key: const ValueKey<String>('settings-debug-python-file'),
@@ -267,7 +267,7 @@ print(os.getcwd())
                           const SpellCheckConfiguration.disabled(),
                       smartDashesType: SmartDashesType.disabled,
                       smartQuotesType: SmartQuotesType.disabled,
-                      style: _SettingsTextStyles.body.copyWith(
+                      style: context.settingsText.body.copyWith(
                         fontFamily: 'monospace',
                         height: 1.45,
                       ),
@@ -280,7 +280,7 @@ print(os.getcwd())
                     ),
                     if (_runError != null) ...[
                       const SizedBox(height: 10),
-                      Text(_runError!, style: _SettingsTextStyles.bodyStrong),
+                      Text(_runError!, style: context.settingsText.bodyStrong),
                     ],
                   ],
                 ),
@@ -335,7 +335,7 @@ print(os.getcwd())
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Last result', style: _SettingsTextStyles.cardTitle),
+          Text('Last result', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           Wrap(spacing: 8, runSpacing: 8, children: chips),
           const SizedBox(height: 12),
@@ -374,22 +374,22 @@ print(os.getcwd())
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: _SettingsTextStyles.cardTitle),
+          Text(title, style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           if (normalizedText.isEmpty)
-            Text(emptyText, style: _SettingsTextStyles.body)
+            Text(emptyText, style: context.settingsText.body)
           else
             Container(
               width: double.infinity,
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: OpenCrayColors.surfaceSubtle,
+                color: context.palette.surfaceSubtle,
                 borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: OpenCrayColors.divider),
+                border: Border.all(color: context.palette.divider),
               ),
               child: SelectableText(
                 normalizedText,
-                style: _SettingsTextStyles.body.copyWith(
+                style: context.settingsText.body.copyWith(
                   fontFamily: 'monospace',
                   height: 1.45,
                 ),
@@ -474,7 +474,7 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
   Widget build(BuildContext context) {
     final snapshot = _snapshot;
     return Scaffold(
-      backgroundColor: OpenCrayColors.shellBackground,
+      backgroundColor: context.palette.shellBackground,
       body: SafeArea(
         bottom: false,
         child: SingleChildScrollView(
@@ -495,18 +495,18 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
               _SettingsCard(
                 child: Row(
                   children: [
-                    const Expanded(
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             'Runtime status source',
-                            style: _SettingsTextStyles.cardTitle,
+                            style: context.settingsText.cardTitle,
                           ),
                           SizedBox(height: 8),
                           Text(
                             'Uses the existing shell snapshot path. No separate host diagnostics channel is required.',
-                            style: _SettingsTextStyles.body,
+                            style: context.settingsText.body,
                           ),
                         ],
                       ),
@@ -522,10 +522,10 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
               if (_loadError != null) ...[
                 const SizedBox(height: 16),
                 _SettingsCard(
-                  backgroundColor: OpenCrayColors.dangerTint,
+                  backgroundColor: context.palette.dangerTint,
                   child: Text(
                     _loadError!,
-                    style: _SettingsTextStyles.bodyStrong,
+                    style: context.settingsText.bodyStrong,
                   ),
                 ),
               ],
@@ -567,9 +567,9 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             'Connection & transport',
-            style: _SettingsTextStyles.cardTitle,
+            style: context.settingsText.cardTitle,
           ),
           const SizedBox(height: 10),
           Wrap(
@@ -600,9 +600,9 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
           ),
           const SizedBox(height: 12),
           if (connection == null)
-            const Text(
+            Text(
               'No runtime service connection state was projected into the shell snapshot.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else ...[
             _DebugKeyValueLine(
@@ -636,12 +636,12 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Host & ownership', style: _SettingsTextStyles.cardTitle),
+          Text('Host & ownership', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           if (hostLifecycle == null && ownerLifecycle == null)
-            const Text(
+            Text(
               'No host or runtime owner lifecycle data is visible in the shell snapshot.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else ...[
             Wrap(
@@ -674,9 +674,9 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
             if (flutterAppInstanceId?.isNotEmpty == true ||
                 bridgeInstanceId?.isNotEmpty == true) ...[
               const SizedBox(height: 12),
-              const Text(
+              Text(
                 'Client attach',
-                style: _SettingsTextStyles.bodyStrong,
+                style: context.settingsText.bodyStrong,
               ),
               const SizedBox(height: 8),
               if (flutterAppInstanceId?.isNotEmpty == true)
@@ -686,15 +686,15 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
             ],
             if (hostLifecycle != null) ...[
               const SizedBox(height: 12),
-              const Text('Current host', style: _SettingsTextStyles.bodyStrong),
+              Text('Current host', style: context.settingsText.bodyStrong),
               const SizedBox(height: 8),
               ..._buildHostLifecycleLines(hostLifecycle),
             ],
             if (ownerLifecycle != null) ...[
               const SizedBox(height: 12),
-              const Text(
+              Text(
                 'Runtime owner',
-                style: _SettingsTextStyles.bodyStrong,
+                style: context.settingsText.bodyStrong,
               ),
               const SizedBox(height: 8),
               ..._buildHostLifecycleLines(ownerLifecycle),
@@ -722,15 +722,15 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             'Local runtime server',
-            style: _SettingsTextStyles.cardTitle,
+            style: context.settingsText.cardTitle,
           ),
           const SizedBox(height: 10),
           if (server == null)
-            const Text(
+            Text(
               'No local runtime server state was projected into the shell snapshot.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else ...[
             Wrap(
@@ -786,15 +786,15 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             'Runtime owner work',
-            style: _SettingsTextStyles.cardTitle,
+            style: context.settingsText.cardTitle,
           ),
           const SizedBox(height: 10),
           if (summary == null)
-            const Text(
+            Text(
               'No runtime owner work summary was projected into the shell snapshot.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else ...[
             Wrap(
@@ -842,9 +842,9 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
             if (summary.activeSessionIds.isEmpty &&
                 summary.pendingWorkSessionIds.isEmpty &&
                 summary.liveManagedProcessSessionIds.isEmpty)
-              const Text(
+              Text(
                 'No active session ids or managed process owners are currently reported.',
-                style: _SettingsTextStyles.body,
+                style: context.settingsText.body,
               ),
           ],
         ],
@@ -860,12 +860,12 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Runtime service', style: _SettingsTextStyles.cardTitle),
+          Text('Runtime service', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           if (lifecycle == null && workState == null && keepAlive == null)
-            const Text(
+            Text(
               'No runtime service lifecycle or keepalive state is visible in the shell snapshot.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else ...[
             Wrap(
@@ -895,9 +895,9 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
             ),
             if (lifecycle != null) ...[
               const SizedBox(height: 12),
-              const Text(
+              Text(
                 'Service lifecycle',
-                style: _SettingsTextStyles.bodyStrong,
+                style: context.settingsText.bodyStrong,
               ),
               const SizedBox(height: 8),
               _DebugKeyValueLine(
@@ -919,7 +919,7 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
             ],
             if (workState != null) ...[
               const SizedBox(height: 12),
-              const Text('Work state', style: _SettingsTextStyles.bodyStrong),
+              Text('Work state', style: context.settingsText.bodyStrong),
               const SizedBox(height: 8),
               _DebugKeyValueLine(
                 'Keepalive required',
@@ -944,7 +944,7 @@ class _RuntimeDiagnosticsPageState extends State<_RuntimeDiagnosticsPage> {
             ],
             if (keepAlive != null) ...[
               const SizedBox(height: 12),
-              const Text('Keepalive', style: _SettingsTextStyles.bodyStrong),
+              Text('Keepalive', style: context.settingsText.bodyStrong),
               const SizedBox(height: 8),
               _DebugKeyValueLine(
                 'Idle grace',
@@ -1156,7 +1156,7 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
         ? const <OpenCraySoulFieldSourceSnapshot>[]
         : _linkedSoulFieldSources(_soulSnapshot, selectedRecord.id);
     return Scaffold(
-      backgroundColor: OpenCrayColors.shellBackground,
+      backgroundColor: context.palette.shellBackground,
       body: SafeArea(
         bottom: false,
         child: SingleChildScrollView(
@@ -1181,10 +1181,10 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
               if (_loadError != null) ...[
                 const SizedBox(height: 16),
                 _SettingsCard(
-                  backgroundColor: OpenCrayColors.dangerTint,
+                  backgroundColor: context.palette.dangerTint,
                   child: Text(
                     _loadError!,
-                    style: _SettingsTextStyles.bodyStrong,
+                    style: context.settingsText.bodyStrong,
                   ),
                 ),
               ],
@@ -1234,10 +1234,10 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Store summary',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
               ),
               _HeaderActionChip(
@@ -1249,26 +1249,26 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
           const SizedBox(height: 10),
           Text(
             '${_records.length} records · $durableCount durable · $preferenceCount preferences · $openCommitmentCount open commitments',
-            style: _SettingsTextStyles.bodyStrong,
+            style: context.settingsText.bodyStrong,
           ),
           const SizedBox(height: 6),
           Text(
             latestRecord == null
                 ? 'No persisted memory records are available yet.'
                 : 'Last updated ${_formatDebugClockTime(latestRecord.updatedAtEpochMs)} · ${latestRecord.id}',
-            style: _SettingsTextStyles.body,
+            style: context.settingsText.body,
           ),
           if (snapshot != null) ...[
             const SizedBox(height: 6),
             Text(
               'Session ${snapshot.sessionId}${snapshot.workspaceId.isEmpty ? '' : ' · workspace ${_truncateDebugText(snapshot.workspaceId, 36)}'}',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             ),
           ],
           const SizedBox(height: 8),
-          const Text(
+          Text(
             'This view reads directly from the persisted memory store and annotates each record with current TTL expiry state.',
-            style: _SettingsTextStyles.body,
+            style: context.settingsText.body,
           ),
         ],
       ),
@@ -1280,7 +1280,7 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Filter', style: _SettingsTextStyles.cardTitle),
+          Text('Filter', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           Wrap(
             spacing: 8,
@@ -1319,10 +1319,10 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
           children: [
             Row(
               children: [
-                const Expanded(
+                Expanded(
                   child: Text(
                     'Search projected memory',
-                    style: _SettingsTextStyles.cardTitle,
+                    style: context.settingsText.cardTitle,
                   ),
                 ),
                 _HeaderActionChip(
@@ -1332,9 +1332,9 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
               ],
             ),
             const SizedBox(height: 10),
-            const Text(
+            Text(
               'Query the same projected memory corpus exposed to memory_search and inspect a narrow snippet with memory_get-style slicing.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             ),
             const SizedBox(height: 12),
             TextField(
@@ -1356,19 +1356,19 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
             ),
             if (_searchError != null) ...[
               const SizedBox(height: 10),
-              Text(_searchError!, style: _SettingsTextStyles.bodyStrong),
+              Text(_searchError!, style: context.settingsText.bodyStrong),
             ],
             if (searchSnapshot != null) ...[
               const SizedBox(height: 12),
               Text(
                 '${searchResults.length} match(es) · ${searchSnapshot.corpusFileCount} file(s)${searchSnapshot.queryTerms.isEmpty ? '' : ' · terms ${searchSnapshot.queryTerms.join(', ')}'}',
-                style: _SettingsTextStyles.bodyStrong,
+                style: context.settingsText.bodyStrong,
               ),
               if (searchResults.isEmpty) ...[
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   'No projected memory matches were found for the current query.',
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 ),
               ] else ...[
                 const SizedBox(height: 10),
@@ -1388,12 +1388,12 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
             ],
             if (_searchSlice != null || _isLoadingSearchSlice) ...[
               const SizedBox(height: 14),
-              Text('Selected snippet', style: _SettingsTextStyles.bodyStrong),
+              Text('Selected snippet', style: context.settingsText.bodyStrong),
               const SizedBox(height: 8),
               if (_isLoadingSearchSlice)
-                const Text(
+                Text(
                   'Loading projected snippet...',
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 )
               else if (_searchSlice != null) ...[
                 _DebugKeyValueLine(
@@ -1416,13 +1416,13 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
                   width: double.infinity,
                   padding: const EdgeInsets.all(12),
                   decoration: BoxDecoration(
-                    color: OpenCrayColors.surfaceSubtle,
+                    color: context.palette.surfaceSubtle,
                     borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: OpenCrayColors.divider),
+                    border: Border.all(color: context.palette.divider),
                   ),
                   child: SelectableText(
                     _searchSlice!.text,
-                    style: _SettingsTextStyles.body,
+                    style: context.settingsText.body,
                   ),
                 ),
               ],
@@ -1440,12 +1440,12 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Memory records', style: _SettingsTextStyles.cardTitle),
+          Text('Memory records', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           if (filteredRecords.isEmpty)
-            const Text(
+            Text(
               'No persisted records match the current filter.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else
             for (int index = 0; index < filteredRecords.length; index++) ...[
@@ -1472,12 +1472,12 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Selected record', style: _SettingsTextStyles.cardTitle),
+          Text('Selected record', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           if (record == null)
-            const Text(
+            Text(
               'Select a record to inspect its persisted state.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else ...[
             if (actionChips.isNotEmpty) ...[
@@ -1488,7 +1488,7 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
               Text(
                 _actionError!,
                 key: const ValueKey<String>('settings-memory-action-error'),
-                style: _SettingsTextStyles.bodyStrong,
+                style: context.settingsText.bodyStrong,
               ),
               const SizedBox(height: 12),
             ],
@@ -1565,15 +1565,16 @@ class _MemoryInspectorPageState extends State<_MemoryInspectorPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('Linked activity', style: _SettingsTextStyles.cardTitle),
+            Text('Linked activity', style: context.settingsText.cardTitle),
             const SizedBox(height: 10),
             if (record == null)
-              const Text(
+              Text(
                 'Select a record to inspect linked run and soul activity.',
-                style: _SettingsTextStyles.body,
+                style: context.settingsText.body,
               )
             else
               ..._buildMemoryLinkDetails(
+                context: context,
                 links: links,
                 soulFieldSources: soulFieldSources,
                 includeSoulFieldsSection: true,
@@ -1819,7 +1820,7 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
     final interactionPreferenceDebug = snapshot?.interactionPreferenceDebug;
     final relationshipStateDebug = snapshot?.relationshipStateDebug;
     return Scaffold(
-      backgroundColor: OpenCrayColors.shellBackground,
+      backgroundColor: context.palette.shellBackground,
       body: SafeArea(
         bottom: false,
         child: SingleChildScrollView(
@@ -1846,10 +1847,10 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
               if (_loadError != null) ...[
                 const SizedBox(height: 16),
                 _SettingsCard(
-                  backgroundColor: OpenCrayColors.dangerTint,
+                  backgroundColor: context.palette.dangerTint,
                   child: Text(
                     _loadError!,
-                    style: _SettingsTextStyles.bodyStrong,
+                    style: context.settingsText.bodyStrong,
                   ),
                 ),
               ],
@@ -1859,10 +1860,10 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
                   key: ValueKey<String>('soul-inspector-loading'),
                 )
               else if (snapshot == null)
-                const _SettingsCard(
+                _SettingsCard(
                   child: Text(
                     'Soul state is not available from the current host snapshot.',
-                    style: _SettingsTextStyles.body,
+                    style: context.settingsText.body,
                   ),
                 )
               else ...[
@@ -1872,15 +1873,15 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           'Stored soul',
-                          style: _SettingsTextStyles.cardTitle,
+                          style: context.settingsText.cardTitle,
                         ),
                         const SizedBox(height: 10),
                         if (snapshot.storedSoul == null)
-                          const Text(
+                          Text(
                             'No persisted soul record exists yet.',
-                            style: _SettingsTextStyles.body,
+                            style: context.settingsText.body,
                           )
                         else ...[
                           _DebugKeyValueLine(
@@ -1923,18 +1924,21 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           'Base soul',
-                          style: _SettingsTextStyles.cardTitle,
+                          style: context.settingsText.cardTitle,
                         ),
                         const SizedBox(height: 10),
                         if (snapshot.baseSoul == null)
-                          const Text(
+                          Text(
                             'No base soul is currently resolved from persisted personalization.',
-                            style: _SettingsTextStyles.body,
+                            style: context.settingsText.body,
                           )
                         else ...[
-                          ..._buildSoulProfileLines(snapshot.baseSoul!),
+                          ..._buildSoulProfileLines(
+                            context,
+                            snapshot.baseSoul!,
+                          ),
                         ],
                       ],
                     ),
@@ -1947,15 +1951,15 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           'Memory overlays',
-                          style: _SettingsTextStyles.cardTitle,
+                          style: context.settingsText.cardTitle,
                         ),
                         const SizedBox(height: 10),
                         if (snapshot.overlayRecords.isEmpty)
-                          const Text(
+                          Text(
                             'No active memory-backed soul overlays apply to the current session/workspace.',
-                            style: _SettingsTextStyles.body,
+                            style: context.settingsText.body,
                           )
                         else
                           for (
@@ -1982,18 +1986,21 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           'Effective soul',
-                          style: _SettingsTextStyles.cardTitle,
+                          style: context.settingsText.cardTitle,
                         ),
                         const SizedBox(height: 10),
                         if (snapshot.effectiveSoul == null)
-                          const Text(
+                          Text(
                             'The runtime has no effective soul profile yet.',
-                            style: _SettingsTextStyles.body,
+                            style: context.settingsText.body,
                           )
                         else ...[
-                          ..._buildSoulProfileLines(snapshot.effectiveSoul!),
+                          ..._buildSoulProfileLines(
+                            context,
+                            snapshot.effectiveSoul!,
+                          ),
                         ],
                       ],
                     ),
@@ -2008,15 +2015,15 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           'Interaction preference',
-                          style: _SettingsTextStyles.cardTitle,
+                          style: context.settingsText.cardTitle,
                         ),
                         const SizedBox(height: 10),
                         if (interactionPreferenceDebug == null)
-                          const Text(
+                          Text(
                             'No persisted interaction-preference snapshot currently applies to this soul.',
-                            style: _SettingsTextStyles.body,
+                            style: context.settingsText.body,
                           )
                         else ...[
                           ..._buildInteractionPreferenceDebugLines(
@@ -2036,15 +2043,15 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           'Relationship gates',
-                          style: _SettingsTextStyles.cardTitle,
+                          style: context.settingsText.cardTitle,
                         ),
                         const SizedBox(height: 10),
                         if (relationshipStateDebug == null)
-                          const Text(
+                          Text(
                             'No persisted relationship-state snapshot or event projection currently applies to this soul.',
-                            style: _SettingsTextStyles.body,
+                            style: context.settingsText.body,
                           )
                         else ...[
                           ..._buildRelationshipStateDebugLines(
@@ -2064,15 +2071,15 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           'Field sources',
-                          style: _SettingsTextStyles.cardTitle,
+                          style: context.settingsText.cardTitle,
                         ),
                         const SizedBox(height: 10),
                         if (fieldSources.isEmpty)
-                          const Text(
+                          Text(
                             'No resolved soul fields are currently populated.',
-                            style: _SettingsTextStyles.body,
+                            style: context.settingsText.body,
                           )
                         else
                           for (final source in fieldSources)
@@ -2093,15 +2100,15 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const Text(
+                        Text(
                           'Linked activity',
-                          style: _SettingsTextStyles.cardTitle,
+                          style: context.settingsText.cardTitle,
                         ),
                         const SizedBox(height: 10),
                         if (linkedFieldGroups.isEmpty)
-                          const Text(
+                          Text(
                             'No memory-backed soul fields are currently linked to a persisted memory record.',
-                            style: _SettingsTextStyles.body,
+                            style: context.settingsText.body,
                           )
                         else
                           for (
@@ -2177,10 +2184,11 @@ class _SoulInspectorPageState extends State<_SoulInspectorPage> {
       children: [
         Text(
           '$recordId${fieldsLabel.isEmpty ? '' : ' · $fieldsLabel'}',
-          style: _SettingsTextStyles.bodyStrong,
+          style: context.settingsText.bodyStrong,
         ),
         const SizedBox(height: 8),
         ..._buildMemoryLinkDetails(
+          context: context,
           links: links,
           soulFieldSources: sources,
           includeSoulFieldsSection: false,
@@ -2208,13 +2216,13 @@ class _DebugToggleChip extends StatelessWidget {
       curve: OpenCrayMotion.enter,
       decoration: BoxDecoration(
         color: selected
-            ? OpenCrayColors.primaryTint
-            : OpenCrayColors.surfaceMuted,
+            ? context.palette.primaryTint
+            : context.palette.surfaceMuted,
         borderRadius: BorderRadius.circular(999),
         border: Border.all(
           color: selected
-              ? OpenCrayColors.primaryBorder
-              : OpenCrayColors.divider,
+              ? context.palette.primaryBorder
+              : context.palette.divider,
         ),
       ),
       child: OpenCrayInkSurface(
@@ -2225,10 +2233,10 @@ class _DebugToggleChip extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             child: Text(
               label,
-              style: _SettingsTextStyles.actionChip.copyWith(
+              style: context.settingsText.actionChip.copyWith(
                 color: selected
-                    ? OpenCrayColors.primary
-                    : OpenCrayColors.textSecondary,
+                    ? context.palette.primary
+                    : context.palette.textSecondary,
               ),
             ),
           ),
@@ -2255,12 +2263,12 @@ class _MemoryDebugRecordRow extends StatelessWidget {
       duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
       curve: OpenCrayMotion.enter,
       decoration: BoxDecoration(
-        color: selected ? OpenCrayColors.surfaceMuted : Colors.white,
+        color: selected ? context.palette.surfaceMuted : context.palette.surface,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: selected
-              ? OpenCrayColors.primaryBorder
-              : OpenCrayColors.divider,
+              ? context.palette.primaryBorder
+              : context.palette.divider,
         ),
       ),
       child: OpenCrayInkSurface(
@@ -2274,12 +2282,12 @@ class _MemoryDebugRecordRow extends StatelessWidget {
               children: [
                 Text(
                   _memoryRecordTitleLine(record),
-                  style: _SettingsTextStyles.bodyStrong,
+                  style: context.settingsText.bodyStrong,
                 ),
                 const SizedBox(height: 6),
                 Text(
                   _memoryRecordSummaryLine(record),
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 ),
               ],
             ),
@@ -2307,12 +2315,12 @@ class _MemoryDebugSearchResultRow extends StatelessWidget {
       duration: OpenCrayMotion.resolve(context, OpenCrayMotion.micro),
       curve: OpenCrayMotion.enter,
       decoration: BoxDecoration(
-        color: selected ? OpenCrayColors.surfaceMuted : Colors.white,
+        color: selected ? context.palette.surfaceMuted : context.palette.surface,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
           color: selected
-              ? OpenCrayColors.primaryBorder
-              : OpenCrayColors.divider,
+              ? context.palette.primaryBorder
+              : context.palette.divider,
         ),
       ),
       child: OpenCrayInkSurface(
@@ -2326,25 +2334,25 @@ class _MemoryDebugSearchResultRow extends StatelessWidget {
               children: [
                 Text(
                   '${result.recordId} · ${result.path}#${_formatMemoryLineRange(result.startLine, result.endLine)}',
-                  style: _SettingsTextStyles.bodyStrong,
+                  style: context.settingsText.bodyStrong,
                 ),
                 const SizedBox(height: 6),
                 Text(
                   'score ${result.score} · ${result.kind}/${result.scope}/${result.status}',
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 ),
                 if (result.matchedTerms.isNotEmpty) ...[
                   const SizedBox(height: 4),
                   Text(
                     'terms ${result.matchedTerms.join(', ')}',
-                    style: _SettingsTextStyles.body,
+                    style: context.settingsText.body,
                   ),
                 ],
                 if (result.snippet.trim().isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Text(
                     _truncateDebugText(result.snippet.trim(), 220),
-                    style: _SettingsTextStyles.body,
+                    style: context.settingsText.body,
                   ),
                 ],
               ],
@@ -2367,9 +2375,9 @@ class _DebugLinkEventRow extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(title, style: _SettingsTextStyles.bodyStrong),
+        Text(title, style: context.settingsText.bodyStrong),
         const SizedBox(height: 4),
-        Text(detail, style: _SettingsTextStyles.body),
+        Text(detail, style: context.settingsText.body),
       ],
     );
   }

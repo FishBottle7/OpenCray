@@ -876,7 +876,7 @@ class _AgentsSettingsPageState extends State<_AgentsSettingsPage> {
                   _isLoadingAgents
                       ? 'Loading agents...'
                       : '${_savedAgents.length} saved agents',
-                  style: _SettingsTextStyles.body.copyWith(
+                  style: context.settingsText.body.copyWith(
                     fontWeight: FontWeight.w600,
                   ),
                 ),
@@ -1070,7 +1070,7 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
   Widget build(BuildContext context) {
     final _AgentDraft draft = widget.draft;
     return Scaffold(
-      backgroundColor: OpenCrayColors.shellBackground,
+      backgroundColor: context.palette.shellBackground,
       body: SafeArea(
         bottom: false,
         child: SingleChildScrollView(
@@ -1097,9 +1097,9 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Text(
+                    Text(
                       'Core identity',
-                      style: _SettingsTextStyles.cardTitle,
+                      style: context.settingsText.cardTitle,
                     ),
                     const SizedBox(height: 8),
                     Row(
@@ -1171,9 +1171,9 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Text(
+                    Text(
                       'Soul & runtime',
-                      style: _SettingsTextStyles.cardTitle,
+                      style: context.settingsText.cardTitle,
                     ),
                     const SizedBox(height: 8),
                     _InteractiveSegmentedSelector(
@@ -1204,31 +1204,31 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
                       value: draft.twinImportSummary,
                       onTap: _openTwinImportPage,
                     ),
-                    const Divider(height: 1, color: OpenCrayColors.divider),
+                    Divider(height: 1, color: context.palette.divider),
                     _AgentSummaryLinkRow(
                       title: 'Plasticity',
                       value: draft.plasticityLabel,
                       onTap: _openPlasticityPage,
                     ),
-                    const Divider(height: 1, color: OpenCrayColors.divider),
+                    Divider(height: 1, color: context.palette.divider),
                     _AgentSummaryLinkRow(
                       title: 'Mode',
                       value: draft.modeLabel,
                       onTap: _openModePage,
                     ),
-                    const Divider(height: 1, color: OpenCrayColors.divider),
+                    Divider(height: 1, color: context.palette.divider),
                     _AgentSummaryLinkRow(
                       title: 'Media samples',
                       value: draft.mediaSummary,
                       onTap: _openMediaPage,
                     ),
-                    const Divider(height: 1, color: OpenCrayColors.divider),
+                    Divider(height: 1, color: context.palette.divider),
                     _AgentSummaryLinkRow(
                       title: 'Model',
                       value: draft.modelSummary,
                       onTap: _openModelPage,
                     ),
-                    const Divider(height: 1, color: OpenCrayColors.divider),
+                    Divider(height: 1, color: context.palette.divider),
                     _AgentSummaryLinkRow(
                       title: 'Advanced defaults',
                       value: draft.advancedSummary,
@@ -1240,7 +1240,7 @@ class _AgentCreatePageState extends State<_AgentCreatePage> {
               const SizedBox(height: 8),
               Text(
                 'Workspace is assigned automatically on creation.',
-                style: _SettingsTextStyles.selectionMeta.copyWith(
+                style: context.settingsText.selectionMeta.copyWith(
                   height: 16 / 12,
                 ),
               ),
@@ -1451,7 +1451,7 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Source', style: _SettingsTextStyles.cardTitle),
+          Text('Source', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           _InteractiveSegmentedSelector(
             labels: _AgentTwinImportCorpusType.values
@@ -1478,9 +1478,9 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
           const SizedBox(height: 10),
           Container(
             decoration: BoxDecoration(
-              color: OpenCrayColors.surfaceSubtle,
+              color: context.palette.surfaceSubtle,
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: OpenCrayColors.divider),
+              border: Border.all(color: context.palette.divider),
             ),
             padding: const EdgeInsets.all(14),
             child: Column(
@@ -1493,14 +1493,14 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
                       width: 36,
                       height: 36,
                       decoration: BoxDecoration(
-                        color: OpenCrayColors.surfaceMuted,
+                        color: context.palette.surfaceMuted,
                         borderRadius: BorderRadius.circular(12),
                       ),
                       alignment: Alignment.center,
-                      child: const Icon(
+                      child: Icon(
                         Icons.description_outlined,
                         size: 18,
-                        color: OpenCrayColors.textSecondary,
+                        color: context.palette.textSecondary,
                       ),
                     ),
                     const SizedBox(width: 10),
@@ -1510,14 +1510,14 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
                         children: [
                           Text(
                             draft.twinImportFileName,
-                            style: _SettingsTextStyles.rowTitle.copyWith(
+                            style: context.settingsText.rowTitle.copyWith(
                               fontWeight: FontWeight.w600,
                             ),
                           ),
                           const SizedBox(height: 2),
                           Text(
                             draft.twinImportSourceMeta,
-                            style: _SettingsTextStyles.selectionMeta,
+                            style: context.settingsText.selectionMeta,
                           ),
                         ],
                       ),
@@ -1530,9 +1530,9 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
                   ],
                 ),
                 const SizedBox(height: 10),
-                const Text(
+                Text(
                   'Supported now: ChatLab JSON / JSONL and normalized JSON.',
-                  style: _SettingsTextStyles.selectionMeta,
+                  style: context.settingsText.selectionMeta,
                 ),
               ],
             ),
@@ -1547,29 +1547,29 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('Identity mapping', style: _SettingsTextStyles.cardTitle),
+          Text('Identity mapping', style: context.settingsText.cardTitle),
           const SizedBox(height: 2),
           _AgentSummaryLinkRow(
             title: 'Clone target',
             value: draft.twinImportCloneTarget,
             onTap: _selectCloneTarget,
           ),
-          const Divider(height: 1, color: OpenCrayColors.divider),
+          Divider(height: 1, color: context.palette.divider),
           _AgentSummaryLinkRow(
             title: 'You are cast as',
             value: draft.twinImportCastAs,
             onTap: _selectCastAs,
           ),
-          const Divider(height: 1, color: OpenCrayColors.divider),
+          Divider(height: 1, color: context.palette.divider),
           _AgentSummaryLinkRow(
             title: 'Relation focus',
             value: draft.twinImportRelationFocus,
             onTap: _selectRelationFocus,
           ),
           const SizedBox(height: 6),
-          const Text(
+          Text(
             'Others stay backgrounded unless they change this relationship.',
-            style: _SettingsTextStyles.selectionMeta,
+            style: context.settingsText.selectionMeta,
           ),
         ],
       ),
@@ -1580,8 +1580,8 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
     return _SettingsCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: const [
-          Text('Initialize', style: _SettingsTextStyles.cardTitle),
+        children: [
+          Text('Initialize', style: context.settingsText.cardTitle),
           SizedBox(height: 10),
           Row(
             children: [
@@ -1597,7 +1597,7 @@ class _AgentTwinImportPageState extends State<_AgentTwinImportPage> {
           SizedBox(height: 10),
           Text(
             'Voice, relationship behavior, and memory seeds are drafted together for review before save.',
-            style: _SettingsTextStyles.selectionMeta,
+            style: context.settingsText.selectionMeta,
           ),
         ],
       ),
@@ -1755,9 +1755,9 @@ class _AgentModePageState extends State<_AgentModePage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
+                Text(
                   'Context mode',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 10),
                 for (
@@ -1817,9 +1817,9 @@ class _AgentPlasticityPageState extends State<_AgentPlasticityPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
+                Text(
                   'Plasticity level',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 10),
                 for (
@@ -1882,9 +1882,9 @@ class _AgentAddressStylePageState extends State<_AgentAddressStylePage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
+                Text(
                   'Style options',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 10),
                 for (
@@ -1952,17 +1952,17 @@ class _AgentAvatarPageState extends State<_AgentAvatarPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
+                Text(
                   'Current avatar',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 12),
                 Container(
                   height: 184,
                   decoration: BoxDecoration(
-                    color: OpenCrayColors.surfaceSubtle,
+                    color: context.palette.surfaceSubtle,
                     borderRadius: BorderRadius.circular(14),
-                    border: Border.all(color: OpenCrayColors.divider),
+                    border: Border.all(color: context.palette.divider),
                   ),
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
@@ -1979,9 +1979,9 @@ class _AgentAvatarPageState extends State<_AgentAvatarPage> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                const Text(
+                Text(
                   'This avatar is visible on the create page before the agent is saved.',
-                  style: _SettingsTextStyles.selectionMeta,
+                  style: context.settingsText.selectionMeta,
                 ),
               ],
             ),
@@ -1991,7 +1991,7 @@ class _AgentAvatarPageState extends State<_AgentAvatarPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text('Source', style: _SettingsTextStyles.cardTitle),
+                Text('Source', style: context.settingsText.cardTitle),
                 const SizedBox(height: 6),
                 _AgentDetailActionRow(
                   title: 'Generate from references',
@@ -2014,7 +2014,7 @@ class _AgentAvatarPageState extends State<_AgentAvatarPage> {
                           });
                         },
                 ),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 _AgentDetailActionRow(
                   title: 'Upload custom avatar',
                   subtitle:
@@ -2023,9 +2023,9 @@ class _AgentAvatarPageState extends State<_AgentAvatarPage> {
                   onTap: _pickCustomAvatar,
                 ),
                 const SizedBox(height: 10),
-                const Text(
+                Text(
                   'A custom avatar overrides the generated one until you replace or remove it.',
-                  style: _SettingsTextStyles.selectionMeta,
+                  style: context.settingsText.selectionMeta,
                 ),
               ],
             ),
@@ -2101,7 +2101,7 @@ class _AgentSubpageScaffold extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: OpenCrayColors.shellBackground,
+      backgroundColor: context.palette.shellBackground,
       body: SafeArea(
         bottom: false,
         child: SingleChildScrollView(
@@ -2161,7 +2161,7 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text('Audio sample', style: _SettingsTextStyles.cardTitle),
+            Text('Audio sample', style: context.settingsText.cardTitle),
             const SizedBox(height: 12),
             _AgentUploadZone(
               title: 'Upload audio',
@@ -2178,9 +2178,9 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
               },
             ),
             const SizedBox(height: 12),
-            const Text(
+            Text(
               'Use one clean clip to hint at timbre and cadence.',
-              style: _SettingsTextStyles.selectionMeta,
+              style: context.settingsText.selectionMeta,
             ),
           ],
         ),
@@ -2192,10 +2192,10 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Audio sample',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
               ),
               const _AgentSoftBadge(label: 'Attached'),
@@ -2204,9 +2204,9 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
           const SizedBox(height: 12),
           Container(
             decoration: BoxDecoration(
-              color: OpenCrayColors.surfaceSubtle,
+              color: context.palette.surfaceSubtle,
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: OpenCrayColors.divider),
+              border: Border.all(color: context.palette.divider),
             ),
             padding: const EdgeInsets.all(14),
             child: Column(
@@ -2217,14 +2217,14 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
                     Expanded(
                       child: Text(
                         widget.draft.audioFileName,
-                        style: _SettingsTextStyles.rowTitle.copyWith(
+                        style: context.settingsText.rowTitle.copyWith(
                           fontWeight: FontWeight.w600,
                         ),
                       ),
                     ),
                     Text(
                       '${widget.draft.audioDurationSeconds} s',
-                      style: _SettingsTextStyles.selectionMeta,
+                      style: context.settingsText.selectionMeta,
                     ),
                   ],
                 ),
@@ -2232,7 +2232,7 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
                 Container(
                   height: 56,
                   decoration: BoxDecoration(
-                    color: OpenCrayColors.surfaceMuted,
+                    color: context.palette.surfaceMuted,
                     borderRadius: BorderRadius.circular(10),
                   ),
                   padding: const EdgeInsets.symmetric(
@@ -2279,7 +2279,7 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
                     const Spacer(),
                     Text(
                       widget.draft.audioFileSizeLabel,
-                      style: _SettingsTextStyles.selectionMeta,
+                      style: context.settingsText.selectionMeta,
                     ),
                   ],
                 ),
@@ -2287,9 +2287,9 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
             ),
           ),
           const SizedBox(height: 12),
-          const Text(
+          Text(
             'This sample is stored as a reference clip and can be replaced later.',
-            style: _SettingsTextStyles.selectionMeta,
+            style: context.settingsText.selectionMeta,
           ),
         ],
       ),
@@ -2303,9 +2303,9 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            const Text(
+            Text(
               'Image references',
-              style: _SettingsTextStyles.cardTitle,
+              style: context.settingsText.cardTitle,
             ),
             const SizedBox(height: 12),
             _AgentUploadZone(
@@ -2316,9 +2316,9 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
               onTap: _addImageReference,
             ),
             const SizedBox(height: 12),
-            const Text(
+            Text(
               'Portrait, outfit, and mood board images can be uploaded together.',
-              style: _SettingsTextStyles.selectionMeta,
+              style: context.settingsText.selectionMeta,
             ),
           ],
         ),
@@ -2330,10 +2330,10 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
         children: [
           Row(
             children: [
-              const Expanded(
+              Expanded(
                 child: Text(
                   'Image references',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
               ),
               _AgentSoftBadge(label: '${images.length} images'),
@@ -2342,9 +2342,9 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
           const SizedBox(height: 12),
           Container(
             decoration: BoxDecoration(
-              color: OpenCrayColors.surfaceSubtle,
+              color: context.palette.surfaceSubtle,
               borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: OpenCrayColors.divider),
+              border: Border.all(color: context.palette.divider),
             ),
             padding: const EdgeInsets.all(12),
             child: Column(
@@ -2352,8 +2352,8 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
               children: [
                 Text(
                   '${images.length} labeled references',
-                  style: _SettingsTextStyles.rowSubtitle.copyWith(
-                    color: OpenCrayColors.textSecondary,
+                  style: context.settingsText.rowSubtitle.copyWith(
+                    color: context.palette.textSecondary,
                     fontWeight: FontWeight.w500,
                   ),
                 ),
@@ -2384,7 +2384,7 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
               const Spacer(),
               Text(
                 '${images.length} images',
-                style: _SettingsTextStyles.selectionMeta,
+                style: context.settingsText.selectionMeta,
               ),
             ],
           ),
@@ -2397,7 +2397,7 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
     final List<_AgentImageReference> images = widget.draft.imageReferences;
     await showModalBottomSheet<void>(
       context: context,
-      backgroundColor: Colors.white,
+      backgroundColor: context.palette.surface,
       sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
@@ -2411,9 +2411,9 @@ class _AgentMediaSamplesPageState extends State<_AgentMediaSamplesPage> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
+                Text(
                   'Image references',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 12),
                 Wrap(
@@ -2592,7 +2592,7 @@ class _AgentModelPageState extends State<_AgentModelPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text('Provider', style: _SettingsTextStyles.cardTitle),
+                Text('Provider', style: context.settingsText.cardTitle),
                 const SizedBox(height: 10),
                 _PrototypeSelectionField(
                   label: 'Primary provider',
@@ -2613,7 +2613,7 @@ class _AgentModelPageState extends State<_AgentModelPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text('Connection', style: _SettingsTextStyles.cardTitle),
+                Text('Connection', style: context.settingsText.cardTitle),
                 const SizedBox(height: 10),
                 _PrototypeField(
                   label: 'Base URL',
@@ -2659,9 +2659,9 @@ class _AgentModelPageState extends State<_AgentModelPage> {
                   onTap: _selectReasoningEffort,
                 ),
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   'Leave prompt override empty to use the default OpenCray system prompt.',
-                  style: _SettingsTextStyles.selectionMeta,
+                  style: context.settingsText.selectionMeta,
                 ),
               ],
             ),
@@ -2774,9 +2774,9 @@ class _AgentAdvancedDefaultsPageState
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
+                Text(
                   'Runtime posture',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 6),
                 _AgentSummaryLinkRow(
@@ -2784,13 +2784,13 @@ class _AgentAdvancedDefaultsPageState
                   value: _labelForVoiceSummary(widget.draft.voiceSummary),
                   onTap: _selectVoiceSummary,
                 ),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 _AgentSummaryLinkRow(
                   title: 'Verbosity',
                   value: _labelForVerbosity(widget.draft.verbosity),
                   onTap: _selectVerbosity,
                 ),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 _AgentSummaryLinkRow(
                   title: 'Relationship style',
                   value: _labelForRelationshipStyle(
@@ -2798,13 +2798,13 @@ class _AgentAdvancedDefaultsPageState
                   ),
                   onTap: _selectRelationshipStyle,
                 ),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 _AgentSummaryLinkRow(
                   title: 'Risk tolerance',
                   value: _labelForRiskTolerance(widget.draft.riskTolerance),
                   onTap: _selectRiskTolerance,
                 ),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 _AgentSummaryLinkRow(
                   title: 'Tool use bias',
                   value: _labelForToolUseBias(widget.draft.toolUseBias),
@@ -2818,9 +2818,9 @@ class _AgentAdvancedDefaultsPageState
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const Text(
+                Text(
                   'Written guidance',
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 10),
                 _AgentMultilineField(

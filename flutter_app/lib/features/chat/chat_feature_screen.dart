@@ -22,6 +22,7 @@ import '../../core/models/opencray_sandbox_preview_embed_config.dart';
 import '../../core/models/opencray_sandbox_settings.dart';
 import '../../core/design/opencray_controls.dart';
 import '../../core/design/opencray_motion.dart';
+import '../../core/design/opencray_palette.dart';
 import '../../core/design/opencray_tokens.dart';
 import '../../core/widgets/opencray_image_bytes_view.dart';
 import '../../core/widgets/opencray_markdown.dart';
@@ -55,17 +56,21 @@ part 'chat_composer_attachments.dart';
 part 'chat_session_actions.dart';
 
 @visibleForTesting
-TextSelectionThemeData chatBubbleSelectionTheme(ChatMessageKind kind) {
+TextSelectionThemeData chatBubbleSelectionTheme(
+  ChatMessageKind kind,
+  OpenCrayPalette palette,
+) {
+  final _ChatPalette ink = _ChatPalette(palette);
   return switch (kind) {
-    ChatMessageKind.outbound => const TextSelectionThemeData(
+    ChatMessageKind.outbound => TextSelectionThemeData(
       // Outbound bubbles already use the app accent, so switch to a bright
       // translucent selection color to preserve contrast.
-      selectionColor: _ChatPalette.textSelectionOnAccent,
+      selectionColor: ink.textSelectionOnAccent,
       selectionHandleColor: Colors.white,
     ),
-    _ => const TextSelectionThemeData(
-      selectionColor: _ChatPalette.textSelectionOnSurface,
-      selectionHandleColor: OpenCrayColors.primary,
+    _ => TextSelectionThemeData(
+      selectionColor: ink.textSelectionOnSurface,
+      selectionHandleColor: palette.primary,
     ),
   };
 }
@@ -689,7 +694,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
     _scheduleComposerHeightSync();
 
     final Widget page = ColoredBox(
-      color: _ChatPalette.background,
+      color: context.chatPalette.background,
       child: Stack(
         key: _chatOverlayKey,
         children: <Widget>[
@@ -1243,15 +1248,15 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           value: _SessionMenuAction.delete,
           child: Row(
             children: <Widget>[
-              const Icon(
+              Icon(
                 Icons.delete_outline_rounded,
                 size: 18,
-                color: OpenCrayColors.danger,
+                color: context.palette.danger,
               ),
               const SizedBox(width: 10),
               Text(
                 widget.copy.filesDeleteAction,
-                style: const TextStyle(color: OpenCrayColors.danger),
+                style: TextStyle(color: context.palette.danger),
               ),
             ],
           ),

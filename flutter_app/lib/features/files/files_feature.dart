@@ -14,7 +14,7 @@ import '../../core/models/opencray_files_snapshot.dart';
 import '../../core/models/opencray_workspace_text_document.dart';
 import '../../core/design/opencray_controls.dart';
 import '../../core/design/opencray_motion.dart';
-import '../../core/design/opencray_tokens.dart';
+import '../../core/design/opencray_palette.dart';
 import '../../core/design/opencray_widgets.dart';
 import '../../core/widgets/opencray_image_bytes_view.dart';
 import '../../core/widgets/opencray_markdown.dart';
@@ -73,17 +73,6 @@ class FilesFeatureScreen extends StatefulWidget {
   final bool isTabActive;
   final FilesFeatureController? controller;
   final Duration autoRefreshPollInterval;
-
-  static const Color shellBackground = OpenCrayColors.shellBackground;
-  static const Color surface = OpenCrayColors.surface;
-  static const Color surfaceMuted = OpenCrayColors.surfaceMuted;
-  static const Color surfacePressed = OpenCrayColors.primaryTint;
-  static const Color textPrimary = OpenCrayColors.textPrimary;
-  static const Color textSecondary = OpenCrayColors.textSecondary;
-  static const Color textTertiary = OpenCrayColors.textTertiary;
-  static const Color accent = OpenCrayColors.primary;
-  static const Color danger = OpenCrayColors.danger;
-  static const Color divider = OpenCrayColors.divider;
 
   @override
   State<FilesFeatureScreen> createState() => _FilesFeatureScreenState();
@@ -196,7 +185,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
         _consumeBackPress();
       },
       child: ColoredBox(
-        color: FilesFeatureScreen.shellBackground,
+        color: context.palette.shellBackground,
         child: SafeArea(
           bottom: false,
           child: Stack(
@@ -697,7 +686,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
             onPressed: () => Navigator.of(context).pop(true),
             child: Text(
               widget.copy.filesDeleteAction,
-              style: const TextStyle(color: FilesFeatureScreen.danger),
+              style: TextStyle(color: context.palette.danger),
             ),
           ),
         ],
@@ -1086,7 +1075,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
                     filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
                     child: ColoredBox(
                       key: backdropKey,
-                      color: OpenCrayColors.scrim,
+                      color: context.palette.scrim,
                     ),
                   ),
                 ),

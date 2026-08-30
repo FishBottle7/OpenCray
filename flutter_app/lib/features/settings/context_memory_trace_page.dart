@@ -35,7 +35,7 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: OpenCrayColors.shellBackground,
+      backgroundColor: context.palette.shellBackground,
       body: SafeArea(
         bottom: false,
         child: SingleChildScrollView(
@@ -55,18 +55,18 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
               _SettingsCard(
                 child: Row(
                   children: [
-                    const Expanded(
+                    Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             'Run source',
-                            style: _SettingsTextStyles.cardTitle,
+                            style: context.settingsText.cardTitle,
                           ),
                           SizedBox(height: 8),
                           Text(
                             'Uses existing host run snapshots. No separate debug protocol is required.',
-                            style: _SettingsTextStyles.body,
+                            style: context.settingsText.body,
                           ),
                         ],
                       ),
@@ -82,10 +82,10 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
               if (_loadError != null) ...[
                 const SizedBox(height: 16),
                 _SettingsCard(
-                  backgroundColor: OpenCrayColors.dangerTint,
+                  backgroundColor: context.palette.dangerTint,
                   child: Text(
                     _loadError!,
-                    style: _SettingsTextStyles.bodyStrong,
+                    style: context.settingsText.bodyStrong,
                   ),
                 ),
               ],
@@ -126,15 +126,15 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
 
   Widget _buildRunSelectorCard() {
     if (_recentRunIds.isEmpty) {
-      return const _SettingsCard(
+      return _SettingsCard(
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Recent runs', style: _SettingsTextStyles.cardTitle),
+            Text('Recent runs', style: context.settingsText.cardTitle),
             SizedBox(height: 8),
             Text(
               'No recent run ids are visible in the current runtime activity snapshot.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             ),
           ],
         ),
@@ -144,11 +144,11 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Recent runs', style: _SettingsTextStyles.cardTitle),
+          Text('Recent runs', style: context.settingsText.cardTitle),
           const SizedBox(height: 8),
-          const Text(
+          Text(
             'Select a run before inspecting write, recall, and soul sections.',
-            style: _SettingsTextStyles.body,
+            style: context.settingsText.body,
           ),
           const SizedBox(height: 8),
           for (int index = 0; index < _recentRunIds.length; index++) ...[
@@ -158,7 +158,7 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
               onTap: () => _selectRun(_recentRunIds[index]),
             ),
             if (index < _recentRunIds.length - 1)
-              const Divider(height: 1, color: OpenCrayColors.divider),
+              Divider(height: 1, color: context.palette.divider),
           ],
         ],
       ),
@@ -176,7 +176,7 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Run overview', style: _SettingsTextStyles.cardTitle),
+          Text('Run overview', style: context.settingsText.cardTitle),
           const SizedBox(height: 12),
           Wrap(
             spacing: 8,
@@ -248,20 +248,20 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
+          Text(
             'Projected subagents',
-            style: _SettingsTextStyles.cardTitle,
+            style: context.settingsText.cardTitle,
           ),
           const SizedBox(height: 8),
-          const Text(
+          Text(
             'Reads runtimeActivity.subAgents directly so detached child state stays visible after the parent run leaves the recent run list.',
-            style: _SettingsTextStyles.body,
+            style: context.settingsText.body,
           ),
           const SizedBox(height: 10),
           if (subAgents.isEmpty)
-            const Text(
+            Text(
               'No projected subagents are visible in the current runtime activity snapshot.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else
             for (int index = 0; index < subAgents.length; index++) ...[
@@ -303,7 +303,7 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
               const SizedBox(height: 8),
               Text(
                 _formatSubAgentSummary(subAgents[index]),
-                style: _SettingsTextStyles.body,
+                style: context.settingsText.body,
               ),
               if (subAgents[index].mailboxLastDeliveredMessageId
                       ?.trim()
@@ -340,7 +340,7 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
                 ),
               if (index < subAgents.length - 1) ...[
                 const SizedBox(height: 12),
-                const Divider(height: 1, color: OpenCrayColors.divider),
+                Divider(height: 1, color: context.palette.divider),
                 const SizedBox(height: 12),
               ],
             ],
@@ -356,12 +356,12 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Memory writes', style: _SettingsTextStyles.cardTitle),
+          Text('Memory writes', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           if (memoryWriteEvent == null && memoryFlushEvent == null)
-            const Text(
+            Text(
               'No memory write or flush event was captured for this run.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else ...[
             Wrap(
@@ -443,12 +443,12 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Memory recall', style: _SettingsTextStyles.cardTitle),
+          Text('Memory recall', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           if (trace == null)
-            const Text(
+            Text(
               'No recalled memory trace was captured for this run.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else ...[
             Wrap(
@@ -477,9 +477,9 @@ class _ContextMemoryTracePageState extends State<_ContextMemoryTracePage> {
             if (trace.omitted.isNotEmpty) buildOmittedRecordsSection(trace),
             if (trace.filteredCounts.isNotEmpty) ...[
               const SizedBox(height: 4),
-              const Text(
+              Text(
                 'Filtered counts',
-                style: _SettingsTextStyles.cardTitle,
+                style: context.settingsText.cardTitle,
               ),
               const SizedBox(height: 8),
               ...trace.filteredCounts.entries.map(
@@ -623,7 +623,7 @@ extension on _ContextMemoryTracePageState {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 4),
-        const Text('Selected records', style: _SettingsTextStyles.cardTitle),
+        Text('Selected records', style: context.settingsText.cardTitle),
         const SizedBox(height: 8),
         for (final selected in trace.selected) ...[
           _DebugKeyValueLine('Record', selected.id),
@@ -645,7 +645,7 @@ extension on _ContextMemoryTracePageState {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const SizedBox(height: 4),
-        const Text('Omitted records', style: _SettingsTextStyles.cardTitle),
+        Text('Omitted records', style: context.settingsText.cardTitle),
         const SizedBox(height: 8),
         for (final omitted in trace.omitted) ...[
           _DebugKeyValueLine('Record', omitted.id),
@@ -670,7 +670,7 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Context setup', style: _SettingsTextStyles.cardTitle),
+          Text('Context setup', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           if (llmDiagnostics == null &&
               liveContext == null &&
@@ -679,15 +679,15 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
               stickyMemory == null &&
               memoryFlush == null &&
               durableCompaction == null)
-            const Text(
+            Text(
               'No LLM diagnostics, live-context, context-budget, bootstrap, sticky memory, memory flush, or durable compaction trace was captured for this run.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else ...[
             if (llmDiagnostics != null) ...[
-              const Text(
+              Text(
                 'LLM diagnostics',
-                style: _SettingsTextStyles.bodyStrong,
+                style: context.settingsText.bodyStrong,
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -776,7 +776,7 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
             ],
             if (liveContext != null) ...[
               if (llmDiagnostics != null) const SizedBox(height: 16),
-              const Text('Live context', style: _SettingsTextStyles.bodyStrong),
+              Text('Live context', style: context.settingsText.bodyStrong),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -805,9 +805,9 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
             ],
             if (contextBudget != null) ...[
               if (liveContext != null) const SizedBox(height: 16),
-              const Text(
+              Text(
                 'Context budget',
-                style: _SettingsTextStyles.bodyStrong,
+                style: context.settingsText.bodyStrong,
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -896,9 +896,9 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                 ),
               if (contextBudget.layers.isNotEmpty) ...[
                 const SizedBox(height: 8),
-                const Text(
+                Text(
                   'Layer states',
-                  style: _SettingsTextStyles.bodyStrong,
+                  style: context.settingsText.bodyStrong,
                 ),
                 const SizedBox(height: 8),
                 for (final layer in contextBudget.layers)
@@ -915,7 +915,7 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
             if (bootstrap != null) ...[
               if (liveContext != null || contextBudget != null)
                 const SizedBox(height: 16),
-              const Text('Bootstrap', style: _SettingsTextStyles.bodyStrong),
+              Text('Bootstrap', style: context.settingsText.bodyStrong),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -959,7 +959,7 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                   contextBudget != null ||
                   bootstrap != null)
                 const SizedBox(height: 16),
-              const Text('Memory flush', style: _SettingsTextStyles.bodyStrong),
+              Text('Memory flush', style: context.settingsText.bodyStrong),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -1054,9 +1054,9 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                   bootstrap != null ||
                   memoryFlush != null)
                 const SizedBox(height: 16),
-              const Text(
+              Text(
                 'Sticky memory',
-                style: _SettingsTextStyles.bodyStrong,
+                style: context.settingsText.bodyStrong,
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -1086,9 +1086,9 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
                   stickyMemory != null ||
                   memoryFlush != null)
                 const SizedBox(height: 16),
-              const Text(
+              Text(
                 'Durable compaction',
-                style: _SettingsTextStyles.bodyStrong,
+                style: context.settingsText.bodyStrong,
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -1361,12 +1361,12 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Soul resolution', style: _SettingsTextStyles.cardTitle),
+          Text('Soul resolution', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           if (snapshot == null)
-            const Text(
+            Text(
               'Personalization state is not available from the current host bridge.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else ...[
             _DebugKeyValueLine(
@@ -1415,18 +1415,18 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Skill context', style: _SettingsTextStyles.cardTitle),
+          Text('Skill context', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           if (skillInventory == null && activeSkill == null)
-            const Text(
+            Text(
               'No skill inventory or active skill trace was captured for this run.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else ...[
             if (skillInventory != null) ...[
-              const Text(
+              Text(
                 'Skill inventory',
-                style: _SettingsTextStyles.bodyStrong,
+                style: context.settingsText.bodyStrong,
               ),
               const SizedBox(height: 8),
               Wrap(
@@ -1471,7 +1471,7 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
             ],
             if (activeSkill != null) ...[
               if (skillInventory != null) const SizedBox(height: 16),
-              const Text('Active skill', style: _SettingsTextStyles.bodyStrong),
+              Text('Active skill', style: context.settingsText.bodyStrong),
               const SizedBox(height: 8),
               Wrap(
                 spacing: 8,
@@ -1531,18 +1531,18 @@ extension _ContextMemoryTraceDetails on _ContextMemoryTracePageState {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('Raw trace', style: _SettingsTextStyles.cardTitle),
+          Text('Raw trace', style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
           if (events.isEmpty)
-            const Text(
+            Text(
               'No structured events were captured for this run.',
-              style: _SettingsTextStyles.body,
+              style: context.settingsText.body,
             )
           else
             for (int index = 0; index < events.length; index++) ...[
               _DebugEventRow(event: events[index]),
               if (index < events.length - 1)
-                const Divider(height: 16, color: OpenCrayColors.divider),
+                Divider(height: 16, color: context.palette.divider),
             ],
         ],
       ),
@@ -1596,10 +1596,10 @@ class _DebugEventRow extends StatelessWidget {
       children: [
         Text(
           '${_formatDebugClockTime(event.emittedAtEpochMs)} · ${event.kind}',
-          style: _SettingsTextStyles.bodyStrong,
+          style: context.settingsText.bodyStrong,
         ),
         const SizedBox(height: 4),
-        Text(_summarizeRuntimeEvent(event), style: _SettingsTextStyles.body),
+        Text(_summarizeRuntimeEvent(event), style: context.settingsText.body),
       ],
     );
   }

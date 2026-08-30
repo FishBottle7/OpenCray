@@ -56,8 +56,8 @@ extension _ChatComposerAttachmentsActions on _OpenCrayChatFeatureState {
       label: attachment.displayName,
       detail: detail,
       accentColor: isImage
-          ? OpenCrayColors.primaryTint
-          : (isVoice ? OpenCrayColors.successTint : OpenCrayColors.surfaceMuted),
+          ? context.palette.primaryTint
+          : (isVoice ? context.palette.successTint : context.palette.surfaceMuted),
       draftAttachment: attachment,
     );
   }

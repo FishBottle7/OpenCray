@@ -107,7 +107,7 @@ class _ChatImageAttachmentPreviewState
   ) {
     return _showChatPreviewDialog(
       context,
-      barrierColor: _ChatPalette.imageBarrier,
+      barrierColor: context.chatPalette.imageBarrier,
       builder: (dialogContext) {
         return Dialog(
           backgroundColor: Colors.transparent,
@@ -134,10 +134,10 @@ class _ChatImageAttachmentPreviewState
   Widget build(BuildContext context) {
     final Color borderColor = widget.isOutgoing
         ? Colors.white.withValues(alpha: 0.22)
-        : _ChatPalette.border;
+        : context.chatPalette.border;
     final Color placeholderColor = widget.isOutgoing
         ? Colors.white.withValues(alpha: 0.14)
-        : OpenCrayColors.surfaceMuted;
+        : context.palette.surfaceMuted;
     final Future<OpenCrayFileImagePreview>? previewFuture = _previewFuture;
     final double stableAspectRatio = _chatMessageAttachmentStableAspectRatio(
       widget.attachment,
@@ -262,11 +262,11 @@ class _ChatImageAttachmentPlaceholder extends StatelessWidget {
             decoration: BoxDecoration(
               color: isOutgoing
                   ? Colors.white.withValues(alpha: 0.14)
-                  : OpenCrayColors.surfaceMuted,
+                  : context.palette.surfaceMuted,
               border: Border.all(
                 color: isOutgoing
                     ? Colors.white.withValues(alpha: 0.22)
-                    : _ChatPalette.border,
+                    : context.chatPalette.border,
               ),
             ),
             child: _ChatImageAttachmentPlaceholderBody(
@@ -294,7 +294,7 @@ class _ChatImageAttachmentPlaceholderBody extends StatelessWidget {
   Widget build(BuildContext context) {
     final Color foregroundColor = isOutgoing
         ? Colors.white.withValues(alpha: 0.9)
-        : _ChatPalette.textSecondary;
+        : context.chatPalette.textSecondary;
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -308,7 +308,7 @@ class _ChatImageAttachmentPlaceholderBody extends StatelessWidget {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,
-              style: _ChatTextStyles.attachmentLabel.copyWith(
+              style: context.chatText.attachmentLabel.copyWith(
                 color: foregroundColor,
               ),
             ),
@@ -397,16 +397,16 @@ class _ChatFileAttachmentTile extends StatelessWidget {
         bridge != null && attachment.localPath.trim().isNotEmpty;
     final Color surfaceColor = isOutgoing
         ? Colors.white.withValues(alpha: 0.12)
-        : OpenCrayColors.surfaceMuted;
+        : context.palette.surfaceMuted;
     final Color borderColor = isOutgoing
         ? Colors.white.withValues(alpha: 0.22)
-        : _ChatPalette.border;
+        : context.chatPalette.border;
     final Color titleColor = isOutgoing
-        ? Colors.white
-        : _ChatPalette.textPrimary;
+        ? context.palette.surface
+        : context.chatPalette.textPrimary;
     final Color detailColor = isOutgoing
         ? Colors.white.withValues(alpha: 0.82)
-        : _ChatPalette.textSecondary;
+        : context.chatPalette.textSecondary;
 
     return Ink(
       decoration: BoxDecoration(
@@ -437,7 +437,7 @@ class _ChatFileAttachmentTile extends StatelessWidget {
                           decoration: BoxDecoration(
                             color: isOutgoing
                                 ? Colors.white.withValues(alpha: 0.18)
-                                : Colors.white,
+                                : context.palette.surface,
                             borderRadius: BorderRadius.circular(12),
                           ),
                           child: Icon(
@@ -457,7 +457,7 @@ class _ChatFileAttachmentTile extends StatelessWidget {
                                 attachment.displayName,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: _ChatTextStyles.attachmentLabel.copyWith(
+                                style: context.chatText.attachmentLabel.copyWith(
                                   color: titleColor,
                                 ),
                               ),
@@ -466,7 +466,7 @@ class _ChatFileAttachmentTile extends StatelessWidget {
                                 _chatAttachmentDetailText(attachment),
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: _ChatTextStyles.attachmentDetail
+                                style: context.chatText.attachmentDetail
                                     .copyWith(color: detailColor),
                               ),
                             ],
@@ -701,16 +701,16 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
         widget.bridge != null && widget.attachment.localPath.trim().isNotEmpty;
     final Color surfaceColor = widget.isOutgoing
         ? Colors.white.withValues(alpha: 0.12)
-        : OpenCrayColors.surfaceMuted;
+        : context.palette.surfaceMuted;
     final Color borderColor = widget.isOutgoing
         ? Colors.white.withValues(alpha: 0.22)
-        : _ChatPalette.border;
+        : context.chatPalette.border;
     final Color titleColor = widget.isOutgoing
-        ? Colors.white
-        : _ChatPalette.textPrimary;
+        ? context.palette.surface
+        : context.chatPalette.textPrimary;
     final Color detailColor = widget.isOutgoing
         ? Colors.white.withValues(alpha: 0.82)
-        : _ChatPalette.textSecondary;
+        : context.chatPalette.textSecondary;
 
     return StreamBuilder<ChatVoicePlaybackSnapshot>(
       stream: _playbackController.snapshots,
@@ -784,7 +784,7 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
                       decoration: BoxDecoration(
                         color: widget.isOutgoing
                             ? Colors.white.withValues(alpha: 0.18)
-                            : Colors.white,
+                            : context.palette.surface,
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Center(
@@ -815,7 +815,7 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
                             widget.attachment.displayName,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: _ChatTextStyles.attachmentLabel.copyWith(
+                            style: context.chatText.attachmentLabel.copyWith(
                               color: titleColor,
                             ),
                           ),
@@ -824,7 +824,7 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
                             detailText,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: _ChatTextStyles.attachmentDetail.copyWith(
+                            style: context.chatText.attachmentDetail.copyWith(
                               color: detailColor,
                             ),
                           ),
@@ -837,10 +837,10 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
                             progress: progress,
                             playedColor: widget.isOutgoing
                                 ? Colors.white
-                                : _ChatPalette.accent,
+                                : context.chatPalette.accent,
                             unplayedColor: widget.isOutgoing
                                 ? Colors.white.withValues(alpha: 0.18)
-                                : OpenCrayColors.outline,
+                                : context.palette.outline,
                             onTapSeek: canPlay && totalDuration > Duration.zero
                                 ? (fraction) {
                                     _recordChildInteraction();
@@ -882,7 +882,7 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
                                       !_isTranscriptExpanded
                                   ? TextOverflow.ellipsis
                                   : TextOverflow.visible,
-                              style: _ChatTextStyles.attachmentDetail.copyWith(
+                              style: context.chatText.attachmentDetail.copyWith(
                                 color: detailColor,
                                 height: 1.35,
                               ),
@@ -900,7 +900,7 @@ class _ChatVoiceAttachmentTileState extends State<_ChatVoiceAttachmentTile> {
                                     key: ValueKey<String>(
                                       'chat-message-attachment-transcript-toggle-${widget.attachment.attachmentId}',
                                     ),
-                                    style: _ChatTextStyles.attachmentDetail
+                                    style: context.chatText.attachmentDetail
                                         .copyWith(
                                           color: titleColor,
                                           fontWeight: FontWeight.w600,
@@ -962,16 +962,16 @@ class _ChatAttachmentActions extends StatelessWidget {
         bridge != null && attachment.localPath.trim().isNotEmpty;
     final Color foregroundColor = overlay || isOutgoing
         ? Colors.white
-        : _ChatPalette.textSecondary;
+        : context.chatPalette.textSecondary;
     final Color backgroundColor = overlay
         ? Colors.black.withValues(alpha: 0.42)
         : (isOutgoing
               ? Colors.white.withValues(alpha: 0.14)
-              : Colors.white.withValues(alpha: 0.72));
+              : context.palette.surface.withValues(alpha: 0.72));
     final BorderSide border = BorderSide(
       color: overlay || isOutgoing
           ? Colors.white.withValues(alpha: 0.18)
-          : _ChatPalette.border,
+          : context.chatPalette.border,
     );
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -1332,13 +1332,13 @@ Future<void> _showChatTextPreviewDialog(
 Future<void> _showChatPreviewDialog(
   BuildContext context, {
   required WidgetBuilder builder,
-  Color barrierColor = _ChatPalette.previewBarrier,
+  Color? barrierColor,
 }) {
   return showGeneralDialog<void>(
     context: context,
     barrierDismissible: true,
     barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
-    barrierColor: barrierColor,
+    barrierColor: barrierColor ?? context.chatPalette.previewBarrier,
     transitionDuration: OpenCrayMotion.resolve(context, OpenCrayMotion.panel),
     pageBuilder:
         (
@@ -1461,60 +1461,60 @@ MarkdownStyleSheet _chatTextPreviewMarkdownStyleSheet(BuildContext context) {
       decoration: TextDecoration.underline,
       decorationColor: linkColor.withValues(alpha: 0.75),
     ),
-    p: const TextStyle(
+    p: TextStyle(
       fontSize: 13,
       height: 1.5,
-      color: _ChatPalette.textPrimary,
+      color: context.chatPalette.textPrimary,
     ),
-    h1: const TextStyle(
+    h1: TextStyle(
       fontSize: 23,
       height: 1.2,
       fontWeight: FontWeight.w700,
-      color: _ChatPalette.textPrimary,
+      color: context.chatPalette.textPrimary,
     ),
-    h2: const TextStyle(
+    h2: TextStyle(
       fontSize: 19,
       height: 1.24,
       fontWeight: FontWeight.w700,
-      color: _ChatPalette.textPrimary,
+      color: context.chatPalette.textPrimary,
     ),
-    h3: const TextStyle(
+    h3: TextStyle(
       fontSize: 16,
       height: 1.3,
       fontWeight: FontWeight.w700,
-      color: _ChatPalette.textPrimary,
+      color: context.chatPalette.textPrimary,
     ),
-    listBullet: const TextStyle(
+    listBullet: TextStyle(
       fontSize: 13,
       height: 1.5,
-      color: _ChatPalette.textPrimary,
+      color: context.chatPalette.textPrimary,
     ),
-    code: const TextStyle(
+    code: TextStyle(
       fontSize: 12.5,
       height: 1.45,
       fontFamily: 'monospace',
-      color: _ChatPalette.textPrimary,
+      color: context.chatPalette.textPrimary,
     ),
     codeblockPadding: const EdgeInsets.all(12),
     codeblockDecoration: BoxDecoration(
-      color: OpenCrayColors.surfaceMuted,
+      color: context.palette.surfaceMuted,
       borderRadius: BorderRadius.circular(12),
     ),
     blockSpacing: 14,
-    blockquote: const TextStyle(
+    blockquote: TextStyle(
       fontSize: 12.5,
       height: 1.5,
-      color: _ChatPalette.textSecondary,
+      color: context.chatPalette.textSecondary,
     ),
     blockquoteDecoration: BoxDecoration(
-      color: OpenCrayColors.surfaceMuted,
+      color: context.palette.surfaceMuted,
       borderRadius: BorderRadius.circular(12),
-      border: const Border(
-        left: BorderSide(color: _ChatPalette.border, width: 3),
+      border: Border(
+        left: BorderSide(color: context.chatPalette.border, width: 3),
       ),
     ),
-    horizontalRuleDecoration: const BoxDecoration(
-      border: Border(top: BorderSide(color: _ChatPalette.border, width: 1)),
+    horizontalRuleDecoration: BoxDecoration(
+      border: Border(top: BorderSide(color: context.chatPalette.border, width: 1)),
     ),
   );
 }
@@ -1592,10 +1592,10 @@ class _ChatTextPreviewDialog extends StatelessWidget {
                       preview.name,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 16,
                         fontWeight: FontWeight.w700,
-                        color: _ChatPalette.textPrimary,
+                        color: context.chatPalette.textPrimary,
                       ),
                     ),
                   ),
@@ -1609,9 +1609,9 @@ class _ChatTextPreviewDialog extends StatelessWidget {
               Expanded(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: OpenCrayColors.surfaceSubtle,
+                    color: context.palette.surfaceSubtle,
                     borderRadius: BorderRadius.circular(16),
-                    border: Border.all(color: _ChatPalette.border),
+                    border: Border.all(color: context.chatPalette.border),
                   ),
                   child: Scrollbar(
                     child: SingleChildScrollView(
@@ -1624,16 +1624,16 @@ class _ChatTextPreviewDialog extends StatelessWidget {
                               data: content,
                               hostBridge: bridge,
                               documentRelativePath: preview.relativePath,
-                              latexTextStyle: const TextStyle(
+                              latexTextStyle: TextStyle(
                                 fontSize: 13,
                                 height: 1.5,
-                                color: _ChatPalette.textPrimary,
+                                color: context.chatPalette.textPrimary,
                               ),
                               styleSheet: _chatTextPreviewMarkdownStyleSheet(
                                 context,
                               ),
-                              imageBackgroundColor: OpenCrayColors.surfaceMuted,
-                              imageBorderColor: _ChatPalette.border,
+                              imageBackgroundColor: context.palette.surfaceMuted,
+                              imageBorderColor: context.chatPalette.border,
                               contextMenuBuilder:
                                   (
                                     BuildContext context,
@@ -1650,10 +1650,10 @@ class _ChatTextPreviewDialog extends StatelessWidget {
                           : SelectionArea(
                               child: Text(
                                 content,
-                                style: const TextStyle(
+                                style: TextStyle(
                                   fontSize: 13,
                                   height: 1.5,
-                                  color: _ChatPalette.textPrimary,
+                                  color: context.chatPalette.textPrimary,
                                 ),
                               ),
                             ),

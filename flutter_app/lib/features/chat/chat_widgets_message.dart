@@ -95,7 +95,7 @@ class _ChatMessageMenuOverlay extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: Colors.white.withValues(alpha: 0.92),
                     borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: _ChatGlass.popoverBorder),
+                    border: Border.all(color: context.chatGlass.popoverBorder),
                   ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -209,11 +209,11 @@ class _ChatMessageMenuItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color foregroundColor = isDestructive
-        ? OpenCrayColors.danger
-        : OpenCrayColors.textPrimary;
+        ? context.palette.danger
+        : context.palette.textPrimary;
     final Color labelColor = isDestructive
-        ? OpenCrayColors.danger
-        : OpenCrayColors.textSecondary;
+        ? context.palette.danger
+        : context.palette.textSecondary;
     return GestureDetector(
       key: itemKey,
       onTap: enabled ? onTap : null,
@@ -230,7 +230,7 @@ class _ChatMessageMenuItem extends StatelessWidget {
               const SizedBox(height: 3),
               Text(
                 label,
-                style: _ChatTextStyles.messageMenuLabel.copyWith(
+                style: context.chatText.messageMenuLabel.copyWith(
                   color: labelColor,
                 ),
               ),
@@ -528,7 +528,10 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
 
   @override
   Widget build(BuildContext context) {
-    final selectionTheme = chatBubbleSelectionTheme(widget.message.kind);
+    final selectionTheme = chatBubbleSelectionTheme(
+      widget.message.kind,
+      context.palette,
+    );
     final _ChatInlineAttachmentContent inlineBody =
         _buildChatInlineAttachmentContent(
           widget.message.text.trim(),
@@ -580,21 +583,21 @@ class _ChatMessageBubbleState extends State<_ChatMessageBubble> {
     final bool isOutboundBubble =
         widget.message.kind == ChatMessageKind.outbound;
     final bool useBrandGradient =
-        isOutboundBubble && widget.backgroundColor == _ChatPalette.accent;
+        isOutboundBubble && widget.backgroundColor == context.chatPalette.accent;
     final bool showInboundOutline =
-        !isOutboundBubble && widget.backgroundColor == Colors.white;
+        !isOutboundBubble && widget.backgroundColor == context.palette.surface;
     final Widget bubble = ConstrainedBox(
       key: ValueKey<String>('chat-bubble-${widget.message.messageId}'),
       constraints: BoxConstraints(maxWidth: widget.maxWidth),
       child: DecoratedBox(
         decoration: ShapeDecoration(
           color: useBrandGradient ? null : widget.backgroundColor,
-          gradient: useBrandGradient ? _ChatGradients.outboundBubble : null,
+          gradient: useBrandGradient ? context.chatGradients.outboundBubble : null,
           shape: RoundedSuperellipseBorder(
             borderRadius: const BorderRadius.all(Radius.circular(18)),
             side: showInboundOutline
                 ? BorderSide(
-                    color: OpenCrayColors.divider.withValues(alpha: 0.85),
+                    color: context.palette.divider.withValues(alpha: 0.85),
                   )
                 : BorderSide.none,
           ),
@@ -1100,7 +1103,7 @@ MarkdownStyleSheet _openCrayMarkdownStyleSheet(
   final Color resolvedLinkColor =
       linkColor ??
       (darkSurface
-          ? _ChatPalette.linkOnDarkSurface
+          ? context.chatPalette.linkOnDarkSurface
           : Theme.of(context).colorScheme.primary);
   final Color resolvedStrongAccentColor =
       strongAccentColor ?? Theme.of(context).colorScheme.primary;
@@ -1181,15 +1184,15 @@ MarkdownStyleSheet _runTraceMarkdownStyleSheet(
   required Color surfaceColor,
   bool preferAccentForStrong = false,
 }) {
-  final Color textColor = bodyStyle.color ?? _ChatPalette.textPrimary;
+  final Color textColor = bodyStyle.color ?? context.chatPalette.textPrimary;
   return _openCrayMarkdownStyleSheet(
     context,
     bodyStyle: bodyStyle,
     surfaceColor: surfaceColor,
     textColor: textColor,
-    linkColor: _ChatPalette.inspectorAction,
+    linkColor: context.chatPalette.inspectorAction,
     preferAccentForStrong: preferAccentForStrong,
-    strongAccentColor: _ChatPalette.inspectorAction,
+    strongAccentColor: context.chatPalette.inspectorAction,
   );
 }
 
@@ -1238,7 +1241,7 @@ class _OpenCrayMarkdownTextBlock extends StatelessWidget {
         preferAccentForStrong: preferAccentForStrong,
       ),
       imageBackgroundColor: surfaceColor.withValues(alpha: 0.45),
-      imageBorderColor: (bodyStyle.color ?? _ChatPalette.textPrimary)
+      imageBorderColor: (bodyStyle.color ?? context.chatPalette.textPrimary)
           .withValues(alpha: 0.16),
     );
   }
@@ -1289,7 +1292,7 @@ class _ChatBubbleMarkdownBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final TextStyle bodyStyle = _ChatTextStyles.bubble.copyWith(
+    final TextStyle bodyStyle = context.chatText.bubble.copyWith(
       color: textColor,
     );
     return Column(
@@ -1367,7 +1370,7 @@ MarkdownStyleSheet _chatMarkdownStyleSheet(
   required Color textColor,
   required Color backgroundColor,
 }) {
-  final TextStyle bodyStyle = _ChatTextStyles.bubble.copyWith(color: textColor);
+  final TextStyle bodyStyle = context.chatText.bubble.copyWith(color: textColor);
   return _openCrayMarkdownStyleSheet(
     context,
     bodyStyle: bodyStyle,

@@ -7,7 +7,7 @@ import '../../core/bridge/opencray_host_bridge.dart';
 import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/design/opencray_controls.dart';
 import '../../core/design/opencray_motion.dart';
-import '../../core/design/opencray_tokens.dart';
+import '../../core/design/opencray_palette.dart';
 import '../../core/design/opencray_widgets.dart';
 import '../../core/models/opencray_skills_snapshot.dart';
 part 'skills_widgets.dart';
@@ -28,14 +28,6 @@ enum _InstalledSkillLifecycleState {
   failed,
 }
 
-const _shellBackground = OpenCrayColors.shellBackground;
-const _surface = OpenCrayColors.surface;
-const _surfaceRaised = OpenCrayColors.surfaceSubtle;
-const _textPrimary = OpenCrayColors.textPrimary;
-const _textSecondary = OpenCrayColors.textSecondary;
-const _border = OpenCrayColors.divider;
-const _danger = OpenCrayColors.danger;
-const _accent = OpenCrayColors.primary;
 const _initialSearchResultLimit = 8;
 const _expandedSearchResultLimit = 20;
 final RegExp _windowsAbsolutePathPattern = RegExp(r'^[A-Za-z]:[\\/].+');
@@ -167,7 +159,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
     final availableSkills = _snapshot.suggestedSkills;
     final installedSkills = _snapshot.installedSkills;
     return ColoredBox(
-      color: _shellBackground,
+      color: context.palette.shellBackground,
       child: SafeArea(
         bottom: false,
         child: SingleChildScrollView(
@@ -238,20 +230,20 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
       children: [
         Text(
           widget.copy.skillsManageSectionTitle,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 13,
             height: 1.2,
             fontWeight: FontWeight.w600,
-            color: _textSecondary,
+            color: context.palette.textSecondary,
           ),
         ),
         const SizedBox(height: 12),
         DecoratedBox(
           decoration: BoxDecoration(
-            color: _surface,
+            color: context.palette.surface,
             borderRadius: const BorderRadius.all(Radius.circular(16)),
-            border: Border.all(color: OpenCrayColors.divider),
-            boxShadow: OpenCrayShadows.card,
+            border: Border.all(color: context.palette.divider),
+            boxShadow: context.palette.cardShadow,
           ),
           child: Column(
             children: [
@@ -272,9 +264,9 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                       _openActionsSheet(visibleInstalledSkills[index]),
                 ),
                 if (index < visibleInstalledSkills.length - 1)
-                  const Divider(
+                  Divider(
                     height: 1,
-                    color: _border,
+                    color: context.palette.divider,
                     indent: 16,
                     endIndent: 16,
                   ),
@@ -353,20 +345,20 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
       children: [
         Text(
           widget.copy.skillsInstallFromTitle,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 13,
             height: 1.2,
             fontWeight: FontWeight.w600,
-            color: _textSecondary,
+            color: context.palette.textSecondary,
           ),
         ),
         const SizedBox(height: 10),
         DecoratedBox(
           decoration: BoxDecoration(
-            color: _surface,
+            color: context.palette.surface,
             borderRadius: const BorderRadius.all(Radius.circular(16)),
-            border: Border.all(color: OpenCrayColors.divider),
-            boxShadow: OpenCrayShadows.card,
+            border: Border.all(color: context.palette.divider),
+            boxShadow: context.palette.cardShadow,
           ),
           child: Column(
             children: [
@@ -382,9 +374,9 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                   },
                 ),
                 if (index < _snapshot.installSources.length - 1)
-                  const Divider(
+                  Divider(
                     height: 1,
-                    color: _border,
+                    color: context.palette.divider,
                     indent: 16,
                     endIndent: 16,
                   ),
@@ -408,11 +400,11 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
       children: [
         Text(
           title,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 13,
             height: 1.2,
             fontWeight: FontWeight.w600,
-            color: _textSecondary,
+            color: context.palette.textSecondary,
           ),
         ),
         const SizedBox(height: 10),
@@ -423,10 +415,10 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
         else ...[
           DecoratedBox(
             decoration: BoxDecoration(
-              color: _surface,
+              color: context.palette.surface,
               borderRadius: const BorderRadius.all(Radius.circular(16)),
-              border: Border.all(color: OpenCrayColors.divider),
-              boxShadow: OpenCrayShadows.card,
+              border: Border.all(color: context.palette.divider),
+              boxShadow: context.palette.cardShadow,
             ),
             child: Column(
               children: [
@@ -456,9 +448,9 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                         _installSuggestedSkill(availableSkills[index]),
                   ),
                   if (index < availableSkills.length - 1)
-                    const Divider(
+                    Divider(
                       height: 1,
-                      color: _border,
+                      color: context.palette.divider,
                       indent: 16,
                       endIndent: 16,
                     ),
@@ -995,10 +987,10 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                           widget.copy.skillsSelectSkillsBody(
                             inspection.sourceRef,
                           ),
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 14,
                             height: 1.35,
-                            color: _textSecondary,
+                            color: context.palette.textSecondary,
                           ),
                         ),
                         const SizedBox(height: 12),
@@ -1023,7 +1015,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                             });
                           },
                         ),
-                        const Divider(height: 1, color: _border),
+                        Divider(height: 1, color: context.palette.divider),
                         for (final candidate in inspection.candidates)
                           CheckboxListTile(
                             contentPadding: EdgeInsets.zero,
@@ -1137,9 +1129,9 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             child: DecoratedBox(
               decoration: BoxDecoration(
-                color: _surfaceRaised,
+                color: context.palette.surfaceSubtle,
                 borderRadius: const BorderRadius.all(Radius.circular(24)),
-                border: Border.all(color: OpenCrayColors.divider),
+                border: Border.all(color: context.palette.divider),
               ),
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 18, 16, 14),
@@ -1153,27 +1145,27 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                         height: 4,
                         margin: const EdgeInsets.only(bottom: 16),
                         decoration: BoxDecoration(
-                          color: OpenCrayColors.outline,
+                          color: context.palette.outline,
                           borderRadius: BorderRadius.circular(999),
                         ),
                       ),
                     ),
                     Text(
                       skill.name,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 20,
                         height: 1.2,
                         fontWeight: FontWeight.w600,
-                        color: _textPrimary,
+                        color: context.palette.textPrimary,
                       ),
                     ),
                     const SizedBox(height: 6),
                     Text(
                       skill.description,
-                      style: const TextStyle(
+                      style: TextStyle(
                         fontSize: 14,
                         height: 1.35,
-                        color: _textSecondary,
+                        color: context.palette.textSecondary,
                       ),
                     ),
                     const SizedBox(height: 18),
@@ -1209,7 +1201,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                       _ActionRow(
                         icon: Icons.delete_outline_rounded,
                         label: widget.copy.skillsRemoveAction,
-                        color: _danger,
+                        color: context.palette.danger,
                         onTap: () {
                           Navigator.of(context).pop();
                           _deleteInstalledSkill(skill);
@@ -1276,28 +1268,28 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                 children: [
                   Text(
                     details.description,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 14,
                       height: 1.35,
-                      color: _textSecondary,
+                      color: context.palette.textSecondary,
                     ),
                   ),
                   const SizedBox(height: 12),
                   Text(
                     details.sourceDirectoryPath,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 12,
                       height: 1.3,
-                      color: _textSecondary,
+                      color: context.palette.textSecondary,
                     ),
                   ),
                   const SizedBox(height: 16),
                   SelectableText(
                     details.markdownBody,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 13,
                       height: 1.4,
-                      color: _textPrimary,
+                      color: context.palette.textPrimary,
                     ),
                   ),
                 ],

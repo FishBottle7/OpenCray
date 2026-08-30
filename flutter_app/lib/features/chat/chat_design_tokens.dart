@@ -1,409 +1,439 @@
 part of 'chat_feature_screen.dart';
 
+/// Chat-scoped tokens, resolved against the app palette so the thread follows a
+/// brightness change. Reach them as `context.chatPalette`, `context.chatGlass`,
+/// `context.chatGradients` and `context.chatText`.
+extension _ChatTokensAccess on BuildContext {
+  _ChatPalette get chatPalette => _ChatPalette(palette);
+
+  _ChatGlass get chatGlass => _ChatGlass(palette);
+
+  _ChatGradients get chatGradients => _ChatGradients(palette);
+
+  _ChatTextStyles get chatText => _ChatTextStyles(_ChatPalette(palette));
+}
+
+/// Alpha as an 8-bit step, so values tuned as `0xAARRGGBB` stay byte-exact when
+/// their base colour moves into the palette.
+Color _chatAlpha(Color base, int step) => base.withValues(alpha: step / 0xFF);
+
 class _ChatDecorations {
   const _ChatDecorations._();
 
-  static BoxDecoration card() {
+  static BoxDecoration card(BuildContext context) {
     return BoxDecoration(
-      color: Colors.white,
+      color: context.palette.surface,
       borderRadius: BorderRadius.circular(16),
-      border: Border.all(color: _ChatPalette.border),
-      boxShadow: OpenCrayShadows.card,
+      border: Border.all(color: context.chatPalette.border),
+      boxShadow: context.palette.cardShadow,
     );
   }
 }
 
 class _ChatPalette {
-  _ChatPalette._();
+  const _ChatPalette(this._base);
 
-  static const Color background = OpenCrayColors.shellBackground;
-  static const Color accent = OpenCrayColors.primary;
-  static const Color highRiskAccent = Color(0xFFC2491D);
-  static const Color highRiskBorder = Color(0xFFF0CFC0);
-  static const Color highRiskBadgeSurface = Color(0xFFFBE4D8);
-  static const Color highRiskSurface = Color(0xFFFDF6F2);
-  static const Color highRiskReasonText = Color(0xFF8A5A3B);
-  static const Color textPrimary = OpenCrayColors.textPrimary;
-  static const Color textSecondary = OpenCrayColors.textSecondary;
-  static const Color textTertiary = OpenCrayColors.textTertiary;
-  static const Color border = OpenCrayColors.divider;
+  final OpenCrayPalette _base;
 
-  /// Zero-alpha counterparts used as the resting end of a fade. Kept as
-  /// literals so the interpolated mid-tones stay identical to the values the
-  /// layout was tuned against.
-  static const Color surfaceClear = Color(0x00FFFFFF);
-  static const Color borderClear = Color(0x00E5E9F0);
+  Color get background => _base.shellBackground;
+  Color get accent => _base.primary;
+  Color get highRiskAccent =>
+      _base.isDark ? const Color(0xFFFF8A5C) : const Color(0xFFC2491D);
+  Color get highRiskBorder =>
+      _base.isDark ? const Color(0xFF5A3020) : const Color(0xFFF0CFC0);
+  Color get highRiskBadgeSurface =>
+      _base.isDark ? const Color(0xFF3A1F14) : const Color(0xFFFBE4D8);
+  Color get highRiskSurface =>
+      _base.isDark ? const Color(0xFF221510) : const Color(0xFFFDF6F2);
+  Color get highRiskReasonText =>
+      _base.isDark ? const Color(0xFFD3A183) : const Color(0xFF8A5A3B);
+  Color get textPrimary => _base.textPrimary;
+  Color get textSecondary => _base.textSecondary;
+  Color get textTertiary => _base.textTertiary;
+  Color get border => _base.divider;
+
+  /// Zero-alpha counterparts used as the resting end of a fade. Derived from the
+  /// solid token so the interpolated mid-tones stay on the same hue.
+  Color get surfaceClear => _chatAlpha(_base.surface, 0);
+  Color get borderClear => _chatAlpha(_base.divider, 0);
 
   /// Summary card title once a thread is active — a step quieter than
   /// [textPrimary] without dropping all the way to [textSecondary].
-  static const Color summaryQuietTitle = Color(0xFF3B4757);
+  Color get summaryQuietTitle =>
+      _base.isDark ? const Color(0xFFC7D2E2) : const Color(0xFF3B4757);
 
-  static const Color runTraceBorder = Color(0xFFDDE4F0);
-  static const Color runTraceStatusSurface = OpenCrayColors.primaryTint;
-  static const Color runTraceStatusText = OpenCrayColors.primaryPressed;
-  static const Color runTraceActivityText = OpenCrayColors.textSecondary;
-  static const Color runTraceDetailSurface = OpenCrayColors.surfaceSubtle;
-  static const Color runTracePreviewSurface = OpenCrayColors.surfaceSubtle;
-  static const Color runTracePreviewBorder = Color(0xFFDCE5F4);
-  static const Color runTraceUrlText = OpenCrayColors.primary;
-  static const Color runTraceInterruptSurface = Color(0xFFFCEFE8);
-  static const Color runTraceInterruptBorder = Color(0xFFF0CFC0);
-  static const Color runTraceInterruptAction = Color(0xFFC2491D);
-  static const Color runTraceRetryMark = OpenCrayColors.warningMark;
-  static const Color runTraceTabDivider = OpenCrayColors.divider;
-  static const Color inspectorAction = OpenCrayColors.primary;
-  static const Color inspectorTarget = Color(0xFF7C3AED);
-  static const Color inspectorScope = OpenCrayColors.success;
-  static const Color inspectorResult = OpenCrayColors.textSecondary;
-  static const Color inspectorConnector = Color(0xFFCBD6EE);
-  static const Color composerStroke = OpenCrayColors.outline;
-  static const Color plusActiveSurface = OpenCrayColors.primaryTint;
-  static const Color subtleSurface = OpenCrayColors.surfaceSubtle;
-  static const Color todoCompletedFill = OpenCrayColors.textTertiary;
-  static const Color selectionRowHighlight = OpenCrayColors.surfaceSunken;
-  static const Color selectionControlBorder = OpenCrayColors.outline;
+  Color get runTraceBorder =>
+      _base.isDark ? const Color(0xFF2A3546) : const Color(0xFFDDE4F0);
+  Color get runTraceStatusSurface => _base.primaryTint;
+  Color get runTraceStatusText => _base.primaryPressed;
+  Color get runTraceActivityText => _base.textSecondary;
+  Color get runTraceDetailSurface => _base.surfaceSubtle;
+  Color get runTracePreviewSurface => _base.surfaceSubtle;
+  Color get runTracePreviewBorder =>
+      _base.isDark ? const Color(0xFF2B384B) : const Color(0xFFDCE5F4);
+  Color get runTraceUrlText => _base.primary;
+  Color get runTraceInterruptSurface =>
+      _base.isDark ? const Color(0xFF261813) : const Color(0xFFFCEFE8);
+  Color get runTraceInterruptBorder =>
+      _base.isDark ? const Color(0xFF5A3020) : const Color(0xFFF0CFC0);
+  Color get runTraceInterruptAction =>
+      _base.isDark ? const Color(0xFFFF8A5C) : const Color(0xFFC2491D);
+  Color get runTraceRetryMark => _base.warningMark;
+  Color get runTraceTabDivider => _base.divider;
+  Color get inspectorAction => _base.primary;
+  Color get inspectorTarget =>
+      _base.isDark ? const Color(0xFFB292FF) : const Color(0xFF7C3AED);
+  Color get inspectorScope => _base.success;
+  Color get inspectorResult => _base.textSecondary;
+  Color get inspectorConnector =>
+      _base.isDark ? const Color(0xFF4C5C77) : const Color(0xFFCBD6EE);
+  Color get composerStroke => _base.outline;
+  Color get plusActiveSurface => _base.primaryTint;
+  Color get subtleSurface => _base.surfaceSubtle;
+  Color get todoCompletedFill => _base.textTertiary;
+  Color get selectionRowHighlight => _base.surfaceSunken;
+  Color get selectionControlBorder => _base.outline;
 
   /// Text selection tints — bright over the accent-filled outbound bubble,
   /// accent-tinted everywhere else.
-  static const Color textSelectionOnAccent = Color(0x52FFFFFF);
-  static const Color textSelectionOnSurface = Color(0x332563EB);
+  Color get textSelectionOnAccent => _chatAlpha(_base.textOnPrimary, 0x52);
+  Color get textSelectionOnSurface => _chatAlpha(_base.primary, 0x33);
 
   /// Markdown links rendered on a dark bubble.
-  static const Color linkOnDarkSurface = Color(0xFFDCEBFF);
+  Color get linkOnDarkSurface => const Color(0xFFDCEBFF);
 
   /// Modal barriers: previews dim to workbench ink, full-bleed images go
   /// darker so the photo owns the screen.
-  static const Color previewBarrier = Color(0x8A0B0E14);
-  static const Color imageBarrier = Color(0xB3000000);
+  Color get previewBarrier =>
+      _base.isDark ? const Color(0xB305080C) : const Color(0x8A0B0E14);
+  Color get imageBarrier => const Color(0xB3000000);
 }
 
 /// Translucent chrome painted over blurred content — top bar, composer sheen,
 /// message popover, approval card.
 ///
-/// These stay literal rather than derived: they are tuned against whatever the
-/// blur behind them produces, so an alpha computed off a solid token would
-/// drift the moment the underlying surface changes.
+/// The alphas stay literal: they are tuned against whatever the blur behind them
+/// produces. Where the tinted base is exactly a palette colour it is named as
+/// one (so a brightness swap carries the glass with it); the few off-white tints
+/// the layout was measured against remain literals.
 class _ChatGlass {
-  const _ChatGlass._();
+  const _ChatGlass(this._base);
+
+  final OpenCrayPalette _base;
 
   /// Top bar. Each `Rest`/`Active` pair is the scroll-driven lerp range.
-  static const Color barTopRest = Color(0xA8FFFFFF);
-  static const Color barTopActive = Color(0xE8FFFFFF);
-  static const Color barMidRest = Color(0x70FFFFFF);
-  static const Color barMidActive = Color(0xC2FFFFFF);
-  static const Color barFootRest = Color(0x14F8FAFE);
-  static const Color barFootActive = Color(0x54F8FAFE);
-  static const Color barFootClear = Color(0x00F8FAFE);
-  static const Color barBorderActive = Color(0x24DCE7F6);
-  static const Color barShadowActive = Color(0x0A101828);
+  Color get barTopRest => _chatAlpha(_base.surface, 0xA8);
+  Color get barTopActive => _chatAlpha(_base.surface, 0xE8);
+  Color get barMidRest => _chatAlpha(_base.surface, 0x70);
+  Color get barMidActive => _chatAlpha(_base.surface, 0xC2);
+  Color get barFootRest =>
+      _base.isDark ? const Color(0x14243244) : const Color(0x14F8FAFE);
+  Color get barFootActive =>
+      _base.isDark ? const Color(0x54243244) : const Color(0x54F8FAFE);
+  Color get barFootClear =>
+      _base.isDark ? const Color(0x00243244) : const Color(0x00F8FAFE);
+  Color get barBorderActive =>
+      _base.isDark ? const Color(0x3D2A3546) : const Color(0x24DCE7F6);
+  Color get barShadowActive => _chatAlpha(_base.shadowInk, 0x0A);
 
   /// Composer sheen behind the input row, plus its lift ink.
-  static const Color composerHighlight = Color(0x73FFFFFF);
-  static const Color composerSheen = Color(0x61F0F5FF);
-  static const Color composerSheenClear = Color(0x00F0F5FF);
-  static const Color composerShadowInk = Color(0xFF0D1B2A);
+  Color get composerHighlight => _chatAlpha(_base.surface, 0x73);
+  Color get composerSheen =>
+      _base.isDark ? const Color(0x4D1E2A3C) : const Color(0x61F0F5FF);
+  Color get composerSheenClear =>
+      _base.isDark ? const Color(0x001E2A3C) : const Color(0x00F0F5FF);
+  Color get composerShadowInk =>
+      _base.isDark ? const Color(0xFF000000) : const Color(0xFF0D1B2A);
 
   /// Floating popovers and inline controls.
-  static const Color popoverBorder = Color(0xCCFFFFFF);
-  static const Color approvalShadow = Color(0x14101828);
-  static const Color interruptThumbShadow = Color(0x1E0F172A);
+  Color get popoverBorder => _chatAlpha(_base.surface, 0xCC);
+  Color get approvalShadow => _chatAlpha(_base.shadowInk, 0x14);
+  Color get interruptThumbShadow =>
+      _base.isDark ? const Color(0x52000000) : const Color(0x1E0F172A);
 }
 
-/// Chat gradients that are deliberately tighter than [OpenCrayGradients.brand]
+/// Chat gradients that are deliberately tighter than the shared brand gradient
 /// so the bubble keeps its own weight next to the send button.
 class _ChatGradients {
-  const _ChatGradients._();
+  const _ChatGradients(this._base);
 
-  static const LinearGradient outboundBubble = LinearGradient(
+  final OpenCrayPalette _base;
+
+  LinearGradient get outboundBubble => LinearGradient(
     begin: Alignment.topCenter,
     end: Alignment.bottomCenter,
-    colors: <Color>[Color(0xFF3D7BF7), OpenCrayColors.primary],
+    colors: <Color>[const Color(0xFF3D7BF7), _base.primary],
   );
 }
 
+/// Chat type ramp. Instance-based so the ink follows the palette; reach it as
+/// `context.chatText`.
 class _ChatTextStyles {
-  const _ChatTextStyles._();
+  const _ChatTextStyles(this._ink);
 
-  /// Shared with the other tabs so every large-title header agrees on metrics.
-  /// The chat header still animates this style (colour lerp on scroll).
-  static const TextStyle pageTitle = OpenCrayTypography.pageTitle;
+  final _ChatPalette _ink;
 
-  static const TextStyle cardTitle = TextStyle(
+  TextStyle get cardTitle => TextStyle(
     fontSize: 17,
     height: 1.25,
     fontWeight: FontWeight.w600,
-    color: _ChatPalette.textPrimary,
+    color: _ink.textPrimary,
     letterSpacing: -0.2,
   );
 
-  static const TextStyle bodyMuted = TextStyle(
+  TextStyle get bodyMuted => TextStyle(
     fontSize: 13,
     height: 1.35,
     fontWeight: FontWeight.w400,
-    color: _ChatPalette.textSecondary,
+    color: _ink.textSecondary,
   );
 
-  static const TextStyle bubble = TextStyle(
-    fontSize: 15,
-    height: 1.4,
-    fontWeight: FontWeight.w400,
-  );
+  TextStyle get bubble =>
+      const TextStyle(fontSize: 15, height: 1.4, fontWeight: FontWeight.w400);
 
-  static const TextStyle runTraceHeadline = TextStyle(
+  TextStyle get runTraceHeadline => TextStyle(
     fontSize: 15,
     height: 1.3,
     fontWeight: FontWeight.w600,
-    color: _ChatPalette.textPrimary,
+    color: _ink.textPrimary,
   );
 
-  static const TextStyle runTraceDetailLabel = TextStyle(
+  TextStyle get runTraceDetailLabel => TextStyle(
     fontSize: 12,
     height: 1.35,
     fontWeight: FontWeight.w600,
-    color: OpenCrayColors.textPrimary,
+    color: _ink.textPrimary,
   );
 
-  static const TextStyle runTraceDetailValue = TextStyle(
+  TextStyle get runTraceDetailValue => TextStyle(
     fontSize: 12,
     height: 1.35,
     fontWeight: FontWeight.w500,
-    color: OpenCrayColors.textSecondary,
+    color: _ink.textSecondary,
   );
 
-  static const TextStyle runTraceFooter = TextStyle(
+  TextStyle get runTraceFooter => TextStyle(
     fontSize: 12,
     height: 1.35,
     fontWeight: FontWeight.w500,
-    color: OpenCrayColors.textTertiary,
+    color: _ink.textTertiary,
   );
 
-  static const TextStyle runInspectorTitle = TextStyle(
+  TextStyle get runInspectorTitle => TextStyle(
     fontSize: 28,
     height: 1.1,
     fontWeight: FontWeight.w700,
-    color: _ChatPalette.textPrimary,
+    color: _ink.textPrimary,
     letterSpacing: -0.5,
   );
 
-  static const TextStyle runInspectorLog = TextStyle(
-    fontSize: 13,
-    height: 1.4,
-    fontWeight: FontWeight.w600,
-  );
+  TextStyle get runInspectorLog =>
+      const TextStyle(fontSize: 13, height: 1.4, fontWeight: FontWeight.w600);
 
-  static const TextStyle runInspectorDetail = TextStyle(
+  TextStyle get runInspectorDetail =>
+      const TextStyle(fontSize: 12, height: 1.45, fontWeight: FontWeight.w500);
+
+  TextStyle get runInspectorResult => TextStyle(
     fontSize: 12,
     height: 1.45,
     fontWeight: FontWeight.w500,
+    color: _ink.inspectorResult,
   );
 
-  static const TextStyle runInspectorResult = TextStyle(
-    fontSize: 12,
-    height: 1.45,
-    fontWeight: FontWeight.w500,
-    color: _ChatPalette.inspectorResult,
-  );
-
-  static const TextStyle runInspectorResultBranch = TextStyle(
+  TextStyle get runInspectorResultBranch => TextStyle(
     fontSize: 13,
     height: 1.35,
     fontWeight: FontWeight.w600,
-    color: _ChatPalette.inspectorConnector,
+    color: _ink.inspectorConnector,
   );
 
-  static const TextStyle messageMenuLabel = TextStyle(
+  TextStyle get messageMenuLabel => const TextStyle(
     fontSize: 11,
     height: 1.1,
     fontWeight: FontWeight.w500,
     letterSpacing: -0.1,
   );
 
-  static const TextStyle timeline = TextStyle(
+  TextStyle get timeline => TextStyle(
     fontSize: 11,
     height: 1.2,
     fontWeight: FontWeight.w500,
-    color: _ChatPalette.textSecondary,
+    color: _ink.textSecondary,
   );
 
-  static const TextStyle todoLabel = TextStyle(
+  TextStyle get todoLabel => TextStyle(
     fontSize: 11,
     height: 1.1,
     fontWeight: FontWeight.w600,
     letterSpacing: 0.5,
-    color: _ChatPalette.textSecondary,
+    color: _ink.textSecondary,
   );
 
-  static const TextStyle todoItem = TextStyle(
+  TextStyle get todoItem => TextStyle(
     fontSize: 14,
     height: 1.2,
     fontWeight: FontWeight.w500,
-    color: _ChatPalette.textPrimary,
+    color: _ink.textPrimary,
   );
 
-  static const TextStyle toolbarButton = TextStyle(
+  TextStyle get toolbarButton => TextStyle(
     fontSize: 13,
     height: 1.15,
     fontWeight: FontWeight.w600,
-    color: _ChatPalette.textPrimary,
+    color: _ink.textPrimary,
   );
 
-  static const TextStyle toolbarStatus = TextStyle(
+  TextStyle get toolbarStatus => TextStyle(
     fontSize: 12,
     height: 1.1,
     fontWeight: FontWeight.w700,
-    color: _ChatPalette.accent,
+    color: _ink.accent,
   );
 
-  static const TextStyle selectionToolbarAction = TextStyle(
+  TextStyle get selectionToolbarAction => TextStyle(
     fontSize: 16,
     height: 1.1,
     fontWeight: FontWeight.w600,
-    color: _ChatPalette.accent,
+    color: _ink.accent,
   );
 
-  static const TextStyle selectionToolbarTitle = TextStyle(
+  TextStyle get selectionToolbarTitle => TextStyle(
     fontSize: 16,
     height: 1.1,
     fontWeight: FontWeight.w600,
-    color: _ChatPalette.textPrimary,
+    color: _ink.textPrimary,
     letterSpacing: -0.2,
   );
 
-  static const TextStyle selectionAction = TextStyle(
-    fontSize: 14,
-    height: 1.15,
-    fontWeight: FontWeight.w600,
-  );
+  TextStyle get selectionAction =>
+      const TextStyle(fontSize: 14, height: 1.15, fontWeight: FontWeight.w600);
 
-  static const TextStyle summaryBadge = TextStyle(
+  TextStyle get summaryBadge => TextStyle(
     fontSize: 11,
     height: 1.1,
     fontWeight: FontWeight.w500,
-    color: _ChatPalette.textSecondary,
+    color: _ink.textSecondary,
   );
 
-  static const TextStyle highRiskBadge = TextStyle(
+  TextStyle get highRiskBadge => TextStyle(
     fontSize: 11,
     height: 1.1,
     fontWeight: FontWeight.w700,
-    color: _ChatPalette.highRiskAccent,
+    color: _ink.highRiskAccent,
   );
 
-  static const TextStyle placeholder = TextStyle(
+  TextStyle get placeholder => TextStyle(
     fontSize: 15,
     height: 1.2,
     fontWeight: FontWeight.w400,
-    color: _ChatPalette.textTertiary,
+    color: _ink.textTertiary,
   );
 
-  static const TextStyle sectionLabel = TextStyle(
+  TextStyle get sectionLabel => TextStyle(
     fontSize: 13,
     height: 1.15,
     fontWeight: FontWeight.w700,
-    color: _ChatPalette.textSecondary,
+    color: _ink.textSecondary,
   );
 
-  static const TextStyle commandsLabel = TextStyle(
+  TextStyle get commandsLabel => TextStyle(
     fontSize: 12,
     height: 1.1,
     fontWeight: FontWeight.w600,
-    color: _ChatPalette.textSecondary,
+    color: _ink.textSecondary,
   );
 
-  static const TextStyle addAction = TextStyle(
+  TextStyle get addAction => TextStyle(
     fontSize: 13,
     height: 1.1,
     fontWeight: FontWeight.w600,
-    color: _ChatPalette.textPrimary,
+    color: _ink.textPrimary,
   );
 
-  static const TextStyle approvalAction = TextStyle(
-    fontSize: 13,
-    height: 1.1,
-    fontWeight: FontWeight.w700,
-  );
+  TextStyle get approvalAction =>
+      const TextStyle(fontSize: 13, height: 1.1, fontWeight: FontWeight.w700);
 
-  static const TextStyle approvalRequest = TextStyle(
+  TextStyle get approvalRequest => TextStyle(
     fontSize: 13,
     height: 1.35,
     fontWeight: FontWeight.w600,
-    color: _ChatPalette.textPrimary,
+    color: _ink.textPrimary,
   );
 
-  static const TextStyle approvalReason = TextStyle(
+  TextStyle get approvalReason => TextStyle(
     fontSize: 12,
     height: 1.4,
     fontWeight: FontWeight.w500,
-    color: _ChatPalette.textSecondary,
+    color: _ink.textSecondary,
   );
 
-  static const TextStyle attachmentLabel = TextStyle(
+  TextStyle get attachmentLabel => TextStyle(
     fontSize: 13,
     height: 1.15,
     fontWeight: FontWeight.w600,
-    color: _ChatPalette.textPrimary,
+    color: _ink.textPrimary,
   );
 
-  static const TextStyle attachmentDetail = TextStyle(
+  TextStyle get attachmentDetail => TextStyle(
     fontSize: 11,
     height: 1.2,
     fontWeight: FontWeight.w500,
-    color: _ChatPalette.textSecondary,
+    color: _ink.textSecondary,
   );
 
-  static const TextStyle commandTitle = TextStyle(
+  TextStyle get commandTitle => TextStyle(
     fontSize: 14,
     height: 1.15,
     fontWeight: FontWeight.w600,
-    color: _ChatPalette.textPrimary,
+    color: _ink.textPrimary,
   );
 
-  static const TextStyle commandDescription = TextStyle(
+  TextStyle get commandDescription => TextStyle(
     fontSize: 12,
     height: 1.3,
     fontWeight: FontWeight.w400,
-    color: _ChatPalette.textSecondary,
+    color: _ink.textSecondary,
   );
 
-  static const TextStyle drawerEyebrow = TextStyle(
+  TextStyle get drawerEyebrow => TextStyle(
     fontSize: 11,
     height: 1.1,
     fontWeight: FontWeight.w700,
-    color: _ChatPalette.textSecondary,
+    color: _ink.textSecondary,
   );
 
-  static const TextStyle drawerTitle = TextStyle(
+  TextStyle get drawerTitle => TextStyle(
     fontSize: 24,
     height: 1.15,
     fontWeight: FontWeight.w600,
-    color: _ChatPalette.textPrimary,
+    color: _ink.textPrimary,
   );
 
-  static const TextStyle drawerCta = TextStyle(
+  TextStyle get drawerCta => const TextStyle(
     fontSize: 14,
     height: 1.1,
     fontWeight: FontWeight.w700,
     color: Colors.white,
   );
 
-  static const TextStyle sessionTitle = TextStyle(
+  TextStyle get sessionTitle => TextStyle(
     fontSize: 14,
     height: 1.15,
     fontWeight: FontWeight.w600,
-    color: _ChatPalette.textPrimary,
+    color: _ink.textPrimary,
   );
 
-  static const TextStyle sessionMeta = TextStyle(
+  TextStyle get sessionMeta => TextStyle(
     fontSize: 11,
     height: 1.1,
     fontWeight: FontWeight.w500,
-    color: _ChatPalette.textSecondary,
+    color: _ink.textSecondary,
   );
 
-  static const TextStyle sessionPreview = TextStyle(
+  TextStyle get sessionPreview => TextStyle(
     fontSize: 12,
     height: 1.3,
     fontWeight: FontWeight.w400,
-    color: _ChatPalette.textSecondary,
+    color: _ink.textSecondary,
   );
 }

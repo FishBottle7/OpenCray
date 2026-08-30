@@ -16,6 +16,7 @@ import '../../core/models/opencray_shell_snapshot.dart';
 import '../../core/copy/opencray_ui_copy.dart';
 import '../../core/design/opencray_controls.dart';
 import '../../core/design/opencray_motion.dart';
+import '../../core/design/opencray_palette.dart';
 import '../../core/design/opencray_tokens.dart';
 import '../../core/design/opencray_widgets.dart';
 import 'notification_settings_models.dart';
@@ -127,10 +128,10 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
   Widget build(BuildContext context) {
     final defaultTextStyle =
         Theme.of(context).textTheme.bodyMedium ??
-        const TextStyle(
+        TextStyle(
           fontSize: 14,
           height: 20 / 14,
-          color: OpenCrayColors.textSecondary,
+          color: context.palette.textSecondary,
         );
     final Widget currentPage = _buildCurrentPage(context);
     final Widget pageBody = _hasPageTransition
@@ -150,11 +151,11 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
     );
     if (widget.standalone) {
       return Scaffold(
-        backgroundColor: OpenCrayColors.shellBackground,
+        backgroundColor: context.palette.shellBackground,
         body: content,
       );
     }
-    return Material(color: OpenCrayColors.shellBackground, child: content);
+    return Material(color: context.palette.shellBackground, child: content);
   }
 
   Widget _buildCurrentPage(BuildContext context) {
@@ -565,6 +566,7 @@ class _SettingsLoading extends StatelessWidget {
 }
 
 List<Widget> _buildDetailSectionCards(
+  BuildContext context,
   List<SettingsSectionSnapshot> sections,
 ) => sections
     .map(
@@ -573,17 +575,17 @@ List<Widget> _buildDetailSectionCards(
         child: _SettingsCard(
           backgroundColor:
               section.backgroundTone == SettingsSectionBackgroundTone.danger
-              ? OpenCrayColors.dangerSurface
-              : Colors.white,
+              ? context.palette.dangerTint
+              : context.palette.surface,
           borderColor:
               section.backgroundTone == SettingsSectionBackgroundTone.danger
-              ? OpenCrayColors.dangerBorder
-              : OpenCrayColors.divider,
+              ? context.palette.dangerBorder
+              : context.palette.divider,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (section.title.isNotEmpty)
-                Text(section.title, style: _SettingsTextStyles.cardTitle),
+                Text(section.title, style: context.settingsText.cardTitle),
               if (section.title.isNotEmpty && section.segmentedOptions == null)
                 const SizedBox(height: 8),
               if (section.segmentedOptions != null) ...[
@@ -595,20 +597,20 @@ List<Widget> _buildDetailSectionCards(
               ],
               if (section.helperText != null) ...[
                 const SizedBox(height: 12),
-                Text(section.helperText!, style: _SettingsTextStyles.body),
+                Text(section.helperText!, style: context.settingsText.body),
               ],
               if (section.inlinePanelText != null) ...[
                 const SizedBox(height: 12),
                 DecoratedBox(
                   decoration: BoxDecoration(
-                    color: OpenCrayColors.surfaceMuted,
+                    color: context.palette.surfaceMuted,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Padding(
                     padding: const EdgeInsets.all(12),
                     child: Text(
                       section.inlinePanelText!,
-                      style: _SettingsTextStyles.bodyStrong,
+                      style: context.settingsText.bodyStrong,
                     ),
                   ),
                 ),
@@ -618,7 +620,7 @@ List<Widget> _buildDetailSectionCards(
                 for (int index = 0; index < section.rows.length; index++) ...[
                   _DetailRow(row: section.rows[index]),
                   if (index < section.rows.length - 1)
-                    const Divider(height: 1, color: OpenCrayColors.divider),
+                    Divider(height: 1, color: context.palette.divider),
                 ],
               ],
             ],
@@ -656,7 +658,7 @@ class _DetailSettingsPage extends StatelessWidget {
             title: snapshot.title,
             summary: snapshot.subtitle,
           ),
-          ..._buildDetailSectionCards(snapshot.sections),
+          ..._buildDetailSectionCards(context, snapshot.sections),
           if (debugBridge != null && facade != null) ...[
             Padding(
               padding: const EdgeInsets.only(bottom: 16),
@@ -664,11 +666,11 @@ class _DetailSettingsPage extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Debug tools', style: _SettingsTextStyles.cardTitle),
+                    Text('Debug tools', style: context.settingsText.cardTitle),
                     const SizedBox(height: 8),
                     Text(
                       'Open runtime diagnostics for context, memory, and soul state.',
-                      style: _SettingsTextStyles.body,
+                      style: context.settingsText.body,
                     ),
                     const SizedBox(height: 12),
                     _HomeEntryRow(
@@ -781,11 +783,11 @@ class _PersonalizationSettingsPageState
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(snapshot.introTitle, style: _SettingsTextStyles.cardTitle),
+                Text(snapshot.introTitle, style: context.settingsText.cardTitle),
                 const SizedBox(height: 8),
-                Text(snapshot.introBody, style: _SettingsTextStyles.body),
+                Text(snapshot.introBody, style: context.settingsText.body),
                 const SizedBox(height: 8),
-                Text(snapshot.introHelper, style: _SettingsTextStyles.body),
+                Text(snapshot.introHelper, style: context.settingsText.body),
               ],
             ),
           ),
@@ -796,10 +798,10 @@ class _PersonalizationSettingsPageState
               children: [
                 Text(
                   snapshot.presetsTitle,
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 8),
-                Text(snapshot.presetsHelper, style: _SettingsTextStyles.body),
+                Text(snapshot.presetsHelper, style: context.settingsText.body),
                 const SizedBox(height: 12),
                 for (final preset in snapshot.presets) ...[
                   _PresetOptionCard(
@@ -820,12 +822,12 @@ class _PersonalizationSettingsPageState
               children: [
                 Text(
                   snapshot.customOverlayTitle,
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 8),
                 Text(
                   snapshot.customOverlayHelper,
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 ),
                 const SizedBox(height: 14),
                 _PrototypeField(
@@ -836,7 +838,7 @@ class _PersonalizationSettingsPageState
                 const SizedBox(height: 8),
                 Text(
                   snapshot.customLabelHelper,
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 ),
                 const SizedBox(height: 12),
                 _PrototypeField(
@@ -849,7 +851,7 @@ class _PersonalizationSettingsPageState
                 const SizedBox(height: 8),
                 Text(
                   snapshot.customGuidanceHelper,
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 ),
               ],
             ),
@@ -861,7 +863,7 @@ class _PersonalizationSettingsPageState
               children: [
                 Text(
                   snapshot.behaviorDefaultsTitle,
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 12),
                 _SettingsPickerRow(
@@ -882,17 +884,17 @@ class _PersonalizationSettingsPageState
               children: [
                 Text(
                   snapshot.livePreviewTitle,
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 12),
                 Text(
                   snapshot.livePreviewName,
-                  style: _SettingsTextStyles.bodyStrong,
+                  style: context.settingsText.bodyStrong,
                 ),
                 const SizedBox(height: 8),
                 Text(
                   snapshot.livePreviewSummary,
-                  style: _SettingsTextStyles.body,
+                  style: context.settingsText.body,
                 ),
               ],
             ),
@@ -902,28 +904,28 @@ class _PersonalizationSettingsPageState
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(snapshot.queueTitle, style: _SettingsTextStyles.cardTitle),
+                Text(snapshot.queueTitle, style: context.settingsText.cardTitle),
                 const SizedBox(height: 10),
-                Text(snapshot.queueBody, style: _SettingsTextStyles.body),
+                Text(snapshot.queueBody, style: context.settingsText.body),
               ],
             ),
           ),
           if (snapshot.lastResetMessage.isNotEmpty) ...[
             const SizedBox(height: 16),
             _SettingsCard(
-              backgroundColor: OpenCrayColors.primaryTint,
-              borderColor: OpenCrayColors.primaryBorder,
+              backgroundColor: context.palette.primaryTint,
+              borderColor: context.palette.primaryBorder,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
                     snapshot.lastResetTitle,
-                    style: _SettingsTextStyles.cardTitle,
+                    style: context.settingsText.cardTitle,
                   ),
                   const SizedBox(height: 8),
                   Text(
                     snapshot.lastResetMessage,
-                    style: _SettingsTextStyles.body,
+                    style: context.settingsText.body,
                   ),
                 ],
               ),
@@ -1041,8 +1043,8 @@ class _PersonalizationSettingsPageState
           child: Padding(
             padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
             child: DecoratedBox(
-              decoration: const BoxDecoration(
-                color: Colors.white,
+              decoration: BoxDecoration(
+                color: context.palette.surface,
                 borderRadius: BorderRadius.all(Radius.circular(22)),
               ),
               child: Padding(
@@ -1057,14 +1059,14 @@ class _PersonalizationSettingsPageState
                         height: 4,
                         margin: const EdgeInsets.only(bottom: 16),
                         decoration: BoxDecoration(
-                          color: OpenCrayColors.divider,
+                          color: context.palette.divider,
                           borderRadius: BorderRadius.circular(999),
                         ),
                       ),
                     ),
                     Text(
                       snapshot.appLanguageTitle,
-                      style: _SettingsTextStyles.cardTitle,
+                      style: context.settingsText.cardTitle,
                     ),
                     const SizedBox(height: 12),
                     for (final option in snapshot.appLanguageOptions)
@@ -1078,13 +1080,13 @@ class _PersonalizationSettingsPageState
                               Expanded(
                                 child: Text(
                                   option.title,
-                                  style: _SettingsTextStyles.rowTitle,
+                                  style: context.settingsText.rowTitle,
                                 ),
                               ),
                               if (option.id == snapshot.selectedAppLanguageId)
-                                const Icon(
+                                Icon(
                                   Icons.check_rounded,
-                                  color: OpenCrayColors.primary,
+                                  color: context.palette.primary,
                                   size: 18,
                                 ),
                             ],
@@ -1269,12 +1271,12 @@ class _McpSettingsPageState extends State<_McpSettingsPage> {
                         children: [
                           Text(
                             snapshot.masterTitle,
-                            style: _SettingsTextStyles.cardTitle,
+                            style: context.settingsText.cardTitle,
                           ),
                           const SizedBox(height: 8),
                           Text(
                             snapshot.masterSummary,
-                            style: _SettingsTextStyles.body,
+                            style: context.settingsText.body,
                           ),
                         ],
                       ),
@@ -1289,7 +1291,7 @@ class _McpSettingsPageState extends State<_McpSettingsPage> {
                 const SizedBox(height: 12),
                 Text(
                   snapshot.summaryLine,
-                  style: _SettingsTextStyles.bodyStrong,
+                  style: context.settingsText.bodyStrong,
                 ),
               ],
             ),
@@ -1299,21 +1301,21 @@ class _McpSettingsPageState extends State<_McpSettingsPage> {
                   snapshot.masterDisabledBody.isNotEmpty)) ...[
             const SizedBox(height: 16),
             _SettingsCard(
-              backgroundColor: OpenCrayColors.warningTint,
-              borderColor: OpenCrayColors.warningBorder,
+              backgroundColor: context.palette.warningTint,
+              borderColor: context.palette.warningBorder,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   if (snapshot.masterDisabledTitle.isNotEmpty)
                     Text(
                       snapshot.masterDisabledTitle,
-                      style: _SettingsTextStyles.cardTitle,
+                      style: context.settingsText.cardTitle,
                     ),
                   if (snapshot.masterDisabledBody.isNotEmpty) ...[
                     const SizedBox(height: 8),
                     Text(
                       snapshot.masterDisabledBody,
-                      style: _SettingsTextStyles.body,
+                      style: context.settingsText.body,
                     ),
                   ],
                 ],
@@ -1327,10 +1329,10 @@ class _McpSettingsPageState extends State<_McpSettingsPage> {
               children: [
                 Text(
                   snapshot.serversTitle,
-                  style: _SettingsTextStyles.cardTitle,
+                  style: context.settingsText.cardTitle,
                 ),
                 const SizedBox(height: 8),
-                Text(snapshot.serversHelper, style: _SettingsTextStyles.body),
+                Text(snapshot.serversHelper, style: context.settingsText.body),
               ],
             ),
           ),
@@ -1449,11 +1451,11 @@ class _PresetOptionCard extends StatelessWidget {
       curve: OpenCrayMotion.enter,
       decoration: BoxDecoration(
         color: isSelected
-            ? OpenCrayColors.primaryTint
-            : OpenCrayColors.surfaceSubtle,
+            ? context.palette.primaryTint
+            : context.palette.surfaceSubtle,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: isSelected ? OpenCrayColors.primary : OpenCrayColors.divider,
+          color: isSelected ? context.palette.primary : context.palette.divider,
         ),
       ),
       child: OpenCrayInkSurface(
@@ -1470,7 +1472,7 @@ class _PresetOptionCard extends StatelessWidget {
                     Expanded(
                       child: Text(
                         preset.title,
-                        style: _SettingsTextStyles.rowTitle,
+                        style: context.settingsText.rowTitle,
                       ),
                     ),
                     _SettingsStatusPill(
@@ -1480,11 +1482,11 @@ class _PresetOptionCard extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 8),
-                Text(preset.summary, style: _SettingsTextStyles.body),
+                Text(preset.summary, style: context.settingsText.body),
                 const SizedBox(height: 8),
-                Text(preset.voice, style: _SettingsTextStyles.bodyStrong),
+                Text(preset.voice, style: context.settingsText.bodyStrong),
                 const SizedBox(height: 8),
-                Text(preset.status, style: _SettingsTextStyles.body),
+                Text(preset.status, style: context.settingsText.body),
               ],
             ),
           ),
@@ -1517,16 +1519,16 @@ class _DangerResetCard extends StatelessWidget {
         ? action.disabledGuidance
         : (isArmed ? action.armedGuidance : action.typeExactGuidance);
     return _SettingsCard(
-      backgroundColor: OpenCrayColors.dangerSurface,
-      borderColor: OpenCrayColors.dangerBorder,
+      backgroundColor: context.palette.dangerTint,
+      borderColor: context.palette.dangerBorder,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(action.title, style: _SettingsTextStyles.cardTitle),
+          Text(action.title, style: context.settingsText.cardTitle),
           const SizedBox(height: 10),
-          Text(action.scopeBody, style: _SettingsTextStyles.body),
+          Text(action.scopeBody, style: context.settingsText.body),
           const SizedBox(height: 8),
-          Text(action.retainBody, style: _SettingsTextStyles.body),
+          Text(action.retainBody, style: context.settingsText.body),
           const SizedBox(height: 12),
           _PrototypeField(
             label: action.inputHint,
@@ -1536,7 +1538,7 @@ class _DangerResetCard extends StatelessWidget {
             onChanged: (_) => onChanged(),
           ),
           const SizedBox(height: 10),
-          Text(guidance, style: _SettingsTextStyles.body),
+          Text(guidance, style: context.settingsText.body),
           const SizedBox(height: 12),
           SizedBox(
             width: double.infinity,
@@ -1547,10 +1549,10 @@ class _DangerResetCard extends StatelessWidget {
                       onReset();
                     },
               style: FilledButton.styleFrom(
-                backgroundColor: OpenCrayColors.dangerText,
+                backgroundColor: context.palette.danger,
                 foregroundColor: Colors.white,
-                disabledBackgroundColor: OpenCrayColors.surfaceSunken,
-                disabledForegroundColor: OpenCrayColors.textSecondary,
+                disabledBackgroundColor: context.palette.surfaceSunken,
+                disabledForegroundColor: context.palette.textSecondary,
                 padding: const EdgeInsets.symmetric(vertical: 12),
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(12),
@@ -1606,7 +1608,7 @@ class _McpServerCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(server.title, style: _SettingsTextStyles.cardTitle),
+                    Text(server.title, style: context.settingsText.cardTitle),
                     const SizedBox(height: 8),
                     _SettingsStatusPill(
                       label: server.statusLabel,
@@ -1627,17 +1629,17 @@ class _McpServerCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 14),
-          Text(server.trustLine, style: _SettingsTextStyles.bodyStrong),
+          Text(server.trustLine, style: context.settingsText.bodyStrong),
           const SizedBox(height: 6),
-          Text(server.authLine, style: _SettingsTextStyles.body),
+          Text(server.authLine, style: context.settingsText.body),
           const SizedBox(height: 6),
-          Text(server.readinessLine, style: _SettingsTextStyles.body),
+          Text(server.readinessLine, style: context.settingsText.body),
           const SizedBox(height: 6),
-          Text(server.transportLine, style: _SettingsTextStyles.body),
+          Text(server.transportLine, style: context.settingsText.body),
           const SizedBox(height: 6),
-          Text(server.exposureLine, style: _SettingsTextStyles.bodyStrong),
+          Text(server.exposureLine, style: context.settingsText.bodyStrong),
           const SizedBox(height: 10),
-          Text(server.guidance, style: _SettingsTextStyles.body),
+          Text(server.guidance, style: context.settingsText.body),
         ],
       ),
     );
@@ -1655,7 +1657,7 @@ class _SegmentedSelector extends StatelessWidget {
     return OpenCraySegmentedControl(
       labels: labels,
       selectedIndex: selectedIndex,
-      textStyle: _SettingsTextStyles.valueChip,
+      textStyle: context.settingsText.valueChip,
     );
   }
 }
@@ -1676,27 +1678,27 @@ class _DetailRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(row.title, style: _SettingsTextStyles.rowTitle),
+                Text(row.title, style: context.settingsText.rowTitle),
                 if (row.subtitle != null) ...[
                   const SizedBox(height: 4),
-                  Text(row.subtitle!, style: _SettingsTextStyles.rowSubtitle),
+                  Text(row.subtitle!, style: context.settingsText.rowSubtitle),
                 ],
               ],
             ),
           ),
           const SizedBox(width: 12),
           if (row.trailingKind == SettingsRowTrailingKind.chevron)
-            const Icon(
+            Icon(
               Icons.chevron_right_rounded,
               size: 18,
-              color: OpenCrayColors.textTertiary,
+              color: context.palette.textTertiary,
             )
           else if (row.trailingKind == SettingsRowTrailingKind.toggle)
             OpenCraySwitch(value: row.toggleValue ?? false, onChanged: (_) {})
           else
             DecoratedBox(
               decoration: BoxDecoration(
-                color: OpenCrayColors.surfaceMuted,
+                color: context.palette.surfaceMuted,
                 borderRadius: BorderRadius.circular(999),
               ),
               child: Padding(
@@ -1706,7 +1708,7 @@ class _DetailRow extends StatelessWidget {
                 ),
                 child: Text(
                   row.valueLabel ?? '',
-                  style: _SettingsTextStyles.valueChip,
+                  style: context.settingsText.valueChip,
                 ),
               ),
             ),

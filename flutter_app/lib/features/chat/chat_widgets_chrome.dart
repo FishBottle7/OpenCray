@@ -110,10 +110,12 @@ class _ChatHeaderCluster extends StatelessWidget {
             ? scrollController.offset
             : 0;
         final double scrollProgress = (scrollOffset / 96).clamp(0.0, 1.0);
-        final TextStyle titleStyle = _ChatTextStyles.pageTitle.copyWith(
+        final TextStyle titleStyle = OpenCrayTypography.pageTitle(
+          context.palette,
+        ).copyWith(
           color: Color.lerp(
-            _ChatPalette.textPrimary,
-            _ChatPalette.textSecondary,
+            context.chatPalette.textPrimary,
+            context.chatPalette.textSecondary,
             isActiveThread ? scrollProgress * 0.28 : 0,
           ),
         );
@@ -152,13 +154,13 @@ class _TopGlassBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final double blurSigma = lerpDouble(0, 14, strength)!;
     final Color borderColor = Color.lerp(
-      _ChatPalette.surfaceClear,
-      _ChatGlass.barBorderActive,
+      context.chatPalette.surfaceClear,
+      context.chatGlass.barBorderActive,
       strength,
     )!;
     final Color shadowColor = Color.lerp(
       Colors.transparent,
-      _ChatGlass.barShadowActive,
+      context.chatGlass.barShadowActive,
       strength,
     )!;
     final double shadowBlur = lerpDouble(0, 16, strength)!;
@@ -176,21 +178,21 @@ class _TopGlassBar extends StatelessWidget {
                 end: Alignment.bottomCenter,
                 colors: <Color>[
                   Color.lerp(
-                    _ChatGlass.barTopRest,
-                    _ChatGlass.barTopActive,
+                    context.chatGlass.barTopRest,
+                    context.chatGlass.barTopActive,
                     strength,
                   )!,
                   Color.lerp(
-                    _ChatGlass.barMidRest,
-                    _ChatGlass.barMidActive,
+                    context.chatGlass.barMidRest,
+                    context.chatGlass.barMidActive,
                     strength,
                   )!,
                   Color.lerp(
-                    _ChatGlass.barFootRest,
-                    _ChatGlass.barFootActive,
+                    context.chatGlass.barFootRest,
+                    context.chatGlass.barFootActive,
                     strength,
                   )!,
-                  _ChatGlass.barFootClear,
+                  context.chatGlass.barFootClear,
                 ],
                 stops: const <double>[0, 0.32, 0.72, 1],
               ),
@@ -251,7 +253,7 @@ class _ChatToolbar extends StatelessWidget {
                   alignment: Alignment.centerLeft,
                   child: Text(
                     copy.chatSelectionDoneAction,
-                    style: _ChatTextStyles.selectionToolbarAction,
+                    style: context.chatText.selectionToolbarAction,
                   ),
                 ),
               ),
@@ -260,7 +262,7 @@ class _ChatToolbar extends StatelessWidget {
               child: Center(
                 child: Text(
                   copy.chatSelectionCount(selectedCount),
-                  style: _ChatTextStyles.selectionToolbarTitle,
+                  style: context.chatText.selectionToolbarTitle,
                 ),
               ),
             ),
@@ -313,8 +315,8 @@ class _ChatToolbarIconButtonState extends State<_ChatToolbarIconButton> {
   @override
   Widget build(BuildContext context) {
     final Color foregroundColor = _isPressed
-        ? _ChatPalette.textPrimary
-        : _ChatPalette.textSecondary;
+        ? context.chatPalette.textPrimary
+        : context.chatPalette.textSecondary;
     return Semantics(
       button: true,
       label: widget.tooltip,
@@ -337,11 +339,11 @@ class _ChatToolbarIconButtonState extends State<_ChatToolbarIconButton> {
                 height: 36,
                 decoration: BoxDecoration(
                   color: _isPressed
-                      ? OpenCrayColors.surfaceMuted
-                      : Colors.white.withValues(alpha: 0.86),
+                      ? context.palette.surfaceMuted
+                      : context.palette.surface.withValues(alpha: 0.86),
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: _ChatPalette.border),
-                  boxShadow: _isPressed ? null : OpenCrayShadows.card,
+                  border: Border.all(color: context.chatPalette.border),
+                  boxShadow: _isPressed ? null : context.palette.cardShadow,
                 ),
                 child: Icon(widget.icon, size: 18, color: foregroundColor),
               ),
@@ -383,10 +385,10 @@ class _ChatRuntimeEnvironmentSelector extends StatelessWidget {
       padding: EdgeInsets.zero,
       offset: const Offset(0, 42),
       elevation: 10,
-      color: Colors.white,
+      color: context.palette.surface,
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(16),
-        side: const BorderSide(color: _ChatPalette.border),
+        side: BorderSide(color: context.chatPalette.border),
       ),
       onSelected: onSelected,
       itemBuilder: (BuildContext context) =>
@@ -445,10 +447,10 @@ class _ChatRuntimeStatusPill extends StatelessWidget {
     return DecoratedBox(
       key: const ValueKey<String>('chat-runtime-status-pill'),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.86),
+        color: context.palette.surface.withValues(alpha: 0.86),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: _ChatPalette.border),
-        boxShadow: OpenCrayShadows.card,
+        border: Border.all(color: context.chatPalette.border),
+        boxShadow: context.palette.cardShadow,
       ),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
@@ -459,13 +461,13 @@ class _ChatRuntimeStatusPill extends StatelessWidget {
               icon,
               key: const ValueKey<String>('chat-runtime-selector-icon'),
               size: 16,
-              color: _ChatPalette.textSecondary,
+              color: context.chatPalette.textSecondary,
             ),
             const SizedBox(width: 7),
             Text(
               environmentLabel,
               key: const ValueKey<String>('chat-runtime-selector-label'),
-              style: _ChatTextStyles.toolbarButton,
+              style: context.chatText.toolbarButton,
             ),
             const SizedBox(width: 7),
             Container(
@@ -473,7 +475,7 @@ class _ChatRuntimeStatusPill extends StatelessWidget {
               width: 3,
               height: 3,
               decoration: BoxDecoration(
-                color: _ChatPalette.textTertiary.withValues(alpha: 0.72),
+                color: context.chatPalette.textTertiary.withValues(alpha: 0.72),
                 shape: BoxShape.circle,
               ),
             ),
@@ -481,13 +483,13 @@ class _ChatRuntimeStatusPill extends StatelessWidget {
             Text(
               modeLabel,
               key: const ValueKey<String>('chat-runtime-mode-label'),
-              style: _ChatTextStyles.toolbarStatus,
+              style: context.chatText.toolbarStatus,
             ),
             const SizedBox(width: 4),
-            const Icon(
+            Icon(
               Icons.expand_more_rounded,
               size: 16,
-              color: _ChatPalette.textTertiary,
+              color: context.chatPalette.textTertiary,
             ),
           ],
         ),
@@ -513,18 +515,18 @@ class _ChatRuntimeEnvironmentMenuRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: <Widget>[
-        Icon(icon, key: iconKey, size: 18, color: _ChatPalette.textSecondary),
+        Icon(icon, key: iconKey, size: 18, color: context.chatPalette.textSecondary),
         const SizedBox(width: 10),
         Expanded(
           child: Text(
             label,
-            style: _ChatTextStyles.toolbarButton.copyWith(
-              color: _ChatPalette.textPrimary,
+            style: context.chatText.toolbarButton.copyWith(
+              color: context.chatPalette.textPrimary,
             ),
           ),
         ),
         if (isSelected)
-          const Icon(Icons.check_rounded, size: 16, color: _ChatPalette.accent),
+          Icon(Icons.check_rounded, size: 16, color: context.chatPalette.accent),
       ],
     );
   }
@@ -547,7 +549,7 @@ class _ChatSelectionToolbar extends StatelessWidget {
   Widget build(BuildContext context) {
     return DecoratedBox(
       key: const ValueKey<String>('chat-selection-toolbar'),
-      decoration: _ChatDecorations.card(),
+      decoration: _ChatDecorations.card(context),
       child: Padding(
         padding: const EdgeInsets.all(10),
         child: Row(
@@ -594,8 +596,8 @@ class _ChatSelectionActionButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color foregroundColor = isDestructive
-        ? OpenCrayColors.danger
-        : _ChatPalette.textPrimary;
+        ? context.palette.danger
+        : context.chatPalette.textPrimary;
     return GestureDetector(
       onTap: onPressed,
       behavior: HitTestBehavior.opaque,
@@ -605,8 +607,8 @@ class _ChatSelectionActionButton extends StatelessWidget {
           height: 44,
           decoration: BoxDecoration(
             color: isDestructive
-                ? OpenCrayColors.dangerTint
-                : _ChatPalette.subtleSurface,
+                ? context.palette.dangerTint
+                : context.chatPalette.subtleSurface,
             borderRadius: BorderRadius.circular(14),
           ),
           padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -620,7 +622,7 @@ class _ChatSelectionActionButton extends StatelessWidget {
                   label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: _ChatTextStyles.selectionAction.copyWith(
+                  style: context.chatText.selectionAction.copyWith(
                     color: foregroundColor,
                   ),
                 ),
@@ -652,23 +654,23 @@ class _SummaryCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final double quietProgress = isActiveThread ? 1 : 0;
     final Color surfaceColor = Color.lerp(
-      Colors.white,
-      _ChatPalette.surfaceClear,
+      context.palette.surface,
+      context.chatPalette.surfaceClear,
       quietProgress * 0.22,
     )!;
     final Color borderColor = Color.lerp(
-      _ChatPalette.borderClear,
-      _ChatPalette.border,
+      context.chatPalette.borderClear,
+      context.chatPalette.border,
       quietProgress,
     )!;
     final Color titleColor = Color.lerp(
-      _ChatPalette.textPrimary,
-      _ChatPalette.summaryQuietTitle,
+      context.chatPalette.textPrimary,
+      context.chatPalette.summaryQuietTitle,
       quietProgress,
     )!;
     final Color bodyColor = Color.lerp(
-      _ChatPalette.textSecondary,
-      _ChatPalette.textTertiary,
+      context.chatPalette.textSecondary,
+      context.chatPalette.textTertiary,
       isActiveThread ? scrollProgress * 0.34 : 0,
     )!;
     return AnimatedContainer(
@@ -696,7 +698,7 @@ class _SummaryCard extends StatelessWidget {
                       OpenCrayMotion.micro,
                     ),
                     curve: OpenCrayMotion.enter,
-                    style: _ChatTextStyles.cardTitle.copyWith(
+                    style: context.chatText.cardTitle.copyWith(
                       color: titleColor,
                       fontSize: isActiveThread ? 16 : 17,
                     ),
@@ -704,14 +706,14 @@ class _SummaryCard extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 12),
-                Text(summary.badge, style: _ChatTextStyles.summaryBadge),
+                Text(summary.badge, style: context.chatText.summaryBadge),
               ],
             ),
             SizedBox(height: isActiveThread ? 6 : 8),
             _OpenCrayMarkdownTextBlock(
               copy: copy,
               data: summary.body,
-              bodyStyle: _ChatTextStyles.bodyMuted.copyWith(color: bodyColor),
+              bodyStyle: context.chatText.bodyMuted.copyWith(color: bodyColor),
               surfaceColor: surfaceColor,
               bridge: bridge,
             ),
@@ -880,12 +882,12 @@ class _ChatTimestampDivider extends StatelessWidget {
               ? null
               : ValueKey<String>('chat-message-divider-$messageId'),
           decoration: BoxDecoration(
-            color: OpenCrayColors.surfaceSunken,
+            color: context.palette.surfaceSunken,
             borderRadius: BorderRadius.circular(999),
           ),
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-            child: Text(label, style: _ChatTextStyles.timeline),
+            child: Text(label, style: context.chatText.timeline),
           ),
         ),
       ),
@@ -1051,7 +1053,7 @@ class _ChatMessageWithTimestamp extends StatelessWidget {
                       ),
                       curve: OpenCrayMotion.enter,
                       color: isSelected
-                          ? _ChatPalette.selectionRowHighlight
+                          ? context.chatPalette.selectionRowHighlight
                           : Colors.transparent,
                     ),
                   ),
@@ -1217,12 +1219,12 @@ class _ChatSelectionControl extends StatelessWidget {
       width: 22,
       height: 22,
       decoration: BoxDecoration(
-        color: isSelected ? _ChatPalette.accent : Colors.white,
+        color: isSelected ? context.chatPalette.accent : context.palette.surface,
         shape: BoxShape.circle,
         border: Border.all(
           color: isSelected
-              ? _ChatPalette.accent
-              : _ChatPalette.selectionControlBorder,
+              ? context.chatPalette.accent
+              : context.chatPalette.selectionControlBorder,
           width: isSelected ? 0 : 1.5,
         ),
       ),
@@ -1472,7 +1474,7 @@ class _MessageListState extends State<_MessageList> {
               child: Center(
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: OpenCrayColors.surfaceSunken,
+                    color: context.palette.surfaceSunken,
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Padding(
@@ -1480,7 +1482,7 @@ class _MessageListState extends State<_MessageList> {
                       horizontal: 10,
                       vertical: 5,
                     ),
-                    child: Text(message.text, style: _ChatTextStyles.timeline),
+                    child: Text(message.text, style: context.chatText.timeline),
                   ),
                 ),
               ),
@@ -1497,8 +1499,8 @@ class _MessageListState extends State<_MessageList> {
               message: message,
               voicePlaybackControllerFactory: voicePlaybackControllerFactory,
               alignment: Alignment.centerLeft,
-              backgroundColor: Colors.white,
-              textColor: _ChatPalette.textPrimary,
+              backgroundColor: context.palette.surface,
+              textColor: context.chatPalette.textPrimary,
               maxWidth: inboundBubbleMaxWidth,
               selectionMode: selectedMessageIds.isNotEmpty,
               isSelected: selectedMessageIds.contains(message.messageId),
@@ -1528,7 +1530,7 @@ class _MessageListState extends State<_MessageList> {
               message: message,
               voicePlaybackControllerFactory: voicePlaybackControllerFactory,
               alignment: Alignment.centerRight,
-              backgroundColor: _ChatPalette.accent,
+              backgroundColor: context.chatPalette.accent,
               textColor: Colors.white,
               maxWidth: outboundBubbleMaxWidth,
               selectionMode: selectedMessageIds.isNotEmpty,

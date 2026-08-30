@@ -51,6 +51,7 @@ _groupLinkedSoulFieldSources(List<OpenCraySoulFieldSourceSnapshot> sources) {
 }
 
 List<Widget> _buildMemoryLinkDetails({
+  required BuildContext context,
   required OpenCrayMemoryDebugLinksEntrySnapshot? links,
   required List<OpenCraySoulFieldSourceSnapshot> soulFieldSources,
   required bool includeSoulFieldsSection,
@@ -61,7 +62,7 @@ List<Widget> _buildMemoryLinkDetails({
     if (widgets.isNotEmpty) {
       widgets.add(const SizedBox(height: 12));
     }
-    widgets.add(Text(title, style: _SettingsTextStyles.bodyStrong));
+    widgets.add(Text(title, style: context.settingsText.bodyStrong));
     widgets.add(const SizedBox(height: 8));
   }
 
@@ -157,9 +158,9 @@ List<Widget> _buildMemoryLinkDetails({
 
   if (widgets.isEmpty) {
     widgets.add(
-      const Text(
+      Text(
         'No linked run or soul activity is available for this record yet.',
-        style: _SettingsTextStyles.body,
+        style: context.settingsText.body,
       ),
     );
   }
@@ -354,7 +355,10 @@ String _formatMemoryLineRange(int startLine, int endLine) {
   return startLine == endLine ? '$startLine' : '$startLine-$endLine';
 }
 
-List<Widget> _buildSoulProfileLines(OpenCraySoulProfileDebugSnapshot snapshot) {
+List<Widget> _buildSoulProfileLines(
+  BuildContext context,
+  OpenCraySoulProfileDebugSnapshot snapshot,
+) {
   final lines = <Widget>[];
 
   void addLine(String label, String value) {
@@ -415,9 +419,9 @@ List<Widget> _buildSoulProfileLines(OpenCraySoulProfileDebugSnapshot snapshot) {
   }
   if (lines.isEmpty) {
     lines.add(
-      const Text(
+      Text(
         'No resolved fields are populated.',
-        style: _SettingsTextStyles.body,
+        style: context.settingsText.body,
       ),
     );
   }

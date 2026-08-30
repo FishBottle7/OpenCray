@@ -81,7 +81,7 @@ class _ApprovalGlassSurface extends StatelessWidget {
                     ),
                     boxShadow: <BoxShadow>[
                       BoxShadow(
-                        color: _ChatGlass.approvalShadow,
+                        color: context.chatGlass.approvalShadow,
                         blurRadius: 22,
                         offset: const Offset(0, 10),
                       ),
@@ -92,8 +92,8 @@ class _ApprovalGlassSurface extends StatelessWidget {
                       colors: <Color>[
                         Colors.white.withValues(alpha: 0.42),
                         Colors.white.withValues(alpha: 0.32),
-                        OpenCrayColors.primaryTint.withValues(alpha: 0.26),
-                        OpenCrayColors.primaryBorder.withValues(alpha: 0.18),
+                        context.palette.primaryTint.withValues(alpha: 0.26),
+                        context.palette.primaryBorder.withValues(alpha: 0.18),
                       ],
                       stops: const <double>[0, 0.28, 0.72, 1],
                     ),
@@ -222,16 +222,16 @@ class _PendingApprovalCard extends StatelessWidget {
     final _PendingApprovalPresentation presentation =
         _PendingApprovalPresentation.fromApproval(copy, approval);
     final Color surfaceColor = approval.isHighRisk
-        ? _ChatPalette.highRiskSurface
-        : OpenCrayColors.surfaceSubtle;
+        ? context.chatPalette.highRiskSurface
+        : context.palette.surfaceSubtle;
     final Color borderColor = approval.isHighRisk
-        ? _ChatPalette.highRiskBorder
-        : _ChatPalette.runTraceBorder;
+        ? context.chatPalette.highRiskBorder
+        : context.chatPalette.runTraceBorder;
     final Color reasonColor = approval.isHighRisk
-        ? _ChatPalette.highRiskReasonText
-        : OpenCrayColors.textSecondary;
-    final TextStyle detailStyle = _ChatTextStyles.approvalRequest.copyWith(
-      color: OpenCrayColors.textPrimary,
+        ? context.chatPalette.highRiskReasonText
+        : context.palette.textSecondary;
+    final TextStyle detailStyle = context.chatText.approvalRequest.copyWith(
+      color: context.palette.textPrimary,
     );
     final List<_ApprovalInfoRowData> visibleRows = isPreview
         ? presentation.impactRows.take(1).toList(growable: false)
@@ -253,7 +253,7 @@ class _PendingApprovalCard extends StatelessWidget {
               bottom: 14,
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  color: _ChatPalette.highRiskAccent.withValues(alpha: 0.68),
+                  color: context.chatPalette.highRiskAccent.withValues(alpha: 0.68),
                   borderRadius: BorderRadius.circular(999),
                 ),
                 child: const SizedBox(width: 3),
@@ -270,14 +270,14 @@ class _PendingApprovalCard extends StatelessWidget {
                     Expanded(
                       child: Text(
                         approval.title,
-                        style: _ChatTextStyles.cardTitle,
+                        style: context.chatText.cardTitle,
                       ),
                     ),
                     if (approval.isHighRisk && !isPreview) ...<Widget>[
                       const SizedBox(width: 12),
                       DecoratedBox(
                         decoration: BoxDecoration(
-                          color: _ChatPalette.highRiskBadgeSurface,
+                          color: context.chatPalette.highRiskBadgeSurface,
                           borderRadius: BorderRadius.circular(999),
                         ),
                         child: Padding(
@@ -290,15 +290,15 @@ class _PendingApprovalCard extends StatelessWidget {
                             children: <Widget>[
                               // Shape as well as colour, so the risk still
                               // reads without colour vision.
-                              const Icon(
+                              Icon(
                                 Icons.warning_amber_rounded,
                                 size: 13,
-                                color: _ChatPalette.highRiskAccent,
+                                color: context.chatPalette.highRiskAccent,
                               ),
                               const SizedBox(width: 4),
                               Text(
                                 copy.chatHighRiskApproval,
-                                style: _ChatTextStyles.highRiskBadge,
+                                style: context.chatText.highRiskBadge,
                               ),
                             ],
                           ),
@@ -337,8 +337,8 @@ class _PendingApprovalCard extends StatelessWidget {
                   const SizedBox(height: 8),
                   Text(
                     presentation.messageLine!,
-                    style: _ChatTextStyles.approvalReason.copyWith(
-                      color: _ChatPalette.textSecondary,
+                    style: context.chatText.approvalReason.copyWith(
+                      color: context.chatPalette.textSecondary,
                     ),
                   ),
                 ],
@@ -388,7 +388,7 @@ class _ApprovalInfoRow extends StatelessWidget {
                 row.label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: _ChatTextStyles.approvalReason.copyWith(
+                style: context.chatText.approvalReason.copyWith(
                   fontSize: 11,
                   fontWeight: FontWeight.w700,
                   color: color.withValues(alpha: 0.78),
@@ -401,7 +401,7 @@ class _ApprovalInfoRow extends StatelessWidget {
                 row.value,
                 maxLines: compact ? 1 : 3,
                 overflow: TextOverflow.ellipsis,
-                style: _ChatTextStyles.approvalReason.copyWith(color: color),
+                style: context.chatText.approvalReason.copyWith(color: color),
               ),
             ),
           ],
@@ -423,11 +423,11 @@ class _ApprovalResolutionBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final Color color = isRejected
-        ? OpenCrayColors.danger
-        : OpenCrayColors.success;
+        ? context.palette.danger
+        : context.palette.success;
     final Color surface = isRejected
-        ? OpenCrayColors.dangerTint
-        : OpenCrayColors.successTint;
+        ? context.palette.dangerTint
+        : context.palette.successTint;
     return DecoratedBox(
       decoration: BoxDecoration(
         color: surface,
@@ -451,7 +451,7 @@ class _ApprovalResolutionBanner extends StatelessWidget {
                 key: const ValueKey<String>('chat-approval-resolution-label'),
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: _ChatTextStyles.approvalAction.copyWith(color: color),
+                style: context.chatText.approvalAction.copyWith(color: color),
               ),
             ),
           ],
@@ -502,20 +502,20 @@ class _ApprovalActionRow extends StatelessWidget {
       );
     }
     final Color accentColor = approval.isHighRisk
-        ? _ChatPalette.highRiskAccent
-        : _ChatPalette.accent;
+        ? context.chatPalette.highRiskAccent
+        : context.chatPalette.accent;
     final Widget rejectButton = _ApprovalActionButton(
       label: approval.rejectLabel,
-      foregroundColor: OpenCrayColors.textSecondary,
-      backgroundColor: Colors.white,
-      borderColor: OpenCrayColors.outline,
+      foregroundColor: context.palette.textSecondary,
+      backgroundColor: context.palette.surface,
+      borderColor: context.palette.outline,
       onPressed: isBusy ? null : onReject,
     );
     final Widget? approveForSessionButton = approval.supportsSessionApproval
         ? _ApprovalActionButton(
             label: approval.approveForSessionLabel,
             foregroundColor: accentColor,
-            backgroundColor: Colors.white,
+            backgroundColor: context.palette.surface,
             borderColor: accentColor.withValues(alpha: 0.65),
             onPressed: isBusy ? null : onApproveForSession,
           )
@@ -713,7 +713,7 @@ class _ApprovalActionButton extends StatelessWidget {
                                 label,
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
-                                style: _ChatTextStyles.approvalAction.copyWith(
+                                style: context.chatText.approvalAction.copyWith(
                                   color: foregroundColor.withValues(
                                     alpha: 0.88,
                                   ),
@@ -727,7 +727,7 @@ class _ApprovalActionButton extends StatelessWidget {
                           key: const ValueKey<String>('approval-action-label'),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: _ChatTextStyles.approvalAction.copyWith(
+                          style: context.chatText.approvalAction.copyWith(
                             color: enabled
                                 ? foregroundColor
                                 : foregroundColor.withValues(alpha: 0.6),

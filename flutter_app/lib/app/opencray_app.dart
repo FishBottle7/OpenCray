@@ -5,8 +5,8 @@ import '../core/bridge/opencray_seed_bridge.dart';
 import '../core/copy/opencray_ui_copy.dart';
 import '../core/design/opencray_motion.dart';
 import '../core/models/opencray_shell_snapshot.dart';
+import '../core/design/opencray_palette.dart';
 import '../core/design/opencray_theme.dart';
-import '../core/design/opencray_tokens.dart';
 import '../features/chat/chat_feature.dart';
 import '../features/files/files.dart';
 import '../features/settings/settings.dart';
@@ -43,6 +43,10 @@ class _OpenCrayAppState extends State<OpenCrayApp> {
       title: 'OpenCray',
       debugShowCheckedModeBanner: false,
       theme: OpenCrayTheme.light(),
+      darkTheme: OpenCrayTheme.dark(),
+      // Follows the OS only. A manual override needs host-side persistence,
+      // which is not wired yet.
+      themeMode: ThemeMode.system,
       onGenerateRoute: (settings) {
         final entry = _routeEntryFor(settings.name);
         if (entry == null) {
@@ -103,7 +107,7 @@ class _ShellEntryState extends State<_ShellEntry> {
       builder: (context, snapshot) {
         final OpenCrayShellSnapshot? shellSnapshot = snapshot.data;
         if (shellSnapshot == null) {
-          return const ColoredBox(color: OpenCrayColors.shellBackground);
+          return ColoredBox(color: context.palette.shellBackground);
         }
         final initialTab = widget.tab ?? OpenCrayTab.chat;
         final initialSettingsPage = widget.tab == OpenCrayTab.settings

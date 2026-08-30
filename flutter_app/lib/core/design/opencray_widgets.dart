@@ -3,8 +3,8 @@ import 'package:flutter/material.dart';
 import '../../app/opencray_tabs.dart';
 import '../copy/opencray_ui_copy.dart';
 import '../models/opencray_shell_snapshot.dart';
-import 'opencray_controls.dart';
 import 'opencray_motion.dart';
+import 'opencray_palette.dart';
 import 'opencray_tokens.dart';
 
 /// Large-title page header shared by the tabs and every settings subpage.
@@ -38,6 +38,7 @@ class OpenCrayPageHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final OpenCrayPalette palette = context.palette;
     final bool hasEyebrow = eyebrow?.trim().isNotEmpty ?? false;
     final bool hasSummary = summary?.trim().isNotEmpty ?? false;
     return Column(
@@ -45,7 +46,7 @@ class OpenCrayPageHeader extends StatelessWidget {
       children: [
         if (leading != null) ...[leading!, SizedBox(height: leadingGap)],
         if (hasEyebrow) ...[
-          Text(eyebrow!, style: OpenCrayTypography.pageEyebrow),
+          Text(eyebrow!, style: OpenCrayTypography.pageEyebrow(palette)),
           const SizedBox(height: OpenCrayTypography.eyebrowGap),
         ],
         Row(
@@ -54,7 +55,7 @@ class OpenCrayPageHeader extends StatelessWidget {
             Expanded(
               child: Text(
                 title,
-                style: titleStyle ?? OpenCrayTypography.pageTitle,
+                style: titleStyle ?? OpenCrayTypography.pageTitle(palette),
               ),
             ),
             if (trailing != null) trailing!,
@@ -62,42 +63,10 @@ class OpenCrayPageHeader extends StatelessWidget {
         ),
         if (hasSummary) ...[
           const SizedBox(height: OpenCrayTypography.summaryGap),
-          Text(summary!, style: OpenCrayTypography.pageSummary),
+          Text(summary!, style: OpenCrayTypography.pageSummary(palette)),
         ],
         if (bottomGap > 0) SizedBox(height: bottomGap),
       ],
-    );
-  }
-}
-
-class OpenCrayCard extends StatelessWidget {
-  const OpenCrayCard({
-    super.key,
-    required this.child,
-    this.padding = const EdgeInsets.all(OpenCraySpacing.md),
-    this.backgroundColor = OpenCrayColors.surface,
-    this.borderColor,
-    this.showShadow = true,
-  });
-
-  final Widget child;
-  final EdgeInsets padding;
-  final Color backgroundColor;
-  final Color? borderColor;
-  final bool showShadow;
-
-  @override
-  Widget build(BuildContext context) {
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: backgroundColor,
-        borderRadius: const BorderRadius.all(OpenCrayRadii.lg),
-        border: Border.all(color: borderColor ?? OpenCrayColors.divider),
-        boxShadow: showShadow ? OpenCrayShadows.card : null,
-      ),
-      child: OpenCrayInkSurface(
-        child: Padding(padding: padding, child: child),
-      ),
     );
   }
 }
@@ -126,7 +95,8 @@ class OpenCrayStateCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final _OpenCrayStateToneColors colors = _stateToneColors(tone);
+    final OpenCrayPalette palette = context.palette;
+    final _OpenCrayStateToneColors colors = _stateToneColors(tone, palette);
     final bool hasText =
         (title?.trim().isNotEmpty ?? false) ||
         (body?.trim().isNotEmpty ?? false);
@@ -139,7 +109,7 @@ class OpenCrayStateCard extends StatelessWidget {
         color: colors.background,
         borderRadius: const BorderRadius.all(OpenCrayRadii.lg),
         border: Border.all(color: colors.border),
-        boxShadow: OpenCrayShadows.card,
+        boxShadow: palette.cardShadow,
       ),
       child: hasText
           ? Row(
@@ -158,12 +128,12 @@ class OpenCrayStateCard extends StatelessWidget {
                       if (title?.trim().isNotEmpty ?? false)
                         Text(
                           title!,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 16,
                             height: 1.25,
                             fontWeight: FontWeight.w600,
                             letterSpacing: -0.2,
-                            color: OpenCrayColors.textPrimary,
+                            color: palette.textPrimary,
                           ),
                         ),
                       if ((title?.trim().isNotEmpty ?? false) &&
@@ -172,10 +142,10 @@ class OpenCrayStateCard extends StatelessWidget {
                       if (body?.trim().isNotEmpty ?? false)
                         Text(
                           body!,
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 14,
                             height: 1.4,
-                            color: OpenCrayColors.textSecondary,
+                            color: palette.textSecondary,
                           ),
                         ),
                       if (action != null) ...[
@@ -252,35 +222,38 @@ class _OpenCrayStateToneColors {
   final Color markerForeground;
 }
 
-_OpenCrayStateToneColors _stateToneColors(OpenCrayStateTone tone) {
+_OpenCrayStateToneColors _stateToneColors(
+  OpenCrayStateTone tone,
+  OpenCrayPalette palette,
+) {
   switch (tone) {
     case OpenCrayStateTone.neutral:
-      return const _OpenCrayStateToneColors(
-        background: OpenCrayColors.surface,
-        border: OpenCrayColors.divider,
-        markerBackground: OpenCrayColors.surfaceMuted,
-        markerForeground: OpenCrayColors.textSecondary,
+      return _OpenCrayStateToneColors(
+        background: palette.surface,
+        border: palette.divider,
+        markerBackground: palette.surfaceMuted,
+        markerForeground: palette.textSecondary,
       );
     case OpenCrayStateTone.accent:
-      return const _OpenCrayStateToneColors(
-        background: OpenCrayColors.surface,
-        border: OpenCrayColors.primaryBorder,
-        markerBackground: OpenCrayColors.primaryTint,
-        markerForeground: OpenCrayColors.primary,
+      return _OpenCrayStateToneColors(
+        background: palette.surface,
+        border: palette.primaryBorder,
+        markerBackground: palette.primaryTint,
+        markerForeground: palette.primary,
       );
     case OpenCrayStateTone.success:
-      return const _OpenCrayStateToneColors(
-        background: OpenCrayColors.surface,
-        border: OpenCrayColors.successBorder,
-        markerBackground: OpenCrayColors.successTint,
-        markerForeground: OpenCrayColors.success,
+      return _OpenCrayStateToneColors(
+        background: palette.surface,
+        border: palette.successBorder,
+        markerBackground: palette.successTint,
+        markerForeground: palette.success,
       );
     case OpenCrayStateTone.danger:
-      return const _OpenCrayStateToneColors(
-        background: OpenCrayColors.dangerTint,
-        border: OpenCrayColors.dangerBorder,
-        markerBackground: OpenCrayColors.surface,
-        markerForeground: OpenCrayColors.danger,
+      return _OpenCrayStateToneColors(
+        background: palette.dangerTint,
+        border: palette.dangerBorder,
+        markerBackground: palette.surface,
+        markerForeground: palette.danger,
       );
   }
 }
@@ -299,10 +272,11 @@ class OpenCrayBottomNavigation extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final OpenCrayPalette palette = context.palette;
     return DecoratedBox(
-      decoration: const BoxDecoration(
-        color: OpenCrayColors.surface,
-        border: Border(top: BorderSide(color: OpenCrayColors.divider)),
+      decoration: BoxDecoration(
+        color: palette.surface,
+        border: Border(top: BorderSide(color: palette.divider)),
       ),
       child: SafeArea(
         top: false,
@@ -351,11 +325,10 @@ class _BottomNavItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final copy = OpenCrayUiCopy.fromLocaleTag(snapshot.localeTag);
-    final color = selected
-        ? OpenCrayColors.primary
-        : OpenCrayColors.textTertiary;
+    final OpenCrayPalette palette = context.palette;
+    final color = selected ? palette.primary : palette.textTertiary;
     final Color indicatorColor = selected
-        ? OpenCrayColors.primaryTint
+        ? palette.primaryTint
         : Colors.transparent;
     final Duration duration = OpenCrayMotion.resolve(
       context,

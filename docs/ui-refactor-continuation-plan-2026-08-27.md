@@ -21,7 +21,7 @@
 
 | # | 缺口 | 证据 | 影响 |
 |---|---|---|---|
-| 1 | 完全没有暗色模式 | `lib/app/opencray_app.dart:45` 仅 `theme: OpenCrayTheme.light()`，无 `darkTheme`/`ThemeMode`；`OpenCrayColors` 全为单值 `const` | 高 |
+| 1 | 完全没有暗色模式 | `lib/app/opencray_app.dart:45` 仅 `theme: OpenCrayTheme.light()`，无 `darkTheme`/`ThemeMode`；`OpenCrayColors` 全为单值 `const` | 高 → 阶段 C 已收 |
 | 2 | Chat 页未收口 | feature 内硬编码 `Color(0x…)` 共 63 处，其中 chat 占 38（`chat_widgets_chrome.dart` 14、`chat_design_tokens.dart` 10、`chat_widgets_composer.dart` 6）；`chat_widgets_run_trace_inspector.dart` 内 `AnimatedContainer`/`AnimatedDefaultTextStyle` 为 0 个，actor tab（`:185 _buildActorTabs`）、展开收起、inspector 开合均为瞬变 | 高 → 阶段 B 已收 |
 | 3 | 页头四套并行 + 死代码 | chat/files/settings/skills 各自定义 28px 标题 + eyebrow + 副标题；`core/design/opencray_widgets.dart` 中 `OpenCrayPageTemplate`/`OpenCrayTabPlaceholder`/`OpenCrayShellHeader`/`OpenCrayPillButton`/`OpenCrayTopBar` **均为 0 调用点、0 测试覆盖** | 中高 |
 | 4 | 图标两套体系 | `CupertinoIcons` 28 处（5 个文件，集中在 files/chat）对 Material `Icons` 144 处 | 中 |
@@ -71,9 +71,56 @@
 
 ### 阶段 C：暗色模式（工作量最大，分三步）
 
-- **C1 令牌抽象（纯重构，零视觉变化）**：`OpenCrayColors` 单值 `const` 改为 `ThemeExtension<OpenCrayPalette>`，提供 light 实例并保持数值完全一致；feature 局部别名（`_shellBackground`、`FilesFeatureScreen.surface` 等）改为从 `context` 取。验收标准是测试**全绿且与基线一致**、抓图与改动前逐像素同构。
-- **C2 dark 配色**：出一套 dark 值（ink 反转、状态色提亮、渐变降饱和、阴影改为边框强化），逐屏抓图核对对比度。
-- **C3 接线**：`MaterialApp` 挂 `darkTheme` + `ThemeMode.system`。手动开关需要 host 侧持久化接口，本阶段不做，只跟随系统，接口另行评估。
+#### C1 令牌抽象（已完成，纯重构零视觉变化）
+
+`OpenCrayColors` 等静态令牌不再直接进入 widget：新增 `core/design/opencray_palette.dart`，`OpenCrayPalette extends ThemeExtension<OpenCrayPalette>` 承载 31 个语义色 + 1 个渐变 + 4 组阴影，读法统一为 `context.palette`。
+
+1. **light 实例用静态令牌定义**（`primary: OpenCrayColors.primary` …），所以迁移期每个颜色仍然只有一处字面量，light 主题不可能漂移。`OpenCrayColors` 保留为「light 数值表」，不是死代码。
+2. **`context.palette` 在扩展缺失时回落 `OpenCrayPalette.light`**。测试普遍只 pump 裸 `MaterialApp`，没有本仓库的主题；有回落它们才继续画出既有 light 值，这是 459 条测试零改动的前提。
+3. **`OpenCrayTheme.light()` 改为 `OpenCrayTheme.of(palette, brightness)` 的薄封装**，整份 `ThemeData`（含 `TextTheme` 与 20 个组件主题）由 palette 生成，并把 palette 挂到 `extensions`。所有走 `Theme.of` 的 Material 组件因此自动跟随明暗。
+4. **三类局部别名收口**：`FilesFeatureScreen.surface` 等 10 个 `static const`、skills 的 8 个顶层 `const _surface`、settings 的 `_SettingsTextStyles`（12 条 `static const TextStyle` → 实例 getter + `context.settingsText`）、chat 的 `_ChatPalette` / `_ChatGlass` / `_ChatGradients` / `_ChatTextStyles`（→ 实例类 + `context.chatPalette` 等四个 getter）。
+5. **零散字面量归位**：新增 `shadowInk` 令牌（阴影专用墨色，与 `textPrimary` 分开，便于 C2 单独处理阴影），吃掉开关拇指 `0x24101828`、Files 选择工具条 `0x12101828`、agent 主键光晕 `0x332563EB`、agent 头像药丸 `0xE0FFFFFF ×2`。chat glass 里纯白/纯墨底色改为 `_chatAlpha(_base.surface, 0xA8)` 这类写法——alpha 仍是字面量（它是对着模糊调出来的），底色则跟随 palette，`toARGB32()` 逐字节不变。
+6. **有意保留字面量**：`chat_seed_data.dart` 的两个 `accentColor`（seed 数据不吃主题，`ChatAttachmentData.accentColor` 非空且参与 `chat_state_equivalence` 比较）、`agent_gradient_data.dart` 的 5 组头像渐变（装饰性色板数据，不是语义色）、`opencray_markdown_images.dart` 的 `0xCC000000`（全屏图片遮罩，两种明暗下都该是近黑）。
+
+两处签名因此变化：`chatBubbleSelectionTheme(kind)` → `(kind, palette)`（它是 `@visibleForTesting` 的纯函数，测试改为显式传 `OpenCrayPalette.light`，断言的颜色值一字不改），`_RunTraceStatusTone.fromTrace` / `_runTracePreviewStatusStyle` / `_runTraceSandboxSessionStatusStyle` / `_buildWorkspaceAccessShared` / `_buildDetailSectionCards` / `_buildMemoryLinkDetails` / `_buildSoulProfileLines` 等 helper 补 `BuildContext`；6 处 `this.color = <token>` 构造默认值改可空 + build 内回落（默认值必须是 const，取不到主题）。
+
+方法上值得记下来的：`OpenCrayColors.X` → `context.palette.X` 是纯文本替换，真正的成本是随之失效的 `const`。用 `flutter analyze` 的 `invalid_constant` 位置反向驱动脚本删掉最近的一个 `const`（`tool/palette_deconst.py`），一轮就从 381 条降到 0，比手改可靠。踩过的坑：临时脚本里写死 `\r\n` 分隔符——本仓库 CRLF/LF 混用，`agent_settings_widgets.dart` 是 LF，导致 `partition` 吃掉整个文件尾部；另一处正则以 `\n` 起头删行，在 CRLF 文件里留下 10 个孤立 `\r`，而孤立 CR 会让 git 放弃 CRLF 归一化、把整份 `files_feature.dart` 显示成全文件改动。脚本一律用 `\r?\n`，并在收尾做一次孤立 CR 审计。
+
+验收：`flutter analyze lib` 零问题；`flutter test` 436 通过 / 23 失败，失败集与基线逐条一致（分五个切片各验一次）；chat / files / skills / 控件画廊四张 golden 与 `854fc98` 工作树（`git worktree` 出一份 HEAD 单独跑）**逐字节相同**。
+
+#### C2 dark 配色（已完成）
+
+`OpenCrayPalette.dark` 落在冷石板色系而不是纯黑——工作台的蓝灰调保留，色相锚点就是仓库里早有的 `inkSurface`（`0xFF16202E`）。三处相对 light 是**反向**的，值得单独记：
+
+1. **状态色提亮**：light 的 `success`/`warning`/`danger` 是照着瓷白底调的（约 4.5:1），放到石板底上会塌掉，所以三色各自提亮度，配套的 tint/border 换成低彩度深色洗（如 `dangerTint: 0xFF33161C`）。
+2. **阴影换成描边**：dark 的 `cardShadow` 是**空列表**——深色底上投影本来就看不见——卡片边界交给 `divider`（`0xFF2A3646`）；只有真正悬浮的层（`floatingShadow`）保留一层黑色柔光，品牌光晕 `brandGlow` 保留蓝色。
+3. **`inkSurface` 变亮而不是变暗**（`0xFF202B39`）：snackbar / tooltip 必须读作「浮在页面之上」，深色页面上「之上」就是亮度更高。
+
+`primary` 有意贴近 light（`0xFF3D7BF7`，正好是 chat 气泡渐变的头部色）：全仓约 40 处在强调色填充上画白色内容（发送键、出站气泡、审批三键），accent 必须先保住白色可读性。这个值在白色下是 3.9:1，作为强调文字压在 `shellBackground` 上是 4.8:1；再亮的蓝会赢第二项、输掉第一项。同理 `textOnPrimary` 保持白色而没有按 M3 惯例翻成深墨。
+
+chat 中枢 24 处 light-only 字面量按 `_base.isDark` 分支给出 dark 版：terracotta 高风险色族整体提亮（`0xFFC2491D` → `0xFFFF8A5C`，色相不动，语义不变）、runTrace/inspector 描边转深、inspector 紫 `0xFF7C3AED` → `0xFFB292FF`、glass 的三个偏白底色换成石板底。`OpenCrayPalette` 因此新增 `brightness` 字段（附 `isDark`），需要按明暗挑字面量的 feature 从它分支，而不是反推某个颜色。
+
+抓图暴露出 C1 没覆盖的一类问题：**硬编码白色**。全仓 111 处 `Colors.white`，其中约 2/3 是「强调色填充上的内容」（`isOutgoing ? Colors.white : …`），本来就该保持白；剩下 40 处是**当作表面用**的白——inbound 气泡、composer 输入框、顶栏状态药丸、7 个 sheet 面板、inspector 卡片、skills 分段指示块、files 搜索框——这些在 dark 下整块发白。逐处按「内容 vs 表面」分类后改 `context.palette.surface`（含 9 处 `Colors.white.withValues(alpha:)` 的半透明中性 chrome）。light 下 `surface` 就是 `Colors.white`，所以这批改动在 light 下逐字节不变。
+
+#### C3 接线（已完成）
+
+`MaterialApp` 挂 `darkTheme: OpenCrayTheme.dark()` + `themeMode: ThemeMode.system`。手动开关仍然不做——需要 host 侧持久化接口，另行评估。
+
+验收：`flutter analyze` lib 零问题（`test/` 7 条 `unnecessary_import` 属既有项）；`flutter test` 436 通过 / 23 失败，失败集与基线逐条一致；chat / files / skills / 控件画廊四张 light golden 与 `854fc98`（`git worktree` 出一份 HEAD 单独跑，同一 DPR）**逐字节相同**；四张 dark golden 逐屏核对过对比度与层次。
+
+留在字面量里的（有意）：`chat_seed_data.dart` 的两个 `accentColor`、`agent_gradient_data.dart` 的 5 组头像渐变、`opencray_markdown_images.dart` 的 `0xCC000000` 图片遮罩、以及 approval 卡与出站气泡内部那批压在强调色上的白色洗。
+
+#### 真机核对与控件修正（2026-08-30）
+
+装到 PLB110（Android 16，系统本来就是暗色）逐个 tab 走了一遍。抓图暴露三处 `flutter test` 与 light golden 都抓不到的问题，共同点是**颜色语义选错而不是颜色值选错**：
+
+1. **开关拇指变黑**。C1 把 `Colors.white` 机械换成 `palette.surface` 时，`OpenCraySwitch` 的拇指跟着走了；dark 下 `surface` 是 `0xFF161E29`，压在蓝色轨道上读作「轨道上挖了个洞」。拇指属于**强调色填充上的内容**，不是表面。新增 `controlThumb` / `controlThumbDisabled`（light 指向 `surface` / `surfaceSubtle`，逐字节不变；dark 为 `0xFFEDF2FA` / `0xFF4A5769`），并把这一条补进 `OpenCrayPalette.dark` 的文档注释，与另外三处反向项并列。
+2. **分段控件选中块失去层级**。C2 让 dark 的 `cardShadow` 变成空列表，而分段指示块正是靠那层投影浮起来的；`surface`（`0xFF161E29`）与 `surfaceSunken`（`0xFF0A1017`）只差 12 级亮度，投影一撤就分不出来。按 C2 既定的「阴影换描边」规则给 dark 补一条 `outline` 发丝线，light 传 `null` 不受影响。
+3. **Files 搜索框套了两层框**。`InputDecorator` 解析边框时先取 `enabledBorder` / `focusedBorder`，只有它们为空才回落 `border`，而这两个来自主题——单写 `border: InputBorder.none` 拦不住主题的轮廓；`filled` 同理，主题的 `surface` 填充盖在宿主容器自己的底色上，聚焦时把 Files 搜索条的 `primaryTint` 盖掉一块。新增 `openCrayBareInputDecoration` 常量一次性关掉六个边框槽位与 `filled`，9 个自带外框的输入框（Files / Skills 搜索、composer、settings 与 llm 页内联编辑器）改为 `copyWith` 它；composer 原先手写了六个槽位、是全仓唯一写对的一处，现在也走同一常量。
+
+第 3 条在 light 下同样是缺陷（发丝线颜色浅，只是不明显），修掉之后 light 不再与 `854fc98` 逐像素相同——这是有意的视觉修正，不算回归。
+
+验收：`flutter analyze lib` 零问题；`flutter test` 436 通过 / 23 失败，失败集与基线**逐条一致**（并行会话新增的批量批准测试另算一笔提交，不在本轮）；真机上逐个核对了开关、分段控件、搜索框静止与聚焦两态。真机 light 没核对成——ColorOS 的 `cmd uimode night no` 报告已切换，应用仍然收到 dark。
 
 ### 阶段 D：加载态与刷新（夹带在 A/B 之后）
 
@@ -96,7 +143,10 @@
 |---|---|
 | A 页头统一与死代码清理 | 已完成（2026-08-27） |
 | B Chat 视觉与动效 | 已完成（2026-08-28） |
-| C 暗色模式 | 下一步 |
-| D 加载态与刷新 | 未开始 |
+| C1 令牌抽象 | 已完成（2026-08-28） |
+| C2 dark 配色 | 已完成（2026-08-28） |
+| C3 接线 darkTheme | 已完成（2026-08-28） |
+| 真机核对与控件修正 | 已完成（2026-08-30） |
+| D 加载态与刷新 | 下一步 |
 | E 可选打磨 | 未开始 |
 
