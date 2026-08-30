@@ -508,6 +508,7 @@ class _DirectoryCard extends StatelessWidget {
     required this.isSelectionMode,
     required this.selectedPaths,
     required this.pendingTransfer,
+    required this.playsEntrance,
     required this.onEntryTap,
     required this.onEntryLongPress,
   });
@@ -522,6 +523,10 @@ class _DirectoryCard extends StatelessWidget {
   final bool isSelectionMode;
   final Set<String> selectedPaths;
   final _PendingTransfer? pendingTransfer;
+
+  /// True only while the listing is newly on screen; see
+  /// `_FilesFeatureScreenState._isListEntranceActive`.
+  final bool playsEntrance;
   final ValueChanged<OpenCrayFileTreeNodeSnapshot> onEntryTap;
   final ValueChanged<OpenCrayFileTreeNodeSnapshot> onEntryLongPress;
 
@@ -638,18 +643,22 @@ class _DirectoryCard extends StatelessWidget {
                   );
                 }
                 final entry = entries[adjustedIndex ~/ 2];
-                return _DirectoryEntryTile(
-                  entry: entry,
-                  copy: copy,
-                  isSelectionMode: isSelectionMode,
-                  isSelected: selectedPaths.contains(entry.relativePath),
-                  isFaded:
-                      pendingTransfer?.move == true &&
-                      pendingTransfer!.sourceRelativePaths.contains(
-                        entry.relativePath,
-                      ),
-                  onTap: () => onEntryTap(entry),
-                  onLongPress: () => onEntryLongPress(entry),
+                return OpenCrayListEntrance(
+                  index: adjustedIndex ~/ 2,
+                  enabled: playsEntrance,
+                  child: _DirectoryEntryTile(
+                    entry: entry,
+                    copy: copy,
+                    isSelectionMode: isSelectionMode,
+                    isSelected: selectedPaths.contains(entry.relativePath),
+                    isFaded:
+                        pendingTransfer?.move == true &&
+                        pendingTransfer!.sourceRelativePaths.contains(
+                          entry.relativePath,
+                        ),
+                    onTap: () => onEntryTap(entry),
+                    onLongPress: () => onEntryLongPress(entry),
+                  ),
                 );
               },
               childCount: headerChildCount + entryChildCount,

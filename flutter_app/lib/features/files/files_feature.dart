@@ -92,6 +92,11 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
   String? _errorMessage;
   bool _isLoading = true;
   bool _isMutating = false;
+
+  /// Restarted when the visible listing becomes new — first load or a directory
+  /// jump — so only the rows that arrive with it play the entrance.
+  final OpenCrayListEntranceWindow _listEntrance =
+      OpenCrayListEntranceWindow();
   bool _isSelectionMode = false;
   bool _showStickyBrowseBar = false;
   double? _stickyBrowseBarTriggerScrollOffset;
@@ -252,6 +257,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
                         isSelectionMode: _isSelectionMode,
                         selectedPaths: _selectedPaths,
                         pendingTransfer: _pendingTransfer,
+                        playsEntrance: _listEntrance.isActive,
                         onEntryTap: _handleEntryTap,
                         onEntryLongPress: _handleEntryLongPress,
                       ),
@@ -355,6 +361,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
           snapshot,
           _currentDirectoryPath,
         );
+        _listEntrance.restartOnce();
         _selectedPaths = _sanitizeSelectedPaths(snapshot, _selectedPaths);
         _isSelectionMode = _isSelectionMode && _selectedPaths.isNotEmpty;
         _pendingTransfer = _sanitizePendingTransfer(snapshot, _pendingTransfer);
@@ -540,6 +547,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
     FocusManager.instance.primaryFocus?.unfocus();
     setState(() {
       _currentDirectoryPath = relativePath;
+      _listEntrance.restart();
     });
     _scheduleSilentRefresh();
   }
@@ -562,6 +570,7 @@ class _FilesFeatureScreenState extends State<FilesFeatureScreen>
     if (entry.isDirectory) {
       setState(() {
         _currentDirectoryPath = entry.relativePath;
+        _listEntrance.restart();
       });
       _scheduleSilentRefresh();
       return;

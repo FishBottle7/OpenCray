@@ -78,6 +78,78 @@ void main() {
       );
     },
   );
+
+  testWidgets('list entrance arrives as a wave and settles at rest', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_entranceHarness(enabled: true));
+    await tester.pump(const Duration(milliseconds: 60));
+
+    final double firstRow = _rowOpacity(tester, 0);
+    final double lastRow = _rowOpacity(tester, 3);
+    expect(firstRow, greaterThan(lastRow));
+    expect(lastRow, lessThan(1));
+
+    await tester.pumpAndSettle();
+    for (int index = 0; index < 4; index += 1) {
+      expect(_rowOpacity(tester, index), 1);
+    }
+  });
+
+  testWidgets('list entrance is skipped when disabled or motion is reduced', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_entranceHarness(enabled: false));
+    await tester.pump();
+    expect(find.byType(Opacity), findsNothing);
+
+    await tester.pumpWidget(
+      MediaQuery(
+        data: const MediaQueryData(disableAnimations: true),
+        child: _entranceHarness(enabled: true),
+      ),
+    );
+    await tester.pump();
+    for (int index = 0; index < 4; index += 1) {
+      expect(_rowOpacity(tester, index), 1);
+    }
+  });
+
+  test('list entrance window closes on its own', () {
+    final window = OpenCrayListEntranceWindow();
+    expect(window.isActive, isFalse);
+
+    window.restart();
+    expect(window.isActive, isTrue);
+  });
+}
+
+Widget _entranceHarness({required bool enabled}) {
+  return MaterialApp(
+    home: Column(
+      children: <Widget>[
+        for (int index = 0; index < 4; index += 1)
+          OpenCrayListEntrance(
+            index: index,
+            enabled: enabled,
+            child: SizedBox(
+              key: ValueKey<String>('entrance-row-$index'),
+              height: 20,
+            ),
+          ),
+      ],
+    ),
+  );
+}
+
+double _rowOpacity(WidgetTester tester, int index) {
+  final Finder row = find.byKey(ValueKey<String>('entrance-row-$index'));
+  return tester
+      .widgetList<Opacity>(
+        find.ancestor(of: row, matching: find.byType(Opacity)),
+      )
+      .first
+      .opacity;
 }
 
 List<String> _indexedStackLayerKeys(WidgetTester tester) {

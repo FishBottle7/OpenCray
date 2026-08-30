@@ -27,8 +27,8 @@
 | 4 | 图标两套体系 | `CupertinoIcons` 28 处（5 个文件，集中在 files/chat）对 Material `Icons` 144 处 | 中 → 已收敛到 Material rounded（见阶段 D 之后的收敛一节） |
 | 5 | 无障碍与字号缩放 | 全应用 `Semantics(` 仅 10 处；零 `textScaler` 处理；开关/步进/导航使用固定高度（28/38/44/48/54） | 中 |
 | 6 | 加载与刷新态 | 13 个 `CircularProgressIndicator`、0 骨架屏、`RefreshIndicator` 0 处（Skills/Files 仅文字 Refresh + 后台轮询） | 中 → 阶段 D 已收（13 个转圈复核后全是行内忙碌指示，保留） |
-| 7 | 平板/横屏 | 应用壳与设置页无 `LayoutBuilder`、无最大宽度约束，单列直接拉伸 | 低中 |
-| 8 | 动效纵深 | 无 hero/共享元素（开会话、开文件预览）、列表无入场 stagger、底部 sheet 无拖拽把手 | 低中 |
+| 7 | 平板/横屏 | 应用壳与设置页无 `LayoutBuilder`、无最大宽度约束，单列直接拉伸 | 低中 → 明确不做（见边界） |
+| 8 | 动效纵深 | 无 hero/共享元素（开会话、开文件预览）、列表无入场 stagger、底部 sheet 无拖拽把手 | 低中 → 列表入场已收，sheet 把手本来就有，hero 待办 |
 | 9 | 触感 | 仅新增控件有 `HapticFeedback`，发送/审批/保存/删除等主操作没有 | 低 → 阶段 B 已补发送与审批，保存/删除见收敛一节 |
 | 10 | 弹窗主题化 | agent 设置内手写 `Dialog` + `Container` 绕过主题 `dialogTheme` | 低 |
 
@@ -171,9 +171,17 @@ chat 中枢 24 处 light-only 字面量按 `_base.isDark` 分支给出 dark 版�
 light 下 `surface` 就是 `Colors.white`，`_chatAlpha` 的 alpha 字节与原来的 `withValues` 完全一致（0.92 → 0xEB、0.75 → 0xBF），所以这三处在 light 下逐字节不变。判据因此补一条：**半透明白也要分类**——只要压在它上面的是 `textPrimary`，它就是表面而不是洗。
 
 
-### 阶段 E：可选打磨
+### 阶段 E：可选打磨（列表入场已完成，其余待办）
 
-平板/横屏最大宽度约束与两栏、hero/共享元素、列表 stagger、自定义 Dialog 主题化。（sheet 拖拽把手已由 `bottomSheetTheme` 覆盖，从本阶段划掉。四处手写 `Dialog` 复核后都已经走 `context.palette`，只是自己画容器而不吃 `dialogTheme` 的圆角与阴影，其中两处是图片查看器、有意透明。）
+**列表入场 stagger（2026-08-30 已完成）**：新增 `OpenCrayListEntrance` 与 `OpenCrayListEntranceWindow`（`opencray_motion.dart`）。行按 index 错开 26ms 起跑（第 8 行之后并排起跑，长列表不该花一秒才到齐），每行 240ms 内淡入 + 上移 8dp；reduce-motion 时控制器在 `didChangeDependencies` 里直接跳到终值，而不是在 build 里分支。
+
+接入三处：Files 目录行、Skills 的 manage/install 行、设置首页的分组卡。
+
+一个必须配套的点：**懒加载 sliver 每次把行滚回可视区都会重建它**，如果无条件播入场，滚动就会一直重放。所以入场由 `OpenCrayListEntranceWindow` 控制——列表「刚变新」的 420ms 内构建的行才播。Files 在首次快照到达（`restartOnce`）与目录跳转（`restart`）时重启这个窗口，Skills 与设置首页只 `restartOnce`（切 Manage/Install 已经由 `OpenCrayDirectionalSwitcher` 整块滑动，搜索重跑也不该重新错开）。窗口是构建期读时钟，不用定时器。
+
+验收：`flutter analyze` lib 零问题；`flutter test` 444 通过 / 23 失败，失败集与基线逐条一致（+3 是 `opencray_motion_test` 新增的入场用例：60ms 时首行比末行更不透明、settle 后全部为 1、disabled 与 reduce-motion 下不套 `Opacity`）。真机上确认了目录跳转本身正常、行落位正确，但**没抓到动画中间帧**——这台 ColorOS 的 `screenrecord` 写 `/sdcard` 与写 stdout 都不出文件，`screencap` 的延迟又大于单行 240ms 的窗口。
+
+**仍待办**：hero/共享元素、四处手写 `Dialog` 吃 `dialogTheme` 的圆角与阴影。（sheet 拖拽把手已由 `bottomSheetTheme` 的 `showDragHandle: true` 覆盖；平板/横屏见「边界」。）
 
 ## 四、边界（明确不做）
 
@@ -181,6 +189,7 @@ light 下 `surface` 就是 `Colors.white`，`_chatAlpha` 的 alpha 字节与原�
 - 不改 host 侧协议、数据与文案；设置首页的分组只是展示层分组，组内保留 facade 给的相对顺序
 - 不改业务逻辑、`ValueKey`、文案与既有动效时长语义（阶段内明确列出的除外）
 - 图标迁移到 Lucide 曾在 `deprecated/ui-refine` 分支尝试并被废弃（`363d309`），本计划不重启；缺口 4 的方向是收敛到 Material rounded
+- **暂不适配平板与横屏**（2026-08-30 决定）：缺口 7 的最大宽度约束与两栏布局都不做，单列拉伸保持现状。顺带记一条，将来真要做时它不是纯加法：`flutter_test` 的默认视口是 800×600，给壳层加最大宽度约束会让一批断言绝对位置的用例集体偏移，得按阈值生效（只在明显宽于手机的视口上收窄）才不会波及测试基线。
 
 ## 五、进度
 
@@ -194,5 +203,5 @@ light 下 `surface` 就是 `Colors.white`，`_chatAlpha` 的 alpha 字节与原�
 | 真机核对与控件修正 | 已完成（2026-08-30） |
 | D 加载态与刷新 | 已完成（2026-08-30） |
 | 图标收敛与主操作触感 | 已完成（2026-08-30） |
-| E 可选打磨 | 下一步 |
+| E 可选打磨 | 列表入场已完成（2026-08-30），hero 与 Dialog 主题化待办 |
 

@@ -84,6 +84,11 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
   StreamSubscription<SettingsOverviewSnapshot>? _overviewSubscription;
   bool _keyboardWasVisible = false;
 
+  /// Only the first overview plays the card entrance; later pushes from
+  /// [watchOverview] are updates to a list the user is already looking at.
+  final OpenCrayListEntranceWindow _listEntrance =
+      OpenCrayListEntranceWindow();
+
   @override
   void initState() {
     super.initState();
@@ -203,6 +208,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
           snapshot: overview,
           onOpenPage: _openPage,
           onRefresh: _loadOverview,
+          playsEntrance: _listEntrance.isActive,
         );
       case SettingsPage.notificationsBackground:
         return _NotificationsBackgroundSettingsPage(
@@ -385,6 +391,7 @@ class _SettingsFeatureScreenState extends State<SettingsFeatureScreen>
     }
     setState(() {
       _overview = overview;
+      _listEntrance.restartOnce();
     });
   }
 
@@ -516,11 +523,13 @@ class _SettingsHome extends StatelessWidget {
     required this.snapshot,
     required this.onOpenPage,
     required this.onRefresh,
+    required this.playsEntrance,
   });
 
   final SettingsOverviewSnapshot snapshot;
   final ValueChanged<SettingsPage> onOpenPage;
   final Future<void> Function() onRefresh;
+  final bool playsEntrance;
 
   @override
   Widget build(BuildContext context) {
@@ -543,9 +552,17 @@ class _SettingsHome extends StatelessWidget {
             title: snapshot.deviceTitle,
             summary: snapshot.deviceSummary,
           ),
-          for (final group in groups) ...[
+          for (final (int index, List<SettingsHomeEntrySnapshot> group)
+              in groups.indexed) ...[
             const SizedBox(height: 14),
-            _SettingsEntryGroupCard(entries: group, onOpenPage: onOpenPage),
+            OpenCrayListEntrance(
+              index: index,
+              enabled: playsEntrance,
+              child: _SettingsEntryGroupCard(
+                entries: group,
+                onOpenPage: onOpenPage,
+              ),
+            ),
           ],
         ],
       ),

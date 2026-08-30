@@ -68,6 +68,11 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
   Timer? _autoRefreshTimer;
   StreamSubscription<OpenCraySkillsSnapshot>? _skillsSubscription;
 
+  /// Only the first list to arrive plays the entrance; switching Manage/Install
+  /// already slides the whole panel, and a search rerun should not re-stagger.
+  final OpenCrayListEntranceWindow _listEntrance =
+      OpenCrayListEntranceWindow();
+
   OpenCraySkillsSnapshot _snapshot = const OpenCraySkillsSnapshot(
     installedSkills: <OpenCrayInstalledSkillSnapshot>[],
     installSources: <OpenCraySkillInstallSourceSnapshot>[],
@@ -108,6 +113,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
         setState(() {
           _snapshot = snapshot;
           _isLoaded = true;
+          _listEntrance.restartOnce();
           _isSearching = false;
         });
         _openInitialActionsIfNeeded();
@@ -258,16 +264,20 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                 index < visibleInstalledSkills.length;
                 index++
               ) ...[
-                _SkillRow(
-                  skill: visibleInstalledSkills[index],
-                  lifecycleState:
-                      _installedSkillLifecycleById[visibleInstalledSkills[index]
-                          .id],
-                  copy: widget.copy,
-                  onToggle: (enabled) =>
-                      _setSkillEnabled(visibleInstalledSkills[index], enabled),
-                  onMore: () =>
-                      _openActionsSheet(visibleInstalledSkills[index]),
+                OpenCrayListEntrance(
+                  index: index,
+                  enabled: _listEntrance.isActive,
+                  child: _SkillRow(
+                    skill: visibleInstalledSkills[index],
+                    lifecycleState:
+                        _installedSkillLifecycleById[visibleInstalledSkills[index]
+                            .id],
+                    copy: widget.copy,
+                    onToggle: (enabled) =>
+                        _setSkillEnabled(visibleInstalledSkills[index], enabled),
+                    onMore: () =>
+                        _openActionsSheet(visibleInstalledSkills[index]),
+                  ),
                 ),
                 if (index < visibleInstalledSkills.length - 1)
                   Divider(
@@ -433,25 +443,29 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
                   index < availableSkills.length;
                   index++
                 ) ...[
-                  _SuggestedRow(
-                    item: availableSkills[index],
-                    installsLabel: availableSkills[index].installs == null
-                        ? null
-                        : widget.copy.skillsInstallsCount(
-                            availableSkills[index].installs!,
-                          ),
-                    previewLabel: widget.copy.skillsPreviewButton,
-                    installLabel: widget.copy.skillsInstallButton,
-                    installingLabel: widget.copy.skillsInstallingButton,
-                    installedLabel: widget.copy.skillsInstalledButton,
-                    retryLabel: widget.copy.skillsRetryInstallButton,
-                    installState: _installVisualStateFor(
-                      availableSkills[index].sourceRef,
+                  OpenCrayListEntrance(
+                    index: index,
+                    enabled: _listEntrance.isActive,
+                    child: _SuggestedRow(
+                      item: availableSkills[index],
+                      installsLabel: availableSkills[index].installs == null
+                          ? null
+                          : widget.copy.skillsInstallsCount(
+                              availableSkills[index].installs!,
+                            ),
+                      previewLabel: widget.copy.skillsPreviewButton,
+                      installLabel: widget.copy.skillsInstallButton,
+                      installingLabel: widget.copy.skillsInstallingButton,
+                      installedLabel: widget.copy.skillsInstalledButton,
+                      retryLabel: widget.copy.skillsRetryInstallButton,
+                      installState: _installVisualStateFor(
+                        availableSkills[index].sourceRef,
+                      ),
+                      onPreview: () =>
+                          _previewSuggestedSkill(availableSkills[index]),
+                      onInstall: () =>
+                          _installSuggestedSkill(availableSkills[index]),
                     ),
-                    onPreview: () =>
-                        _previewSuggestedSkill(availableSkills[index]),
-                    onInstall: () =>
-                        _installSuggestedSkill(availableSkills[index]),
                   ),
                   if (index < availableSkills.length - 1)
                     Divider(
@@ -548,6 +562,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
       setState(() {
         _snapshot = snapshot;
         _isLoaded = true;
+        _listEntrance.restartOnce();
         _isSearching = false;
       });
       _openInitialActionsIfNeeded();
@@ -557,6 +572,7 @@ class _SkillsFeatureScreenState extends State<SkillsFeatureScreen>
       }
       setState(() {
         _isLoaded = true;
+        _listEntrance.restartOnce();
         _isSearching = false;
       });
       if (showErrorMessage) {

@@ -339,3 +339,138 @@ class _OpenCrayDirectionalSwitcherState
     );
   }
 }
+
+/// Tracks the short window in which a list counts as newly on screen.
+///
+/// [OpenCrayListEntrance] must be switched off once that window closes, or a
+/// lazy sliver replays the entrance for every row that scrolls back into view.
+/// Restart it when the listing becomes new — first load, a directory jump, a tab
+/// that just finished loading.
+class OpenCrayListEntranceWindow {
+  OpenCrayListEntranceWindow();
+
+  static const Duration span = Duration(milliseconds: 420);
+
+  DateTime? _startedAt;
+
+  void restart() {
+    _startedAt = DateTime.now();
+  }
+
+  /// Restarts only the first time, for the initial load of a list that never
+  /// changes identity afterwards.
+  void restartOnce() {
+    if (_startedAt == null) {
+      restart();
+    }
+  }
+
+  bool get isActive {
+    final DateTime? startedAt = _startedAt;
+    return startedAt != null && DateTime.now().difference(startedAt) < span;
+  }
+}
+
+/// Fades and lifts a list row into place, offset by its [index] so a freshly
+/// loaded list arrives as a wave instead of a block.
+///
+/// Only worth it on the first paint of a list. Lazy slivers rebuild a row every
+/// time it scrolls back into view, so pass [enabled] `false` once the list has
+/// settled — otherwise scrolling replays the entrance. Features gate it on a
+/// short window after the snapshot lands.
+class OpenCrayListEntrance extends StatefulWidget {
+  const OpenCrayListEntrance({
+    super.key,
+    required this.index,
+    required this.child,
+    this.enabled = true,
+  });
+
+  final int index;
+  final Widget child;
+  final bool enabled;
+
+  /// Rows past this one start together; a long list should not take a second to
+  /// finish arriving.
+  static const int maxStaggeredRows = 7;
+  static const Duration rowStep = Duration(milliseconds: 26);
+  static const Duration rowSpan = OpenCrayMotion.expand;
+  static const double rise = 8;
+
+  @override
+  State<OpenCrayListEntrance> createState() => _OpenCrayListEntranceState();
+}
+
+class _OpenCrayListEntranceState extends State<OpenCrayListEntrance>
+    with SingleTickerProviderStateMixin {
+  AnimationController? _controller;
+  late Animation<double> _progress;
+
+  @override
+  void initState() {
+    super.initState();
+    if (!widget.enabled) {
+      return;
+    }
+    final int slot = widget.index.clamp(
+      0,
+      OpenCrayListEntrance.maxStaggeredRows,
+    );
+    final Duration delay = OpenCrayListEntrance.rowStep * slot;
+    final Duration total = delay + OpenCrayListEntrance.rowSpan;
+    final AnimationController controller = AnimationController(
+      vsync: this,
+      duration: total,
+    );
+    _controller = controller;
+    _progress = CurvedAnimation(
+      parent: controller,
+      curve: Interval(
+        delay.inMicroseconds / total.inMicroseconds,
+        1,
+        curve: OpenCrayMotion.enter,
+      ),
+    );
+    controller.forward();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Reduce-motion can only be read once dependencies are in place, so the
+    // entrance is jumped to its end state rather than never started.
+    final AnimationController? controller = _controller;
+    if (controller != null && OpenCrayMotion.reduce(context)) {
+      controller.stop();
+      controller.value = controller.upperBound;
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_controller == null) {
+      return widget.child;
+    }
+    return AnimatedBuilder(
+      animation: _progress,
+      builder: (BuildContext context, Widget? child) {
+        final double t = _progress.value;
+        return Opacity(
+          opacity: t,
+          child: Transform.translate(
+            offset: Offset(0, (1 - t) * OpenCrayListEntrance.rise),
+            child: child,
+          ),
+        );
+      },
+      child: widget.child,
+    );
+  }
+}
+
