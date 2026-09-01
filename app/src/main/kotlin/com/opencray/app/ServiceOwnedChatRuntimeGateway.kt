@@ -229,6 +229,7 @@ internal class ServiceOwnedChatRuntimeGateway(
             "service.taskFinishedClearedDraft session=$sessionId task=${task.id} pending=${task.metadata[AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID] ?: "-"} status=${result.status} error=${result.errorCode ?: "-"}",
           )
         }
+        startNextQueuedChatRunAfterTaskFinished(sessionId)
         emitChatSnapshot()
         val hasRuntimeEventDeltaListeners = synchronized(lock) {
           runtimeEventDeltaListeners.isNotEmpty()
@@ -245,6 +246,32 @@ internal class ServiceOwnedChatRuntimeGateway(
       }
     },
   )
+
+  /**
+   * Advances the pending chat input queue once a run reaches a terminal state.
+   *
+   * Without this the queue is only drained by the next [submitChatMessage], so an entry enqueued
+   * behind a run that then fails stays pending forever and keeps rendering as an ephemeral bubble.
+   * Must run without [lock] held: the submission access takes its own lock and then re-enters this
+   * gateway to emit snapshots, so holding [lock] here would invert that order.
+   */
+  private fun startNextQueuedChatRunAfterTaskFinished(sessionId: String) {
+    val access = chatSubmissionAccess ?: return
+    val normalizedSessionId = sessionId.trim()
+    if (normalizedSessionId.isEmpty()) {
+      return
+    }
+    val started = runCatching { access.startNextQueuedChatRun(normalizedSessionId) }
+      .onFailure { throwable ->
+        serviceChatDebug(
+          "service.startNextQueuedChatRunFailed session=$normalizedSessionId type=${throwable::class.java.simpleName}",
+        )
+      }
+      .getOrDefault(false)
+    if (started) {
+      serviceChatDebug("service.startedQueuedChatRun session=$normalizedSessionId")
+    }
+  }
 
   private data class ServiceOwnedLiveAssistantDraftSnapshot(
     val runId: String,

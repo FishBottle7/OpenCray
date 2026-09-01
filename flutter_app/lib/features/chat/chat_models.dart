@@ -26,6 +26,7 @@ class ChatFeatureState {
     this.sessionButtonLabel = 'Sessions',
     this.emptyThreadHeight = 0,
     this.isInputEnabled = true,
+    this.isAwaitingFirstSnapshot = false,
   });
 
   final ChatPrototypeVariant variant;
@@ -42,6 +43,13 @@ class ChatFeatureState {
   final double emptyThreadHeight;
   final bool isInputEnabled;
 
+  /// True between mounting against a host bridge and the first snapshot landing.
+  ///
+  /// The thread is empty in that window for the same reason a brand-new session
+  /// is empty, so without this flag the screen advertises "new session" for
+  /// every restore and then swaps in the real transcript.
+  final bool isAwaitingFirstSnapshot;
+
   ChatFeatureState copyWith({
     ChatPrototypeVariant? variant,
     String? screenTitle,
@@ -56,6 +64,7 @@ class ChatFeatureState {
     String? sessionButtonLabel,
     double? emptyThreadHeight,
     bool? isInputEnabled,
+    bool? isAwaitingFirstSnapshot,
   }) {
     return ChatFeatureState(
       variant: variant ?? this.variant,
@@ -71,6 +80,8 @@ class ChatFeatureState {
       sessionButtonLabel: sessionButtonLabel ?? this.sessionButtonLabel,
       emptyThreadHeight: emptyThreadHeight ?? this.emptyThreadHeight,
       isInputEnabled: isInputEnabled ?? this.isInputEnabled,
+      isAwaitingFirstSnapshot:
+          isAwaitingFirstSnapshot ?? this.isAwaitingFirstSnapshot,
     );
   }
 }

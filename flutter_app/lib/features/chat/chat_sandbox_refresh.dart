@@ -15,11 +15,6 @@ extension _ChatSandboxRefreshActions on _OpenCrayChatFeatureState {
     _queuedSandboxSessionLifecycleRefresh = false;
   }
 
-  void _resetSandboxSessionAutoRefreshTracking() {
-    _cancelScheduledSandboxSessionAutoRefresh();
-    _lastSandboxSessionRefreshAnchor = null;
-  }
-
   void _syncSandboxSessionAutoRefresh() {
     if (!mounted ||
         !widget.isTabActive ||

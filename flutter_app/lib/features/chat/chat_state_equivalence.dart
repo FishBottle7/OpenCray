@@ -802,7 +802,8 @@ bool chatFeatureStatesEquivalent(
       left.drawerOpen == right.drawerOpen &&
       left.sessionButtonLabel == right.sessionButtonLabel &&
       left.emptyThreadHeight == right.emptyThreadHeight &&
-      left.isInputEnabled == right.isInputEnabled;
+      left.isInputEnabled == right.isInputEnabled &&
+      left.isAwaitingFirstSnapshot == right.isAwaitingFirstSnapshot;
 }
 
 @visibleForTesting

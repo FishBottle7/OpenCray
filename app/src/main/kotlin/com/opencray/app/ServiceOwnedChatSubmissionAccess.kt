@@ -716,6 +716,17 @@ internal class ServiceOwnedChatSubmissionAccess(
     )
   }
 
+  /**
+   * Starts the oldest queued chat input for [sessionId] when the session went idle.
+   *
+   * The queue is otherwise only advanced by [submitChatMessage], so a queued entry stays pending
+   * forever once its predecessor run reaches a terminal state. Callers should invoke this from a
+   * run-completion callback, mirroring the host-runtime path. Returns true when a run was started.
+   */
+  fun startNextQueuedChatRun(sessionId: String): Boolean = synchronized(lock) {
+    coordinator.startNextQueuedChatRun(sessionId) != null
+  }
+
   private fun runSubmissionToMap(submission: AgentRunSubmission): Map<String, Any?> = mapOf(
     "sessionId" to submission.sessionId,
     "runId" to submission.runId,

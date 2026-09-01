@@ -1244,6 +1244,82 @@ class ServiceOwnedChatRuntimeGatewayTest {
   }
 
   @Test
+  fun serviceOwnedChatRuntimeGatewayStartsQueuedChatRunOnceTaskFinishes() {
+    val chatStore = ChatSessionLocalStore(
+      temporaryFolder.newFolder("service-owned-chat-queue-drain-store"),
+    )
+    val sessionId = chatStore.loadState().activeSession.sessionId
+    val runtimeHostAccess = RecordingRuntimeHostAccess().apply {
+      putSession(
+        RecordingRuntimeSessionAccess(
+          sessionId = sessionId,
+          resumeHistory = resumeHistory,
+          runs = emptyList(),
+        ),
+      )
+    }
+    val gateway = ServiceOwnedChatRuntimeGateway(
+      readGateway = RecordingChatGateway("projection"),
+      runtimeHostAccess = runtimeHostAccess,
+      chatSubmissionAccess = ServiceOwnedChatSubmissionAccess(
+        chatSessionStore = chatStore,
+        runtimeHostAccess = runtimeHostAccess,
+        safetySettingsFacade = EmptySafetySettingsFacade,
+        workspaceRootProvider = null,
+      ),
+      mainThreadPoster = ImmediateMainThreadPoster,
+    )
+    // A queued entry left behind by a run that already finished: the queue used to
+    // only advance on the next submit, so this stayed pending forever and kept
+    // rendering as a duplicate-looking ephemeral bubble.
+    val queued = chatStore.enqueuePendingUserInput(sessionId = sessionId, text = "queued follow-up")
+    val finishedTask = AgentTask(
+      id = "task-finished",
+      type = com.opencray.core.contracts.AgentTaskType.PROMPT,
+      input = "hello",
+      state = AgentTaskState.FAILED,
+      policyDecision = PolicyDecision(
+        outcome = PolicyDecisionOutcome.ALLOW,
+        reasonCode = "test",
+      ),
+      createdAtEpochMs = 1_000L,
+      updatedAtEpochMs = 1_200L,
+      metadata = mapOf(
+        AppAgentSessionTaskRuntimeFactory.METADATA_RUN_ID to "run-finished",
+        AppAgentSessionTaskRuntimeFactory.METADATA_PENDING_MESSAGE_ID to "pending-finished",
+      ),
+    )
+
+    assertEquals(listOf(queued.queueId), chatStore.loadPendingUserInputs(sessionId).map { it.queueId })
+
+    runtimeHostAccess.emitTaskFinished(
+      sessionId = sessionId,
+      task = finishedTask,
+      result = ExecutionResult(
+        taskId = finishedTask.id,
+        status = ExecutionStatus.FAILED,
+        errorCode = "LLM_REQUEST_FAILED",
+        errorMessage = "Invalid API key.",
+        startedAtEpochMs = 1_000L,
+        finishedAtEpochMs = 1_200L,
+      ),
+    )
+
+    assertTrue(chatStore.loadPendingUserInputs(sessionId).isEmpty())
+    assertEquals(
+      "queued follow-up",
+      runtimeHostAccess.promptSubmissionRequests(sessionId).single().userText,
+    )
+    assertEquals(
+      listOf("queued follow-up", "Thinking"),
+      requireNotNull(chatStore.loadSession(sessionId))
+        .messages
+        .takeLast(2)
+        .map(ChatTranscriptMessageEntry::text),
+    )
+  }
+
+  @Test
   fun serviceOwnedChatRuntimeGatewayRoutesRetryThroughServiceOwnedRunControlAccess() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("service-owned-chat-retry-store"))
     val llmResumeSessionId = chatStore.loadState().activeSession.sessionId

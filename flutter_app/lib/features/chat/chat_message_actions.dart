@@ -82,59 +82,6 @@ extension _ChatMessageActions on _OpenCrayChatFeatureState {
       ..showSnackBar(SnackBar(content: Text(message)));
   }
 
-  Future<void> _handleRuntimeEnvironmentSelected(
-    _ChatRuntimeEnvironment environment,
-  ) async {
-    final String nextBackend = switch (environment) {
-      _ChatRuntimeEnvironment.cloud => 'sandbox',
-      _ChatRuntimeEnvironment.local => 'local',
-    };
-    if (_sandboxSettings.defaultBackend == nextBackend) {
-      return;
-    }
-    final OpenCraySandboxSettingsSnapshot previousSnapshot = _sandboxSettings;
-    final OpenCraySandboxSettingsSnapshot nextSnapshot = _sandboxSettings
-        .copyWith(defaultBackend: nextBackend);
-    setState(() {
-      _sandboxSettings = nextSnapshot;
-    });
-    final bridge = widget.bridge;
-    if (bridge == null) {
-      return;
-    }
-    try {
-      final savedSnapshot = await bridge.saveSandboxSettings(nextSnapshot);
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _sandboxSettings = savedSnapshot;
-      });
-      if (_selectedRuntimeEnvironment == _ChatRuntimeEnvironment.cloud) {
-        _syncSandboxSessionAutoRefresh();
-        _syncSandboxSessionLifecycleAutoRefresh();
-      } else {
-        _resetSandboxSessionAutoRefreshTracking();
-        _cancelScheduledSandboxSessionLifecycleRefresh();
-      }
-    } catch (_) {
-      if (!mounted) {
-        return;
-      }
-      setState(() {
-        _sandboxSettings = previousSnapshot;
-      });
-      if (_selectedRuntimeEnvironment == _ChatRuntimeEnvironment.cloud) {
-        _syncSandboxSessionAutoRefresh();
-        _syncSandboxSessionLifecycleAutoRefresh();
-      } else {
-        _resetSandboxSessionAutoRefreshTracking();
-        _cancelScheduledSandboxSessionLifecycleRefresh();
-      }
-      _showMessageFeedback('Unable to update runtime environment.');
-    }
-  }
-
   void _emitSelectionHaptic() {
     unawaited(HapticFeedback.selectionClick());
   }

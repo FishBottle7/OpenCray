@@ -129,13 +129,16 @@ class _ChatHeaderCluster extends StatelessWidget {
               child: Text(state.screenTitle),
             ),
             SizedBox(height: isActiveThread ? 14 : 20),
-            _SummaryCard(
-              copy: copy,
-              summary: state.summary,
-              bridge: bridge,
-              isActiveThread: isActiveThread,
-              scrollProgress: scrollProgress,
-            ),
+            if (state.isAwaitingFirstSnapshot && !isActiveThread)
+              _SummaryCardSkeleton(copy: copy)
+            else
+              _SummaryCard(
+                copy: copy,
+                summary: state.summary,
+                bridge: bridge,
+                isActiveThread: isActiveThread,
+                scrollProgress: scrollProgress,
+              ),
             SizedBox(height: isActiveThread ? 14 : 20),
           ],
         );
@@ -213,13 +216,18 @@ class _TopGlassBar extends StatelessWidget {
   }
 }
 
+/// Horizontal page gutter the chat transcript and title use.
+const double _pageGutter = 20;
+
+/// Tap target and glyph size for the top-strip icon button.
+const double _toolbarTapTarget = 44;
+const double _toolbarGlyphSize = 22;
+
 class _ChatToolbar extends StatelessWidget {
   const _ChatToolbar({
     required this.copy,
     required this.sessionButtonLabel,
     required this.modeLabel,
-    required this.runtimeEnvironment,
-    required this.onRuntimeEnvironmentSelected,
     required this.onSessionsPressed,
     this.isSelectionMode = false,
     this.selectedCount = 0,
@@ -229,8 +237,6 @@ class _ChatToolbar extends StatelessWidget {
   final OpenCrayUiCopy copy;
   final String sessionButtonLabel;
   final String modeLabel;
-  final _ChatRuntimeEnvironment runtimeEnvironment;
-  final ValueChanged<_ChatRuntimeEnvironment> onRuntimeEnvironmentSelected;
   final VoidCallback onSessionsPressed;
   final bool isSelectionMode;
   final int selectedCount;
@@ -239,55 +245,62 @@ class _ChatToolbar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (isSelectionMode) {
-      return SizedBox(
-        height: 40,
-        child: Row(
-          children: <Widget>[
-            GestureDetector(
-              key: const ValueKey<String>('chat-selection-done'),
-              onTap: onDonePressed,
-              behavior: HitTestBehavior.opaque,
-              child: SizedBox(
-                width: 56,
-                child: Align(
-                  alignment: Alignment.centerLeft,
-                  child: Text(
-                    copy.chatSelectionDoneAction,
-                    style: context.chatText.selectionToolbarAction,
+      return Padding(
+        padding: const EdgeInsets.symmetric(horizontal: _pageGutter),
+        child: SizedBox(
+          height: 40,
+          child: Row(
+            children: <Widget>[
+              GestureDetector(
+                key: const ValueKey<String>('chat-selection-done'),
+                onTap: onDonePressed,
+                behavior: HitTestBehavior.opaque,
+                child: SizedBox(
+                  width: 56,
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      copy.chatSelectionDoneAction,
+                      style: context.chatText.selectionToolbarAction,
+                    ),
                   ),
                 ),
               ),
-            ),
-            Expanded(
-              child: Center(
-                child: Text(
-                  copy.chatSelectionCount(selectedCount),
-                  style: context.chatText.selectionToolbarTitle,
+              Expanded(
+                child: Center(
+                  child: Text(
+                    copy.chatSelectionCount(selectedCount),
+                    style: context.chatText.selectionToolbarTitle,
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(width: 56),
-          ],
+              const SizedBox(width: 56),
+            ],
+          ),
         ),
       );
     }
-    return SizedBox(
-      height: 44,
-      child: Row(
-        children: <Widget>[
-          _ChatToolbarIconButton(
-            key: const ValueKey<String>('chat-sessions-button'),
-            tooltip: sessionButtonLabel,
-            icon: Icons.menu_rounded,
-            onPressed: onSessionsPressed,
-          ),
-          const Spacer(),
-          _ChatRuntimeEnvironmentSelector(
-            environment: runtimeEnvironment,
-            modeLabel: modeLabel,
-            onSelected: onRuntimeEnvironmentSelected,
-          ),
-        ],
+    // The glyph, not its hit box, is what should line up with the page gutter and
+    // the title below. Inset the row by the leftover on each side of the icon so
+    // the 44dp target overhangs the margin instead of pushing the glyph inward.
+    const double leadingInset =
+        _pageGutter - (_toolbarTapTarget - _toolbarGlyphSize) / 2;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(leadingInset, 0, _pageGutter, 0),
+      child: SizedBox(
+        height: _toolbarTapTarget,
+        child: Row(
+          children: <Widget>[
+            _ChatToolbarIconButton(
+              key: const ValueKey<String>('chat-sessions-button'),
+              tooltip: sessionButtonLabel,
+              icon: Icons.menu_rounded,
+              onPressed: onSessionsPressed,
+            ),
+            const Spacer(),
+            _ChatAutomationModeStamp(copy: copy, modeLabel: modeLabel),
+          ],
+        ),
       ),
     );
   }
@@ -314,9 +327,10 @@ class _ChatToolbarIconButtonState extends State<_ChatToolbarIconButton> {
 
   @override
   Widget build(BuildContext context) {
-    final Color foregroundColor = _isPressed
-        ? context.chatPalette.textPrimary
-        : context.chatPalette.textSecondary;
+    // A bare glyph rather than a card: this is a frequent, low-stakes control,
+    // and giving it `surface` + `border` + `cardShadow` announced it with the
+    // same weight as a content card. Depth for the strip comes from the glass
+    // bar behind it, so the press state only needs to move the ink.
     return Semantics(
       button: true,
       label: widget.tooltip,
@@ -330,22 +344,26 @@ class _ChatToolbarIconButtonState extends State<_ChatToolbarIconButton> {
           onTap: widget.onPressed,
           behavior: HitTestBehavior.opaque,
           child: SizedBox.square(
-            dimension: 44,
+            dimension: _toolbarTapTarget,
             child: Center(
               child: AnimatedContainer(
                 duration: OpenCrayMotion.resolve(context, OpenCrayMotion.quick),
                 curve: OpenCrayMotion.enter,
-                width: 36,
-                height: 36,
+                width: 32,
+                height: 32,
                 decoration: BoxDecoration(
                   color: _isPressed
                       ? context.palette.surfaceMuted
-                      : context.palette.surface.withValues(alpha: 0.86),
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: context.chatPalette.border),
-                  boxShadow: _isPressed ? null : context.palette.cardShadow,
+                      : Colors.transparent,
+                  borderRadius: BorderRadius.circular(11),
                 ),
-                child: Icon(widget.icon, size: 18, color: foregroundColor),
+                child: Icon(
+                  widget.icon,
+                  size: _toolbarGlyphSize,
+                  color: _isPressed
+                      ? context.chatPalette.textPrimary
+                      : context.chatPalette.textSecondary,
+                ),
               ),
             ),
           ),
@@ -364,170 +382,28 @@ class _ChatToolbarIconButtonState extends State<_ChatToolbarIconButton> {
   }
 }
 
-class _ChatRuntimeEnvironmentSelector extends StatelessWidget {
-  const _ChatRuntimeEnvironmentSelector({
-    required this.environment,
-    required this.modeLabel,
-    required this.onSelected,
-  });
+/// The automation mode the host is running under (SAFE / AUTO / DEV), stamped in
+/// the top strip as ambient text.
+///
+/// Deliberately not a control. This reads out the approval policy, which is
+/// worth keeping pinned while you work; picking a runtime backend is a
+/// configuration decision and lives with the rest of the sandbox settings.
+class _ChatAutomationModeStamp extends StatelessWidget {
+  const _ChatAutomationModeStamp({required this.copy, required this.modeLabel});
 
-  final _ChatRuntimeEnvironment environment;
-  final String modeLabel;
-  final ValueChanged<_ChatRuntimeEnvironment> onSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    final String label = _selectorLabel(environment);
-    final IconData icon = _selectorIcon(environment);
-    return PopupMenuButton<_ChatRuntimeEnvironment>(
-      key: const ValueKey<String>('chat-runtime-environment-selector'),
-      tooltip: 'Runtime environment',
-      padding: EdgeInsets.zero,
-      offset: const Offset(0, 42),
-      elevation: 10,
-      color: context.palette.surface,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: BorderSide(color: context.chatPalette.border),
-      ),
-      onSelected: onSelected,
-      itemBuilder: (BuildContext context) =>
-          <PopupMenuEntry<_ChatRuntimeEnvironment>>[
-            PopupMenuItem<_ChatRuntimeEnvironment>(
-              key: const ValueKey<String>('chat-runtime-menu-local'),
-              value: _ChatRuntimeEnvironment.local,
-              child: _ChatRuntimeEnvironmentMenuRow(
-                icon: Icons.laptop_mac_outlined,
-                iconKey: const ValueKey<String>('chat-runtime-menu-icon-local'),
-                label: 'Run locally',
-                isSelected: environment == _ChatRuntimeEnvironment.local,
-              ),
-            ),
-            PopupMenuItem<_ChatRuntimeEnvironment>(
-              key: const ValueKey<String>('chat-runtime-menu-cloud'),
-              value: _ChatRuntimeEnvironment.cloud,
-              child: _ChatRuntimeEnvironmentMenuRow(
-                icon: Icons.cloud_queue_rounded,
-                iconKey: const ValueKey<String>('chat-runtime-menu-icon-cloud'),
-                label: 'Run in cloud',
-                isSelected: environment == _ChatRuntimeEnvironment.cloud,
-              ),
-            ),
-          ],
-      child: _ChatRuntimeStatusPill(
-        icon: icon,
-        environmentLabel: label,
-        modeLabel: modeLabel,
-      ),
-    );
-  }
-
-  String _selectorLabel(_ChatRuntimeEnvironment environment) =>
-      environment == _ChatRuntimeEnvironment.cloud ? 'Cloud' : 'Local';
-
-  IconData _selectorIcon(_ChatRuntimeEnvironment environment) =>
-      environment == _ChatRuntimeEnvironment.cloud
-      ? Icons.cloud_queue_rounded
-      : Icons.laptop_mac_outlined;
-}
-
-class _ChatRuntimeStatusPill extends StatelessWidget {
-  const _ChatRuntimeStatusPill({
-    required this.icon,
-    required this.environmentLabel,
-    required this.modeLabel,
-  });
-
-  final IconData icon;
-  final String environmentLabel;
+  final OpenCrayUiCopy copy;
   final String modeLabel;
 
   @override
   Widget build(BuildContext context) {
-    return DecoratedBox(
-      key: const ValueKey<String>('chat-runtime-status-pill'),
-      decoration: BoxDecoration(
-        color: context.palette.surface.withValues(alpha: 0.86),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: context.chatPalette.border),
-        boxShadow: context.palette.cardShadow,
+    return Semantics(
+      label: copy.chatAutomationModeSemanticLabel(modeLabel),
+      excludeSemantics: true,
+      child: Text(
+        modeLabel,
+        key: const ValueKey<String>('chat-runtime-mode-label'),
+        style: context.chatText.toolbarModeStamp,
       ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: <Widget>[
-            Icon(
-              icon,
-              key: const ValueKey<String>('chat-runtime-selector-icon'),
-              size: 16,
-              color: context.chatPalette.textSecondary,
-            ),
-            const SizedBox(width: 7),
-            Text(
-              environmentLabel,
-              key: const ValueKey<String>('chat-runtime-selector-label'),
-              style: context.chatText.toolbarButton,
-            ),
-            const SizedBox(width: 7),
-            Container(
-              key: const ValueKey<String>('chat-runtime-status-divider'),
-              width: 3,
-              height: 3,
-              decoration: BoxDecoration(
-                color: context.chatPalette.textTertiary.withValues(alpha: 0.72),
-                shape: BoxShape.circle,
-              ),
-            ),
-            const SizedBox(width: 7),
-            Text(
-              modeLabel,
-              key: const ValueKey<String>('chat-runtime-mode-label'),
-              style: context.chatText.toolbarStatus,
-            ),
-            const SizedBox(width: 4),
-            Icon(
-              Icons.expand_more_rounded,
-              size: 16,
-              color: context.chatPalette.textTertiary,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ChatRuntimeEnvironmentMenuRow extends StatelessWidget {
-  const _ChatRuntimeEnvironmentMenuRow({
-    required this.icon,
-    required this.iconKey,
-    required this.label,
-    required this.isSelected,
-  });
-
-  final IconData icon;
-  final Key iconKey;
-  final String label;
-  final bool isSelected;
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: <Widget>[
-        Icon(icon, key: iconKey, size: 18, color: context.chatPalette.textSecondary),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text(
-            label,
-            style: context.chatText.toolbarButton.copyWith(
-              color: context.chatPalette.textPrimary,
-            ),
-          ),
-        ),
-        if (isSelected)
-          Icon(Icons.check_rounded, size: 16, color: context.chatPalette.accent),
-      ],
     );
   }
 }
@@ -639,6 +515,46 @@ class _ChatSelectionActionButton extends StatelessWidget {
                   ),
                 ),
               ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Stands in for [_SummaryCard] until the first host snapshot lands.
+///
+/// A restored session and a brand-new one are both empty on the first frame, so
+/// showing the real card early would announce "new session" for every restore.
+/// The bars mirror the card's title line and two-line body to keep the header
+/// from reflowing when the summary arrives.
+class _SummaryCardSkeleton extends StatelessWidget {
+  const _SummaryCardSkeleton({required this.copy});
+
+  final OpenCrayUiCopy copy;
+
+  @override
+  Widget build(BuildContext context) {
+    return OpenCraySkeletonPulse(
+      key: const ValueKey<String>('chat-summary-loading'),
+      semanticsLabel: copy.contentLoadingLabel,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: context.palette.surface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: context.chatPalette.border),
+        ),
+        child: const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: <Widget>[
+              OpenCraySkeletonBar(height: 17, widthFactor: 0.42),
+              SizedBox(height: 14),
+              OpenCraySkeletonBar(height: 13, widthFactor: 0.92),
+              SizedBox(height: 8),
+              OpenCraySkeletonBar(height: 13, widthFactor: 0.64),
             ],
           ),
         ),

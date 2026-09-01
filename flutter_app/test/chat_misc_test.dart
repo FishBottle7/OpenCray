@@ -242,69 +242,7 @@ void main() {
   );
 
   testWidgets(
-    'switching from local to cloud triggers sandbox session auto refresh',
-    (tester) async {
-      final bridge = FakeChatBridge(
-        chatSnapshot: hostChatSnapshot(),
-        runtimeSnapshot: OpenCrayChatRuntimeSnapshot(
-          sessionId: 'session-1',
-          activeRuns: const <OpenCrayChatRunSnapshot>[],
-          events: <OpenCrayChatRuntimeEventSnapshot>[
-            OpenCrayChatRuntimeEventSnapshot(
-              kind: 'tool_result',
-              runId: 'run-cloud-1',
-              taskId: 'task-cloud-1',
-              emittedAtEpochMs: 4200,
-              toolName: 'python_exec',
-              resultMetadata: const <String, String>{'sandboxProvider': 'e2b'},
-            ),
-          ],
-        ),
-        sandboxSettings: const OpenCraySandboxSettingsSnapshot(
-          localeTag: 'en',
-          enabled: true,
-          providerId: 'e2b',
-          defaultBackend: 'local',
-          sessionMode: 'ephemeral',
-          autoResume: false,
-          idleTimeoutMinutes: 15,
-          startupTimeoutMs: 30000,
-          requestTimeoutMs: 300000,
-          timeoutAction: 'kill',
-          templateId: '',
-          e2bApiKey: 'e2b_demo',
-          apiKeyConfigured: true,
-        ),
-      );
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: OpenCrayChatFeature(
-              copy: OpenCrayUiCopy.fromLocaleTag('en'),
-              bridge: bridge,
-            ),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      expect(bridge.refreshSandboxSessionInfoCallCount, 0);
-
-      await tester.tap(
-        find.byKey(const ValueKey<String>('chat-runtime-environment-selector')),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Run in cloud'));
-      await tester.pumpAndSettle();
-      await tester.pump(chatSandboxSessionAutoRefreshDebounce);
-      await tester.pump();
-
-      expect(bridge.refreshSandboxSessionInfoCallCount, 1);
-    },
-  );
-
-  testWidgets(
-    'switching to cloud skips auto refresh when newer sandbox session info already exists',
+    'cloud mode skips auto refresh when newer sandbox session info already exists',
     (tester) async {
       final bridge = FakeChatBridge(
         chatSnapshot: hostChatSnapshot(),
@@ -333,7 +271,7 @@ void main() {
           localeTag: 'en',
           enabled: true,
           providerId: 'e2b',
-          defaultBackend: 'local',
+          defaultBackend: 'sandbox',
           sessionMode: 'ephemeral',
           autoResume: false,
           idleTimeoutMinutes: 15,
@@ -359,12 +297,6 @@ void main() {
       await tester.pumpAndSettle();
       expect(bridge.refreshSandboxSessionInfoCallCount, 0);
 
-      await tester.tap(
-        find.byKey(const ValueKey<String>('chat-runtime-environment-selector')),
-      );
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Run in cloud'));
-      await tester.pumpAndSettle();
       await tester.pump(chatSandboxSessionAutoRefreshDebounce * 2);
       await tester.pump();
 

@@ -563,6 +563,8 @@ class OpenCrayUiCopy {
   String get chatMessageSelectAction => isChinese ? '多选' : 'Select';
   String get chatMessageQuoteAction => isChinese ? '引用' : 'Quote';
   String get chatMessageCopied => isChinese ? '已复制消息。' : 'Message copied.';
+  String chatAutomationModeSemanticLabel(String modeLabel) =>
+      isChinese ? '自动化模式：$modeLabel' : 'Automation mode: $modeLabel';
   String get chatSelectionDoneAction => isChinese ? '完成' : 'Done';
   String chatSelectionCount(int count) =>
       isChinese ? '已选 $count 条' : '$count Selected';

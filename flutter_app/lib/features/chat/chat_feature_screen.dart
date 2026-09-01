@@ -22,6 +22,7 @@ import '../../core/models/opencray_sandbox_settings.dart';
 import '../../core/design/opencray_controls.dart';
 import '../../core/design/opencray_motion.dart';
 import '../../core/design/opencray_palette.dart';
+import '../../core/design/opencray_skeleton.dart';
 import '../../core/design/opencray_tokens.dart';
 import '../../core/widgets/opencray_image_bytes_view.dart';
 import '../../core/widgets/opencray_markdown.dart';
@@ -312,6 +313,7 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
         sessions: const <ChatSessionListItemData>[],
       ),
       emptyThreadHeight: 260,
+      isAwaitingFirstSnapshot: true,
     );
   }
 
@@ -819,13 +821,11 @@ class _OpenCrayChatFeatureState extends State<OpenCrayChatFeature> {
           SafeArea(
             bottom: false,
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+              padding: const EdgeInsets.only(top: 6),
               child: _ChatToolbar(
                 copy: widget.copy,
                 sessionButtonLabel: _state.sessionButtonLabel,
                 modeLabel: _state.modeLabel,
-                runtimeEnvironment: _selectedRuntimeEnvironment,
-                onRuntimeEnvironmentSelected: _handleRuntimeEnvironmentSelected,
                 onSessionsPressed: _showDrawer,
                 isSelectionMode: _isMessageSelectionMode,
                 selectedCount: _selectedMessageCount,

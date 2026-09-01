@@ -183,6 +183,24 @@ light 下 `surface` 就是 `Colors.white`，`_chatAlpha` 的 alpha 字节与原�
 
 **仍待办**：hero/共享元素、四处手写 `Dialog` 吃 `dialogTheme` 的圆角与阴影。（sheet 拖拽把手已由 `bottomSheetTheme` 的 `showDragHandle: true` 覆盖；平板/横屏见「边界」。）
 
+### Chat 顶栏收敛（2026-09-01）
+
+真机上会话按钮「突兀」的根因不是尺寸而是**层级用错**：它和右侧运行时药丸都用 `surface` + `border` + `cardShadow` 这套内容卡配方，等于给一个高频低风险控件配了设置分组卡的重量；两块卡分居 44dp strip 两端、中间全空，又正压在 28px 标题上方，读作一条脱离页面的碎片。其他三个 tab 的动作都在 `OpenCrayPageHeader` 的 `trailing` 里，是纯文字或裸图标，chat 是唯一有这条 strip 的页面。
+
+运行时药肸还有个功能性问题：它把两件不相干的事焊在一起。`Local`/`Cloud` 是**代码在哪儿跑**，设置 → 沙箱 → Default backend 早就有同样两个选项、同样的 `Run locally` / `Run in cloud` 文案、写同一个 `defaultBackend` 字段；`SAFE`/`AUTO`/`DEV` 是安全设置里的自动化模式，也就是审批策略。一半是重复配置，一半是干活时要看见的状态。
+
+按此三处改动：
+
+1. **删掉运行时切换器**（`_ChatRuntimeEnvironmentSelector` / `_ChatRuntimeStatusPill` / `_ChatRuntimeEnvironmentMenuRow` 三个 widget、`_handleRuntimeEnvironmentSelected`、以及随之失去调用点的 `_resetSandboxSessionAutoRefreshTracking` 与 `_ChatTextStyles.toolbarButton`）。后端选择只留设置页一处。`_ChatRuntimeEnvironment` 枚举保留——沙箱预览卡与四处自动刷新门禁仍然读它。
+2. **模式改 ambient 文字**：新增 `_ChatAutomationModeStamp` + `toolbarModeStamp`（11px / w700 / 0.6 tracking / `textSecondary`）。**没有沿用原来的 `toolbarStatus`（12px w700 accent）**——accent 在这条 strip 里已经表示「可点」（多选态的 `selectionToolbarAction` 就在同一个角落用 accent），单独一个 accent 粗体词会被读成按钮。跟 `todoLabel` 同一套小号字距 stamp 写法。补 `chatAutomationModeSemanticLabel`（「自动化模式：SAFE」）。
+3. **会话按钮去卡片外壳**：`surface`/`border`/`cardShadow` 全撤，留 44dp 命中区 + 22px 裸图标（原 18px，去掉底板后要补回视觉重量），按下时只有 `surfaceMuted` 底衬。纵深交给本来就有的玻璃条。
+
+顺手修掉一处对齐缺陷：原先 strip 的 20dp 内边距加在**命中区**上，44dp 里 22px 图标居中，字形实际落在 x=31，而下方标题在 x=20——图标比标题内缩了 11px。改为把 20dp gutter 移进 `_ChatToolbar`、非多选分支左侧用 `20 - (44-22)/2 = 9`，字形回到 20、命中区反过来外挑到 9（与 Material `AppBar` leading 的做法一致）。多选分支仍是对称 20dp，「完成」位置不变。
+
+验证方式是临时写一个几何探针（不是 golden——PNG 读不出来）打印并断言：明暗两套下命中区 44×44、`borders=0 shadows=0`、字形 left=20=标题 left、命中区 left=9、模式文字右缘距屏 20、两端 `center.dy` 同为 28、`modeColor` 明 `0xff5c6a7e` / 暗 `0xffa3b1c6`。核完即删。
+
+验收：`flutter analyze` lib 零问题；`flutter test` **442 通过 / 23 失败**，失败集与基线**逐条一致**。442 = 444 − 2 条删除的用例：`chat_widgets_chrome_test` 的 `runtime environment selector uses English labels…`（整条测的就是被删的弹窗），以及 `chat_misc_test` 的 `switching from local to cloud triggers sandbox session auto refresh`——后者把 seed 换成 `'sandbox'` 之后与文件里已有的 `cloud mode auto refreshes sandbox session info after cloud runtime activity` 逐字节相同，故删而不留副本。同文件的 `switching to cloud skips auto refresh when newer sandbox session info already exists` 有独立分支覆盖（较新的 `sandbox_session_info` 压制刷新），改为直接 seed `'sandbox'` 并更名 `cloud mode skips…` 保留。`chat top utility bar keeps frequent controls visually quiet` 改为断言 strip 只有模式、`Local`/`Cloud` 与选择器 key 都不存在。
+
 ## 四、边界（明确不做）
 
 - 不引入新的第三方 UI 库
@@ -204,4 +222,5 @@ light 下 `surface` 就是 `Colors.white`，`_chatAlpha` 的 alpha 字节与原�
 | D 加载态与刷新 | 已完成（2026-08-30） |
 | 图标收敛与主操作触感 | 已完成（2026-08-30） |
 | E 可选打磨 | 列表入场已完成（2026-08-30），hero 与 Dialog 主题化待办 |
+| Chat 顶栏收敛 | 已完成（2026-09-01） |
 

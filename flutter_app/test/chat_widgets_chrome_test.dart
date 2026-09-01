@@ -228,31 +228,22 @@ void main() {
     await tester.pumpWidget(buildChatHarness());
     await tester.pumpAndSettle();
 
-    final Finder sessionsButton = chatSessionsButton();
-    final Finder statusPill = find.byKey(
-      const ValueKey<String>('chat-runtime-status-pill'),
-    );
-
-    expect(sessionsButton, findsOneWidget);
-    expect(statusPill, findsOneWidget);
+    expect(chatSessionsButton(), findsOneWidget);
     expect(find.text('Sessions'), findsNothing);
-    expect(find.text('Local'), findsOneWidget);
-    expect(find.text('SAFE'), findsOneWidget);
+
+    // The strip carries the automation mode and nothing else. Picking a runtime
+    // backend is configuration and lives in Settings, so neither the label nor a
+    // switcher for it belongs up here.
     expect(
-      find.descendant(
-        of: statusPill,
-        matching: find.byKey(
-          const ValueKey<String>('chat-runtime-selector-label'),
-        ),
-      ),
+      find.byKey(const ValueKey<String>('chat-runtime-mode-label')),
       findsOneWidget,
     );
+    expect(find.text('SAFE'), findsOneWidget);
+    expect(find.text('Local'), findsNothing);
+    expect(find.text('Cloud'), findsNothing);
     expect(
-      find.descendant(
-        of: statusPill,
-        matching: find.byKey(const ValueKey<String>('chat-runtime-mode-label')),
-      ),
-      findsOneWidget,
+      find.byKey(const ValueKey<String>('chat-runtime-environment-selector')),
+      findsNothing,
     );
   });
 
@@ -298,68 +289,4 @@ void main() {
     expect(lastBubble, findsOneWidget);
   });
 
-  testWidgets(
-    'runtime environment selector uses English labels, shows icons, and saves cloud selection',
-    (tester) async {
-      final bridge = FakeChatBridge(
-        chatSnapshot: hostChatSnapshot(),
-        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
-          sessionId: 'session-1',
-          activeRuns: <OpenCrayChatRunSnapshot>[],
-          events: <OpenCrayChatRuntimeEventSnapshot>[],
-        ),
-        sandboxSettings: const OpenCraySandboxSettingsSnapshot(
-          localeTag: 'en',
-          enabled: true,
-          providerId: 'e2b',
-          defaultBackend: 'local',
-          sessionMode: 'ephemeral',
-          autoResume: false,
-          idleTimeoutMinutes: 15,
-          startupTimeoutMs: 30000,
-          requestTimeoutMs: 300000,
-          timeoutAction: 'kill',
-          templateId: '',
-          e2bApiKey: 'e2b_demo',
-          apiKeyConfigured: true,
-        ),
-      );
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: OpenCrayChatFeature(
-              copy: OpenCrayUiCopy.fromLocaleTag('en'),
-              bridge: bridge,
-            ),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.text('Local'), findsOneWidget);
-
-      await tester.tap(
-        find.byKey(const ValueKey<String>('chat-runtime-environment-selector')),
-      );
-      await tester.pumpAndSettle();
-
-      expect(find.text('Run locally'), findsOneWidget);
-      expect(find.text('Run in cloud'), findsOneWidget);
-      expect(
-        find.byKey(const ValueKey<String>('chat-runtime-menu-icon-local')),
-        findsOneWidget,
-      );
-      expect(
-        find.byKey(const ValueKey<String>('chat-runtime-menu-icon-cloud')),
-        findsOneWidget,
-      );
-
-      await tester.tap(find.text('Run in cloud'));
-      await tester.pumpAndSettle();
-
-      expect(bridge.savedSandboxSettings.single.defaultBackend, 'sandbox');
-      expect(find.text('Cloud'), findsOneWidget);
-    },
-  );
 }

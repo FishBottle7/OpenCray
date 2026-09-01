@@ -286,18 +286,17 @@ class _ChatTextStyles {
     color: _ink.textPrimary,
   );
 
-  TextStyle get toolbarButton => TextStyle(
-    fontSize: 13,
-    height: 1.15,
-    fontWeight: FontWeight.w600,
-    color: _ink.textPrimary,
-  );
-
-  TextStyle get toolbarStatus => TextStyle(
-    fontSize: 12,
+  /// Automation-mode stamp in the top strip (SAFE / AUTO / DEV).
+  ///
+  /// Tracked small caps in `textSecondary` rather than bold accent: accent in
+  /// this strip already means "tappable" — [selectionToolbarAction] sits in the
+  /// same corner — and the mode is a readout, not a control.
+  TextStyle get toolbarModeStamp => TextStyle(
+    fontSize: 11,
     height: 1.1,
     fontWeight: FontWeight.w700,
-    color: _ink.accent,
+    letterSpacing: 0.6,
+    color: _ink.textSecondary,
   );
 
   TextStyle get selectionToolbarAction => TextStyle(
