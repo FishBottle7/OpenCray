@@ -89,12 +89,55 @@ void main() {
     expect(find.text(copy.chatSeedWorkspaceReady), findsNothing);
     expect(find.text(copy.chatSeedSafeModeAsks), findsNothing);
     expect(find.text('Inspect the workspace.'), findsNothing);
-    expect(find.text(copy.chatSeedEmptyTitle), findsOneWidget);
+    // The pre-snapshot frame must not claim the session is new: until the
+    // transcript lands we cannot tell an empty session from an unloaded one.
+    expect(find.text(copy.chatSeedEmptyTitle), findsNothing);
+    expect(
+      find.byKey(const ValueKey<String>('chat-summary-loading')),
+      findsOneWidget,
+    );
 
     bridge.loadChatSnapshotCompleter!.complete(bridge.chatSnapshot);
     await tester.pumpAndSettle();
 
     expect(find.text('Inspect the workspace.'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('chat-summary-loading')),
+      findsNothing,
+    );
+  });
+
+  testWidgets('genuinely empty session still shows the new-session summary', (
+    tester,
+  ) async {
+    final copy = OpenCrayUiCopy.fromLocaleTag('en');
+    final bridge = FakeChatBridge(
+      chatSnapshot: hostChatSnapshot(
+        messages: const <OpenCrayChatMessageSnapshot>[],
+      ),
+      runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+        sessionId: 'session-empty',
+        activeRuns: <OpenCrayChatRunSnapshot>[],
+        events: <OpenCrayChatRuntimeEventSnapshot>[],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey<String>('chat-summary-loading')),
+      findsNothing,
+    );
+    // The summary is host-authored; a fresh empty session shows the host's
+    // empty-session title rather than the loading skeleton.
+    expect(find.text('Session'), findsOneWidget);
   });
 
   testWidgets(

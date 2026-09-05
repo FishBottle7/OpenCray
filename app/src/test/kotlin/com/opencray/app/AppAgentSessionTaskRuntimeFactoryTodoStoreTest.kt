@@ -509,6 +509,64 @@ class AppAgentSessionTaskRuntimeFactoryTodoStoreTest {
   }
 
   @Test
+  fun repairTerminalReplayFromRunSnapshotsAppendsEachMissingRunObservationInOnePass() {
+    // The repair used to re-read the transcript file once per run; after a
+    // process death mid-batch each run saw a stale snapshot, so two distinct
+    // missing runs had to both be backfilled from the same single read. This
+    // locks in the batched behavior and the per-run dedup ordering.
+    val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-terminal-repair-batch"))
+    val workspaceRoot = temporaryFolder.newFolder("workspace-root-terminal-repair-batch").toPath()
+    val factory = AppAgentSessionTaskRuntimeFactory(
+      llmSettingsProvider = { LlmSettingsState() },
+      sessionContextFactory = ChatRuntimeSessionContextFactory(chatStore),
+      soulProfileProvider = { null },
+      workspaceRootsProvider = { setOf(workspaceRoot) },
+      skillsRootsProvider = { emptyList() },
+      mcpReportProvider = { null },
+    )
+
+    factory.repairTerminalReplayFromRunSnapshots(
+      sessionId = "session-1",
+      runs = listOf(
+        AgentRunSnapshot(
+          sessionId = "session-1",
+          runId = "run-failed-2",
+          taskId = "task-failed-2",
+          acceptedAtEpochMs = 2_000L,
+          updatedAtEpochMs = 2_100L,
+          lifecycleState = com.opencray.core.orchestrator.QueueTaskLifecycleState.FAILED,
+          taskState = com.opencray.core.contracts.AgentTaskState.FAILED,
+          attempt = 2,
+          executionStatus = com.opencray.core.contracts.ExecutionStatus.FAILED,
+          errorCode = "TOOL_EXECUTION_FAILED",
+        ),
+        AgentRunSnapshot(
+          sessionId = "session-1",
+          runId = "run-failed-1",
+          taskId = "task-failed-1",
+          acceptedAtEpochMs = 1_000L,
+          updatedAtEpochMs = 1_100L,
+          lifecycleState = com.opencray.core.orchestrator.QueueTaskLifecycleState.FAILED,
+          taskState = com.opencray.core.contracts.AgentTaskState.FAILED,
+          attempt = 1,
+          executionStatus = com.opencray.core.contracts.ExecutionStatus.FAILED,
+          errorCode = "RUNTIME_EXCEPTION",
+        ),
+      ),
+    )
+
+    val snapshot = factory.transcriptStoreForSession("session-1").snapshot()
+
+    // Both missing observations land in acceptance order regardless of the
+    // order the runs were listed in, because dedup sees the same base snapshot.
+    assertEquals(2, snapshot.size)
+    assertTrue(snapshot[0].content.startsWith("run_interrupted"))
+    assertTrue(snapshot[0].content.contains("task_id=task-failed-1"))
+    assertTrue(snapshot[1].content.startsWith("retry_abandoned"))
+    assertTrue(snapshot[1].content.contains("task_id=task-failed-2"))
+  }
+
+  @Test
   fun recordSuccessfulToolInteractionAppendsToolCallAndResultReplaySummaries() {
     val chatStore = ChatSessionLocalStore(temporaryFolder.newFolder("chat-store-tool-replay"))
     val workspaceRoot = temporaryFolder.newFolder("workspace-root-tool-replay").toPath()

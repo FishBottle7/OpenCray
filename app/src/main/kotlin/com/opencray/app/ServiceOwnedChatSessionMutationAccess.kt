@@ -2,6 +2,7 @@ package com.opencray.app
 
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.model.ChatTranscriptSessionEntry
+import com.opencray.persistence.model.ChatWorkspaceRecord
 import java.io.File
 
 internal class ChatSessionMutationCoordinator(
@@ -45,12 +46,16 @@ internal class ChatSessionMutationCoordinator(
   }
 
   fun selectChatSession(sessionId: String): String {
+    // One workspace read for the whole pre-selection probe: loadState(),
+    // the sessions-contains check, and the reusable-empty check each re-read
+    // the full workspace file on their own, tripling the cost of every switch.
     val stateBeforeSelection = chatSessionStore.loadState()
     val currentSessionId = stateBeforeSelection.activeSession.sessionId
+    val workspace = chatSessionStore.loadWorkspaceRecord()
     val shouldDiscardCurrentEmptySession =
       sessionId != currentSessionId &&
-        stateBeforeSelection.sessions.any { session -> session.sessionId == sessionId } &&
-        canDiscardEmptySession(currentSessionId)
+        workspace.sessions.any { session -> session.sessionId == sessionId } &&
+        canDiscardEmptySession(currentSessionId, workspace)
     if (shouldDiscardCurrentEmptySession) {
       discardSession(currentSessionId)
       chatSessionStore.deleteSession(currentSessionId)
@@ -133,8 +138,15 @@ internal class ChatSessionMutationCoordinator(
     runtimeSession.resume()
   }
 
-  private fun canDiscardEmptySession(sessionId: String): Boolean {
-    if (!chatSessionStore.isReusableEmptySession(sessionId)) {
+  private fun canDiscardEmptySession(
+    sessionId: String,
+    workspace: ChatWorkspaceRecord? = null,
+  ): Boolean {
+    if (workspace != null) {
+      if (!chatSessionStore.isReusableEmptySession(workspace = workspace, sessionId = sessionId)) {
+        return false
+      }
+    } else if (!chatSessionStore.isReusableEmptySession(sessionId)) {
       return false
     }
     if (chatUnreadMessageState.rawCount(sessionId) > 0) {

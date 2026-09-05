@@ -25,10 +25,14 @@ internal open class ChatSessionLocalStore(
     val workspace = loadWorkspaceOrCreate()
     val activeSession = checkNotNull(activeSessionFrom(workspace)) { "Expected chat workspace to have an active session." }
     return ChatSessionsState(
-      sessions = sessionsForUi(workspaceStore.load() ?: workspace),
+      sessions = sessionsForUi(workspace),
       activeSession = activeSession,
     )
   }
+
+  /** Read-only workspace access for probe chains; never seeds a missing record. */
+  internal fun loadWorkspaceRecord(): ChatWorkspaceRecord = workspaceStore.load()
+    ?: seedWorkspaceRecord(nowEpochMs())
 
   fun createSession(): ChatSessionsState {
     loadWorkspaceOrCreate()
@@ -87,11 +91,40 @@ internal open class ChatSessionLocalStore(
       return false
     }
     val workspace = loadWorkspaceOrCreate()
-    val session = workspace.sessions.firstOrNull { entry -> entry.sessionId == sessionId } ?: return false
-    return isReusableEmptySession(
-      workspace = workspace,
-      session = session,
-    )
+    return workspace.sessions
+      .firstOrNull { entry -> entry.sessionId == sessionId }
+      ?.let { session ->
+        isReusableEmptySession(
+          workspace = workspace,
+          session = session,
+        )
+      }
+      ?: false
+  }
+
+  /**
+   * Single-read variant for callers that already hold the workspace record.
+   *
+   * Every [loadWorkspaceOrCreate] re-reads and re-deserializes the whole
+   * workspace file under a file lock, so probe chains that consult several
+   * store helpers must share one record instead of paying the read per call.
+   */
+  internal fun isReusableEmptySession(
+    workspace: ChatWorkspaceRecord,
+    sessionId: String,
+  ): Boolean {
+    if (sessionId.isBlank()) {
+      return false
+    }
+    return workspace.sessions
+      .firstOrNull { entry -> entry.sessionId == sessionId }
+      ?.let { session ->
+        isReusableEmptySession(
+          workspace = workspace,
+          session = session,
+        )
+      }
+      ?: false
   }
 
   fun selectSession(sessionId: String): ChatSessionsState {

@@ -1339,15 +1339,24 @@ internal class AppAgentSessionTaskRuntimeFactory(
     runs: List<AgentRunSnapshot>,
   ) {
     val store = transcriptStoreForSession(sessionId)
+    // One snapshot for the whole batch: snapshot() re-reads and re-normalizes the
+    // entire transcript file per call, so reading it once per run made session
+    // switches O(runs × transcript) in both reads and normalization passes.
+    val existingMessages = store.snapshot()
+    var updatedMessages: MutableList<RuntimeConversationMessage>? = null
     runs
       .sortedBy(AgentRunSnapshot::acceptedAtEpochMs)
       .forEach { run ->
         val observation = terminalReplayObservationFor(
-          existingMessages = store.snapshot(),
+          existingMessages = existingMessages,
           run = run,
         ) ?: return@forEach
-        store.appendIfDistinct(observation)
+        if (updatedMessages == null) {
+          updatedMessages = existingMessages.toMutableList()
+        }
+        updatedMessages!! += observation
       }
+    updatedMessages?.let { store.replaceReplayWorkingCopy(it) }
   }
 
   internal fun recalledMemoryFor(
