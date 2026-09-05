@@ -425,6 +425,93 @@ void main() {
   );
 
   testWidgets(
+    'host-backed session selection shows thread skeleton for a session with history',
+    (tester) async {
+      final copy = OpenCrayUiCopy.fromLocaleTag('en');
+      final bridge = FakeChatBridge(
+        chatSnapshot: hostChatSnapshot(
+          messages: const <OpenCrayChatMessageSnapshot>[
+            OpenCrayChatMessageSnapshot(
+              messageId: 'message-skeleton-old',
+              kind: 'inbound',
+              text: 'Old selected session text',
+              createdAtEpochMs: 1000,
+            ),
+          ],
+          drawer: const OpenCrayChatDrawerSnapshot(
+            eyebrow: 'Recent sessions',
+            title: 'Recent sessions',
+            ctaLabel: 'New session',
+            sessions: <OpenCrayChatSessionItemSnapshot>[
+              OpenCrayChatSessionItemSnapshot(
+                sessionId: 'session-skeleton-old',
+                title: 'Old session',
+                preview: 'Currently selected',
+                meta: '1 message',
+                isSelected: true,
+                lastMessageAtEpochMs: 1000,
+              ),
+              OpenCrayChatSessionItemSnapshot(
+                sessionId: 'session-skeleton-next',
+                title: 'Next session',
+                preview: 'Switch here',
+                meta: '2 messages',
+                isSelected: false,
+                lastMessageAtEpochMs: 2000,
+              ),
+            ],
+          ),
+        ),
+        runtimeSnapshot: const OpenCrayChatRuntimeSnapshot(
+          sessionId: 'session-skeleton-old',
+          activeRuns: <OpenCrayChatRunSnapshot>[],
+          events: <OpenCrayChatRuntimeEventSnapshot>[],
+        ),
+      );
+      // Hold the host response so the pre-snapshot frame is observable.
+      bridge.selectChatSessionCompleter = Completer<void>();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: OpenCrayChatFeature(copy: copy, bridge: bridge),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.byKey(const ValueKey<String>('chat-thread-loading')),
+        findsNothing,
+      );
+
+      await tester.tap(chatSessionsButton());
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Next session'));
+      await tester.pump();
+
+      // The target has messages, so the gap reads as loading, not as an
+      // empty new session.
+      expect(
+        find.byKey(const ValueKey<String>('chat-thread-loading')),
+        findsOneWidget,
+      );
+      expect(find.text('Old selected session text'), findsNothing);
+
+      bridge.selectChatSessionCompleter!.complete();
+      // The skeleton pulses forever, so settle would hang; pump is enough to
+      // verify the flow moved past selection (memory: skeleton-pulse-hangs).
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(
+        find.byKey(const ValueKey<String>('chat-thread-loading')),
+        findsOneWidget,
+      );
+      expect(bridge.selectedSessionIds, <String>['session-skeleton-next']);
+    },
+  );
+
+  testWidgets(
     'new session drawer action waits for host creation before closing the drawer',
     (tester) async {
       final bridge = FakeChatBridge(

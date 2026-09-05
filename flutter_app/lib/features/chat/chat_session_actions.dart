@@ -73,6 +73,14 @@ extension _ChatSessionActions on _OpenCrayChatFeatureState {
         )
         .toList(growable: false);
     final bool threadEmpty = selectedSessionId != _activeSessionId;
+    // A session with a known last message is not empty; the thread only reads
+    // empty because the host snapshot has not landed yet. Say so with the
+    // loading state instead of the new-session placeholder.
+    final ChatSessionListItemData? selectedSession = sessions
+        .where((item) => item.sessionId == selectedSessionId)
+        .firstOrNull;
+    final bool awaitingSnapshot =
+        threadEmpty && (selectedSession?.lastMessageAtEpochMs ?? 0) > 0;
     return _state.copyWith(
       variant: threadEmpty ? ChatPrototypeVariant.empty : _state.variant,
       messages: threadEmpty ? const <ChatMessageData>[] : _state.messages,
@@ -91,6 +99,7 @@ extension _ChatSessionActions on _OpenCrayChatFeatureState {
       ),
       drawerOpen: false,
       emptyThreadHeight: threadEmpty ? 260 : _state.emptyThreadHeight,
+      isAwaitingFirstSnapshot: awaitingSnapshot,
     );
   }
 

@@ -57,7 +57,10 @@ class _ChatScrollContent extends StatelessWidget {
         if (state.messages.isEmpty &&
             state.runTraces.isEmpty &&
             state.pendingApprovals.isEmpty)
-          SliverToBoxAdapter(child: SizedBox(height: state.emptyThreadHeight))
+          if (state.isAwaitingFirstSnapshot)
+            SliverToBoxAdapter(child: _ThreadSkeleton(copy: copy))
+          else
+            SliverToBoxAdapter(child: SizedBox(height: state.emptyThreadHeight))
         else
           _MessageList(
             bridge: bridge,
@@ -517,6 +520,48 @@ class _ChatSelectionActionButton extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Stands in for the transcript while a session with history is being loaded.
+///
+/// The header keeps its own skeleton; this one fills the thread area so the
+/// switch to a session with messages does not flash the empty-thread spacer
+/// (or worse, read as a lost history) before the host snapshot lands.
+class _ThreadSkeleton extends StatelessWidget {
+  const _ThreadSkeleton({required this.copy});
+
+  final OpenCrayUiCopy copy;
+
+  @override
+  Widget build(BuildContext context) {
+    return OpenCraySkeletonPulse(
+      key: const ValueKey<String>('chat-thread-loading'),
+      semanticsLabel: copy.contentLoadingLabel,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 8, 24, 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: const <Widget>[
+            Align(
+              alignment: AlignmentDirectional.centerEnd,
+              child: OpenCraySkeletonBar(height: 40, width: 190),
+            ),
+            SizedBox(height: 12),
+            OpenCraySkeletonBar(height: 14, widthFactor: 0.72),
+            SizedBox(height: 8),
+            OpenCraySkeletonBar(height: 14, widthFactor: 0.54),
+            SizedBox(height: 12),
+            OpenCraySkeletonBar(height: 14, widthFactor: 0.62),
+            SizedBox(height: 12),
+            Align(
+              alignment: AlignmentDirectional.centerEnd,
+              child: OpenCraySkeletonBar(height: 28, width: 120),
+            ),
+          ],
         ),
       ),
     );

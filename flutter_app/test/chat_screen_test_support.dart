@@ -440,6 +440,7 @@ class FakeChatBridge implements OpenCrayHostBridge {
   int refreshSandboxSessionInfoCallCount = 0;
   int resolveSandboxPreviewEmbedConfigCallCount = 0;
   Completer<OpenCrayChatSnapshot>? loadChatSnapshotCompleter;
+  Completer<void>? selectChatSessionCompleter;
   Completer<void>? refreshSandboxSessionInfoCompleter;
   Object? refreshSandboxSessionInfoError;
   Object? resolveSandboxPreviewEmbedConfigError;
@@ -812,6 +813,10 @@ class FakeChatBridge implements OpenCrayHostBridge {
   @override
   Future<void> selectChatSession(String sessionId) async {
     selectedSessionIds.add(sessionId);
+    final completer = selectChatSessionCompleter;
+    if (completer != null) {
+      await completer.future;
+    }
   }
 
   @override
