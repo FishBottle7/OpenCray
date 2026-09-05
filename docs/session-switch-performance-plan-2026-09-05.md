@@ -71,3 +71,10 @@ UI 显示旧会话列表。需要 mtime+size 校验或失效广播兜底，复�
 真机：切换会话前后 `logcat` 里 `serviceChatDebug` 的时间戳；
 或 `adb shell am start` 后在 Sessions 抽屉快速连续切换，观察
 `chat-workspace.json` 的 IO（`strace` 不可用时用 logcat 间接）。
+
+## 执行状态
+
+- 第四层（分库存储）进行中：subagent 在独立 worktree 分支
+  `feat/session-storage-split` 上实施（2026-09-05 启动；首次尝试因
+  首次 Gradle 构建静默超时被看门狗终止，已重启并要求后台跑长命令）。
+  合并前需人工审查迁移的崩溃窗口与跨文件锁顺序。
