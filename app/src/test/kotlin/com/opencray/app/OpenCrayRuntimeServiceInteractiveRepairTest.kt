@@ -10,6 +10,7 @@ import com.opencray.core.contracts.PolicyDecisionOutcome
 import com.opencray.core.orchestrator.QueueTaskLifecycleState
 import com.opencray.core.orchestrator.SessionLifecycleState
 import com.opencray.core.orchestrator.SessionQueueSnapshot
+import com.opencray.core.orchestrator.SessionQueueSnapshotStore
 import com.opencray.core.orchestrator.SessionQueueTaskSnapshot
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.persistence.store.MemoryStore
@@ -313,6 +314,67 @@ class OpenCrayRuntimeServiceInteractiveRepairTest {
     val evidence = result.repairEvidenceBySession.getValue(reconnectSessionId)
     assertEquals(listOf(InterruptedRunRepairEvidenceKind.MANAGED_PROCESS_RECONNECT), evidence.map { it.kind })
     assertEquals(2_500L, evidence.single().repairAfterEpochMs)
+  }
+
+  @Test
+  fun bootstrapRuntimeServiceSessionsSurvivesRepairEvidenceReadFailure() {
+    // One session's journal/lock read timing out used to crash onBind, and the
+    // system restart loop then re-entered the same bind forever. Bootstrap must
+    // degrade that session to "no evidence" and still process the others.
+    val root = temporaryFolder.newFolder("runtime-service-bootstrap-evidence-failure")
+    val runtimeRoot = root.resolve("runtime")
+    val chatSessionStore = ChatSessionLocalStore(root.resolve("chat-session"))
+    val activeSessionId = chatSessionStore.loadState().activeSession.sessionId
+    val failingSessionId = chatSessionStore.copySession(activeSessionId).activeSession.sessionId
+    chatSessionStore.selectSession(activeSessionId)
+    val snapshotStoreFactory = FileBackedAgentQueueSnapshotStoreFactory(runtimeRoot)
+    val promptCheckpointStoreFactory = FileBackedPromptCheckpointStoreFactory(runtimeRoot)
+    val subAgentHandleStoreFactory = FileBackedSubAgentHandleStoreFactory(runtimeRoot)
+
+    val failingSnapshotStoreFactory = object : AgentQueueSnapshotStoreFactory by snapshotStoreFactory {
+      override fun forChatSession(sessionId: String): SessionQueueSnapshotStore =
+        if (sessionId == failingSessionId) {
+          throw java.io.IOException("Timed out acquiring process file lock after 20000 ms.")
+        } else {
+          snapshotStoreFactory.forChatSession(sessionId)
+        }
+    }
+
+    val activeSession = RecordingRuntimeSessionAccess(activeSessionId, runs = emptyList())
+    val failingSession = RecordingRuntimeSessionAccess(failingSessionId, runs = emptyList())
+    val runtimeAccess = OpenCrayRuntimeOwnerAccess(
+      lifecycleDescriptor = HostRuntimeLifecycleDescriptor(),
+      hostAccess = RecordingRuntimeHostAccess(
+        sessions = mapOf(
+          activeSessionId to activeSession,
+          failingSessionId to failingSession,
+        ),
+      ),
+      transcriptMessagesProvider = { emptyList<RuntimeConversationMessage>() },
+      memoryIngestionCoordinator = ChatMemoryIngestionCoordinator(
+        memoryStore = InMemoryMemoryStore(),
+      ),
+      replayAccess = OpenCrayRuntimeReplayAccess(
+        approvalRejectionRecorder = { _, _, _, _, _, _ -> },
+        approvalApprovedRecorder = { _, _, _, _, _, _ -> },
+        subAgentReplayRecorder = { _, _ -> },
+        runCancellationRecorder = { _, _, _, _, _ -> },
+        terminalReplayRepairer = { _, _ -> },
+      ),
+    )
+
+    val result = bootstrapRuntimeServiceSessions(
+      chatSessionStore = chatSessionStore,
+      runtimeSessionDirectoryAccess = runtimeAccess.hostAccess,
+      runtimeReplayAccess = runtimeAccess.replayAccess,
+      snapshotStoreFactory = failingSnapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      nowEpochMs = 2_000L,
+    )
+
+    assertTrue(failingSessionId !in result.resumedSessionIds)
+    assertTrue(result.scannedSessionIds.containsAll(listOf(activeSessionId, failingSessionId)))
   }
 
   @Test

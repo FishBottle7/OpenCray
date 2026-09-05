@@ -1,6 +1,7 @@
 package com.opencray.app
 
 import android.content.Context
+import android.util.Log
 import com.opencray.runtime.process.ManagedProcessRestoreMode
 import java.nio.file.Path
 
@@ -682,15 +683,30 @@ private fun durableInteractiveRepairEvidenceForSession(
   ) {
     return emptyList()
   }
-  return potentialInterruptedRunRepairEvidenceForSession(
-    sessionId = sessionId,
-    snapshotStoreFactory = snapshotStoreFactory,
-    promptCheckpointStoreFactory = promptCheckpointStoreFactory,
-    subAgentHandleStoreFactory = subAgentHandleStoreFactory,
-    runRecordStoreFactory = runRecordStoreFactory,
-    runEventJournalStoreFactory = runEventJournalStoreFactory,
-    processRegistryFactory = processRegistryFactory,
-  )
+  // Bootstrap runs inside onBind; one session's lock contention (e.g. a stale
+  // lock holder after the app data was cleared) must not crash the whole
+  // runtime process, because the system then restarts it into the same bind
+  // and the failure loops forever. A session whose repair evidence cannot be
+  // read is degraded to "no evidence" and picked up by the next repair retry.
+  return runCatching {
+    potentialInterruptedRunRepairEvidenceForSession(
+      sessionId = sessionId,
+      snapshotStoreFactory = snapshotStoreFactory,
+      promptCheckpointStoreFactory = promptCheckpointStoreFactory,
+      subAgentHandleStoreFactory = subAgentHandleStoreFactory,
+      runRecordStoreFactory = runRecordStoreFactory,
+      runEventJournalStoreFactory = runEventJournalStoreFactory,
+      processRegistryFactory = processRegistryFactory,
+    )
+  }.getOrElse { failure ->
+    runCatching {
+      Log.w(
+        "OpenCrayDiag",
+        "bootstrap repair evidence read failed session=$sessionId type=${failure::class.java.simpleName}",
+      )
+    }
+    emptyList()
+  }
 }
 
 private fun projectedInterruptedRunRepairEvidenceBySession(
