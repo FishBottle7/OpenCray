@@ -87,6 +87,9 @@ data class ChatTranscriptSessionEntry(
   val createdAtEpochMs: Long,
   val updatedAtEpochMs: Long,
   val messages: List<ChatTranscriptMessageEntry> = emptyList(),
+  val messageCount: Int = 0,
+  val lastMessagePreview: String = "",
+  val lastMessageAtEpochMs: Long? = null,
 ) {
   init {
     require(sessionId.isNotBlank()) { "ChatTranscriptSessionEntry sessionId must not be blank." }
@@ -94,6 +97,7 @@ data class ChatTranscriptSessionEntry(
     require(updatedAtEpochMs >= createdAtEpochMs) {
       "ChatTranscriptSessionEntry updatedAtEpochMs must be >= createdAtEpochMs."
     }
+    require(messageCount >= 0) { "ChatTranscriptSessionEntry messageCount must be >= 0." }
   }
 }
 
