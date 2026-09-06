@@ -74,7 +74,10 @@ UI 显示旧会话列表。需要 mtime+size 校验或失效广播兜底，复�
 
 ## 执行状态
 
-- 第四层（分库存储）进行中：subagent 在独立 worktree 分支
-  `feat/session-storage-split` 上实施（2026-09-05 启动；首次尝试因
-  首次 Gradle 构建静默超时被看门狗终止，已重启并要求后台跑长命令）。
-  合并前需人工审查迁移的崩溃窗口与跨文件锁顺序。
+- 第四层（分库存储）完成（2026-09-06，d55e8eb）：`chat-workspace.json` 只留会话
+  元数据与去规范化摘要字段，每会话消息拆至
+  `chat-sessions/<base64url-sid>/transcript.json`（同一文件锁协议）。消息变更走
+  T→W 两阶段锁序（transcript 锁改写→workspace 锁刷新元数据），不嵌套持锁。旧布局
+  由 `loadWorkspaceOrCreate` 两阶段迁移（a:逐会话写 transcript；b:清空 inline），
+  崩溃可重入、幂等、并发完成者优先。迁移/引导/并发回归测试 6 个新增；全量
+  1864 app 单测 + 31 persistence 单测通过。
