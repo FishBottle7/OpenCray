@@ -8,7 +8,9 @@ import com.opencray.persistence.model.ChatTranscriptMessageEntry
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.model.ChatTranscriptSessionEntry
 import com.opencray.persistence.model.ChatWorkspaceRecord
+import com.opencray.persistence.model.PersistedChatSessionTranscript
 import com.opencray.persistence.store.ChatWorkspaceStoreUpdate
+import com.opencray.persistence.store.file.RecordStorageUpdate
 import com.opencray.runtime.AgentTodoEntry
 import com.opencray.runtime.AgentTodoStatus
 import com.opencray.runtime.workingstate.WorkingState
@@ -20,24 +22,162 @@ private val pendingUserInputJson = Json { ignoreUnknownKeys = true }
 private val todoJson = Json { ignoreUnknownKeys = true }
 private val workingStateJson = Json { ignoreUnknownKeys = true }
 
-internal fun ChatSessionLocalStore.loadWorkspaceOrCreate(): ChatWorkspaceRecord = workspaceStore.update { workspace ->
-  val existingActiveSession = workspace?.let(::activeSessionFrom)
-  if (workspace != null && existingActiveSession != null) {
-    return@update ChatWorkspaceStoreUpdate(
-      record = workspace,
-      result = workspace,
-      write = false,
+/**
+ * Loads (and if needed creates or migrates) the chat workspace record.
+ *
+ * The returned record carries session metadata only: `messages` lists are always empty
+ * and the full message list for a session lives in its per-session transcript file.
+ * Hydrate a session with [ChatSessionLocalStore.transcriptMessagesFor].
+ *
+ * Migration from the legacy single-file layout is a two-phase, lock-ordered split:
+ *  a. every session's inline messages are written to
+ *     `chat-sessions/<sid>/transcript.json` under that session's own lock, one session
+ *     at a time, with no workspace lock held (existing transcripts win, so re-running
+ *     after a crash never clobbers concurrent progress),
+ *  b. the workspace is rewritten with empty `messages` plus denormalized preview/count
+ *     metadata under the workspace lock; when a concurrent process already completed
+ *     the migration, their record is kept as-is.
+ * A crash between the phases only causes the migration to re-run on next start.
+ */
+internal fun ChatSessionLocalStore.loadWorkspaceOrCreate(): ChatWorkspaceRecord {
+  var workspace = workspaceStore.load()
+  if (workspace != null && hasInlineMessages(workspace)) {
+    migrateInlineMessagesToTranscripts(workspace)
+    workspace = workspaceStore.load()
+  }
+  if (workspace != null && activeSessionFrom(workspace) != null) {
+    return workspace
+  }
+  return ensureActiveSessionInWorkspace(workspace)
+}
+
+internal fun hasInlineMessages(workspace: ChatWorkspaceRecord): Boolean =
+  workspace.sessions.any { session -> session.messages.isNotEmpty() }
+
+internal fun ChatSessionLocalStore.migrateInlineMessagesToTranscripts(
+  workspace: ChatWorkspaceRecord,
+) {
+  // Phase a: per-session transcript writes, each under that session's own lock, with no
+  // workspace lock held. The check-and-create is atomic per session, so re-running
+  // after a crash or a concurrent migration never clobbers existing transcripts.
+  workspace.sessions
+    .filter { session -> session.messages.isNotEmpty() }
+    .forEach { session ->
+      transcriptStore.update(session.sessionId) { current ->
+        if (current != null) {
+          RecordStorageUpdate(
+            value = current,
+            result = Unit,
+            write = false,
+          )
+        } else {
+          RecordStorageUpdate(
+            value = PersistedChatSessionTranscript(
+              sessionId = session.sessionId,
+              messages = session.messages,
+              createdAtEpochMs = session.createdAtEpochMs,
+              updatedAtEpochMs = session.updatedAtEpochMs,
+            ),
+            result = Unit,
+          )
+        }
+      }
+    }
+  // Phase b: under the workspace lock, re-read; only rewrite when the record is still
+  // legacy. A concurrent process that finished first keeps its result.
+  workspaceStore.update { current ->
+    if (current == null || !hasInlineMessages(current)) {
+      return@update ChatWorkspaceStoreUpdate(
+        record = current,
+        result = Unit,
+        write = false,
+      )
+    }
+    val now = nowEpochMs()
+    ChatWorkspaceStoreUpdate(
+      record = current.copy(
+        sessions = current.sessions.map { session ->
+          if (session.messages.isEmpty()) {
+            session
+          } else {
+            session.withMessagesAndMetadata(session.messages).asMetadataOnly()
+          }
+        },
+        recordVersion = current.recordVersion + 1,
+        updatedAtEpochMs = maxOf(current.updatedAtEpochMs, now),
+      ),
+      result = Unit,
     )
   }
+}
+
+/**
+ * Guarantees the workspace has an active session, seeding a fresh one when the record is
+ * missing or session-less. The seed transcript file is written before the workspace
+ * record so a listed session always has its transcript on disk; when a concurrent process
+ * wins the workspace creation, our seed file stays behind as a harmless orphan.
+ */
+internal fun ChatSessionLocalStore.ensureActiveSessionInWorkspace(
+  workspace: ChatWorkspaceRecord?,
+): ChatWorkspaceRecord {
   val now = nowEpochMs()
-  val currentWorkspace = workspace ?: seedWorkspaceRecord(now)
-  val created = workspaceWithNewSession(
-    workspace = currentWorkspace,
-    now = now,
+  val seededSession = newSeededSession(now)
+  return workspaceStore.update { current ->
+    val existingActiveSession = current?.let(::activeSessionFrom)
+    if (current != null && existingActiveSession != null) {
+      return@update ChatWorkspaceStoreUpdate(
+        record = current,
+        result = current,
+        write = false,
+      )
+    }
+    val created = replaceSession(
+      workspace = current ?: seedWorkspaceRecord(now),
+      updatedSession = seededSession.asMetadataOnly(),
+      activeSessionId = seededSession.sessionId,
+      updatedAtEpochMs = maxOf(seedWorkspaceRecordUpdatedAt(current, now), now),
+    )
+    ChatWorkspaceStoreUpdate(
+      record = created,
+      result = created,
+    )
+  }
+}
+
+private fun seedWorkspaceRecordUpdatedAt(
+  workspace: ChatWorkspaceRecord?,
+  now: Long,
+): Long = workspace?.updatedAtEpochMs ?: now
+
+/** Metadata-only session entry for a brand-new session plus its seed transcript file. */
+internal fun ChatSessionLocalStore.newSeededSession(now: Long): ChatTranscriptSessionEntry {
+  val session = newSessionEntry(now)
+  transcriptStore.save(
+    PersistedChatSessionTranscript(
+      sessionId = session.sessionId,
+      messages = session.messages,
+      createdAtEpochMs = session.createdAtEpochMs,
+      updatedAtEpochMs = session.updatedAtEpochMs,
+    ),
   )
-  ChatWorkspaceStoreUpdate(
-    record = created.workspace,
-    result = created.workspace,
+  return session
+}
+
+internal fun newSessionEntry(now: Long): ChatTranscriptSessionEntry {
+  val sessionId = "session-${now}-${UUID.randomUUID().toString().take(8)}"
+  return ChatTranscriptSessionEntry(
+    sessionId = sessionId,
+    title = DEFAULT_SESSION_TITLE,
+    createdAtEpochMs = now,
+    updatedAtEpochMs = now,
+    messages = listOf(
+      ChatTranscriptMessageEntry(
+        messageId = "system-$now-${UUID.randomUUID().toString().take(8)}",
+        role = ChatTranscriptRole.SYSTEM,
+        promptTemplateRefId = DEFAULT_SYSTEM_TEMPLATE_ID,
+        createdAtEpochMs = now,
+      ),
+    ),
   )
 }
 
@@ -57,71 +197,10 @@ internal fun seedWorkspaceRecord(now: Long): ChatWorkspaceRecord = ChatWorkspace
   updatedAtEpochMs = now,
 )
 
-internal fun ChatSessionLocalStore.workspaceAndSessionForAppend(
-  workspace: ChatWorkspaceRecord?,
-  sessionId: String,
-  now: Long,
-): CreatedChatSessionWorkspace {
-  val currentWorkspace = workspace ?: seedWorkspaceRecord(now)
-  val currentSession = currentWorkspace.sessions.firstOrNull { it.sessionId == sessionId }
-    ?: error(
-      "Chat session '$sessionId' no longer exists; rejecting transcript append.",
-    )
-  return CreatedChatSessionWorkspace(
-    workspace = currentWorkspace,
-    session = currentSession,
-  )
-}
-
-internal fun ChatSessionLocalStore.workspaceAndActiveSessionForUpdate(
-  workspace: ChatWorkspaceRecord?,
-  now: Long,
-): CreatedChatSessionWorkspace {
-  val currentWorkspace = workspace ?: seedWorkspaceRecord(now)
-  val activeSession = activeSessionFrom(currentWorkspace)
-  return if (activeSession == null) {
-    workspaceWithNewSession(
-      workspace = currentWorkspace,
-      now = now,
-    )
-  } else {
-    CreatedChatSessionWorkspace(
-      workspace = currentWorkspace,
-      session = activeSession,
-    )
-  }
-}
-
-internal fun ChatSessionLocalStore.workspaceWithNewSession(
-  workspace: ChatWorkspaceRecord,
-  now: Long,
-): CreatedChatSessionWorkspace {
-  val sessionId = "session-${now}-${UUID.randomUUID().toString().take(8)}"
-  val session = ChatTranscriptSessionEntry(
-    sessionId = sessionId,
-    title = DEFAULT_SESSION_TITLE,
-    createdAtEpochMs = now,
-    updatedAtEpochMs = now,
-    messages = listOf(
-      ChatTranscriptMessageEntry(
-        messageId = messageId("system"),
-        role = ChatTranscriptRole.SYSTEM,
-        promptTemplateRefId = DEFAULT_SYSTEM_TEMPLATE_ID,
-        createdAtEpochMs = now,
-      ),
-    ),
-  )
-  return CreatedChatSessionWorkspace(
-    workspace = workspace.copy(
-      sessions = (workspace.sessions.filterNot { it.sessionId == sessionId } + session)
-        .sortedByDescending { it.updatedAtEpochMs },
-      activeSessionId = sessionId,
-      recordVersion = workspace.recordVersion + 1,
-      updatedAtEpochMs = maxOf(workspace.updatedAtEpochMs, now),
-    ),
-    session = session,
-  )
-}
+internal data class CreatedChatSessionWorkspace(
+  val workspace: ChatWorkspaceRecord,
+  val session: ChatTranscriptSessionEntry,
+)
 
 internal fun workspaceWithReusedEmptySession(
   workspace: ChatWorkspaceRecord,
@@ -133,7 +212,7 @@ internal fun workspaceWithReusedEmptySession(
     title = DEFAULT_SESSION_TITLE,
     createdAtEpochMs = reusedAt,
     updatedAtEpochMs = reusedAt,
-  )
+  ).asMetadataOnly()
   val updatedWorkspace = replaceSession(
     workspace = workspace,
     updatedSession = reusedSession,
@@ -146,16 +225,11 @@ internal fun workspaceWithReusedEmptySession(
   )
 }
 
-internal data class CreatedChatSessionWorkspace(
-  val workspace: ChatWorkspaceRecord,
-  val session: ChatTranscriptSessionEntry,
-)
-
 internal fun activeSessionFrom(workspace: ChatWorkspaceRecord): ChatTranscriptSessionEntry? =
   workspace.activeSessionId?.let { activeId -> workspace.sessions.firstOrNull { it.sessionId == activeId } }
     ?: workspace.sessions.maxByOrNull { it.updatedAtEpochMs }
 
-internal fun reusableEmptySessionFrom(workspace: ChatWorkspaceRecord): ChatTranscriptSessionEntry? =
+internal fun ChatSessionLocalStore.reusableEmptySessionFrom(workspace: ChatWorkspaceRecord): ChatTranscriptSessionEntry? =
   workspace.sessions
     .sortedByDescending(ChatTranscriptSessionEntry::updatedAtEpochMs)
     .firstOrNull { session ->
@@ -165,7 +239,7 @@ internal fun reusableEmptySessionFrom(workspace: ChatWorkspaceRecord): ChatTrans
       )
     }
 
-internal fun isReusableEmptySession(
+internal fun ChatSessionLocalStore.isReusableEmptySession(
   workspace: ChatWorkspaceRecord,
   session: ChatTranscriptSessionEntry,
 ): Boolean {
@@ -187,10 +261,15 @@ internal fun isReusableEmptySession(
   if (sessionScopedStatePresentFrom(workspace = workspace, sessionId = session.sessionId)) {
     return false
   }
-  if (session.messages.size != 1) {
+  if (session.messages.isNotEmpty()) {
+    // Legacy inline layout: verify directly.
+    return session.messages.size == 1 && isDefaultSeedSystemMessage(session.messages.single())
+  }
+  if (session.messageCount != 0) {
     return false
   }
-  return isDefaultSeedSystemMessage(session.messages.single())
+  val messages = transcriptMessagesFor(session)
+  return messages.size == 1 && isDefaultSeedSystemMessage(messages.single())
 }
 
 internal fun isDefaultSeedSystemMessage(message: ChatTranscriptMessageEntry): Boolean =
@@ -212,13 +291,18 @@ internal fun replaceSession(
   updatedSession: ChatTranscriptSessionEntry,
   activeSessionId: String,
   updatedAtEpochMs: Long,
-): ChatWorkspaceRecord = workspace.copy(
-  sessions = (workspace.sessions.filterNot { it.sessionId == updatedSession.sessionId } + updatedSession)
-    .sortedByDescending { it.updatedAtEpochMs },
-  activeSessionId = activeSessionId,
-  recordVersion = workspace.recordVersion + 1,
-  updatedAtEpochMs = updatedAtEpochMs,
-)
+): ChatWorkspaceRecord {
+  require(updatedSession.messages.isEmpty()) {
+    "Workspace records must not carry inline transcript messages for '${updatedSession.sessionId}'."
+  }
+  return workspace.copy(
+    sessions = (workspace.sessions.filterNot { it.sessionId == updatedSession.sessionId } + updatedSession)
+      .sortedByDescending { it.updatedAtEpochMs },
+    activeSessionId = activeSessionId,
+    recordVersion = workspace.recordVersion + 1,
+    updatedAtEpochMs = updatedAtEpochMs,
+  )
+}
 
 internal fun pendingUserInputsFrom(
   workspace: ChatWorkspaceRecord,
@@ -414,6 +498,78 @@ internal fun copySessionExtensions(
       updatedExtensions + (maintainedContextWindowTokensExtensionKey(targetSessionId) to sourceValue)
   }
   return updatedExtensions
+}
+
+internal fun previewForMessage(message: ChatTranscriptMessageEntry): String {
+  val text = message.text.orEmpty().trim()
+  if (text.isNotBlank()) {
+    return text
+  }
+  if (!message.commandLabel.isNullOrBlank()) {
+    return message.commandLabel.orEmpty().trim()
+  }
+  if (message.attachments.isNotEmpty()) {
+    return message.attachments.first().displayName
+  }
+  return ""
+}
+
+/**
+ * Derives the denormalized drawer metadata (visible message count, last preview, last
+ * message timestamp) from a session's message list using the same semantics the drawer
+ * previously computed on the fly.
+ */
+internal fun transcriptSummaryFor(messages: List<ChatTranscriptMessageEntry>): ChatSessionLocalStore.SessionTranscriptMetadata {
+  val lastVisibleMessage = messages
+    .asReversed()
+    .firstOrNull { message -> message.role != ChatTranscriptRole.SYSTEM }
+  return ChatSessionLocalStore.SessionTranscriptMetadata(
+    messageCount = messages.count { message ->
+      message.role != ChatTranscriptRole.SYSTEM ||
+        message.promptTemplateRefId != DEFAULT_SYSTEM_TEMPLATE_ID
+    },
+    lastMessagePreview = lastVisibleMessage
+      ?.let(::previewForMessage)
+      .orEmpty()
+      .trim()
+      .take(52),
+    lastMessageAtEpochMs = lastVisibleMessage?.createdAtEpochMs,
+  )
+}
+
+/** Sets the message list together with its denormalized metadata. */
+internal fun ChatTranscriptSessionEntry.withMessagesAndMetadata(
+  messages: List<ChatTranscriptMessageEntry>,
+): ChatTranscriptSessionEntry {
+  val summary = transcriptSummaryFor(messages)
+  return copy(
+    messages = messages,
+    messageCount = summary.messageCount,
+    lastMessagePreview = summary.lastMessagePreview,
+    lastMessageAtEpochMs = summary.lastMessageAtEpochMs,
+  )
+}
+
+/** Strips inline messages while keeping the denormalized metadata; the shape persisted in the workspace record. */
+internal fun ChatTranscriptSessionEntry.asMetadataOnly(): ChatTranscriptSessionEntry =
+  copy(messages = emptyList())
+
+/**
+ * Merges freshly-read workspace metadata with metadata computed from a transcript
+ * update. When the workspace entry is strictly newer than the transcript commit, a
+ * concurrent writer already published fresher content and their fields are kept
+ * (timestamps still move forward) so we never regress the drawer metadata.
+ */
+internal fun mergeSessionMetadata(
+  existing: ChatTranscriptSessionEntry,
+  computed: ChatTranscriptSessionEntry,
+): ChatTranscriptSessionEntry {
+  val mergedUpdatedAt = maxOf(existing.updatedAtEpochMs, computed.updatedAtEpochMs)
+  return if (existing.updatedAtEpochMs > computed.updatedAtEpochMs) {
+    existing.copy(updatedAtEpochMs = mergedUpdatedAt)
+  } else {
+    computed.copy(updatedAtEpochMs = mergedUpdatedAt)
+  }
 }
 
 internal fun decodePendingUserInputs(raw: String): List<PendingUserInputEntry> = runCatching {

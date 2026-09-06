@@ -4,11 +4,15 @@ import android.content.Context
 import com.opencray.app.ChatSessionLocalStore
 import com.opencray.app.PersonalizationPreset
 import com.opencray.app.WorkspaceSoulProfile
+import com.opencray.app.asMetadataOnly
+import com.opencray.app.withMessagesAndMetadata
 import com.opencray.persistence.model.ChatPromptTemplateEntry
 import com.opencray.persistence.model.ChatTranscriptMessageEntry
 import com.opencray.persistence.model.ChatTranscriptRole
 import com.opencray.persistence.model.ChatTranscriptSessionEntry
 import com.opencray.persistence.model.ChatWorkspaceRecord
+import com.opencray.persistence.model.PersistedChatSessionTranscript
+import com.opencray.persistence.store.file.JsonFileChatSessionTranscriptStore
 import com.opencray.persistence.store.file.JsonFileChatWorkspaceStore
 import java.nio.file.Files
 import java.nio.file.Path
@@ -116,23 +120,32 @@ internal class AgentBootstrapService(
     if (workspaceStore.load() != null) {
       return
     }
-    val workspace = ChatWorkspaceRecord(
-      sessions = listOf(
-        ChatTranscriptSessionEntry(
-          sessionId = sessionId,
-          title = ChatSessionLocalStore.DEFAULT_SESSION_TITLE,
+    val seedSession = ChatTranscriptSessionEntry(
+      sessionId = sessionId,
+      title = ChatSessionLocalStore.DEFAULT_SESSION_TITLE,
+      createdAtEpochMs = createdAtEpochMs,
+      updatedAtEpochMs = createdAtEpochMs,
+      messages = listOf(
+        ChatTranscriptMessageEntry(
+          messageId = "system-$sessionId-seed",
+          role = ChatTranscriptRole.SYSTEM,
+          promptTemplateRefId = ChatSessionLocalStore.DEFAULT_SYSTEM_TEMPLATE_ID,
           createdAtEpochMs = createdAtEpochMs,
-          updatedAtEpochMs = createdAtEpochMs,
-          messages = listOf(
-            ChatTranscriptMessageEntry(
-              messageId = "system-$sessionId-seed",
-              role = ChatTranscriptRole.SYSTEM,
-              promptTemplateRefId = ChatSessionLocalStore.DEFAULT_SYSTEM_TEMPLATE_ID,
-              createdAtEpochMs = createdAtEpochMs,
-            ),
-          ),
         ),
       ),
+    )
+    // Split-storage layout: the seed transcript lands in its per-session file before
+    // the workspace record lists the session, so a listed session always has a transcript.
+    JsonFileChatSessionTranscriptStore(chatLocalStateRoot.toFile()).save(
+      PersistedChatSessionTranscript(
+        sessionId = sessionId,
+        messages = seedSession.messages,
+        createdAtEpochMs = createdAtEpochMs,
+        updatedAtEpochMs = createdAtEpochMs,
+      ),
+    )
+    val workspace = ChatWorkspaceRecord(
+      sessions = listOf(seedSession.withMessagesAndMetadata(seedSession.messages).asMetadataOnly()),
       promptTemplates = listOf(
         ChatPromptTemplateEntry(
           templateId = ChatSessionLocalStore.DEFAULT_SYSTEM_TEMPLATE_ID,
