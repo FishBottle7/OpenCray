@@ -1,6 +1,7 @@
 package com.opencray.app.agent
 
 import com.opencray.persistence.model.ChatTranscriptRole
+import com.opencray.persistence.store.file.JsonFileChatSessionTranscriptStore
 import com.opencray.persistence.store.file.JsonFileChatWorkspaceStore
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -109,7 +110,12 @@ class AgentBootstrapServiceTest {
     assertNotNull(chatWorkspace)
     assertEquals(result.descriptor.activeSessionId, chatWorkspace?.activeSessionId)
     assertEquals(1, chatWorkspace?.sessions?.size)
-    assertEquals(ChatTranscriptRole.SYSTEM, chatWorkspace?.sessions?.single()?.messages?.single()?.role)
+    // Split-storage layout: the workspace record carries metadata only; the seed system
+    // message lives in the per-session transcript file.
+    assertTrue(chatWorkspace?.sessions?.single()?.messages?.isEmpty() == true)
+    val seedTranscript = JsonFileChatSessionTranscriptStore(result.storagePaths.chatLocalStateRoot.toFile())
+      .load(requireNotNull(result.descriptor.activeSessionId))
+    assertEquals(ChatTranscriptRole.SYSTEM, seedTranscript?.messages?.single()?.role)
   }
 
   @Test
