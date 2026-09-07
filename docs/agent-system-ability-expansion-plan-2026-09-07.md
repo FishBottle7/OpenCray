@@ -158,6 +158,15 @@ OmniBot 权限体验的交互模式（视觉按仓库 token 重做）：
   `SYSTEM_ABILITY_UNAVAILABLE`/`SYSTEM_ACTION_FAILED`），`docs/error-codes.md` 同步。
   新增 9 个 dispatcher 工具测试 + classifier 6 工具映射测试 + policy 矩阵 6 case；
   全量 `.\gradlew.bat test` 通过。
-- 待做：第二层权限 UX 链路（OmniBot 模式：聊天权限卡 + 授权页/弹层 + 声明式
-  PermissionSpec 注册表 + 透明权限 Activity）；日历/联系人等运行时权限工具；
-  第三批高敏感能力逐个评估；MCP 工具桥远期独立立项。
+- 第二层（后端部分）完成（2026-09-07）：日历/联系人三工具——
+  `system_calendar_upcoming`（`SYSTEM_QUERY`，`CalendarContract.Instances` 窗口查询）、
+  `system_calendar_create`（`SYSTEM_ACTION`，主日历 insert）、`system_contact_search`
+  （`SYSTEM_QUERY`，名字/电话/邮箱三路并集搜索）落地。运行时权限三段式的后端契约成型：
+  权限未授予时工具返回 `SYSTEM_PERMISSION_REQUIRED` + `missingPermissions` 元数据
+  （READ_CALENDAR/WRITE_CALENDAR/READ_CONTACTS），内容引导用户到系统设置授权后重试，
+  不与策略审批（`APPROVAL_REQUIRED`）混用。manifest 增三个运行时权限声明。新增 8 个
+  dispatcher 测试用例（含 SAFE 审批、AUTO 放行、权限缺失映射、参数校验前置）；
+  全量 `.\gradlew.bat test` 通过。
+- 待做：第二层权限 UX 前端链路（OmniBot 模式：聊天权限卡 + 授权页/弹层 + 声明式
+  PermissionSpec 注册表 + 透明权限 Activity——需要用户确认视觉方案后开工，Pencil
+  原型仍是视觉事实来源）；第三批高敏感能力逐个评估；MCP 工具桥远期独立立项。
