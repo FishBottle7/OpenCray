@@ -147,4 +147,17 @@ OmniBot 权限体验的交互模式（视觉按仓库 token 重做）：
 
 ## 执行状态
 
-- 进行中（2026-09-07）：文档建立，第一层实现开工。
+- 第一层完成（2026-09-07）：六个系统工具（`system_alarm_create`/`system_timer_start`/
+  `system_notification_post`/`system_app_list`/`system_app_open`/`system_settings_open`）
+  全链路落地——`PolicyToolClass` 新增 `SYSTEM_QUERY`/`SYSTEM_ACTION`（SAFE 档查询放行、
+  动作 ASK 标准审批，AUTO/DEVELOPER 放行）+ `SystemAbilityIntent` intent 模型；runtime 侧
+  `SystemAbilityGateway` 接口 + config 判空条件注册；app 侧 `AppSystemAbilityGateway`
+  （`AlarmClock` intent + `EXTRA_SKIP_UI`、白名单设置页、`RuntimeNotificationChannelRegistry`
+  复用、PackageManager 查询）经 `InProcessOpenCrayRuntimeOwner` 注入；manifest 增
+  `SET_ALARM` + `<queries>`；E6xxx 启用为系统能力段（`SYSTEM_PERMISSION_REQUIRED`/
+  `SYSTEM_ABILITY_UNAVAILABLE`/`SYSTEM_ACTION_FAILED`），`docs/error-codes.md` 同步。
+  新增 9 个 dispatcher 工具测试 + classifier 6 工具映射测试 + policy 矩阵 6 case；
+  全量 `.\gradlew.bat test` 通过。
+- 待做：第二层权限 UX 链路（OmniBot 模式：聊天权限卡 + 授权页/弹层 + 声明式
+  PermissionSpec 注册表 + 透明权限 Activity）；日历/联系人等运行时权限工具；
+  第三批高敏感能力逐个评估；MCP 工具桥远期独立立项。
