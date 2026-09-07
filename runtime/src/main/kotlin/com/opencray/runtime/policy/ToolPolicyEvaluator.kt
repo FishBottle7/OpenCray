@@ -182,6 +182,8 @@ internal class ToolPolicyEvaluator(
       PolicyToolClass.EXECUTE_COMMAND -> SafetySettingsMetadataKeys.SHELL_COMMANDS_POLICY_ID
       PolicyToolClass.READ_FILE,
       PolicyToolClass.NETWORK_ACCESS,
+      PolicyToolClass.SYSTEM_QUERY,
+      PolicyToolClass.SYSTEM_ACTION,
       -> null
     } ?: return ToolPolicyOverride.INHERIT
     return ToolPolicyOverride.fromWireValue(task.metadata[metadataKey])
@@ -202,7 +204,10 @@ internal class ToolPolicyEvaluator(
       PolicyToolClass.EXECUTE_COMMAND,
       PolicyToolClass.NETWORK_ACCESS,
       -> PolicyApprovalRisk.HIGH_RISK
-      PolicyToolClass.READ_FILE -> PolicyApprovalRisk.STANDARD
+      PolicyToolClass.READ_FILE,
+      PolicyToolClass.SYSTEM_QUERY,
+      PolicyToolClass.SYSTEM_ACTION,
+      -> PolicyApprovalRisk.STANDARD
     }
   }
 

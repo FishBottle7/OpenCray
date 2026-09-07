@@ -126,3 +126,25 @@ internal data class SchedulingIntent(
     title?.takeIf(String::isNotBlank)?.let { put("scheduleTitle", it) }
   }
 }
+
+internal enum class SystemAbilityIntentKind(val wireValue: String) {
+  CREATE_ALARM("create_alarm"),
+  START_TIMER("start_timer"),
+  POST_NOTIFICATION("post_notification"),
+  LIST_APPS("list_apps"),
+  OPEN_APP("open_app"),
+  OPEN_SETTINGS("open_settings"),
+}
+
+internal data class SystemAbilityIntent(
+  val kind: SystemAbilityIntentKind,
+  val actionSummary: String? = null,
+) : ToolRuntimeIntent {
+  override val categoryWireValue: String = "system_ability"
+
+  override fun metadata(): Map<String, String> = buildMap {
+    put("intentCategory", categoryWireValue)
+    put("systemAbilityIntentKind", kind.wireValue)
+    actionSummary?.takeIf(String::isNotBlank)?.let { put("systemActionSummary", it) }
+  }
+}

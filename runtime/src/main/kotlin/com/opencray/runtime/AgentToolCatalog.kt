@@ -603,6 +603,71 @@ internal fun OpenCrayToolDispatcher.toolDefinitions(): List<AgentToolDefinition>
           AgentToolParameter("skill_id", "string", required = true, description = "Exact installed skill id."),
         ),
       ),
+      config.systemAbilityGateway?.let {
+        AgentToolDefinition(
+          name = "system_alarm_create",
+          description = "Create one alarm in the device clock app. Use this for wake-up calls and reminders that must fire even when this app is closed. For in-app scheduled agent runs prefer ScheduledTaskCreate.",
+          parameters = listOf(
+            AgentToolParameter("hour", "number", required = true, description = "Alarm hour in 24-hour local time, 0-23."),
+            AgentToolParameter("minute", "number", required = true, description = "Alarm minute, 0-59."),
+            AgentToolParameter("label", "string", required = false, description = "Optional alarm label shown in the clock app."),
+            AgentToolParameter(
+              "days",
+              "number[]",
+              required = false,
+              description = "Optional repeat days as ISO day numbers 1 (Monday) through 7 (Sunday). Omit for a one-shot alarm.",
+            ),
+          ),
+        )
+      },
+      config.systemAbilityGateway?.let {
+        AgentToolDefinition(
+          name = "system_timer_start",
+          description = "Start a countdown timer in the device clock app. Use this for short-duration reminders such as a 10-minute timer.",
+          parameters = listOf(
+            AgentToolParameter("seconds", "number", required = true, description = "Timer duration in seconds, 1 or more."),
+            AgentToolParameter("label", "string", required = false, description = "Optional timer label shown in the clock app."),
+          ),
+        )
+      },
+      config.systemAbilityGateway?.let {
+        AgentToolDefinition(
+          name = "system_notification_post",
+          description = "Post one local notification visible in the system notification shade. Use this to surface a result or reminder to the user without opening the app.",
+          parameters = listOf(
+            AgentToolParameter("title", "string", required = true, description = "Notification title."),
+            AgentToolParameter("body", "string", required = true, description = "Notification body text."),
+          ),
+        )
+      },
+      config.systemAbilityGateway?.let {
+        AgentToolDefinition(
+          name = "system_app_list",
+          description = "List installed launchable apps on the device with package names and labels. Use this before system_app_open to resolve a package name.",
+          parameters = listOf(
+            AgentToolParameter("query", "string", required = false, description = "Optional case-insensitive filter matched against app labels and package names."),
+            AgentToolParameter("limit", "number", required = false, description = "Maximum number of apps to return. Defaults to 50."),
+          ),
+        )
+      },
+      config.systemAbilityGateway?.let {
+        AgentToolDefinition(
+          name = "system_app_open",
+          description = "Launch one installed app by package name. Resolve the package name with system_app_list first when unsure.",
+          parameters = listOf(
+            AgentToolParameter("package", "string", required = true, description = "Android package name of the app to launch, for example com.example.app."),
+          ),
+        )
+      },
+      config.systemAbilityGateway?.let {
+        AgentToolDefinition(
+          name = "system_settings_open",
+          description = "Open one whitelisted system settings page. Supported pages: battery_optimization, notifications, exact_alarms, app_details.",
+          parameters = listOf(
+            AgentToolParameter("page", "string", required = true, description = "Whitelisted settings page key: battery_optimization, notifications, exact_alarms, or app_details."),
+          ),
+        )
+      },
       AgentToolDefinition(
         name = "mcp_list_servers",
         description = "Inspect currently exposed MCP servers and their trust state. This runtime does not proxy remote MCP tools yet.",

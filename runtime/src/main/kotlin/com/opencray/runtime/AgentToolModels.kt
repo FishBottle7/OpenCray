@@ -178,6 +178,7 @@ data class OpenCrayToolDispatcherConfig(
   val sandboxSessionControlService: SandboxSessionControlService? = null,
   val sandboxSessionInfoService: SandboxSessionInfoService? = null,
   val scheduledTaskManager: ScheduledTaskManager? = null,
+  val systemAbilityGateway: SystemAbilityGateway? = null,
   val mediaToolSettingsProvider: () -> OpenCrayMediaToolSettings? = { null },
   val imageGenerationClient: OpenCrayImageGenerationClient? = null,
   val speechSynthesisClient: OpenCraySpeechSynthesisClient? = null,

@@ -46,6 +46,16 @@ internal class ToolCapabilityClassifier {
     "sandbox_session_close",
     -> PolicyToolClass.NETWORK_ACCESS
 
+    "system_alarm_create",
+    "system_timer_start",
+    "system_notification_post",
+    "system_app_open",
+    "system_settings_open",
+    -> PolicyToolClass.SYSTEM_ACTION
+
+    "system_app_list",
+    -> PolicyToolClass.SYSTEM_QUERY
+
     "LS",
     "Read",
     "Grep",
@@ -137,6 +147,14 @@ internal class ToolCapabilityClassifier {
 
     "mcp_list_servers" -> "read_mcp"
 
+    "system_alarm_create",
+    "system_timer_start",
+    "system_notification_post",
+    "system_app_list",
+    "system_app_open",
+    "system_settings_open",
+    -> "system_ability"
+
     "memory_search",
     "memory_get",
     "session_search",
@@ -168,6 +186,9 @@ internal class ToolCapabilityClassifier {
         PolicyToolClass.EXECUTE_COMMAND -> "execute_command"
         PolicyToolClass.NETWORK_ACCESS -> "network_access"
         PolicyToolClass.READ_FILE -> "read_file"
+        PolicyToolClass.SYSTEM_QUERY,
+        PolicyToolClass.SYSTEM_ACTION,
+        -> "system_ability"
       }
     }
   }

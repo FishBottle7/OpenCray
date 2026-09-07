@@ -19,7 +19,7 @@
 | E3xxx | 会话编排与运行时 |
 | E4xxx | 文件系统 |
 | E5xxx | 技能 |
-| E6xxx | MCP（保留段，服务端返回的认证错误码为动态值） |
+| E6xxx | 系统与设备能力（系统能力工具的执行/权限失败） |
 | E7xxx | 终端环境 |
 | E8xxx | 子代理 |
 | E9xxx | 未归类 / 未知 |
@@ -105,6 +105,14 @@
 | E5004 | INVALID_FRONT_MATTER | front matter 解析失败 |
 | E5005 | DUPLICATE_SKILL_NAME | 技能名称重复 |
 | E5006 | INVALID_SKILL_METADATA | 技能元数据校验失败（name/description 不合规） |
+
+## E6xxx 系统与设备能力
+
+| 短码 | 内部码 | 含义与常见原因 |
+|---|---|---|
+| E6001 | SYSTEM_PERMISSION_REQUIRED | 系统能力执行所需运行时权限未授予（如通知权限），需要用户去系统授权 |
+| E6002 | SYSTEM_ABILITY_UNAVAILABLE | 设备侧能力不可用（无时钟应用、目标应用未安装等） |
+| E6003 | SYSTEM_ACTION_FAILED | 系统能力动作执行失败（intent 发送被拒、provider 异常等） |
 
 ## E7xxx 终端环境
 

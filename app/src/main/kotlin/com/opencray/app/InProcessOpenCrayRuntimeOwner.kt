@@ -472,6 +472,9 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
         },
       )
     },
+    systemAbilityGatewayProvider = {
+      AppSystemAbilityGateway.fromContext(appContext)
+    },
   )
   val sessionRuntimeManager = DefaultAgentSessionRuntimeManager(
     agentId = "opencray-flutter-host",

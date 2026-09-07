@@ -38,6 +38,8 @@ enum class PolicyToolClass {
   RENAME_FILE,
   EXECUTE_COMMAND,
   NETWORK_ACCESS,
+  SYSTEM_QUERY,
+  SYSTEM_ACTION,
   ;
 
   fun requiresTargetPath(): Boolean = when (this) {
@@ -50,6 +52,8 @@ enum class PolicyToolClass {
 
     EXECUTE_COMMAND,
     NETWORK_ACCESS,
+    SYSTEM_QUERY,
+    SYSTEM_ACTION,
     -> false
   }
 
@@ -94,6 +98,7 @@ object PolicyReasonCode {
   const val ASK_SAFE_DESTRUCTIVE_HIGH_RISK = "ASK_SAFE_DESTRUCTIVE_HIGH_RISK"
   const val ASK_SAFE_COMMAND_HIGH_RISK = "ASK_SAFE_COMMAND_HIGH_RISK"
   const val ASK_SAFE_NETWORK_HIGH_RISK = "ASK_SAFE_NETWORK_HIGH_RISK"
+  const val ASK_SAFE_SYSTEM_ACTION = "ASK_SAFE_SYSTEM_ACTION"
 
   const val ALLOW_AUTO_STANDARD = "ALLOW_AUTO_STANDARD"
   const val ASK_AUTO_DESTRUCTIVE = "ASK_AUTO_DESTRUCTIVE"
@@ -153,6 +158,14 @@ class ModePolicy(
           reasonCode = PolicyReasonCode.ASK_SAFE_NETWORK_HIGH_RISK,
           approvalRisk = PolicyApprovalRisk.HIGH_RISK,
         ),
+        PolicyToolClass.SYSTEM_QUERY to MatrixRule(
+          outcome = PolicyDecisionOutcome.ALLOW,
+          reasonCode = PolicyReasonCode.ALLOW_SAFE_READ,
+        ),
+        PolicyToolClass.SYSTEM_ACTION to MatrixRule(
+          outcome = PolicyDecisionOutcome.ASK,
+          reasonCode = PolicyReasonCode.ASK_SAFE_SYSTEM_ACTION,
+        ),
       ),
       ExecutionMode.AUTO to mapOf(
         PolicyToolClass.READ_FILE to MatrixRule(
@@ -183,6 +196,14 @@ class ModePolicy(
           outcome = PolicyDecisionOutcome.ASK,
           reasonCode = PolicyReasonCode.ASK_AUTO_NETWORK,
         ),
+        PolicyToolClass.SYSTEM_QUERY to MatrixRule(
+          outcome = PolicyDecisionOutcome.ALLOW,
+          reasonCode = PolicyReasonCode.ALLOW_AUTO_STANDARD,
+        ),
+        PolicyToolClass.SYSTEM_ACTION to MatrixRule(
+          outcome = PolicyDecisionOutcome.ALLOW,
+          reasonCode = PolicyReasonCode.ALLOW_AUTO_STANDARD,
+        ),
       ),
       ExecutionMode.DEVELOPER to mapOf(
         PolicyToolClass.READ_FILE to MatrixRule(
@@ -210,6 +231,14 @@ class ModePolicy(
           reasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
         ),
         PolicyToolClass.NETWORK_ACCESS to MatrixRule(
+          outcome = PolicyDecisionOutcome.ALLOW,
+          reasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
+        ),
+        PolicyToolClass.SYSTEM_QUERY to MatrixRule(
+          outcome = PolicyDecisionOutcome.ALLOW,
+          reasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
+        ),
+        PolicyToolClass.SYSTEM_ACTION to MatrixRule(
           outcome = PolicyDecisionOutcome.ALLOW,
           reasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
         ),

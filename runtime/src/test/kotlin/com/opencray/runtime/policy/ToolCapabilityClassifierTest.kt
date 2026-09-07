@@ -83,4 +83,38 @@ class ToolCapabilityClassifierTest {
     assertEquals("schedule_task", classifier.classifyCapabilityKind("ScheduledTaskUpdate"))
     assertEquals("schedule_task", classifier.classifyCapabilityKind("ScheduledTaskDelete"))
   }
+
+  @Test
+  fun classifiesSystemAbilityToolsConsistently() {
+    assertEquals(
+      PolicyToolClass.SYSTEM_ACTION,
+      classifier.classifyPolicyToolClass("system_alarm_create"),
+    )
+    assertEquals(
+      PolicyToolClass.SYSTEM_ACTION,
+      classifier.classifyPolicyToolClass("system_timer_start"),
+    )
+    assertEquals(
+      PolicyToolClass.SYSTEM_ACTION,
+      classifier.classifyPolicyToolClass("system_notification_post"),
+    )
+    assertEquals(
+      PolicyToolClass.SYSTEM_ACTION,
+      classifier.classifyPolicyToolClass("system_app_open"),
+    )
+    assertEquals(
+      PolicyToolClass.SYSTEM_ACTION,
+      classifier.classifyPolicyToolClass("system_settings_open"),
+    )
+    assertEquals(
+      PolicyToolClass.SYSTEM_QUERY,
+      classifier.classifyPolicyToolClass("system_app_list"),
+    )
+    assertEquals("system_ability", classifier.classifyCapabilityKind("system_alarm_create"))
+    assertEquals("system_ability", classifier.classifyCapabilityKind("system_timer_start"))
+    assertEquals("system_ability", classifier.classifyCapabilityKind("system_notification_post"))
+    assertEquals("system_ability", classifier.classifyCapabilityKind("system_app_list"))
+    assertEquals("system_ability", classifier.classifyCapabilityKind("system_app_open"))
+    assertEquals("system_ability", classifier.classifyCapabilityKind("system_settings_open"))
+  }
 }

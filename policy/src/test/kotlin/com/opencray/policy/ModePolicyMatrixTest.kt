@@ -166,6 +166,48 @@ class ModePolicyMatrixTest {
         expectedReasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
         targetRelativePath = null,
       ),
+      MatrixExpectation(
+        mode = ExecutionMode.SAFE,
+        toolClass = PolicyToolClass.SYSTEM_QUERY,
+        expectedOutcome = PolicyDecisionOutcome.ALLOW,
+        expectedReasonCode = PolicyReasonCode.ALLOW_SAFE_READ,
+        targetRelativePath = null,
+      ),
+      MatrixExpectation(
+        mode = ExecutionMode.SAFE,
+        toolClass = PolicyToolClass.SYSTEM_ACTION,
+        expectedOutcome = PolicyDecisionOutcome.ASK,
+        expectedReasonCode = PolicyReasonCode.ASK_SAFE_SYSTEM_ACTION,
+        targetRelativePath = null,
+      ),
+      MatrixExpectation(
+        mode = ExecutionMode.AUTO,
+        toolClass = PolicyToolClass.SYSTEM_QUERY,
+        expectedOutcome = PolicyDecisionOutcome.ALLOW,
+        expectedReasonCode = PolicyReasonCode.ALLOW_AUTO_STANDARD,
+        targetRelativePath = null,
+      ),
+      MatrixExpectation(
+        mode = ExecutionMode.AUTO,
+        toolClass = PolicyToolClass.SYSTEM_ACTION,
+        expectedOutcome = PolicyDecisionOutcome.ALLOW,
+        expectedReasonCode = PolicyReasonCode.ALLOW_AUTO_STANDARD,
+        targetRelativePath = null,
+      ),
+      MatrixExpectation(
+        mode = ExecutionMode.DEVELOPER,
+        toolClass = PolicyToolClass.SYSTEM_QUERY,
+        expectedOutcome = PolicyDecisionOutcome.ALLOW,
+        expectedReasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
+        targetRelativePath = null,
+      ),
+      MatrixExpectation(
+        mode = ExecutionMode.DEVELOPER,
+        toolClass = PolicyToolClass.SYSTEM_ACTION,
+        expectedOutcome = PolicyDecisionOutcome.ALLOW,
+        expectedReasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
+        targetRelativePath = null,
+      ),
     )
 
     for (matrixCase in cases) {

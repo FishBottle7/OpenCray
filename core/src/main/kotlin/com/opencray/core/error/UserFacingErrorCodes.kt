@@ -6,7 +6,7 @@ package com.opencray.core.error
  *
  * Segments: E0xxx policy/approval, E1xxx command/process execution,
  * E2xxx LLM/provider, E3xxx session orchestration, E4xxx filesystem,
- * E5xxx skills, E6xxx MCP (reserved), E7xxx terminal environment,
+ * E5xxx skills, E6xxx system/device abilities, E7xxx terminal environment,
  * E8xxx subagent, E9xxx unknown/unregistered.
  *
  * When adding or renaming an error code, register it here with a unique
@@ -71,6 +71,10 @@ object UserFacingErrorCodes {
     put("INVALID_FRONT_MATTER", "E5004")
     put("DUPLICATE_SKILL_NAME", "E5005")
     put("INVALID_SKILL_METADATA", "E5006")
+
+    put("SYSTEM_PERMISSION_REQUIRED", "E6001")
+    put("SYSTEM_ABILITY_UNAVAILABLE", "E6002")
+    put("SYSTEM_ACTION_FAILED", "E6003")
 
     put("TERMUX_UNAVAILABLE", "E7001")
 
