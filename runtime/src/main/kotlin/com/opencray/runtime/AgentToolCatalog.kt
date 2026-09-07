@@ -668,6 +668,39 @@ internal fun OpenCrayToolDispatcher.toolDefinitions(): List<AgentToolDefinition>
           ),
         )
       },
+      config.systemAbilityGateway?.let {
+        AgentToolDefinition(
+          name = "system_calendar_upcoming",
+          description = "List upcoming calendar events from the device calendar provider within the next days. Requires calendar read access; when missing, the result explains how to grant it.",
+          parameters = listOf(
+            AgentToolParameter("days", "number", required = false, description = "How many days ahead to look. Defaults to 7, at most 31."),
+            AgentToolParameter("limit", "number", required = false, description = "Maximum number of events to return. Defaults to 20."),
+          ),
+        )
+      },
+      config.systemAbilityGateway?.let {
+        AgentToolDefinition(
+          name = "system_calendar_create",
+          description = "Create one event in the primary device calendar. Combine with system_calendar_upcoming to confirm the schedule afterwards. Requires calendar write access; when missing, the result explains how to grant it.",
+          parameters = listOf(
+            AgentToolParameter("title", "string", required = true, description = "Event title."),
+            AgentToolParameter("begin", "number", required = true, description = "Event start as milliseconds since the Unix epoch in the device timezone."),
+            AgentToolParameter("duration_minutes", "number", required = true, description = "Event duration in minutes, 1 or more."),
+            AgentToolParameter("location", "string", required = false, description = "Optional event location."),
+            AgentToolParameter("description", "string", required = false, description = "Optional event description or notes."),
+          ),
+        )
+      },
+      config.systemAbilityGateway?.let {
+        AgentToolDefinition(
+          name = "system_contact_search",
+          description = "Search device contacts by name, phone digits, or email. Requires contacts read access; when missing, the result explains how to grant it.",
+          parameters = listOf(
+            AgentToolParameter("query", "string", required = true, description = "Case-insensitive search text matched against contact names, phone numbers, and emails."),
+            AgentToolParameter("limit", "number", required = false, description = "Maximum number of contacts to return. Defaults to 20."),
+          ),
+        )
+      },
       AgentToolDefinition(
         name = "mcp_list_servers",
         description = "Inspect currently exposed MCP servers and their trust state. This runtime does not proxy remote MCP tools yet.",

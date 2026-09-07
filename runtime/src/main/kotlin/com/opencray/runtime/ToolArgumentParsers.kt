@@ -57,6 +57,10 @@ internal fun JsonObject.requiredInt(name: String): Int =
   optionalInt(name)
     ?: throw IllegalArgumentException("Required argument '$name' must be a JSON number.")
 
+internal fun JsonObject.requiredLong(name: String): Long =
+  optionalLong(name)
+    ?: throw IllegalArgumentException("Required argument '$name' must be a JSON number.")
+
 internal fun JsonObject.optionalLong(name: String): Long? {
   val element = this[name] ?: return null
   val primitive = element as? JsonPrimitive

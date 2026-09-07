@@ -134,6 +134,9 @@ internal enum class SystemAbilityIntentKind(val wireValue: String) {
   LIST_APPS("list_apps"),
   OPEN_APP("open_app"),
   OPEN_SETTINGS("open_settings"),
+  LIST_CALENDAR_EVENTS("list_calendar_events"),
+  CREATE_CALENDAR_EVENT("create_calendar_event"),
+  SEARCH_CONTACTS("search_contacts"),
 }
 
 internal data class SystemAbilityIntent(

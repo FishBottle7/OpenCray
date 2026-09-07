@@ -51,9 +51,12 @@ internal class ToolCapabilityClassifier {
     "system_notification_post",
     "system_app_open",
     "system_settings_open",
+    "system_calendar_create",
     -> PolicyToolClass.SYSTEM_ACTION
 
     "system_app_list",
+    "system_calendar_upcoming",
+    "system_contact_search",
     -> PolicyToolClass.SYSTEM_QUERY
 
     "LS",
@@ -153,6 +156,9 @@ internal class ToolCapabilityClassifier {
     "system_app_list",
     "system_app_open",
     "system_settings_open",
+    "system_calendar_upcoming",
+    "system_calendar_create",
+    "system_contact_search",
     -> "system_ability"
 
     "memory_search",

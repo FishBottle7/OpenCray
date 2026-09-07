@@ -110,11 +110,26 @@ class ToolCapabilityClassifierTest {
       PolicyToolClass.SYSTEM_QUERY,
       classifier.classifyPolicyToolClass("system_app_list"),
     )
+    assertEquals(
+      PolicyToolClass.SYSTEM_ACTION,
+      classifier.classifyPolicyToolClass("system_calendar_create"),
+    )
+    assertEquals(
+      PolicyToolClass.SYSTEM_QUERY,
+      classifier.classifyPolicyToolClass("system_calendar_upcoming"),
+    )
+    assertEquals(
+      PolicyToolClass.SYSTEM_QUERY,
+      classifier.classifyPolicyToolClass("system_contact_search"),
+    )
     assertEquals("system_ability", classifier.classifyCapabilityKind("system_alarm_create"))
     assertEquals("system_ability", classifier.classifyCapabilityKind("system_timer_start"))
     assertEquals("system_ability", classifier.classifyCapabilityKind("system_notification_post"))
     assertEquals("system_ability", classifier.classifyCapabilityKind("system_app_list"))
     assertEquals("system_ability", classifier.classifyCapabilityKind("system_app_open"))
     assertEquals("system_ability", classifier.classifyCapabilityKind("system_settings_open"))
+    assertEquals("system_ability", classifier.classifyCapabilityKind("system_calendar_upcoming"))
+    assertEquals("system_ability", classifier.classifyCapabilityKind("system_calendar_create"))
+    assertEquals("system_ability", classifier.classifyCapabilityKind("system_contact_search"))
   }
 }
