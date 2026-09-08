@@ -154,6 +154,9 @@ internal class OpenCrayHostRuntime internal constructor(
   private val workspaceSnapshotProvider: () -> Map<String, Any?>,
   internal val strongBackgroundSettingsAccess: StrongBackgroundSettingsAccess =
     NoOpStrongBackgroundSettingsAccess,
+  internal val systemPermissionSnapshotAccess: SystemPermissionSnapshotAccess =
+    appContext?.let(AndroidSystemPermissionSnapshotAccess::fromContext)
+      ?: UnavailableSystemPermissionSnapshotAccess,
   internal val voiceMetadataAnalyzer: AppAgentWorkspaceVoiceMetadataAnalyzer,
   internal val voiceMetadataBackfillExecutor: Executor,
   internal val voiceMetadataCacheStore: AppAgentWorkspaceVoiceMetadataCacheStore? = null,

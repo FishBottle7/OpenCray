@@ -246,6 +246,12 @@ internal class OpenCrayRuntimeServiceGatewayBundle(
         strongBackgroundSettingsAccess = AndroidStrongBackgroundSettingsAccess.fromContext(
           appContext,
         ),
+        systemPermissionSnapshotAccess = AndroidSystemPermissionSnapshotAccess.fromContext(
+          appContext,
+        ),
+        systemPermissionRequestLauncher = AndroidSystemPermissionRequestLauncher(
+          appContext,
+        ),
         appLanguageSettingsAccess = FacadeBackedAppLanguageSettingsGatewayAccess.fromContext(
           appContext,
         ),

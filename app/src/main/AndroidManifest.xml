@@ -66,6 +66,13 @@
             android:noHistory="true"
             android:theme="@android:style/Theme.Material.Light.NoActionBar" />
         <activity
+            android:name="com.opencray.app.SystemPermissionActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="@string/activity_label_main_interaction"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Material.Light.NoActionBar" />
+        <activity
             android:name="com.opencray.app.WorkspaceSettingsActivity"
             android:exported="true"
             android:label="@string/activity_label_workspace_settings"

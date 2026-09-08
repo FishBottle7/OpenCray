@@ -19,6 +19,10 @@ internal class ServiceOwnedSettingsGateway(
   private val scheduledTaskManager: AppScheduledTaskManager? = null,
   private val strongBackgroundSettingsAccess: StrongBackgroundSettingsAccess =
     NoOpStrongBackgroundSettingsAccess,
+  private val systemPermissionSnapshotAccess: SystemPermissionSnapshotAccess =
+    UnavailableSystemPermissionSnapshotAccess,
+  private val systemPermissionRequestLauncher: SystemPermissionRequestLauncher =
+    NoOpSystemPermissionRequestLauncher,
   appLanguageSettingsAccess: AppLanguageSettingsGatewayAccess? = null,
   private val sandboxSettingsAccess: SandboxSettingsGatewayAccess,
   private var networkSearchConfigFacade: NetworkSearchConfigFacade,
@@ -114,6 +118,25 @@ internal class ServiceOwnedSettingsGateway(
 
   override fun performStrongBackgroundAction(actionId: String): Map<String, Any?> =
     strongBackgroundSettingsAccess.performAction(actionId)
+
+  override fun loadSystemPermissionSnapshot(): Map<String, Any?> = buildMap {
+    putAll(systemPermissionSnapshotAccess.loadSnapshot())
+    put("lastRequestOutcome", SystemPermissionRequestReporter.lastOutcome())
+  }
+
+  override fun performSystemPermissionAction(
+    actionId: String,
+    permissionIds: List<String>,
+  ): Map<String, Any?> {
+    if (actionId != SystemPermissionActionIds.REQUEST) {
+      return systemPermissionActionResult(
+        actionId = actionId,
+        launched = false,
+        reason = "unsupported_action",
+      )
+    }
+    return systemPermissionRequestLauncher.launchRequest(permissionIds)
+  }
 
   override fun loadNetworkSearchConfig(): Map<String, Any?> =
     networkSearchConfigFacade.load().toGatewayMap()

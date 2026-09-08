@@ -376,6 +376,14 @@ internal class OpenCrayLocalRuntimeServer(
       "POST" to "/v1/perform_strong_background_action" -> settingsGateway.performStrongBackgroundAction(
         actionId = body.optString("actionId"),
       )
+      "GET" to "/v1/system_permission_snapshot" -> settingsGateway.loadSystemPermissionSnapshot()
+      "POST" to "/v1/perform_system_permission_action" ->
+        settingsGateway.performSystemPermissionAction(
+          actionId = body.optString("actionId"),
+          permissionIds = body.optJSONArray("permissionIds")
+            ?.let { jsonArray -> (0 until jsonArray.length()).mapNotNull { index -> jsonArray.optString(index) } }
+            ?: emptyList(),
+        )
       "GET" to "/v1/network_search_config" -> settingsGateway.loadNetworkSearchConfig()
       "POST" to "/v1/save_network_search_config" -> settingsGateway.saveNetworkSearchConfig(
         slots = body.optJSONArray("slots")?.let(::jsonArrayToMaps) ?: emptyList(),

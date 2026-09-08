@@ -362,6 +362,16 @@ internal class OpenCrayFlutterHostBridge(
           }
           return
         }
+        "loadSystemPermissionSnapshot" -> settingsGateway.loadSystemPermissionSnapshot()
+        "performSystemPermissionAction" -> {
+          runAsync(result) {
+            settingsGateway.performSystemPermissionAction(
+              actionId = call.argument<String>("actionId").orEmpty(),
+              permissionIds = call.argument<List<String>>("permissionIds").orEmpty(),
+            )
+          }
+          return
+        }
         "loadNetworkSearchConfig" -> settingsGateway.loadNetworkSearchConfig()
         "saveNetworkSearchConfig" -> {
           runAsync(result) {

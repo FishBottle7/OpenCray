@@ -34,6 +34,14 @@ internal interface OpenCraySettingsGateway {
 
   fun performStrongBackgroundAction(actionId: String): Map<String, Any?>
 
+  fun loadSystemPermissionSnapshot(): Map<String, Any?> =
+    error("System permission state is unavailable.")
+
+  fun performSystemPermissionAction(
+    actionId: String,
+    permissionIds: List<String> = emptyList(),
+  ): Map<String, Any?> = error("System permission actions are unavailable.")
+
   fun loadNetworkSearchConfig(): Map<String, Any?>
 
   fun saveNetworkSearchConfig(slots: List<Map<String, Any?>>): Map<String, Any?>

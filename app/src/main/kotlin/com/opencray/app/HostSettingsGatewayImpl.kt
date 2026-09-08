@@ -78,6 +78,31 @@ internal class HostSettingsGatewayImpl(
   override fun performStrongBackgroundAction(actionId: String): Map<String, Any?> =
     host.strongBackgroundSettingsAccess.performAction(actionId)
 
+  override fun loadSystemPermissionSnapshot(): Map<String, Any?> = buildMap {
+    putAll(host.systemPermissionSnapshotAccess.loadSnapshot())
+    put("lastRequestOutcome", SystemPermissionRequestReporter.lastOutcome())
+  }
+
+  override fun performSystemPermissionAction(
+    actionId: String,
+    permissionIds: List<String>,
+  ): Map<String, Any?> {
+    if (actionId != SystemPermissionActionIds.REQUEST) {
+      return systemPermissionActionResult(
+        actionId = actionId,
+        launched = false,
+        reason = "unsupported_action",
+      )
+    }
+    val context = host.appContext
+      ?: return systemPermissionActionResult(
+        actionId = actionId,
+        launched = false,
+        reason = "unavailable",
+      )
+    return AndroidSystemPermissionRequestLauncher(context).launchRequest(permissionIds)
+  }
+
   override fun loadNetworkSearchConfig(): Map<String, Any?> =
     synchronized(host.lock) { host.networkSearchConfigFacade.load() }.toGatewayMap()
 
