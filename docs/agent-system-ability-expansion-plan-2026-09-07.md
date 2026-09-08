@@ -170,3 +170,16 @@ OmniBot 权限体验的交互模式（视觉按仓库 token 重做）：
 - 待做：第二层权限 UX 前端链路（OmniBot 模式：聊天权限卡 + 授权页/弹层 + 声明式
   PermissionSpec 注册表 + 透明权限 Activity——需要用户确认视觉方案后开工，Pencil
   原型仍是视觉事实来源）；第三批高敏感能力逐个评估；MCP 工具桥远期独立立项。
+- 第二层（权限后端）完成（2026-09-07）：`SystemPermissionRegistry`（声明式 spec：
+  id/Android 权限/标题/目的文案/能力清单/触发工具）+ `SystemPermissionSnapshotAccess`
+  （Android checkSelfPermission 实现 + JVM Unavailable 降级）+
+  `SystemPermissionActivity`（透明跳板 Activity，服务进程可拉起系统权限弹窗；
+  Reporter 记录最近授权结果供桥轮询；Gate 防重复弹同页）+ 请求 Launcher（未知 id /
+  已在请求中两类拒绝码）。接入点对齐 strongBackground 模式：
+  `OpenCraySettingsGateway` 两个方法（`loadSystemPermissionSnapshot` /
+  `performSystemPermissionAction`），`HostSettingsGatewayImpl` 与
+  `ServiceOwnedSettingsGateway` 双实现，Flutter 桥两方法 +
+  本地服务端 GET `/v1/system_permission_snapshot` / POST
+  `/v1/perform_system_permission_action`。UI 需求已写入
+  `docs/chat-led-ui-prototype-requirements.md` 第 11 节（三组件 + 状态机硬约束 +
+  四个开放设计决策 9-12），等用户与设计 agent 定稿视觉后实现前端。
