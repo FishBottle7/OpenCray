@@ -1,6 +1,22 @@
 # 移动端原生联网搜索实施定稿
 
-更新时间：2026-04-04
+更新时间：2026-04-04（2026-09-08 回填执行状态）
+
+## 执行状态（2026-09-08 回填）
+
+本计划截至 2026-09-08 处于**基础能力完成、架构收口停滞**状态：
+
+- 已落地：
+  - 宿主 `WebSearch` / `WebFetch` 工具与 `SequentialWebSearchProvider` 槽位回退链路。
+  - `HttpUrlWebContentFetcher` 抓取器。
+  - 四个连接器：exa / tavily / brave / openai_web_search（后者来自
+    `openai-responses-web-search-implementation-plan.md` 的 PR3）。
+- 未落地（停滞，自 2026-03-25 后无相关提交）：
+  - 第 2.4 / 11 节的连接器化重构：`SearchConnector` 接口、`SearchConnectorRegistry`、
+    `SequentialSearchRouter`、`PageContentExtractor` 均未建，
+    `SequentialWebSearchProvider` 仍是文档要求"不再扩大"的单体文件。
+  - 第 4.4 节优先新增连接器：`custom_json_search`、`searxng`、`html_serp` 均未实现。
+  - 重启建议：既有四个连接器工作正常，重构属纯架构收口；新连接器需求出现时再一并评估。
 
 ## 1. 文档目的
 

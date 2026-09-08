@@ -1,6 +1,13 @@
 # Agent Runtime Task List
 
-Last updated: 2026-03-12
+Last updated: 2026-03-12（2026-09-08 状态回填，见下）
+
+## Status（2026-09-08 回填）
+
+**本任务清单已整体完成，属历史文档。** P0–P2 全部任务经代码核验均已在当前仓库落地
+（durable 队列持久化、session runtime manager、prompt 分层、统一审批、memory 读写、
+soul 结构化、skills 暴露与执行、hooks、bootstrap、bounded subagent、observability）。
+保留在原位是因为多个文档仍引用本文件路径。
 
 ## Purpose
 

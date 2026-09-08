@@ -1,6 +1,6 @@
 # LiteRT-LM 端侧 LLM 接入实施计划
 
-更新时间：2026-04-04
+更新时间：2026-04-04（2026-09-08 回填实施状态）
 
 ## 0. 实施状态快照
 
@@ -20,7 +20,15 @@
 - 现状诊断已完成：
   - 当前仓库 LLM 主链路是“远端 HTTP provider”架构。
   - 当前设置页、桥接层、运行时注入点都可以复用，但需要补一条端侧 provider 分支。
-- 本计划对应的代码尚未开始实现。
+- ~~本计划对应的代码尚未开始实现。~~
+- 实施状态更新（2026-09-08 回填）：本计划 Phase 1–4 已全部落地——
+  `LiteRtOnDeviceRuntime.kt`、`LiteRtOnDeviceLlmProviderClient.kt`、
+  `LiteRtOnDeviceModelDownloadManager.kt`、`LiteRtOnDeviceModelInstallStore.kt`、
+  litertlm_bridge JNI 桥均已存在于 `app/src/main/kotlin/com/opencray/app/`。
+  主链路落地于 38aa5aa（2026-04-10），安装索引原子更新见 29e63a6（2026-07-06）。
+  未做的只剩文档本身列为二期的 Phase 5/6（Android AI Core provider、设备专用 NPU 包）。
+  后续端侧深化方向（On-device Skills Mode、审批意图工具、端侧技能胶囊）见
+  `docs/litert-lm-on-device-implementation-plan.md`，该路线 Phase 2/3 截至 2026-09-08 仍未动工。
 
 ## 1. 文档目的
 

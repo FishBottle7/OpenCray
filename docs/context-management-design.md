@@ -1,6 +1,6 @@
 # OpenCray Context Management Design
 
-Last updated: 2026-04-03
+Last updated: 2026-04-03（2026-09-08 回填差距清单状态）
 
 ## Status
 
@@ -1424,11 +1424,11 @@ Some Codex details are correct for Codex specifically but would be the wrong fit
 Compared with the Codex strategy inspected from source, OpenCray still has these meaningful gaps:
 
 - pre-turn pressure now uses one shared `auto_compact_token_limit`, but it still only gates omitted-history rewrites
-- no mid-turn compaction path for long multi-step runs
-- no smaller-window model-switch compaction safeguard
-- prompt-local pruning is narrower now, but it still lacks Codex-style overflow/sendability trimming tied to the real request boundary
-- no explicit post-compaction sanitation stage for future semantic compaction output
-- no provider-native compaction path plus constrained fallback path split
+- ~~no mid-turn compaction path for long multi-step runs~~（已吸收：`flushMidTurn`/`compactMidTurn` 已落地于 `AppAgentSessionTaskRuntimeFactory` 与 `ChatMemoryIngestionCoordinator`）
+- ~~no smaller-window model-switch compaction safeguard~~（已吸收：`ReplayPressureEvaluator` 自 2026-08-19 起提供 `smallerWindowModelSwitchDetected` 与 `modelSwitchAutoCompactTokenLimit`，见 39200ac/ad8a7e9）
+- prompt-local pruning is narrower now, but it still lacks Codex-style overflow/sendability trimming tied to the real request boundary（仍未实现）
+- no explicit post-compaction sanitation stage for future semantic compaction output（仍未实现）
+- no provider-native compaction path plus constrained fallback path split（仍未实现）
 
 The important design conclusion is:
 

@@ -370,7 +370,11 @@ Verification:
 
 ### Phase 5: Model-Switch Safeguard
 
-Status: deferred.
+Status: ~~deferred~~ **done（2026-09-08 回填）**：已于 2026-08-19/21 落地
+（39200ac / ad8a7e9）——`ReplayPressureEvaluator` 提供
+`smallerWindowModelSwitchDetected`（比较前后路由 context window）与
+`modelSwitchAutoCompactTokenLimit`（切换到更小窗口时收紧自动压缩阈值），
+并作为独立触发阶段与常规 pre-run 压缩分开。下文保留原始计划记录。
 
 Reason:
 

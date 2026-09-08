@@ -1,6 +1,16 @@
 # Agent Runtime Roadmap
 
-Last updated: 2026-03-16
+Last updated: 2026-03-16（2026-09-08 状态回填，见下）
+
+## Status（2026-09-08 回填）
+
+**本路线图已整体完成，属历史文档。** M1–M5 全部里程碑经代码核验均已在当前仓库落地
+（durable queue / session runtime manager 见 `SessionStoreQueueSnapshotStore`、
+`AgentSessionRuntimeManager`；prompt 分层与统一审批见 `PromptAssembler`、
+`ToolPolicyPipeline` 与 ModeGate 体系；memory/soul 运行时化、skills 执行化、
+hooks、bootstrap 文件、bounded subagent、trace 均有对应实现）。
+保留在原位是因为多个文档仍引用本文件路径。后续运行时方向见
+`docs/codex-gap-analysis.md` 与 `docs/subagent-runtime-plan.md`。
 
 ## Purpose
 

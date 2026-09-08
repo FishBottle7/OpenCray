@@ -1,6 +1,13 @@
 # Agent Runtime Issue Backlog
 
-Last updated: 2026-03-16
+Last updated: 2026-03-16（2026-09-08 状态回填，见下）
+
+## Status（2026-09-08 回填）
+
+**本 issue backlog 已整体完成，属历史文档。** P0×5 / P1×6 / P2×4 全部条目经代码核验
+均已有对应实现（队列持久化、session manager、prompt 分层、审批统一、memory 读写、
+soul 结构化、skills 暴露与执行、hooks、bootstrap、subagent、observability）。
+保留在原位是因为 `agent-runtime-reference-guide.md` 等文档仍引用本文件路径。
 
 ## Purpose
 

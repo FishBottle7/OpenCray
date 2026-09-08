@@ -1,10 +1,18 @@
 # OpenCray Harmony Portability Architecture
 
-Last updated: 2026-03-12
+Last updated: 2026-03-12（2026-09-08 状态回填，见下）
 
 ## Status
 
-Planning document
+Planning document（历史决策记录）
+
+> **状态注记（2026-09-08 回填）：** 本文档推荐的 Option B（UI 迁往 Flutter、宿主保留
+> 原生适配层）正是后来实际走的路线——Flutter 已成为主 UI（`OpenCrayFlutterActivity`
+> 为 launcher），前置项 1（runtime ownership 移出 AppShellActivity）已由 service-owned
+> runtime 落地，项 3/4（transcript 与 SAF 解耦）已大部分完成。**Harmony 适配器本身
+> （Phase 5）从未启动，零代码零提交**，移植目标实质被 Flutter 跨平台路线搁置。
+> 若未来重启 Harmony 移植，应先重估本文档中已被后续架构（service-owned detached
+> runtime、双进程拆分）改变的前置假设。
 
 ## Purpose
 

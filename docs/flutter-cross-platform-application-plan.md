@@ -1,6 +1,17 @@
 # OpenCray 跨平台应用层改造方案
 
-Last updated: 2026-03-13
+Last updated: 2026-03-13（2026-09-08 状态回填，见下）
+
+## 执行状态（2026-09-08 回填）
+
+- P0（facade/bridge/DTO 契约、host-owned application layer）：**已完成**——
+  `flutter_app/` 已是完整生产 UI（chat/files/settings/skills 四模块），桥接九域拆分落地。
+- P1（Flutter shell）：**已完成**——`OpenCrayFlutterActivity` 为 launcher。
+- P2-1（绞杀原生 Android 重复 UI）：**部分完成**——5 个无 intent-filter 的旧 wrapper
+  Activity 仍 `exported="true"`，launcher trampoline 迁移未实施（见
+  `runtime-reliability-audit-2026-07-20.md` 遗留项）。
+- P2-2（Harmony-ready host seam）：**未启动**——零提交，与
+  `harmony-portability-architecture.md` 的状态注记一致，属被搁置方向。
 
 ## 目标
 

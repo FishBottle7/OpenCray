@@ -147,6 +147,11 @@ Without that container layer, `activeAgentId` remains mostly a host/UI selection
 
 ### 5. Working-state persistence is not fully wired on the main live path
 
+> **状态更新（2026-09-08 回填）：本差距已闭合。** 63fac18（2026-07-05）
+> 落地 `FileBackedWorkingStateStoreFactory`，并在 `InProcessOpenCrayRuntimeOwner.kt`
+> 以 `FileBackedWorkingStateStoreFactory.fromContext(appContext)` 接线活路径
+> （较下文建议的 `ChatSessionBackedWorkingStateStore` 更进一步）。以下为 2026-04-21 时的原始记录。
+
 The working-state design is meant to preserve short-term procedural continuity that should not be dumped into durable memory.
 
 Important current state:
@@ -162,6 +167,11 @@ So the live path still falls short of the intended long-task continuity model:
 - but restart-safe procedural continuity is not fully enabled on the main path
 
 ### 6. Searchable session memory is still weaker than it should be
+
+> **状态更新（2026-09-08 回填）：本差距已闭合。** `AgentToolCatalog` 现已注册
+> `session_search` / `past_session_search` 一等运行时工具（含配套的行范围读取工具），
+> 即下文要求的"search past sessions, summarize, and inject only what matters"
+> 面已落地。以下为 2026-04-21 时的原始记录。
 
 OpenCray already persists chat sessions, transcripts, and session-side working data, but it still lacks a first-class session-memory surface that is clearly separate from durable memory.
 

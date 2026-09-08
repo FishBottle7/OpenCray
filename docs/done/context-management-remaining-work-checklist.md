@@ -54,7 +54,7 @@ Additional context-budget checkpoint:
 - `PromptAssembler` and the coordinator now share the same prompt-layer renderers and the same `FULL` / `COMPACT` / `MINIMAL` reduction shape for those layers, so reduction logic stays aligned with final prompt text instead of drifting into coordinator-local formatting
 - current bounded replay is still a message-window strategy, not a run-count strategy: transcript `near` context is the rebuilt window, `far` context is represented only through summaries or separately recalled memory
 - current larger context budgets now reduce prompt-pressure trimming and also enlarge source caps such as transcript window size, injected memory count, bootstrap caps, skill caps, and recent-observation caps
-- Codex comparison note: Codex uses an effective-window display headroom of about `95%` but its default automatic compaction threshold is actually `90% of context_window`, with pre-turn and mid-turn compaction paths. OpenCray now has the shared replay-pressure slice for this: `memory flush` and `durable compaction` both derive or clamp `auto_compact_token_limit` from model-window metadata and require that threshold before acting on pre-run and mid-turn maintenance paths. The remaining pressure gap for this plan is only the intentionally deferred model-switch safeguard.
+- Codex comparison note: Codex uses an effective-window display headroom of about `95%` but its default automatic compaction threshold is actually `90% of context_window`, with pre-turn and mid-turn compaction paths. OpenCray now has the shared replay-pressure slice for this: `memory flush` and `durable compaction` both derive or clamp `auto_compact_token_limit` from model-window metadata and require that threshold before acting on pre-run and mid-turn maintenance paths. ~~The remaining pressure gap for this plan is only the intentionally deferred model-switch safeguard.~~（2026-09-08 回填：model-switch safeguard 已于 2026-08-19/21 落地，`ReplayPressureEvaluator` 的 `smallerWindowModelSwitchDetected`/`modelSwitchAutoCompactTokenLimit` 在活路径生效，本计划的压力面差距至此清零。）
 
 ## Remaining work after P0
 
@@ -163,7 +163,7 @@ Additional context-budget checkpoint:
    - Current status: memory-flush trace now includes replay-pressure audit fields (`triggerStage`, `maintenanceTask`, `contextWindowTokens`, `autoCompactTokenLimit`, `estimatedReplayTokens`, `tokenThresholdTriggered`, and candidate/written record ids) through runtime metadata, host/local snapshots, Flutter bridge models, chat run trace, and Settings `Context & Memory Trace`.
    - Current status: mid-turn flush is now wired on the live prompt path. After tool execution, app runtime writes the current transcript to the session store, runs `flushMidTurn(...)` under the same replay-pressure policy, refreshes recalled memory, and feeds the updated `AgentRuntimeSessionContext` back into the next model turn.
    - Remaining gaps: there is still no separate durable compaction worker or dedicated background flush task. Flush currently runs inline during session preparation and mid-turn maintenance.
-   - Deferred: model-switch pressure handling is intentionally parked for a later provider/runtime continuation slice.
+   - Deferred: model-switch pressure handling is intentionally parked for a later provider/runtime continuation slice.（2026-09-08 回填：已于 2026-08-19/21 完成，见 39200ac/ad8a7e9 与 `ReplayPressureEvaluator`。）
 
 8. Context pruner
    - Add prompt-local pruning rules for large tool outputs, repeated observations, and bulky attachments.
@@ -182,7 +182,7 @@ Additional context-budget checkpoint:
    - Current status: durable-compaction trace now also carries per-entry audit rows for compacted-message counts, omitted-role counts, and compacted timestamps. Host/local snapshots and Flutter trace surfaces project those entry rows for read-only drill-down.
    - Current status: OpenAI Responses routes can now use native remote compaction through `/v1/responses/compact` before falling back to the local durable summary path. The live app wires this provider into both pre-run and mid-turn compaction, preserves request/used/fallback metadata in durable-compaction trace, rejects blank or opaque-only compact responses as fallback cases, and keeps non-Responses protocols on local compaction instead of advertising unsupported native behavior.
    - Remaining gaps: compaction still runs inline during session preparation and mid-turn maintenance rather than as a separate background worker.
-   - Deferred: smaller-window model-switch safeguard is intentionally parked for a later model/provider switching slice.
+   - Deferred: smaller-window model-switch safeguard is intentionally parked for a later model/provider switching slice.（2026-09-08 回填：已完成，`ReplayPressureEvaluator` 已提供 `smallerWindowModelSwitchDetected` 与 `modelSwitchAutoCompactTokenLimit`。）
    - Remaining gaps: a future semantic compaction path still needs explicit output sanitation plus canonical runtime-baseline reinjection instead of blindly trusting returned compacted replay.
 
 10. Bootstrap context files
@@ -237,6 +237,9 @@ Additional context-budget checkpoint:
    - Current status: explicit rebuild reasons now cover the main Responses-native invalidation paths as first-class causes: `responses_legacy_json_fallback_enabled`, `responses_lineage_unavailable`, `responses_pending_user_message`, `responses_pending_tool_result_attachment_artifact`, `tool_pool_changed`, and `dynamic_context_changed`.
    - Planned redesign for Responses-native: move closer to Codex's `reference_context_item` pattern. Keep only truly stable slices in the native baseline, replace high-volatility Zone C front-context dependency with append-only provider-safe context update items, and stop letting opportunistic automatic recall mutate the native continuation baseline by default.
    - Planned redesign for Responses-native: introduce a persisted baseline-plus-diff contract such as `ResponsesContextBaselineSnapshot`, structured reference state for diff generation, and pending provider-safe context updates, so native continuation can survive working-state or skill changes without pretending provider-hidden prefix bytes were patched in place.
+     （2026-09-08 回填：本条已实现——`OpenCrayAgentRuntime` 与 `GatewayMessagePlanner` 已在活路径使用
+     `ResponsesContextBaselineSnapshot`、`ResponsesContextReferenceState` 与 `ResponsesPendingContextUpdate`，
+     并透出 `responsesPendingContextUpdateCount/Hash` 诊断键。）
    - Current status: pinned active-skill promotion is now implemented. A pinned active skill can enter the durable front zone under an explicit capsule contract while ordinary active skills stay dynamic, and runtime/app/Flutter trace surfaces expose the pinned state.
    - Current status: sticky memory promotion is now implemented. Retrieved memories marked as sticky are removed from the dynamic `Retrieved Memory` layer, rendered as a dedicated `Sticky Memory` capsule in the durable front-context zone, projected through runtime/app/Flutter trace surfaces, and treated by the budget coordinator as reducible but not droppable.
    - Remaining gaps: provider-native continuation is still intentionally narrow for live procedural churn until the baseline-plus-context-update design replaces the old Zone C front-shape dependency.
@@ -244,7 +247,7 @@ Additional context-budget checkpoint:
   - Current status: the Codex-aligned tightening now also applies to the broader control-plane path. Delegation summaries, skills/scheduling inspection summaries, workspace package/document inspection summaries, and `Task Metadata` no longer get front-loaded into Zone C on the main path, and `Working State` now stays absent unless there is real operational state to anchor it.
    - Remaining gaps: provider-native continuation is still intentionally narrow for true operational churn. Real working-state mutations such as `TodoWrite`, schedule create/update/delete mutations, resume checkpoints, blockers, and similar live procedural-state changes still mutate the current Responses front dependency and therefore still force explicit provider-native rebuild until the new baseline-plus-context-update design replaces the old Zone C front-shape contract. The new local Zone C patch currently applies only to the non-Responses continuation path.
    - Current status: live Settings UI now exposes the context-budget preset selector (`compact`, `balanced`, `expanded`, `dev`) plus raw override fields for reserved output tokens, safety-margin tokens, and effective input percent. Flutter bridges, local/failure/seed runtimes, and widget tests cover saving both preset and raw values.
-   - Deferred: model-switch safeguard remains intentionally deferred for a later model/provider switching slice.
+   - Deferred: model-switch safeguard remains intentionally deferred for a later model/provider switching slice.（2026-09-08 回填：已完成，2026-08-19/21 落地，见 39200ac/ad8a7e9。）
 
 ## Recommended execution order
 
@@ -254,7 +257,10 @@ Additional context-budget checkpoint:
 4. Replace inline flush/compaction maintenance with a real background worker only if product latency or lifecycle data shows it is needed
 5. Add deeper replay/filter UX for context traces beyond the current read-only run trace and inspector drill-down surfaces
 6. Finish broader child-context live-policy inheritance and child budgeting/provenance trace
-7. Pick up the deferred model-switch safeguard in a later model/provider switching slice
+7. ~~Pick up the deferred model-switch safeguard in a later model/provider switching slice~~
+   （2026-09-08 回填：已完成，2026-08-19/21 由 39200ac/ad8a7e9 落地，
+   `ReplayPressureEvaluator` 的 `smallerWindowModelSwitchDetected` 与
+   `modelSwitchAutoCompactTokenLimit` 已在活路径生效）
 
 ## Explicitly deferred for the current product shape
 

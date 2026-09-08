@@ -609,6 +609,11 @@ Status:
 
 ### Phase 3: Provenance-driven maintenance
 
+（2026-09-08 回填：本阶段已完成——`SkillsCheck` 与 `SkillsUpdate` 均已实现于
+`runtime/src/main/kotlin/com/opencray/runtime/skills/SkillPackageTools.kt`，
+含 staged 原子更新流程与更新报告模型，超出本文"Implementation update"小节
+2026-03-18 时所列的 Find/List/Add/Remove 范围。）
+
 - add `SkillsCheck`
 - add `SkillsUpdate`
 - add revision and hash comparison rules
@@ -619,6 +624,10 @@ Exit condition:
 - OpenCray can answer whether installed skills are outdated and can update them safely
 
 ### Phase 4: Built-in guidance migration
+
+（2026-09-08 回填：本阶段大体完成——内置 `find-skills` SKILL.md 已改用
+`SkillsFind`/`SkillsAdd` 表述；原计划的 `SkillsInit` 工具未实现（7 工具面落地 6 个），
+如仍需要需单独立项。）
 
 - update built-in `find-skills`
 - update any prompt text or operator guidance that still refers to `npx skills`

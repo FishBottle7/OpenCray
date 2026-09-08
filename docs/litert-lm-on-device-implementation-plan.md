@@ -1,6 +1,24 @@
 # LiteRT-LM 端侧技能模式实施计划
 
-Date: 2026-04-06
+Date: 2026-04-06（2026-09-08 回填执行状态）
+
+## 执行状态（2026-09-08 回填）
+
+本计划截至 2026-09-08 处于**部分落地后停滞**状态：
+
+- 已落地（Phase 1 部分）：
+  - warmup 链路：`AppAgentOnDeviceWarmup.kt`、`OnDeviceLlmWarmupController.kt`。
+  - transport 双重重放问题已消除：`LiteRtOnDeviceLlmProviderClient.kt` 中 messages 非空时 prompt 置空。
+  - `WebSearch` 工具已接入端侧工具集（`LiteRtOnDeviceRuntime.kt`）。
+- 未落地（截至回填日零代码）：
+  - Phase 2 审批意图模型全链：`RequestToolApproval` 工具、`APPROVAL_INTENT_REQUIRED`
+    错误码、审批 grant 指纹匹配——全仓 grep 零命中。
+  - Phase 3 `OnDeviceSkillCapsule` 投影与端侧技能 UI——零命中。
+  - Phase 4 生产化：automatic execution 仍被 `FLAG_DEBUGGABLE` 门控
+    （`InProcessOpenCrayRuntimeOwner.kt`），`enableLiteRtDevAutomaticToolExecution` 默认 false；
+    lite mode 仍在清空工具集（`AppAgentOnDeviceWarmup.kt`），即本计划第 2 节点名要改的现状未改。
+- 停滞时间线：LiteRT 相关文件最后实质改动 2026-06-08，此后无本计划专属提交。
+  重启时应先复核 Phase 1 已落地项是否仍与现状一致。
 
 ## 1. 结论
 

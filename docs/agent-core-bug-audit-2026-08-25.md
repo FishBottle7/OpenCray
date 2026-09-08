@@ -248,11 +248,11 @@ llm/src/main/kotlin 仅 4 个文件（LiteLlmGateway、ProviderRouting、LiteLlm
 ### 遗留跟进项（非审计编号）
 
 1. 单 handle 版 synchronizedSubAgentHandle 与复数版同构竞态未修（超当时范围）。
-2. 	runcateToReadBudget 死代码待清理；Read 工具大文件 	otalLineCount 语义变为窗口内行数，待产品确认。
+2. 	truncateToReadBudget 死代码待清理；Read 工具大文件 	otalLineCount 语义变为窗口内行数，待产品确认。（2026-09-08 回填：死代码已清理，全仓 grep `truncateToReadBudget` 零命中；totalLineCount 窗口语义仍待产品确认。）
 3. SessionQueue 每实例一个常驻持久化线程；自定义 store 回调队列公共方法会自锁死（现无此模式）。
 4. 进程注册表满载 fail-closed：极端长任务下 Bash 会收到明确失败（原为静默挤掉 RUNNING）。
 5. W-05 内容绑定已激活（07711e5）：批准时刻签发带指纹的 CommandApprovalToken 随 grant/checkpoint 流转，ModeGate ASK/ALLOW 双分支校验，指纹不符落回重新弹窗；宿主预批准路径保持无 token 现状。
-6. PROVIDER_REQUEST_CANCELLED 未注册 UserFacingErrorCodes（当前路径不产生用户可见文案，如未来直连网关渲染失败需补注册）。
+6. PROVIDER_REQUEST_CANCELLED 未注册 UserFacingErrorCodes（当前路径不产生用户可见文案，如未来直连网关渲染失败需补注册）。（2026-09-08 回填：已注册为 E2042，见 `UserFacingErrorCodes.kt` 与 `docs/error-codes.md`，提交 6150bbe。）
 
 ### 验证状态
 
