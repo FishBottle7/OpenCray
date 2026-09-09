@@ -1094,6 +1094,39 @@ private class LoopbackHttpOpenCraySettingsGateway(
     OpenCraySettingsWriteCommand.SetMcpServerEnabled(serverId = serverId, enabled = enabled),
   )
 
+  override fun addMcpServer(
+    serverId: String,
+    displayName: String,
+    url: String,
+    authHeaderName: String?,
+    authToken: String?,
+  ): Map<String, Any?> = commandTransport.requireSettingsPayload(
+    OpenCraySettingsWriteCommand.AddMcpServer(
+      serverId = serverId,
+      displayName = displayName,
+      url = url,
+      authHeaderName = authHeaderName,
+      authToken = authToken,
+    ),
+  )
+
+  override fun removeMcpServer(serverId: String): Map<String, Any?> =
+    commandTransport.requireSettingsPayload(
+      OpenCraySettingsWriteCommand.RemoveMcpServer(serverId = serverId),
+    )
+
+  override fun setMcpServerCredential(
+    serverId: String,
+    authHeaderName: String,
+    authToken: String?,
+  ): Map<String, Any?> = commandTransport.requireSettingsPayload(
+    OpenCraySettingsWriteCommand.SetMcpServerCredential(
+      serverId = serverId,
+      authHeaderName = authHeaderName,
+      authToken = authToken,
+    ),
+  )
+
   override fun loadSafetySettings(): Map<String, Any?> =
     requestClient.getObject(path = "v1/safety_settings")
 

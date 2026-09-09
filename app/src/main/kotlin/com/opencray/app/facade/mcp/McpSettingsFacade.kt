@@ -1,7 +1,9 @@
 package com.opencray.app.facade.mcp
 
 import android.content.Context
+import com.opencray.app.AndroidKeystoreSharedPreferencesSecretVault
 import com.opencray.app.AppMcpRegistryStore
+import com.opencray.app.AppSecretManager
 import com.opencray.app.McpSettingsStore
 import com.opencray.app.OpenCrayLocaleManager
 import com.opencray.core.contracts.McpServerSpec
@@ -63,6 +65,22 @@ interface McpSettingsFacade {
 
   fun setServerEnabled(serverId: String, enabled: Boolean): McpSettingsSnapshot
 
+  fun addServer(
+    serverId: String,
+    displayName: String,
+    url: String,
+    authHeaderName: String?,
+    authToken: String?,
+  ): McpSettingsSnapshot
+
+  fun removeServer(serverId: String): McpSettingsSnapshot
+
+  fun setServerCredential(
+    serverId: String,
+    authHeaderName: String,
+    authToken: String?,
+  ): McpSettingsSnapshot
+
   fun currentExposureReport(): McpClientExposureReport
 
   /** Fresh registry view for the MCP tool bridge; reloads from the store each call. */
@@ -88,6 +106,22 @@ internal object EmptyMcpSettingsFacade : McpSettingsFacade {
 
   override fun setServerEnabled(serverId: String, enabled: Boolean): McpSettingsSnapshot = load()
 
+  override fun addServer(
+    serverId: String,
+    displayName: String,
+    url: String,
+    authHeaderName: String?,
+    authToken: String?,
+  ): McpSettingsSnapshot = load()
+
+  override fun removeServer(serverId: String): McpSettingsSnapshot = load()
+
+  override fun setServerCredential(
+    serverId: String,
+    authHeaderName: String,
+    authToken: String?,
+  ): McpSettingsSnapshot = load()
+
   override fun currentExposureReport(): McpClientExposureReport = McpClientExposureReport(
     activeClients = emptyList(),
     blockedClients = emptyList(),
@@ -101,8 +135,14 @@ internal class LocalMcpSettingsFacade private constructor(
   private val settingsStore: McpSettingsStore,
   private val registryStore: McpRegistryStore,
   private val clientFactory: McpClientFactory,
+  private val secretManager: AppSecretManager?,
   private val nowEpochMs: () -> Long,
 ) : McpSettingsFacade {
+  private val registryEditor = McpServerRegistryEditor(
+    registryProvider = ::registry,
+    secretManager = secretManager,
+  )
+
   override fun load(): McpSettingsSnapshot = snapshot()
 
   override fun setMasterEnabled(enabled: Boolean): McpSettingsSnapshot {
@@ -122,6 +162,41 @@ internal class LocalMcpSettingsFacade private constructor(
       enabled -> registry.enable(serverId)
       else -> registry.disable(serverId)
     }
+    return snapshot()
+  }
+
+  override fun addServer(
+    serverId: String,
+    displayName: String,
+    url: String,
+    authHeaderName: String?,
+    authToken: String?,
+  ): McpSettingsSnapshot {
+    registryEditor.addServer(
+      serverId = serverId,
+      displayName = displayName,
+      url = url,
+      authHeaderName = authHeaderName,
+      authToken = authToken,
+    )
+    return snapshot()
+  }
+
+  override fun removeServer(serverId: String): McpSettingsSnapshot {
+    registryEditor.removeServer(serverId)
+    return snapshot()
+  }
+
+  override fun setServerCredential(
+    serverId: String,
+    authHeaderName: String,
+    authToken: String?,
+  ): McpSettingsSnapshot {
+    registryEditor.setServerCredential(
+      serverId = serverId,
+      authHeaderName = authHeaderName,
+      authToken = authToken,
+    )
     return snapshot()
   }
 
@@ -444,6 +519,9 @@ internal class LocalMcpSettingsFacade private constructor(
       settingsStore = McpSettingsStore.fromContext(context.applicationContext),
       registryStore = AppMcpRegistryStore.fromContext(context.applicationContext),
       clientFactory = McpClientFactory(),
+      secretManager = AppSecretManager(
+        vault = AndroidKeystoreSharedPreferencesSecretVault.fromContext(context.applicationContext),
+      ),
       nowEpochMs = System::currentTimeMillis,
     )
 
@@ -452,12 +530,14 @@ internal class LocalMcpSettingsFacade private constructor(
       settingsStore: McpSettingsStore,
       registryStore: McpRegistryStore,
       clientFactory: McpClientFactory = McpClientFactory(),
+      secretManager: AppSecretManager? = null,
       nowEpochMs: () -> Long = System::currentTimeMillis,
     ): McpSettingsFacade = LocalMcpSettingsFacade(
       context = context,
       settingsStore = settingsStore,
       registryStore = registryStore,
       clientFactory = clientFactory,
+      secretManager = secretManager,
       nowEpochMs = nowEpochMs,
     )
   }

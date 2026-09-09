@@ -1072,6 +1072,23 @@ class OpenCrayFlutterHostBridgeTest {
     override fun setMcpServerEnabled(serverId: String, enabled: Boolean): Map<String, Any?> =
       throw UnsupportedOperationException()
 
+    override fun addMcpServer(
+      serverId: String,
+      displayName: String,
+      url: String,
+      authHeaderName: String?,
+      authToken: String?,
+    ): Map<String, Any?> = throw UnsupportedOperationException()
+
+    override fun removeMcpServer(serverId: String): Map<String, Any?> =
+      throw UnsupportedOperationException()
+
+    override fun setMcpServerCredential(
+      serverId: String,
+      authHeaderName: String,
+      authToken: String?,
+    ): Map<String, Any?> = throw UnsupportedOperationException()
+
     override fun loadSafetySettings(): Map<String, Any?> = throw UnsupportedOperationException()
 
     override fun saveSafetySettings(

@@ -658,6 +658,27 @@ class OpenCrayFailureBridge implements OpenCrayHostBridge {
   }) async => throw StateError(_failureMessage);
 
   @override
+  Future<OpenCrayMcpSettingsSnapshot> addMcpServer({
+    required String serverId,
+    required String displayName,
+    required String url,
+    String? authHeaderName,
+    String? authToken,
+  }) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayMcpSettingsSnapshot> removeMcpServer({
+    required String serverId,
+  }) async => throw StateError(_failureMessage);
+
+  @override
+  Future<OpenCrayMcpSettingsSnapshot> setMcpServerCredential({
+    required String serverId,
+    required String authHeaderName,
+    String? authToken,
+  }) async => throw StateError(_failureMessage);
+
+  @override
   Future<OpenCraySafetySettingsSnapshot>
   loadSafetySettings() async => const OpenCraySafetySettingsSnapshot(
     automationModeId: 'auto',

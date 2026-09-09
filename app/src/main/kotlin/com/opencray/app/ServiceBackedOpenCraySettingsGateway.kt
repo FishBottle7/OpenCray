@@ -302,6 +302,42 @@ internal class ServiceBackedOpenCraySettingsGateway(
     ),
   )
 
+  override fun addMcpServer(
+    serverId: String,
+    displayName: String,
+    url: String,
+    authHeaderName: String?,
+    authToken: String?,
+  ): Map<String, Any?> = dispatchPayloadWriteCommand(
+    operation = "addMcpServer",
+    command = OpenCraySettingsWriteCommand.AddMcpServer(
+      serverId = serverId,
+      displayName = displayName,
+      url = url,
+      authHeaderName = authHeaderName,
+      authToken = authToken,
+    ),
+  )
+
+  override fun removeMcpServer(serverId: String): Map<String, Any?> =
+    dispatchPayloadWriteCommand(
+      operation = "removeMcpServer",
+      command = OpenCraySettingsWriteCommand.RemoveMcpServer(serverId = serverId),
+    )
+
+  override fun setMcpServerCredential(
+    serverId: String,
+    authHeaderName: String,
+    authToken: String?,
+  ): Map<String, Any?> = dispatchPayloadWriteCommand(
+    operation = "setMcpServerCredential",
+    command = OpenCraySettingsWriteCommand.SetMcpServerCredential(
+      serverId = serverId,
+      authHeaderName = authHeaderName,
+      authToken = authToken,
+    ),
+  )
+
   override fun loadSafetySettings(): Map<String, Any?> =
     currentLoadGateway().loadSafetySettings()
 

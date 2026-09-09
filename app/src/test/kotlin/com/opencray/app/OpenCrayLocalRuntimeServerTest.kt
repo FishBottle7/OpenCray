@@ -3687,6 +3687,34 @@ class OpenCrayLocalRuntimeServerTest {
       "enabled" to enabled,
     )
 
+    override fun addMcpServer(
+      serverId: String,
+      displayName: String,
+      url: String,
+      authHeaderName: String?,
+      authToken: String?,
+    ): Map<String, Any?> = mapOf(
+      "source" to "gateway-mcp-add-server",
+      "serverId" to serverId,
+      "displayName" to displayName,
+      "url" to url,
+    )
+
+    override fun removeMcpServer(serverId: String): Map<String, Any?> = mapOf(
+      "source" to "gateway-mcp-remove-server",
+      "serverId" to serverId,
+    )
+
+    override fun setMcpServerCredential(
+      serverId: String,
+      authHeaderName: String,
+      authToken: String?,
+    ): Map<String, Any?> = mapOf(
+      "source" to "gateway-mcp-server-credential",
+      "serverId" to serverId,
+      "authHeaderName" to authHeaderName,
+    )
+
     override fun loadSafetySettings(): Map<String, Any?> =
       mapOf("source" to "gateway-safety")
 

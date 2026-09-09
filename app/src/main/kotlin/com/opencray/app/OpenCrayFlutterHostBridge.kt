@@ -630,6 +630,36 @@ internal class OpenCrayFlutterHostBridge(
           }
           return
         }
+        "addMcpServer" -> {
+          runAsync(result) {
+            settingsGateway.addMcpServer(
+              serverId = call.argument<String>("serverId").orEmpty(),
+              displayName = call.argument<String>("displayName").orEmpty(),
+              url = call.argument<String>("url").orEmpty(),
+              authHeaderName = call.argument<String>("authHeaderName"),
+              authToken = call.argument<String>("authToken"),
+            )
+          }
+          return
+        }
+        "removeMcpServer" -> {
+          runAsync(result) {
+            settingsGateway.removeMcpServer(
+              serverId = call.argument<String>("serverId").orEmpty(),
+            )
+          }
+          return
+        }
+        "setMcpServerCredential" -> {
+          runAsync(result) {
+            settingsGateway.setMcpServerCredential(
+              serverId = call.argument<String>("serverId").orEmpty(),
+              authHeaderName = call.argument<String>("authHeaderName").orEmpty(),
+              authToken = call.argument<String>("authToken"),
+            )
+          }
+          return
+        }
         "loadSafetySettings" -> settingsGateway.loadSafetySettings()
         "saveSafetySettings" -> {
           runAsync(result) {

@@ -792,4 +792,38 @@ class OpenCrayUiCopy {
   String get chatSeedImageDetail =>
       isChinese ? '图片 · 1.8 MB' : 'Image · 1.8 MB';
   String get chatSeedFileDetail => isChinese ? '文件 · 12 KB' : 'File · 12 KB';
+
+  String get mcpAddServerTitle => isChinese ? '添加服务器' : 'Add server';
+  String get mcpAddServerSummary => isChinese
+      ? '连接一个远端 MCP 服务器（Streamable HTTP），添加后需要手动启用才会生效。'
+      : 'Connect a remote MCP server over Streamable HTTP. New servers stay blocked until you enable them.';
+  String get mcpAddServerFormTitle => isChinese ? '添加 MCP 服务器' : 'Add MCP server';
+  String get mcpAddServerFormHelper => isChinese
+      ? '服务器 ID 只用小写字母、数字和连字符；URL 必须以 http(s):// 开头。'
+      : 'Server id uses lowercase letters, digits, and dashes only. The URL must start with http(s)://.';
+  String get mcpAddServerIdLabel => isChinese ? '服务器 ID' : 'Server id';
+  String get mcpAddServerIdHint =>
+      isChinese ? '例如 search-demo' : 'e.g. search-demo';
+  String get mcpAddServerNameLabel => isChinese ? '显示名称' : 'Display name';
+  String get mcpAddServerNameHint =>
+      isChinese ? '例如 搜索演示' : 'e.g. Search demo';
+  String get mcpAddServerUrlLabel => isChinese ? '服务器 URL' : 'Server URL';
+  String get mcpAddServerUrlHint =>
+      isChinese ? 'https://example.com/mcp' : 'https://example.com/mcp';
+  String get mcpAddServerHeaderLabel =>
+      isChinese ? '认证头名称（可选）' : 'Auth header name (optional)';
+  String get mcpAddServerHeaderHint =>
+      isChinese ? '默认 Authorization' : 'Defaults to Authorization';
+  String get mcpAddServerTokenLabel =>
+      isChinese ? '访问令牌（可选）' : 'Access token (optional)';
+  String get mcpAddServerTokenHint => isChinese
+      ? '留空表示无需认证；令牌只存入设备密钥库'
+      : 'Leave blank for no auth. Tokens are stored in the device keystore only.';
+  String get mcpAddServerApply => isChinese ? '添加' : 'Add';
+  String get mcpAddServerCancel => isChinese ? '取消' : 'Cancel';
+  String get mcpAddServerInvalidId => isChinese
+      ? '服务器 ID 只能包含小写字母、数字和连字符。'
+      : 'Server id may only contain lowercase letters, digits, and dashes.';
+  String get mcpAddServerInvalidUrl =>
+      isChinese ? 'URL 必须以 http:// 或 https:// 开头。' : 'The URL must start with http:// or https://.';
 }

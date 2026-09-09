@@ -320,6 +320,24 @@ abstract interface class OpenCrayHostBridge {
     required bool enabled,
   });
 
+  Future<OpenCrayMcpSettingsSnapshot> addMcpServer({
+    required String serverId,
+    required String displayName,
+    required String url,
+    String? authHeaderName,
+    String? authToken,
+  });
+
+  Future<OpenCrayMcpSettingsSnapshot> removeMcpServer({
+    required String serverId,
+  });
+
+  Future<OpenCrayMcpSettingsSnapshot> setMcpServerCredential({
+    required String serverId,
+    required String authHeaderName,
+    String? authToken,
+  });
+
   Future<OpenCraySafetySettingsSnapshot> loadSafetySettings();
 
   Future<bool> authorizeExternalAccessLocation(String locationId);

@@ -26,6 +26,52 @@ mixin _PlatformBridgeMcpSafetyDomain on _PlatformBridgeDeps {
   );
 
   @override
+  Future<OpenCrayMcpSettingsSnapshot> addMcpServer({
+    required String serverId,
+    required String displayName,
+    required String url,
+    String? authHeaderName,
+    String? authToken,
+  }) async => OpenCrayMcpSettingsSnapshot.fromMap(
+    await _invokeMap(
+      'addMcpServer',
+      arguments: <String, Object?>{
+        'serverId': serverId,
+        'displayName': displayName,
+        'url': url,
+        'authHeaderName': authHeaderName,
+        'authToken': authToken,
+      },
+    ),
+  );
+
+  @override
+  Future<OpenCrayMcpSettingsSnapshot> removeMcpServer({
+    required String serverId,
+  }) async => OpenCrayMcpSettingsSnapshot.fromMap(
+    await _invokeMap(
+      'removeMcpServer',
+      arguments: <String, Object?>{'serverId': serverId},
+    ),
+  );
+
+  @override
+  Future<OpenCrayMcpSettingsSnapshot> setMcpServerCredential({
+    required String serverId,
+    required String authHeaderName,
+    String? authToken,
+  }) async => OpenCrayMcpSettingsSnapshot.fromMap(
+    await _invokeMap(
+      'setMcpServerCredential',
+      arguments: <String, Object?>{
+        'serverId': serverId,
+        'authHeaderName': authHeaderName,
+        'authToken': authToken,
+      },
+    ),
+  );
+
+  @override
   Future<OpenCraySafetySettingsSnapshot> loadSafetySettings() async =>
       OpenCraySafetySettingsSnapshot.fromMap(
         await _invokeMap('loadSafetySettings'),

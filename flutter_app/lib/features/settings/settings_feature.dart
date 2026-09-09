@@ -1424,9 +1424,45 @@ class _McpSettingsPageState extends State<_McpSettingsPage> {
             ),
             if (server != snapshot.servers.last) const SizedBox(height: 16),
           ],
+          const SizedBox(height: 16),
+          _McpAddServerEntryCard(
+            onTap: _openAddServerSheet,
+          ),
         ],
       ),
     );
+  }
+
+  Future<void> _openAddServerSheet() async {
+    final copy = OpenCrayUiCopy.fromLocaleTag(
+      View.of(context).platformDispatcher.locale.toLanguageTag(),
+    );
+    final result = await showModalBottomSheet<McpSettingsSnapshot>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      sheetAnimationStyle: OpenCrayMotion.sheetAnimationStyle(context),
+      builder: (sheetContext) {
+        return _McpAddServerSheet(
+          copy: copy,
+          onSubmit: (serverId, displayName, url, authHeaderName, authToken) async {
+            return widget.facade.addMcpServer(
+              serverId: serverId,
+              displayName: displayName,
+              url: url,
+              authHeaderName: authHeaderName,
+              authToken: authToken,
+            );
+          },
+        );
+      },
+    );
+    if (result == null || !mounted) {
+      return;
+    }
+    setState(() {
+      _snapshot = result;
+    });
   }
 
   Future<void> _load() async {
@@ -1719,6 +1755,308 @@ class _McpServerCard extends StatelessWidget {
           Text(server.guidance, style: context.settingsText.body),
         ],
       ),
+    );
+  }
+}
+
+class _McpAddServerEntryCard extends StatelessWidget {
+  const _McpAddServerEntryCard({
+    required this.onTap,
+  });
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final copy = OpenCrayUiCopy.fromLocaleTag(
+      View.of(context).platformDispatcher.locale.toLanguageTag(),
+    );
+    return _SettingsCard(
+      child: OpenCrayInkSurface(
+        child: InkWell(
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        copy.mcpAddServerTitle,
+                        style: context.settingsText.cardTitle,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(copy.mcpAddServerSummary, style: context.settingsText.body),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Icon(
+                  Icons.add_rounded,
+                  size: 22,
+                  color: context.palette.primary,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _McpAddServerSheet extends StatefulWidget {
+  const _McpAddServerSheet({
+    required this.copy,
+    required this.onSubmit,
+  });
+
+  final OpenCrayUiCopy copy;
+  final Future<McpSettingsSnapshot> Function(
+    String serverId,
+    String displayName,
+    String url,
+    String? authHeaderName,
+    String? authToken,
+  ) onSubmit;
+
+  @override
+  State<_McpAddServerSheet> createState() => _McpAddServerSheetState();
+}
+
+class _McpAddServerSheetState extends State<_McpAddServerSheet> {
+  final TextEditingController _serverIdController = TextEditingController();
+  final TextEditingController _displayNameController = TextEditingController();
+  final TextEditingController _urlController = TextEditingController();
+  final TextEditingController _authHeaderController = TextEditingController();
+  final TextEditingController _tokenController = TextEditingController();
+  final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+  bool _isSubmitting = false;
+  String? _submitError;
+
+  static final RegExp _serverIdPattern = RegExp(r'^[a-z0-9][a-z0-9-]*$');
+
+  @override
+  void dispose() {
+    _serverIdController.dispose();
+    _displayNameController.dispose();
+    _urlController.dispose();
+    _authHeaderController.dispose();
+    _tokenController.dispose();
+    super.dispose();
+  }
+
+  bool get _isFormValid =>
+      _serverIdPattern.hasMatch(_serverIdController.text.trim()) &&
+      _displayNameController.text.trim().isNotEmpty &&
+      (_urlController.text.trim().startsWith('http://') ||
+          _urlController.text.trim().startsWith('https://'));
+
+  Future<void> _submit() async {
+    if (!_isFormValid || _isSubmitting) {
+      return;
+    }
+    setState(() {
+      _isSubmitting = true;
+      _submitError = null;
+    });
+    try {
+      final snapshot = await widget.onSubmit(
+        _serverIdController.text.trim(),
+        _displayNameController.text.trim(),
+        _urlController.text.trim(),
+        _authHeaderController.text.trim().isNotEmpty
+            ? _authHeaderController.text.trim()
+            : null,
+        _tokenController.text.trim().isNotEmpty
+            ? _tokenController.text.trim()
+            : null,
+      );
+      if (mounted) {
+        Navigator.of(context).pop(snapshot);
+      }
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _isSubmitting = false;
+          _submitError = error.toString().replaceFirst('Exception: ', '');
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final copy = widget.copy;
+    return SafeArea(
+      top: false,
+        child: SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(
+            12,
+            0,
+            12,
+            MediaQuery.of(context).viewInsets.bottom + 12,
+        ),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: context.palette.surface,
+            borderRadius: const BorderRadius.all(Radius.circular(22)),
+          ),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 18, 16, 16),
+              child: Form(
+                key: _formKey,
+                autovalidateMode: AutovalidateMode.onUserInteraction,
+                onChanged: () => setState(() {}),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Center(
+                      child: Container(
+                        width: 40,
+                        height: 4,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          color: context.palette.divider,
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      ),
+                    ),
+                    Text(
+                      copy.mcpAddServerFormTitle,
+                      style: context.settingsText.cardTitle,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(copy.mcpAddServerFormHelper, style: context.settingsText.body),
+                    const SizedBox(height: 12),
+                    _McpFormField(
+                      controller: _serverIdController,
+                      label: copy.mcpAddServerIdLabel,
+                      hintText: copy.mcpAddServerIdHint,
+                      validator: (value) =>
+                          _serverIdPattern.hasMatch(value.trim())
+                              ? null
+                              : copy.mcpAddServerInvalidId,
+                    ),
+                    const SizedBox(height: 12),
+                    _McpFormField(
+                      controller: _displayNameController,
+                      label: copy.mcpAddServerNameLabel,
+                      hintText: copy.mcpAddServerNameHint,
+                      validator: (value) => value.trim().isEmpty
+                          ? copy.mcpAddServerNameLabel
+                          : null,
+                    ),
+                    const SizedBox(height: 12),
+                    _McpFormField(
+                      controller: _urlController,
+                      label: copy.mcpAddServerUrlLabel,
+                      hintText: copy.mcpAddServerUrlHint,
+                      keyboardType: TextInputType.url,
+                      validator: (value) {
+                        final trimmed = value.trim();
+                        if (trimmed.startsWith('http://') ||
+                            trimmed.startsWith('https://')) {
+                          return null;
+                        }
+                        return copy.mcpAddServerInvalidUrl;
+                      },
+                    ),
+                    const SizedBox(height: 12),
+                    _McpFormField(
+                      controller: _authHeaderController,
+                      label: copy.mcpAddServerHeaderLabel,
+                      hintText: copy.mcpAddServerHeaderHint,
+                      validator: null,
+                    ),
+                    const SizedBox(height: 12),
+                    _McpFormField(
+                      controller: _tokenController,
+                      label: copy.mcpAddServerTokenLabel,
+                      hintText: copy.mcpAddServerTokenHint,
+                      obscureText: true,
+                      validator: null,
+                    ),
+                    if (_submitError != null) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        _submitError!,
+                        style: context.settingsText.body.copyWith(
+                          color: context.palette.danger,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        TextButton(
+                          onPressed: _isSubmitting
+                              ? null
+                              : () => Navigator.of(context).pop(),
+                          child: Text(copy.mcpAddServerCancel),
+                        ),
+                        const Spacer(),
+                        FilledButton(
+                          onPressed: (_isFormValid && !_isSubmitting)
+                              ? _submit
+                              : null,
+                          child: Text(copy.mcpAddServerApply),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+    );
+  }
+}
+class _McpFormField extends StatelessWidget {
+  const _McpFormField({
+    required this.controller,
+    required this.label,
+    required this.hintText,
+    this.validator,
+    this.obscureText = false,
+    this.keyboardType,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final String hintText;
+  final String? Function(String)? validator;
+  final bool obscureText;
+  final TextInputType? keyboardType;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: context.settingsText.rowTitle),
+        const SizedBox(height: 6),
+        _PrototypeFieldSurface(
+          child: TextFormField(
+            controller: controller,
+            obscureText: obscureText,
+            keyboardType: keyboardType,
+            textInputAction: TextInputAction.next,
+            decoration: openCrayBareInputDecoration.copyWith(
+              hintText: hintText,
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 14,
+              ),
+            ),
+            validator: (value) => validator?.call(value ?? ''),
+          ),
+        ),
+      ],
     );
   }
 }

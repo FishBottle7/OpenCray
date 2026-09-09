@@ -1315,6 +1315,22 @@ abstract class AgentBootstrapTestBase {
           enabled: Boolean,
         ): Map<String, Any?> = emptyMap()
 
+        override fun addMcpServer(
+          serverId: String,
+          displayName: String,
+          url: String,
+          authHeaderName: String?,
+          authToken: String?,
+        ): Map<String, Any?> = emptyMap()
+
+        override fun removeMcpServer(serverId: String): Map<String, Any?> = emptyMap()
+
+        override fun setMcpServerCredential(
+          serverId: String,
+          authHeaderName: String,
+          authToken: String?,
+        ): Map<String, Any?> = emptyMap()
+
         override fun loadSafetySettings(): Map<String, Any?> = emptyMap()
 
         override fun saveSafetySettings(

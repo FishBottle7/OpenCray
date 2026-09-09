@@ -1054,6 +1054,33 @@ internal class OpenCrayHostRuntime internal constructor(
     enabled = enabled,
   )
 
+  override fun addMcpServer(
+    serverId: String,
+    displayName: String,
+    url: String,
+    authHeaderName: String?,
+    authToken: String?,
+  ): Map<String, Any?> = settingsGateway.addMcpServer(
+    serverId = serverId,
+    displayName = displayName,
+    url = url,
+    authHeaderName = authHeaderName,
+    authToken = authToken,
+  )
+
+  override fun removeMcpServer(serverId: String): Map<String, Any?> =
+    settingsGateway.removeMcpServer(serverId = serverId)
+
+  override fun setMcpServerCredential(
+    serverId: String,
+    authHeaderName: String,
+    authToken: String?,
+  ): Map<String, Any?> = settingsGateway.setMcpServerCredential(
+    serverId = serverId,
+    authHeaderName = authHeaderName,
+    authToken = authToken,
+  )
+
   override fun loadSafetySettings(): Map<String, Any?> =
     settingsGateway.loadSafetySettings()
 

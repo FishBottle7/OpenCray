@@ -615,6 +615,21 @@ internal class OpenCrayLocalRuntimeServer(
         serverId = body.optString("serverId"),
         enabled = body.optBoolean("enabled"),
       )
+      "POST" to "/v1/add_mcp_server" -> settingsGateway.addMcpServer(
+        serverId = body.optString("serverId"),
+        displayName = body.optString("displayName"),
+        url = body.optString("url"),
+        authHeaderName = body.optString("authHeaderName").takeIf(String::isNotBlank),
+        authToken = body.optString("authToken").takeIf(String::isNotBlank),
+      )
+      "POST" to "/v1/remove_mcp_server" -> settingsGateway.removeMcpServer(
+        serverId = body.optString("serverId"),
+      )
+      "POST" to "/v1/set_mcp_server_credential" -> settingsGateway.setMcpServerCredential(
+        serverId = body.optString("serverId"),
+        authHeaderName = body.optString("authHeaderName"),
+        authToken = body.optString("authToken").takeIf(String::isNotBlank),
+      )
       "GET" to "/v1/safety_settings" -> settingsGateway.loadSafetySettings()
       "POST" to "/v1/save_safety_settings" -> settingsGateway.saveSafetySettings(
         automationModeId = body.optString("automationModeId"),

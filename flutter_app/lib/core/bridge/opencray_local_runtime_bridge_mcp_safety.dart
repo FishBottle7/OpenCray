@@ -25,6 +25,45 @@ mixin _LocalRuntimeBridgeMcpSafetyDomain on _LocalRuntimeBridgeDeps {
   );
 
   @override
+  Future<OpenCrayMcpSettingsSnapshot> addMcpServer({
+    required String serverId,
+    required String displayName,
+    required String url,
+    String? authHeaderName,
+    String? authToken,
+  }) async => OpenCrayMcpSettingsSnapshot.fromMap(
+    await _postMap('v1/add_mcp_server', <String, Object?>{
+      'serverId': serverId,
+      'displayName': displayName,
+      'url': url,
+      'authHeaderName': authHeaderName,
+      'authToken': authToken,
+    }),
+  );
+
+  @override
+  Future<OpenCrayMcpSettingsSnapshot> removeMcpServer({
+    required String serverId,
+  }) async => OpenCrayMcpSettingsSnapshot.fromMap(
+    await _postMap('v1/remove_mcp_server', <String, Object?>{
+      'serverId': serverId,
+    }),
+  );
+
+  @override
+  Future<OpenCrayMcpSettingsSnapshot> setMcpServerCredential({
+    required String serverId,
+    required String authHeaderName,
+    String? authToken,
+  }) async => OpenCrayMcpSettingsSnapshot.fromMap(
+    await _postMap('v1/set_mcp_server_credential', <String, Object?>{
+      'serverId': serverId,
+      'authHeaderName': authHeaderName,
+      'authToken': authToken,
+    }),
+  );
+
+  @override
   Future<OpenCraySafetySettingsSnapshot> loadSafetySettings() async =>
       OpenCraySafetySettingsSnapshot.fromMap(
         await _getMap('v1/safety_settings'),

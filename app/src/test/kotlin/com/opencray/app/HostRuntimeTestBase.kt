@@ -664,6 +664,40 @@ abstract class HostRuntimeTestBase {
     override fun currentRegistry(): com.opencray.mcp.McpRegistry =
       com.opencray.mcp.McpRegistry(com.opencray.mcp.InMemoryMcpRegistryStore())
 
+    var lastAddedServerId: String? = null
+      private set
+    var lastRemovedServerId: String? = null
+      private set
+    var lastCredentialServerId: String? = null
+      private set
+
+    override fun addServer(
+      serverId: String,
+      displayName: String,
+      url: String,
+      authHeaderName: String?,
+      authToken: String?,
+    ): McpSettingsSnapshot {
+      lastAddedServerId = serverId
+      return snapshot(
+        summaryLine = "Enabled 3 • Blocked 0 • Attention 1",
+      )
+    }
+
+    override fun removeServer(serverId: String): McpSettingsSnapshot {
+      lastRemovedServerId = serverId
+      return snapshot()
+    }
+
+    override fun setServerCredential(
+      serverId: String,
+      authHeaderName: String,
+      authToken: String?,
+    ): McpSettingsSnapshot {
+      lastCredentialServerId = serverId
+      return snapshot()
+    }
+
     private fun snapshot(
       masterEnabled: Boolean = true,
       summaryLine: String = "Enabled 2 • Blocked 1 • Attention 2",

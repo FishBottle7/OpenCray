@@ -27,8 +27,9 @@ tool call 代理、远端工具的策略分类与审批。
 - 不做 SSE 长连接传输（`RemoteSse` 合同保留；阶段一先做 Streamable HTTP 单工，
   2025-11-05 协议允许 client 只用 request/response 模式）。
 - 不批量代理 E2B 200+ server 目录，不做无策略清单的透传（e2b 计划明确警示）。
-- 不在本计划内做"添加 MCP 服务器"UI（chat-led 原型需求第 11 节之外的 add-server
-  表单与桥方法另行排期，见 `docs/chat-led-ui-prototype-requirements.md` L425/L462）。
+- 不在本计划的初版排期内做"添加 MCP 服务器"UI（chat-led 原型需求第 11 节之外的
+  add-server 表单与桥方法另行排期，见 `docs/chat-led-ui-prototype-requirements.md`
+  L425/L462）——2026-09-09 已提前实现（见阶段三）。
 
 ## 三、技术选型
 
@@ -97,11 +98,22 @@ tool call 代理、远端工具的策略分类与审批。
 - 连接生命周期接入 `InProcessOpenCrayRuntimeOwner`（`mcpReportProvider` 旁新增
   `mcpToolBridgeGatewayProvider`），与强后台/重启恢复语义对齐。
 
-### 阶段三：设置与发现闭环（远期）
+### 阶段三：设置与发现闭环（add-server 部分已完成，2026-09-09）
 
-- add-server 桥方法 + 设置表单（chat-led 原型 L425/L462 后端待办）。
-- 凭据录入 UI（vault 保存，凭据引用回写注册表）。
-- SSE 传输、LocalStdio 进程传输、E2B MCP gateway provider。
+- add-server 桥方法 + 设置表单（chat-led 原型 L425/L462 后端待办）：已完成。
+  `McpSettingsFacade.addServer/removeServer/setServerCredential` +
+  纯 Kotlin `McpServerRegistryEditor`（无 Android Context，JVM 可测），贯通
+  四条原生写通道（`HostSettingsGatewayImpl`、`RuntimeServiceWriteCommandProtocol`
+  路由 `v1/add_mcp_server`/`v1/remove_mcp_server`/`v1/set_mcp_server_credential`、
+  `OpenCrayLocalRuntimeServer` HTTP、`RuntimeServiceCommandFallbackTransport`）与
+  Flutter 四桥（platform/local-runtime/seed/failure）；MCP 设置页服务器卡片尾部
+  新增"添加服务器"入口卡与底部表单面板（服务器 ID/显示名称/URL/认证头/令牌）。
+- 凭据录入（vault 保存，凭据引用回写注册表）：已完成。令牌只经
+  `AppSecretManager.storeUtf8` 进 keystore vault，注册表持久化仅
+  `secret://mcp/<serverId>/token` 凭据引用；移除服务器同步删 vault 条目；
+  凭据轮换保持手动启用态与 URL 不变；空令牌清除认证；新服务器注册即
+  `REQUIRES_MANUAL_ENABLE`（从卡片手动启用才触网）。
+- 待做（远期不变）：SSE 传输、LocalStdio 进程传输、E2B MCP gateway provider。
 
 ## 五、测试策略
 
@@ -150,4 +162,10 @@ tool call 代理、远端工具的策略分类与审批。
   名称不可解析）、`ModePolicyMatrixTest` MCP_TOOL 三档、
   `ToolCapabilityClassifierTest` MCP 映射（并补齐阶段一遗漏的
   `mcp_list_servers` → READ_FILE 分类映射）、既有 MCP 测试断言同步翻转。
-- 待做：阶段三 add-server UI 与凭据录入、SSE/stdio 传输、E2B gateway。
+- 待做：阶段三远期项——SSE/stdio 传输、E2B gateway。add-server 与凭据录入已于
+  2026-09-09 提前落地（见阶段三）：`McpServerRegistryEditor`（add/remove/凭据
+  轮换，vault-only 明文，JVM 测试 6 例）、三条桥方法贯通原生写通道与 Flutter
+  四桥、MCP 设置页添加服务器入口卡 + 表单面板（复用既有 sheet 表单范式，严格按
+  原型 L425/6.2③）、中英文文案 16 条、既有 mcp 引导文案 4 条同步（从"未代理"
+  改为"经策略审批可调用"）、Flutter 组件测试 3 例（入口卡、提交流转、非法输入
+  禁用按钮）。

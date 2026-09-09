@@ -283,6 +283,23 @@ internal class ProjectionOnlyOpenCraySettingsGateway(
     enabled: Boolean,
   ): Map<String, Any?> = throw writeUnavailable("setMcpServerEnabled")
 
+  override fun addMcpServer(
+    serverId: String,
+    displayName: String,
+    url: String,
+    authHeaderName: String?,
+    authToken: String?,
+  ): Map<String, Any?> = throw writeUnavailable("addMcpServer")
+
+  override fun removeMcpServer(serverId: String): Map<String, Any?> =
+    throw writeUnavailable("removeMcpServer")
+
+  override fun setMcpServerCredential(
+    serverId: String,
+    authHeaderName: String,
+    authToken: String?,
+  ): Map<String, Any?> = throw writeUnavailable("setMcpServerCredential")
+
   override fun loadSafetySettings(): Map<String, Any?> =
     safetySettingsFacade.load().toGatewayMap()
 

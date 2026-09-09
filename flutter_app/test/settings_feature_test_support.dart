@@ -1113,6 +1113,14 @@ class FakeSettingsFacade implements SettingsFacade {
   )?
   onSaveNotificationSettings;
   final Future<ScheduledTasksSnapshot> Function()? onLoadScheduledTasks;
+  Future<McpSettingsSnapshot> Function({
+    required String serverId,
+    required String displayName,
+    required String url,
+    String? authHeaderName,
+    String? authToken,
+  })?
+  onAddMcpServer;
   final PersonalizationConfigSnapshot personalizationConfig;
   final McpSettingsSnapshot mcpSettings = const McpSettingsSnapshot(
     title: 'MCP',
@@ -1762,6 +1770,38 @@ class FakeSettingsFacade implements SettingsFacade {
   Future<McpSettingsSnapshot> setMcpServerEnabled({
     required String serverId,
     required bool enabled,
+  }) async => mcpSettings;
+
+  @override
+  Future<McpSettingsSnapshot> addMcpServer({
+    required String serverId,
+    required String displayName,
+    required String url,
+    String? authHeaderName,
+    String? authToken,
+  }) async {
+    if (onAddMcpServer != null) {
+      return await onAddMcpServer!(
+        serverId: serverId,
+        displayName: displayName,
+        url: url,
+        authHeaderName: authHeaderName,
+        authToken: authToken,
+      );
+    }
+    return mcpSettings;
+  }
+
+  @override
+  Future<McpSettingsSnapshot> removeMcpServer({
+    required String serverId,
+  }) async => mcpSettings;
+
+  @override
+  Future<McpSettingsSnapshot> setMcpServerCredential({
+    required String serverId,
+    required String authHeaderName,
+    String? authToken,
   }) async => mcpSettings;
 
   @override

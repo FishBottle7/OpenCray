@@ -408,6 +408,43 @@ class BridgeSettingsFacade implements SettingsFacade {
   );
 
   @override
+  Future<McpSettingsSnapshot> addMcpServer({
+    required String serverId,
+    required String displayName,
+    required String url,
+    String? authHeaderName,
+    String? authToken,
+  }) async => _mapMcpSettings(
+    await _bridge.addMcpServer(
+      serverId: serverId,
+      displayName: displayName,
+      url: url,
+      authHeaderName: authHeaderName,
+      authToken: authToken,
+    ),
+  );
+
+  @override
+  Future<McpSettingsSnapshot> removeMcpServer({
+    required String serverId,
+  }) async => _mapMcpSettings(
+    await _bridge.removeMcpServer(serverId: serverId),
+  );
+
+  @override
+  Future<McpSettingsSnapshot> setMcpServerCredential({
+    required String serverId,
+    required String authHeaderName,
+    String? authToken,
+  }) async => _mapMcpSettings(
+    await _bridge.setMcpServerCredential(
+      serverId: serverId,
+      authHeaderName: authHeaderName,
+      authToken: authToken,
+    ),
+  );
+
+  @override
   Future<SafetySettingsSnapshot> loadSafetySettings() async =>
       _mapSafetySettings(await _bridge.loadSafetySettings());
 

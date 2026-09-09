@@ -113,7 +113,7 @@
     <string name="mcp_home_master_title">启用 MCP 集成</string>
     <string name="mcp_home_master_summary">已信任的服务器跟随这个总开关切换；未知服务器仍需手动启用。</string>
     <string name="mcp_settings_guidance_title">逐个服务器的控制都在这里</string>
-    <string name="mcp_settings_guidance_body">这里按服务器列出状态和操作，首页只保留总开关。当前运行时只通过 mcp_list_servers 暴露服务器可见性，尚未把远端 MCP 工具代理进 agent。</string>
+    <string name="mcp_settings_guidance_body">这里按服务器列出状态和操作。已启用服务器的远端工具可通过 mcp__ 代理工具调用，每次调用都会经过策略审批。</string>
     <string name="mcp_master_disabled_title">这台设备上的 MCP 已暂停</string>
     <string name="mcp_master_disabled_body">已受信任的服务器仍会保留在注册表中，但在你重新打开总开关前，仅用于可见性展示的 MCP 状态也会继续隐藏。</string>
     <string name="mcp_server_name_assistant_local">Assistant Local</string>
@@ -123,9 +123,9 @@
     <string name="mcp_status_blocked">已阻止</string>
     <string name="mcp_exposure_active">暴露：已启用（仅状态）</string>
     <string name="mcp_exposure_blocked">暴露：已阻止</string>
-    <string name="mcp_guidance_active_ready">这个服务器已经受信任，并会出现在 MCP 可见性报告里；远端 MCP 工具目前还没有代理进壳层运行时。</string>
-    <string name="mcp_guidance_active_needs_auth">这个服务器已经启用，但仍需要补齐认证设置；远端 MCP 工具目前还没有代理进壳层运行时。</string>
-    <string name="mcp_guidance_blocked_manual">在你手动启用前，这个服务器会保持阻止；只有你在这里确认后它才会出现在可见性报告里，而且远端 MCP 工具目前仍未代理进来。</string>
+    <string name="mcp_guidance_active_ready">这个服务器已受信任，远端工具可通过 mcp__ 代理工具调用，每次调用都会经过策略审批。</string>
+    <string name="mcp_guidance_active_needs_auth">这个服务器已启用，但仍需补齐认证设置，远端工具才能建立连接。</string>
+    <string name="mcp_guidance_blocked_manual">在你手动启用前，这个服务器会保持阻止；在你确认前它的远端工具不可用。</string>
     <string name="mcp_guidance_blocked_disabled_ready">这个服务器当前在此设备上被停用；你可以随时在这里重新打开它。</string>
     <string name="mcp_guidance_blocked_disabled_needs_auth">这个服务器当前被停用，而且仍需要完成认证设置后才能视为就绪。</string>
     <string name="mcp_action_disable_server">停用服务器</string>

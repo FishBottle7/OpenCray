@@ -1459,6 +1459,34 @@ abstract class RuntimeServiceHostTestBase {
       "enabled" to enabled,
     )
 
+    override fun addMcpServer(
+      serverId: String,
+      displayName: String,
+      url: String,
+      authHeaderName: String?,
+      authToken: String?,
+    ): Map<String, Any?> = mapOf(
+      "source" to "$label-mcp-add-server",
+      "serverId" to serverId,
+      "displayName" to displayName,
+      "url" to url,
+    )
+
+    override fun removeMcpServer(serverId: String): Map<String, Any?> = mapOf(
+      "source" to "$label-mcp-remove-server",
+      "serverId" to serverId,
+    )
+
+    override fun setMcpServerCredential(
+      serverId: String,
+      authHeaderName: String,
+      authToken: String?,
+    ): Map<String, Any?> = mapOf(
+      "source" to "$label-mcp-server-credential",
+      "serverId" to serverId,
+      "authHeaderName" to authHeaderName,
+    )
+
     override fun loadSafetySettings(): Map<String, Any?> =
       mapOf("source" to "$label-safety")
 
@@ -2229,6 +2257,29 @@ abstract class RuntimeServiceHostTestBase {
 
     override fun currentRegistry(): com.opencray.mcp.McpRegistry =
       com.opencray.mcp.McpRegistry(com.opencray.mcp.InMemoryMcpRegistryStore())
+
+    override fun addServer(
+      serverId: String,
+      displayName: String,
+      url: String,
+      authHeaderName: String?,
+      authToken: String?,
+    ): com.opencray.app.facade.mcp.McpSettingsSnapshot = snapshot(
+      masterEnabled = true,
+      serverActionEnabled = false,
+    )
+
+    override fun removeServer(serverId: String): com.opencray.app.facade.mcp.McpSettingsSnapshot =
+      snapshot(masterEnabled = true, serverActionEnabled = false)
+
+    override fun setServerCredential(
+      serverId: String,
+      authHeaderName: String,
+      authToken: String?,
+    ): com.opencray.app.facade.mcp.McpSettingsSnapshot = snapshot(
+      masterEnabled = true,
+      serverActionEnabled = false,
+    )
 
     private fun snapshot(
       masterEnabled: Boolean,

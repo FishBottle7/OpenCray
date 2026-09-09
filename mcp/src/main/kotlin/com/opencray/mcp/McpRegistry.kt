@@ -11,7 +11,7 @@ import com.opencray.persistence.security.CredentialRef
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-private const val DEFAULT_AUTH_HEADER_NAME = "Authorization"
+const val DEFAULT_AUTH_HEADER_NAME = "Authorization"
 
 @Serializable
 enum class McpServerAuthStatus {

@@ -149,6 +149,22 @@ internal interface OpenCraySettingsGateway {
     enabled: Boolean,
   ): Map<String, Any?>
 
+  fun addMcpServer(
+    serverId: String,
+    displayName: String,
+    url: String,
+    authHeaderName: String?,
+    authToken: String?,
+  ): Map<String, Any?>
+
+  fun removeMcpServer(serverId: String): Map<String, Any?>
+
+  fun setMcpServerCredential(
+    serverId: String,
+    authHeaderName: String,
+    authToken: String?,
+  ): Map<String, Any?>
+
   fun loadSafetySettings(): Map<String, Any?>
 
   fun saveSafetySettings(
@@ -309,6 +325,24 @@ internal sealed interface OpenCraySettingsWriteCommand {
   data class SetMcpServerEnabled(
     val serverId: String,
     val enabled: Boolean,
+  ) : OpenCraySettingsWriteCommand
+
+  data class AddMcpServer(
+    val serverId: String,
+    val displayName: String,
+    val url: String,
+    val authHeaderName: String?,
+    val authToken: String?,
+  ) : OpenCraySettingsWriteCommand
+
+  data class RemoveMcpServer(
+    val serverId: String,
+  ) : OpenCraySettingsWriteCommand
+
+  data class SetMcpServerCredential(
+    val serverId: String,
+    val authHeaderName: String,
+    val authToken: String?,
   ) : OpenCraySettingsWriteCommand
 
   data class SaveSafetySettings(
@@ -493,6 +527,28 @@ internal fun OpenCraySettingsGateway.dispatchSettingsWriteCommand(
     setMcpServerEnabled(
       serverId = command.serverId,
       enabled = command.enabled,
+    ),
+  )
+
+  is OpenCraySettingsWriteCommand.AddMcpServer -> OpenCraySettingsWriteDispatchResult.Payload(
+    addMcpServer(
+      serverId = command.serverId,
+      displayName = command.displayName,
+      url = command.url,
+      authHeaderName = command.authHeaderName,
+      authToken = command.authToken,
+    ),
+  )
+
+  is OpenCraySettingsWriteCommand.RemoveMcpServer -> OpenCraySettingsWriteDispatchResult.Payload(
+    removeMcpServer(serverId = command.serverId),
+  )
+
+  is OpenCraySettingsWriteCommand.SetMcpServerCredential -> OpenCraySettingsWriteDispatchResult.Payload(
+    setMcpServerCredential(
+      serverId = command.serverId,
+      authHeaderName = command.authHeaderName,
+      authToken = command.authToken,
     ),
   )
 

@@ -148,6 +148,24 @@ abstract interface class SettingsFacade {
     required bool enabled,
   });
 
+  Future<McpSettingsSnapshot> addMcpServer({
+    required String serverId,
+    required String displayName,
+    required String url,
+    String? authHeaderName,
+    String? authToken,
+  });
+
+  Future<McpSettingsSnapshot> removeMcpServer({
+    required String serverId,
+  });
+
+  Future<McpSettingsSnapshot> setMcpServerCredential({
+    required String serverId,
+    required String authHeaderName,
+    String? authToken,
+  });
+
   Future<SafetySettingsSnapshot> loadSafetySettings();
 
   Future<bool> authorizeExternalAccessLocation(String locationId);

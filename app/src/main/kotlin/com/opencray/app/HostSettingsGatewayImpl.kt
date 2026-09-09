@@ -379,6 +379,39 @@ internal class HostSettingsGatewayImpl(
     host.mcpSettingsFacade.setServerEnabled(serverId = serverId, enabled = enabled)
   }.toGatewayMap()
 
+  override fun addMcpServer(
+    serverId: String,
+    displayName: String,
+    url: String,
+    authHeaderName: String?,
+    authToken: String?,
+  ): Map<String, Any?> = synchronized(host.lock) {
+    host.mcpSettingsFacade.addServer(
+      serverId = serverId,
+      displayName = displayName,
+      url = url,
+      authHeaderName = authHeaderName,
+      authToken = authToken,
+    )
+  }.toGatewayMap()
+
+  override fun removeMcpServer(serverId: String): Map<String, Any?> =
+    synchronized(host.lock) {
+      host.mcpSettingsFacade.removeServer(serverId)
+    }.toGatewayMap()
+
+  override fun setMcpServerCredential(
+    serverId: String,
+    authHeaderName: String,
+    authToken: String?,
+  ): Map<String, Any?> = synchronized(host.lock) {
+    host.mcpSettingsFacade.setServerCredential(
+      serverId = serverId,
+      authHeaderName = authHeaderName,
+      authToken = authToken,
+    )
+  }.toGatewayMap()
+
   override fun loadSafetySettings(): Map<String, Any?> =
     synchronized(host.lock) { host.safetySettingsFacade.load() }.toSafetyGatewayMap()
 

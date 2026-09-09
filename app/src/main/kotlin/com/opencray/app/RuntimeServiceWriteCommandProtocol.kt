@@ -391,6 +391,33 @@ internal fun runtimeServiceWriteCommandEnvelope(
     },
   )
 
+  is OpenCraySettingsWriteCommand.AddMcpServer -> settingsCommandEnvelope(
+    route = "v1/add_mcp_server",
+    payload = buildJsonObject {
+      put("serverId", command.serverId)
+      put("displayName", command.displayName)
+      put("url", command.url)
+      putIfNotNull("authHeaderName", command.authHeaderName)
+      putIfNotNull("authToken", command.authToken)
+    },
+  )
+
+  is OpenCraySettingsWriteCommand.RemoveMcpServer -> settingsCommandEnvelope(
+    route = "v1/remove_mcp_server",
+    payload = buildJsonObject {
+      put("serverId", command.serverId)
+    },
+  )
+
+  is OpenCraySettingsWriteCommand.SetMcpServerCredential -> settingsCommandEnvelope(
+    route = "v1/set_mcp_server_credential",
+    payload = buildJsonObject {
+      put("serverId", command.serverId)
+      put("authHeaderName", command.authHeaderName)
+      putIfNotNull("authToken", command.authToken)
+    },
+  )
+
   is OpenCraySettingsWriteCommand.SaveSafetySettings -> settingsCommandEnvelope(
     route = "v1/save_safety_settings",
     payload = buildJsonObject {
@@ -816,6 +843,27 @@ private fun RuntimeServiceWriteCommandEnvelope.decodeSettingsCommand(): OpenCray
       OpenCraySettingsWriteCommand.SetMcpServerEnabled(
         serverId = payload.requireString("serverId"),
         enabled = payload.requireBoolean("enabled"),
+      )
+
+    "POST" to "v1/add_mcp_server" ->
+      OpenCraySettingsWriteCommand.AddMcpServer(
+        serverId = payload.requireString("serverId"),
+        displayName = payload.requireString("displayName"),
+        url = payload.requireString("url"),
+        authHeaderName = payload.optionalString("authHeaderName"),
+        authToken = payload.optionalString("authToken"),
+      )
+
+    "POST" to "v1/remove_mcp_server" ->
+      OpenCraySettingsWriteCommand.RemoveMcpServer(
+        serverId = payload.requireString("serverId"),
+      )
+
+    "POST" to "v1/set_mcp_server_credential" ->
+      OpenCraySettingsWriteCommand.SetMcpServerCredential(
+        serverId = payload.requireString("serverId"),
+        authHeaderName = payload.requireString("authHeaderName"),
+        authToken = payload.optionalString("authToken"),
       )
 
     "POST" to "v1/save_safety_settings" -> OpenCraySettingsWriteCommand.SaveSafetySettings(

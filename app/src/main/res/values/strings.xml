@@ -113,7 +113,7 @@
     <string name="mcp_home_master_title">Enable MCP integrations</string>
     <string name="mcp_home_master_summary">Trusted servers follow this master switch. Unknown servers still need manual enable.</string>
     <string name="mcp_settings_guidance_title">Per-server controls live here</string>
-    <string name="mcp_settings_guidance_body">This page lists per-server status and actions. Today the runtime only exposes server visibility through mcp_list_servers; remote MCP tools are not proxied into the agent yet.</string>
+    <string name="mcp_settings_guidance_body">This page lists per-server status and actions. Remote tools on enabled servers are callable through mcp__ proxy tools, and every call goes through policy approval.</string>
     <string name="mcp_master_disabled_title">MCP is paused for this device</string>
     <string name="mcp_master_disabled_body">Trusted servers stay registered, but the exposure-only MCP status stays hidden until you turn the master switch back on.</string>
     <string name="mcp_server_name_assistant_local">Assistant Local</string>
@@ -123,9 +123,9 @@
     <string name="mcp_status_blocked">Blocked</string>
     <string name="mcp_exposure_active">Exposure: Active (status only)</string>
     <string name="mcp_exposure_blocked">Exposure: Blocked</string>
-    <string name="mcp_guidance_active_ready">This server is trusted and visible in the MCP exposure report. Remote MCP tools are not proxied into the shell runtime yet.</string>
-    <string name="mcp_guidance_active_needs_auth">This server is enabled, but auth setup still needs attention. Remote MCP tools are not proxied into the shell runtime yet.</string>
-    <string name="mcp_guidance_blocked_manual">Blocked until you enable this server manually. Exposure stays hidden until you consent here, and remote MCP tools are not proxied yet.</string>
+    <string name="mcp_guidance_active_ready">This server is trusted and its remote tools are callable through mcp__ proxy tools; every call goes through policy approval.</string>
+    <string name="mcp_guidance_active_needs_auth">This server is enabled, but auth setup still needs attention before its remote tools can connect.</string>
+    <string name="mcp_guidance_blocked_manual">Blocked until you enable this server manually. Its remote tools stay unavailable until you consent here.</string>
     <string name="mcp_guidance_blocked_disabled_ready">This server is disabled on this device. You can turn it back on here at any time.</string>
     <string name="mcp_guidance_blocked_disabled_needs_auth">This server is disabled and still needs auth setup before it can be considered ready.</string>
     <string name="mcp_action_disable_server">Disable server</string>
