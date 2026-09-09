@@ -661,6 +661,9 @@ abstract class HostRuntimeTestBase {
         blockedClients = emptyList(),
       )
 
+    override fun currentRegistry(): com.opencray.mcp.McpRegistry =
+      com.opencray.mcp.McpRegistry(com.opencray.mcp.InMemoryMcpRegistryStore())
+
     private fun snapshot(
       masterEnabled: Boolean = true,
       summaryLine: String = "Enabled 2 • Blocked 1 • Attention 2",

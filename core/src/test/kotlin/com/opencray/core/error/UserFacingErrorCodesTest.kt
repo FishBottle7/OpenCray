@@ -21,6 +21,9 @@ class UserFacingErrorCodesTest {
     assertEquals("E4005", UserFacingErrorCodes.shortCodeOf("ROLLBACK_FAILED"))
     assertEquals("E5002", UserFacingErrorCodes.shortCodeOf("MISSING_FRONT_MATTER"))
     assertEquals("E7001", UserFacingErrorCodes.shortCodeOf("TERMUX_UNAVAILABLE"))
+    assertEquals("E9301", UserFacingErrorCodes.shortCodeOf("MCP_SERVER_UNAVAILABLE"))
+    assertEquals("E9303", UserFacingErrorCodes.shortCodeOf("MCP_TOOL_CALL_FAILED"))
+    assertEquals("E9305", UserFacingErrorCodes.shortCodeOf("MCP_CONNECTION_REJECTED"))
   }
 
   @Test

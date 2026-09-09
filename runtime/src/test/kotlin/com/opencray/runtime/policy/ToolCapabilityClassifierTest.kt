@@ -132,4 +132,16 @@ class ToolCapabilityClassifierTest {
     assertEquals("system_ability", classifier.classifyCapabilityKind("system_calendar_create"))
     assertEquals("system_ability", classifier.classifyCapabilityKind("system_contact_search"))
   }
+
+  @Test
+  fun classifiesMcpBridgeToolsConsistently() {
+    assertEquals(PolicyToolClass.READ_FILE, classifier.classifyPolicyToolClass("mcp_list_servers"))
+    assertEquals(PolicyToolClass.READ_FILE, classifier.classifyPolicyToolClass("mcp_list_tools"))
+    assertEquals(PolicyToolClass.MCP_TOOL, classifier.classifyPolicyToolClass("mcp__demo__search"))
+    assertEquals(PolicyToolClass.MCP_TOOL, classifier.classifyPolicyToolClass("mcp__weather__get_forecast"))
+    assertEquals("read_mcp", classifier.classifyCapabilityKind("mcp_list_servers"))
+    assertEquals("read_mcp", classifier.classifyCapabilityKind("mcp_list_tools"))
+    assertEquals("mcp_tool", classifier.classifyCapabilityKind("mcp__demo__search"))
+    assertEquals("mcp_tool", classifier.classifyCapabilityKind("mcp__weather__get_forecast"))
+  }
 }

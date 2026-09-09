@@ -20,16 +20,19 @@ class OpenCrayToolDispatcherMcpTest {
   val temporaryFolder: TemporaryFolder = TemporaryFolder()
 
   @Test
-  fun definitions_describeMcpSupportAsExposureOnly() {
+  fun definitions_describeMcpBridgeWithReadOnlyInspectionTools() {
     val dispatcher = dispatcher()
 
     val mcpDefinitions = dispatcher.definitions().filter { definition ->
-      definition.name.startsWith("mcp_")
+      definition.name.startsWith("mcp_") && !definition.name.startsWith(McpRuntimeSupport.MCP_TOOL_NAME_PREFIX)
     }
     val definition = requireNotNull(dispatcher.definitions().firstOrNull { it.name == "mcp_list_servers" })
 
-    assertEquals(McpRuntimeSupport.SUPPORTED_AGENT_TOOL_NAMES, mcpDefinitions.map { it.name }.toSet())
-    assertTrue(definition.description.contains("does not proxy remote MCP tools yet"))
+    // Without a bridge gateway only mcp_list_servers is registered; mcp_list_tools
+    // and the dynamic proxy tools require an injected gateway (covered by
+    // OpenCrayToolDispatcherMcpToolBridgeTest).
+    assertEquals(setOf("mcp_list_servers"), mcpDefinitions.map { it.name }.toSet())
+    assertTrue(definition.description.contains("per-server discovered tool counts"))
   }
 
   @Test
@@ -54,9 +57,9 @@ class OpenCrayToolDispatcherMcpTest {
     assertTrue(result.content.contains(McpRuntimeSupport.bridgeSummary()))
     assertEquals("read_mcp", result.metadata["capabilityKind"])
     assertEquals("none", result.metadata["workspaceRelation"])
-    assertEquals("exposure_only", result.metadata["bridgeStatus"])
-    assertEquals("false", result.metadata["remoteToolBridgeAvailable"])
-    assertEquals("mcp_list_servers", result.metadata["supportedAgentTools"])
+    assertEquals("bridge_ready", result.metadata["bridgeStatus"])
+    assertEquals("true", result.metadata["remoteToolBridgeAvailable"])
+    assertEquals("mcp_list_servers,mcp_list_tools", result.metadata["supportedAgentTools"])
   }
 
   private fun dispatcher(

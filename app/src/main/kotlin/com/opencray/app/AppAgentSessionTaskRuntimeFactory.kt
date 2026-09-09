@@ -29,6 +29,7 @@ import com.opencray.llm.ProviderRoute
 import com.opencray.llm.ProviderRouting
 import com.opencray.llm.LiteLlmStructuredToolCall
 import com.opencray.mcp.McpClientExposureReport
+import com.opencray.mcp.McpToolBridgeGateway
 import com.opencray.persistence.model.MemoryRecord
 import com.opencray.runtime.AgentToolDefinition
 import com.opencray.runtime.AgentTodoStore
@@ -174,6 +175,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
   private val fileMutationLockDirectoryProvider: () -> Path? = { null },
   private val skillsRootsProvider: () -> List<File>,
   private val mcpReportProvider: () -> McpClientExposureReport?,
+  private val mcpToolBridgeGatewayProvider: () -> McpToolBridgeGateway? = { null },
   private val memoryRecordsProvider: () -> List<MemoryRecord> = { emptyList() },
   private val providerUserAgent: String = OpenCrayUserAgent.providerApi("0"),
   private val approvalRegistry: AgentTaskApprovalRegistry = AgentTaskApprovalRegistry(),
@@ -795,6 +797,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
         scheduledTaskManager = scheduledTaskManager,
         systemAbilityGateway = systemAbilityGatewayProvider(),
         mcpExposureReport = mcpReportProvider(),
+        mcpToolBridgeGateway = mcpToolBridgeGatewayProvider(),
         // Host UI tool actions are already user-initiated, so nested policy gates should not
         // bounce them back into chat approval just because the internal gate uses Read/WebFetch.
         approvedTaskId = task.id.takeIf {
@@ -1651,6 +1654,7 @@ internal class AppAgentSessionTaskRuntimeFactory(
         scheduledTaskManager = scheduledTaskManager,
         systemAbilityGateway = systemAbilityGatewayProvider(),
         mcpExposureReport = mcpReportProvider(),
+        mcpToolBridgeGateway = mcpToolBridgeGatewayProvider(),
         approvedTaskId = approvedTaskId,
         commandExecutor = commandExecutorProvider(),
         pythonRuntimeAdapter = pythonRuntimeProvider(),

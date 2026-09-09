@@ -7,7 +7,8 @@ package com.opencray.core.error
  * Segments: E0xxx policy/approval, E1xxx command/process execution,
  * E2xxx LLM/provider, E3xxx session orchestration, E4xxx filesystem,
  * E5xxx skills, E6xxx system/device abilities, E7xxx terminal environment,
- * E8xxx subagent, E9xxx unknown/unregistered.
+ * E8xxx subagent, E9xxx MCP tool bridge (E93xx) plus the E9999 unknown
+ * reserve constant.
  *
  * When adding or renaming an error code, register it here with a unique
  * short code and update docs/error-codes.md.
@@ -79,6 +80,13 @@ object UserFacingErrorCodes {
     put("TERMUX_UNAVAILABLE", "E7001")
 
     put("SUBAGENT_BACKGROUND_INTERRUPTED", "E8001")
+
+    put("MCP_SERVER_UNAVAILABLE", "E9301")
+    put("MCP_TOOL_NOT_FOUND", "E9302")
+    put("MCP_TOOL_CALL_FAILED", "E9303")
+    put("MCP_SERVER_NOT_ENABLED", "E9304")
+    put("MCP_CONNECTION_REJECTED", "E9305")
+    put("MCP_BRIDGE_UNAVAILABLE", "E9306")
   }
 
   fun all(): Map<String, String> = registry

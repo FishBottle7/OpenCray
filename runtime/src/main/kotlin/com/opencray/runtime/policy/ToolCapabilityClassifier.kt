@@ -1,5 +1,6 @@
 package com.opencray.runtime.policy
 
+import com.opencray.mcp.McpRuntimeSupport
 import com.opencray.policy.PolicyToolClass
 
 internal class ToolCapabilityClassifier {
@@ -82,6 +83,8 @@ internal class ToolCapabilityClassifier {
     "SkillsCheck",
     "ScheduledTaskList",
     "ScheduledTaskGet",
+    "mcp_list_servers",
+    "mcp_list_tools",
     "session_search",
     "session_get",
     "past_session_search",
@@ -91,7 +94,13 @@ internal class ToolCapabilityClassifier {
     "sandbox_session_info",
     -> PolicyToolClass.NETWORK_ACCESS
 
-    else -> error("No PolicyToolClass mapping is registered for tool '$toolName'.")
+    else -> when {
+      toolName.startsWith(McpRuntimeSupport.MCP_TOOL_NAME_PREFIX) &&
+        McpRuntimeSupport.parseProxyToolName(toolName) != null ->
+        PolicyToolClass.MCP_TOOL
+
+      else -> error("No PolicyToolClass mapping is registered for tool '$toolName'.")
+    }
   }
 
   fun classifyCapabilityKind(toolName: String): String = when (toolName) {
@@ -148,7 +157,9 @@ internal class ToolCapabilityClassifier {
 
     "SkillsRemove" -> "remove_skill"
 
-    "mcp_list_servers" -> "read_mcp"
+    "mcp_list_servers",
+    "mcp_list_tools",
+    -> "read_mcp"
 
     "system_alarm_create",
     "system_timer_start",
@@ -195,6 +206,8 @@ internal class ToolCapabilityClassifier {
         PolicyToolClass.SYSTEM_QUERY,
         PolicyToolClass.SYSTEM_ACTION,
         -> "system_ability"
+
+        PolicyToolClass.MCP_TOOL -> "mcp_tool"
       }
     }
   }

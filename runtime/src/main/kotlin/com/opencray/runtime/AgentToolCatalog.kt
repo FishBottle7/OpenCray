@@ -1,5 +1,11 @@
 package com.opencray.runtime
 
+import com.opencray.mcp.McpRuntimeSupport
+import com.opencray.mcp.McpToolDescriptor
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+
 internal fun OpenCrayToolDispatcher.toolDefinitions(): List<AgentToolDefinition> {
     val pythonManifestProviderAvailable = config.pythonRuntimeManifestProvider != null
     val canonicalDefinitions = listOf(
@@ -703,9 +709,15 @@ internal fun OpenCrayToolDispatcher.toolDefinitions(): List<AgentToolDefinition>
       },
       AgentToolDefinition(
         name = "mcp_list_servers",
-        description = "Inspect currently exposed MCP servers and their trust state. This runtime does not proxy remote MCP tools yet.",
+        description = "Inspect currently exposed MCP servers, their trust state, and per-server discovered tool counts.",
       ),
-    ).filterNotNull() + memoryToolDefinitions() + sessionToolDefinitions()
+      config.mcpToolBridgeGateway?.let {
+        AgentToolDefinition(
+          name = "mcp_list_tools",
+          description = "List remote tools discovered on enabled MCP servers with their mcp__ proxy names, then call them through those proxy tools.",
+        )
+      },
+    ).filterNotNull() + mcpProxyToolDefinitions() + memoryToolDefinitions() + sessionToolDefinitions()
     val visibleCanonicalDefinitions = canonicalDefinitions
       .filter { definition -> !isToolHiddenByConfig(definition.name) }
       .let { visibleDefinitions ->
@@ -717,8 +729,69 @@ internal fun OpenCrayToolDispatcher.toolDefinitions(): List<AgentToolDefinition>
     return visibleCanonicalDefinitions + aliasDefinitions
 }
 
+internal fun OpenCrayToolDispatcher.mcpProxyToolDefinitions(): List<AgentToolDefinition> {
+  val gateway = config.mcpToolBridgeGateway ?: return emptyList()
+  val report = config.mcpExposureReport ?: return emptyList()
+  val definitions = mutableListOf<AgentToolDefinition>()
+  for (client in report.activeClients) {
+    if (definitions.size >= MAX_MCP_PROXY_TOOL_DEFINITIONS) {
+      break
+    }
+    gateway.listTools(client.id).forEach { tool ->
+      if (definitions.size >= MAX_MCP_PROXY_TOOL_DEFINITIONS) {
+        return@forEach
+      }
+      val proxyName = McpRuntimeSupport.proxyToolName(client.id, tool.name) ?: return@forEach
+      definitions += AgentToolDefinition(
+        name = proxyName,
+        description = buildString {
+          append("Proxy for remote MCP tool '${tool.name}' on server '${client.id}'")
+          client.displayName.takeIf { it.isNotBlank() && it != client.id }?.let { append(" ($it)") }
+          append(". Every call is policy-approved before the remote server is contacted.")
+          tool.description?.takeIf(String::isNotBlank)?.let { description ->
+            append(" Remote description: ")
+            append(description.replace('\n', ' ').take(400))
+          }
+        },
+        parameters = mcpProxyToolParameters(tool),
+      )
+    }
+  }
+  return definitions
+}
+
+private const val MAX_MCP_PROXY_TOOL_DEFINITIONS = 50
+
+private fun mcpProxyToolParameters(
+  tool: McpToolDescriptor,
+): List<AgentToolParameter> {
+  val schema = tool.inputSchema ?: return emptyList()
+  val properties = schema["properties"] as? JsonObject ?: return emptyList()
+  val required = (schema["required"] as? JsonArray)
+    ?.filterIsInstance<JsonPrimitive>()
+    ?.map { it.content }
+    ?.toSet()
+    ?: emptySet()
+  return properties.entries.mapNotNull { (name, rawType) ->
+    if (rawType !is JsonObject) {
+      return@mapNotNull null
+    }
+    // The remote property schema is forwarded as-is so nested shapes, enums,
+    // and item schemas survive; the flat type label is only a prompt hint.
+    AgentToolParameter(
+      name = name,
+      type = "object",
+      required = name in required,
+      description = (rawType["description"] as? JsonPrimitive)?.content
+        ?.takeIf(String::isNotBlank)
+        ?: "Remote argument '$name'.",
+      jsonSchema = rawType,
+    )
+  }
+}
+
 internal fun OpenCrayToolDispatcher.memoryToolDefinitions(): List<AgentToolDefinition> {
-    if (config.memoryToolContext == null) {
+  if (config.memoryToolContext == null) {
       return emptyList()
     }
     return listOf(

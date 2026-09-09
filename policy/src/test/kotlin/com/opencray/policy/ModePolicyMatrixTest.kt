@@ -208,6 +208,27 @@ class ModePolicyMatrixTest {
         expectedReasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
         targetRelativePath = null,
       ),
+      MatrixExpectation(
+        mode = ExecutionMode.SAFE,
+        toolClass = PolicyToolClass.MCP_TOOL,
+        expectedOutcome = PolicyDecisionOutcome.ASK,
+        expectedReasonCode = PolicyReasonCode.ASK_SAFE_MCP_TOOL,
+        targetRelativePath = null,
+      ),
+      MatrixExpectation(
+        mode = ExecutionMode.AUTO,
+        toolClass = PolicyToolClass.MCP_TOOL,
+        expectedOutcome = PolicyDecisionOutcome.ALLOW,
+        expectedReasonCode = PolicyReasonCode.ALLOW_AUTO_STANDARD,
+        targetRelativePath = null,
+      ),
+      MatrixExpectation(
+        mode = ExecutionMode.DEVELOPER,
+        toolClass = PolicyToolClass.MCP_TOOL,
+        expectedOutcome = PolicyDecisionOutcome.ALLOW,
+        expectedReasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
+        targetRelativePath = null,
+      ),
     )
 
     for (matrixCase in cases) {

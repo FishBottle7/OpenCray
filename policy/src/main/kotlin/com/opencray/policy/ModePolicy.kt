@@ -40,6 +40,7 @@ enum class PolicyToolClass {
   NETWORK_ACCESS,
   SYSTEM_QUERY,
   SYSTEM_ACTION,
+  MCP_TOOL,
   ;
 
   fun requiresTargetPath(): Boolean = when (this) {
@@ -54,6 +55,7 @@ enum class PolicyToolClass {
     NETWORK_ACCESS,
     SYSTEM_QUERY,
     SYSTEM_ACTION,
+    MCP_TOOL,
     -> false
   }
 
@@ -99,6 +101,7 @@ object PolicyReasonCode {
   const val ASK_SAFE_COMMAND_HIGH_RISK = "ASK_SAFE_COMMAND_HIGH_RISK"
   const val ASK_SAFE_NETWORK_HIGH_RISK = "ASK_SAFE_NETWORK_HIGH_RISK"
   const val ASK_SAFE_SYSTEM_ACTION = "ASK_SAFE_SYSTEM_ACTION"
+  const val ASK_SAFE_MCP_TOOL = "ASK_SAFE_MCP_TOOL"
 
   const val ALLOW_AUTO_STANDARD = "ALLOW_AUTO_STANDARD"
   const val ASK_AUTO_DESTRUCTIVE = "ASK_AUTO_DESTRUCTIVE"
@@ -166,6 +169,10 @@ class ModePolicy(
           outcome = PolicyDecisionOutcome.ASK,
           reasonCode = PolicyReasonCode.ASK_SAFE_SYSTEM_ACTION,
         ),
+        PolicyToolClass.MCP_TOOL to MatrixRule(
+          outcome = PolicyDecisionOutcome.ASK,
+          reasonCode = PolicyReasonCode.ASK_SAFE_MCP_TOOL,
+        ),
       ),
       ExecutionMode.AUTO to mapOf(
         PolicyToolClass.READ_FILE to MatrixRule(
@@ -204,6 +211,10 @@ class ModePolicy(
           outcome = PolicyDecisionOutcome.ALLOW,
           reasonCode = PolicyReasonCode.ALLOW_AUTO_STANDARD,
         ),
+        PolicyToolClass.MCP_TOOL to MatrixRule(
+          outcome = PolicyDecisionOutcome.ALLOW,
+          reasonCode = PolicyReasonCode.ALLOW_AUTO_STANDARD,
+        ),
       ),
       ExecutionMode.DEVELOPER to mapOf(
         PolicyToolClass.READ_FILE to MatrixRule(
@@ -239,6 +250,10 @@ class ModePolicy(
           reasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
         ),
         PolicyToolClass.SYSTEM_ACTION to MatrixRule(
+          outcome = PolicyDecisionOutcome.ALLOW,
+          reasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
+        ),
+        PolicyToolClass.MCP_TOOL to MatrixRule(
           outcome = PolicyDecisionOutcome.ALLOW,
           reasonCode = PolicyReasonCode.ALLOW_DEVELOPER_OVERRIDE,
         ),

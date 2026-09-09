@@ -5,6 +5,7 @@ import com.opencray.filesystem.FileMutationOperation
 import com.opencray.filesystem.FileOpsService
 import com.opencray.llm.LiteLlmToolDefinition
 import com.opencray.mcp.McpClientExposureReport
+import com.opencray.mcp.McpConnectionState
 import com.opencray.mcp.McpRuntimeSupport
 import com.opencray.mcp.McpToolExposure
 import com.opencray.policy.ModePolicy
@@ -364,18 +365,28 @@ class OpenCrayToolDispatcher(
         "SkillsUpdate" -> updateInstalledSkillPackages(task = task, arguments = invocation.arguments)
         "SkillsRemove" -> removeSkillPackage(task = task, arguments = invocation.arguments)
         "mcp_list_servers" -> listMcpServers()
+        "mcp_list_tools" -> listMcpTools()
         "memory_search" -> searchProjectedMemory(invocation.arguments)
         "memory_get" -> getProjectedMemory(invocation.arguments)
         "session_search" -> searchProjectedSessionHistory(invocation.arguments)
         "session_get" -> getProjectedSessionHistory(invocation.arguments)
         "past_session_search" -> searchPastSessionArchive(invocation.arguments)
         "past_session_get" -> getPastSessionArchive(invocation.arguments)
-        else -> AgentToolResult(
-          toolName = invocation.requestedToolName,
-          status = AgentToolResultStatus.FAILED,
-          content = "Tool '${invocation.requestedToolName}' is not registered.",
-          errorCode = "TOOL_NOT_FOUND",
-        )
+        else -> when {
+          invocation.normalizedToolName.startsWith(McpRuntimeSupport.MCP_TOOL_NAME_PREFIX) ->
+            callMcpProxyTool(
+              task = task,
+              toolName = invocation.normalizedToolName,
+              arguments = invocation.arguments,
+            )
+
+          else -> AgentToolResult(
+            toolName = invocation.requestedToolName,
+            status = AgentToolResultStatus.FAILED,
+            content = "Tool '${invocation.requestedToolName}' is not registered.",
+            errorCode = "TOOL_NOT_FOUND",
+          )
+        }
       }
       registerMediaArtifactsFromResult(task = task, result = result)
       toolCallNormalizer.decorateResult(result = result, invocation = invocation)
@@ -432,6 +443,7 @@ class OpenCrayToolDispatcher(
         "skill_read",
         "SkillsList",
         "mcp_list_servers",
+        "mcp_list_tools",
         "memory_search",
         "memory_get",
         "session_search",
@@ -3624,16 +3636,31 @@ class OpenCrayToolDispatcher(
 
   private fun listMcpServers(): AgentToolResult {
     val report = config.mcpExposureReport
+    val bridge = config.mcpToolBridgeGateway
+    val bridgeSummaries = bridge?.connectionSummaries().orEmpty()
     val activeCount = report?.activeClients?.size ?: 0
     val blockedCount = report?.blockedClients?.size ?: 0
     val lines = buildList {
       add(McpRuntimeSupport.bridgeSummary())
       report?.activeClients?.forEach { client ->
-        add("active\t${client.id}\t${client.displayName}\t${client.transport::class.simpleName}\t${client.trustState}")
+        val connection = bridgeSummaries.firstOrNull { it.serverId == client.id }
+        val toolCount = connection?.connectedToolCount
+        add(
+          buildString {
+            append("active\t${client.id}\t${client.displayName}")
+            append("\t${client.transport::class.simpleName}\t${client.trustState}")
+            toolCount?.let { append("\ttools=$it") }
+          },
+        )
       }
       report?.blockedClients?.forEach { client ->
         add("blocked\t${client.id}\t${client.displayName}\t${client.transport::class.simpleName}\t${client.blockReason}")
       }
+      bridgeSummaries
+        .filter { it.state == McpConnectionState.DISCONNECTED && it.lastError != null }
+        .forEach { summary ->
+          add("error\t${summary.serverId}\t${summary.lastError}")
+        }
     }
     return AgentToolResult(
       toolName = "mcp_list_servers",
@@ -3649,9 +3676,10 @@ class OpenCrayToolDispatcher(
       ) + mapOf(
         "activeCount" to activeCount.toString(),
         "blockedCount" to blockedCount.toString(),
-        "bridgeStatus" to McpRuntimeSupport.BRIDGE_STATUS_EXPOSURE_ONLY,
+        "bridgeStatus" to McpRuntimeSupport.BRIDGE_STATUS_BRIDGE_READY,
         "remoteToolBridgeAvailable" to McpRuntimeSupport.REMOTE_TOOL_BRIDGE_AVAILABLE.toString(),
         "supportedAgentTools" to McpRuntimeSupport.SUPPORTED_AGENT_TOOL_NAMES.sorted().joinToString(separator = ","),
+        "discoveredToolCount" to bridgeSummaries.sumOf { it.connectedToolCount }.toString(),
         "toolExposure" to (
           report?.activeClients?.firstOrNull()?.toolExposure
             ?: report?.blockedClients?.firstOrNull()?.toolExposure

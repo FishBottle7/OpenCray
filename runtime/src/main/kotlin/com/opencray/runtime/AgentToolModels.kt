@@ -1,6 +1,7 @@
 package com.opencray.runtime
 
 import com.opencray.mcp.McpClientExposureReport
+import com.opencray.mcp.McpToolBridgeGateway
 import com.opencray.policy.ModePolicy
 import com.opencray.runtime.memory.MemoryToolContext
 import com.opencray.runtime.process.AgentProcessRegistry
@@ -157,6 +158,7 @@ data class OpenCrayToolDispatcherConfig(
   val skillsRoots: List<File> = emptyList(),
   val skillPackageManager: SkillPackageManager? = null,
   val mcpExposureReport: McpClientExposureReport? = null,
+  val mcpToolBridgeGateway: McpToolBridgeGateway? = null,
   val modePolicy: ModePolicy = ModePolicy(),
   val approvedTaskId: String? = null,
   val approvedToolName: String? = null,

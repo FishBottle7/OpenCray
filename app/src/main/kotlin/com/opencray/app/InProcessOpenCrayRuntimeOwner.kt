@@ -347,6 +347,10 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
       )
     },
   )
+  val mcpToolBridgeGateway = McpToolBridgeGatewayImpl(
+    registryProvider = { mcpSettingsFacade.currentRegistry() },
+    vault = AndroidKeystoreSharedPreferencesSecretVault.fromContext(appContext),
+  )
   val runtimeFactory = AppAgentSessionTaskRuntimeFactory(
     llmSettingsProvider = { llmSettingsStore.load() },
     safetySettingsProvider = { SafetySettingsStore.fromContext(appContext).load() },
@@ -360,6 +364,7 @@ internal fun createRetainedInProcessOpenCrayRuntimeOwnerCore(
     },
     skillsRootsProvider = { skillsFacade.enabledSkillRoots() },
     mcpReportProvider = { mcpSettingsFacade.currentExposureReport() },
+    mcpToolBridgeGatewayProvider = { mcpToolBridgeGateway },
     memoryRecordsProvider = personalizationStore::listMemoryRecords,
     providerUserAgent = providerUserAgent,
     approvalRegistry = approvalRegistry,

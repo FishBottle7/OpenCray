@@ -7,6 +7,7 @@ import com.opencray.app.OpenCrayLocaleManager
 import com.opencray.core.contracts.McpServerSpec
 import com.opencray.core.contracts.McpServerTrustState
 import com.opencray.core.contracts.McpTransportDescriptor
+import com.opencray.mcp.InMemoryMcpRegistryStore
 import com.opencray.mcp.McpBlockedClientDescriptor
 import com.opencray.mcp.McpClientAuthDescriptor
 import com.opencray.mcp.McpClientBlockReason
@@ -63,6 +64,9 @@ interface McpSettingsFacade {
   fun setServerEnabled(serverId: String, enabled: Boolean): McpSettingsSnapshot
 
   fun currentExposureReport(): McpClientExposureReport
+
+  /** Fresh registry view for the MCP tool bridge; reloads from the store each call. */
+  fun currentRegistry(): McpRegistry
 }
 
 internal object EmptyMcpSettingsFacade : McpSettingsFacade {
@@ -88,6 +92,8 @@ internal object EmptyMcpSettingsFacade : McpSettingsFacade {
     activeClients = emptyList(),
     blockedClients = emptyList(),
   )
+
+  override fun currentRegistry(): McpRegistry = McpRegistry(InMemoryMcpRegistryStore())
 }
 
 internal class LocalMcpSettingsFacade private constructor(
@@ -123,6 +129,8 @@ internal class LocalMcpSettingsFacade private constructor(
     val rawReport = clientFactory.load(registry())
     return effectiveReport(rawReport, masterEnabled())
   }
+
+  override fun currentRegistry(): McpRegistry = registry()
 
   private fun snapshot(): McpSettingsSnapshot {
     val masterEnabled = masterEnabled()

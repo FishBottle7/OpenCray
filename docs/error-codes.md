@@ -22,7 +22,8 @@
 | E6xxx | 系统与设备能力（系统能力工具的执行/权限失败） |
 | E7xxx | 终端环境 |
 | E8xxx | 子代理 |
-| E9xxx | 未归类 / 未知 |
+| E93xx | MCP 工具桥（远端 MCP 服务器的连接与工具调用失败） |
+| E9999 | 未归类 / 未知（保留常量，非段位） |
 
 注册表源文件：`core/src/main/kotlin/com/opencray/core/error/UserFacingErrorCodes.kt`。新增或改名错误码时必须同步注册并更新本表。
 
@@ -125,3 +126,14 @@
 | 短码 | 内部码 | 含义与常见原因 |
 |---|---|---|
 | E8001 | SUBAGENT_BACKGROUND_INTERRUPTED | 后台子代理被中断 |
+
+## E93xx MCP 工具桥
+
+| 短码 | 内部码 | 含义与常见原因 |
+|---|---|---|
+| E9301 | MCP_SERVER_UNAVAILABLE | 目标 MCP 服务器连接不可用（未连接、连接已关闭、传输失败） |
+| E9302 | MCP_TOOL_NOT_FOUND | 代理调用的远端工具在服务器已发现工具清单中不存在 |
+| E9303 | MCP_TOOL_CALL_FAILED | 远端 tools/call 返回错误（JSON-RPC error、isError 内容或传输异常） |
+| E9304 | MCP_SERVER_NOT_ENABLED | 目标服务器信任态非 ENABLED，连接被前置拒绝 |
+| E9305 | MCP_CONNECTION_REJECTED | 连接被前置拒绝（信任态/传输不支持/凭据缺失或解析失败） |
+| E9306 | MCP_BRIDGE_UNAVAILABLE | 当前执行环境未注入 MCP 工具桥网关（代理工具未注册） |

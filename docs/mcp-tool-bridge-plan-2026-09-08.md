@@ -75,7 +75,7 @@ tool call 代理、远端工具的策略分类与审批。
 - 现有 `McpManagerTest` / `OpenCrayToolDispatcherMcpTest` 不变。
 - `.\gradlew.bat test` 全量通过。
 
-### 阶段二：工具面接入（下一步，待用户确认后开工）
+### 阶段二：工具面接入（已完成，2026-09-09）
 
 - `McpRuntimeSupport.REMOTE_TOOL_BRIDGE_AVAILABLE = true`，
   `BRIDGE_STATUS_EXPOSURE_ONLY` 改为 `bridge_ready`；`mcp_list_servers` 输出追加
@@ -88,11 +88,14 @@ tool call 代理、远端工具的策略分类与审批。
     `McpToolCallIntent`（serverId/toolName/参数摘要）。
   - 工具目录动态合入：已启用服务器在会话启动/工具刷新时 `tools/list`，schema 归一
     后进 `AgentToolCatalog`。
-- 错误段：E6xxx 已被系统能力占用，MCP 错误登记到 E5 段之后的空段或新增段——
-  在阶段二开工时与用户确认选段（候选：复用 E0 策略段 + 新增 E2x 段不合适；倾向
-  新增 `MCP_TOOL_FAILED` 等 3-5 个码登记进未占用的 E6 空位之外的新段，需定稿）。
+- 错误段（已定稿）：E + 4 位短码的 10 个首位段（E0-E8）已全部占用，E9999 为
+  未知保留常量；MCP 专属段定为 **E93xx**（E9 段内的 MCP 子段），共 6 码：
+  E9301 `MCP_SERVER_UNAVAILABLE`、E9302 `MCP_TOOL_NOT_FOUND`、E9303
+  `MCP_TOOL_CALL_FAILED`、E9304 `MCP_SERVER_NOT_ENABLED`、E9305
+  `MCP_CONNECTION_REJECTED`、E9306 `MCP_BRIDGE_UNAVAILABLE`，同步登记进
+  `UserFacingErrorCodes` 与 `docs/error-codes.md`。
 - 连接生命周期接入 `InProcessOpenCrayRuntimeOwner`（`mcpReportProvider` 旁新增
-  `mcpToolBridgeProvider`），与强后台/重启恢复语义对齐。
+  `mcpToolBridgeGatewayProvider`），与强后台/重启恢复语义对齐。
 
 ### 阶段三：设置与发现闭环（远期）
 
@@ -130,6 +133,21 @@ tool call 代理、远端工具的策略分类与审批。
   （编解码 8、协议 13、管理器 8、传输 9），模块 42 用例全绿；全量
   `.\gradlew.bat test` 912 例仅 1 例既有偶发失败（`OpenCrayAgentRuntimeSubAgentTest`
   子代理审批续跑，单独与整模块重跑均通过，与 mcp 改动无关）。
-- 待做：阶段二工具面接入（动态 `mcp__<server>__<tool>` 代理、`MCP_TOOL` 策略类与
-  intent 模型、E5/E6 之外的错误段定稿——选段需用户确认）；阶段三 add-server UI 与
-  凭据录入、SSE/stdio 传输、E2B gateway。
+- 阶段二（工具面接入）完成（2026-09-09）：`McpRuntimeSupport` 翻转为
+  `bridge_ready`/`true` 并新增代理工具名解析（`parseProxyToolName`/
+  `proxyToolName`，分隔符碰撞拒绝）；新增只读工具 `mcp_list_tools` 与动态代理
+  工具 `mcp__<server>__<tool>`（`McpToolBridgeTooling`，走 `ToolPolicyPipeline`
+  全流程）；`PolicyToolClass.MCP_TOOL` 策略类 + 三模式矩阵（SAFE→ASK/
+  `ASK_SAFE_MCP_TOOL`/STANDARD，AUTO→ALLOW，DEVELOPER→ALLOW，SAFE 档审批
+  经用户确认）；`McpToolCallIntent` 意图模型；`AgentToolCatalog` 动态合入远端
+  工具定义（schema 原样透传为 `jsonSchema`，上限 50 个）；runtime 纯 Kotlin
+  接口 `McpToolBridgeGateway`，app 层 `McpToolBridgeGatewayImpl` 懒连接实现
+  （仅 ENABLED + RemoteHttp 服务器触网，凭据从 keystore vault 连接时解析，
+  明文只进传输请求头）经 `InProcessOpenCrayRuntimeOwner` 注入；错误码
+  E9301-E9306 登记 `UserFacingErrorCodes` + `docs/error-codes.md`。
+  新增/更新测试：`OpenCrayToolDispatcherMcpToolBridgeTest` 9 用例（注册条件、
+  schema 透传、SAFE 审批拦截、AUTO 放行、审批续跑、网关缺失、远端失败映射、
+  名称不可解析）、`ModePolicyMatrixTest` MCP_TOOL 三档、
+  `ToolCapabilityClassifierTest` MCP 映射（并补齐阶段一遗漏的
+  `mcp_list_servers` → READ_FILE 分类映射）、既有 MCP 测试断言同步翻转。
+- 待做：阶段三 add-server UI 与凭据录入、SSE/stdio 传输、E2B gateway。

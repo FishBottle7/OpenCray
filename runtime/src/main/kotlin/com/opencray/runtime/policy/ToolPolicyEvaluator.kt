@@ -184,6 +184,7 @@ internal class ToolPolicyEvaluator(
       PolicyToolClass.NETWORK_ACCESS,
       PolicyToolClass.SYSTEM_QUERY,
       PolicyToolClass.SYSTEM_ACTION,
+      PolicyToolClass.MCP_TOOL,
       -> null
     } ?: return ToolPolicyOverride.INHERIT
     return ToolPolicyOverride.fromWireValue(task.metadata[metadataKey])
@@ -207,6 +208,7 @@ internal class ToolPolicyEvaluator(
       PolicyToolClass.READ_FILE,
       PolicyToolClass.SYSTEM_QUERY,
       PolicyToolClass.SYSTEM_ACTION,
+      PolicyToolClass.MCP_TOOL,
       -> PolicyApprovalRisk.STANDARD
     }
   }

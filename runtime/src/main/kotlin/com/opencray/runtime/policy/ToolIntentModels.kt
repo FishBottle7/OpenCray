@@ -151,3 +151,18 @@ internal data class SystemAbilityIntent(
     actionSummary?.takeIf(String::isNotBlank)?.let { put("systemActionSummary", it) }
   }
 }
+
+internal data class McpToolCallIntent(
+  val serverId: String,
+  val remoteToolName: String,
+  val argumentSummary: String? = null,
+) : ToolRuntimeIntent {
+  override val categoryWireValue: String = "mcp_tool_call"
+
+  override fun metadata(): Map<String, String> = buildMap {
+    put("intentCategory", categoryWireValue)
+    put("mcpServerId", serverId)
+    put("mcpRemoteToolName", remoteToolName)
+    argumentSummary?.takeIf(String::isNotBlank)?.let { put("mcpArgumentSummary", it) }
+  }
+}
